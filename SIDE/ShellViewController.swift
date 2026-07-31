@@ -143,7 +143,12 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         window.title = (isDirty ? fileName.map { "\($0) — Edited" } : fileName) ?? projectURL?.lastPathComponent ?? "Side"
 
         var subtitleParts: [String] = []
-        if let projectName = projectURL?.lastPathComponent { subtitleParts.append(projectName) }
+        if let projectURL, let currentFileURL {
+            let relative = currentFileURL.path.replacingOccurrences(of: projectURL.path + "/", with: "")
+            subtitleParts.append(relative)
+        } else if let projectName = projectURL?.lastPathComponent {
+            subtitleParts.append(projectName)
+        }
         if let branch = gitBranch {
             subtitleParts.append(gitDirtyCount > 0 ? "\(branch) · \(gitDirtyCount) changed" : branch)
         }

@@ -16,6 +16,8 @@ final class LineNumberGutterView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    deinit { NotificationCenter.default.removeObserver(self) }
+
     override var isFlipped: Bool { true }
 
     @objc func invalidate() { needsDisplay = true }

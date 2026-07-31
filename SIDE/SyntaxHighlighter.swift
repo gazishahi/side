@@ -8,6 +8,9 @@ enum SyntaxHighlighter {
     private static let commentColor = NSColor(calibratedWhite: 0.45, alpha: 1)
     private static let numberColor = NSColor(calibratedRed: 0.68, green: 0.80, blue: 0.98, alpha: 1)
     private static let headingColor = NSColor(calibratedRed: 0.55, green: 0.85, blue: 0.65, alpha: 1)
+    private static let jsxTagColor = NSColor(calibratedRed: 0.42, green: 0.82, blue: 0.66, alpha: 1)
+    private static let jsxAttrColor = NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.98, alpha: 1)
+    private static let typeColor = NSColor(calibratedRed: 0.98, green: 0.78, blue: 0.45, alpha: 1)
 
     static let maxHighlightableLength = 2_000_000
 
@@ -28,7 +31,9 @@ enum SyntaxHighlighter {
     private static func rules(for ext: String) -> [Rule] {
         switch ext {
         case "swift": return codeRules(keywords: swiftKeywords, lineComment: "//", blockComment: true)
-        case "ts", "tsx", "js", "jsx", "mjs", "cjs": return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true)
+        case "tsx", "jsx": return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true, jsx: true, typeAnnotations: ext == "tsx")
+        case "ts": return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true, typeAnnotations: true)
+        case "js", "mjs", "cjs": return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true)
         case "py": return codeRules(keywords: pyKeywords, lineComment: "#", blockComment: false)
         case "json": return jsonRules
         case "md", "markdown": return markdownRules
@@ -40,10 +45,15 @@ enum SyntaxHighlighter {
         try? NSRegularExpression(pattern: pattern, options: options)
     }
 
-    private static func codeRules(keywords: [String], lineComment: String, blockComment: Bool) -> [Rule] {
+    private static func codeRules(keywords: [String], lineComment: String, blockComment: Bool, jsx: Bool = false, typeAnnotations: Bool = false) -> [Rule] {
         var rules: [Rule] = []
         if let r = regex("\\b(\(keywords.joined(separator: "|")))\\b") { rules.append(Rule(regex: r, color: keywordColor)) }
         if let r = regex("\\b\\d+(\\.\\d+)?\\b") { rules.append(Rule(regex: r, color: numberColor)) }
+        if typeAnnotations, let r = regex(":\\s*([A-Z]\\w*(?:<[^>]*>)?(?:\\[\\])?)") { rules.append(Rule(regex: r, color: typeColor)) }
+        if jsx {
+            if let r = regex("</?[A-Za-z][\\w.]*") { rules.append(Rule(regex: r, color: jsxTagColor)) }
+            if let r = regex("\\b[a-zA-Z][\\w-]*(?=\\=(\"|\\{))") { rules.append(Rule(regex: r, color: jsxAttrColor)) }
+        }
         if let r = regex("\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|`(?:[^`\\\\]|\\\\.)*`") { rules.append(Rule(regex: r, color: stringColor)) }
         if let r = regex("\(NSRegularExpression.escapedPattern(for: lineComment)).*$", [.anchorsMatchLines]) { rules.append(Rule(regex: r, color: commentColor)) }
         if blockComment, let r = regex("/\\*[\\s\\S]*?\\*/") { rules.append(Rule(regex: r, color: commentColor)) }

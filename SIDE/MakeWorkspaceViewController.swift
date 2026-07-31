@@ -137,6 +137,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         resultsTable.addTableColumn(column)
         resultsTable.headerView = nil
         resultsTable.rowHeight = quickOpenRowHeight
+        resultsTable.intercellSpacing = NSSize(width: 0, height: 0)
         resultsTable.backgroundColor = .clear
         resultsTable.selectionHighlightStyle = .regular
         resultsTable.dataSource = self
@@ -153,7 +154,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let effect = NSVisualEffectView()
         effect.material = .popover
         effect.state = .active
-        effect.blendingMode = .behindWindow
+        effect.blendingMode = .withinWindow
         effect.wantsLayer = true
         effect.layer?.cornerRadius = 10
         effect.layer?.masksToBounds = true
@@ -170,7 +171,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let height = CGFloat(visibleRows) * quickOpenRowHeight + 12
         let fieldFrameInWindow = searchField.convert(searchField.bounds, to: nil)
         let fieldFrameOnScreen = window.convertToScreen(fieldFrameInWindow)
-        let panelFrame = NSRect(x: fieldFrameOnScreen.minX, y: fieldFrameOnScreen.minY - height - 6, width: max(fieldFrameOnScreen.width, 420), height: height)
+        let width = max(fieldFrameOnScreen.width, 420)
+
+        var x = fieldFrameOnScreen.minX
+        let windowFrame = window.frame
+        if x + width > windowFrame.maxX - 12 { x = windowFrame.maxX - width - 12 }
+        if x < windowFrame.minX + 12 { x = windowFrame.minX + 12 }
+
+        let panelFrame = NSRect(x: x, y: fieldFrameOnScreen.minY - height - 6, width: width, height: height)
         quickOpenPanel.setFrame(panelFrame, display: true)
         if quickOpenPanel.parent == nil {
             window.addChildWindow(quickOpenPanel, ordered: .above)
@@ -277,7 +285,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         onFileOpened?(tab.url)
     }
 
-    @objc private func selectTab(_ sender: NSButton) { switchToTab(sender.tag) }
     @objc private func switchToTabShortcut(_ sender: NSMenuItem) {
         let index = sender.tag >= 0 ? sender.tag : openTabs.count - 1
         switchToTab(index)
@@ -315,6 +322,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         rebuildTabBar()
     }
 
+    private func reorderTab(from: Int, to: Int) {
+        guard openTabs.indices.contains(from), openTabs.indices.contains(to), from != to else { return }
+        let activeURL = activeTabIndex.flatMap { openTabs.indices.contains($0) ? openTabs[$0].url : nil }
+        let moved = openTabs.remove(at: from)
+        openTabs.insert(moved, at: to)
+        if let activeURL { activeTabIndex = openTabs.firstIndex(where: { $0.url == activeURL }) }
+        rebuildTabBar()
+    }
+
     private func rebuildTabBar() {
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let showBar = openTabs.count > 1
@@ -328,46 +344,33 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func makeTabChip(index: Int, tab: OpenTab, isActive: Bool) -> NSView {
         let container = TabChipView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 6
-        container.layer?.backgroundColor = isActive ? NSColor(calibratedWhite: 0.17, alpha: 1).cgColor : NSColor.clear.cgColor
+        container.index = index
+        container.isActive = isActive
+        container.title = tab.dirty ? "\(tab.url.lastPathComponent) •" : tab.url.lastPathComponent
+        container.toolTip = relativePath(tab.url)
         container.translatesAutoresizingMaskIntoConstraints = false
         container.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        container.onSelect = { [weak self] i in self?.switchToTab(i) }
+        container.onReorder = { [weak self] from, to in self?.reorderTab(from: from, to: to) }
 
-        let button = NSButton(title: "", target: self, action: #selector(selectTab(_:)))
-        button.tag = index
-        button.isBordered = false
-        button.imagePosition = .noImage
-        let title = tab.dirty ? "\(tab.url.lastPathComponent) •" : tab.url.lastPathComponent
-        button.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: isActive ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.55, alpha: 1),
-            .font: NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
-        ])
-        button.translatesAutoresizingMaskIntoConstraints = false
-
-        let closeButton = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!, target: self, action: #selector(closeTabButton(_:)))
+        let closeButton = TabCloseButton(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
         closeButton.tag = index
-        closeButton.isBordered = false
-        closeButton.imageScaling = .scaleProportionallyDown
-        closeButton.contentTintColor = NSColor(calibratedWhite: 0.6, alpha: 1)
+        closeButton.target = self
+        closeButton.action = #selector(closeTabButton(_:))
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.isHidden = true
-
-        container.addSubview(button)
         container.addSubview(closeButton)
         container.closeButton = closeButton
         NSLayoutConstraint.activate([
-            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12), button.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
-            button.topAnchor.constraint(equalTo: container.topAnchor), button.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: 14), closeButton.heightAnchor.constraint(equalToConstant: 14)
+            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -5), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 16), closeButton.heightAnchor.constraint(equalToConstant: 16)
         ])
 
         let menu = NSMenu()
         let closeItem = menu.addItem(withTitle: "Close Tab", action: #selector(closeTabFromMenu(_:)), keyEquivalent: "")
         closeItem.tag = index
         closeItem.target = self
-        button.menu = menu
+        container.menu = menu
 
         return container
     }
@@ -521,7 +524,23 @@ final class QuickOpenPanel: NSPanel {
 
 final class TabChipView: NSView {
     weak var closeButton: NSButton?
+    var index: Int = 0
+    var onSelect: ((Int) -> Void)?
+    var onReorder: ((Int, Int) -> Void)?
+    var title: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
+    var isActive: Bool = false { didSet { needsDisplay = true } }
+
     private var trackingArea: NSTrackingArea?
+    private var dragOrigin: NSPoint?
+    private var didDrag = false
+
+    override var isFlipped: Bool { true }
+
+    override var intrinsicContentSize: NSSize {
+        let font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        let textWidth = (title as NSString).size(withAttributes: [.font: font]).width
+        return NSSize(width: textWidth + 12 + 24, height: 24)
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -533,6 +552,82 @@ final class TabChipView: NSView {
 
     override func mouseEntered(with event: NSEvent) { closeButton?.isHidden = false }
     override func mouseExited(with event: NSEvent) { closeButton?.isHidden = true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let background = isActive ? NSColor(calibratedWhite: 0.17, alpha: 1) : NSColor.clear
+        background.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: isActive ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.55, alpha: 1),
+            .font: NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        ]
+        let text = title as NSString
+        let size = text.size(withAttributes: attributes)
+        let maxWidth = max(0, bounds.width - 12 - 24)
+        let drawRect = NSRect(x: 12, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth), height: size.height)
+        text.draw(in: drawRect, withAttributes: attributes)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragOrigin = event.locationInWindow
+        didDrag = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragOrigin else { return }
+        let dx = event.locationInWindow.x - dragOrigin.x
+        if abs(dx) > 4 { didDrag = true }
+        wantsLayer = true
+        layer?.zPosition = 10
+        layer?.setAffineTransform(CGAffineTransform(translationX: dx, y: 0))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { dragOrigin = nil }
+        layer?.setAffineTransform(.identity)
+        layer?.zPosition = 0
+        guard dragOrigin != nil else { return }
+        if didDrag, let stack = superview as? NSStackView {
+            let finalX = event.locationInWindow.x
+            var dropIndex = index
+            for (i, sibling) in stack.arrangedSubviews.enumerated() where sibling !== self {
+                let siblingMidXInWindow = sibling.convert(NSPoint(x: sibling.bounds.midX, y: 0), to: nil).x
+                if finalX > siblingMidXInWindow { dropIndex = i }
+            }
+            onReorder?(index, dropIndex)
+        } else {
+            onSelect?(index)
+        }
+    }
+}
+
+final class TabCloseButton: NSButton {
+    private var trackingArea: NSTrackingArea?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = frameRect.width / 2
+        isBordered = false
+        imagePosition = .imageOnly
+        let config = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
+        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?.withSymbolConfiguration(config)
+        contentTintColor = NSColor(calibratedWhite: 0.62, alpha: 1)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = NSColor(calibratedWhite: 1, alpha: 0.16).cgColor }
+    override func mouseExited(with event: NSEvent) { layer?.backgroundColor = NSColor.clear.cgColor }
 }
 
 final class QuickOpenSearchField: NSSearchField {
