@@ -22,6 +22,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var matches: [URL] = []
     private var openTabs: [OpenTab] = []
     private var activeTabIndex: Int?
+    private var tabChips: [TabChipView] = []
     private var dirty = false { didSet { onDirtyChanged?(dirty) } }
     var onProjectOpened: ((URL) -> Void)?
     var onFileOpened: ((URL?) -> Void)?
@@ -156,11 +157,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         effect.state = .active
         effect.blendingMode = .withinWindow
         effect.wantsLayer = true
-        effect.layer?.cornerRadius = 10
+        effect.layer?.cornerRadius = 8
         effect.layer?.masksToBounds = true
         effect.addSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -6)
+            scroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -10)
         ])
         quickOpenPanel.contentView = effect
     }
@@ -168,7 +169,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func showQuickOpenPanel() {
         guard let window = searchField.window else { return }
         let visibleRows = max(1, min(quickOpenMaxVisibleRows, matches.count))
-        let height = CGFloat(visibleRows) * quickOpenRowHeight + 12
+        let height = CGFloat(visibleRows) * quickOpenRowHeight + 20
         let fieldFrameInWindow = searchField.convert(searchField.bounds, to: nil)
         let fieldFrameOnScreen = window.convertToScreen(fieldFrameInWindow)
         let width = max(fieldFrameOnScreen.width, 420)
@@ -322,27 +323,51 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         rebuildTabBar()
     }
 
-    private func reorderTab(from: Int, to: Int) {
-        guard openTabs.indices.contains(from), openTabs.indices.contains(to), from != to else { return }
+    private func handleTabDragging(_ chip: TabChipView, toWindowX x: CGFloat) {
+        guard let draggedIndex = tabChips.firstIndex(where: { $0 === chip }) else { return }
+        var dropIndex = draggedIndex
+        for (i, sibling) in tabChips.enumerated() where sibling !== chip {
+            let siblingMidXInWindow = sibling.convert(NSPoint(x: sibling.bounds.midX, y: 0), to: nil).x
+            if x > siblingMidXInWindow { dropIndex = i }
+        }
+        guard dropIndex != draggedIndex else { return }
+
         let activeURL = activeTabIndex.flatMap { openTabs.indices.contains($0) ? openTabs[$0].url : nil }
-        let moved = openTabs.remove(at: from)
-        openTabs.insert(moved, at: to)
+        let movedTab = openTabs.remove(at: draggedIndex)
+        openTabs.insert(movedTab, at: dropIndex)
+        tabChips.remove(at: draggedIndex)
+        tabChips.insert(chip, at: dropIndex)
+        tabBarStack.removeArrangedSubview(chip)
+        tabBarStack.insertArrangedSubview(chip, at: dropIndex)
         if let activeURL { activeTabIndex = openTabs.firstIndex(where: { $0.url == activeURL }) }
-        rebuildTabBar()
+        reindexTabChips()
+        tabBarStack.layoutSubtreeIfNeeded()
+    }
+
+    private func reindexTabChips() {
+        for (i, chip) in tabChips.enumerated() {
+            chip.index = i
+            chip.isActive = (i == activeTabIndex)
+            chip.closeButton?.tag = i
+            chip.closeMenuItem?.tag = i
+        }
     }
 
     private func rebuildTabBar() {
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        tabChips.removeAll()
         let showBar = openTabs.count > 1
         tabBar.isHidden = !showBar
         tabBarHeightConstraint.constant = showBar ? 30 : 0
         guard showBar else { return }
         for (index, tab) in openTabs.enumerated() {
-            tabBarStack.addArrangedSubview(makeTabChip(index: index, tab: tab, isActive: index == activeTabIndex))
+            let chip = makeTabChip(index: index, tab: tab, isActive: index == activeTabIndex)
+            tabBarStack.addArrangedSubview(chip)
+            tabChips.append(chip)
         }
     }
 
-    private func makeTabChip(index: Int, tab: OpenTab, isActive: Bool) -> NSView {
+    private func makeTabChip(index: Int, tab: OpenTab, isActive: Bool) -> TabChipView {
         let container = TabChipView()
         container.index = index
         container.isActive = isActive
@@ -351,7 +376,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         container.translatesAutoresizingMaskIntoConstraints = false
         container.heightAnchor.constraint(equalToConstant: 24).isActive = true
         container.onSelect = { [weak self] i in self?.switchToTab(i) }
-        container.onReorder = { [weak self] from, to in self?.reorderTab(from: from, to: to) }
+        container.onDragging = { [weak self, weak container] windowX in
+            guard let self, let container else { return }
+            self.handleTabDragging(container, toWindowX: windowX)
+        }
 
         let closeButton = TabCloseButton(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
         closeButton.tag = index
@@ -370,6 +398,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let closeItem = menu.addItem(withTitle: "Close Tab", action: #selector(closeTabFromMenu(_:)), keyEquivalent: "")
         closeItem.tag = index
         closeItem.target = self
+        container.closeMenuItem = closeItem
         container.menu = menu
 
         return container
@@ -477,9 +506,25 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let saveItem = fileMenu.addItem(withTitle: "Save", action: #selector(save), keyEquivalent: "s"); saveItem.target = self
         let closeItem = fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: "w"); closeItem.target = self
         fileItem.submenu = fileMenu
+
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: "Edit")
+        let find = editMenu.addItem(withTitle: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+        find.tag = NSTextFinder.Action.showFindInterface.rawValue
+        let findReplace = editMenu.addItem(withTitle: "Find and Replace…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+        findReplace.keyEquivalentModifierMask = [.command, .option]
+        findReplace.tag = NSTextFinder.Action.showReplaceInterface.rawValue
+        let findNext = editMenu.addItem(withTitle: "Find Next", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+        findNext.tag = NSTextFinder.Action.nextMatch.rawValue
+        let findPrevious = editMenu.addItem(withTitle: "Find Previous", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+        findPrevious.keyEquivalentModifierMask = [.command, .shift]
+        findPrevious.tag = NSTextFinder.Action.previousMatch.rawValue
+        editItem.submenu = editMenu
+
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
         let navigateMenu = NSMenu(title: "Navigate")
         let quickOpen = navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p"); quickOpen.target = self
+        let goToLine = navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l"); goToLine.target = self
         navigateMenu.addItem(NSMenuItem.separator())
         for i in 1...8 {
             let item = navigateMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "\(i)")
@@ -490,9 +535,39 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         lastTab.tag = -1
         lastTab.target = self
         navigateItem.submenu = navigateMenu
-        main.addItem(fileItem); main.addItem(navigateItem); NSApp.mainMenu = main
+        main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); NSApp.mainMenu = main
     }
     @objc private func focusQuickOpen() { searchField.stringValue = ""; view.window?.makeFirstResponder(searchField); refreshMatches(showingPalette: true) }
+    @objc private func showGoToLine() {
+        guard let window = view.window, activeTabIndex != nil else { return }
+        let alert = NSAlert()
+        alert.messageText = "Go to Line"
+        alert.informativeText = "Enter a line number to jump to."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        field.placeholderString = "Line number"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Go")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self, let line = Int(field.stringValue) else { return }
+            self.scrollToLine(line)
+        }
+    }
+    private func scrollToLine(_ line: Int) {
+        let text = editor.string as NSString
+        var currentLine = 1
+        var index = 0
+        while currentLine < max(1, line) && index < text.length {
+            let lineRange = text.lineRange(for: NSRange(location: index, length: 0))
+            index = NSMaxRange(lineRange)
+            currentLine += 1
+        }
+        let targetRange = text.lineRange(for: NSRange(location: min(index, text.length), length: 0))
+        editor.scrollRangeToVisible(targetRange)
+        editor.setSelectedRange(targetRange)
+        view.window?.makeFirstResponder(editor)
+    }
     @objc private func save() {
         guard let index = activeTabIndex else { return }
         let tab = openTabs[index]
@@ -524,11 +599,17 @@ final class QuickOpenPanel: NSPanel {
 
 final class TabChipView: NSView {
     weak var closeButton: NSButton?
+    weak var closeMenuItem: NSMenuItem?
     var index: Int = 0
     var onSelect: ((Int) -> Void)?
-    var onReorder: ((Int, Int) -> Void)?
+    var onDragging: ((CGFloat) -> Void)?
+    var onDragEnded: (() -> Void)?
     var title: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
     var isActive: Bool = false { didSet { needsDisplay = true } }
+
+    private static let textInset: CGFloat = 12
+    private static let trailingReserve: CGFloat = 26
+    private static let maxTextWidth: CGFloat = 200
 
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
@@ -538,8 +619,8 @@ final class TabChipView: NSView {
 
     override var intrinsicContentSize: NSSize {
         let font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
-        let textWidth = (title as NSString).size(withAttributes: [.font: font]).width
-        return NSSize(width: textWidth + 12 + 24, height: 24)
+        let textWidth = min((title as NSString).size(withAttributes: [.font: font]).width, Self.maxTextWidth)
+        return NSSize(width: textWidth + Self.textInset + Self.trailingReserve, height: 24)
     }
 
     override func updateTrackingAreas() {
@@ -564,8 +645,8 @@ final class TabChipView: NSView {
         ]
         let text = title as NSString
         let size = text.size(withAttributes: attributes)
-        let maxWidth = max(0, bounds.width - 12 - 24)
-        let drawRect = NSRect(x: 12, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth), height: size.height)
+        let maxWidth = max(0, bounds.width - Self.textInset - Self.trailingReserve)
+        let drawRect = NSRect(x: Self.textInset, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
         text.draw(in: drawRect, withAttributes: attributes)
     }
 
@@ -578,24 +659,15 @@ final class TabChipView: NSView {
         guard let dragOrigin else { return }
         let dx = event.locationInWindow.x - dragOrigin.x
         if abs(dx) > 4 { didDrag = true }
-        wantsLayer = true
-        layer?.zPosition = 10
-        layer?.setAffineTransform(CGAffineTransform(translationX: dx, y: 0))
+        guard didDrag else { return }
+        onDragging?(event.locationInWindow.x)
     }
 
     override func mouseUp(with event: NSEvent) {
         defer { dragOrigin = nil }
-        layer?.setAffineTransform(.identity)
-        layer?.zPosition = 0
         guard dragOrigin != nil else { return }
-        if didDrag, let stack = superview as? NSStackView {
-            let finalX = event.locationInWindow.x
-            var dropIndex = index
-            for (i, sibling) in stack.arrangedSubviews.enumerated() where sibling !== self {
-                let siblingMidXInWindow = sibling.convert(NSPoint(x: sibling.bounds.midX, y: 0), to: nil).x
-                if finalX > siblingMidXInWindow { dropIndex = i }
-            }
-            onReorder?(index, dropIndex)
+        if didDrag {
+            onDragEnded?()
         } else {
             onSelect?(index)
         }
@@ -608,7 +680,6 @@ final class TabCloseButton: NSButton {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.cornerRadius = frameRect.width / 2
         isBordered = false
         imagePosition = .imageOnly
         let config = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
@@ -617,6 +688,11 @@ final class TabCloseButton: NSButton {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = min(bounds.width, bounds.height) / 2
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

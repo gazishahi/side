@@ -1,7 +1,7 @@
 import AppKit
 
 enum SyntaxHighlighter {
-    private struct Rule { let regex: NSRegularExpression; let color: NSColor }
+    private struct Rule { let regex: NSRegularExpression; let color: NSColor; var italic: Bool = false }
 
     private static let keywordColor = NSColor(calibratedRed: 0.78, green: 0.48, blue: 0.96, alpha: 1)
     private static let stringColor = NSColor(calibratedRed: 0.94, green: 0.60, blue: 0.44, alpha: 1)
@@ -11,6 +11,7 @@ enum SyntaxHighlighter {
     private static let jsxTagColor = NSColor(calibratedRed: 0.42, green: 0.82, blue: 0.66, alpha: 1)
     private static let jsxAttrColor = NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.98, alpha: 1)
     private static let typeColor = NSColor(calibratedRed: 0.98, green: 0.78, blue: 0.45, alpha: 1)
+    private static let functionCallColor = NSColor(calibratedRed: 0.92, green: 0.87, blue: 0.58, alpha: 1)
 
     static let maxHighlightableLength = 2_000_000
 
@@ -20,10 +21,12 @@ enum SyntaxHighlighter {
         textStorage.addAttribute(.font, value: font, range: full)
         guard textStorage.length < maxHighlightableLength else { return }
         let text = textStorage.string
+        let italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
         for rule in rules(for: url.pathExtension.lowercased()) {
             rule.regex.enumerateMatches(in: text, range: full) { match, _, _ in
                 guard let range = match?.range else { return }
                 textStorage.addAttribute(.foregroundColor, value: rule.color, range: range)
+                if rule.italic { textStorage.addAttribute(.font, value: italicFont, range: range) }
             }
         }
     }
@@ -47,16 +50,21 @@ enum SyntaxHighlighter {
 
     private static func codeRules(keywords: [String], lineComment: String, blockComment: Bool, jsx: Bool = false, typeAnnotations: Bool = false) -> [Rule] {
         var rules: [Rule] = []
+        // Lowest precedence first; later rules override earlier ones on overlapping ranges.
+        if let r = regex("\\b[A-Za-z_]\\w*(?=\\()") { rules.append(Rule(regex: r, color: functionCallColor)) }
         if let r = regex("\\b(\(keywords.joined(separator: "|")))\\b") { rules.append(Rule(regex: r, color: keywordColor)) }
         if let r = regex("\\b\\d+(\\.\\d+)?\\b") { rules.append(Rule(regex: r, color: numberColor)) }
-        if typeAnnotations, let r = regex(":\\s*([A-Z]\\w*(?:<[^>]*>)?(?:\\[\\])?)") { rules.append(Rule(regex: r, color: typeColor)) }
+        if typeAnnotations {
+            if let r = regex("\\b(string|number|boolean|any|void|unknown|never|object|symbol|bigint)\\b") { rules.append(Rule(regex: r, color: typeColor)) }
+            if let r = regex(":\\s*([A-Z]\\w*(?:<[^>]*>)?(?:\\[\\])?)") { rules.append(Rule(regex: r, color: typeColor)) }
+        }
         if jsx {
             if let r = regex("</?[A-Za-z][\\w.]*") { rules.append(Rule(regex: r, color: jsxTagColor)) }
             if let r = regex("\\b[a-zA-Z][\\w-]*(?=\\=(\"|\\{))") { rules.append(Rule(regex: r, color: jsxAttrColor)) }
         }
         if let r = regex("\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|`(?:[^`\\\\]|\\\\.)*`") { rules.append(Rule(regex: r, color: stringColor)) }
-        if let r = regex("\(NSRegularExpression.escapedPattern(for: lineComment)).*$", [.anchorsMatchLines]) { rules.append(Rule(regex: r, color: commentColor)) }
-        if blockComment, let r = regex("/\\*[\\s\\S]*?\\*/") { rules.append(Rule(regex: r, color: commentColor)) }
+        if let r = regex("\(NSRegularExpression.escapedPattern(for: lineComment)).*$", [.anchorsMatchLines]) { rules.append(Rule(regex: r, color: commentColor, italic: true)) }
+        if blockComment, let r = regex("/\\*[\\s\\S]*?\\*/") { rules.append(Rule(regex: r, color: commentColor, italic: true)) }
         return rules
     }
 

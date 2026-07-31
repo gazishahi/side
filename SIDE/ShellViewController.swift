@@ -1,6 +1,7 @@
 import AppKit
 
 private extension NSToolbarItem.Identifier {
+    static let projectLabel = NSToolbarItem.Identifier("side.project-label")
     static let stageSwitcher = NSToolbarItem.Identifier("side.stage-switcher")
     static let quickOpen = NSToolbarItem.Identifier("side.quick-open")
 }
@@ -9,6 +10,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     enum Stage: String, CaseIterable { case make = "Make", run = "Run" }
 
     private let stageControl = NSSegmentedControl(labels: Stage.allCases.map(\.rawValue), trackingMode: .selectOne, target: nil, action: nil)
+    private let projectLabel = NSTextField(labelWithString: "")
     private let container = NSView()
     private lazy var makeVC = MakeWorkspaceViewController()
     private lazy var runVC = TerminalViewController()
@@ -54,6 +56,10 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         stageControl.target = self
         stageControl.action = #selector(stageChanged(_:))
 
+        projectLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        projectLabel.textColor = .secondaryLabelColor
+        projectLabel.lineBreakMode = .byTruncatingMiddle
+
         container.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(container)
 
@@ -67,10 +73,17 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
     // MARK: - Toolbar
 
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.stageSwitcher, .flexibleSpace, .quickOpen] }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.stageSwitcher, .quickOpen, .flexibleSpace] }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.projectLabel, .flexibleSpace, .stageSwitcher, .flexibleSpace, .quickOpen] }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.projectLabel, .stageSwitcher, .quickOpen, .flexibleSpace] }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
+        case .projectLabel:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            projectLabel.translatesAutoresizingMaskIntoConstraints = false
+            projectLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 200).isActive = true
+            item.view = projectLabel
+            item.label = "Project"
+            return item
         case .stageSwitcher:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = stageControl
@@ -137,6 +150,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     }
 
     private func applyWindowChrome() {
+        projectLabel.stringValue = projectURL?.lastPathComponent ?? ""
         guard let window = view.window else { return }
         window.representedURL = currentFileURL
         let fileName = currentFileURL?.lastPathComponent
