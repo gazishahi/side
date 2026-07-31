@@ -12,6 +12,13 @@ final class LSPManager: @unchecked Sendable {
     private var clients: [String: LSPClient] = [:]
     private var startingServers: Set<String> = []
     private var documentVersions: [URL: Int] = [:]
+    private var buildServerSetup: BuildServerSetupState = .notStarted
+
+    private enum BuildServerSetupState {
+        case notStarted
+        case inProgress([@Sendable () -> Void])
+        case done
+    }
 
     var onDiagnostics: ((URL, [LSPDiagnostic]) -> Void)?
 
@@ -88,13 +95,43 @@ final class LSPManager: @unchecked Sendable {
     // MARK: - Client lifecycle
 
     private func withClient(for entry: LanguageServerRegistry.Entry, completion: @escaping @Sendable (LSPClient?) -> Void) {
+        guard clients[entry.binaryName] == nil else {
+            completion(clients[entry.binaryName])
+            return
+        }
+        ensureBuildServerConfigured { [weak self] in
+            self?.spawnOrReuseClient(for: entry, completion: completion)
+        }
+    }
+
+    /// Runs once per project: generates buildServer.json first (if applicable) so the very
+    /// first client we spawn — sourcekit-lsp in particular — sees it at its own startup,
+    /// since that's the only point it checks. Later callers just queue behind it.
+    private func ensureBuildServerConfigured(then: @escaping @Sendable () -> Void) {
+        switch buildServerSetup {
+        case .done:
+            then()
+        case .inProgress(let callbacks):
+            buildServerSetup = .inProgress(callbacks + [then])
+        case .notStarted:
+            buildServerSetup = .inProgress([then])
+            XcodeBuildServerSetup.ensureConfigured(projectRoot: projectRoot) { [weak self] in
+                guard let self else { return }
+                guard case .inProgress(let callbacks) = self.buildServerSetup else { return }
+                self.buildServerSetup = .done
+                callbacks.forEach { $0() }
+            }
+        }
+    }
+
+    private func spawnOrReuseClient(for entry: LanguageServerRegistry.Entry, completion: @escaping @Sendable (LSPClient?) -> Void) {
         if let existing = clients[entry.binaryName] {
             completion(existing)
             return
         }
         guard !startingServers.contains(entry.binaryName) else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.withClient(for: entry, completion: completion)
+                self?.spawnOrReuseClient(for: entry, completion: completion)
             }
             return
         }
