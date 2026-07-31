@@ -1,10 +1,12 @@
 import AppKit
 
 private struct OpenTab {
-    let url: URL
+    var url: URL
     let textStorage: NSTextStorage
     let undoManager: UndoManager
     var dirty: Bool
+    var isUntitled: Bool
+    var knownModificationDate: Date?
 }
 
 private struct IndexedFile {
@@ -60,7 +62,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         buildView()
         buildMenu()
         configureQuickOpenKeys()
-        DispatchQueue.main.async { [weak self] in self?.restoreLastSession() }
     }
 
     private func buildView() {
@@ -466,15 +467,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc private func openProject() {
-        let panel = NSOpenPanel()
-        panel.message = "Choose a project to open in SIDE"
-        panel.prompt = "Open project"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.beginSheetModal(for: view.window!) { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            self?.loadProject(at: url, restoring: false)
+        confirmAllUnsavedChanges { [weak self] proceed in
+            guard let self, proceed, let window = self.view.window else { return }
+            let panel = NSOpenPanel()
+            panel.message = "Choose a project to open in SIDE"
+            panel.prompt = "Open project"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.beginSheetModal(for: window) { [weak self] response in
+                guard let self, response == .OK, let url = panel.url else { return }
+                self.closeAllTabsImmediately()
+                self.loadProject(at: url, restoring: false)
+            }
         }
     }
 
@@ -521,19 +526,65 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     // MARK: - Tabs
 
+    private static let maxOpenableFileSize = 10_000_000
+
     private func open(_ url: URL) {
         if let existingIndex = openTabs.firstIndex(where: { $0.url == url }) {
             activeTabIndex = existingIndex
-        } else {
-            guard let source = try? String(contentsOf: url, encoding: .utf8) else { return }
-            openTabs.append(OpenTab(url: url, textStorage: NSTextStorage(string: source), undoManager: UndoManager(), dirty: false))
-            activeTabIndex = openTabs.count - 1
+            loadActiveTabIntoEditor()
+            finishOpenUI(url: url)
+            return
         }
-        loadActiveTabIntoEditor()
+        guard let window = view.window else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            if size > Self.maxOpenableFileSize {
+                DispatchQueue.main.async {
+                    self?.showAlert(title: "File too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over SIDE's current 10 MB limit for opening in the editor.", window: window)
+                }
+                return
+            }
+            guard let data = try? Data(contentsOf: url) else {
+                DispatchQueue.main.async {
+                    self?.showAlert(title: "Couldn't open file", message: "\(url.lastPathComponent) couldn't be read.", window: window)
+                }
+                return
+            }
+            guard let source = String(data: data, encoding: .utf8) else {
+                DispatchQueue.main.async {
+                    self?.showAlert(title: "Can't open this file", message: "\(url.lastPathComponent) doesn't appear to be a text file SIDE can edit.", window: window)
+                }
+                return
+            }
+            let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.openTabs.append(OpenTab(url: url, textStorage: NSTextStorage(string: source), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate))
+                self.activeTabIndex = self.openTabs.count - 1
+                self.loadActiveTabIntoEditor()
+                self.finishOpenUI(url: url)
+            }
+        }
+    }
+
+    private func finishOpenUI(url: URL) {
         searchField.stringValue = ""
         UserDefaults.standard.set(url.path, forKey: lastFileKey)
         hideQuickOpenPanel()
         view.window?.makeFirstResponder(editor)
+    }
+
+    private func showAlert(title: String, message: String, window: NSWindow, style: NSAlert.Style = .warning) {
+        let alert = NSAlert()
+        alert.alertStyle = style
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
+    }
+
+    private func modificationDate(of url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
     private func loadActiveTabIntoEditor() {
@@ -571,24 +622,93 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func closeTab(at index: Int) {
         guard openTabs.indices.contains(index) else { return }
+        let tab = openTabs[index]
+        guard tab.dirty else { finishCloseTab(at: index); return }
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Do you want to save the changes you made to \u{201C}\(tab.isUntitled ? "Untitled" : tab.url.lastPathComponent)\u{201D}?"
+        alert.informativeText = "Your changes will be lost if you don't save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            switch response {
+            case .alertFirstButtonReturn:
+                self.performSave(tabIndex: index) { success in if success { self.finishCloseTab(at: index) } }
+            case .alertSecondButtonReturn:
+                self.finishCloseTab(at: index)
+            default:
+                break
+            }
+        }
+    }
+
+    private func finishCloseTab(at index: Int) {
+        guard openTabs.indices.contains(index) else { return }
         openTabs.remove(at: index)
         if openTabs.isEmpty {
-            activeTabIndex = nil
-            editor.layoutManager?.replaceTextStorage(NSTextStorage())
-            editor.tabUndoManager = nil
-            editor.isEditable = false
-            editorScroll.isHidden = true
-            gutter.isHidden = true
-            gutter.lineDiffMarks = [:]
-            dirty = false
-            UserDefaults.standard.removeObject(forKey: lastFileKey)
-            onFileOpened?(nil)
+            closeAllTabsImmediately()
         } else {
             activeTabIndex = min(index, openTabs.count - 1)
             loadActiveTabIntoEditor()
+            rebuildTabBar()
         }
+    }
+
+    private func closeAllTabsImmediately() {
+        openTabs.removeAll()
+        activeTabIndex = nil
+        editor.layoutManager?.replaceTextStorage(NSTextStorage())
+        editor.tabUndoManager = nil
+        editor.isEditable = false
+        editorScroll.isHidden = true
+        gutter.isHidden = true
+        gutter.lineDiffMarks = [:]
+        dirty = false
+        UserDefaults.standard.removeObject(forKey: lastFileKey)
+        onFileOpened?(nil)
         rebuildTabBar()
     }
+
+    /// Resolves every dirty tab (via Save/Don't Save/Cancel, one at a time) before allowing a
+    /// caller to proceed with something that would otherwise discard them — closing the window,
+    /// quitting, or switching projects.
+    private func confirmAllUnsavedChanges(completion: @escaping (_ shouldProceed: Bool) -> Void) {
+        let dirtyIndices = openTabs.indices.filter { openTabs[$0].dirty }
+        guard !dirtyIndices.isEmpty, let window = view.window else { completion(true); return }
+
+        func processNext(_ remaining: [Int]) {
+            var remaining = remaining
+            guard let index = remaining.first else { completion(true); return }
+            remaining.removeFirst()
+            guard openTabs.indices.contains(index) else { processNext(remaining); return }
+            let tab = openTabs[index]
+            let alert = NSAlert()
+            alert.messageText = "Do you want to save the changes you made to \u{201C}\(tab.isUntitled ? "Untitled" : tab.url.lastPathComponent)\u{201D}?"
+            alert.informativeText = "Your changes will be lost if you don't save them."
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard let self else { completion(false); return }
+                switch response {
+                case .alertFirstButtonReturn:
+                    self.performSave(tabIndex: index) { success in
+                        if success { processNext(remaining) } else { completion(false) }
+                    }
+                case .alertSecondButtonReturn:
+                    processNext(remaining)
+                default:
+                    completion(false)
+                }
+            }
+        }
+        processNext(dirtyIndices)
+    }
+
+    var hasUnsavedChanges: Bool { openTabs.contains { $0.dirty } }
+    func confirmCloseAllUnsaved(completion: @escaping (Bool) -> Void) { confirmAllUnsavedChanges(completion: completion) }
 
     private func handleTabDragging(_ chip: TabChipView, toWindowX x: CGFloat) {
         guard let draggedIndex = tabChips.firstIndex(where: { $0 === chip }) else { return }
@@ -645,7 +765,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         container.index = index
         container.isActive = isActive
         container.title = tab.dirty ? "\(tab.url.lastPathComponent) •" : tab.url.lastPathComponent
-        container.toolTip = relativePath(tab.url)
+        container.toolTip = tab.isUntitled ? "Unsaved" : relativePath(tab.url)
         container.translatesAutoresizingMaskIntoConstraints = false
         container.heightAnchor.constraint(equalToConstant: 24).isActive = true
         container.onSelect = { [weak self] i in self?.switchToTab(i) }
@@ -686,6 +806,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func refreshGitDiffMarks() {
         guard let projectURL, let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
+        guard !tab.isUntitled else {
+            gutter.lineDiffMarks = [:]
+            currentDiffHunks = []
+            currentDiffHeadContent = nil
+            return
+        }
         gitDiffGeneration += 1
         let generation = gitDiffGeneration
         let content = tab.textStorage.string
@@ -965,13 +1091,27 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
     }
 
+    // Menu items below deliberately leave `target` unset (nil): AppKit dispatches nil-target
+    // actions through the responder chain of whichever window is currently key, which is what
+    // lets the same static menu bar correctly address multiple open project windows. The one
+    // exception is "New Window," which routes to AppDelegate explicitly since it isn't a
+    // per-window action.
     private func buildMenu() {
         let main = NSMenu(title: "SIDE")
         let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
-        let openItem = fileMenu.addItem(withTitle: "Open Project…", action: #selector(openProject), keyEquivalent: "o"); openItem.target = self
-        let saveItem = fileMenu.addItem(withTitle: "Save", action: #selector(save), keyEquivalent: "s"); saveItem.target = self
-        let closeItem = fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: "w"); closeItem.target = self
+        let newWindowItem = fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow), keyEquivalent: "n")
+        newWindowItem.keyEquivalentModifierMask = [.command, .shift]
+        newWindowItem.target = NSApp.delegate as? AppDelegate
+        fileMenu.addItem(withTitle: "New File", action: #selector(newFile), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "Open Project…", action: #selector(openProject), keyEquivalent: "o")
+        fileMenu.addItem(NSMenuItem.separator())
+        fileMenu.addItem(withTitle: "Save", action: #selector(save), keyEquivalent: "s")
+        let saveAsItem = fileMenu.addItem(withTitle: "Save As…", action: #selector(saveAs), keyEquivalent: "s")
+        saveAsItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(revertToSaved), keyEquivalent: "")
+        fileMenu.addItem(NSMenuItem.separator())
+        fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: "w")
         fileItem.submenu = fileMenu
 
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
@@ -990,23 +1130,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
         let navigateMenu = NSMenu(title: "Navigate")
-        let quickOpen = navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p"); quickOpen.target = self
-        let goToLine = navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l"); goToLine.target = self
+        navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p")
+        navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l")
         let goToSymbol = navigateMenu.addItem(withTitle: "Go to Symbol…", action: #selector(focusSymbolSearch), keyEquivalent: "o")
         goToSymbol.keyEquivalentModifierMask = [.command, .shift]
-        goToSymbol.target = self
         let explorer = navigateMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "e")
         explorer.keyEquivalentModifierMask = [.command, .shift]
-        explorer.target = self
         navigateMenu.addItem(NSMenuItem.separator())
         for i in 1...8 {
             let item = navigateMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "\(i)")
             item.tag = i - 1
-            item.target = self
         }
         let lastTab = navigateMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "9")
         lastTab.tag = -1
-        lastTab.target = self
         navigateItem.submenu = navigateMenu
         main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); NSApp.mainMenu = main
     }
@@ -1058,13 +1194,134 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     @objc private func save() {
         guard let index = activeTabIndex else { return }
-        let tab = openTabs[index]
-        try? tab.textStorage.string.write(to: tab.url, atomically: true, encoding: .utf8)
+        performSave(tabIndex: index) { _ in }
+    }
 
-        if let projectURL, let formatter = Self.formatterCommand(for: tab.url, projectRoot: projectURL) {
-            runFormatter(formatter, tabIndex: index, url: tab.url)
-        } else {
-            finishSave(tabIndex: index)
+    @objc private func saveAs() {
+        guard let index = activeTabIndex else { return }
+        performSaveAs(tabIndex: index) { _ in }
+    }
+
+    @objc private func newFile() {
+        Self.untitledCounter += 1
+        let name = "Untitled-\(Self.untitledCounter)"
+        let url = URL(string: "side-untitled:///\(name)")!
+        openTabs.append(OpenTab(url: url, textStorage: NSTextStorage(string: ""), undoManager: UndoManager(), dirty: false, isUntitled: true, knownModificationDate: nil))
+        activeTabIndex = openTabs.count - 1
+        loadActiveTabIntoEditor()
+        view.window?.makeFirstResponder(editor)
+    }
+
+    private static var untitledCounter = 0
+
+    /// Resolves the whole save pipeline for a tab: routes untitled tabs to Save As,
+    /// checks for out-of-band disk changes, writes, runs a formatter if configured, and
+    /// reports success so callers (close/quit prompts) know whether it's safe to proceed.
+    private func performSave(tabIndex: Int, completion: @escaping (Bool) -> Void) {
+        guard openTabs.indices.contains(tabIndex) else { completion(false); return }
+        let tab = openTabs[tabIndex]
+        if tab.isUntitled {
+            performSaveAs(tabIndex: tabIndex, completion: completion)
+            return
+        }
+        writeTabToDisk(tabIndex: tabIndex, url: tab.url, completion: completion)
+    }
+
+    private func performSaveAs(tabIndex: Int, completion: @escaping (Bool) -> Void) {
+        guard openTabs.indices.contains(tabIndex), let window = view.window else { completion(false); return }
+        let panel = NSSavePanel()
+        let currentName = openTabs[tabIndex].url.lastPathComponent
+        panel.nameFieldStringValue = openTabs[tabIndex].isUntitled ? "\(currentName).txt" : currentName
+        if let projectURL { panel.directoryURL = projectURL }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let newURL = panel.url else { completion(false); return }
+            guard self.openTabs.indices.contains(tabIndex) else { completion(false); return }
+            self.openTabs[tabIndex].url = newURL
+            self.openTabs[tabIndex].isUntitled = false
+            self.writeTabToDiskForced(tabIndex: tabIndex, url: newURL) { success in
+                if success {
+                    if self.activeTabIndex == tabIndex {
+                        UserDefaults.standard.set(newURL.path, forKey: self.lastFileKey)
+                        self.onFileOpened?(newURL)
+                        SyntaxHighlighter.apply(to: self.openTabs[tabIndex].textStorage, url: newURL, baseColor: Self.editorTextColor, font: Self.editorFont)
+                        self.gutter.invalidate()
+                    }
+                    self.rebuildTabBar()
+                }
+                completion(success)
+            }
+        }
+    }
+
+    private func writeTabToDisk(tabIndex: Int, url: URL, completion: @escaping (Bool) -> Void) {
+        guard openTabs.indices.contains(tabIndex), let window = view.window else { completion(false); return }
+        let tab = openTabs[tabIndex]
+        if let known = tab.knownModificationDate, let onDisk = modificationDate(of: url), onDisk > known {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "\u{201C}\(url.lastPathComponent)\u{201D} has changed on disk"
+            alert.informativeText = "This file was modified outside SIDE since you opened it. Overwriting will discard those external changes."
+            alert.addButton(withTitle: "Overwrite")
+            alert.addButton(withTitle: "Cancel")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard let self else { completion(false); return }
+                if response == .alertFirstButtonReturn {
+                    self.writeTabToDiskForced(tabIndex: tabIndex, url: url, completion: completion)
+                } else {
+                    completion(false)
+                }
+            }
+            return
+        }
+        writeTabToDiskForced(tabIndex: tabIndex, url: url, completion: completion)
+    }
+
+    private func writeTabToDiskForced(tabIndex: Int, url: URL, completion: @escaping (Bool) -> Void) {
+        guard openTabs.indices.contains(tabIndex) else { completion(false); return }
+        let content = openTabs[tabIndex].textStorage.string
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            openTabs[tabIndex].knownModificationDate = modificationDate(of: url)
+            runFormatterIfNeeded(tabIndex: tabIndex, url: url, completion: completion)
+        } catch {
+            guard let window = view.window else { completion(false); return }
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Couldn't save \u{201C}\(url.lastPathComponent)\u{201D}"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+            alert.beginSheetModal(for: window) { _ in completion(false) }
+        }
+    }
+
+    private func runFormatterIfNeeded(tabIndex: Int, url: URL, completion: @escaping (Bool) -> Void) {
+        guard let projectURL, let formatter = Self.formatterCommand(for: url, projectRoot: projectURL) else {
+            finishSave(tabIndex: tabIndex)
+            completion(true)
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: formatter.executable)
+            process.arguments = formatter.args
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            try? process.run()
+            process.waitUntilExit()
+            let formattedContent = try? String(contentsOf: url, encoding: .utf8)
+            DispatchQueue.main.async {
+                guard let self, self.openTabs.indices.contains(tabIndex) else { completion(true); return }
+                let tab = self.openTabs[tabIndex]
+                if let formattedContent, formattedContent != tab.textStorage.string {
+                    let fullRange = NSRange(location: 0, length: tab.textStorage.length)
+                    tab.textStorage.replaceCharacters(in: fullRange, with: formattedContent)
+                    SyntaxHighlighter.apply(to: tab.textStorage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
+                    if self.activeTabIndex == tabIndex { self.gutter.invalidate() }
+                    self.openTabs[tabIndex].knownModificationDate = self.modificationDate(of: url)
+                }
+                self.finishSave(tabIndex: tabIndex)
+                completion(true)
+            }
         }
     }
 
@@ -1076,27 +1333,27 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         refreshGitDiffMarks()
     }
 
-    private func runFormatter(_ formatter: (executable: String, args: [String]), tabIndex: Int, url: URL) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: formatter.executable)
-            process.arguments = formatter.args
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            try? process.run()
-            process.waitUntilExit()
-            let formattedContent = try? String(contentsOf: url, encoding: .utf8)
-            DispatchQueue.main.async {
-                guard let self, self.openTabs.indices.contains(tabIndex) else { return }
-                let tab = self.openTabs[tabIndex]
-                if let formattedContent, formattedContent != tab.textStorage.string {
-                    let fullRange = NSRange(location: 0, length: tab.textStorage.length)
-                    tab.textStorage.replaceCharacters(in: fullRange, with: formattedContent)
-                    SyntaxHighlighter.apply(to: tab.textStorage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
-                    if self.activeTabIndex == tabIndex { self.gutter.invalidate() }
-                }
-                self.finishSave(tabIndex: tabIndex)
-            }
+    @objc private func revertToSaved() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), !openTabs[index].isUntitled, let window = view.window else { return }
+        let tab = openTabs[index]
+        guard tab.dirty else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Revert \u{201C}\(tab.url.lastPathComponent)\u{201D} to the version on disk?"
+        alert.informativeText = "Your unsaved changes will be lost."
+        alert.addButton(withTitle: "Revert")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            guard let source = try? String(contentsOf: tab.url, encoding: .utf8) else { return }
+            let fullRange = NSRange(location: 0, length: tab.textStorage.length)
+            tab.textStorage.replaceCharacters(in: fullRange, with: source)
+            SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+            self.openTabs[index].dirty = false
+            self.openTabs[index].knownModificationDate = self.modificationDate(of: tab.url)
+            if self.activeTabIndex == index { self.dirty = false; self.gutter.invalidate() }
+            self.rebuildTabBar()
+            self.refreshGitDiffMarks()
         }
     }
 
@@ -1129,7 +1386,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (path?.isEmpty == false) ? path : nil
     }
-    private func restoreLastSession() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
+    func restoreLastSessionIfAvailable() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
 }
 
 final class EditorTextView: NSTextView {
