@@ -130,7 +130,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         refreshGitInfo(for: url)
     }
 
-    private func fileOpened(_ url: URL) {
+    private func fileOpened(_ url: URL?) {
         currentFileURL = url
         isDirty = false
         applyWindowChrome()

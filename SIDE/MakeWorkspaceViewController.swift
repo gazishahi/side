@@ -1,22 +1,36 @@
 import AppKit
 
+private struct OpenTab {
+    let url: URL
+    var content: String
+    var dirty: Bool
+}
+
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
     let searchField = QuickOpenSearchField()
     private let editor = NSTextView()
     private let editorScroll = NSScrollView()
+    private let tabBar = NSView()
+    private let tabBarStack = NSStackView()
+    private var tabBarHeightConstraint: NSLayoutConstraint!
     private let emptyState = NSStackView()
     private let quickOpenPanel = QuickOpenPanel()
     private let resultsTable = NSTableView()
     private var projectURL: URL?
     private var allFiles: [URL] = []
     private var matches: [URL] = []
-    private var currentFile: URL?
+    private var openTabs: [OpenTab] = []
+    private var activeTabIndex: Int?
     private var dirty = false { didSet { onDirtyChanged?(dirty) } }
     var onProjectOpened: ((URL) -> Void)?
-    var onFileOpened: ((URL) -> Void)?
+    var onFileOpened: ((URL?) -> Void)?
     var onDirtyChanged: ((Bool) -> Void)?
     private let lastProjectKey = "side.last-project-path"
     private let lastFileKey = "side.last-file-path"
+    private var pendingSearchWorkItem: DispatchWorkItem?
+    private static let editorBackground = NSColor(calibratedWhite: 0.098, alpha: 1)
+    private static let editorFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+    private static let editorTextColor = NSColor(calibratedWhite: 0.85, alpha: 1)
 
     override func loadView() { view = NSView() }
 
@@ -37,13 +51,34 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         searchField.target = self
         searchField.action = #selector(confirmSearch)
 
+        tabBar.wantsLayer = true
+        tabBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        tabBar.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.clipsToBounds = true
+        tabBarStack.orientation = .horizontal
+        tabBarStack.alignment = .centerY
+        tabBarStack.spacing = 4
+        tabBarStack.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.addSubview(tabBarStack)
+        let divider = NSBox()
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.addSubview(divider)
+        view.addSubview(tabBar)
+        tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
+            tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
+            divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor)
+        ])
+
         editor.isRichText = false
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
         editor.isAutomaticTextCompletionEnabled = false
         editor.usesFindBar = true
-        editor.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
-        editor.textColor = NSColor(calibratedWhite: 0.85, alpha: 1)
+        editor.font = Self.editorFont
+        editor.textColor = Self.editorTextColor
         editor.backgroundColor = Self.editorBackground
         editor.insertionPointColor = .controlAccentColor
         editor.textContainerInset = NSSize(width: 16, height: 12)
@@ -80,13 +115,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(emptyState)
 
         NSLayoutConstraint.activate([
-            editorScroll.topAnchor.constraint(equalTo: view.topAnchor), editorScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            editorScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), editorScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
         configureQuickOpenPanel()
     }
-
-    private static let editorBackground = NSColor(calibratedWhite: 0.098, alpha: 1)
 
     private func configureQuickOpenKeys() {
         searchField.onMove = { [weak self] direction in self?.moveSelection(direction) }
@@ -180,8 +213,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    private static let maxIndexedFiles = 25000
+
     nonisolated private static func indexFiles(at root: URL) -> [URL] {
-        let ignored: Set<String> = [".git", ".build", "DerivedData", "node_modules", ".next", "Pods", "dist", "build"]
+        let ignored: Set<String> = [
+            ".git", ".build", "DerivedData", "node_modules", ".next", "Pods", "dist", "build",
+            ".venv", "venv", "vendor", "Carthage", "target", "out", ".cache", "coverage",
+            "__pycache__", ".tox", ".mypy_cache", ".pytest_cache"
+        ]
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return [] }
         var indexed: [URL] = []
@@ -189,6 +228,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let values = try? url.resourceValues(forKeys: keys)
             if values?.isDirectory == true && ignored.contains(url.lastPathComponent) { enumerator.skipDescendants(); continue }
             if values?.isRegularFile == true && !url.pathExtension.isEmpty { indexed.append(url) }
+            if indexed.count >= maxIndexedFiles { break }
         }
         return indexed.sorted {
             let lhs = $0.path.replacingOccurrences(of: root.path + "/", with: "")
@@ -197,19 +237,117 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    // MARK: - Tabs
+
     private func open(_ url: URL) {
-        guard let source = try? String(contentsOf: url, encoding: .utf8) else { return }
-        currentFile = url
-        editor.string = source
-        editor.isEditable = true
-        editorScroll.isHidden = false
-        (editorScroll.verticalRulerView as? LineNumberRulerView)?.invalidateLineNumbers()
+        persistActiveTabEdits()
+        if let existingIndex = openTabs.firstIndex(where: { $0.url == url }) {
+            activeTabIndex = existingIndex
+        } else {
+            guard let source = try? String(contentsOf: url, encoding: .utf8) else { return }
+            openTabs.append(OpenTab(url: url, content: source, dirty: false))
+            activeTabIndex = openTabs.count - 1
+        }
+        loadActiveTabIntoEditor()
         searchField.stringValue = ""
-        dirty = false
         UserDefaults.standard.set(url.path, forKey: lastFileKey)
-        onFileOpened?(url)
         hideQuickOpenPanel()
         view.window?.makeFirstResponder(editor)
+    }
+
+    private func persistActiveTabEdits() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
+        openTabs[index].content = editor.string
+        openTabs[index].dirty = dirty
+    }
+
+    private func loadActiveTabIntoEditor() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
+        let tab = openTabs[index]
+        editor.string = tab.content
+        let fullRange = NSRange(location: 0, length: (editor.string as NSString).length)
+        editor.textStorage?.addAttributes([.foregroundColor: Self.editorTextColor, .font: Self.editorFont], range: fullRange)
+        editor.isEditable = true
+        editorScroll.isHidden = false
+        dirty = tab.dirty
+        (editorScroll.verticalRulerView as? LineNumberRulerView)?.invalidateLineNumbers()
+        rebuildTabBar()
+        onFileOpened?(tab.url)
+    }
+
+    @objc private func selectTab(_ sender: NSButton) {
+        let index = sender.tag
+        guard openTabs.indices.contains(index), index != activeTabIndex else { return }
+        persistActiveTabEdits()
+        activeTabIndex = index
+        loadActiveTabIntoEditor()
+        UserDefaults.standard.set(openTabs[index].url.path, forKey: lastFileKey)
+        view.window?.makeFirstResponder(editor)
+    }
+
+    @objc private func closeTabFromMenu(_ sender: NSMenuItem) { closeTab(at: sender.tag) }
+    @objc private func closeActiveTab() { guard let index = activeTabIndex else { return }; closeTab(at: index) }
+
+    private func closeTab(at index: Int) {
+        guard openTabs.indices.contains(index) else { return }
+        openTabs.remove(at: index)
+        if openTabs.isEmpty {
+            activeTabIndex = nil
+            editor.string = ""
+            editor.isEditable = false
+            editorScroll.isHidden = true
+            dirty = false
+            UserDefaults.standard.removeObject(forKey: lastFileKey)
+            onFileOpened?(nil)
+        } else {
+            activeTabIndex = min(index, openTabs.count - 1)
+            loadActiveTabIntoEditor()
+        }
+        rebuildTabBar()
+    }
+
+    private func rebuildTabBar() {
+        tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let showBar = openTabs.count > 1
+        tabBar.isHidden = !showBar
+        tabBarHeightConstraint.constant = showBar ? 30 : 0
+        guard showBar else { return }
+        for (index, tab) in openTabs.enumerated() {
+            tabBarStack.addArrangedSubview(makeTabChip(index: index, tab: tab, isActive: index == activeTabIndex))
+        }
+    }
+
+    private func makeTabChip(index: Int, tab: OpenTab, isActive: Bool) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 6
+        container.layer?.backgroundColor = isActive ? NSColor(calibratedWhite: 0.17, alpha: 1).cgColor : NSColor.clear.cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.heightAnchor.constraint(equalToConstant: 24).isActive = true
+
+        let button = NSButton(title: "", target: self, action: #selector(selectTab(_:)))
+        button.tag = index
+        button.isBordered = false
+        button.imagePosition = .noImage
+        let title = tab.dirty ? "\(tab.url.lastPathComponent) •" : tab.url.lastPathComponent
+        button.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: isActive ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.55, alpha: 1),
+            .font: NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        ])
+        button.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12), button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            button.topAnchor.constraint(equalTo: container.topAnchor), button.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        let menu = NSMenu()
+        let closeItem = menu.addItem(withTitle: "Close Tab", action: #selector(closeTabFromMenu(_:)), keyEquivalent: "")
+        closeItem.tag = index
+        closeItem.target = self
+        button.menu = menu
+
+        return container
     }
 
     private func relativePath(_ url: URL) -> String {
@@ -217,8 +355,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return url.path.replacingOccurrences(of: projectURL.path + "/", with: "")
     }
 
-    func controlTextDidBeginEditing(_ obj: Notification) { refreshMatches(showingPalette: true) }
-    func controlTextDidChange(_ obj: Notification) { refreshMatches(showingPalette: true) }
+    // MARK: - Search
+
+    func controlTextDidBeginEditing(_ obj: Notification) { scheduleRefreshMatches() }
+    func controlTextDidChange(_ obj: Notification) { scheduleRefreshMatches() }
+
+    private func scheduleRefreshMatches() {
+        pendingSearchWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in self?.refreshMatches(showingPalette: true) }
+        pendingSearchWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
+    }
+
     private func refreshMatches(showingPalette: Bool) {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard projectURL != nil else { hideQuickOpenPanel(); return }
@@ -278,6 +426,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     func textDidChange(_ notification: Notification) {
         dirty = true
+        if let index = activeTabIndex { openTabs[index].dirty = true }
         (editorScroll.verticalRulerView as? LineNumberRulerView)?.invalidateLineNumbers()
     }
 
@@ -287,6 +436,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let fileMenu = NSMenu(title: "File")
         let openItem = fileMenu.addItem(withTitle: "Open Project…", action: #selector(openProject), keyEquivalent: "o"); openItem.target = self
         let saveItem = fileMenu.addItem(withTitle: "Save", action: #selector(save), keyEquivalent: "s"); saveItem.target = self
+        let closeItem = fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: "w"); closeItem.target = self
         fileItem.submenu = fileMenu
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
         let navigateMenu = NSMenu(title: "Navigate")
@@ -295,7 +445,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         main.addItem(fileItem); main.addItem(navigateItem); NSApp.mainMenu = main
     }
     @objc private func focusQuickOpen() { searchField.stringValue = ""; view.window?.makeFirstResponder(searchField); refreshMatches(showingPalette: true) }
-    @objc private func save() { guard let currentFile else { return }; try? editor.string.write(to: currentFile, atomically: true, encoding: .utf8); dirty = false }
+    @objc private func save() {
+        guard let index = activeTabIndex else { return }
+        let tab = openTabs[index]
+        try? editor.string.write(to: tab.url, atomically: true, encoding: .utf8)
+        openTabs[index].content = editor.string
+        openTabs[index].dirty = false
+        dirty = false
+        rebuildTabBar()
+    }
     private func restoreLastSession() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
 }
 
