@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "Side"
         window.toolbarStyle = .unifiedCompact
         window.minSize = NSSize(width: 900, height: 620)
-        window.contentViewController = MakeWorkspaceViewController()
+        window.contentViewController = ShellViewController()
         self.window = window
         window.center()
         window.makeKeyAndOrderFront(nil)
