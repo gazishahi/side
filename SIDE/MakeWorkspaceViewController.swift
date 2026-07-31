@@ -178,18 +178,41 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.contentInsets = NSEdgeInsetsZero
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.state = .active
-        effect.blendingMode = .withinWindow
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 8
-        effect.layer?.masksToBounds = true
-        effect.addSubview(scroll)
+        quickOpenPanel.contentView = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 8, padding: 14)
+    }
+
+    /// Wraps `content` in Liquid Glass on macOS 26+, falling back to the older vibrancy
+    /// material on earlier systems (deployment target stays 15.0, so both paths ship).
+    private static func makeFloatingPanelSurface(embedding content: NSView, cornerRadius: CGFloat, padding: CGFloat) -> NSView {
+        let padded = NSView()
+        padded.translatesAutoresizingMaskIntoConstraints = false
+        padded.addSubview(content)
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 14), scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -14)
+            content.topAnchor.constraint(equalTo: padded.topAnchor, constant: padding), content.leadingAnchor.constraint(equalTo: padded.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: padded.trailingAnchor), content.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -padding)
         ])
-        quickOpenPanel.contentView = effect
+
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.contentView = padded
+            glass.cornerRadius = cornerRadius
+            glass.style = .regular
+            return glass
+        } else {
+            let effect = NSVisualEffectView()
+            effect.material = .popover
+            effect.state = .active
+            effect.blendingMode = .withinWindow
+            effect.wantsLayer = true
+            effect.layer?.cornerRadius = cornerRadius
+            effect.layer?.masksToBounds = true
+            effect.addSubview(padded)
+            NSLayoutConstraint.activate([
+                padded.topAnchor.constraint(equalTo: effect.topAnchor), padded.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+                padded.trailingAnchor.constraint(equalTo: effect.trailingAnchor), padded.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
+            ])
+            return effect
+        }
     }
 
     private func showQuickOpenPanel() {
@@ -276,19 +299,35 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.contentInsets = NSEdgeInsetsZero
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.state = .active
-        effect.blendingMode = .withinWindow
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 10
-        effect.layer?.masksToBounds = true
-        effect.addSubview(scroll)
+        let padded = NSView()
+        padded.translatesAutoresizingMaskIntoConstraints = false
+        padded.addSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 4),
-            scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -4), scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -10)
+            scroll.topAnchor.constraint(equalTo: padded.topAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: padded.leadingAnchor, constant: 4),
+            scroll.trailingAnchor.constraint(equalTo: padded.trailingAnchor, constant: -4), scroll.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -10)
         ])
-        fileExplorerPanel.contentView = effect
+
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.contentView = padded
+            glass.cornerRadius = 10
+            glass.style = .regular
+            fileExplorerPanel.contentView = glass
+        } else {
+            let effect = NSVisualEffectView()
+            effect.material = .popover
+            effect.state = .active
+            effect.blendingMode = .withinWindow
+            effect.wantsLayer = true
+            effect.layer?.cornerRadius = 10
+            effect.layer?.masksToBounds = true
+            effect.addSubview(padded)
+            NSLayoutConstraint.activate([
+                padded.topAnchor.constraint(equalTo: effect.topAnchor), padded.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+                padded.trailingAnchor.constraint(equalTo: effect.trailingAnchor), padded.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
+            ])
+            fileExplorerPanel.contentView = effect
+        }
     }
 
     @objc private func toggleFileExplorer() {
