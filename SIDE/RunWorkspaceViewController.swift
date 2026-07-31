@@ -213,6 +213,10 @@ final class RunWorkspaceViewController: NSViewController {
             chip.translatesAutoresizingMaskIntoConstraints = false
             chip.heightAnchor.constraint(equalToConstant: 24).isActive = true
             chip.onSelect = { [weak self] i in self?.switchToSession(i) }
+            chip.onDragging = { [weak self, weak chip] windowX in
+                guard let self, let chip else { return }
+                self.handleTabDragging(chip, toWindowX: windowX)
+            }
 
             let closeButton = TabCloseButton(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
             closeButton.tag = index
@@ -233,6 +237,41 @@ final class RunWorkspaceViewController: NSViewController {
     }
 
     @objc private func closeSessionButton(_ sender: NSButton) { closeSession(at: sender.tag) }
+
+    private func handleTabDragging(_ chip: TabChipView, toWindowX x: CGFloat) {
+        guard let draggedIndex = tabChips.firstIndex(where: { $0 === chip }) else { return }
+        var dropIndex = draggedIndex
+        for (i, sibling) in tabChips.enumerated() where sibling !== chip {
+            let siblingMidXInWindow = sibling.convert(NSPoint(x: sibling.bounds.midX, y: 0), to: nil).x
+            if x > siblingMidXInWindow { dropIndex = i }
+        }
+        guard dropIndex != draggedIndex else { return }
+
+        let activeID = activeSessionIndex.flatMap { sessions.indices.contains($0) ? sessions[$0].id : nil }
+        let movedSession = sessions.remove(at: draggedIndex)
+        sessions.insert(movedSession, at: dropIndex)
+        tabChips.remove(at: draggedIndex)
+        tabChips.insert(chip, at: dropIndex)
+        tabBarStack.removeArrangedSubview(chip)
+        tabBarStack.insertArrangedSubview(chip, at: dropIndex)
+        if let activeID { activeSessionIndex = sessions.firstIndex(where: { $0.id == activeID }) }
+        reindexTabChips()
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.allowsImplicitAnimation = true
+            tabBarStack.layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func reindexTabChips() {
+        for (i, chip) in tabChips.enumerated() {
+            chip.index = i
+            chip.isActive = (i == activeSessionIndex)
+            chip.closeButton?.tag = i
+        }
+    }
 
     // MARK: - File links
 
