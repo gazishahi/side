@@ -6,6 +6,11 @@ private struct OpenTab {
     var dirty: Bool
 }
 
+private struct IndexedFile {
+    let url: URL
+    let relativePath: String
+}
+
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
     let searchField = QuickOpenSearchField()
     private let editor = NSTextView()
@@ -18,7 +23,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let quickOpenPanel = QuickOpenPanel()
     private let resultsTable = NSTableView()
     private var projectURL: URL?
-    private var allFiles: [URL] = []
+    private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
     private var openTabs: [OpenTab] = []
     private var activeTabIndex: Int?
@@ -30,6 +35,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let lastProjectKey = "side.last-project-path"
     private let lastFileKey = "side.last-file-path"
     private var pendingSearchWorkItem: DispatchWorkItem?
+    private var searchGeneration = 0
     private static let editorBackground = NSColor(calibratedWhite: 0.098, alpha: 1)
     private static let editorFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
     private static let editorTextColor = NSColor(calibratedWhite: 0.85, alpha: 1)
@@ -219,15 +225,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 guard let self, self.projectURL == url else { return }
                 self.allFiles = indexed
                 self.searchField.placeholderString = "Find a file in \(url.lastPathComponent)"
-                if restoring, let saved = UserDefaults.standard.string(forKey: self.lastFileKey), let file = indexed.first(where: { $0.path == saved }) { self.open(file); return }
-                if let file = indexed.first(where: { ["swift", "ts", "tsx", "js", "json", "md"].contains($0.pathExtension.lowercased()) }) { self.open(file) }
+                if restoring, let saved = UserDefaults.standard.string(forKey: self.lastFileKey), let file = indexed.first(where: { $0.url.path == saved }) { self.open(file.url); return }
+                if let file = indexed.first(where: { ["swift", "ts", "tsx", "js", "json", "md"].contains($0.url.pathExtension.lowercased()) }) { self.open(file.url) }
             }
         }
     }
 
     private static let maxIndexedFiles = 25000
 
-    nonisolated private static func indexFiles(at root: URL) -> [URL] {
+    nonisolated private static func indexFiles(at root: URL) -> [IndexedFile] {
         let ignored: Set<String> = [
             ".git", ".build", "DerivedData", "node_modules", ".next", "Pods", "dist", "build",
             ".venv", "venv", "vendor", "Carthage", "target", "out", ".cache", "coverage",
@@ -235,18 +241,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         ]
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return [] }
-        var indexed: [URL] = []
+        let rootPrefix = root.path + "/"
+        var indexed: [IndexedFile] = []
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: keys)
             if values?.isDirectory == true && ignored.contains(url.lastPathComponent) { enumerator.skipDescendants(); continue }
-            if values?.isRegularFile == true && !url.pathExtension.isEmpty { indexed.append(url) }
+            if values?.isRegularFile == true && !url.pathExtension.isEmpty {
+                indexed.append(IndexedFile(url: url, relativePath: url.path.replacingOccurrences(of: rootPrefix, with: "")))
+            }
             if indexed.count >= maxIndexedFiles { break }
         }
-        return indexed.sorted {
-            let lhs = $0.path.replacingOccurrences(of: root.path + "/", with: "")
-            let rhs = $1.path.replacingOccurrences(of: root.path + "/", with: "")
-            return lhs.localizedStandardCompare(rhs) == .orderedAscending
-        }
+        return indexed.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
     }
 
     // MARK: - Tabs
@@ -423,18 +428,41 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func scheduleRefreshMatches() {
         pendingSearchWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in self?.refreshMatches(showingPalette: true) }
+        let workItem = DispatchWorkItem { [weak self] in self?.performSearch() }
         pendingSearchWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
     }
 
-    private func refreshMatches(showingPalette: Bool) {
-        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func performSearch() {
         guard projectURL != nil else { hideQuickOpenPanel(); return }
-        matches = allFiles.filter { query.isEmpty || relativePath($0).localizedCaseInsensitiveContains(query) }.prefix(30).map { $0 }
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchGeneration += 1
+        let generation = searchGeneration
+        let entries = allFiles
+
+        guard !query.isEmpty else {
+            matches = entries.prefix(30).map { $0.url }
+            applySearchResults()
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let scored = entries.compactMap { entry -> (URL, Int)? in
+                FuzzyMatcher.score(query: query, candidate: entry.relativePath).map { (entry.url, $0) }
+            }
+            let ranked = scored.sorted { $0.1 > $1.1 }.prefix(30).map { $0.0 }
+            DispatchQueue.main.async {
+                guard let self, self.searchGeneration == generation else { return }
+                self.matches = Array(ranked)
+                self.applySearchResults()
+            }
+        }
+    }
+
+    private func applySearchResults() {
         resultsTable.reloadData()
         if !matches.isEmpty { resultsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
-        if !matches.isEmpty && showingPalette { showQuickOpenPanel() } else { hideQuickOpenPanel() }
+        if !matches.isEmpty { showQuickOpenPanel() } else { hideQuickOpenPanel() }
     }
     @objc private func confirmSearch() {
         let selected = resultsTable.selectedRow
@@ -544,7 +572,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         navigateItem.submenu = navigateMenu
         main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); NSApp.mainMenu = main
     }
-    @objc private func focusQuickOpen() { searchField.stringValue = ""; view.window?.makeFirstResponder(searchField); refreshMatches(showingPalette: true) }
+    @objc private func focusQuickOpen() { searchField.stringValue = ""; view.window?.makeFirstResponder(searchField); performSearch() }
     @objc private func showGoToLine() {
         guard let window = view.window, activeTabIndex != nil else { return }
         let alert = NSAlert()
