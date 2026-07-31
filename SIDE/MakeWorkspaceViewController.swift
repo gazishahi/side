@@ -138,6 +138,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.insertionPointColor = .controlAccentColor
         editor.textContainerInset = NSSize(width: 16, height: 12)
         editor.delegate = self
+        editor.onDefinitionRequested = { [weak self] index in
+            guard let self, let tabIndex = self.activeTabIndex else { return }
+            self.performJumpToDefinition(at: index, tabIndex: tabIndex)
+        }
         editor.isEditable = false
         editorScroll.documentView = editor
         editorScroll.hasVerticalScroller = true
@@ -1022,10 +1026,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc private func jumpToDefinition() {
-        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text, let lspManager else { return }
-        let tab = openTabs[index]
+        guard let index = activeTabIndex else { return }
+        performJumpToDefinition(at: editor.selectedRange().location, tabIndex: index)
+    }
+
+    private func performJumpToDefinition(at characterIndex: Int, tabIndex: Int) {
+        guard openTabs.indices.contains(tabIndex), openTabs[tabIndex].kind == .text, let lspManager else { return }
+        let tab = openTabs[tabIndex]
         let ns = tab.textStorage.string as NSString
-        let position = lspPosition(for: editor.selectedRange().location, in: ns)
+        let position = lspPosition(for: characterIndex, in: ns)
         lspManager.definition(url: tab.url, position: position) { [weak self] locations in
             guard let self, let target = locations.first, let targetURL = URL(string: target.uri) else { return }
             self.open(targetURL) { [weak self] in
@@ -2026,6 +2035,25 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 final class EditorTextView: NSTextView {
     var tabUndoManager: UndoManager?
     override var undoManager: UndoManager? { tabUndoManager }
+    var onDefinitionRequested: ((Int) -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        guard onDefinitionRequested != nil else { return menu }
+        let point = convert(event.locationInWindow, from: nil)
+        let index = characterIndexForInsertion(at: point)
+        let item = NSMenuItem(title: "Jump to Definition", action: #selector(triggerJumpToDefinition(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = index
+        menu?.insertItem(item, at: 0)
+        menu?.insertItem(NSMenuItem.separator(), at: 1)
+        return menu
+    }
+
+    @objc private func triggerJumpToDefinition(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else { return }
+        onDefinitionRequested?(index)
+    }
 }
 
 final class QuickOpenPanel: NSPanel {
