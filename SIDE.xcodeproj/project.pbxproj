@@ -1,0 +1,28 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+		A00000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A00000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MakeWorkspaceViewController.swift; sourceTree = "<group>"; };
+		A00000000000000000000003 = {isa = PBXFileReference; explicitFileType = wrapper.application; path = SIDE.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000004 = {isa = PBXBuildFile; fileRef = A00000000000000000000001; };
+		A00000000000000000000005 = {isa = PBXBuildFile; fileRef = A00000000000000000000002; };
+		A00000000000000000000006 = {isa = PBXGroup; children = (A00000000000000000000001, A00000000000000000000002); path = SIDE; sourceTree = "<group>"; };
+		A00000000000000000000007 = {isa = PBXGroup; children = (A00000000000000000000006, A00000000000000000000008,); sourceTree = "<group>"; };
+		A00000000000000000000008 = {isa = PBXGroup; children = (A00000000000000000000003,); name = Products; sourceTree = "<group>"; };
+		A00000000000000000000009 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000004, A00000000000000000000005,); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000010 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000011 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000012 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000013; buildPhases = (A00000000000000000000009, A00000000000000000000010, A00000000000000000000011,); buildRules = (); dependencies = (); name = SIDE; productName = SIDE; productReference = A00000000000000000000003; productType = "com.apple.product-type.application"; };
+		A00000000000000000000013 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000014, A00000000000000000000015,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A00000000000000000000016 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000017, A00000000000000000000018,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A00000000000000000000017 = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; }; name = Debug; };
+		A00000000000000000000018 = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; }; name = Release; };
+		A00000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.shahi.side; PRODUCT_NAME = Side; MACOSX_DEPLOYMENT_TARGET = 15.0; SWIFT_VERSION = 6.0; SWIFT_STRICT_CONCURRENCY = complete; INFOPLIST_KEY_CFBundleDisplayName = Side; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; }; name = Debug; };
+		A00000000000000000000015 = {isa = XCBuildConfiguration; buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.shahi.side; PRODUCT_NAME = Side; MACOSX_DEPLOYMENT_TARGET = 15.0; SWIFT_VERSION = 6.0; SWIFT_STRICT_CONCURRENCY = complete; INFOPLIST_KEY_CFBundleDisplayName = Side; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; }; name = Release; };
+		A00000000000000000000019 = {isa = PBXProject; attributes = { LastUpgradeCheck = 2630; TargetAttributes = { A00000000000000000000012 = { CreatedOnToolsVersion = 26.3; }; }; }; buildConfigurationList = A00000000000000000000016; compatibilityVersion = "Xcode 16.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A00000000000000000000007; productRefGroup = A00000000000000000000008; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000012,); };
+	};
+	rootObject = A00000000000000000000019;
+}
