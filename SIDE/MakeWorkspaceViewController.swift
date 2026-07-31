@@ -32,6 +32,7 @@ private struct OpenTab {
     var knownModificationDate: Date?
     var lastSelectedRange = NSRange(location: 0, length: 0)
     var csvRows: [[String]] = []
+    var diagnostics: [LSPDiagnostic] = []
     var cachedImage: NSImage?
     var headCache: HeadContentCache = .notFetched
 }
@@ -66,6 +67,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var currentDiffHunks: [GitHunk] = []
     private var currentDiffHeadContent: String?
     private var projectURL: URL?
+    private var lspManager: LSPManager?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
     private enum SearchMode { case files, symbols }
@@ -149,6 +151,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         gutter.isHidden = true
         gutter.translatesAutoresizingMaskIntoConstraints = false
         gutter.onMarkClicked = { [weak self] line, mark, event in self?.showDiffMenu(line: line, mark: mark, event: event) }
+        gutter.onDiagnosticClicked = { [weak self] line, severity, event in self?.showDiagnosticMenu(line: line, severity: severity, event: event) }
         view.addSubview(gutter)
 
         imageScroll.hasVerticalScroller = true
@@ -720,6 +723,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func loadProject(at url: URL, restoring: Bool) {
+        lspManager?.prepareForClose()
+        let manager = LSPManager(projectRoot: url)
+        manager.onDiagnostics = { [weak self] fileURL, diagnostics in
+            self?.applyDiagnostics(diagnostics, to: fileURL)
+        }
+        lspManager = manager
         projectURL = url
         searchField.placeholderString = "Indexing \(url.lastPathComponent)…"
         emptyState.isHidden = true
@@ -836,6 +845,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 self.activeTabIndex = self.openTabs.count - 1
                 self.loadActiveTabIntoEditor()
                 self.finishOpenUI(url: url)
+                if tab.kind == .text { self.lspManager?.opened(url: url, content: source) }
             }
         }
     }
@@ -900,6 +910,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             editor.scrollRangeToVisible(restoredRange)
             gutter.invalidate()
             refreshGitDiffMarks()
+            renderDiagnosticsForActiveTab()
         case .image:
             editor.isEditable = false
             imageView.image = tab.cachedImage
@@ -925,6 +936,78 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             column.width = 140
             csvTable.addTableColumn(column)
         }
+    }
+
+    // MARK: - Diagnostics
+
+    private func applyDiagnostics(_ diagnostics: [LSPDiagnostic], to url: URL) {
+        guard let index = openTabs.firstIndex(where: { $0.url == url }) else { return }
+        openTabs[index].diagnostics = diagnostics
+        guard activeTabIndex == index else { return }
+        renderDiagnosticsForActiveTab()
+    }
+
+    private func renderDiagnosticsForActiveTab() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { return }
+        let tab = openTabs[index]
+        let fullRange = NSRange(location: 0, length: tab.textStorage.length)
+        tab.textStorage.removeAttribute(.underlineStyle, range: fullRange)
+        tab.textStorage.removeAttribute(.underlineColor, range: fullRange)
+        let ns = tab.textStorage.string as NSString
+        var lineSeverities: [Int: LSPDiagnosticSeverity] = [:]
+        for diagnostic in tab.diagnostics {
+            let line = diagnostic.range.start.line + 1
+            if let existing = lineSeverities[line] {
+                if severityRank(diagnostic.severity) < severityRank(existing) { lineSeverities[line] = diagnostic.severity ?? existing }
+            } else {
+                lineSeverities[line] = diagnostic.severity ?? .information
+            }
+            guard let range = nsRange(for: diagnostic.range, in: ns), NSMaxRange(range) <= ns.length else { continue }
+            let color: NSColor = diagnostic.severity == .error ? .systemRed : (diagnostic.severity == .warning ? .systemYellow : .systemGray)
+            tab.textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue, range: range)
+            tab.textStorage.addAttribute(.underlineColor, value: color, range: range)
+        }
+        gutter.lineDiagnostics = lineSeverities
+    }
+
+    private func severityRank(_ severity: LSPDiagnosticSeverity?) -> Int { severity?.rawValue ?? 5 }
+
+    /// LSP positions are zero-based (line, UTF-16 character) pairs; NSTextStorage indexes by
+    /// UTF-16 code unit too, so this only has to walk line breaks to find each line's start.
+    private func nsRange(for range: LSPRange, in ns: NSString) -> NSRange? {
+        guard let start = utf16Location(line: range.start.line, character: range.start.character, in: ns),
+              let end = utf16Location(line: range.end.line, character: range.end.character, in: ns),
+              end >= start else { return nil }
+        return NSRange(location: start, length: end - start)
+    }
+
+    private func utf16Location(line: Int, character: Int, in ns: NSString) -> Int? {
+        guard line >= 0, character >= 0 else { return nil }
+        var currentLine = 0
+        var index = 0
+        let length = ns.length
+        while currentLine < line {
+            guard index < length else { return nil }
+            index = NSMaxRange(ns.lineRange(for: NSRange(location: index, length: 0)))
+            currentLine += 1
+        }
+        guard index <= length else { return nil }
+        let lineRange = ns.lineRange(for: NSRange(location: min(index, max(length - 1, 0)), length: 0))
+        let hasTrailingNewline = lineRange.length > 0 && ns.character(at: NSMaxRange(lineRange) - 1) == 10
+        let lineContentLength = hasTrailingNewline ? lineRange.length - 1 : lineRange.length
+        return index + min(character, lineContentLength)
+    }
+
+    private func showDiagnosticMenu(line: Int, severity: LSPDiagnosticSeverity, event: NSEvent) {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
+        let onLine = openTabs[index].diagnostics.filter { $0.range.start.line + 1 == line }
+        guard !onLine.isEmpty else { return }
+        let menu = NSMenu()
+        for diagnostic in onLine {
+            let item = menu.addItem(withTitle: diagnostic.message, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: gutter)
     }
 
     @objc private func switchToTabShortcut(_ sender: NSMenuItem) {
@@ -971,7 +1054,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func finishCloseTab(at index: Int) {
         guard openTabs.indices.contains(index) else { return }
+        let closedTab = openTabs[index]
         openTabs.remove(at: index)
+        if closedTab.kind == .text { lspManager?.closed(url: closedTab.url) }
         if openTabs.isEmpty {
             closeAllTabsImmediately()
         } else {
@@ -982,6 +1067,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func closeAllTabsImmediately() {
+        for tab in openTabs where tab.kind == .text { lspManager?.closed(url: tab.url) }
         openTabs.removeAll()
         activeTabIndex = nil
         isLoadingTab = true
@@ -1399,6 +1485,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var highlightGeneration = 0
     private var isLoadingTab = false
     private var pendingDiffWorkItem: DispatchWorkItem?
+    private var pendingLSPWorkItem: DispatchWorkItem?
     func textDidChange(_ notification: Notification) {
         guard !isLoadingTab else { return }
         dirty = true
@@ -1406,6 +1493,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         gutter.invalidate()
         scheduleHighlight()
         scheduleDiffRefresh()
+        scheduleLSPDidChange()
+    }
+
+    private func scheduleLSPDidChange() {
+        pendingLSPWorkItem?.cancel()
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text, lspManager != nil else { return }
+        let url = openTabs[index].url
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, let currentIndex = self.activeTabIndex, self.openTabs.indices.contains(currentIndex), self.openTabs[currentIndex].url == url else { return }
+            self.lspManager?.changed(url: url, content: self.openTabs[currentIndex].textStorage.string)
+        }
+        pendingLSPWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
     private static let autoClosePairs: [Character: Character] = ["(": ")", "[": "]", "{": "}", "\"": "\"", "'": "'"]
@@ -1800,6 +1900,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         quickOpenPanel.orderOut(nil)
         if fileExplorerPanel.parent != nil { view.window?.removeChildWindow(fileExplorerPanel) }
         fileExplorerPanel.orderOut(nil)
+        lspManager?.prepareForClose()
     }
 }
 

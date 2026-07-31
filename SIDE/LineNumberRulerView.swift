@@ -7,10 +7,23 @@ final class LineNumberGutterView: NSView {
     static let width: CGFloat = 44
     var lineDiffMarks: [Int: GitDiffMark] = [:] { didSet { needsDisplay = true } }
     var onMarkClicked: ((Int, GitDiffMark, NSEvent) -> Void)?
+    var lineDiagnostics: [Int: LSPDiagnosticSeverity] = [:] { didSet { needsDisplay = true } }
+    var onDiagnosticClicked: ((Int, LSPDiagnosticSeverity, NSEvent) -> Void)?
 
     private static let addedColor = NSColor(calibratedRed: 0.42, green: 0.78, blue: 0.48, alpha: 1)
     private static let modifiedColor = NSColor(calibratedRed: 0.85, green: 0.68, blue: 0.35, alpha: 1)
     private static let removedColor = NSColor(calibratedRed: 0.86, green: 0.42, blue: 0.42, alpha: 1)
+    private static let errorColor = NSColor(calibratedRed: 0.92, green: 0.35, blue: 0.35, alpha: 1)
+    private static let warningColor = NSColor(calibratedRed: 0.93, green: 0.75, blue: 0.3, alpha: 1)
+    private static let hintColor = NSColor(calibratedWhite: 0.55, alpha: 1)
+
+    private static func color(for severity: LSPDiagnosticSeverity) -> NSColor {
+        switch severity {
+        case .error: return errorColor
+        case .warning: return warningColor
+        case .information, .hint: return hintColor
+        }
+    }
 
     init(textView: NSTextView, scrollView: NSScrollView) {
         self.textView = textView
@@ -82,6 +95,13 @@ final class LineNumberGutterView: NSView {
                 }
             }
 
+            if let severity = lineDiagnostics[lineNumber] {
+                Self.color(for: severity).setFill()
+                let dotSize: CGFloat = 6
+                let dotRect = NSRect(x: 7, y: lineRect.minY - offsetY + (lineRect.height - dotSize) / 2, width: dotSize, height: dotSize)
+                NSBezierPath(ovalIn: dotRect).fill()
+            }
+
             if lineRange.location >= textLength { break }
             let nextIndex = NSMaxRange(lineRange)
             guard nextIndex > index else { break }
@@ -102,6 +122,10 @@ final class LineNumberGutterView: NSView {
         let text = textView.string as NSString
         guard charIndex <= text.length else { return }
         let lineNumber = text.substring(to: min(charIndex, text.length)).components(separatedBy: "\n").count
+        if let severity = lineDiagnostics[lineNumber] {
+            onDiagnosticClicked?(lineNumber, severity, event)
+            return
+        }
         if let mark = lineDiffMarks[lineNumber] {
             onMarkClicked?(lineNumber, mark, event)
         }
