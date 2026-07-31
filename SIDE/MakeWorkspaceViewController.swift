@@ -1,16 +1,9 @@
 import AppKit
 
-private extension NSToolbarItem.Identifier {
-    static let quickOpen = NSToolbarItem.Identifier("side.quick-open")
-}
-
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
-    private let searchField = QuickOpenSearchField()
-    private let projectLabel = NSTextField(labelWithString: "No project open")
-    private let fileLabel = NSTextField(labelWithString: "")
+    let searchField = QuickOpenSearchField()
     private let editor = NSTextView()
     private let editorScroll = NSScrollView()
-    private let fileHeader = NSView()
     private let emptyState = NSStackView()
     private let quickOpenPanel = QuickOpenPanel()
     private let resultsTable = NSTableView()
@@ -18,11 +11,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var allFiles: [URL] = []
     private var matches: [URL] = []
     private var currentFile: URL?
-    private var dirty = false { didSet { updateTitle() } }
+    private var dirty = false { didSet { onDirtyChanged?(dirty) } }
     var onProjectOpened: ((URL) -> Void)?
+    var onFileOpened: ((URL) -> Void)?
+    var onDirtyChanged: ((Bool) -> Void)?
     private let lastProjectKey = "side.last-project-path"
     private let lastFileKey = "side.last-file-path"
-    private lazy var toolbarCoordinator = WorkspaceToolbarCoordinator(searchField: searchField)
 
     override func loadView() { view = NSView() }
 
@@ -39,50 +33,33 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         searchField.placeholderString = "Open file, symbol, or command"
-        searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(confirmSearch)
+
         editor.isRichText = false
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
         editor.isAutomaticTextCompletionEnabled = false
         editor.usesFindBar = true
         editor.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
-        editor.textColor = .labelColor
-        editor.backgroundColor = .textBackgroundColor
+        editor.textColor = NSColor(calibratedWhite: 0.85, alpha: 1)
+        editor.backgroundColor = Self.editorBackground
         editor.insertionPointColor = .controlAccentColor
-        editor.textContainerInset = NSSize(width: 34, height: 28)
+        editor.textContainerInset = NSSize(width: 16, height: 12)
         editor.delegate = self
         editor.isEditable = false
         editorScroll.documentView = editor
         editorScroll.hasVerticalScroller = true
         editorScroll.autohidesScrollers = true
         editorScroll.drawsBackground = true
-        editorScroll.backgroundColor = .textBackgroundColor
+        editorScroll.backgroundColor = Self.editorBackground
+        editorScroll.hasVerticalRuler = true
+        editorScroll.rulersVisible = true
+        editorScroll.verticalRulerView = LineNumberRulerView(textView: editor)
         editorScroll.isHidden = true
         editorScroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(editorScroll)
-
-        fileHeader.wantsLayer = true
-        fileHeader.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        fileHeader.isHidden = true
-        fileHeader.translatesAutoresizingMaskIntoConstraints = false
-        fileLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        fileLabel.textColor = .secondaryLabelColor
-        fileLabel.lineBreakMode = .byTruncatingHead
-        fileLabel.translatesAutoresizingMaskIntoConstraints = false
-        fileHeader.addSubview(fileLabel)
-        let divider = NSBox()
-        divider.boxType = .separator
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        fileHeader.addSubview(divider)
-        view.addSubview(fileHeader)
-        NSLayoutConstraint.activate([
-            fileHeader.topAnchor.constraint(equalTo: view.topAnchor), fileHeader.leadingAnchor.constraint(equalTo: view.leadingAnchor), fileHeader.trailingAnchor.constraint(equalTo: view.trailingAnchor), fileHeader.heightAnchor.constraint(equalToConstant: 28),
-            fileLabel.leadingAnchor.constraint(equalTo: fileHeader.leadingAnchor, constant: 14), fileLabel.trailingAnchor.constraint(lessThanOrEqualTo: fileHeader.trailingAnchor, constant: -14), fileLabel.centerYAnchor.constraint(equalTo: fileHeader.centerYAnchor),
-            divider.leadingAnchor.constraint(equalTo: fileHeader.leadingAnchor), divider.trailingAnchor.constraint(equalTo: fileHeader.trailingAnchor), divider.bottomAnchor.constraint(equalTo: fileHeader.bottomAnchor)
-        ])
 
         let headline = NSTextField(labelWithString: "Open a project")
         headline.font = .systemFont(ofSize: 25, weight: .medium)
@@ -103,23 +80,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(emptyState)
 
         NSLayoutConstraint.activate([
-            editorScroll.topAnchor.constraint(equalTo: fileHeader.bottomAnchor), editorScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            editorScroll.topAnchor.constraint(equalTo: view.topAnchor), editorScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
         configureQuickOpenPanel()
     }
 
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        guard let window = view.window, window.toolbar == nil else { return }
-        let toolbar = NSToolbar(identifier: "side.workspace.toolbar")
-        toolbar.delegate = toolbarCoordinator
-        toolbar.centeredItemIdentifier = .quickOpen
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
-    }
+    private static let editorBackground = NSColor(calibratedWhite: 0.098, alpha: 1)
 
     private func configureQuickOpenKeys() {
         searchField.onMove = { [weak self] direction in self?.moveSelection(direction) }
@@ -197,7 +164,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func loadProject(at url: URL, restoring: Bool) {
         projectURL = url
-        projectLabel.stringValue = url.lastPathComponent
         searchField.placeholderString = "Indexing \(url.lastPathComponent)…"
         emptyState.isHidden = true
         UserDefaults.standard.set(url.path, forKey: lastProjectKey)
@@ -237,11 +203,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.string = source
         editor.isEditable = true
         editorScroll.isHidden = false
-        fileHeader.isHidden = false
-        fileLabel.stringValue = relativePath(url)
+        (editorScroll.verticalRulerView as? LineNumberRulerView)?.invalidateLineNumbers()
         searchField.stringValue = ""
         dirty = false
         UserDefaults.standard.set(url.path, forKey: lastFileKey)
+        onFileOpened?(url)
         hideQuickOpenPanel()
         view.window?.makeFirstResponder(editor)
     }
@@ -310,7 +276,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return false
         }
     }
-    func textDidChange(_ notification: Notification) { dirty = true }
+    func textDidChange(_ notification: Notification) {
+        dirty = true
+        (editorScroll.verticalRulerView as? LineNumberRulerView)?.invalidateLineNumbers()
+    }
 
     private func buildMenu() {
         let main = NSMenu(title: "SIDE")
@@ -328,23 +297,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     @objc private func focusQuickOpen() { searchField.stringValue = ""; view.window?.makeFirstResponder(searchField); refreshMatches(showingPalette: true) }
     @objc private func save() { guard let currentFile else { return }; try? editor.string.write(to: currentFile, atomically: true, encoding: .utf8); dirty = false }
     private func restoreLastSession() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
-    private func updateTitle() { view.window?.title = dirty ? "Side — \(currentFile?.lastPathComponent ?? "") •" : "Side" }
-}
-
-private final class WorkspaceToolbarCoordinator: NSObject, NSToolbarDelegate {
-    private let searchField: NSSearchField
-    init(searchField: NSSearchField) { self.searchField = searchField }
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.quickOpen] }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard itemIdentifier == .quickOpen else { return nil }
-        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.widthAnchor.constraint(equalToConstant: 410).isActive = true
-        item.view = searchField
-        item.label = "Quick Open"
-        return item
-    }
 }
 
 final class QuickOpenPanel: NSPanel {
@@ -364,7 +316,7 @@ final class QuickOpenPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-private final class QuickOpenSearchField: NSSearchField {
+final class QuickOpenSearchField: NSSearchField {
     var onMove: ((Int) -> Void)?
     var onConfirm: (() -> Void)?
     var onCancel: (() -> Void)?
