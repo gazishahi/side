@@ -11,6 +11,11 @@ enum LanguageServerRegistry {
 
     private static let entriesByExtension: [String: Entry] = [
         "py": Entry(languageId: "python", binaryName: "pyright-langserver", arguments: ["--stdio"]),
+        "ts": Entry(languageId: "typescript", binaryName: "typescript-language-server", arguments: ["--stdio"]),
+        "tsx": Entry(languageId: "typescriptreact", binaryName: "typescript-language-server", arguments: ["--stdio"]),
+        "js": Entry(languageId: "javascript", binaryName: "typescript-language-server", arguments: ["--stdio"]),
+        "jsx": Entry(languageId: "javascriptreact", binaryName: "typescript-language-server", arguments: ["--stdio"]),
+        "swift": Entry(languageId: "swift", binaryName: "sourcekit-lsp", arguments: []),
     ]
 
     static func entry(forExtension ext: String) -> Entry? {
