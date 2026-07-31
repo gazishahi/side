@@ -12,7 +12,7 @@ private struct IndexedFile {
     let relativePath: String
 }
 
-final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
+final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate {
     let searchField = QuickOpenSearchField()
     private let editor = EditorTextView()
     private let editorScroll = NSScrollView()
@@ -23,6 +23,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let emptyState = NSStackView()
     private let quickOpenPanel = QuickOpenPanel()
     private let resultsTable = NSTableView()
+    private let fileExplorerPanel = FileExplorerPanel()
+    private let fileExplorerOutline = ExplorerOutlineView()
+    private var fileTreeRoots: [FileTreeNode] = []
     private var projectURL: URL?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
@@ -130,6 +133,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
         configureQuickOpenPanel()
+        configureFileExplorerPanel()
     }
 
     private func configureQuickOpenKeys() {
@@ -199,6 +203,168 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard quickOpenPanel.isVisible || quickOpenPanel.parent != nil else { return }
         searchField.window?.removeChildWindow(quickOpenPanel)
         quickOpenPanel.orderOut(nil)
+    }
+
+    // MARK: - File explorer
+
+    private func configureFileExplorerPanel() {
+        fileExplorerOutline.headerView = nil
+        fileExplorerOutline.backgroundColor = .clear
+        fileExplorerOutline.dataSource = self
+        fileExplorerOutline.delegate = self
+        fileExplorerOutline.indentationPerLevel = 14
+        fileExplorerOutline.doubleAction = #selector(openSelectedTreeItem)
+        fileExplorerOutline.target = self
+        fileExplorerOutline.onEscape = { [weak self] in self?.hideFileExplorer() }
+        fileExplorerOutline.onEnter = { [weak self] in self?.openSelectedTreeItem() }
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
+        column.width = 260
+        fileExplorerOutline.addTableColumn(column)
+        fileExplorerOutline.outlineTableColumn = column
+
+        let scroll = NSScrollView()
+        scroll.documentView = fileExplorerOutline
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.state = .active
+        effect.blendingMode = .withinWindow
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 10
+        effect.layer?.masksToBounds = true
+        effect.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 4),
+            scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -4), scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -10)
+        ])
+        fileExplorerPanel.contentView = effect
+    }
+
+    @objc private func toggleFileExplorer() {
+        if fileExplorerPanel.isVisible {
+            hideFileExplorer()
+            return
+        }
+        guard let window = view.window, let root = projectURL else { return }
+        let files = allFiles
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let tree = Self.buildFileTree(from: files, root: root)
+            DispatchQueue.main.async {
+                guard let self, self.projectURL == root else { return }
+                self.fileTreeRoots = tree
+                self.fileExplorerOutline.reloadData()
+                self.showFileExplorer(in: window)
+            }
+        }
+    }
+
+    private func showFileExplorer(in window: NSWindow) {
+        let width: CGFloat = 300
+        let height: CGFloat = 420
+        let windowFrame = window.frame
+        let x = windowFrame.minX + 40
+        let y = windowFrame.maxY - 120 - height
+        fileExplorerPanel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        if fileExplorerPanel.parent == nil { window.addChildWindow(fileExplorerPanel, ordered: .above) }
+        fileExplorerPanel.makeKeyAndOrderFront(nil)
+        fileExplorerPanel.makeFirstResponder(fileExplorerOutline)
+    }
+
+    private func hideFileExplorer() {
+        view.window?.removeChildWindow(fileExplorerPanel)
+        fileExplorerPanel.orderOut(nil)
+        view.window?.makeFirstResponder(editor)
+    }
+
+    nonisolated private static func buildFileTree(from files: [IndexedFile], root: URL) -> [FileTreeNode] {
+        var roots: [FileTreeNode] = []
+        var directoryLookup: [String: FileTreeNode] = [:]
+
+        for file in files {
+            let components = file.relativePath.components(separatedBy: "/")
+            var parentNode: FileTreeNode?
+            var accumulatedPath = ""
+            for (i, component) in components.enumerated() {
+                accumulatedPath = accumulatedPath.isEmpty ? component : accumulatedPath + "/" + component
+                let isLast = i == components.count - 1
+                if isLast {
+                    let fileNode = FileTreeNode(name: component, url: file.url, isDirectory: false)
+                    if let parentNode { parentNode.children.append(fileNode) } else { roots.append(fileNode) }
+                } else if let existing = directoryLookup[accumulatedPath] {
+                    parentNode = existing
+                } else {
+                    let dirNode = FileTreeNode(name: component, url: root.appendingPathComponent(accumulatedPath), isDirectory: true)
+                    if let parentNode { parentNode.children.append(dirNode) } else { roots.append(dirNode) }
+                    directoryLookup[accumulatedPath] = dirNode
+                    parentNode = dirNode
+                }
+            }
+        }
+
+        func sortRecursively(_ nodes: [FileTreeNode]) -> [FileTreeNode] {
+            let sorted = nodes.sorted { a, b in
+                if a.isDirectory != b.isDirectory { return a.isDirectory }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
+            for node in sorted where node.isDirectory { node.children = sortRecursively(node.children) }
+            return sorted
+        }
+        return sortRecursively(roots)
+    }
+
+    @objc private func openSelectedTreeItem() {
+        let row = fileExplorerOutline.selectedRow
+        guard row >= 0, let node = fileExplorerOutline.item(atRow: row) as? FileTreeNode else { return }
+        if node.isDirectory {
+            if fileExplorerOutline.isItemExpanded(node) { fileExplorerOutline.collapseItem(node) } else { fileExplorerOutline.expandItem(node) }
+        } else {
+            open(node.url)
+            hideFileExplorer()
+        }
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        if let node = item as? FileTreeNode { return node.children.count }
+        return fileTreeRoots.count
+    }
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if let node = item as? FileTreeNode { return node.children[index] }
+        return fileTreeRoots[index]
+    }
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        (item as? FileTreeNode)?.isDirectory ?? false
+    }
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        guard let node = item as? FileTreeNode else { return nil }
+        let id = NSUserInterfaceItemIdentifier("treeCell")
+        let cell = outlineView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
+        cell.identifier = id
+        let text = cell.textField ?? NSTextField(labelWithString: "")
+        let icon = cell.imageView ?? NSImageView()
+        if cell.textField == nil {
+            cell.textField = text
+            cell.imageView = icon
+            text.translatesAutoresizingMaskIntoConstraints = false
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            text.font = .systemFont(ofSize: 12)
+            text.lineBreakMode = .byTruncatingMiddle
+            cell.addSubview(icon)
+            cell.addSubview(text)
+            NSLayoutConstraint.activate([
+                icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 14), icon.heightAnchor.constraint(equalToConstant: 14),
+                text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+            ])
+        }
+        text.stringValue = node.name
+        text.textColor = node.isDirectory ? NSColor(calibratedWhite: 0.75, alpha: 1) : NSColor(calibratedWhite: 0.85, alpha: 1)
+        let symbolName = node.isDirectory ? "folder.fill" : "doc.text"
+        icon.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
+        icon.contentTintColor = node.isDirectory ? NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.98, alpha: 1) : NSColor(calibratedWhite: 0.55, alpha: 1)
+        return cell
     }
 
     @objc private func openProject() {
@@ -618,6 +784,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let navigateMenu = NSMenu(title: "Navigate")
         let quickOpen = navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p"); quickOpen.target = self
         let goToLine = navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l"); goToLine.target = self
+        let explorer = navigateMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "e")
+        explorer.keyEquivalentModifierMask = [.command, .shift]
+        explorer.target = self
         navigateMenu.addItem(NSMenuItem.separator())
         for i in 1...8 {
             let item = navigateMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "\(i)")
