@@ -77,6 +77,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.isAutomaticDashSubstitutionEnabled = false
         editor.isAutomaticTextCompletionEnabled = false
         editor.usesFindBar = true
+        editor.isIncrementalSearchingEnabled = true
         editor.font = Self.editorFont
         editor.textColor = Self.editorTextColor
         editor.backgroundColor = Self.editorBackground
@@ -130,7 +131,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         searchField.onCancel = { [weak self] in self?.dismissQuickOpen() }
     }
 
-    private let quickOpenRowHeight: CGFloat = 30
+    private let quickOpenRowHeight: CGFloat = 34
     private let quickOpenMaxVisibleRows = 8
 
     private func configureQuickOpenPanel() {
@@ -161,7 +162,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         effect.layer?.masksToBounds = true
         effect.addSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -10)
+            scroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 14), scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -14)
         ])
         quickOpenPanel.contentView = effect
     }
@@ -169,7 +170,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func showQuickOpenPanel() {
         guard let window = searchField.window else { return }
         let visibleRows = max(1, min(quickOpenMaxVisibleRows, matches.count))
-        let height = CGFloat(visibleRows) * quickOpenRowHeight + 20
+        let height = CGFloat(visibleRows) * quickOpenRowHeight + 28
         let fieldFrameInWindow = searchField.convert(searchField.bounds, to: nil)
         let fieldFrameOnScreen = window.convertToScreen(fieldFrameInWindow)
         let width = max(fieldFrameOnScreen.width, 420)
@@ -341,7 +342,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tabBarStack.insertArrangedSubview(chip, at: dropIndex)
         if let activeURL { activeTabIndex = openTabs.firstIndex(where: { $0.url == activeURL }) }
         reindexTabChips()
-        tabBarStack.layoutSubtreeIfNeeded()
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.allowsImplicitAnimation = true
+            tabBarStack.layoutSubtreeIfNeeded()
+        }
     }
 
     private func reindexTabChips() {
@@ -563,9 +570,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             index = NSMaxRange(lineRange)
             currentLine += 1
         }
-        let targetRange = text.lineRange(for: NSRange(location: min(index, text.length), length: 0))
-        editor.scrollRangeToVisible(targetRange)
-        editor.setSelectedRange(targetRange)
+        let lineStart = min(index, text.length)
+        let cursorRange = NSRange(location: lineStart, length: 0)
+        editor.scrollRangeToVisible(text.lineRange(for: cursorRange))
+        editor.setSelectedRange(cursorRange)
         view.window?.makeFirstResponder(editor)
     }
     @objc private func save() {
@@ -685,6 +693,12 @@ final class TabCloseButton: NSButton {
         let config = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
         image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?.withSymbolConfiguration(config)
         contentTintColor = NSColor(calibratedWhite: 0.62, alpha: 1)
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentHuggingPriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .vertical)
+        layer?.cornerRadius = frameRect.width / 2
+        layer?.masksToBounds = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -702,7 +716,10 @@ final class TabCloseButton: NSButton {
         trackingArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = NSColor(calibratedWhite: 1, alpha: 0.16).cgColor }
+    override func mouseEntered(with event: NSEvent) {
+        layer?.cornerRadius = min(bounds.width, bounds.height) / 2
+        layer?.backgroundColor = NSColor(calibratedWhite: 1, alpha: 0.16).cgColor
+    }
     override func mouseExited(with event: NSEvent) { layer?.backgroundColor = NSColor.clear.cgColor }
 }
 

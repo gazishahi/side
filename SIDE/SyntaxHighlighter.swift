@@ -1,7 +1,7 @@
 import AppKit
 
 enum SyntaxHighlighter {
-    private struct Rule { let regex: NSRegularExpression; let color: NSColor; var italic: Bool = false }
+    private struct Rule { let regex: NSRegularExpression; let color: NSColor; var italic: Bool = false; var groupIndex: Int = 0 }
 
     private static let keywordColor = NSColor(calibratedRed: 0.78, green: 0.48, blue: 0.96, alpha: 1)
     private static let stringColor = NSColor(calibratedRed: 0.94, green: 0.60, blue: 0.44, alpha: 1)
@@ -12,6 +12,8 @@ enum SyntaxHighlighter {
     private static let jsxAttrColor = NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.98, alpha: 1)
     private static let typeColor = NSColor(calibratedRed: 0.98, green: 0.78, blue: 0.45, alpha: 1)
     private static let functionCallColor = NSColor(calibratedRed: 0.92, green: 0.87, blue: 0.58, alpha: 1)
+    private static let declarationColor = NSColor(calibratedRed: 0.95, green: 0.82, blue: 0.60, alpha: 1)
+    private static let propertyColor = NSColor(calibratedRed: 0.56, green: 0.82, blue: 0.92, alpha: 1)
 
     static let maxHighlightableLength = 2_000_000
 
@@ -24,7 +26,8 @@ enum SyntaxHighlighter {
         let italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
         for rule in rules(for: url.pathExtension.lowercased()) {
             rule.regex.enumerateMatches(in: text, range: full) { match, _, _ in
-                guard let range = match?.range else { return }
+                guard let match, match.range(at: rule.groupIndex).location != NSNotFound else { return }
+                let range = match.range(at: rule.groupIndex)
                 textStorage.addAttribute(.foregroundColor, value: rule.color, range: range)
                 if rule.italic { textStorage.addAttribute(.font, value: italicFont, range: range) }
             }
@@ -33,11 +36,21 @@ enum SyntaxHighlighter {
 
     private static func rules(for ext: String) -> [Rule] {
         switch ext {
-        case "swift": return codeRules(keywords: swiftKeywords, lineComment: "//", blockComment: true)
-        case "tsx", "jsx": return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true, jsx: true, typeAnnotations: ext == "tsx")
-        case "ts": return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true, typeAnnotations: true)
-        case "js", "mjs", "cjs": return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true)
-        case "py": return codeRules(keywords: pyKeywords, lineComment: "#", blockComment: false)
+        case "swift":
+            return codeRules(keywords: swiftKeywords, lineComment: "//", blockComment: true)
+                + declarationRules(varKeywords: ["let", "var"], funcKeywords: ["func"])
+        case "tsx", "jsx":
+            return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true, jsx: true, typeAnnotations: ext == "tsx")
+                + declarationRules(varKeywords: ["const", "let", "var"], funcKeywords: ["function"])
+        case "ts":
+            return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true, typeAnnotations: true)
+                + declarationRules(varKeywords: ["const", "let", "var"], funcKeywords: ["function"])
+        case "js", "mjs", "cjs":
+            return codeRules(keywords: jsKeywords, lineComment: "//", blockComment: true)
+                + declarationRules(varKeywords: ["const", "let", "var"], funcKeywords: ["function"])
+        case "py":
+            return codeRules(keywords: pyKeywords, lineComment: "#", blockComment: false)
+                + declarationRules(varKeywords: [], funcKeywords: ["def"])
         case "json": return jsonRules
         case "md", "markdown": return markdownRules
         default: return []
@@ -52,11 +65,12 @@ enum SyntaxHighlighter {
         var rules: [Rule] = []
         // Lowest precedence first; later rules override earlier ones on overlapping ranges.
         if let r = regex("\\b[A-Za-z_]\\w*(?=\\()") { rules.append(Rule(regex: r, color: functionCallColor)) }
+        if let r = regex("\\b[a-zA-Z_]\\w*(?=\\s*:(?!:))") { rules.append(Rule(regex: r, color: propertyColor)) }
         if let r = regex("\\b(\(keywords.joined(separator: "|")))\\b") { rules.append(Rule(regex: r, color: keywordColor)) }
         if let r = regex("\\b\\d+(\\.\\d+)?\\b") { rules.append(Rule(regex: r, color: numberColor)) }
         if typeAnnotations {
             if let r = regex("\\b(string|number|boolean|any|void|unknown|never|object|symbol|bigint)\\b") { rules.append(Rule(regex: r, color: typeColor)) }
-            if let r = regex(":\\s*([A-Z]\\w*(?:<[^>]*>)?(?:\\[\\])?)") { rules.append(Rule(regex: r, color: typeColor)) }
+            if let r = regex(":\\s*([A-Z]\\w*(?:<[^>]*>)?(?:\\[\\])?)") { rules.append(Rule(regex: r, color: typeColor, groupIndex: 1)) }
         }
         if jsx {
             if let r = regex("</?[A-Za-z][\\w.]*") { rules.append(Rule(regex: r, color: jsxTagColor)) }
@@ -68,11 +82,24 @@ enum SyntaxHighlighter {
         return rules
     }
 
+    private static func declarationRules(varKeywords: [String], funcKeywords: [String]) -> [Rule] {
+        var rules: [Rule] = []
+        if !varKeywords.isEmpty, let r = regex("\\b(?:\(varKeywords.joined(separator: "|")))\\s+([A-Za-z_]\\w*)") {
+            rules.append(Rule(regex: r, color: declarationColor, groupIndex: 1))
+        }
+        for kw in funcKeywords {
+            if let r = regex("\\b\(kw)\\s+([A-Za-z_]\\w*)") { rules.append(Rule(regex: r, color: declarationColor, groupIndex: 1)) }
+        }
+        if let r = regex("\\bclass\\s+([A-Za-z_]\\w*)") { rules.append(Rule(regex: r, color: declarationColor, groupIndex: 1)) }
+        return rules
+    }
+
     private static var jsonRules: [Rule] {
         var rules: [Rule] = []
-        if let r = regex("\"(?:[^\"\\\\]|\\\\.)*\"") { rules.append(Rule(regex: r, color: stringColor)) }
         if let r = regex("\\b-?\\d+(\\.\\d+)?\\b") { rules.append(Rule(regex: r, color: numberColor)) }
         if let r = regex("\\b(true|false|null)\\b") { rules.append(Rule(regex: r, color: keywordColor)) }
+        if let r = regex("\"(?:[^\"\\\\]|\\\\.)*\"") { rules.append(Rule(regex: r, color: stringColor)) }
+        if let r = regex("\"(?:[^\"\\\\]|\\\\.)*\"(?=\\s*:)") { rules.append(Rule(regex: r, color: propertyColor)) }
         return rules
     }
 
