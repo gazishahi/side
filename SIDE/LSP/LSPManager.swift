@@ -45,6 +45,35 @@ final class LSPManager: @unchecked Sendable {
         Task { try? await client.didClose(uri: url.absoluteString) }
     }
 
+    func definition(url: URL, position: LSPPosition, completion: @escaping @Sendable ([LSPLocation]) -> Void) {
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension),
+              let client = clients[entry.binaryName] else { completion([]); return }
+        Task {
+            let locations: [LSPLocation]
+            if let data = try? await client.definition(uri: url.absoluteString, position: position) {
+                locations = Self.decodeLocations(from: data)
+            } else {
+                locations = []
+            }
+            DispatchQueue.main.async { completion(locations) }
+        }
+    }
+
+    private static func decodeLocations(from data: Data) -> [LSPLocation] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = object["result"], !(result is NSNull),
+              let resultData = try? JSONSerialization.data(withJSONObject: result) else { return [] }
+        if let locations = try? JSONDecoder().decode([LSPLocation].self, from: resultData) { return locations }
+        if let location = try? JSONDecoder().decode(LSPLocation.self, from: resultData) { return [location] }
+        if let links = try? JSONDecoder().decode([LSPLocationLink].self, from: resultData) {
+            return links.map { LSPLocation(uri: $0.targetUri, range: $0.targetRange) }
+        }
+        if let link = try? JSONDecoder().decode(LSPLocationLink.self, from: resultData) {
+            return [LSPLocation(uri: link.targetUri, range: link.targetRange)]
+        }
+        return []
+    }
+
     /// Best-effort: terminates every running language server. Fire-and-forget since this is
     /// called from the same synchronous window/app-quit cleanup path as
     /// TerminalViewController.prepareForClose(), which cannot await actor hops.

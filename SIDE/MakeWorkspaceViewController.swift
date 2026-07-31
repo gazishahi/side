@@ -776,15 +776,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let maxOpenableImageSize = 50_000_000
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "webp"]
 
-    private func open(_ url: URL) {
+    private func open(_ url: URL, completion: (() -> Void)? = nil) {
         captureActiveTabSelection()
         if let existingIndex = openTabs.firstIndex(where: { $0.url == url }) {
             activeTabIndex = existingIndex
             loadActiveTabIntoEditor()
             finishOpenUI(url: url)
+            completion?()
             return
         }
-        guard let window = view.window else { return }
+        guard let window = view.window else { completion?(); return }
         let ext = url.pathExtension.lowercased()
 
         if Self.imageExtensions.contains(ext) {
@@ -793,23 +794,26 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 if size > Self.maxOpenableImageSize {
                     DispatchQueue.main.async {
                         self?.showAlert(title: "Image too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over SIDE's current 50 MB limit.", window: window)
+                        completion?()
                     }
                     return
                 }
                 guard let image = NSImage(contentsOf: url) else {
                     DispatchQueue.main.async {
                         self?.showAlert(title: "Couldn't open image", message: "\(url.lastPathComponent) couldn't be read as an image.", window: window)
+                        completion?()
                     }
                     return
                 }
                 DispatchQueue.main.async {
-                    guard let self else { return }
+                    guard let self else { completion?(); return }
                     var tab = OpenTab(url: url, kind: .image, textStorage: NSTextStorage(), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: nil)
                     tab.cachedImage = image
                     self.openTabs.append(tab)
                     self.activeTabIndex = self.openTabs.count - 1
                     self.loadActiveTabIntoEditor()
                     self.finishOpenUI(url: url)
+                    completion?()
                 }
             }
             return
@@ -820,18 +824,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             if size > Self.maxOpenableFileSize {
                 DispatchQueue.main.async {
                     self?.showAlert(title: "File too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over SIDE's current 10 MB limit for opening in the editor.", window: window)
+                    completion?()
                 }
                 return
             }
             guard let data = try? Data(contentsOf: url) else {
                 DispatchQueue.main.async {
                     self?.showAlert(title: "Couldn't open file", message: "\(url.lastPathComponent) couldn't be read.", window: window)
+                    completion?()
                 }
                 return
             }
             guard let source = String(data: data, encoding: .utf8) else {
                 DispatchQueue.main.async {
                     self?.showAlert(title: "Can't open this file", message: "\(url.lastPathComponent) doesn't appear to be a text file SIDE can edit.", window: window)
+                    completion?()
                 }
                 return
             }
@@ -839,7 +846,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let isCSV = ext == "csv"
             let rows = isCSV ? CSVParser.parse(source) : []
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self else { completion?(); return }
                 var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, textStorage: NSTextStorage(string: source), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
                 tab.csvRows = rows
                 self.openTabs.append(tab)
@@ -847,6 +854,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 self.loadActiveTabIntoEditor()
                 self.finishOpenUI(url: url)
                 if tab.kind == .text { self.lspManager?.opened(url: url, content: source) }
+                completion?()
             }
         }
     }
@@ -997,6 +1005,38 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let hasTrailingNewline = lineRange.length > 0 && ns.character(at: NSMaxRange(lineRange) - 1) == 10
         let lineContentLength = hasTrailingNewline ? lineRange.length - 1 : lineRange.length
         return index + min(character, lineContentLength)
+    }
+
+    /// Inverse of utf16Location(line:character:in:) — converts a flat UTF-16 offset back to
+    /// the zero-based (line, character) pair LSP positions use.
+    private func lspPosition(for characterIndex: Int, in ns: NSString) -> LSPPosition {
+        var line = 0
+        var index = 0
+        while index < characterIndex, index < ns.length {
+            let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
+            if NSMaxRange(lineRange) > characterIndex { break }
+            index = NSMaxRange(lineRange)
+            line += 1
+        }
+        return LSPPosition(line: line, character: characterIndex - index)
+    }
+
+    @objc private func jumpToDefinition() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text, let lspManager else { return }
+        let tab = openTabs[index]
+        let ns = tab.textStorage.string as NSString
+        let position = lspPosition(for: editor.selectedRange().location, in: ns)
+        lspManager.definition(url: tab.url, position: position) { [weak self] locations in
+            guard let self, let target = locations.first, let targetURL = URL(string: target.uri) else { return }
+            self.open(targetURL) { [weak self] in
+                guard let self, let targetIndex = self.openTabs.firstIndex(where: { $0.url == targetURL }), self.openTabs[targetIndex].kind == .text else { return }
+                let targetNS = self.openTabs[targetIndex].textStorage.string as NSString
+                guard let targetRange = self.nsRange(for: target.range, in: targetNS) else { return }
+                self.editor.setSelectedRange(NSRange(location: targetRange.location, length: 0))
+                self.editor.scrollRangeToVisible(targetRange)
+                self.view.window?.makeFirstResponder(self.editor)
+            }
+        }
     }
 
     private func showDiagnosticMenu(line: Int, severity: LSPDiagnosticSeverity, event: NSEvent) {
@@ -1708,6 +1748,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         goToSymbol.keyEquivalentModifierMask = [.command, .shift]
         let explorer = navigateMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "e")
         explorer.keyEquivalentModifierMask = [.command, .shift]
+        let jumpToDef = navigateMenu.addItem(withTitle: "Jump to Definition", action: #selector(jumpToDefinition), keyEquivalent: "j")
+        jumpToDef.keyEquivalentModifierMask = [.command, .control]
         navigateMenu.addItem(NSMenuItem.separator())
         for i in 1...8 {
             let item = navigateMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "\(i)")

@@ -45,6 +45,11 @@ struct DidCloseTextDocumentParams: Encodable {
     let textDocument: TextDocumentIdentifier
 }
 
+struct DefinitionParams: Encodable {
+    let textDocument: TextDocumentIdentifier
+    let position: LSPPosition
+}
+
 struct InitializeParams: Encodable {
     let processId: Int?
     let rootUri: String?
@@ -76,4 +81,15 @@ struct LSPDiagnostic: Decodable {
 struct PublishDiagnosticsParams: Decodable {
     let uri: String
     let diagnostics: [LSPDiagnostic]
+}
+
+struct LSPLocation: Decodable {
+    let uri: String
+    let range: LSPRange
+}
+
+/// Some servers respond to textDocument/definition with LocationLink instead of Location.
+struct LSPLocationLink: Decodable {
+    let targetUri: String
+    let targetRange: LSPRange
 }

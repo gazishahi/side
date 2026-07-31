@@ -61,6 +61,12 @@ actor LSPClient {
         try notify(method: "textDocument/didClose", params: DidCloseTextDocumentParams(textDocument: TextDocumentIdentifier(uri: uri)))
     }
 
+    /// Returns the raw JSON-RPC response body; the shape of `result` (Location vs
+    /// Location[] vs LocationLink[]) varies by server, so the caller decodes it.
+    func definition(uri: String, position: LSPPosition) async throws -> Data {
+        try await request(method: "textDocument/definition", params: DefinitionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position))
+    }
+
     // MARK: - JSON-RPC plumbing
 
     private func request<Params: Encodable>(method: String, params: Params) async throws -> Data {
