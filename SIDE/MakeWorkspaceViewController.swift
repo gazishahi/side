@@ -2,7 +2,8 @@ import AppKit
 
 private struct OpenTab {
     let url: URL
-    var content: String
+    let textStorage: NSTextStorage
+    let undoManager: UndoManager
     var dirty: Bool
 }
 
@@ -13,7 +14,7 @@ private struct IndexedFile {
 
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
     let searchField = QuickOpenSearchField()
-    private let editor = NSTextView()
+    private let editor = EditorTextView()
     private let editorScroll = NSScrollView()
     private var gutter: LineNumberGutterView!
     private let tabBar = NSView()
@@ -257,12 +258,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     // MARK: - Tabs
 
     private func open(_ url: URL) {
-        persistActiveTabEdits()
         if let existingIndex = openTabs.firstIndex(where: { $0.url == url }) {
             activeTabIndex = existingIndex
         } else {
             guard let source = try? String(contentsOf: url, encoding: .utf8) else { return }
-            openTabs.append(OpenTab(url: url, content: source, dirty: false))
+            openTabs.append(OpenTab(url: url, textStorage: NSTextStorage(string: source), undoManager: UndoManager(), dirty: false))
             activeTabIndex = openTabs.count - 1
         }
         loadActiveTabIntoEditor()
@@ -272,17 +272,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.window?.makeFirstResponder(editor)
     }
 
-    private func persistActiveTabEdits() {
-        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
-        openTabs[index].content = editor.string
-        openTabs[index].dirty = dirty
-    }
-
     private func loadActiveTabIntoEditor() {
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
-        editor.string = tab.content
-        if let storage = editor.textStorage { SyntaxHighlighter.apply(to: storage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont) }
+        editor.layoutManager?.replaceTextStorage(tab.textStorage)
+        editor.tabUndoManager = tab.undoManager
+        SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
         editor.isEditable = true
         editorScroll.isHidden = false
         gutter.isHidden = false
@@ -290,6 +285,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         dirty = tab.dirty
         rebuildTabBar()
         onFileOpened?(tab.url)
+        refreshGitDiffMarks()
     }
 
     @objc private func switchToTabShortcut(_ sender: NSMenuItem) {
@@ -299,7 +295,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func switchToTab(_ index: Int) {
         guard openTabs.indices.contains(index), index != activeTabIndex else { return }
-        persistActiveTabEdits()
         activeTabIndex = index
         loadActiveTabIntoEditor()
         UserDefaults.standard.set(openTabs[index].url.path, forKey: lastFileKey)
@@ -315,10 +310,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         openTabs.remove(at: index)
         if openTabs.isEmpty {
             activeTabIndex = nil
-            editor.string = ""
+            editor.layoutManager?.replaceTextStorage(NSTextStorage())
+            editor.tabUndoManager = nil
             editor.isEditable = false
             editorScroll.isHidden = true
             gutter.isHidden = true
+            gutter.lineDiffMarks = [:]
             dirty = false
             UserDefaults.standard.removeObject(forKey: lastFileKey)
             onFileOpened?(nil)
@@ -421,6 +418,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return url.path.replacingOccurrences(of: projectURL.path + "/", with: "")
     }
 
+    private var gitDiffGeneration = 0
+    private func refreshGitDiffMarks() {
+        guard let projectURL, let index = activeTabIndex, openTabs.indices.contains(index) else { return }
+        let tab = openTabs[index]
+        gitDiffGeneration += 1
+        let generation = gitDiffGeneration
+        let content = tab.textStorage.string
+        let relative = relativePath(tab.url)
+        GitDiffComputer.compute(projectRoot: projectURL, relativePath: relative, currentContent: content) { [weak self] marks in
+            guard let self, self.gitDiffGeneration == generation, self.activeTabIndex == index else { return }
+            self.gutter.lineDiffMarks = marks
+        }
+    }
+
     // MARK: - Search
 
     func controlTextDidBeginEditing(_ obj: Notification) { scheduleRefreshMatches() }
@@ -514,11 +525,58 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
     private var pendingHighlightWorkItem: DispatchWorkItem?
+    private var pendingDiffWorkItem: DispatchWorkItem?
     func textDidChange(_ notification: Notification) {
         dirty = true
         if let index = activeTabIndex { openTabs[index].dirty = true }
         gutter.invalidate()
         scheduleHighlight()
+        scheduleDiffRefresh()
+    }
+
+    private static let autoClosePairs: [Character: Character] = ["(": ")", "[": "]", "{": "}", "\"": "\"", "'": "'"]
+    private static let autoCloseClosers: Set<Character> = [")", "]", "}", "\"", "'"]
+
+    func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        guard textView === editor, let replacementString, replacementString.count == 1, let char = replacementString.first else { return true }
+
+        if Self.autoCloseClosers.contains(char), affectedCharRange.length == 0 {
+            let ns = textView.string as NSString
+            if affectedCharRange.location < ns.length, ns.character(at: affectedCharRange.location) == char.utf16.first {
+                textView.setSelectedRange(NSRange(location: affectedCharRange.location + 1, length: 0))
+                return false
+            }
+        }
+
+        if let closing = Self.autoClosePairs[char], affectedCharRange.length == 0 {
+            textView.insertText("\(char)\(closing)", replacementRange: affectedCharRange)
+            textView.setSelectedRange(NSRange(location: affectedCharRange.location + 1, length: 0))
+            return false
+        }
+
+        return true
+    }
+
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard textView === editor, commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        let ns = textView.string as NSString
+        let selectedRange = textView.selectedRange()
+        let lineRange = ns.lineRange(for: NSRange(location: selectedRange.location, length: 0))
+        let currentLine = ns.substring(with: NSRange(location: lineRange.location, length: selectedRange.location - lineRange.location))
+        let leadingWhitespace = currentLine.prefix(while: { $0 == " " || $0 == "\t" })
+        var indent = String(leadingWhitespace)
+        if let last = currentLine.trimmingCharacters(in: .whitespaces).last, "{[(".contains(last) {
+            indent += "    "
+        }
+        textView.insertText("\n" + indent, replacementRange: selectedRange)
+        return true
+    }
+
+    private func scheduleDiffRefresh() {
+        pendingDiffWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in self?.refreshGitDiffMarks() }
+        pendingDiffWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: workItem)
     }
 
     private func scheduleHighlight() {
@@ -607,13 +665,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     @objc private func save() {
         guard let index = activeTabIndex else { return }
         let tab = openTabs[index]
-        try? editor.string.write(to: tab.url, atomically: true, encoding: .utf8)
-        openTabs[index].content = editor.string
+        try? tab.textStorage.string.write(to: tab.url, atomically: true, encoding: .utf8)
         openTabs[index].dirty = false
         dirty = false
         rebuildTabBar()
+        refreshGitDiffMarks()
     }
     private func restoreLastSession() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
+}
+
+final class EditorTextView: NSTextView {
+    var tabUndoManager: UndoManager?
+    override var undoManager: UndoManager? { tabUndoManager }
 }
 
 final class QuickOpenPanel: NSPanel {

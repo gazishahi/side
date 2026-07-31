@@ -5,6 +5,11 @@ final class LineNumberGutterView: NSView {
     private weak var scrollView: NSScrollView?
     private let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     static let width: CGFloat = 44
+    var lineDiffMarks: [Int: GitDiffMark] = [:] { didSet { needsDisplay = true } }
+
+    private static let addedColor = NSColor(calibratedRed: 0.42, green: 0.78, blue: 0.48, alpha: 1)
+    private static let modifiedColor = NSColor(calibratedRed: 0.85, green: 0.68, blue: 0.35, alpha: 1)
+    private static let removedColor = NSColor(calibratedRed: 0.86, green: 0.42, blue: 0.42, alpha: 1)
 
     init(textView: NSTextView, scrollView: NSScrollView) {
         self.textView = textView
@@ -61,6 +66,20 @@ final class LineNumberGutterView: NSView {
             let size = numberString.size(withAttributes: attributes)
             let drawRect = NSRect(x: Self.width - size.width - 8, y: lineRect.minY - offsetY, width: size.width, height: lineRect.height)
             numberString.draw(in: drawRect, withAttributes: attributes)
+
+            if let mark = lineDiffMarks[lineNumber] {
+                switch mark {
+                case .added:
+                    Self.addedColor.setFill()
+                    NSRect(x: 0, y: lineRect.minY - offsetY, width: 3, height: lineRect.height).fill()
+                case .modified:
+                    Self.modifiedColor.setFill()
+                    NSRect(x: 0, y: lineRect.minY - offsetY, width: 3, height: lineRect.height).fill()
+                case .removedBefore:
+                    Self.removedColor.setFill()
+                    NSRect(x: 0, y: lineRect.minY - offsetY - 1, width: 3, height: 3).fill()
+                }
+            }
 
             if lineRange.location >= textLength { break }
             let nextIndex = NSMaxRange(lineRange)
