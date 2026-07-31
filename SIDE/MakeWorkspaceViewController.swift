@@ -14,7 +14,7 @@ private struct IndexedFile {
     let relativePath: String
 }
 
-final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate {
+final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
     private let editor = EditorTextView()
     private let editorScroll = NSScrollView()
@@ -258,6 +258,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         fileExplorerOutline.target = self
         fileExplorerOutline.onEscape = { [weak self] in self?.hideFileExplorer() }
         fileExplorerOutline.onEnter = { [weak self] in self?.openSelectedTreeItem() }
+        let contextMenu = NSMenu()
+        contextMenu.delegate = self
+        fileExplorerOutline.menu = contextMenu
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
         column.width = 260
@@ -423,6 +426,137 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         } else {
             open(node.url)
             hideFileExplorer()
+        }
+    }
+
+    // MARK: - File explorer context menu (new / rename / delete)
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let row = fileExplorerOutline.clickedRow
+        let clickedNode = row >= 0 ? fileExplorerOutline.item(atRow: row) as? FileTreeNode : nil
+        guard let root = projectURL else { return }
+
+        let folderForNewItems: FileTreeNode
+        if let clickedNode, clickedNode.isDirectory {
+            folderForNewItems = clickedNode
+        } else {
+            folderForNewItems = FileTreeNode(name: root.lastPathComponent, url: root, isDirectory: true)
+        }
+        let newFile = menu.addItem(withTitle: "New File…", action: #selector(newFileInFolder(_:)), keyEquivalent: "")
+        newFile.representedObject = folderForNewItems
+        let newFolder = menu.addItem(withTitle: "New Folder…", action: #selector(newFolderInFolder(_:)), keyEquivalent: "")
+        newFolder.representedObject = folderForNewItems
+
+        if let clickedNode {
+            menu.addItem(NSMenuItem.separator())
+            let rename = menu.addItem(withTitle: "Rename…", action: #selector(renameTreeItem(_:)), keyEquivalent: "")
+            rename.representedObject = clickedNode
+            let delete = menu.addItem(withTitle: "Move to Trash", action: #selector(deleteTreeItem(_:)), keyEquivalent: "")
+            delete.representedObject = clickedNode
+        }
+        menu.items.forEach { $0.target = self }
+    }
+
+    @objc private func newFileInFolder(_ sender: NSMenuItem) {
+        guard let folder = sender.representedObject as? FileTreeNode else { return }
+        promptForName(title: "New File", placeholder: "filename.txt") { [weak self] name in
+            guard let self, let name, !name.isEmpty else { return }
+            let newURL = folder.url.appendingPathComponent(name)
+            guard let window = self.view.window else { return }
+            guard !FileManager.default.fileExists(atPath: newURL.path) else {
+                self.showAlert(title: "File already exists", message: "\(name) already exists in \(folder.name).", window: window)
+                return
+            }
+            guard FileManager.default.createFile(atPath: newURL.path, contents: Data()) else {
+                self.showAlert(title: "Couldn't create file", message: newURL.lastPathComponent, window: window)
+                return
+            }
+            self.refreshFileTreeAndReindex()
+            self.open(newURL)
+        }
+    }
+
+    @objc private func newFolderInFolder(_ sender: NSMenuItem) {
+        guard let folder = sender.representedObject as? FileTreeNode else { return }
+        promptForName(title: "New Folder", placeholder: "folder name") { [weak self] name in
+            guard let self, let name, !name.isEmpty else { return }
+            let newURL = folder.url.appendingPathComponent(name)
+            do {
+                try FileManager.default.createDirectory(at: newURL, withIntermediateDirectories: true)
+                self.refreshFileTreeAndReindex()
+            } catch {
+                guard let window = self.view.window else { return }
+                self.showAlert(title: "Couldn't create folder", message: error.localizedDescription, window: window)
+            }
+        }
+    }
+
+    @objc private func renameTreeItem(_ sender: NSMenuItem) {
+        guard let node = sender.representedObject as? FileTreeNode else { return }
+        promptForName(title: "Rename", placeholder: node.name, initialValue: node.name) { [weak self] name in
+            guard let self, let name, !name.isEmpty, name != node.name else { return }
+            let newURL = node.url.deletingLastPathComponent().appendingPathComponent(name)
+            do {
+                try FileManager.default.moveItem(at: node.url, to: newURL)
+                if let idx = self.openTabs.firstIndex(where: { $0.url == node.url }) {
+                    self.openTabs[idx].url = newURL
+                    self.rebuildTabBar()
+                    if self.activeTabIndex == idx { self.onFileOpened?(newURL) }
+                }
+                self.refreshFileTreeAndReindex()
+            } catch {
+                guard let window = self.view.window else { return }
+                self.showAlert(title: "Couldn't rename", message: error.localizedDescription, window: window)
+            }
+        }
+    }
+
+    @objc private func deleteTreeItem(_ sender: NSMenuItem) {
+        guard let node = sender.representedObject as? FileTreeNode, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Move \u{201C}\(node.name)\u{201D} to the Trash?"
+        alert.informativeText = node.isDirectory ? "This folder and everything inside it will be moved to the Trash." : "This file will be moved to the Trash."
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            try? FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
+            if let idx = self.openTabs.firstIndex(where: { $0.url == node.url }) {
+                self.closeTab(at: idx)
+            }
+            self.refreshFileTreeAndReindex()
+        }
+    }
+
+    private func promptForName(title: String, placeholder: String, initialValue: String = "", completion: @escaping (String?) -> Void) {
+        guard let window = view.window else { completion(nil); return }
+        let alert = NSAlert()
+        alert.messageText = title
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = placeholder
+        field.stringValue = initialValue
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { response in
+            completion(response == .alertFirstButtonReturn ? field.stringValue.trimmingCharacters(in: .whitespaces) : nil)
+        }
+    }
+
+    private func refreshFileTreeAndReindex() {
+        guard let root = projectURL else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let indexed = Self.indexFiles(at: root)
+            let tree = Self.buildFileTree(from: indexed, root: root)
+            DispatchQueue.main.async {
+                guard let self, self.projectURL == root else { return }
+                self.allFiles = indexed
+                self.fileTreeRoots = tree
+                self.fileExplorerOutline.reloadData()
+            }
         }
     }
 
