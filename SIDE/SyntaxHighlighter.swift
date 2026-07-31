@@ -17,21 +17,46 @@ enum SyntaxHighlighter {
 
     static let maxHighlightableLength = 2_000_000
 
-    static func apply(to textStorage: NSTextStorage, url: URL, baseColor: NSColor, font: NSFont) {
+    struct ColorRun { let range: NSRange; let color: NSColor; let italic: Bool }
+
+    /// Pure regex matching over an immutable String — safe to run on a background queue.
+    /// Splitting this out from attribute application is what lets the expensive part of
+    /// highlighting (running a dozen-plus regexes over the whole file) happen off the main
+    /// thread instead of stalling the UI every time the debounce timer fires.
+    nonisolated static func computeRuns(text: String, url: URL) -> [ColorRun] {
+        guard text.utf16.count < maxHighlightableLength else { return [] }
+        let ns = text as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        var runs: [ColorRun] = []
+        for rule in rules(for: url.pathExtension.lowercased()) {
+            rule.regex.enumerateMatches(in: text, range: full) { match, _, _ in
+                guard let match, match.range(at: rule.groupIndex).location != NSNotFound else { return }
+                runs.append(ColorRun(range: match.range(at: rule.groupIndex), color: rule.color, italic: rule.italic))
+            }
+        }
+        return runs
+    }
+
+    /// Cheap: just sets precomputed attribute ranges, no regex evaluation. Must run on the main
+    /// thread since it mutates a live NSTextStorage.
+    static func applyRuns(_ runs: [ColorRun], to textStorage: NSTextStorage, baseColor: NSColor, font: NSFont) {
         let full = NSRange(location: 0, length: textStorage.length)
         textStorage.addAttribute(.foregroundColor, value: baseColor, range: full)
         textStorage.addAttribute(.font, value: font, range: full)
         guard textStorage.length < maxHighlightableLength else { return }
-        let text = textStorage.string
         let italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
-        for rule in rules(for: url.pathExtension.lowercased()) {
-            rule.regex.enumerateMatches(in: text, range: full) { match, _, _ in
-                guard let match, match.range(at: rule.groupIndex).location != NSNotFound else { return }
-                let range = match.range(at: rule.groupIndex)
-                textStorage.addAttribute(.foregroundColor, value: rule.color, range: range)
-                if rule.italic { textStorage.addAttribute(.font, value: italicFont, range: range) }
-            }
+        for run in runs {
+            guard NSMaxRange(run.range) <= textStorage.length else { continue }
+            textStorage.addAttribute(.foregroundColor, value: run.color, range: run.range)
+            if run.italic { textStorage.addAttribute(.font, value: italicFont, range: run.range) }
         }
+    }
+
+    /// Synchronous convenience for the initial-load path, where the file is about to be
+    /// displayed anyway and there's no debounce to benefit from splitting the work.
+    static func apply(to textStorage: NSTextStorage, url: URL, baseColor: NSColor, font: NSFont) {
+        let runs = computeRuns(text: textStorage.string, url: url)
+        applyRuns(runs, to: textStorage, baseColor: baseColor, font: font)
     }
 
     private static func rules(for ext: String) -> [Rule] {

@@ -16,10 +16,20 @@ struct GitDiffResult {
 }
 
 enum GitDiffComputer {
-    static func compute(projectRoot: URL, relativePath: String, currentContent: String, completion: @escaping (GitDiffResult) -> Void) {
+    /// Spawns `git show`, so callers should fetch this once per tab (e.g. on open, and again
+    /// after save) rather than on every debounced refresh — that's the expensive half of what
+    /// used to be a two-subprocess round trip on every keystroke.
+    static func fetchHeadContent(projectRoot: URL, relativePath: String, completion: @escaping (String?) -> Void) {
         DispatchQueue.global(qos: .utility).async {
-            let headContentRaw = runGit(["show", "HEAD:\(relativePath)"], cwd: projectRoot.path)
-            let headContent = headContentRaw.isEmpty ? nil : headContentRaw
+            let raw = runGit(["show", "HEAD:\(relativePath)"], cwd: projectRoot.path)
+            DispatchQueue.main.async { completion(raw.isEmpty ? nil : raw) }
+        }
+    }
+
+    /// Diffs already-known HEAD content against the live buffer. No `git show` here — just the
+    /// `--no-index` temp-file diff — so this stays cheap enough to call on every keystroke debounce.
+    static func diff(headContent: String?, currentContent: String, projectRoot: URL, completion: @escaping (GitDiffResult) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
             let result = diffResult(original: headContent, current: currentContent, projectRoot: projectRoot)
             DispatchQueue.main.async { completion(result) }
         }

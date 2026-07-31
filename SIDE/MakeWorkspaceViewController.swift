@@ -1,13 +1,24 @@
 import AppKit
 
+private enum TabKind { case text, image, csv }
+
+private enum HeadContentCache {
+    case notFetched
+    case fetched(String?)
+}
+
 private struct OpenTab {
     var url: URL
+    let kind: TabKind
     let textStorage: NSTextStorage
     let undoManager: UndoManager
     var dirty: Bool
     var isUntitled: Bool
     var knownModificationDate: Date?
     var lastSelectedRange = NSRange(location: 0, length: 0)
+    var csvRows: [[String]] = []
+    var cachedImage: NSImage?
+    var headCache: HeadContentCache = .notFetched
 }
 
 private struct IndexedFile {
@@ -29,6 +40,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let fileExplorerPanel = FileExplorerPanel()
     private let fileExplorerOutline = ExplorerOutlineView()
     private var fileTreeRoots: [FileTreeNode] = []
+    private let imageScroll = NSScrollView()
+    private let imageView = NSImageView()
+    private let csvScroll = NSScrollView()
+    private let csvTable = NSTableView()
     private var quickOpenLocalMonitor: Any?
     private var quickOpenGlobalMonitor: Any?
     private var fileExplorerLocalMonitor: Any?
@@ -121,6 +136,33 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         gutter.onMarkClicked = { [weak self] line, mark, event in self?.showDiffMenu(line: line, mark: mark, event: event) }
         view.addSubview(gutter)
 
+        imageScroll.hasVerticalScroller = true
+        imageScroll.hasHorizontalScroller = true
+        imageScroll.allowsMagnification = true
+        imageScroll.minMagnification = 0.1
+        imageScroll.maxMagnification = 8
+        imageScroll.backgroundColor = Self.editorBackground
+        imageScroll.drawsBackground = true
+        imageScroll.isHidden = true
+        imageScroll.translatesAutoresizingMaskIntoConstraints = false
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageScroll.documentView = imageView
+        view.addSubview(imageScroll)
+
+        csvTable.headerView = NSTableHeaderView()
+        csvTable.usesAlternatingRowBackgroundColors = true
+        csvTable.rowHeight = 22
+        csvTable.dataSource = self
+        csvTable.delegate = self
+        csvScroll.documentView = csvTable
+        csvScroll.hasVerticalScroller = true
+        csvScroll.hasHorizontalScroller = true
+        csvScroll.backgroundColor = Self.editorBackground
+        csvScroll.drawsBackground = true
+        csvScroll.isHidden = true
+        csvScroll.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(csvScroll)
+
         let headline = NSTextField(labelWithString: "Open a project")
         headline.font = .systemFont(ofSize: 25, weight: .medium)
         headline.alignment = .center
@@ -142,6 +184,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         NSLayoutConstraint.activate([
             gutter.topAnchor.constraint(equalTo: tabBar.bottomAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: LineNumberGutterView.width),
             editorScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), editorScroll.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            imageScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            csvScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
         configureQuickOpenPanel()
@@ -701,6 +745,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     // MARK: - Tabs
 
     private static let maxOpenableFileSize = 10_000_000
+    private static let maxOpenableImageSize = 50_000_000
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "webp"]
 
     private func open(_ url: URL) {
         captureActiveTabSelection()
@@ -711,6 +757,36 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return
         }
         guard let window = view.window else { return }
+        let ext = url.pathExtension.lowercased()
+
+        if Self.imageExtensions.contains(ext) {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                if size > Self.maxOpenableImageSize {
+                    DispatchQueue.main.async {
+                        self?.showAlert(title: "Image too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over SIDE's current 50 MB limit.", window: window)
+                    }
+                    return
+                }
+                guard let image = NSImage(contentsOf: url) else {
+                    DispatchQueue.main.async {
+                        self?.showAlert(title: "Couldn't open image", message: "\(url.lastPathComponent) couldn't be read as an image.", window: window)
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    var tab = OpenTab(url: url, kind: .image, textStorage: NSTextStorage(), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: nil)
+                    tab.cachedImage = image
+                    self.openTabs.append(tab)
+                    self.activeTabIndex = self.openTabs.count - 1
+                    self.loadActiveTabIntoEditor()
+                    self.finishOpenUI(url: url)
+                }
+            }
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             if size > Self.maxOpenableFileSize {
@@ -732,9 +808,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 return
             }
             let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            let isCSV = ext == "csv"
+            let rows = isCSV ? CSVParser.parse(source) : []
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.openTabs.append(OpenTab(url: url, textStorage: NSTextStorage(string: source), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate))
+                var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, textStorage: NSTextStorage(string: source), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
+                tab.csvRows = rows
+                self.openTabs.append(tab)
                 self.activeTabIndex = self.openTabs.count - 1
                 self.loadActiveTabIntoEditor()
                 self.finishOpenUI(url: url)
@@ -773,26 +853,60 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func loadActiveTabIntoEditor() {
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
-        editor.layoutManager?.replaceTextStorage(tab.textStorage)
-        editor.tabUndoManager = tab.undoManager
-        SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
-        // Replacing the text storage can leave typingAttributes pointing at whatever the
-        // previous (or default system) font/color was, especially for a brand-new empty
-        // document with no existing attribute run to inherit from — explicitly reset it so
-        // freshly typed characters are never invisible against the editor background.
-        editor.typingAttributes = [.foregroundColor: Self.editorTextColor, .font: Self.editorFont]
-        editor.isEditable = true
-        editorScroll.isHidden = false
-        gutter.isHidden = false
-        let clampedLocation = min(tab.lastSelectedRange.location, tab.textStorage.length)
-        let restoredRange = NSRange(location: clampedLocation, length: 0)
-        editor.setSelectedRange(restoredRange)
-        editor.scrollRangeToVisible(restoredRange)
-        gutter.invalidate()
+
+        editorScroll.isHidden = tab.kind != .text
+        gutter.isHidden = tab.kind != .text
+        imageScroll.isHidden = tab.kind != .image
+        csvScroll.isHidden = tab.kind != .csv
+
+        switch tab.kind {
+        case .text:
+            // Guards against textDidChange firing (synchronously or via a same-turn queued
+            // notification) as a side effect of this programmatic swap and spuriously marking
+            // an untouched, freshly opened file as dirty. Cleared on the *next* runloop turn
+            // rather than immediately, so it still covers a notification queued this turn.
+            isLoadingTab = true
+            editor.layoutManager?.replaceTextStorage(tab.textStorage)
+            DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
+            editor.tabUndoManager = tab.undoManager
+            SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+            // Replacing the text storage can leave typingAttributes pointing at whatever the
+            // previous (or default system) font/color was, especially for a brand-new empty
+            // document with no existing attribute run to inherit from — explicitly reset it so
+            // freshly typed characters are never invisible against the editor background.
+            editor.typingAttributes = [.foregroundColor: Self.editorTextColor, .font: Self.editorFont]
+            editor.isEditable = true
+            let clampedLocation = min(tab.lastSelectedRange.location, tab.textStorage.length)
+            let restoredRange = NSRange(location: clampedLocation, length: 0)
+            editor.setSelectedRange(restoredRange)
+            editor.scrollRangeToVisible(restoredRange)
+            gutter.invalidate()
+            refreshGitDiffMarks()
+        case .image:
+            editor.isEditable = false
+            imageView.image = tab.cachedImage
+            if let size = tab.cachedImage?.size { imageView.frame = NSRect(origin: .zero, size: size) }
+        case .csv:
+            editor.isEditable = false
+            rebuildCSVColumns(for: tab)
+            csvTable.reloadData()
+        }
+
         dirty = tab.dirty
         rebuildTabBar()
         onFileOpened?(tab.url)
-        refreshGitDiffMarks()
+    }
+
+    private func rebuildCSVColumns(for tab: OpenTab) {
+        csvTable.tableColumns.forEach { csvTable.removeTableColumn($0) }
+        guard let columnCount = tab.csvRows.first?.count else { return }
+        let header = tab.csvRows.first ?? []
+        for i in 0..<columnCount {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("csv-\(i)"))
+            column.title = i < header.count ? header[i] : "Column \(i + 1)"
+            column.width = 140
+            csvTable.addTableColumn(column)
+        }
     }
 
     @objc private func switchToTabShortcut(_ sender: NSMenuItem) {
@@ -852,12 +966,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func closeAllTabsImmediately() {
         openTabs.removeAll()
         activeTabIndex = nil
+        isLoadingTab = true
         editor.layoutManager?.replaceTextStorage(NSTextStorage())
+        DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
         editor.tabUndoManager = nil
         editor.isEditable = false
         editorScroll.isHidden = true
         gutter.isHidden = true
         gutter.lineDiffMarks = [:]
+        imageScroll.isHidden = true
+        imageView.image = nil
+        csvScroll.isHidden = true
         dirty = false
         UserDefaults.standard.removeObject(forKey: lastFileKey)
         onFileOpened?(nil)
@@ -999,7 +1118,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func refreshGitDiffMarks() {
         guard let projectURL, let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
-        guard !tab.isUntitled else {
+        guard !tab.isUntitled, tab.kind == .text else {
             gutter.lineDiffMarks = [:]
             currentDiffHunks = []
             currentDiffHeadContent = nil
@@ -1009,8 +1128,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let generation = gitDiffGeneration
         let content = tab.textStorage.string
         let relative = relativePath(tab.url)
-        GitDiffComputer.compute(projectRoot: projectURL, relativePath: relative, currentContent: content) { [weak self] result in
-            guard let self, self.gitDiffGeneration == generation, self.activeTabIndex == index else { return }
+
+        switch tab.headCache {
+        case .fetched(let headContent):
+            runDiff(headContent: headContent, content: content, projectRoot: projectURL, tabIndex: index, generation: generation)
+        case .notFetched:
+            GitDiffComputer.fetchHeadContent(projectRoot: projectURL, relativePath: relative) { [weak self] headContent in
+                guard let self, self.openTabs.indices.contains(index) else { return }
+                self.openTabs[index].headCache = .fetched(headContent)
+                guard self.gitDiffGeneration == generation, self.activeTabIndex == index else { return }
+                self.runDiff(headContent: headContent, content: content, projectRoot: projectURL, tabIndex: index, generation: generation)
+            }
+        }
+    }
+
+    private func runDiff(headContent: String?, content: String, projectRoot: URL, tabIndex: Int, generation: Int) {
+        GitDiffComputer.diff(headContent: headContent, currentContent: content, projectRoot: projectRoot) { [weak self] result in
+            guard let self, self.gitDiffGeneration == generation, self.activeTabIndex == tabIndex else { return }
             self.gutter.lineDiffMarks = result.marks
             self.currentDiffHunks = result.hunks
             self.currentDiffHeadContent = result.headContent
@@ -1172,10 +1306,36 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         resultsTable.scrollRowToVisible(next)
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
-        guard tableView === resultsTable else { return 0 }
-        return searchMode == .symbols ? symbolMatches.count : matches.count
+        if tableView === resultsTable { return searchMode == .symbols ? symbolMatches.count : matches.count }
+        if tableView === csvTable {
+            guard let index = activeTabIndex, openTabs.indices.contains(index) else { return 0 }
+            return max(0, openTabs[index].csvRows.count - 1)
+        }
+        return 0
     }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableView === csvTable {
+            guard let index = activeTabIndex, openTabs.indices.contains(index), let tableColumn else { return nil }
+            let rows = openTabs[index].csvRows
+            let dataRow = row + 1
+            guard dataRow < rows.count, let colIndex = tableView.tableColumns.firstIndex(of: tableColumn) else { return nil }
+            let id = NSUserInterfaceItemIdentifier("csvCell")
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
+            cell.identifier = id
+            let text = cell.textField ?? NSTextField(labelWithString: "")
+            if cell.textField == nil {
+                cell.textField = text
+                text.translatesAutoresizingMaskIntoConstraints = false
+                text.font = .systemFont(ofSize: 12)
+                text.lineBreakMode = .byTruncatingTail
+                cell.addSubview(text)
+                NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
+            }
+            text.stringValue = colIndex < rows[dataRow].count ? rows[dataRow][colIndex] : ""
+            text.textColor = NSColor(calibratedWhite: 0.85, alpha: 1)
+            return cell
+        }
+
         guard tableView === resultsTable else { return nil }
         let id = NSUserInterfaceItemIdentifier("result")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
@@ -1218,8 +1378,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
     private var pendingHighlightWorkItem: DispatchWorkItem?
+    private var highlightGeneration = 0
+    private var isLoadingTab = false
     private var pendingDiffWorkItem: DispatchWorkItem?
     func textDidChange(_ notification: Notification) {
+        guard !isLoadingTab else { return }
         dirty = true
         if let index = activeTabIndex { openTabs[index].dirty = true }
         gutter.invalidate()
@@ -1269,19 +1432,32 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         pendingDiffWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in self?.refreshGitDiffMarks() }
         pendingDiffWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: workItem)
+        // Was 0.6s when every refresh spawned two git subprocesses; now that HEAD content is
+        // cached per-tab (one subprocess only on first computation), a shorter debounce still
+        // stays cheap and the gutter updates noticeably faster.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
     }
 
     private func scheduleHighlight() {
         pendingHighlightWorkItem?.cancel()
-        guard let index = activeTabIndex else { return }
-        let url = openTabs[index].url
+        guard let index = activeTabIndex, openTabs[index].kind == .text else { return }
+        let tab = openTabs[index]
+        let url = tab.url
+        highlightGeneration += 1
+        let generation = highlightGeneration
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self, let storage = self.editor.textStorage else { return }
-            SyntaxHighlighter.apply(to: storage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
+            let text = tab.textStorage.string
+            DispatchQueue.global(qos: .userInitiated).async {
+                let runs = SyntaxHighlighter.computeRuns(text: text, url: url)
+                DispatchQueue.main.async {
+                    guard let self, self.highlightGeneration == generation, self.activeTabIndex == index else { return }
+                    SyntaxHighlighter.applyRuns(runs, to: tab.textStorage, baseColor: Self.editorTextColor, font: Self.editorFont)
+                    self.gutter.invalidate()
+                }
+            }
         }
         pendingHighlightWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
     }
 
     // Menu items below deliberately leave `target` unset (nil): AppKit dispatches nil-target
@@ -1412,7 +1588,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Self.untitledCounter += 1
         let name = "Untitled-\(Self.untitledCounter)"
         let url = URL(string: "side-untitled:///\(name)")!
-        openTabs.append(OpenTab(url: url, textStorage: NSTextStorage(string: ""), undoManager: UndoManager(), dirty: false, isUntitled: true, knownModificationDate: nil))
+        openTabs.append(OpenTab(url: url, kind: .text, textStorage: NSTextStorage(string: ""), undoManager: UndoManager(), dirty: false, isUntitled: true, knownModificationDate: nil))
         activeTabIndex = openTabs.count - 1
         loadActiveTabIntoEditor()
         view.window?.makeFirstResponder(editor)
@@ -1426,6 +1602,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func performSave(tabIndex: Int, completion: @escaping (Bool) -> Void) {
         guard openTabs.indices.contains(tabIndex) else { completion(false); return }
         let tab = openTabs[tabIndex]
+        guard tab.kind == .text else { completion(false); return }
         if tab.isUntitled {
             performSaveAs(tabIndex: tabIndex, completion: completion)
             return
@@ -1540,7 +1717,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc private func revertToSaved() {
-        guard let index = activeTabIndex, openTabs.indices.contains(index), !openTabs[index].isUntitled, let window = view.window else { return }
+        guard let index = activeTabIndex, openTabs.indices.contains(index), !openTabs[index].isUntitled, openTabs[index].kind == .text, let window = view.window else { return }
         let tab = openTabs[index]
         guard tab.dirty else { return }
         let alert = NSAlert()
