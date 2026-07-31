@@ -1983,7 +1983,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let lastTab = navigateMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "9")
         lastTab.tag = -1
         navigateItem.submenu = navigateMenu
-        main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); NSApp.mainMenu = main
+
+        // Targets nothing here — RunWorkspaceViewController implements these selectors and
+        // picks them up via the responder chain while the Run stage is active, same pattern
+        // as "New Window" targeting AppDelegate directly above.
+        let runItem = NSMenuItem(title: "Run", action: nil, keyEquivalent: "")
+        let runMenu = NSMenu(title: "Run")
+        runMenu.addItem(withTitle: "New Terminal Tab", action: #selector(RunWorkspaceViewController.newSession), keyEquivalent: "t")
+        runMenu.addItem(withTitle: "Stop", action: #selector(RunWorkspaceViewController.stopActiveSession), keyEquivalent: ".")
+        let restart = runMenu.addItem(withTitle: "Restart Terminal", action: #selector(RunWorkspaceViewController.restartActiveSession), keyEquivalent: "r")
+        restart.keyEquivalentModifierMask = [.command, .shift]
+        runMenu.addItem(withTitle: "Rerun Last Command", action: #selector(RunWorkspaceViewController.rerunLastCommand), keyEquivalent: "")
+        runItem.submenu = runMenu
+
+        main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); main.addItem(runItem); NSApp.mainMenu = main
     }
     @objc private func focusQuickOpen() {
         searchMode = .files
@@ -2233,6 +2246,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     func restoreLastSessionIfAvailable() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
 
+    /// Entry point for cross-stage "open this file" requests (currently: clicking a
+    /// file-path-shaped link in the Run stage's terminal output).
+    func revealFile(_ url: URL, line: Int?) {
+        open(url) { [weak self] in
+            guard let self, let line, line > 0,
+                  let index = self.openTabs.firstIndex(where: { $0.url == url }), self.openTabs[index].kind == .text else { return }
+            let ns = self.openTabs[index].textStorage.string as NSString
+            guard let range = self.nsRange(for: LSPRange(start: LSPPosition(line: line - 1, character: 0), end: LSPPosition(line: line - 1, character: 0)), in: ns) else { return }
+            self.editor.setSelectedRange(NSRange(location: range.location, length: 0))
+            self.editor.scrollRangeToVisible(range)
+            self.view.window?.makeFirstResponder(self.editor)
+        }
+    }
+
     /// Detaches floating child windows and event monitors before the owning window closes.
     /// Child windows left attached to a parent that's being deallocated, and global event
     /// monitors whose closures outlive their view controller, are both plausible sources of
@@ -2320,6 +2347,10 @@ final class TabChipView: NSView {
     var onDragEnded: (() -> Void)?
     var title: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
     var isActive: Bool = false { didSet { needsDisplay = true } }
+    /// Used by Run's terminal tabs (unused by Make's file tabs, which never set these) to show
+    /// an exited-process state and an unseen-output dot without needing a separate chip type.
+    var isDead: Bool = false { didSet { needsDisplay = true } }
+    var hasUnseenOutput: Bool = false { didSet { needsDisplay = true } }
 
     private static let textInset: CGFloat = 12
     private static let trailingReserve: CGFloat = 26
@@ -2354,8 +2385,9 @@ final class TabChipView: NSView {
         background.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
 
+        let dimmed = isDead ? 0.35 : 1.0
         let attributes: [NSAttributedString.Key: Any] = [
-            .foregroundColor: isActive ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.55, alpha: 1),
+            .foregroundColor: (isActive ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.55, alpha: 1)).withAlphaComponent(dimmed),
             .font: NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
         ]
         let text = title as NSString
@@ -2363,6 +2395,12 @@ final class TabChipView: NSView {
         let maxWidth = max(0, bounds.width - Self.textInset - Self.trailingReserve)
         let drawRect = NSRect(x: Self.textInset, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
         text.draw(in: drawRect, withAttributes: attributes)
+
+        if hasUnseenOutput {
+            NSColor.controlAccentColor.setFill()
+            let dotSize: CGFloat = 6
+            NSBezierPath(ovalIn: NSRect(x: 2, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

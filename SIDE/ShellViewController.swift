@@ -13,7 +13,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     private let projectLabel = NSTextField(labelWithString: "")
     private let container = NSView()
     private lazy var makeVC = MakeWorkspaceViewController()
-    private lazy var runVC = TerminalViewController()
+    private lazy var runVC = RunWorkspaceViewController()
     private var current: Stage?
 
     private var projectURL: URL?
@@ -30,6 +30,12 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         makeVC.onProjectOpened = { [weak self] url in self?.projectOpened(url) }
         makeVC.onFileOpened = { [weak self] url in self?.fileOpened(url) }
         makeVC.onDirtyChanged = { [weak self] dirty in self?.isDirty = dirty; self?.applyWindowChrome() }
+        runVC.onOpenFileRequested = { [weak self] url, line in
+            guard let self else { return }
+            self.show(.make)
+            self.makeVC.revealFile(url, line: line)
+        }
+        runVC.onActivityChanged = { [weak self] in self?.updateStageLabels() }
         show(.make)
     }
 
@@ -138,15 +144,20 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         ])
 
         if stage == .run {
-            runVC.activate()
+            runVC.activateActiveSession()
         }
+    }
+
+    private func updateStageLabels() {
+        let runIndex = Stage.allCases.firstIndex(of: .run) ?? 1
+        stageControl.setLabel(runVC.hasBackgroundActivity ? "Run \u{25CF}" : "Run", forSegment: runIndex)
     }
 
     // MARK: - Window chrome (title, subtitle, git info)
 
     private func projectOpened(_ url: URL) {
         projectURL = url
-        runVC.workingDirectory = url.path
+        runVC.defaultWorkingDirectory = url.path
         applyWindowChrome()
         refreshGitInfo(for: url)
     }
