@@ -10,6 +10,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     let searchField = QuickOpenSearchField()
     private let editor = NSTextView()
     private let editorScroll = NSScrollView()
+    private var gutter: LineNumberGutterView!
     private let tabBar = NSView()
     private let tabBarStack = NSStackView()
     private var tabBarHeightConstraint: NSLayoutConstraint!
@@ -91,6 +92,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editorScroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(editorScroll)
 
+        gutter = LineNumberGutterView(textView: editor, scrollView: editorScroll)
+        gutter.isHidden = true
+        gutter.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(gutter)
+
         let headline = NSTextField(labelWithString: "Open a project")
         headline.font = .systemFont(ofSize: 25, weight: .medium)
         headline.alignment = .center
@@ -110,7 +116,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(emptyState)
 
         NSLayoutConstraint.activate([
-            editorScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), editorScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            gutter.topAnchor.constraint(equalTo: tabBar.bottomAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: LineNumberGutterView.width),
+            editorScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), editorScroll.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
         configureQuickOpenPanel()
@@ -260,17 +267,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         editor.string = tab.content
-        let fullRange = NSRange(location: 0, length: (editor.string as NSString).length)
-        editor.textStorage?.addAttributes([.foregroundColor: Self.editorTextColor, .font: Self.editorFont], range: fullRange)
+        if let storage = editor.textStorage { SyntaxHighlighter.apply(to: storage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont) }
         editor.isEditable = true
         editorScroll.isHidden = false
+        gutter.isHidden = false
+        gutter.invalidate()
         dirty = tab.dirty
         rebuildTabBar()
         onFileOpened?(tab.url)
     }
 
-    @objc private func selectTab(_ sender: NSButton) {
-        let index = sender.tag
+    @objc private func selectTab(_ sender: NSButton) { switchToTab(sender.tag) }
+    @objc private func switchToTabShortcut(_ sender: NSMenuItem) {
+        let index = sender.tag >= 0 ? sender.tag : openTabs.count - 1
+        switchToTab(index)
+    }
+
+    private func switchToTab(_ index: Int) {
         guard openTabs.indices.contains(index), index != activeTabIndex else { return }
         persistActiveTabEdits()
         activeTabIndex = index
@@ -279,6 +292,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.window?.makeFirstResponder(editor)
     }
 
+    @objc private func closeTabButton(_ sender: NSButton) { closeTab(at: sender.tag) }
     @objc private func closeTabFromMenu(_ sender: NSMenuItem) { closeTab(at: sender.tag) }
     @objc private func closeActiveTab() { guard let index = activeTabIndex else { return }; closeTab(at: index) }
 
@@ -290,6 +304,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             editor.string = ""
             editor.isEditable = false
             editorScroll.isHidden = true
+            gutter.isHidden = true
             dirty = false
             UserDefaults.standard.removeObject(forKey: lastFileKey)
             onFileOpened?(nil)
@@ -312,7 +327,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func makeTabChip(index: Int, tab: OpenTab, isActive: Bool) -> NSView {
-        let container = NSView()
+        let container = TabChipView()
         container.wantsLayer = true
         container.layer?.cornerRadius = 6
         container.layer?.backgroundColor = isActive ? NSColor(calibratedWhite: 0.17, alpha: 1).cgColor : NSColor.clear.cgColor
@@ -329,10 +344,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             .font: NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
         ])
         button.translatesAutoresizingMaskIntoConstraints = false
+
+        let closeButton = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!, target: self, action: #selector(closeTabButton(_:)))
+        closeButton.tag = index
+        closeButton.isBordered = false
+        closeButton.imageScaling = .scaleProportionallyDown
+        closeButton.contentTintColor = NSColor(calibratedWhite: 0.6, alpha: 1)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.isHidden = true
+
         container.addSubview(button)
+        container.addSubview(closeButton)
+        container.closeButton = closeButton
         NSLayoutConstraint.activate([
-            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12), button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            button.topAnchor.constraint(equalTo: container.topAnchor), button.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12), button.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -4),
+            button.topAnchor.constraint(equalTo: container.topAnchor), button.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 14), closeButton.heightAnchor.constraint(equalToConstant: 14)
         ])
 
         let menu = NSMenu()
@@ -418,9 +446,24 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return false
         }
     }
+    private var pendingHighlightWorkItem: DispatchWorkItem?
     func textDidChange(_ notification: Notification) {
         dirty = true
         if let index = activeTabIndex { openTabs[index].dirty = true }
+        gutter.invalidate()
+        scheduleHighlight()
+    }
+
+    private func scheduleHighlight() {
+        pendingHighlightWorkItem?.cancel()
+        guard let index = activeTabIndex else { return }
+        let url = openTabs[index].url
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, let storage = self.editor.textStorage else { return }
+            SyntaxHighlighter.apply(to: storage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
+        }
+        pendingHighlightWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
     }
 
     private func buildMenu() {
@@ -434,6 +477,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
         let navigateMenu = NSMenu(title: "Navigate")
         let quickOpen = navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p"); quickOpen.target = self
+        navigateMenu.addItem(NSMenuItem.separator())
+        for i in 1...8 {
+            let item = navigateMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "\(i)")
+            item.tag = i - 1
+            item.target = self
+        }
+        let lastTab = navigateMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "9")
+        lastTab.tag = -1
+        lastTab.target = self
         navigateItem.submenu = navigateMenu
         main.addItem(fileItem); main.addItem(navigateItem); NSApp.mainMenu = main
     }
@@ -465,6 +517,22 @@ final class QuickOpenPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+final class TabChipView: NSView {
+    weak var closeButton: NSButton?
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { closeButton?.isHidden = false }
+    override func mouseExited(with event: NSEvent) { closeButton?.isHidden = true }
 }
 
 final class QuickOpenSearchField: NSSearchField {
