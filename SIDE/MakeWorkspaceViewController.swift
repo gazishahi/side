@@ -2,6 +2,21 @@ import AppKit
 
 private enum TabKind { case text, image, csv }
 
+private final class CenteringClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var rect = super.constrainBoundsRect(proposedBounds)
+        guard let container = documentView else { return rect }
+        let containerFrame = container.frame
+        if containerFrame.width < rect.width {
+            rect.origin.x = (containerFrame.width - rect.width) / 2
+        }
+        if containerFrame.height < rect.height {
+            rect.origin.y = (containerFrame.height - rect.height) / 2
+        }
+        return rect
+    }
+}
+
 private enum HeadContentCache {
     case notFetched
     case fetched(String?)
@@ -146,6 +161,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         imageScroll.isHidden = true
         imageScroll.translatesAutoresizingMaskIntoConstraints = false
         imageView.imageScaling = .scaleProportionallyUpOrDown
+        let centeringClip = CenteringClipView()
+        centeringClip.drawsBackground = false
+        imageScroll.contentView = centeringClip
         imageScroll.documentView = imageView
         view.addSubview(imageScroll)
 
