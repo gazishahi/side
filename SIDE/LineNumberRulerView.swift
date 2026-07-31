@@ -6,6 +6,7 @@ final class LineNumberGutterView: NSView {
     private let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     static let width: CGFloat = 44
     var lineDiffMarks: [Int: GitDiffMark] = [:] { didSet { needsDisplay = true } }
+    var onMarkClicked: ((Int, GitDiffMark, NSEvent) -> Void)?
 
     private static let addedColor = NSColor(calibratedRed: 0.42, green: 0.78, blue: 0.48, alpha: 1)
     private static let modifiedColor = NSColor(calibratedRed: 0.85, green: 0.68, blue: 0.35, alpha: 1)
@@ -87,6 +88,22 @@ final class LineNumberGutterView: NSView {
             index = nextIndex
             lineNumber += 1
             if index > NSMaxRange(characterRange) { break }
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let textView, let layoutManager = textView.layoutManager, let textContainer = textView.textContainer, let scrollView else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let offsetY = scrollView.contentView.bounds.origin.y
+        let adjustedY = point.y + offsetY - textView.textContainerInset.height
+        let glyphIndex = layoutManager.glyphIndex(for: NSPoint(x: 0, y: adjustedY), in: textContainer)
+        guard glyphIndex < layoutManager.numberOfGlyphs || layoutManager.numberOfGlyphs == 0 else { return }
+        let charIndex = layoutManager.numberOfGlyphs == 0 ? 0 : layoutManager.characterIndexForGlyph(at: glyphIndex)
+        let text = textView.string as NSString
+        guard charIndex <= text.length else { return }
+        let lineNumber = text.substring(to: min(charIndex, text.length)).components(separatedBy: "\n").count
+        if let mark = lineDiffMarks[lineNumber] {
+            onMarkClicked?(lineNumber, mark, event)
         }
     }
 }

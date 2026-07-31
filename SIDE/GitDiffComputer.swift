@@ -2,24 +2,39 @@ import Foundation
 
 enum GitDiffMark { case added, modified, removedBefore }
 
+struct GitHunk {
+    let oldStart: Int
+    let oldCount: Int
+    let newStart: Int
+    let newCount: Int
+}
+
+struct GitDiffResult {
+    let marks: [Int: GitDiffMark]
+    let hunks: [GitHunk]
+    let headContent: String?
+}
+
 enum GitDiffComputer {
-    static func compute(projectRoot: URL, relativePath: String, currentContent: String, completion: @escaping ([Int: GitDiffMark]) -> Void) {
+    static func compute(projectRoot: URL, relativePath: String, currentContent: String, completion: @escaping (GitDiffResult) -> Void) {
         DispatchQueue.global(qos: .utility).async {
-            let headContent = runGit(["show", "HEAD:\(relativePath)"], cwd: projectRoot.path)
-            let marks = diffMarks(original: headContent.isEmpty ? nil : headContent, current: currentContent, projectRoot: projectRoot)
-            DispatchQueue.main.async { completion(marks) }
+            let headContentRaw = runGit(["show", "HEAD:\(relativePath)"], cwd: projectRoot.path)
+            let headContent = headContentRaw.isEmpty ? nil : headContentRaw
+            let result = diffResult(original: headContent, current: currentContent, projectRoot: projectRoot)
+            DispatchQueue.main.async { completion(result) }
         }
     }
 
-    private static func diffMarks(original: String?, current: String, projectRoot: URL) -> [Int: GitDiffMark] {
+    private static func diffResult(original: String?, current: String, projectRoot: URL) -> GitDiffResult {
         guard let original else {
-            guard !current.isEmpty else { return [:] }
+            guard !current.isEmpty else { return GitDiffResult(marks: [:], hunks: [], headContent: nil) }
             let lineCount = current.components(separatedBy: "\n").count
             var marks: [Int: GitDiffMark] = [:]
             for line in 1...max(lineCount, 1) { marks[line] = .added }
-            return marks
+            let hunk = GitHunk(oldStart: 0, oldCount: 0, newStart: 1, newCount: lineCount)
+            return GitDiffResult(marks: marks, hunks: [hunk], headContent: nil)
         }
-        guard original != current else { return [:] }
+        guard original != current else { return GitDiffResult(marks: [:], hunks: [], headContent: original) }
 
         let tmpDir = FileManager.default.temporaryDirectory
         let originalFile = tmpDir.appendingPathComponent("side-diff-orig-\(UUID().uuidString).txt")
@@ -31,15 +46,30 @@ enum GitDiffComputer {
         do {
             try original.write(to: originalFile, atomically: true, encoding: .utf8)
             try current.write(to: currentFile, atomically: true, encoding: .utf8)
-        } catch { return [:] }
+        } catch { return GitDiffResult(marks: [:], hunks: [], headContent: original) }
 
         let output = runGit(["diff", "--no-index", "--no-color", "-U0", originalFile.path, currentFile.path], cwd: projectRoot.path)
-        return parseHunks(output)
+        let hunks = parseHunks(output)
+        return GitDiffResult(marks: marks(for: hunks), hunks: hunks, headContent: original)
     }
 
-    private static func parseHunks(_ diffOutput: String) -> [Int: GitDiffMark] {
+    private static func marks(for hunks: [GitHunk]) -> [Int: GitDiffMark] {
         var marks: [Int: GitDiffMark] = [:]
-        guard let hunkRegex = try? NSRegularExpression(pattern: "^@@ -\\d+(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@") else { return marks }
+        for hunk in hunks {
+            if hunk.newCount == 0 {
+                marks[max(hunk.newStart, 1)] = .removedBefore
+            } else if hunk.oldCount == 0 {
+                for line in hunk.newStart..<(hunk.newStart + hunk.newCount) { marks[line] = .added }
+            } else {
+                for line in hunk.newStart..<(hunk.newStart + hunk.newCount) { marks[line] = .modified }
+            }
+        }
+        return marks
+    }
+
+    private static func parseHunks(_ diffOutput: String) -> [GitHunk] {
+        var hunks: [GitHunk] = []
+        guard let hunkRegex = try? NSRegularExpression(pattern: "^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@") else { return hunks }
         for line in diffOutput.components(separatedBy: "\n") where line.hasPrefix("@@") {
             let ns = line as NSString
             guard let match = hunkRegex.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { continue }
@@ -47,19 +77,13 @@ enum GitDiffComputer {
                 let r = match.range(at: i)
                 return r.location == NSNotFound ? nil : ns.substring(with: r)
             }
-            let oldCount = Int(group(1) ?? "1") ?? 1
-            let newStart = Int(group(2) ?? "0") ?? 0
-            let newCount = Int(group(3) ?? "1") ?? 1
-
-            if newCount == 0 {
-                marks[max(newStart, 1)] = .removedBefore
-            } else if oldCount == 0 {
-                for line in newStart..<(newStart + newCount) { marks[line] = .added }
-            } else {
-                for line in newStart..<(newStart + newCount) { marks[line] = .modified }
-            }
+            let oldStart = Int(group(1) ?? "0") ?? 0
+            let oldCount = Int(group(2) ?? "1") ?? 1
+            let newStart = Int(group(3) ?? "0") ?? 0
+            let newCount = Int(group(4) ?? "1") ?? 1
+            hunks.append(GitHunk(oldStart: oldStart, oldCount: oldCount, newStart: newStart, newCount: newCount))
         }
-        return marks
+        return hunks
     }
 
     private static func runGit(_ args: [String], cwd: String) -> String {

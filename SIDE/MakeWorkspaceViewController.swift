@@ -30,9 +30,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var quickOpenGlobalMonitor: Any?
     private var fileExplorerLocalMonitor: Any?
     private var fileExplorerGlobalMonitor: Any?
+    private var currentDiffHunks: [GitHunk] = []
+    private var currentDiffHeadContent: String?
     private var projectURL: URL?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
+    private enum SearchMode { case files, symbols }
+    private var searchMode: SearchMode = .files
+    private var symbolMatches: [CodeSymbol] = []
     private var openTabs: [OpenTab] = []
     private var activeTabIndex: Int?
     private var tabChips: [TabChipView] = []
@@ -111,6 +116,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         gutter = LineNumberGutterView(textView: editor, scrollView: editorScroll)
         gutter.isHidden = true
         gutter.translatesAutoresizingMaskIntoConstraints = false
+        gutter.onMarkClicked = { [weak self] line, mark, event in self?.showDiffMenu(line: line, mark: mark, event: event) }
         view.addSubview(gutter)
 
         let headline = NSTextField(labelWithString: "Open a project")
@@ -679,10 +685,81 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let generation = gitDiffGeneration
         let content = tab.textStorage.string
         let relative = relativePath(tab.url)
-        GitDiffComputer.compute(projectRoot: projectURL, relativePath: relative, currentContent: content) { [weak self] marks in
+        GitDiffComputer.compute(projectRoot: projectURL, relativePath: relative, currentContent: content) { [weak self] result in
             guard let self, self.gitDiffGeneration == generation, self.activeTabIndex == index else { return }
-            self.gutter.lineDiffMarks = marks
+            self.gutter.lineDiffMarks = result.marks
+            self.currentDiffHunks = result.hunks
+            self.currentDiffHeadContent = result.headContent
         }
+    }
+
+    private func hunk(containingLine line: Int, mark: GitDiffMark) -> GitHunk? {
+        currentDiffHunks.first { hunk in
+            if mark == .removedBefore { return hunk.newCount == 0 && max(hunk.newStart, 1) == line }
+            return line >= hunk.newStart && line < hunk.newStart + hunk.newCount
+        }
+    }
+
+    private func showDiffMenu(line: Int, mark: GitDiffMark, event: NSEvent) {
+        guard let hunk = hunk(containingLine: line, mark: mark) else { return }
+        let menu = NSMenu()
+        let item = menu.addItem(withTitle: "Revert Change", action: #selector(revertHunkAction(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = hunk
+        NSMenu.popUpContextMenu(menu, with: event, for: gutter)
+    }
+
+    @objc private func revertHunkAction(_ sender: NSMenuItem) {
+        guard let hunk = sender.representedObject as? GitHunk else { return }
+        revertHunk(hunk)
+    }
+
+    private func revertHunk(_ hunk: GitHunk) {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
+        let tab = openTabs[index]
+        guard editor.textStorage === tab.textStorage else { return }
+
+        let originalLines = (currentDiffHeadContent ?? "").components(separatedBy: "\n")
+        let replacementLines: [String]
+        if hunk.oldCount > 0, hunk.oldStart - 1 + hunk.oldCount <= originalLines.count {
+            replacementLines = Array(originalLines[(hunk.oldStart - 1)..<(hunk.oldStart - 1 + hunk.oldCount)])
+        } else {
+            replacementLines = []
+        }
+        let replacement = replacementLines.isEmpty ? "" : replacementLines.joined(separator: "\n") + "\n"
+
+        let ns = tab.textStorage.string as NSString
+        let range: NSRange
+        if hunk.newCount > 0 {
+            range = lineSpanRange(in: ns, startLine: hunk.newStart, count: hunk.newCount)
+        } else {
+            let insertionPoint = lineSpanRange(in: ns, startLine: hunk.newStart, count: 0)
+            range = NSRange(location: insertionPoint.location, length: 0)
+        }
+
+        editor.insertText(replacement, replacementRange: range)
+        SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+        gutter.invalidate()
+        refreshGitDiffMarks()
+    }
+
+    private func lineSpanRange(in text: NSString, startLine: Int, count: Int) -> NSRange {
+        var index = 0
+        var currentLine = 1
+        while currentLine < max(1, startLine) && index < text.length {
+            let lineRange = text.lineRange(for: NSRange(location: index, length: 0))
+            index = NSMaxRange(lineRange)
+            currentLine += 1
+        }
+        let start = min(index, text.length)
+        guard count > 0 else { return NSRange(location: start, length: 0) }
+        var end = start
+        for _ in 0..<count {
+            guard end < text.length else { break }
+            let lineRange = text.lineRange(for: NSRange(location: end, length: 0))
+            end = NSMaxRange(lineRange)
+        }
+        return NSRange(location: start, length: end - start)
     }
 
     // MARK: - Search
@@ -698,6 +775,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func performSearch() {
+        if searchMode == .symbols {
+            performSymbolSearch()
+            return
+        }
         guard projectURL != nil else { hideQuickOpenPanel(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         searchGeneration += 1
@@ -723,26 +804,55 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    private func performSymbolSearch() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { hideQuickOpenPanel(); return }
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tab = openTabs[index]
+        let allSymbols = SymbolIndexer.symbols(in: tab.textStorage.string, ext: tab.url.pathExtension.lowercased())
+        if query.isEmpty {
+            symbolMatches = Array(allSymbols.prefix(30))
+        } else {
+            symbolMatches = allSymbols.compactMap { symbol in
+                FuzzyMatcher.score(query: query, candidate: symbol.name).map { (symbol, $0) }
+            }.sorted { $0.1 > $1.1 }.prefix(30).map { $0.0 }
+        }
+        applySearchResults()
+    }
+
     private func applySearchResults() {
         resultsTable.reloadData()
-        if !matches.isEmpty { resultsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
-        if !matches.isEmpty { showQuickOpenPanel() } else { hideQuickOpenPanel() }
+        let count = searchMode == .symbols ? symbolMatches.count : matches.count
+        if count > 0 { resultsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        if count > 0 { showQuickOpenPanel() } else { hideQuickOpenPanel() }
     }
     @objc private func confirmSearch() {
         let selected = resultsTable.selectedRow
-        if selected >= 0 && selected < matches.count { open(matches[selected]) }
-        else if let first = matches.first { open(first) }
+        switch searchMode {
+        case .files:
+            if selected >= 0 && selected < matches.count { open(matches[selected]) }
+            else if let first = matches.first { open(first) }
+        case .symbols:
+            let symbol = (selected >= 0 && selected < symbolMatches.count) ? symbolMatches[selected] : symbolMatches.first
+            guard let symbol else { return }
+            hideQuickOpenPanel()
+            scrollToLine(symbol.line)
+        }
     }
     @objc private func openSelectedResult() { confirmSearch() }
     private func dismissQuickOpen() { hideQuickOpenPanel(); view.window?.makeFirstResponder(editor) }
     private func moveSelection(_ direction: Int) {
-        guard !matches.isEmpty else { return }
-        let next = max(0, min(matches.count - 1, resultsTable.selectedRow + direction))
+        let count = searchMode == .symbols ? symbolMatches.count : matches.count
+        guard count > 0 else { return }
+        let next = max(0, min(count - 1, resultsTable.selectedRow + direction))
         resultsTable.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
         resultsTable.scrollRowToVisible(next)
     }
-    func numberOfRows(in tableView: NSTableView) -> Int { matches.count }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        guard tableView === resultsTable else { return 0 }
+        return searchMode == .symbols ? symbolMatches.count : matches.count
+    }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard tableView === resultsTable else { return nil }
         let id = NSUserInterfaceItemIdentifier("result")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
         cell.identifier = id
@@ -755,7 +865,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.addSubview(text)
             NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
         }
-        text.stringValue = relativePath(matches[row])
+        switch searchMode {
+        case .files:
+            text.stringValue = relativePath(matches[row])
+        case .symbols:
+            let symbol = symbolMatches[row]
+            text.stringValue = "\(symbol.name)  —  \(symbol.kind) · line \(symbol.line)"
+        }
         return cell
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -871,6 +987,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let navigateMenu = NSMenu(title: "Navigate")
         let quickOpen = navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p"); quickOpen.target = self
         let goToLine = navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l"); goToLine.target = self
+        let goToSymbol = navigateMenu.addItem(withTitle: "Go to Symbol…", action: #selector(focusSymbolSearch), keyEquivalent: "o")
+        goToSymbol.keyEquivalentModifierMask = [.command, .shift]
+        goToSymbol.target = self
         let explorer = navigateMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "e")
         explorer.keyEquivalentModifierMask = [.command, .shift]
         explorer.target = self
@@ -886,7 +1005,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         navigateItem.submenu = navigateMenu
         main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); NSApp.mainMenu = main
     }
-    @objc private func focusQuickOpen() { searchField.stringValue = ""; view.window?.makeFirstResponder(searchField); performSearch() }
+    @objc private func focusQuickOpen() {
+        searchMode = .files
+        searchField.placeholderString = projectURL.map { "Find a file in \($0.lastPathComponent)" } ?? "Open file, symbol, or command"
+        searchField.stringValue = ""
+        view.window?.makeFirstResponder(searchField)
+        performSearch()
+    }
+    @objc private func focusSymbolSearch() {
+        guard activeTabIndex != nil else { return }
+        searchMode = .symbols
+        searchField.placeholderString = "Go to symbol"
+        searchField.stringValue = ""
+        view.window?.makeFirstResponder(searchField)
+        performSearch()
+    }
     @objc private func showGoToLine() {
         guard let window = view.window, activeTabIndex != nil else { return }
         let alert = NSAlert()
@@ -922,10 +1055,74 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex else { return }
         let tab = openTabs[index]
         try? tab.textStorage.string.write(to: tab.url, atomically: true, encoding: .utf8)
-        openTabs[index].dirty = false
-        dirty = false
+
+        if let projectURL, let formatter = Self.formatterCommand(for: tab.url, projectRoot: projectURL) {
+            runFormatter(formatter, tabIndex: index, url: tab.url)
+        } else {
+            finishSave(tabIndex: index)
+        }
+    }
+
+    private func finishSave(tabIndex: Int) {
+        guard openTabs.indices.contains(tabIndex) else { return }
+        openTabs[tabIndex].dirty = false
+        if activeTabIndex == tabIndex { dirty = false }
         rebuildTabBar()
         refreshGitDiffMarks()
+    }
+
+    private func runFormatter(_ formatter: (executable: String, args: [String]), tabIndex: Int, url: URL) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: formatter.executable)
+            process.arguments = formatter.args
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            try? process.run()
+            process.waitUntilExit()
+            let formattedContent = try? String(contentsOf: url, encoding: .utf8)
+            DispatchQueue.main.async {
+                guard let self, self.openTabs.indices.contains(tabIndex) else { return }
+                let tab = self.openTabs[tabIndex]
+                if let formattedContent, formattedContent != tab.textStorage.string {
+                    let fullRange = NSRange(location: 0, length: tab.textStorage.length)
+                    tab.textStorage.replaceCharacters(in: fullRange, with: formattedContent)
+                    SyntaxHighlighter.apply(to: tab.textStorage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
+                    if self.activeTabIndex == tabIndex { self.gutter.invalidate() }
+                }
+                self.finishSave(tabIndex: tabIndex)
+            }
+        }
+    }
+
+    private static func formatterCommand(for url: URL, projectRoot: URL) -> (executable: String, args: [String])? {
+        let ext = url.pathExtension.lowercased()
+        switch ext {
+        case "js", "jsx", "ts", "tsx", "json", "md", "css", "html", "yaml", "yml":
+            let local = projectRoot.appendingPathComponent("node_modules/.bin/prettier").path
+            if FileManager.default.isExecutableFile(atPath: local) { return (local, ["--write", url.path]) }
+            if let global = which("prettier") { return (global, ["--write", url.path]) }
+            return nil
+        case "swift":
+            if let global = which("swift-format") { return (global, ["-i", url.path]) }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private static func which(_ tool: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["which", tool]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do { try process.run() } catch { return nil }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (path?.isEmpty == false) ? path : nil
     }
     private func restoreLastSession() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
 }
