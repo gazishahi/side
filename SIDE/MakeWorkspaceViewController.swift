@@ -23,6 +23,7 @@ private enum HeadContentCache {
 }
 
 private struct OpenTab {
+    let id = UUID()
     var url: URL
     let kind: TabKind
     let textStorage: NSTextStorage
@@ -33,6 +34,7 @@ private struct OpenTab {
     var lastSelectedRange = NSRange(location: 0, length: 0)
     var csvRows: [[String]] = []
     var diagnostics: [LSPDiagnostic] = []
+    var renderedDiagnosticRanges: [NSRange] = []
     var cachedImage: NSImage?
     var headCache: HeadContentCache = .notFetched
 }
@@ -960,14 +962,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         renderDiagnosticsForActiveTab()
     }
 
+    /// Clears/reapplies only the ranges diagnostics actually touched, not the whole document —
+    /// this runs on every diagnostics update (i.e. roughly every debounced keystroke while a
+    /// language server is attached), so on a large file a full-document attribute strip would
+    /// force NSLayoutManager to invalidate layout well beyond what's visible on every edit.
     private func renderDiagnosticsForActiveTab() {
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { return }
         let tab = openTabs[index]
-        let fullRange = NSRange(location: 0, length: tab.textStorage.length)
-        tab.textStorage.removeAttribute(.underlineStyle, range: fullRange)
-        tab.textStorage.removeAttribute(.underlineColor, range: fullRange)
+        let storageLength = tab.textStorage.length
+        for range in tab.renderedDiagnosticRanges where NSMaxRange(range) <= storageLength {
+            tab.textStorage.removeAttribute(.underlineStyle, range: range)
+            tab.textStorage.removeAttribute(.underlineColor, range: range)
+        }
         let ns = tab.textStorage.string as NSString
         var lineSeverities: [Int: LSPDiagnosticSeverity] = [:]
+        var appliedRanges: [NSRange] = []
         for diagnostic in tab.diagnostics {
             let line = diagnostic.range.start.line + 1
             if let existing = lineSeverities[line] {
@@ -979,7 +988,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let color: NSColor = diagnostic.severity == .error ? .systemRed : (diagnostic.severity == .warning ? .systemYellow : .systemGray)
             tab.textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue, range: range)
             tab.textStorage.addAttribute(.underlineColor, value: color, range: range)
+            appliedRanges.append(range)
         }
+        openTabs[index].renderedDiagnosticRanges = appliedRanges
         gutter.lineDiagnostics = lineSeverities
     }
 
@@ -1078,10 +1089,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     @objc private func closeTabFromMenu(_ sender: NSMenuItem) { closeTab(at: sender.tag) }
     @objc private func closeActiveTab() { guard let index = activeTabIndex else { return }; closeTab(at: index) }
 
+    /// Uses a stable tab id (not the raw index) beyond this point: closing this tab involves
+    /// an async alert sheet, and another tab's own async save/formatter pipeline could shift
+    /// array indices in the meantime, which would otherwise make a stale index silently
+    /// resolve to the wrong tab.
     private func closeTab(at index: Int) {
         guard openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
-        guard tab.dirty else { finishCloseTab(at: index); return }
+        let tabID = tab.id
+        guard tab.dirty else { finishCloseTab(id: tabID); return }
         guard let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = "Do you want to save the changes you made to \u{201C}\(tab.isUntitled ? "Untitled" : tab.url.lastPathComponent)\u{201D}?"
@@ -1093,17 +1109,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             guard let self else { return }
             switch response {
             case .alertFirstButtonReturn:
-                self.performSave(tabIndex: index) { success in if success { self.finishCloseTab(at: index) } }
+                self.performSave(tabID: tabID) { success in if success { self.finishCloseTab(id: tabID) } }
             case .alertSecondButtonReturn:
-                self.finishCloseTab(at: index)
+                self.finishCloseTab(id: tabID)
             default:
                 break
             }
         }
     }
 
-    private func finishCloseTab(at index: Int) {
-        guard openTabs.indices.contains(index) else { return }
+    private func indexForTab(id: UUID) -> Int? { openTabs.firstIndex(where: { $0.id == id }) }
+
+    private func finishCloseTab(id tabID: UUID) {
+        guard let index = indexForTab(id: tabID) else { return }
         let closedTab = openTabs[index]
         openTabs.remove(at: index)
         if closedTab.kind == .text { lspManager?.closed(url: closedTab.url) }
@@ -1141,14 +1159,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// caller to proceed with something that would otherwise discard them — closing the window,
     /// quitting, or switching projects.
     private func confirmAllUnsavedChanges(completion: @escaping (_ shouldProceed: Bool) -> Void) {
-        let dirtyIndices = openTabs.indices.filter { openTabs[$0].dirty }
-        guard !dirtyIndices.isEmpty, let window = view.window else { completion(true); return }
+        let dirtyIDs = openTabs.filter { $0.dirty }.map { $0.id }
+        guard !dirtyIDs.isEmpty, let window = view.window else { completion(true); return }
 
-        func processNext(_ remaining: [Int]) {
+        func processNext(_ remaining: [UUID]) {
             var remaining = remaining
-            guard let index = remaining.first else { completion(true); return }
+            guard let tabID = remaining.first else { completion(true); return }
             remaining.removeFirst()
-            guard openTabs.indices.contains(index) else { processNext(remaining); return }
+            guard let index = self.indexForTab(id: tabID) else { processNext(remaining); return }
             let tab = openTabs[index]
             let alert = NSAlert()
             alert.messageText = "Do you want to save the changes you made to \u{201C}\(tab.isUntitled ? "Untitled" : tab.url.lastPathComponent)\u{201D}?"
@@ -1160,7 +1178,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 guard let self else { completion(false); return }
                 switch response {
                 case .alertFirstButtonReturn:
-                    self.performSave(tabIndex: index) { success in
+                    self.performSave(tabID: tabID) { success in
                         if success { processNext(remaining) } else { completion(false) }
                     }
                 case .alertSecondButtonReturn:
@@ -1170,7 +1188,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 }
             }
         }
-        processNext(dirtyIndices)
+        processNext(dirtyIDs)
     }
 
     var hasUnsavedChanges: Bool { openTabs.contains { $0.dirty } }
@@ -1603,12 +1621,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return Character(scalar)
     }
 
+    /// Capped so an unmatched bracket in a huge or minified file can't turn every cursor move
+    /// into an unbounded document-length scan — beyond this distance we just skip the highlight
+    /// rather than searching all the way to the end/start of the file.
+    private static let maxBracketScanDistance = 50_000
+
     private func findMatchingBracket(open: Character, close: Character, from location: Int, forward: Bool, in ns: NSString) -> Int? {
         guard let openUnit = String(open).utf16.first, let closeUnit = String(close).utf16.first else { return nil }
         var depth = 0
         if forward {
             var i = location
-            while i < ns.length {
+            let limit = min(ns.length, location + Self.maxBracketScanDistance)
+            while i < limit {
                 let c = ns.character(at: i)
                 if c == openUnit { depth += 1 } else if c == closeUnit {
                     depth -= 1
@@ -1618,7 +1642,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
         } else {
             var i = location
-            while i >= 0 {
+            let limit = max(0, location - Self.maxBracketScanDistance)
+            while i >= limit {
                 let c = ns.character(at: i)
                 if c == closeUnit { depth += 1 } else if c == openUnit {
                     depth -= 1
@@ -1817,12 +1842,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     @objc private func save() {
         guard let index = activeTabIndex else { return }
-        performSave(tabIndex: index) { _ in }
+        performSave(tabID: openTabs[index].id) { _ in }
     }
 
     @objc private func saveAs() {
         guard let index = activeTabIndex else { return }
-        performSaveAs(tabIndex: index) { _ in }
+        performSaveAs(tabID: openTabs[index].id) { _ in }
     }
 
     @objc private func newFile() {
@@ -1841,34 +1866,34 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Resolves the whole save pipeline for a tab: routes untitled tabs to Save As,
     /// checks for out-of-band disk changes, writes, runs a formatter if configured, and
     /// reports success so callers (close/quit prompts) know whether it's safe to proceed.
-    private func performSave(tabIndex: Int, completion: @escaping (Bool) -> Void) {
-        guard openTabs.indices.contains(tabIndex) else { completion(false); return }
-        let tab = openTabs[tabIndex]
+    private func performSave(tabID: UUID, completion: @escaping (Bool) -> Void) {
+        guard let index = indexForTab(id: tabID) else { completion(false); return }
+        let tab = openTabs[index]
         guard tab.kind == .text else { completion(false); return }
         if tab.isUntitled {
-            performSaveAs(tabIndex: tabIndex, completion: completion)
+            performSaveAs(tabID: tabID, completion: completion)
             return
         }
-        writeTabToDisk(tabIndex: tabIndex, url: tab.url, completion: completion)
+        writeTabToDisk(tabID: tabID, url: tab.url, completion: completion)
     }
 
-    private func performSaveAs(tabIndex: Int, completion: @escaping (Bool) -> Void) {
-        guard openTabs.indices.contains(tabIndex), let window = view.window else { completion(false); return }
+    private func performSaveAs(tabID: UUID, completion: @escaping (Bool) -> Void) {
+        guard let index = indexForTab(id: tabID), let window = view.window else { completion(false); return }
         let panel = NSSavePanel()
-        let currentName = openTabs[tabIndex].url.lastPathComponent
-        panel.nameFieldStringValue = openTabs[tabIndex].isUntitled ? "\(currentName).txt" : currentName
+        let currentName = openTabs[index].url.lastPathComponent
+        panel.nameFieldStringValue = openTabs[index].isUntitled ? "\(currentName).txt" : currentName
         if let projectURL { panel.directoryURL = projectURL }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let newURL = panel.url else { completion(false); return }
-            guard self.openTabs.indices.contains(tabIndex) else { completion(false); return }
-            self.openTabs[tabIndex].url = newURL
-            self.openTabs[tabIndex].isUntitled = false
-            self.writeTabToDiskForced(tabIndex: tabIndex, url: newURL) { success in
+            guard let index = self.indexForTab(id: tabID) else { completion(false); return }
+            self.openTabs[index].url = newURL
+            self.openTabs[index].isUntitled = false
+            self.writeTabToDiskForced(tabID: tabID, url: newURL) { success in
                 if success {
-                    if self.activeTabIndex == tabIndex {
+                    if let index = self.indexForTab(id: tabID), self.activeTabIndex == index {
                         UserDefaults.standard.set(newURL.path, forKey: self.lastFileKey)
                         self.onFileOpened?(newURL)
-                        SyntaxHighlighter.apply(to: self.openTabs[tabIndex].textStorage, url: newURL, baseColor: Self.editorTextColor, font: Self.editorFont)
+                        SyntaxHighlighter.apply(to: self.openTabs[index].textStorage, url: newURL, baseColor: Self.editorTextColor, font: Self.editorFont)
                         self.gutter.invalidate()
                     }
                     self.rebuildTabBar()
@@ -1878,9 +1903,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
-    private func writeTabToDisk(tabIndex: Int, url: URL, completion: @escaping (Bool) -> Void) {
-        guard openTabs.indices.contains(tabIndex), let window = view.window else { completion(false); return }
-        let tab = openTabs[tabIndex]
+    private func writeTabToDisk(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
+        guard let index = indexForTab(id: tabID), let window = view.window else { completion(false); return }
+        let tab = openTabs[index]
         if let known = tab.knownModificationDate, let onDisk = modificationDate(of: url), onDisk > known {
             let alert = NSAlert()
             alert.alertStyle = .warning
@@ -1891,23 +1916,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             alert.beginSheetModal(for: window) { [weak self] response in
                 guard let self else { completion(false); return }
                 if response == .alertFirstButtonReturn {
-                    self.writeTabToDiskForced(tabIndex: tabIndex, url: url, completion: completion)
+                    self.writeTabToDiskForced(tabID: tabID, url: url, completion: completion)
                 } else {
                     completion(false)
                 }
             }
             return
         }
-        writeTabToDiskForced(tabIndex: tabIndex, url: url, completion: completion)
+        writeTabToDiskForced(tabID: tabID, url: url, completion: completion)
     }
 
-    private func writeTabToDiskForced(tabIndex: Int, url: URL, completion: @escaping (Bool) -> Void) {
-        guard openTabs.indices.contains(tabIndex) else { completion(false); return }
-        let content = openTabs[tabIndex].textStorage.string
+    private func writeTabToDiskForced(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
+        guard let index = indexForTab(id: tabID) else { completion(false); return }
+        let content = openTabs[index].textStorage.string
         do {
             try content.write(to: url, atomically: true, encoding: .utf8)
-            openTabs[tabIndex].knownModificationDate = modificationDate(of: url)
-            runFormatterIfNeeded(tabIndex: tabIndex, url: url, completion: completion)
+            openTabs[index].knownModificationDate = modificationDate(of: url)
+            runFormatterIfNeeded(tabID: tabID, url: url, completion: completion)
         } catch {
             guard let window = view.window else { completion(false); return }
             let alert = NSAlert()
@@ -1919,9 +1944,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
-    private func runFormatterIfNeeded(tabIndex: Int, url: URL, completion: @escaping (Bool) -> Void) {
+    private func runFormatterIfNeeded(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
         guard let projectURL, let formatter = Self.formatterCommand(for: url, projectRoot: projectURL) else {
-            finishSave(tabIndex: tabIndex)
+            finishSave(tabID: tabID)
             completion(true)
             return
         }
@@ -1935,29 +1960,29 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             process.waitUntilExit()
             let formattedContent = try? String(contentsOf: url, encoding: .utf8)
             DispatchQueue.main.async {
-                guard let self, self.openTabs.indices.contains(tabIndex) else { completion(true); return }
-                let tab = self.openTabs[tabIndex]
+                guard let self, let index = self.indexForTab(id: tabID) else { completion(true); return }
+                let tab = self.openTabs[index]
                 if let formattedContent, formattedContent != tab.textStorage.string {
                     let fullRange = NSRange(location: 0, length: tab.textStorage.length)
                     tab.textStorage.replaceCharacters(in: fullRange, with: formattedContent)
                     SyntaxHighlighter.apply(to: tab.textStorage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
-                    if self.activeTabIndex == tabIndex { self.gutter.invalidate() }
+                    if self.activeTabIndex == index { self.gutter.invalidate() }
                 }
                 // Re-read even when content didn't change: some formatters touch the file
                 // (rewriting it in place) without altering its bytes, which would otherwise
                 // leave knownModificationDate pointing at the pre-formatter write and trigger
                 // a false "changed on disk" prompt on the next save.
-                self.openTabs[tabIndex].knownModificationDate = self.modificationDate(of: url)
-                self.finishSave(tabIndex: tabIndex)
+                self.openTabs[index].knownModificationDate = self.modificationDate(of: url)
+                self.finishSave(tabID: tabID)
                 completion(true)
             }
         }
     }
 
-    private func finishSave(tabIndex: Int) {
-        guard openTabs.indices.contains(tabIndex) else { return }
-        openTabs[tabIndex].dirty = false
-        if activeTabIndex == tabIndex { dirty = false }
+    private func finishSave(tabID: UUID) {
+        guard let index = indexForTab(id: tabID) else { return }
+        openTabs[index].dirty = false
+        if activeTabIndex == index { dirty = false }
         rebuildTabBar()
         refreshGitDiffMarks()
     }
