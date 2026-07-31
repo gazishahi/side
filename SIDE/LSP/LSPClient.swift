@@ -8,7 +8,6 @@ actor LSPClient {
     }
 
     private let transport: JSONRPCTransport
-    private let languageId: String
     private var nextRequestID = 1
     private var pendingRequests: [Int: CheckedContinuation<Data, Error>] = [:]
     private(set) var isRunning = false
@@ -16,8 +15,7 @@ actor LSPClient {
     private var onDiagnostics: (@Sendable (PublishDiagnosticsParams) -> Void)?
     private var onTerminate: (@Sendable () -> Void)?
 
-    init(languageId: String, executableURL: URL, arguments: [String], environment: [String: String]?, currentDirectory: URL?) {
-        self.languageId = languageId
+    init(executableURL: URL, arguments: [String], environment: [String: String]?, currentDirectory: URL?) {
         transport = JSONRPCTransport(executableURL: executableURL, arguments: arguments, environment: environment, currentDirectory: currentDirectory)
     }
 
@@ -48,7 +46,7 @@ actor LSPClient {
         failAllPending(with: ClientError.notRunning)
     }
 
-    func didOpen(uri: String, text: String, version: Int) throws {
+    func didOpen(uri: String, languageId: String, text: String, version: Int) throws {
         try notify(method: "textDocument/didOpen", params: DidOpenTextDocumentParams(
             textDocument: TextDocumentItem(uri: uri, languageId: languageId, version: version, text: text)))
     }

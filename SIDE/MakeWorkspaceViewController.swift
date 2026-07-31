@@ -126,6 +126,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         ])
 
         editor.isRichText = false
+        editor.allowsUndo = true
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
         editor.isAutomaticTextCompletionEnabled = false
@@ -1508,6 +1509,78 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
+    // MARK: - Bracket matching
+
+    private var bracketHighlightRanges: [NSRange] = []
+    private static let bracketPairs: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
+    private static let bracketPairsReversed: [Character: Character] = [")": "(", "]": "[", "}": "{"]
+    private static let bracketHighlightColor = NSColor(calibratedWhite: 1.0, alpha: 0.15)
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        updateBracketHighlight()
+    }
+
+    private func updateBracketHighlight() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { return }
+        let textStorage = openTabs[index].textStorage
+        for range in bracketHighlightRanges where NSMaxRange(range) <= textStorage.length {
+            textStorage.removeAttribute(.backgroundColor, range: range)
+        }
+        bracketHighlightRanges = []
+
+        let selection = editor.selectedRange()
+        guard selection.length == 0 else { return }
+        let ns = textStorage.string as NSString
+        let location = selection.location
+        var matchRanges: [NSRange] = []
+
+        if location < ns.length, let ch = character(in: ns, at: location), let close = Self.bracketPairs[ch],
+           let matchLoc = findMatchingBracket(open: ch, close: close, from: location, forward: true, in: ns) {
+            matchRanges = [NSRange(location: location, length: 1), NSRange(location: matchLoc, length: 1)]
+        } else if location > 0, let ch = character(in: ns, at: location - 1), let open = Self.bracketPairsReversed[ch],
+                  let matchLoc = findMatchingBracket(open: open, close: ch, from: location - 1, forward: false, in: ns) {
+            matchRanges = [NSRange(location: location - 1, length: 1), NSRange(location: matchLoc, length: 1)]
+        }
+
+        guard !matchRanges.isEmpty else { return }
+        for range in matchRanges {
+            textStorage.addAttribute(.backgroundColor, value: Self.bracketHighlightColor, range: range)
+        }
+        bracketHighlightRanges = matchRanges
+    }
+
+    private func character(in ns: NSString, at index: Int) -> Character? {
+        guard let scalar = UnicodeScalar(UInt32(ns.character(at: index))) else { return nil }
+        return Character(scalar)
+    }
+
+    private func findMatchingBracket(open: Character, close: Character, from location: Int, forward: Bool, in ns: NSString) -> Int? {
+        guard let openUnit = String(open).utf16.first, let closeUnit = String(close).utf16.first else { return nil }
+        var depth = 0
+        if forward {
+            var i = location
+            while i < ns.length {
+                let c = ns.character(at: i)
+                if c == openUnit { depth += 1 } else if c == closeUnit {
+                    depth -= 1
+                    if depth == 0 { return i }
+                }
+                i += 1
+            }
+        } else {
+            var i = location
+            while i >= 0 {
+                let c = ns.character(at: i)
+                if c == closeUnit { depth += 1 } else if c == openUnit {
+                    depth -= 1
+                    if depth == 0 { return i }
+                }
+                i -= 1
+            }
+        }
+        return nil
+    }
+
     private static let autoClosePairs: [Character: Character] = ["(": ")", "[": "]", "{": "}", "\"": "\"", "'": "'"]
     private static let autoCloseClosers: Set<Character> = [")", "]", "}", "\"", "'"]
 
@@ -1818,8 +1891,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     tab.textStorage.replaceCharacters(in: fullRange, with: formattedContent)
                     SyntaxHighlighter.apply(to: tab.textStorage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
                     if self.activeTabIndex == tabIndex { self.gutter.invalidate() }
-                    self.openTabs[tabIndex].knownModificationDate = self.modificationDate(of: url)
                 }
+                // Re-read even when content didn't change: some formatters touch the file
+                // (rewriting it in place) without altering its bytes, which would otherwise
+                // leave knownModificationDate pointing at the pre-formatter write and trigger
+                // a false "changed on disk" prompt on the next save.
+                self.openTabs[tabIndex].knownModificationDate = self.modificationDate(of: url)
                 self.finishSave(tabIndex: tabIndex)
                 completion(true)
             }

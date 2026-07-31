@@ -1,15 +1,16 @@
 import Foundation
 
-/// Owns at most one LSPClient per language for a single project root, spawned lazily on
-/// first matching file open, and routes diagnostics back to the caller keyed by file URL.
-/// All public methods are expected to be called on the main thread; `onDiagnostics` fires
-/// on the main thread too.
+/// Owns at most one LSPClient per server *binary* (not per language — several extensions,
+/// e.g. .ts/.tsx/.js/.jsx, can share a single typescript-language-server process) for a
+/// single project root, spawned lazily on first matching file open. Routes diagnostics back
+/// to the caller keyed by file URL. All public methods are expected to be called on the main
+/// thread; `onDiagnostics` fires on the main thread too.
 /// Marked unchecked-Sendable because it's deliberately only ever touched from the main
 /// thread — every entry point below and the diagnostics callback dispatch onto it.
 final class LSPManager: @unchecked Sendable {
     private let projectRoot: URL
     private var clients: [String: LSPClient] = [:]
-    private var startingLanguages: Set<String> = []
+    private var startingServers: Set<String> = []
     private var documentVersions: [URL: Int] = [:]
 
     var onDiagnostics: ((URL, [LSPDiagnostic]) -> Void)?
@@ -23,7 +24,7 @@ final class LSPManager: @unchecked Sendable {
         documentVersions[url] = 1
         withClient(for: entry) { client in
             guard let client else { return }
-            Task { try? await client.didOpen(uri: url.absoluteString, text: content, version: 1) }
+            Task { try? await client.didOpen(uri: url.absoluteString, languageId: entry.languageId, text: content, version: 1) }
         }
     }
 
@@ -40,7 +41,7 @@ final class LSPManager: @unchecked Sendable {
     func closed(url: URL) {
         documentVersions[url] = nil
         guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension),
-              let client = clients[entry.languageId] else { return }
+              let client = clients[entry.binaryName] else { return }
         Task { try? await client.didClose(uri: url.absoluteString) }
     }
 
@@ -52,17 +53,17 @@ final class LSPManager: @unchecked Sendable {
             Task { await client.stop() }
         }
         clients.removeAll()
-        startingLanguages.removeAll()
+        startingServers.removeAll()
     }
 
     // MARK: - Client lifecycle
 
     private func withClient(for entry: LanguageServerRegistry.Entry, completion: @escaping @Sendable (LSPClient?) -> Void) {
-        if let existing = clients[entry.languageId] {
+        if let existing = clients[entry.binaryName] {
             completion(existing)
             return
         }
-        guard !startingLanguages.contains(entry.languageId) else {
+        guard !startingServers.contains(entry.binaryName) else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 self?.withClient(for: entry, completion: completion)
             }
@@ -73,8 +74,8 @@ final class LSPManager: @unchecked Sendable {
             completion(nil)
             return
         }
-        startingLanguages.insert(entry.languageId)
-        let client = LSPClient(languageId: entry.languageId, executableURL: executable, arguments: entry.arguments, environment: ProcessInfo.processInfo.environment, currentDirectory: projectRoot)
+        startingServers.insert(entry.binaryName)
+        let client = LSPClient(executableURL: executable, arguments: entry.arguments, environment: ProcessInfo.processInfo.environment, currentDirectory: projectRoot)
         let rootURI = projectRoot.absoluteString
         Task { @MainActor [weak self] in
             do {
@@ -84,12 +85,12 @@ final class LSPManager: @unchecked Sendable {
                     DispatchQueue.main.async { self?.onDiagnostics?(url, params.diagnostics) }
                 }
                 guard let self else { return }
-                self.clients[entry.languageId] = client
-                self.startingLanguages.remove(entry.languageId)
+                self.clients[entry.binaryName] = client
+                self.startingServers.remove(entry.binaryName)
                 completion(client)
             } catch {
                 print("[LSP] failed to start \(entry.binaryName): \(error)")
-                self?.startingLanguages.remove(entry.languageId)
+                self?.startingServers.remove(entry.binaryName)
                 completion(nil)
             }
         }
