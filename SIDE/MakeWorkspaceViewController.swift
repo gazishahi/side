@@ -26,6 +26,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let fileExplorerPanel = FileExplorerPanel()
     private let fileExplorerOutline = ExplorerOutlineView()
     private var fileTreeRoots: [FileTreeNode] = []
+    private var quickOpenLocalMonitor: Any?
+    private var quickOpenGlobalMonitor: Any?
+    private var fileExplorerLocalMonitor: Any?
+    private var fileExplorerGlobalMonitor: Any?
     private var projectURL: URL?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
@@ -162,6 +166,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.documentView = resultsTable
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsetsZero
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
         let effect = NSVisualEffectView()
@@ -197,12 +203,40 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             window.addChildWindow(quickOpenPanel, ordered: .above)
         }
         quickOpenPanel.orderFront(nil)
+        installQuickOpenDismissMonitors()
     }
 
     private func hideQuickOpenPanel() {
+        removeQuickOpenDismissMonitors()
         guard quickOpenPanel.isVisible || quickOpenPanel.parent != nil else { return }
         searchField.window?.removeChildWindow(quickOpenPanel)
         quickOpenPanel.orderOut(nil)
+    }
+
+    private func installQuickOpenDismissMonitors() {
+        guard quickOpenLocalMonitor == nil else { return }
+        quickOpenLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            self?.dismissQuickOpenIfClickOutside()
+            return event
+        }
+        quickOpenGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.hideQuickOpenPanel()
+        }
+    }
+
+    private func removeQuickOpenDismissMonitors() {
+        if let m = quickOpenLocalMonitor { NSEvent.removeMonitor(m); quickOpenLocalMonitor = nil }
+        if let m = quickOpenGlobalMonitor { NSEvent.removeMonitor(m); quickOpenGlobalMonitor = nil }
+    }
+
+    private func dismissQuickOpenIfClickOutside() {
+        let point = NSEvent.mouseLocation
+        if quickOpenPanel.frame.insetBy(dx: -2, dy: -2).contains(point) { return }
+        if let window = searchField.window {
+            let searchFieldFrame = window.convertToScreen(searchField.convert(searchField.bounds, to: nil))
+            if searchFieldFrame.insetBy(dx: -4, dy: -4).contains(point) { return }
+        }
+        hideQuickOpenPanel()
     }
 
     // MARK: - File explorer
@@ -227,6 +261,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.documentView = fileExplorerOutline
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsetsZero
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
         let effect = NSVisualEffectView()
@@ -262,21 +298,72 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    private static let fileExplorerWidth: CGFloat = 280
+    private static let fileExplorerTopMargin: CGFloat = 90
+    private static let fileExplorerBottomMargin: CGFloat = 20
+    private static let fileExplorerTrailingMargin: CGFloat = 14
+
     private func showFileExplorer(in window: NSWindow) {
-        let width: CGFloat = 300
-        let height: CGFloat = 420
         let windowFrame = window.frame
-        let x = windowFrame.minX + 40
-        let y = windowFrame.maxY - 120 - height
-        fileExplorerPanel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        let width = Self.fileExplorerWidth
+        let height = windowFrame.height - Self.fileExplorerTopMargin - Self.fileExplorerBottomMargin
+        let targetX = windowFrame.maxX - width - Self.fileExplorerTrailingMargin
+        let y = windowFrame.minY + Self.fileExplorerBottomMargin
+        let startFrame = NSRect(x: windowFrame.maxX, y: y, width: width, height: height)
+        let targetFrame = NSRect(x: targetX, y: y, width: width, height: height)
+
+        fileExplorerPanel.setFrame(startFrame, display: false)
         if fileExplorerPanel.parent == nil { window.addChildWindow(fileExplorerPanel, ordered: .above) }
-        fileExplorerPanel.makeKeyAndOrderFront(nil)
-        fileExplorerPanel.makeFirstResponder(fileExplorerOutline)
+        fileExplorerPanel.orderFront(nil)
+        installFileExplorerDismissMonitors()
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.22
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            fileExplorerPanel.animator().setFrame(targetFrame, display: true)
+        } completionHandler: { [weak self] in
+            guard let self else { return }
+            self.fileExplorerPanel.makeKey()
+            self.fileExplorerPanel.makeFirstResponder(self.fileExplorerOutline)
+        }
+    }
+
+    private func installFileExplorerDismissMonitors() {
+        guard fileExplorerLocalMonitor == nil else { return }
+        fileExplorerLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            self?.dismissFileExplorerIfClickOutside()
+            return event
+        }
+        fileExplorerGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.hideFileExplorer()
+        }
+    }
+
+    private func removeFileExplorerDismissMonitors() {
+        if let m = fileExplorerLocalMonitor { NSEvent.removeMonitor(m); fileExplorerLocalMonitor = nil }
+        if let m = fileExplorerGlobalMonitor { NSEvent.removeMonitor(m); fileExplorerGlobalMonitor = nil }
+    }
+
+    private func dismissFileExplorerIfClickOutside() {
+        let point = NSEvent.mouseLocation
+        if fileExplorerPanel.frame.insetBy(dx: -2, dy: -2).contains(point) { return }
+        hideFileExplorer()
     }
 
     private func hideFileExplorer() {
-        view.window?.removeChildWindow(fileExplorerPanel)
-        fileExplorerPanel.orderOut(nil)
+        removeFileExplorerDismissMonitors()
+        guard let window = view.window, fileExplorerPanel.isVisible else { return }
+        var endFrame = fileExplorerPanel.frame
+        endFrame.origin.x = window.frame.maxX
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            fileExplorerPanel.animator().setFrame(endFrame, display: true)
+        } completionHandler: { [weak self] in
+            guard let self else { return }
+            self.view.window?.removeChildWindow(self.fileExplorerPanel)
+            self.fileExplorerPanel.orderOut(nil)
+        }
         view.window?.makeFirstResponder(editor)
     }
 
@@ -881,6 +968,7 @@ final class TabChipView: NSView {
 
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
+    private var grabOffsetX: CGFloat = 0
     private var didDrag = false
 
     override var isFlipped: Bool { true }
@@ -920,21 +1008,35 @@ final class TabChipView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         dragOrigin = event.locationInWindow
+        grabOffsetX = event.locationInWindow.x - convert(NSPoint.zero, to: nil).x
         didDrag = false
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let dragOrigin else { return }
-        let dx = event.locationInWindow.x - dragOrigin.x
-        if abs(dx) > 4 { didDrag = true }
+        let totalDX = event.locationInWindow.x - dragOrigin.x
+        if abs(totalDX) > 4 { didDrag = true }
         guard didDrag else { return }
+
+        // Reorder the model/stack first (siblings animate into their new slots)...
         onDragging?(event.locationInWindow.x)
+
+        // ...then keep this chip glued to the cursor regardless of where that reorder
+        // just placed it in the stack, by transforming relative to its *current* laid-out
+        // position rather than the position at mouseDown.
+        wantsLayer = true
+        layer?.zPosition = 10
+        let naturalXInWindow = convert(NSPoint.zero, to: nil).x
+        let desiredXInWindow = event.locationInWindow.x - grabOffsetX
+        layer?.setAffineTransform(CGAffineTransform(translationX: desiredXInWindow - naturalXInWindow, y: 0))
     }
 
     override func mouseUp(with event: NSEvent) {
         defer { dragOrigin = nil }
         guard dragOrigin != nil else { return }
         if didDrag {
+            layer?.setAffineTransform(.identity)
+            layer?.zPosition = 0
             onDragEnded?()
         } else {
             onSelect?(index)
