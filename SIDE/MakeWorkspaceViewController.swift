@@ -315,18 +315,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let height = windowFrame.height - Self.fileExplorerTopMargin - Self.fileExplorerBottomMargin
         let targetX = windowFrame.maxX - width - Self.fileExplorerTrailingMargin
         let y = windowFrame.minY + Self.fileExplorerBottomMargin
-        let startFrame = NSRect(x: windowFrame.maxX, y: y, width: width, height: height)
+        // Short travel distance reads as a reveal; sliding the full window width reads as "thrown in."
+        let startFrame = NSRect(x: targetX + 28, y: y, width: width, height: height)
         let targetFrame = NSRect(x: targetX, y: y, width: width, height: height)
 
+        fileExplorerPanel.alphaValue = 0
         fileExplorerPanel.setFrame(startFrame, display: false)
         if fileExplorerPanel.parent == nil { window.addChildWindow(fileExplorerPanel, ordered: .above) }
         fileExplorerPanel.orderFront(nil)
         installFileExplorerDismissMonitors()
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.duration = 0.32
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
             fileExplorerPanel.animator().setFrame(targetFrame, display: true)
+            fileExplorerPanel.animator().alphaValue = 1
         } completionHandler: { [weak self] in
             guard let self else { return }
             self.fileExplorerPanel.makeKey()
@@ -358,17 +361,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func hideFileExplorer() {
         removeFileExplorerDismissMonitors()
-        guard let window = view.window, fileExplorerPanel.isVisible else { return }
+        guard fileExplorerPanel.isVisible else { return }
         var endFrame = fileExplorerPanel.frame
-        endFrame.origin.x = window.frame.maxX
+        endFrame.origin.x += 24
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
             fileExplorerPanel.animator().setFrame(endFrame, display: true)
+            fileExplorerPanel.animator().alphaValue = 0
         } completionHandler: { [weak self] in
             guard let self else { return }
             self.view.window?.removeChildWindow(self.fileExplorerPanel)
             self.fileExplorerPanel.orderOut(nil)
+            self.fileExplorerPanel.alphaValue = 1
         }
         view.window?.makeFirstResponder(editor)
     }
