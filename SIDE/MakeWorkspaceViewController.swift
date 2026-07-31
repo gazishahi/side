@@ -7,6 +7,7 @@ private struct OpenTab {
     var dirty: Bool
     var isUntitled: Bool
     var knownModificationDate: Date?
+    var lastSelectedRange = NSRange(location: 0, length: 0)
 }
 
 private struct IndexedFile {
@@ -663,6 +664,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let maxOpenableFileSize = 10_000_000
 
     private func open(_ url: URL) {
+        captureActiveTabSelection()
         if let existingIndex = openTabs.firstIndex(where: { $0.url == url }) {
             activeTabIndex = existingIndex
             loadActiveTabIntoEditor()
@@ -721,15 +723,32 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
+    /// Snapshots the outgoing tab's cursor position so switching back to it later restores
+    /// where the user was, instead of leaving the editor's stale selection/typing attributes
+    /// from whatever tab was previously loaded.
+    private func captureActiveTabSelection() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
+        openTabs[index].lastSelectedRange = editor.selectedRange()
+    }
+
     private func loadActiveTabIntoEditor() {
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         editor.layoutManager?.replaceTextStorage(tab.textStorage)
         editor.tabUndoManager = tab.undoManager
         SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+        // Replacing the text storage can leave typingAttributes pointing at whatever the
+        // previous (or default system) font/color was, especially for a brand-new empty
+        // document with no existing attribute run to inherit from — explicitly reset it so
+        // freshly typed characters are never invisible against the editor background.
+        editor.typingAttributes = [.foregroundColor: Self.editorTextColor, .font: Self.editorFont]
         editor.isEditable = true
         editorScroll.isHidden = false
         gutter.isHidden = false
+        let clampedLocation = min(tab.lastSelectedRange.location, tab.textStorage.length)
+        let restoredRange = NSRange(location: clampedLocation, length: 0)
+        editor.setSelectedRange(restoredRange)
+        editor.scrollRangeToVisible(restoredRange)
         gutter.invalidate()
         dirty = tab.dirty
         rebuildTabBar()
@@ -744,6 +763,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func switchToTab(_ index: Int) {
         guard openTabs.indices.contains(index), index != activeTabIndex else { return }
+        captureActiveTabSelection()
         activeTabIndex = index
         loadActiveTabIntoEditor()
         UserDefaults.standard.set(openTabs[index].url.path, forKey: lastFileKey)
@@ -1337,6 +1357,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc private func newFile() {
+        captureActiveTabSelection()
         Self.untitledCounter += 1
         let name = "Untitled-\(Self.untitledCounter)"
         let url = URL(string: "side-untitled:///\(name)")!
@@ -1521,6 +1542,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return (path?.isEmpty == false) ? path : nil
     }
     func restoreLastSessionIfAvailable() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
+
+    /// Detaches floating child windows and event monitors before the owning window closes.
+    /// Child windows left attached to a parent that's being deallocated, and global event
+    /// monitors whose closures outlive their view controller, are both plausible sources of
+    /// undefined behavior on window teardown — this makes sure neither lingers.
+    func prepareForClose() {
+        removeQuickOpenDismissMonitors()
+        removeFileExplorerDismissMonitors()
+        if quickOpenPanel.parent != nil { view.window?.removeChildWindow(quickOpenPanel) }
+        quickOpenPanel.orderOut(nil)
+        if fileExplorerPanel.parent != nil { view.window?.removeChildWindow(fileExplorerPanel) }
+        fileExplorerPanel.orderOut(nil)
+    }
 }
 
 final class EditorTextView: NSTextView {

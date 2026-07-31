@@ -36,6 +36,10 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     var hasUnsavedChanges: Bool { makeVC.hasUnsavedChanges }
     func confirmCloseAllUnsaved(completion: @escaping (Bool) -> Void) { makeVC.confirmCloseAllUnsaved(completion: completion) }
     func restoreLastSessionIfAvailable() { makeVC.restoreLastSessionIfAvailable() }
+    func prepareForClose() {
+        makeVC.prepareForClose()
+        runVC.prepareForClose()
+    }
 
     override func viewDidAppear() {
         super.viewDidAppear()

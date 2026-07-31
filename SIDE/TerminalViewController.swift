@@ -33,4 +33,14 @@ final class TerminalViewController: NSViewController {
         terminalView.startProcess(executable: shell, args: ["-l"], currentDirectory: workingDirectory)
         view.window?.makeFirstResponder(terminalView)
     }
+
+    /// SwiftTerm's LocalProcess intentionally doesn't kill the shell from its own deinit
+    /// (its deinit only tears down its own I/O resources) — without an explicit terminate,
+    /// closing a window whose Run stage was ever activated leaves an orphaned shell process
+    /// and drops the process into deinit while its own delegate callbacks may still be
+    /// in flight. Call this before the owning window closes.
+    func prepareForClose() {
+        guard didStart else { return }
+        terminalView.process.terminate()
+    }
 }

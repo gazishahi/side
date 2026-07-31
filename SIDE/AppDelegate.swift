@@ -16,13 +16,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func newWindow() {
         let window = makeWindow()
         windows.append(window)
+        window.center()
         // Cascade so new windows don't stack exactly on top of existing ones.
         let offset = CGFloat((windows.count - 1) % 8) * 24
         var frame = window.frame
         frame.origin.x += offset
         frame.origin.y -= offset
         window.setFrame(frame, display: false)
-        window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -43,9 +43,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let shell = sender.contentViewController as? ShellViewController, shell.hasUnsavedChanges else { return true }
+        guard let shell = sender.contentViewController as? ShellViewController else { return true }
+        guard shell.hasUnsavedChanges else {
+            shell.prepareForClose()
+            return true
+        }
         shell.confirmCloseAllUnsaved { [weak self] proceed in
             guard proceed else { return }
+            shell.prepareForClose()
             self?.windows.removeAll { $0 === sender }
             sender.close()
         }
