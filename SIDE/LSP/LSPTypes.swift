@@ -50,6 +50,11 @@ struct DefinitionParams: Encodable {
     let position: LSPPosition
 }
 
+struct CompletionParams: Encodable {
+    let textDocument: TextDocumentIdentifier
+    let position: LSPPosition
+}
+
 struct InitializeParams: Encodable {
     let processId: Int?
     let rootUri: String?
@@ -92,4 +97,16 @@ struct LSPLocation: Decodable {
 struct LSPLocationLink: Decodable {
     let targetUri: String
     let targetRange: LSPRange
+}
+
+struct LSPCompletionItem: Decodable {
+    let label: String
+    let insertText: String?
+    let detail: String?
+}
+
+/// Servers respond to textDocument/completion with either a bare CompletionItem[] or this
+/// wrapper object — the caller tries both shapes.
+struct LSPCompletionList: Decodable {
+    let items: [LSPCompletionItem]
 }

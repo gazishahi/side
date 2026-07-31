@@ -66,6 +66,33 @@ final class LSPManager: @unchecked Sendable {
         }
     }
 
+    /// Flushes an immediate (non-debounced) didChange with the current buffer before asking
+    /// for completions — otherwise, if this fires faster than the ~0.3s diagnostics debounce,
+    /// the server would answer against stale content that doesn't include what was just typed.
+    func completion(url: URL, content: String, position: LSPPosition, completion: @escaping @Sendable ([LSPCompletionItem]) -> Void) {
+        changed(url: url, content: content)
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension),
+              let client = clients[entry.binaryName] else { completion([]); return }
+        Task {
+            let items: [LSPCompletionItem]
+            if let data = try? await client.completion(uri: url.absoluteString, position: position) {
+                items = Self.decodeCompletionItems(from: data)
+            } else {
+                items = []
+            }
+            DispatchQueue.main.async { completion(items) }
+        }
+    }
+
+    private static func decodeCompletionItems(from data: Data) -> [LSPCompletionItem] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = object["result"], !(result is NSNull),
+              let resultData = try? JSONSerialization.data(withJSONObject: result) else { return [] }
+        if let items = try? JSONDecoder().decode([LSPCompletionItem].self, from: resultData) { return items }
+        if let list = try? JSONDecoder().decode(LSPCompletionList.self, from: resultData) { return list.items }
+        return []
+    }
+
     private static func decodeLocations(from data: Data) -> [LSPLocation] {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = object["result"], !(result is NSNull),

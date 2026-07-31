@@ -67,6 +67,10 @@ actor LSPClient {
         try await request(method: "textDocument/definition", params: DefinitionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position))
     }
 
+    func completion(uri: String, position: LSPPosition) async throws -> Data {
+        try await request(method: "textDocument/completion", params: CompletionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position))
+    }
+
     // MARK: - JSON-RPC plumbing
 
     private func request<Params: Encodable>(method: String, params: Params) async throws -> Data {

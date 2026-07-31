@@ -62,6 +62,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let imageView = NSImageView()
     private let csvScroll = NSScrollView()
     private let csvTable = NSTableView()
+    private let completionPanel = CompletionPanel()
+    private let completionTable = NSTableView()
+    private var completionItems: [LSPCompletionItem] = []
+    private var completionSelectedIndex = 0
+    private var completionReplacementRange: NSRange?
+    private var pendingCompletionWorkItem: DispatchWorkItem?
+    private var completionGeneration = 0
+    private var isAcceptingCompletion = false
+    private var suppressNextSelectionDismiss = false
     private var quickOpenLocalMonitor: Any?
     private var quickOpenGlobalMonitor: Any?
     private var fileExplorerLocalMonitor: Any?
@@ -218,6 +227,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         ])
         configureQuickOpenPanel()
         configureFileExplorerPanel()
+        configureCompletionPanel()
     }
 
     private func configureQuickOpenKeys() {
@@ -251,6 +261,31 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
         quickOpenPanel.contentView = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 8, padding: 14)
+    }
+
+    private let completionRowHeight: CGFloat = 22
+    private let completionMaxVisibleRows = 8
+
+    private func configureCompletionPanel() {
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("completion"))
+        completionTable.addTableColumn(column)
+        completionTable.headerView = nil
+        completionTable.rowHeight = completionRowHeight
+        completionTable.intercellSpacing = NSSize(width: 0, height: 0)
+        completionTable.backgroundColor = .clear
+        completionTable.selectionHighlightStyle = .regular
+        completionTable.dataSource = self
+        completionTable.delegate = self
+
+        let scroll = NSScrollView()
+        scroll.documentView = completionTable
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsetsZero
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        completionPanel.contentView = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 6, padding: 6)
     }
 
     /// Wraps `content` in Liquid Glass on macOS 26+, falling back to the older vibrancy
@@ -896,6 +931,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func loadActiveTabIntoEditor() {
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
+        hideCompletionPanel()
 
         editorScroll.isHidden = tab.kind != .text
         gutter.isHidden = tab.kind != .text
@@ -1479,6 +1515,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === resultsTable { return searchMode == .symbols ? symbolMatches.count : matches.count }
+        if tableView === completionTable { return completionItems.count }
         if tableView === csvTable {
             guard let index = activeTabIndex, openTabs.indices.contains(index) else { return 0 }
             return max(0, openTabs[index].csvRows.count - 1)
@@ -1505,6 +1542,32 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
             text.stringValue = colIndex < rows[dataRow].count ? rows[dataRow][colIndex] : ""
             text.textColor = NSColor(calibratedWhite: 0.85, alpha: 1)
+            return cell
+        }
+
+        if tableView === completionTable {
+            guard row < completionItems.count else { return nil }
+            let item = completionItems[row]
+            let id = NSUserInterfaceItemIdentifier("completion")
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
+            cell.identifier = id
+            let text = cell.textField ?? NSTextField(labelWithString: "")
+            if cell.textField == nil {
+                cell.textField = text
+                text.translatesAutoresizingMaskIntoConstraints = false
+                text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+                text.lineBreakMode = .byTruncatingTail
+                cell.addSubview(text)
+                NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
+            }
+            if let detail = item.detail, !detail.isEmpty {
+                let attributed = NSMutableAttributedString(string: item.label, attributes: [.foregroundColor: NSColor(calibratedWhite: 0.9, alpha: 1)])
+                attributed.append(NSAttributedString(string: "  \(detail)", attributes: [.foregroundColor: NSColor(calibratedWhite: 0.55, alpha: 1)]))
+                text.attributedStringValue = attributed
+            } else {
+                text.stringValue = item.label
+                text.textColor = NSColor(calibratedWhite: 0.9, alpha: 1)
+            }
             return cell
         }
 
@@ -1562,6 +1625,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scheduleHighlight()
         scheduleDiffRefresh()
         scheduleLSPDidChange()
+        scheduleCompletionRequest()
+        suppressNextSelectionDismiss = true
     }
 
     private func scheduleLSPDidChange() {
@@ -1576,6 +1641,104 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
+    // MARK: - Autocomplete
+
+    private static let identifierCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+
+    private func scheduleCompletionRequest() {
+        pendingCompletionWorkItem?.cancel()
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
+              lspManager != nil, LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension) != nil else {
+            hideCompletionPanel()
+            return
+        }
+        let tabID = openTabs[index].id
+        let cursor = editor.selectedRange().location
+        completionGeneration += 1
+        let generation = completionGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.performCompletionRequest(tabID: tabID, cursor: cursor, generation: generation)
+        }
+        pendingCompletionWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+    }
+
+    private func performCompletionRequest(tabID: UUID, cursor: Int, generation: Int) {
+        guard let index = indexForTab(id: tabID), openTabs[index].kind == .text, let lspManager else { return }
+        let tab = openTabs[index]
+        let ns = tab.textStorage.string as NSString
+        guard cursor <= ns.length else { return }
+        var start = cursor
+        while start > 0, let scalar = UnicodeScalar(UInt32(ns.character(at: start - 1))), Self.identifierCharacters.contains(scalar) {
+            start -= 1
+        }
+        completionReplacementRange = NSRange(location: start, length: cursor - start)
+        let position = lspPosition(for: cursor, in: ns)
+        lspManager.completion(url: tab.url, content: ns as String, position: position) { [weak self] items in
+            guard let self, self.completionGeneration == generation,
+                  let currentIndex = self.indexForTab(id: tabID), self.activeTabIndex == currentIndex else { return }
+            guard !items.isEmpty else { self.hideCompletionPanel(); return }
+            self.completionItems = items
+            self.completionSelectedIndex = 0
+            self.completionTable.reloadData()
+            self.completionTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            self.showCompletionPanel()
+        }
+    }
+
+    private func screenRectForCaret() -> NSRect? {
+        let charRange = NSRange(location: editor.selectedRange().location, length: 0)
+        var actualRange = NSRange(location: 0, length: 0)
+        let rect = editor.firstRect(forCharacterRange: charRange, actualRange: &actualRange)
+        return rect == .zero ? nil : rect
+    }
+
+    private func showCompletionPanel() {
+        guard let window = view.window, let caretRect = screenRectForCaret() else { return }
+        let visibleRows = max(1, min(completionMaxVisibleRows, completionItems.count))
+        let height = CGFloat(visibleRows) * completionRowHeight + 12
+        let width: CGFloat = 320
+        var x = caretRect.minX
+        let windowFrame = window.frame
+        if x + width > windowFrame.maxX - 12 { x = windowFrame.maxX - width - 12 }
+        if x < windowFrame.minX + 12 { x = windowFrame.minX + 12 }
+        let panelFrame = NSRect(x: x, y: caretRect.minY - height - 4, width: width, height: height)
+        completionPanel.setFrame(panelFrame, display: true)
+        if completionPanel.parent == nil {
+            window.addChildWindow(completionPanel, ordered: .above)
+        }
+        completionPanel.orderFront(nil)
+    }
+
+    private func hideCompletionPanel() {
+        pendingCompletionWorkItem?.cancel()
+        completionItems = []
+        guard completionPanel.isVisible || completionPanel.parent != nil else { return }
+        view.window?.removeChildWindow(completionPanel)
+        completionPanel.orderOut(nil)
+    }
+
+    private func acceptSelectedCompletion() {
+        guard completionItems.indices.contains(completionSelectedIndex), let range = completionReplacementRange else {
+            hideCompletionPanel()
+            return
+        }
+        let item = completionItems[completionSelectedIndex]
+        let text = item.insertText ?? item.label
+        isAcceptingCompletion = true
+        editor.insertText(text, replacementRange: range)
+        editor.setSelectedRange(NSRange(location: range.location + (text as NSString).length, length: 0))
+        isAcceptingCompletion = false
+        hideCompletionPanel()
+    }
+
+    private func moveCompletionSelection(_ delta: Int) {
+        guard !completionItems.isEmpty else { return }
+        completionSelectedIndex = max(0, min(completionItems.count - 1, completionSelectedIndex + delta))
+        completionTable.selectRowIndexes(IndexSet(integer: completionSelectedIndex), byExtendingSelection: false)
+        completionTable.scrollRowToVisible(completionSelectedIndex)
+    }
+
     // MARK: - Bracket matching
 
     private var bracketHighlightRanges: [NSRange] = []
@@ -1585,6 +1748,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     func textViewDidChangeSelection(_ notification: Notification) {
         updateBracketHighlight()
+        // Typing itself moves the selection, which fires this same delegate method within the
+        // same call chain as textDidChange (before its just-scheduled completion request ever
+        // gets to run) — only treat this as a real "user navigated away" dismissal signal when
+        // it wasn't just a consequence of an edit or of accepting a completion.
+        guard !isAcceptingCompletion, !suppressNextSelectionDismiss else {
+            suppressNextSelectionDismiss = false
+            return
+        }
+        hideCompletionPanel()
     }
 
     private func updateBracketHighlight() {
@@ -1679,7 +1851,26 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        guard textView === editor, commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        guard textView === editor else { return false }
+        if completionPanel.isVisible {
+            switch commandSelector {
+            case #selector(NSResponder.moveUp(_:)):
+                moveCompletionSelection(-1)
+                return true
+            case #selector(NSResponder.moveDown(_:)):
+                moveCompletionSelection(1)
+                return true
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+                acceptSelectedCompletion()
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                hideCompletionPanel()
+                return true
+            default:
+                break
+            }
+        }
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
         let ns = textView.string as NSString
         let selectedRange = textView.selectedRange()
         let lineRange = ns.lineRange(for: NSRange(location: selectedRange.location, length: 0))
@@ -2053,6 +2244,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         quickOpenPanel.orderOut(nil)
         if fileExplorerPanel.parent != nil { view.window?.removeChildWindow(fileExplorerPanel) }
         fileExplorerPanel.orderOut(nil)
+        if completionPanel.parent != nil { view.window?.removeChildWindow(completionPanel) }
+        completionPanel.orderOut(nil)
         lspManager?.prepareForClose()
     }
 }
@@ -2079,6 +2272,26 @@ final class EditorTextView: NSTextView {
         guard let index = sender.representedObject as? Int else { return }
         onDefinitionRequested?(index)
     }
+}
+
+/// Unlike QuickOpenPanel, this must never take key status — the editor has to keep first
+/// responder the whole time it's visible so arrow keys/Tab/Return/Escape keep landing in
+/// NSTextViewDelegate for interception instead of needing the popup to handle input itself.
+final class CompletionPanel: NSPanel {
+    convenience init() {
+        self.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = .floating
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }
 
 final class QuickOpenPanel: NSPanel {
