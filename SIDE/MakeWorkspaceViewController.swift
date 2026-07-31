@@ -48,8 +48,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         searchField.placeholderString = "Open file, symbol, or command"
         searchField.delegate = self
-        searchField.target = self
-        searchField.action = #selector(confirmSearch)
 
         tabBar.wantsLayer = true
         tabBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -89,9 +87,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editorScroll.autohidesScrollers = true
         editorScroll.drawsBackground = true
         editorScroll.backgroundColor = Self.editorBackground
-        editorScroll.hasVerticalRuler = true
-        editorScroll.rulersVisible = true
-        editorScroll.verticalRulerView = LineNumberRulerView(textView: editor)
         editorScroll.isHidden = true
         editorScroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(editorScroll)
@@ -270,7 +265,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.isEditable = true
         editorScroll.isHidden = false
         dirty = tab.dirty
-        (editorScroll.verticalRulerView as? LineNumberRulerView)?.invalidateLineNumbers()
         rebuildTabBar()
         onFileOpened?(tab.url)
     }
@@ -427,7 +421,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     func textDidChange(_ notification: Notification) {
         dirty = true
         if let index = activeTabIndex { openTabs[index].dirty = true }
-        (editorScroll.verticalRulerView as? LineNumberRulerView)?.invalidateLineNumbers()
     }
 
     private func buildMenu() {
