@@ -34,6 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.minSize = NSSize(width: 900, height: 620)
         window.contentViewController = ShellViewController()
         window.delegate = self
+        // We manage window lifetime ourselves via `windows`, not an NSWindowController — the
+        // default `true` has AppKit *also* drop its own ownership on close, which races our
+        // array's cleanup and produces exactly the garbage-address EXC_BAD_ACCESS this was
+        // causing on window close.
+        window.isReleasedWhenClosed = false
         return window
     }
 
