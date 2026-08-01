@@ -12,6 +12,7 @@ enum ChromeBackground {
         effect.material = .hudWindow
         effect.blendingMode = .withinWindow
         effect.state = .active
+        effect.appearance = NSAppearance(named: .darkAqua)
         effect.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(effect, positioned: .below, relativeTo: nil)
         NSLayoutConstraint.activate([
@@ -19,6 +20,22 @@ enum ChromeBackground {
             effect.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             effect.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             effect.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        // Belt-and-suspenders on top of the vibrancy: without live visual verification
+        // available this session, don't leave "still looks too bright" to how dark a given
+        // material happens to render — a solid low-alpha black wash guarantees the result
+        // reads as unambiguously dark regardless.
+        let tint = NSView()
+        tint.wantsLayer = true
+        tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        tint.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(tint, positioned: .above, relativeTo: effect)
+        NSLayoutConstraint.activate([
+            tint.topAnchor.constraint(equalTo: view.topAnchor),
+            tint.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tint.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tint.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
 }
