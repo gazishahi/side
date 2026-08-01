@@ -34,10 +34,10 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func buildView() {
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        ChromeBackground.install(in: view)
 
         tabBar.wantsLayer = true
-        tabBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        ChromeBackground.install(in: tabBar)
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
         tabBarStack.orientation = .horizontal

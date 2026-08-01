@@ -123,13 +123,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func buildView() {
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        ChromeBackground.install(in: view)
 
         searchField.placeholderString = "Open file, symbol, or command"
         searchField.delegate = self
 
         tabBar.wantsLayer = true
-        tabBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        ChromeBackground.install(in: tabBar)
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
         tabBarStack.orientation = .horizontal

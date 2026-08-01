@@ -63,7 +63,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
     private func buildLayout() {
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        ChromeBackground.install(in: view)
 
         stageControl.segmentStyle = .texturedRounded
         stageControl.selectedSegment = 0
