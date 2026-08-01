@@ -908,6 +908,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 self.searchField.placeholderString = "Find a file in \(url.lastPathComponent)"
                 if let saved = self.lastFile(forProject: url), let file = indexed.first(where: { $0.url.path == saved.path }) {
                     self.open(file.url)
+                } else {
+                    // No remembered file for this project — a fully blank canvas isn't a good
+                    // first impression. Surface the file tree instead so there's immediately
+                    // something to act on, rather than guessing which file to auto-open.
+                    self.toggleFileExplorer()
                 }
             }
         }
