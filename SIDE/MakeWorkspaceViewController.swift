@@ -53,6 +53,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let tabBarStack = NSStackView()
     private var tabBarHeightConstraint: NSLayoutConstraint!
     private let emptyState = NSStackView()
+    private let recentProjectsStack = NSStackView()
+    private let openRecentMenu = NSMenu(title: "Open Recent")
     private let quickOpenPanel = QuickOpenPanel()
     private let resultsTable = NSTableView()
     private let fileExplorerPanel = FileExplorerPanel()
@@ -92,7 +94,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     var onFileOpened: ((URL?) -> Void)?
     var onDirtyChanged: ((Bool) -> Void)?
     private let lastProjectKey = "side.last-project-path"
-    private let lastFileKey = "side.last-file-path"
+    private let lastFilesByProjectKey = "side.last-files-by-project"
+    private let recentProjectsKey = "side.recent-projects"
+    private let maxRecentProjects = 8
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
     private static let editorBackground = NSColor(calibratedWhite: 0.098, alpha: 1)
@@ -106,6 +110,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         buildView()
         buildMenu()
         configureQuickOpenKeys()
+        refreshRecentProjectsList()
+    }
+
+    /// Recents are shared across windows via UserDefaults — refresh on every appearance so a
+    /// newly-created window's empty state (or this one, if left idle on it) reflects projects
+    /// opened elsewhere in the meantime.
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        refreshRecentProjectsList()
     }
 
     private func buildView() {
@@ -211,10 +224,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let open = NSButton(title: "Open project…", target: self, action: #selector(openProject))
         open.bezelStyle = .rounded
         open.controlSize = .large
+        recentProjectsStack.orientation = .vertical
+        recentProjectsStack.alignment = .centerX
+        recentProjectsStack.spacing = 4
         emptyState.orientation = .vertical
         emptyState.alignment = .centerX
         emptyState.spacing = 13
-        [headline, detail, open].forEach(emptyState.addArrangedSubview)
+        [headline, detail, open, recentProjectsStack].forEach(emptyState.addArrangedSubview)
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyState)
 
@@ -579,6 +595,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     // MARK: - File explorer context menu (new / rename / delete)
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === openRecentMenu {
+            menu.removeAllItems()
+            let recents = recentProjects()
+            if recents.isEmpty {
+                menu.addItem(withTitle: "No Recent Projects", action: nil, keyEquivalent: "").isEnabled = false
+            } else {
+                for url in recents {
+                    let item = menu.addItem(withTitle: url.lastPathComponent, action: #selector(openRecentProjectMenuItem(_:)), keyEquivalent: "")
+                    item.toolTip = url.path
+                    item.representedObject = url
+                    item.target = self
+                }
+            }
+            return
+        }
         menu.removeAllItems()
         let row = fileExplorerOutline.clickedRow
         let clickedNode = row >= 0 ? fileExplorerOutline.item(atRow: row) as? FileTreeNode : nil
@@ -747,6 +778,76 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return cell
     }
 
+    // MARK: - Per-project file memory & recent projects
+
+    private func rememberLastFile(_ fileURL: URL, forProject project: URL) {
+        var map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String] ?? [:]
+        map[project.path] = fileURL.path
+        UserDefaults.standard.set(map, forKey: lastFilesByProjectKey)
+    }
+
+    private func lastFile(forProject project: URL) -> URL? {
+        guard let map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String],
+              let path = map[project.path] else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    private func rememberRecentProject(_ project: URL) {
+        var recents = UserDefaults.standard.stringArray(forKey: recentProjectsKey) ?? []
+        recents.removeAll { $0 == project.path }
+        recents.insert(project.path, at: 0)
+        if recents.count > maxRecentProjects { recents.removeLast(recents.count - maxRecentProjects) }
+        UserDefaults.standard.set(recents, forKey: recentProjectsKey)
+    }
+
+    private func recentProjects() -> [URL] {
+        let recents = UserDefaults.standard.stringArray(forKey: recentProjectsKey) ?? []
+        return recents.filter { $0 != projectURL?.path }.map { URL(fileURLWithPath: $0) }
+    }
+
+    private func refreshRecentProjectsList() {
+        recentProjectsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let recents = recentProjects()
+        guard !recents.isEmpty else { return }
+        let label = NSTextField(labelWithString: "Recent Projects")
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.textColor = .tertiaryLabelColor
+        recentProjectsStack.addArrangedSubview(label)
+        recentProjectsStack.setCustomSpacing(8, after: label)
+        for url in recents {
+            let row = NSButton(title: url.lastPathComponent, target: self, action: #selector(openRecentProjectRow(_:)))
+            row.bezelStyle = .inline
+            row.isBordered = false
+            row.contentTintColor = .linkColor
+            row.toolTip = url.path
+            row.identifier = NSUserInterfaceItemIdentifier(url.path)
+            recentProjectsStack.addArrangedSubview(row)
+        }
+    }
+
+    @objc private func openRecentProjectRow(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        openRecentProject(at: URL(fileURLWithPath: path))
+    }
+
+    @objc private func openRecentProjectMenuItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        openRecentProject(at: url)
+    }
+
+    private func openRecentProject(at url: URL) {
+        confirmAllUnsavedChanges { [weak self] proceed in
+            guard let self, proceed else { return }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                if let window = self.view.window { self.showAlert(title: "Can't find this project", message: "\(url.lastPathComponent) no longer exists at \(url.path).", window: window) }
+                return
+            }
+            self.closeAllTabsImmediately()
+            self.loadProject(at: url)
+        }
+    }
+
     @objc private func openProject() {
         confirmAllUnsavedChanges { [weak self] proceed in
             guard let self, proceed, let window = self.view.window else { return }
@@ -759,12 +860,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             panel.beginSheetModal(for: window) { [weak self] response in
                 guard let self, response == .OK, let url = panel.url else { return }
                 self.closeAllTabsImmediately()
-                self.loadProject(at: url, restoring: false)
+                self.loadProject(at: url)
             }
         }
     }
 
-    private func loadProject(at url: URL, restoring: Bool) {
+    /// Only ever reopens a file if this specific project has one remembered — no more
+    /// guessing a "probably the main file" default by extension. A project with nothing
+    /// remembered (first time opening it, or session storage cleared) just opens to an
+    /// empty canvas; the file explorer/quick-open are one keystroke away regardless.
+    private func loadProject(at url: URL) {
         lspManager?.prepareForClose()
         let manager = LSPManager(projectRoot: url)
         manager.onDiagnostics = { [weak self] fileURL, diagnostics in
@@ -775,6 +880,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         searchField.placeholderString = "Indexing \(url.lastPathComponent)…"
         emptyState.isHidden = true
         UserDefaults.standard.set(url.path, forKey: lastProjectKey)
+        rememberRecentProject(url)
         onProjectOpened?(url)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let indexed = Self.indexFiles(at: url)
@@ -782,8 +888,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 guard let self, self.projectURL == url else { return }
                 self.allFiles = indexed
                 self.searchField.placeholderString = "Find a file in \(url.lastPathComponent)"
-                if restoring, let saved = UserDefaults.standard.string(forKey: self.lastFileKey), let file = indexed.first(where: { $0.url.path == saved }) { self.open(file.url); return }
-                if let file = indexed.first(where: { ["swift", "ts", "tsx", "js", "json", "md"].contains($0.url.pathExtension.lowercased()) }) { self.open(file.url) }
+                if let saved = self.lastFile(forProject: url), let file = indexed.first(where: { $0.url.path == saved.path }) {
+                    self.open(file.url)
+                }
             }
         }
     }
@@ -902,7 +1009,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func finishOpenUI(url: URL) {
         searchField.stringValue = ""
-        UserDefaults.standard.set(url.path, forKey: lastFileKey)
+        if let projectURL { rememberLastFile(url, forProject: projectURL) }
         hideQuickOpenPanel()
         view.window?.makeFirstResponder(editor)
     }
@@ -1117,7 +1224,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         captureActiveTabSelection()
         activeTabIndex = index
         loadActiveTabIntoEditor()
-        UserDefaults.standard.set(openTabs[index].url.path, forKey: lastFileKey)
+        if let projectURL { rememberLastFile(openTabs[index].url, forProject: projectURL) }
         view.window?.makeFirstResponder(editor)
     }
 
@@ -1186,7 +1293,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         imageView.image = nil
         csvScroll.isHidden = true
         dirty = false
-        UserDefaults.standard.removeObject(forKey: lastFileKey)
         onFileOpened?(nil)
         rebuildTabBar()
     }
@@ -1931,6 +2037,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         newWindowItem.target = NSApp.delegate as? AppDelegate
         fileMenu.addItem(withTitle: "New File", action: #selector(newFile), keyEquivalent: "n")
         fileMenu.addItem(withTitle: "Open Project…", action: #selector(openProject), keyEquivalent: "o")
+        openRecentMenu.delegate = self
+        let openRecentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
+        openRecentItem.submenu = openRecentMenu
+        fileMenu.addItem(openRecentItem)
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(withTitle: "Save", action: #selector(save), keyEquivalent: "s")
         let saveAsItem = fileMenu.addItem(withTitle: "Save As…", action: #selector(saveAs), keyEquivalent: "s")
@@ -2096,7 +2206,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             self.writeTabToDiskForced(tabID: tabID, url: newURL) { success in
                 if success {
                     if let index = self.indexForTab(id: tabID), self.activeTabIndex == index {
-                        UserDefaults.standard.set(newURL.path, forKey: self.lastFileKey)
+                        if let projectURL = self.projectURL { self.rememberLastFile(newURL, forProject: projectURL) }
                         self.onFileOpened?(newURL)
                         SyntaxHighlighter.apply(to: self.openTabs[index].textStorage, url: newURL, baseColor: Self.editorTextColor, font: Self.editorFont)
                         self.gutter.invalidate()
@@ -2245,7 +2355,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (path?.isEmpty == false) ? path : nil
     }
-    func restoreLastSessionIfAvailable() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url, restoring: true) }
+    func restoreLastSessionIfAvailable() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url) }
 
     /// Entry point for cross-stage "open this file" requests (currently: clicking a
     /// file-path-shaped link in the Run stage's terminal output).
