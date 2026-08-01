@@ -35,6 +35,7 @@ private struct OpenTab {
     var csvRows: [[String]] = []
     var diagnostics: [LSPDiagnostic] = []
     var renderedDiagnosticRanges: [NSRange] = []
+    var isPreviewingMarkdown = false
     var cachedImage: NSImage?
     var headCache: HeadContentCache = .notFetched
 }
@@ -64,6 +65,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let imageView = NSImageView()
     private let csvScroll = NSScrollView()
     private let csvTable = NSTableView()
+    private let markdownPreviewScroll = NSScrollView()
+    private let markdownPreviewView = NSTextView()
     private let completionPanel = CompletionPanel()
     private let completionTable = NSTableView()
     private var completionItems: [LSPCompletionItem] = []
@@ -213,6 +216,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         csvScroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(csvScroll)
 
+        markdownPreviewView.isEditable = false
+        markdownPreviewView.isSelectable = true
+        markdownPreviewView.drawsBackground = true
+        markdownPreviewView.backgroundColor = Self.editorBackground
+        markdownPreviewView.textContainerInset = NSSize(width: 20, height: 16)
+        markdownPreviewView.textContainer?.widthTracksTextView = true
+        markdownPreviewScroll.documentView = markdownPreviewView
+        markdownPreviewScroll.hasVerticalScroller = true
+        markdownPreviewScroll.backgroundColor = Self.editorBackground
+        markdownPreviewScroll.drawsBackground = true
+        markdownPreviewScroll.isHidden = true
+        markdownPreviewScroll.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(markdownPreviewScroll)
+
         let headline = NSTextField(labelWithString: "Open a project")
         headline.font = .systemFont(ofSize: 25, weight: .medium)
         headline.alignment = .center
@@ -239,6 +256,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             editorScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), editorScroll.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             imageScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             csvScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            markdownPreviewScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
         configureQuickOpenPanel()
@@ -1040,10 +1058,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let tab = openTabs[index]
         hideCompletionPanel()
 
-        editorScroll.isHidden = tab.kind != .text
-        gutter.isHidden = tab.kind != .text
+        let showingMarkdownPreview = tab.kind == .text && tab.isPreviewingMarkdown
+        editorScroll.isHidden = tab.kind != .text || showingMarkdownPreview
+        gutter.isHidden = tab.kind != .text || showingMarkdownPreview
         imageScroll.isHidden = tab.kind != .image
         csvScroll.isHidden = tab.kind != .csv
+        markdownPreviewScroll.isHidden = !showingMarkdownPreview
 
         switch tab.kind {
         case .text:
@@ -1069,6 +1089,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             gutter.invalidate()
             refreshGitDiffMarks()
             renderDiagnosticsForActiveTab()
+            if showingMarkdownPreview { renderMarkdownPreview(for: tab) }
         case .image:
             editor.isEditable = false
             imageView.image = tab.cachedImage
@@ -1094,6 +1115,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             column.width = 140
             csvTable.addTableColumn(column)
         }
+    }
+
+    // MARK: - Markdown preview
+
+    @objc private func toggleMarkdownPreview() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index),
+              openTabs[index].kind == .text, openTabs[index].url.pathExtension.lowercased() == "md" else { return }
+        openTabs[index].isPreviewingMarkdown.toggle()
+        loadActiveTabIntoEditor()
+    }
+
+    private func renderMarkdownPreview(for tab: OpenTab) {
+        let rendered = MarkdownRenderer.render(tab.textStorage.string, baseFont: Self.editorFont, textColor: Self.editorTextColor)
+        markdownPreviewView.textStorage?.setAttributedString(rendered)
     }
 
     // MARK: - Diagnostics
@@ -1292,6 +1327,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         imageScroll.isHidden = true
         imageView.image = nil
         csvScroll.isHidden = true
+        markdownPreviewScroll.isHidden = true
         dirty = false
         onFileOpened?(nil)
         rebuildTabBar()
@@ -2046,6 +2082,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let saveAsItem = fileMenu.addItem(withTitle: "Save As…", action: #selector(saveAs), keyEquivalent: "s")
         saveAsItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(revertToSaved), keyEquivalent: "")
+        fileMenu.addItem(withTitle: "Toggle Markdown Preview", action: #selector(toggleMarkdownPreview), keyEquivalent: "m")
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: "w")
         fileItem.submenu = fileMenu
