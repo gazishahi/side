@@ -40,6 +40,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // chrome still read as too bright/gray despite our own views using dark colors.
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = NSColor(calibratedWhite: 0.098, alpha: 1)
+        // Even with dark appearance forced, the native title/toolbar strip still renders
+        // using the system's own dark-mode material — a medium charcoal, visibly lighter
+        // than the app's near-black content. This is very likely the real source of "still
+        // too light": that strip runs across the top of every window, Make or Run, whether
+        // or not a tab bar is showing beneath it. Making it transparent lets our own
+        // near-black backgroundColor show through instead, unifying the two.
+        window.titlebarAppearsTransparent = true
         window.contentViewController = ShellViewController()
         window.delegate = self
         // We manage window lifetime ourselves via `windows`, not an NSWindowController — the
