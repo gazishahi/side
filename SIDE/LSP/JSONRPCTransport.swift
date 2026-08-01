@@ -12,6 +12,7 @@ actor JSONRPCTransport {
 
     private var onMessage: (@Sendable (Data) -> Void)?
     private var onTerminate: (@Sendable () -> Void)?
+    private let logLabel: String
 
     func setHandlers(onMessage: @escaping @Sendable (Data) -> Void, onTerminate: @escaping @Sendable () -> Void) {
         self.onMessage = onMessage
@@ -25,6 +26,7 @@ actor JSONRPCTransport {
     }
 
     init(executableURL: URL, arguments: [String], environment: [String: String]?, currentDirectory: URL?) {
+        logLabel = executableURL.lastPathComponent
         process.executableURL = executableURL
         process.arguments = arguments
         if let environment { process.environment = environment }
@@ -39,6 +41,16 @@ actor JSONRPCTransport {
             let data = handle.availableData
             guard !data.isEmpty else { return }
             Task { await self?.consume(data) }
+        }
+        // Previously discarded entirely — when a server process dies right after spawn (e.g.
+        // a shebang interpreter it needs isn't resolvable), this stderr output is the only
+        // place the real reason ever appears; without it every such failure just looked like
+        // a generic "notRunning".
+        let label = logLabel
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
+            print("[LSP][\(label) stderr] \(text)")
         }
         process.terminationHandler = { [weak self] _ in
             Task { await self?.handleTermination() }

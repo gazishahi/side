@@ -168,7 +168,7 @@ final class LSPManager: @unchecked Sendable {
             return
         }
         startingServers.insert(entry.binaryName)
-        let client = LSPClient(executableURL: executable, arguments: entry.arguments, environment: ProcessInfo.processInfo.environment, currentDirectory: projectRoot)
+        let client = LSPClient(executableURL: executable, arguments: entry.arguments, environment: LanguageServerRegistry.environmentForSpawning(), currentDirectory: projectRoot)
         let rootURI = projectRoot.absoluteString
         let tsserverPath = LanguageServerRegistry.tsserverPathOverride(for: entry, projectRoot: projectRoot)
         Task { @MainActor [weak self] in

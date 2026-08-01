@@ -69,6 +69,52 @@ enum LanguageServerRegistry {
         }
     }
 
+    private nonisolated(unsafe) static var loginShellPATHCache: String??
+
+    /// Node-based servers (typescript-language-server, pyright's own tsserver-adjacent shims)
+    /// are launched via a `#!/usr/bin/env node`-style shebang — resolving the *binary itself*
+    /// via the login shell (resolveExecutable) isn't enough, because the shebang interpreter
+    /// is looked up using whatever PATH the *spawned process's own environment* carries. A GUI
+    /// app's environment (ProcessInfo.processInfo.environment) has launchd's bare minimum PATH
+    /// (no Homebrew, no nvm, etc.), so `env: node: No such file or directory` kills the server
+    /// immediately after spawn — which surfaces here only as a generic "notRunning" failure,
+    /// not the underlying reason. Build a spawn environment with the login shell's real PATH
+    /// merged in so the shebang line actually resolves.
+    static func environmentForSpawning() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if let path = resolveLoginShellPATH() {
+            environment["PATH"] = path
+        }
+        return environment
+    }
+
+    private static func resolveLoginShellPATH() -> String? {
+        if let cached = loginShellPATHCache { return cached }
+        let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shellPath)
+        process.arguments = ["-lic", "echo $PATH"]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !output.isEmpty else {
+                loginShellPATHCache = .some(nil)
+                return nil
+            }
+            loginShellPATHCache = .some(output)
+            return output
+        } catch {
+            loginShellPATHCache = .some(nil)
+            return nil
+        }
+    }
+
     private enum Resolution {
         case found(URL)
         case notFound
