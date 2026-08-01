@@ -1748,6 +1748,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     func textViewDidChangeSelection(_ notification: Notification) {
         updateBracketHighlight()
+        editor.needsDisplay = true
         // Typing itself moves the selection, which fires this same delegate method within the
         // same call chain as textDidChange (before its just-scheduled completion request ever
         // gets to run) — only treat this as a real "user navigated away" dismissal signal when
@@ -2298,6 +2299,32 @@ final class EditorTextView: NSTextView {
     @objc private func triggerJumpToDefinition(_ sender: NSMenuItem) {
         guard let index = sender.representedObject as? Int else { return }
         onDefinitionRequested?(index)
+    }
+
+    private static let currentLineHighlightColor = NSColor(calibratedWhite: 1, alpha: 0.045)
+
+    /// Real NSTextView override point for exactly this: a full-width current-line band,
+    /// matching Xcode/Cursor. Skipped whenever there's an active selection, same as both.
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard selectedRange().length == 0, let layoutManager, textContainer != nil else { return }
+        var lineRect: NSRect
+        if layoutManager.numberOfGlyphs == 0 {
+            // A brand-new empty document has no glyphs at all — extraLineFragmentRect is
+            // NSLayoutManager's dedicated rect for the empty trailing line in that case.
+            lineRect = layoutManager.extraLineFragmentRect
+            guard lineRect.width > 0 || lineRect.height > 0 else { return }
+        } else {
+            let charIndex = min(selectedRange().location, (string as NSString).length)
+            let glyphIndex = min(layoutManager.glyphIndexForCharacter(at: charIndex), layoutManager.numberOfGlyphs - 1)
+            lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        }
+        let origin = textContainerOrigin
+        lineRect.origin.x = 0
+        lineRect.origin.y += origin.y
+        lineRect.size.width = max(bounds.width, lineRect.width + origin.x)
+        Self.currentLineHighlightColor.setFill()
+        lineRect.fill()
     }
 }
 
