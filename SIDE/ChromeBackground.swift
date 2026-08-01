@@ -1,41 +1,25 @@
 import AppKit
 
-/// A translucent, dark "glass" background for chrome surfaces (window root, tab bars) — never
-/// for the editor's own text-editing surface, which keeps its explicit solid dark color since
-/// a surface that guarantees text contrast shouldn't be translucent. `.hudWindow` is Apple's
-/// dedicated always-dark, always-translucent material (the look behind Quick Look's HUD,
-/// Spotlight, etc.), so this doesn't require forcing the whole app into dark appearance to get
-/// a consistent charcoal-glass look regardless of the system's current appearance.
+/// A flat, guaranteed-dark background for chrome surfaces (window root, tab bars) — matching
+/// the editor's own near-black tone exactly, no vibrancy/material involved. An earlier version
+/// of this used an NSVisualEffectView (.hudWindow, translucent) for a "glass" look, but that
+/// material's actual rendered brightness turned out to still read as too light next to the
+/// editor's explicit solid color, and isn't something reliably tunable without live visual
+/// verification — a plain solid fill removes that ambiguity entirely.
 enum ChromeBackground {
-    static func install(in view: NSView) {
-        let effect = NSVisualEffectView()
-        effect.material = .hudWindow
-        effect.blendingMode = .withinWindow
-        effect.state = .active
-        effect.appearance = NSAppearance(named: .darkAqua)
-        effect.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(effect, positioned: .below, relativeTo: nil)
-        NSLayoutConstraint.activate([
-            effect.topAnchor.constraint(equalTo: view.topAnchor),
-            effect.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            effect.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            effect.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
+    static let color = NSColor(calibratedWhite: 0.098, alpha: 1)
 
-        // Belt-and-suspenders on top of the vibrancy: without live visual verification
-        // available this session, don't leave "still looks too bright" to how dark a given
-        // material happens to render — a solid low-alpha black wash guarantees the result
-        // reads as unambiguously dark regardless.
-        let tint = NSView()
-        tint.wantsLayer = true
-        tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
-        tint.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(tint, positioned: .above, relativeTo: effect)
+    static func install(in view: NSView) {
+        let fill = NSView()
+        fill.wantsLayer = true
+        fill.layer?.backgroundColor = color.cgColor
+        fill.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(fill, positioned: .below, relativeTo: nil)
         NSLayoutConstraint.activate([
-            tint.topAnchor.constraint(equalTo: view.topAnchor),
-            tint.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tint.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tint.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            fill.topAnchor.constraint(equalTo: view.topAnchor),
+            fill.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            fill.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            fill.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
 }
