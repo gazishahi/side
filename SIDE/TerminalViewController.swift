@@ -67,9 +67,14 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        if let nerdFont = NSFont(name: "MesloLGS-NF-Regular", size: 13) {
+        if let nerdFont = NSFont(name: "MesloLGS-NF-Regular", size: 14) {
             terminalView.font = nerdFont
         }
+        // SwiftTerm's own defaults are a ~54%-gray foreground on a pure black background —
+        // legible but noticeably dim next to the editor. Match the editor's palette exactly
+        // (0.85/0.098 white) before the shell ever prints its first prompt.
+        terminalView.terminal.foregroundColor = Color(red: 55704, green: 55704, blue: 55704)
+        terminalView.terminal.backgroundColor = Color(red: 6423, green: 6423, blue: 6423)
         terminalView.processDelegate = self
         terminalView.onFileLinkRequested = { [weak self] link in self?.onFileLinkRequested?(link) ?? false }
         terminalView.onLineSubmitted = { [weak self] line in self?.lastSubmittedCommand = line }

@@ -56,7 +56,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
-        window.toolbarStyle = .unified
+        window.toolbarStyle = .unifiedCompact
         window.titleVisibility = .visible
         applyWindowChrome()
     }

@@ -203,7 +203,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let headline = NSTextField(labelWithString: "Open a project")
         headline.font = .systemFont(ofSize: 25, weight: .medium)
         headline.alignment = .center
-        let detail = NSTextField(wrappingLabelWithString: "Start with the code. SIDE will restore this workspace when you come back.")
+        let detail = NSTextField(wrappingLabelWithString: "Start with the code. Side will restore this workspace when you come back.")
         detail.font = .systemFont(ofSize: 14)
         detail.textColor = .secondaryLabelColor
         detail.alignment = .center
@@ -751,7 +751,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         confirmAllUnsavedChanges { [weak self] proceed in
             guard let self, proceed, let window = self.view.window else { return }
             let panel = NSOpenPanel()
-            panel.message = "Choose a project to open in SIDE"
+            panel.message = "Choose a project to open in Side"
             panel.prompt = "Open project"
             panel.canChooseFiles = false
             panel.canChooseDirectories = true
@@ -834,7 +834,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
                 if size > Self.maxOpenableImageSize {
                     DispatchQueue.main.async {
-                        self?.showAlert(title: "Image too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over SIDE's current 50 MB limit.", window: window)
+                        self?.showAlert(title: "Image too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over Side's current 50 MB limit.", window: window)
                         completion?()
                     }
                     return
@@ -864,7 +864,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             if size > Self.maxOpenableFileSize {
                 DispatchQueue.main.async {
-                    self?.showAlert(title: "File too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over SIDE's current 10 MB limit for opening in the editor.", window: window)
+                    self?.showAlert(title: "File too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over Side's current 10 MB limit for opening in the editor.", window: window)
                     completion?()
                 }
                 return
@@ -878,7 +878,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
             guard let source = String(data: data, encoding: .utf8) else {
                 DispatchQueue.main.async {
-                    self?.showAlert(title: "Can't open this file", message: "\(url.lastPathComponent) doesn't appear to be a text file SIDE can edit.", window: window)
+                    self?.showAlert(title: "Can't open this file", message: "\(url.lastPathComponent) doesn't appear to be a text file Side can edit.", window: window)
                     completion?()
                 }
                 return
@@ -1922,7 +1922,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     // exception is "New Window," which routes to AppDelegate explicitly since it isn't a
     // per-window action.
     private func buildMenu() {
-        let main = NSMenu(title: "SIDE")
+        let main = NSMenu(title: "Side")
         let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
         let newWindowItem = fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow), keyEquivalent: "n")
@@ -2114,7 +2114,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "\u{201C}\(url.lastPathComponent)\u{201D} has changed on disk"
-            alert.informativeText = "This file was modified outside SIDE since you opened it. Overwriting will discard those external changes."
+            alert.informativeText = "This file was modified outside Side since you opened it. Overwriting will discard those external changes."
             alert.addButton(withTitle: "Overwrite")
             alert.addButton(withTitle: "Cancel")
             alert.beginSheetModal(for: window) { [weak self] response in
