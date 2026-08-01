@@ -71,10 +71,12 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             terminalView.font = nerdFont
         }
         // SwiftTerm's own defaults are a ~54%-gray foreground on a pure black background —
-        // legible but noticeably dim next to the editor. Match the editor's palette exactly
-        // (0.85/0.098 white) before the shell ever prints its first prompt.
+        // legible but noticeably dim next to the editor. Terminal background is deliberately
+        // darker than the editor's own (near-black rather than matching exactly) — a common
+        // convention (Terminal.app, iTerm2 defaults) that also helps a glance tell Make and
+        // Run apart.
         terminalView.terminal.foregroundColor = Color(red: 55704, green: 55704, blue: 55704)
-        terminalView.terminal.backgroundColor = Color(red: 6423, green: 6423, blue: 6423)
+        terminalView.terminal.backgroundColor = Color(red: 1310, green: 1310, blue: 1310)
         terminalView.processDelegate = self
         terminalView.onFileLinkRequested = { [weak self] link in self?.onFileLinkRequested?(link) ?? false }
         terminalView.onLineSubmitted = { [weak self] line in self?.lastSubmittedCommand = line }
