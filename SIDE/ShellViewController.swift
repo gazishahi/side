@@ -78,7 +78,11 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         view.addSubview(container)
 
         NSLayoutConstraint.activate([
-            container.topAnchor.constraint(equalTo: view.topAnchor),
+            // safeAreaLayoutGuide, not view.topAnchor: with .fullSizeContentView the content
+            // view now extends up behind the title bar/toolbar (that's the point — it's what
+            // lets our background color show through there), but actual Make/Run content still
+            // needs to start below the toolbar controls, not underneath them.
+            container.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             container.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             container.bottomAnchor.constraint(equalTo: view.bottomAnchor)

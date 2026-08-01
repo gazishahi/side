@@ -28,7 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        // .fullSizeContentView is load-bearing, not cosmetic: without it, titlebarAppearsTransparent
+        // only clears the title-text row — the unified toolbar strip beneath it (where our stage
+        // switcher/search field live) keeps rendering its own opaque system material regardless of
+        // window.backgroundColor. With it, our content view's background extends up behind the
+        // whole title+toolbar region instead of stopping below it, which is what actually lets our
+        // color show through there.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Side"
         window.toolbarStyle = .unifiedCompact
         window.minSize = NSSize(width: 900, height: 620)
