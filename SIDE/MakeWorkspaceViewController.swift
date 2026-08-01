@@ -833,14 +833,31 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         recentProjectsStack.addArrangedSubview(label)
         recentProjectsStack.setCustomSpacing(8, after: label)
         for url in recents {
-            let row = NSButton(title: url.lastPathComponent, target: self, action: #selector(openRecentProjectRow(_:)))
-            row.bezelStyle = .inline
-            row.isBordered = false
-            row.contentTintColor = .linkColor
-            row.toolTip = url.path
-            row.identifier = NSUserInterfaceItemIdentifier(url.path)
+            let nameButton = NSButton(title: url.lastPathComponent, target: self, action: #selector(openRecentProjectRow(_:)))
+            nameButton.bezelStyle = .inline
+            nameButton.isBordered = false
+            nameButton.contentTintColor = .linkColor
+            nameButton.toolTip = url.path
+            nameButton.identifier = NSUserInterfaceItemIdentifier(url.path)
+
+            let pathLabel = NSTextField(labelWithString: abbreviatedParentPath(of: url))
+            pathLabel.font = .systemFont(ofSize: 11)
+            pathLabel.textColor = .tertiaryLabelColor
+
+            let row = NSStackView(views: [nameButton, pathLabel])
+            row.orientation = .horizontal
+            row.spacing = 8
+            row.alignment = .firstBaseline
             recentProjectsStack.addArrangedSubview(row)
         }
+    }
+
+    private func abbreviatedParentPath(of url: URL) -> String {
+        let parent = url.deletingLastPathComponent().path
+        let home = NSHomeDirectory()
+        if parent == home { return "~" }
+        if parent.hasPrefix(home + "/") { return "~" + parent.dropFirst(home.count) }
+        return parent
     }
 
     @objc private func openRecentProjectRow(_ sender: NSButton) {
