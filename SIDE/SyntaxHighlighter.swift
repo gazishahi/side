@@ -3,17 +3,17 @@ import AppKit
 enum SyntaxHighlighter {
     private struct Rule { let regex: NSRegularExpression; let color: NSColor; var italic: Bool = false; var groupIndex: Int = 0 }
 
-    private static let keywordColor = NSColor(calibratedRed: 0.78, green: 0.48, blue: 0.96, alpha: 1)
-    private static let stringColor = NSColor(calibratedRed: 0.94, green: 0.60, blue: 0.44, alpha: 1)
-    private static let commentColor = NSColor(calibratedWhite: 0.45, alpha: 1)
-    private static let numberColor = NSColor(calibratedRed: 0.68, green: 0.80, blue: 0.98, alpha: 1)
-    private static let headingColor = NSColor(calibratedRed: 0.55, green: 0.85, blue: 0.65, alpha: 1)
-    private static let jsxTagColor = NSColor(calibratedRed: 0.42, green: 0.82, blue: 0.66, alpha: 1)
-    private static let jsxAttrColor = NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.98, alpha: 1)
-    private static let typeColor = NSColor(calibratedRed: 0.98, green: 0.78, blue: 0.45, alpha: 1)
-    private static let functionCallColor = NSColor(calibratedRed: 0.92, green: 0.87, blue: 0.58, alpha: 1)
-    private static let declarationColor = NSColor(calibratedRed: 0.95, green: 0.82, blue: 0.60, alpha: 1)
-    private static let propertyColor = NSColor(calibratedRed: 0.56, green: 0.82, blue: 0.92, alpha: 1)
+    private static let keywordColor = NSColor(red: 0.78, green: 0.48, blue: 0.96, alpha: 1)
+    private static let stringColor = NSColor(red: 0.94, green: 0.60, blue: 0.44, alpha: 1)
+    private static let commentColor = NSColor(white: 0.45, alpha: 1)
+    private static let numberColor = NSColor(red: 0.68, green: 0.80, blue: 0.98, alpha: 1)
+    private static let headingColor = NSColor(red: 0.55, green: 0.85, blue: 0.65, alpha: 1)
+    private static let jsxTagColor = NSColor(red: 0.42, green: 0.82, blue: 0.66, alpha: 1)
+    private static let jsxAttrColor = NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1)
+    private static let typeColor = NSColor(red: 0.98, green: 0.78, blue: 0.45, alpha: 1)
+    private static let functionCallColor = NSColor(red: 0.92, green: 0.87, blue: 0.58, alpha: 1)
+    private static let declarationColor = NSColor(red: 0.95, green: 0.82, blue: 0.60, alpha: 1)
+    private static let propertyColor = NSColor(red: 0.56, green: 0.82, blue: 0.92, alpha: 1)
 
     static let maxHighlightableLength = 2_000_000
 

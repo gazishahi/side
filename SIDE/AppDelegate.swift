@@ -45,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // resolve their vibrancy against that light backdrop too — which is exactly why the
         // chrome still read as too bright/gray despite our own views using dark colors.
         window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(calibratedWhite: 0.098, alpha: 1)
+        window.backgroundColor = NSColor(white: 0.098, alpha: 1)
         // Even with dark appearance forced, the native title/toolbar strip still renders
         // using the system's own dark-mode material — a medium charcoal, visibly lighter
         // than the app's near-black content. This is very likely the real source of "still

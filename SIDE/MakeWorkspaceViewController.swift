@@ -102,9 +102,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let maxRecentProjects = 8
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
-    private static let editorBackground = NSColor(calibratedWhite: 0.098, alpha: 1)
+    private static let editorBackground = NSColor(white: 0.098, alpha: 1)
     private static let editorFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
-    private static let editorTextColor = NSColor(calibratedWhite: 0.85, alpha: 1)
+    private static let editorTextColor = NSColor(white: 0.85, alpha: 1)
 
     override func loadView() { view = NSView() }
 
@@ -789,10 +789,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             ])
         }
         text.stringValue = node.name
-        text.textColor = node.isDirectory ? NSColor(calibratedWhite: 0.75, alpha: 1) : NSColor(calibratedWhite: 0.85, alpha: 1)
+        text.textColor = node.isDirectory ? NSColor(white: 0.75, alpha: 1) : NSColor(white: 0.85, alpha: 1)
         let symbolName = node.isDirectory ? "folder.fill" : "doc.text"
         icon.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
-        icon.contentTintColor = node.isDirectory ? NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.98, alpha: 1) : NSColor(calibratedWhite: 0.55, alpha: 1)
+        icon.contentTintColor = node.isDirectory ? NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1) : NSColor(white: 0.55, alpha: 1)
         return cell
     }
 
@@ -1705,7 +1705,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
             text.stringValue = colIndex < rows[dataRow].count ? rows[dataRow][colIndex] : ""
-            text.textColor = NSColor(calibratedWhite: 0.85, alpha: 1)
+            text.textColor = NSColor(white: 0.85, alpha: 1)
             return cell
         }
 
@@ -1725,12 +1725,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
             if let detail = item.detail, !detail.isEmpty {
-                let attributed = NSMutableAttributedString(string: item.label, attributes: [.foregroundColor: NSColor(calibratedWhite: 0.9, alpha: 1)])
-                attributed.append(NSAttributedString(string: "  \(detail)", attributes: [.foregroundColor: NSColor(calibratedWhite: 0.55, alpha: 1)]))
+                let attributed = NSMutableAttributedString(string: item.label, attributes: [.foregroundColor: NSColor(white: 0.9, alpha: 1)])
+                attributed.append(NSAttributedString(string: "  \(detail)", attributes: [.foregroundColor: NSColor(white: 0.55, alpha: 1)]))
                 text.attributedStringValue = attributed
             } else {
                 text.stringValue = item.label
-                text.textColor = NSColor(calibratedWhite: 0.9, alpha: 1)
+                text.textColor = NSColor(white: 0.9, alpha: 1)
             }
             return cell
         }
@@ -1908,7 +1908,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var bracketHighlightRanges: [NSRange] = []
     private static let bracketPairs: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
     private static let bracketPairsReversed: [Character: Character] = [")": "(", "]": "[", "}": "{"]
-    private static let bracketHighlightColor = NSColor(calibratedWhite: 1.0, alpha: 0.15)
+    private static let bracketHighlightColor = NSColor(white: 1.0, alpha: 0.15)
 
     func textViewDidChangeSelection(_ notification: Notification) {
         updateBracketHighlight()
@@ -2470,7 +2470,7 @@ final class EditorTextView: NSTextView {
         onDefinitionRequested?(index)
     }
 
-    private static let currentLineHighlightColor = NSColor(calibratedWhite: 1, alpha: 0.045)
+    private static let currentLineHighlightColor = NSColor(white: 1, alpha: 0.045)
 
     /// Real NSTextView override point for exactly this: a full-width current-line band,
     /// matching Xcode/Cursor. Skipped whenever there's an active selection, same as both.
@@ -2577,13 +2577,13 @@ final class TabChipView: NSView {
     override func mouseExited(with event: NSEvent) { closeButton?.isHidden = true }
 
     override func draw(_ dirtyRect: NSRect) {
-        let background = isActive ? NSColor(calibratedWhite: 0.17, alpha: 1) : NSColor.clear
+        let background = isActive ? NSColor(white: 0.17, alpha: 1) : NSColor.clear
         background.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
 
         let dimmed = isDead ? 0.35 : 1.0
         let attributes: [NSAttributedString.Key: Any] = [
-            .foregroundColor: (isActive ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.55, alpha: 1)).withAlphaComponent(dimmed),
+            .foregroundColor: (isActive ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.55, alpha: 1)).withAlphaComponent(dimmed),
             .font: NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
         ]
         let text = title as NSString
@@ -2647,7 +2647,7 @@ final class TabCloseButton: NSButton {
         imagePosition = .imageOnly
         let config = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
         image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?.withSymbolConfiguration(config)
-        contentTintColor = NSColor(calibratedWhite: 0.62, alpha: 1)
+        contentTintColor = NSColor(white: 0.62, alpha: 1)
         setContentHuggingPriority(.required, for: .horizontal)
         setContentHuggingPriority(.required, for: .vertical)
         setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -2673,7 +2673,7 @@ final class TabCloseButton: NSButton {
 
     override func mouseEntered(with event: NSEvent) {
         layer?.cornerRadius = min(bounds.width, bounds.height) / 2
-        layer?.backgroundColor = NSColor(calibratedWhite: 1, alpha: 0.16).cgColor
+        layer?.backgroundColor = NSColor(white: 1, alpha: 0.16).cgColor
     }
     override func mouseExited(with event: NSEvent) { layer?.backgroundColor = NSColor.clear.cgColor }
 }

@@ -10,12 +10,12 @@ final class LineNumberGutterView: NSView {
     var lineDiagnostics: [Int: LSPDiagnosticSeverity] = [:] { didSet { needsDisplay = true } }
     var onDiagnosticClicked: ((Int, LSPDiagnosticSeverity, NSEvent) -> Void)?
 
-    private static let addedColor = NSColor(calibratedRed: 0.42, green: 0.78, blue: 0.48, alpha: 1)
-    private static let modifiedColor = NSColor(calibratedRed: 0.85, green: 0.68, blue: 0.35, alpha: 1)
-    private static let removedColor = NSColor(calibratedRed: 0.86, green: 0.42, blue: 0.42, alpha: 1)
-    private static let errorColor = NSColor(calibratedRed: 0.92, green: 0.35, blue: 0.35, alpha: 1)
-    private static let warningColor = NSColor(calibratedRed: 0.93, green: 0.75, blue: 0.3, alpha: 1)
-    private static let hintColor = NSColor(calibratedWhite: 0.55, alpha: 1)
+    private static let addedColor = NSColor(red: 0.42, green: 0.78, blue: 0.48, alpha: 1)
+    private static let modifiedColor = NSColor(red: 0.85, green: 0.68, blue: 0.35, alpha: 1)
+    private static let removedColor = NSColor(red: 0.86, green: 0.42, blue: 0.42, alpha: 1)
+    private static let errorColor = NSColor(red: 0.92, green: 0.35, blue: 0.35, alpha: 1)
+    private static let warningColor = NSColor(red: 0.93, green: 0.75, blue: 0.3, alpha: 1)
+    private static let hintColor = NSColor(white: 0.55, alpha: 1)
 
     private static func color(for severity: LSPDiagnosticSeverity) -> NSColor {
         switch severity {
@@ -42,7 +42,7 @@ final class LineNumberGutterView: NSView {
     @objc func invalidate() { needsDisplay = true }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(calibratedWhite: 0.098, alpha: 1).setFill()
+        NSColor(white: 0.098, alpha: 1).setFill()
         bounds.fill()
         guard let textView, let layoutManager = textView.layoutManager, let textContainer = textView.textContainer, let scrollView else { return }
 
@@ -60,7 +60,7 @@ final class LineNumberGutterView: NSView {
 
         var lineNumber = text.substring(to: characterRange.location).components(separatedBy: "\n").count
         var index = characterRange.location
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(calibratedWhite: 0.42, alpha: 1)]
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(white: 0.42, alpha: 1)]
 
         var safetyCounter = 0
         let maxIterations = 5000
