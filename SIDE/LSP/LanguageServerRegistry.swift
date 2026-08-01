@@ -22,6 +22,53 @@ enum LanguageServerRegistry {
         entriesByExtension[ext.lowercased()]
     }
 
+    /// typescript-language-server resolves the "typescript" package the same way Node itself
+    /// would — from the project's own node_modules — and fails its *entire* initialize
+    /// request (not just a degraded mode) if a project doesn't vendor one, even if
+    /// "typescript" is installed globally. Returns a global install's tsserver.js to pass via
+    /// initializationOptions.tsserver.path as a fallback, but only when the project doesn't
+    /// already have its own (a project pinning a specific TypeScript version should keep
+    /// using that one). Also refuses a global install that turns out to be TypeScript 7 (the
+    /// new Go-based rewrite) — it has no tsserver.js at all, so it's silently unusable here.
+    static func tsserverPathOverride(for entry: Entry, projectRoot: URL) -> String? {
+        guard entry.binaryName == "typescript-language-server" else { return nil }
+        let localTsserver = projectRoot.appendingPathComponent("node_modules/typescript/lib/tsserver.js")
+        guard !FileManager.default.fileExists(atPath: localTsserver.path) else { return nil }
+        guard let globalRoot = resolveGlobalNpmRoot() else { return nil }
+        let globalTsserver = URL(fileURLWithPath: globalRoot).appendingPathComponent("typescript/lib/tsserver.js")
+        guard FileManager.default.fileExists(atPath: globalTsserver.path) else { return nil }
+        return globalTsserver.path
+    }
+
+    private nonisolated(unsafe) static var globalNpmRootCache: String??
+
+    private static func resolveGlobalNpmRoot() -> String? {
+        if let cached = globalNpmRootCache { return cached }
+        let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shellPath)
+        process.arguments = ["-lic", "npm root -g"]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !output.isEmpty else {
+                globalNpmRootCache = .some(nil)
+                return nil
+            }
+            globalNpmRootCache = .some(output)
+            return output
+        } catch {
+            globalNpmRootCache = .some(nil)
+            return nil
+        }
+    }
+
     private enum Resolution {
         case found(URL)
         case notFound

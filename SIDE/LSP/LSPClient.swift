@@ -28,13 +28,23 @@ actor LSPClient {
     }
 
     func start(rootURI: String) async throws {
+        try await startInternal(rootURI: rootURI, initializationOptions: Optional<NoInitializationOptions>.none)
+    }
+
+    /// typescript-language-server only resolves "typescript" from the workspace's own
+    /// node_modules by default — this is how a global npm install gets used as a fallback.
+    func start(rootURI: String, tsserverPath: String) async throws {
+        try await startInternal(rootURI: rootURI, initializationOptions: TSServerInitializationOptions(tsserver: TSServerPathOption(path: tsserverPath)))
+    }
+
+    private func startInternal<Options: Encodable>(rootURI: String, initializationOptions: Options?) async throws {
         await transport.setHandlers(
             onMessage: { data in Task { await self.handleMessage(data) } },
             onTerminate: { Task { await self.handleTermination() } }
         )
         try await transport.start()
         isRunning = true
-        _ = try await request(method: "initialize", params: InitializeParams(processId: Int(ProcessInfo.processInfo.processIdentifier), rootUri: rootURI))
+        _ = try await request(method: "initialize", params: InitializeParams(processId: Int(ProcessInfo.processInfo.processIdentifier), rootUri: rootURI, initializationOptions: initializationOptions))
         try notify(method: "initialized", params: [String: String]())
     }
 
@@ -130,6 +140,8 @@ actor LSPClient {
         pendingRequests.removeAll()
     }
 }
+
+private struct NoInitializationOptions: Encodable {}
 
 private struct RequestEnvelope<Params: Encodable>: Encodable {
     let jsonrpc = "2.0"

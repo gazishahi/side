@@ -170,9 +170,14 @@ final class LSPManager: @unchecked Sendable {
         startingServers.insert(entry.binaryName)
         let client = LSPClient(executableURL: executable, arguments: entry.arguments, environment: ProcessInfo.processInfo.environment, currentDirectory: projectRoot)
         let rootURI = projectRoot.absoluteString
+        let tsserverPath = LanguageServerRegistry.tsserverPathOverride(for: entry, projectRoot: projectRoot)
         Task { @MainActor [weak self] in
             do {
-                try await client.start(rootURI: rootURI)
+                if let tsserverPath {
+                    try await client.start(rootURI: rootURI, tsserverPath: tsserverPath)
+                } else {
+                    try await client.start(rootURI: rootURI)
+                }
                 await client.setOnDiagnostics { [weak self] params in
                     guard let url = URL(string: params.uri) else { return }
                     DispatchQueue.main.async { self?.onDiagnostics?(url, params.diagnostics) }

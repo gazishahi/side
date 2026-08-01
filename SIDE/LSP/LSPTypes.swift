@@ -55,16 +55,28 @@ struct CompletionParams: Encodable {
     let position: LSPPosition
 }
 
-struct InitializeParams: Encodable {
+struct InitializeParams<Options: Encodable>: Encodable {
     let processId: Int?
     let rootUri: String?
     let capabilities: [String: String]
+    let initializationOptions: Options?
 
-    init(processId: Int?, rootUri: String?) {
+    init(processId: Int?, rootUri: String?, initializationOptions: Options? = nil) {
         self.processId = processId
         self.rootUri = rootUri
         self.capabilities = [:]
+        self.initializationOptions = initializationOptions
     }
+}
+
+/// typescript-language-server ignores a global npm "typescript" install unless explicitly
+/// pointed at it this way — see LanguageServerRegistry.tsserverPathOverride.
+struct TSServerPathOption: Encodable {
+    let path: String
+}
+
+struct TSServerInitializationOptions: Encodable {
+    let tsserver: TSServerPathOption
 }
 
 // MARK: - Incoming (Decodable)
