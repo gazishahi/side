@@ -38,6 +38,7 @@ private struct OpenTab {
     var isPreviewingMarkdown = false
     var cachedImage: NSImage?
     var headCache: HeadContentCache = .notFetched
+    var isSaving = false
 }
 
 private struct IndexedFile {
@@ -82,8 +83,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var fileExplorerGlobalMonitor: Any?
     private var currentDiffHunks: [GitHunk] = []
     private var currentDiffHeadContent: String?
+    /// Canonical identity — the repo root as originally opened. Used for window/recent-project
+    /// identity and the per-track file-memory key, neither of which should change just because
+    /// the active track happens to have its own worktree.
     private var projectURL: URL?
+    /// Where files actually live for whatever's currently focused — the active track's own
+    /// worktree if it has one, else `projectURL`. Everything that touches real files on disk
+    /// (indexing, the file explorer, git diff/blame, the formatter, LSP) operates against this,
+    /// not `projectURL`.
+    private var focusedRoot: URL?
     private var lspManager: LSPManager?
+    /// Lives in the shared window toolbar (wired by ShellViewController), not this stage's own
+    /// view — the whole point is it's visible from the title bar regardless of which stage is
+    /// showing, though it only ever has something to show while a Make file is active.
+    let lspStatusButton = NSButton(image: NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Language server not installed") ?? NSImage(), target: nil, action: nil)
+    private var lspInstallPopover: NSPopover?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
     private enum SearchMode { case files, symbols }
@@ -114,6 +128,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         buildMenu()
         configureQuickOpenKeys()
         refreshRecentProjectsList()
+        lspStatusButton.bezelStyle = .texturedRounded
+        lspStatusButton.isBordered = false
+        lspStatusButton.contentTintColor = .systemYellow
+        lspStatusButton.target = self
+        lspStatusButton.action = #selector(showLSPStatusPopover)
+        lspStatusButton.isHidden = true
     }
 
     /// Recents are shared across windows via UserDefaults — refresh on every appearance so a
@@ -122,6 +142,34 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     override func viewWillAppear() {
         super.viewWillAppear()
         refreshRecentProjectsList()
+    }
+
+    /// The file explorer is a child *window* of the whole app window (so it can float above
+    /// Make's own content), not a subview of this controller's own view — which means switching
+    /// stages, which only swaps the container's child view controller, never touches it. Without
+    /// this it kept floating on top of Run or Tracks after switching away, which made no sense:
+    /// it's a Make-only affordance (browse → open into the editor), and there's no editor to open
+    /// into while looking at another stage.
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        hideFileExplorer()
+    }
+
+    /// Opening a file (or dismissing quick-open) claims first responder as a side effect
+    /// elsewhere in this file, but neither of those necessarily happens on every reappearance —
+    /// switching to another stage and back with no tabs open, for instance, leaves the window's
+    /// first responder wherever the *previous* stage left it (or the window itself), which is
+    /// outside this controller's view hierarchy entirely. Without reclaiming it here, the
+    /// responder chain never reaches MakeWorkspaceViewController while this stage is visible,
+    /// silently disabling every Navigate-menu action (Toggle File Explorer included) — same gap
+    /// Tracks already hit and fixed the same way.
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        if let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text {
+            view.window?.makeFirstResponder(editor)
+        } else {
+            view.window?.makeFirstResponder(searchField)
+        }
     }
 
     private func buildView() {
@@ -238,16 +286,22 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         detail.textColor = .secondaryLabelColor
         detail.alignment = .center
         detail.maximumNumberOfLines = 2
-        let open = NSButton(title: "Open project…", target: self, action: #selector(openProject))
+        let open = NSButton(title: "Open Project…", target: self, action: #selector(openProject))
         open.bezelStyle = .rounded
         open.controlSize = .large
+        let newProjectButton = NSButton(title: "New Project…", target: self, action: #selector(newProject))
+        newProjectButton.bezelStyle = .rounded
+        newProjectButton.controlSize = .large
+        let buttonsRow = NSStackView(views: [newProjectButton, open])
+        buttonsRow.orientation = .horizontal
+        buttonsRow.spacing = 10
         recentProjectsStack.orientation = .vertical
         recentProjectsStack.alignment = .centerX
         recentProjectsStack.spacing = 4
         emptyState.orientation = .vertical
         emptyState.alignment = .centerX
         emptyState.spacing = 13
-        [headline, detail, open, recentProjectsStack].forEach(emptyState.addArrangedSubview)
+        [headline, detail, buttonsRow, recentProjectsStack].forEach(emptyState.addArrangedSubview)
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyState)
 
@@ -476,12 +530,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             hideFileExplorer()
             return
         }
-        guard let window = view.window, let root = projectURL else { return }
+        guard let window = view.window, let root = focusedRoot else { return }
         let files = allFiles
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let tree = Self.buildFileTree(from: files, root: root)
             DispatchQueue.main.async {
-                guard let self, self.projectURL == root else { return }
+                guard let self, self.focusedRoot == root else { return }
                 self.fileTreeRoots = tree
                 self.fileExplorerOutline.reloadData()
                 self.showFileExplorer(in: window)
@@ -631,7 +685,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         menu.removeAllItems()
         let row = fileExplorerOutline.clickedRow
         let clickedNode = row >= 0 ? fileExplorerOutline.item(atRow: row) as? FileTreeNode : nil
-        guard let root = projectURL else { return }
+        guard let root = focusedRoot else { return }
 
         let folderForNewItems: FileTreeNode
         if let clickedNode, clickedNode.isDirectory {
@@ -743,12 +797,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func refreshFileTreeAndReindex() {
-        guard let root = projectURL else { return }
+        guard let root = focusedRoot else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let indexed = Self.indexFiles(at: root)
             let tree = Self.buildFileTree(from: indexed, root: root)
             DispatchQueue.main.async {
-                guard let self, self.projectURL == root else { return }
+                guard let self, self.focusedRoot == root else { return }
                 self.allFiles = indexed
                 self.fileTreeRoots = tree
                 self.fileExplorerOutline.reloadData()
@@ -796,18 +850,72 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return cell
     }
 
-    // MARK: - Per-project file memory & recent projects
+    // MARK: - Per-project (and per-track) file memory & recent projects
+
+    /// `nil` when there's no active track (a project not using Tracks, or sitting on the default
+    /// branch between tracks) — falls back to one shared per-project bucket, same as before
+    /// Tracks existed. Non-nil keys the memory to that track's branch specifically, so switching
+    /// tracks doesn't dump you on whatever file the *last* track happened to have open.
+    var currentTrackKey: String?
+
+    private func compositeMemoryKey(for project: URL) -> String {
+        "\(project.path)#\(currentTrackKey ?? "")"
+    }
 
     private func rememberLastFile(_ fileURL: URL, forProject project: URL) {
         var map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String] ?? [:]
-        map[project.path] = fileURL.path
+        map[compositeMemoryKey(for: project)] = fileURL.path
         UserDefaults.standard.set(map, forKey: lastFilesByProjectKey)
     }
 
     private func lastFile(forProject project: URL) -> URL? {
         guard let map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String],
-              let path = map[project.path] else { return nil }
+              let path = map[compositeMemoryKey(for: project)] else { return nil }
         return URL(fileURLWithPath: path)
+    }
+
+    /// Applies an approved agent edit into the open tab for `url`, if there is one, and returns
+    /// whether it did. Deliberately routes through the same textStorage replacement + rehighlight
+    /// + dirty-marking path `revertToSaved`/format-on-save already use, so from this point on the
+    /// change is indistinguishable from a manual edit: normal undo, normal save, normal diff
+    /// gutter. Returns false when the file isn't open, leaving the caller to write to disk.
+    func applyApprovedEdit(url: URL, newContent: String) -> Bool {
+        guard let index = openTabs.firstIndex(where: { $0.url == url && $0.kind == .text }) else { return false }
+        let tab = openTabs[index]
+        let fullRange = NSRange(location: 0, length: tab.textStorage.length)
+        tab.textStorage.replaceCharacters(in: fullRange, with: newContent)
+        SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+        openTabs[index].dirty = true
+        if activeTabIndex == index {
+            dirty = true
+            gutter.invalidate()
+            refreshGitDiffMarks()
+        }
+        rebuildTabBar()
+        return true
+    }
+
+    /// Opens `url` and reveals it, so approving an edit lands the user in the file that changed.
+    func revealAfterApply(_ url: URL) {
+        revealFile(url, line: nil)
+    }
+
+    /// Unsaved editor content for `url`, or nil if that file isn't open with pending edits.
+    /// Heron's read tools consult this so an agent reasons about what's on screen rather than
+    /// stale disk content. Only dirty tabs are reported — for a clean tab, disk is identical
+    /// and reading the file directly avoids copying a whole buffer per call.
+    func unsavedContent(for url: URL) -> String? {
+        guard let tab = openTabs.first(where: { $0.url == url && $0.kind == .text && $0.dirty }) else { return nil }
+        return tab.textStorage.string
+    }
+
+    /// Called when a track is deleted — its remembered file has nowhere to belong anymore, so the
+    /// entry is dropped rather than left as permanent dead weight in the defaults dictionary.
+    func forgetLastFile(forTrackKey trackKey: String?) {
+        guard let projectURL else { return }
+        var map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String] ?? [:]
+        map.removeValue(forKey: "\(projectURL.path)#\(trackKey ?? "")")
+        UserDefaults.standard.set(map, forKey: lastFilesByProjectKey)
     }
 
     private func rememberRecentProject(_ project: URL) {
@@ -832,6 +940,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         label.textColor = .tertiaryLabelColor
         recentProjectsStack.addArrangedSubview(label)
         recentProjectsStack.setCustomSpacing(8, after: label)
+
+        // NSGridView (not per-row NSStackViews) so the name column and path column each
+        // line up across rows instead of every row sizing independently to its own content.
+        let grid = NSGridView(numberOfColumns: 2, rows: 0)
+        grid.rowSpacing = 4
+        grid.columnSpacing = 10
         for url in recents {
             let nameButton = NSButton(title: url.lastPathComponent, target: self, action: #selector(openRecentProjectRow(_:)))
             nameButton.bezelStyle = .inline
@@ -843,13 +957,22 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let pathLabel = NSTextField(labelWithString: abbreviatedParentPath(of: url))
             pathLabel.font = .systemFont(ofSize: 11)
             pathLabel.textColor = .tertiaryLabelColor
+            pathLabel.lineBreakMode = .byTruncatingMiddle
+            pathLabel.maximumNumberOfLines = 1
+            pathLabel.alignment = .right
+            pathLabel.toolTip = url.path
+            pathLabel.translatesAutoresizingMaskIntoConstraints = false
+            // Middle-truncated so both ends of the path stay legible (the identifying leaf
+            // directories) rather than losing the tail to a fixed-width tail truncation. Fixed
+            // (not max) width so right-alignment actually lines paths up flush on the right
+            // instead of each just right-aligning within its own ragged content width.
+            pathLabel.widthAnchor.constraint(equalToConstant: 320).isActive = true
 
-            let row = NSStackView(views: [nameButton, pathLabel])
-            row.orientation = .horizontal
-            row.spacing = 8
-            row.alignment = .firstBaseline
-            recentProjectsStack.addArrangedSubview(row)
+            grid.addRow(with: [nameButton, pathLabel])
         }
+        grid.column(at: 0).xPlacement = .leading
+        grid.column(at: 1).xPlacement = .trailing
+        recentProjectsStack.addArrangedSubview(grid)
     }
 
     private func abbreviatedParentPath(of url: URL) -> String {
@@ -900,34 +1023,107 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    /// Creates a brand-new project folder and `git init`s it, so it's never in the broken
+    /// "opened a plain folder with no `.git`" state Tracks otherwise has to detect and recover
+    /// from — new projects start correctly rather than needing a separate repair step.
+    @objc private func newProject() {
+        confirmAllUnsavedChanges { [weak self] proceed in
+            guard let self, proceed, let window = self.view.window else { return }
+            let panel = NSSavePanel()
+            panel.message = "Name your new project"
+            panel.prompt = "Create"
+            panel.nameFieldStringValue = "New Project"
+            panel.canCreateDirectories = true
+            panel.beginSheetModal(for: window) { [weak self] response in
+                guard let self, response == .OK, let url = panel.url else { return }
+                do {
+                    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                } catch {
+                    self.showAlert(title: "Couldn't create project", message: error.localizedDescription, window: window)
+                    return
+                }
+                let initResult = self.runGitInit(at: url)
+                guard initResult.success else {
+                    self.showAlert(title: "Couldn't initialize git", message: initResult.output, window: window)
+                    return
+                }
+                self.closeAllTabsImmediately()
+                self.loadProject(at: url)
+            }
+        }
+    }
+
+    private func runGitInit(at url: URL) -> (success: Bool, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git", "init"]
+        process.currentDirectoryURL = url
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            return (false, error.localizedDescription)
+        }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (process.terminationStatus == 0, output)
+    }
+
     /// Only ever reopens a file if this specific project has one remembered — no more
     /// guessing a "probably the main file" default by extension. A project with nothing
     /// remembered (first time opening it, or session storage cleared) just opens to an
     /// empty canvas; the file explorer/quick-open are one keystroke away regardless.
     private func loadProject(at url: URL) {
-        lspManager?.prepareForClose()
-        let manager = LSPManager(projectRoot: url)
-        manager.onDiagnostics = { [weak self] fileURL, diagnostics in
-            self?.applyDiagnostics(diagnostics, to: fileURL)
-        }
-        lspManager = manager
         projectURL = url
-        searchField.placeholderString = "Indexing \(url.lastPathComponent)…"
+        retarget(to: url)
+        // A fresh project open starts at the shared per-project bucket; if this project has an
+        // active track, ShellViewController sets the real key synchronously inside its
+        // `onProjectOpened` callback below, before `reindexAndRestoreLastFile` reads it.
+        currentTrackKey = nil
         emptyState.isHidden = true
         UserDefaults.standard.set(url.path, forKey: lastProjectKey)
         rememberRecentProject(url)
         onProjectOpened?(url)
+        reindexAndRestoreLastFile()
+    }
+
+    /// Tears down and recreates `lspManager` pointed at `root`, and points every other
+    /// file-touching operation (indexing, explorer, diff, formatter) at it too. Cheap to call —
+    /// `LSPManager` only spawns servers lazily on first file open, so retargeting mid-session
+    /// (a track switch landing on a different worktree) does no real work until a file is opened.
+    private func retarget(to root: URL) {
+        lspManager?.prepareForClose()
+        let manager = LSPManager(projectRoot: root)
+        manager.onDiagnostics = { [weak self] fileURL, diagnostics in
+            self?.applyDiagnostics(diagnostics, to: fileURL)
+        }
+        manager.onAvailabilityChanged = { [weak self] in self?.updateLSPIndicator() }
+        lspManager = manager
+        focusedRoot = root
+        searchField.placeholderString = "Indexing \(root.lastPathComponent)…"
+    }
+
+    /// Re-scans the focused root's files and reopens whatever's remembered for
+    /// `(projectURL, currentTrackKey)` (or reveals the file explorer if nothing is). Shared by
+    /// opening a project for the first time and by switching tracks mid-session, since both need
+    /// the file list refreshed — branches (or worktrees) can differ in which files even exist —
+    /// before deciding what to reopen.
+    private func reindexAndRestoreLastFile() {
+        guard let root = focusedRoot, let memoryRoot = projectURL else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let indexed = Self.indexFiles(at: url)
+            let indexed = Self.indexFiles(at: root)
             DispatchQueue.main.async {
-                guard let self, self.projectURL == url else { return }
+                guard let self, self.focusedRoot == root else { return }
                 self.allFiles = indexed
-                self.searchField.placeholderString = "Find a file in \(url.lastPathComponent)"
-                if let saved = self.lastFile(forProject: url), let file = indexed.first(where: { $0.url.path == saved.path }) {
+                self.searchField.placeholderString = "Find a file in \(root.lastPathComponent)"
+                if let saved = self.lastFile(forProject: memoryRoot), let file = indexed.first(where: { $0.url.path == saved.path }) {
                     self.open(file.url)
                 } else {
-                    // No remembered file for this project — a fully blank canvas isn't a good
-                    // first impression. Surface the file tree instead so there's immediately
+                    // No remembered file for this project/track — a fully blank canvas isn't a
+                    // good first impression. Surface the file tree instead so there's immediately
                     // something to act on, rather than guessing which file to auto-open.
                     self.toggleFileExplorer()
                 }
@@ -935,27 +1131,24 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    /// Called after a successful track switch. The previous track's open tabs hold in-memory
+    /// content for a branch that's no longer checked out — reopening them as-is would show stale
+    /// content instead of the new branch's version (or a file that doesn't exist on it at all) —
+    /// so they're closed outright rather than left open, then the new track's own remembered file
+    /// (if any) is restored.
+    func reloadForTrackSwitch(trackKey: String?, workingDirectory: URL) {
+        closeAllTabsImmediately()
+        currentTrackKey = trackKey
+        retarget(to: workingDirectory)
+        reindexAndRestoreLastFile()
+    }
+
     private static let maxIndexedFiles = 25000
 
+    /// Walking/ignore rules live in ProjectFileAccess so Heron's read tools see exactly the
+    /// same file set quick-open does.
     nonisolated private static func indexFiles(at root: URL) -> [IndexedFile] {
-        let ignored: Set<String> = [
-            ".git", ".build", "DerivedData", "node_modules", ".next", "Pods", "dist", "build",
-            ".venv", "venv", "vendor", "Carthage", "target", "out", ".cache", "coverage",
-            "__pycache__", ".tox", ".mypy_cache", ".pytest_cache"
-        ]
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey]
-        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return [] }
-        let rootPrefix = root.path + "/"
-        var indexed: [IndexedFile] = []
-        for case let url as URL in enumerator {
-            let values = try? url.resourceValues(forKeys: keys)
-            if values?.isDirectory == true && ignored.contains(url.lastPathComponent) { enumerator.skipDescendants(); continue }
-            if values?.isRegularFile == true && !url.pathExtension.isEmpty {
-                indexed.append(IndexedFile(url: url, relativePath: url.path.replacingOccurrences(of: rootPrefix, with: "")))
-            }
-            if indexed.count >= maxIndexedFiles { break }
-        }
-        return indexed.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        ProjectFileAccess.scan(root: root).map { IndexedFile(url: $0.url, relativePath: $0.relativePath) }
     }
 
     // MARK: - Tabs
@@ -963,6 +1156,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let maxOpenableFileSize = 10_000_000
     private static let maxOpenableImageSize = 50_000_000
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "webp"]
+
+    private static func decodeText(from data: Data) -> String? {
+        ProjectFileAccess.decodeText(from: data)
+    }
 
     private func open(_ url: URL, completion: (() -> Void)? = nil) {
         captureActiveTabSelection()
@@ -1023,7 +1220,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 }
                 return
             }
-            guard let source = String(data: data, encoding: .utf8) else {
+            guard let source = Self.decodeText(from: data) else {
                 DispatchQueue.main.async {
                     self?.showAlert(title: "Can't open this file", message: "\(url.lastPathComponent) doesn't appear to be a text file Side can edit.", window: window)
                     completion?()
@@ -1124,7 +1321,46 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         dirty = tab.dirty
         rebuildTabBar()
+        updateLSPIndicator()
         onFileOpened?(tab.url)
+    }
+
+    /// Drives the title-bar warning glyph: visible only when the active file's extension has a
+    /// registered, installable language server that isn't actually on PATH. Never shown for
+    /// sourcekit-lsp (no installFormula) since there's nothing the user could do about that here.
+    private func updateLSPIndicator() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
+              let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension),
+              entry.installFormula != nil,
+              lspManager?.isUnavailable(forExtension: openTabs[index].url.pathExtension) == true else {
+            lspStatusButton.isHidden = true
+            return
+        }
+        lspStatusButton.isHidden = false
+        lspStatusButton.toolTip = "\(entry.languageId.capitalized) language server not installed — click to install"
+    }
+
+    @objc private func showLSPStatusPopover() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index),
+              let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension) else { return }
+        let tabURL = openTabs[index].url
+        let content = LSPInstallPopoverViewController(entry: entry) { [weak self] in
+            guard let self else { return }
+            // Re-sends didOpen with the buffer's current in-memory content — this *is* the
+            // activation, not just a cache clear, so there's nothing left for the user to do
+            // (no need to actually close/reopen the tab) despite the file never having left
+            // the editor.
+            self.lspManager?.retryAfterInstall(binaryName: entry.binaryName)
+            if let currentIndex = self.activeTabIndex, self.openTabs.indices.contains(currentIndex), self.openTabs[currentIndex].url == tabURL {
+                self.lspManager?.opened(url: tabURL, content: self.openTabs[currentIndex].textStorage.string)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in self?.lspInstallPopover?.close() }
+        }
+        let popover = NSPopover()
+        popover.contentViewController = content
+        popover.behavior = .transient
+        lspInstallPopover = popover
+        popover.show(relativeTo: lspStatusButton.bounds, of: lspStatusButton, preferredEdge: .maxY)
     }
 
     private func rebuildCSVColumns(for tab: OpenTab) {
@@ -1353,6 +1589,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         dirty = false
         onFileOpened?(nil)
         rebuildTabBar()
+        updateLSPIndicator()
     }
 
     /// Resolves every dirty tab (via Save/Don't Save/Cancel, one at a time) before allowing a
@@ -1482,13 +1719,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func relativePath(_ url: URL) -> String {
-        guard let projectURL else { return url.path }
-        return url.path.replacingOccurrences(of: projectURL.path + "/", with: "")
+        guard let focusedRoot else { return url.path }
+        return url.path.replacingOccurrences(of: focusedRoot.path + "/", with: "")
     }
 
     private var gitDiffGeneration = 0
     private func refreshGitDiffMarks() {
-        guard let projectURL, let index = activeTabIndex, openTabs.indices.contains(index) else { return }
+        guard let focusedRoot, let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         guard !tab.isUntitled, tab.kind == .text else {
             gutter.lineDiffMarks = [:]
@@ -1503,13 +1740,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         switch tab.headCache {
         case .fetched(let headContent):
-            runDiff(headContent: headContent, content: content, projectRoot: projectURL, tabIndex: index, generation: generation)
+            runDiff(headContent: headContent, content: content, projectRoot: focusedRoot, tabIndex: index, generation: generation)
         case .notFetched:
-            GitDiffComputer.fetchHeadContent(projectRoot: projectURL, relativePath: relative) { [weak self] headContent in
+            GitDiffComputer.fetchHeadContent(projectRoot: focusedRoot, relativePath: relative) { [weak self] headContent in
                 guard let self, self.openTabs.indices.contains(index) else { return }
                 self.openTabs[index].headCache = .fetched(headContent)
                 guard self.gitDiffGeneration == generation, self.activeTabIndex == index else { return }
-                self.runDiff(headContent: headContent, content: content, projectRoot: projectURL, tabIndex: index, generation: generation)
+                self.runDiff(headContent: headContent, content: content, projectRoot: focusedRoot, tabIndex: index, generation: generation)
             }
         }
     }
@@ -2088,12 +2325,34 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     // per-window action.
     private func buildMenu() {
         let main = NSMenu(title: "Side")
+
+        // The very first item's own title is cosmetic — AppKit always displays the running
+        // app's actual name (from Info.plist) for it regardless — but it has to exist for
+        // AppKit to treat this as the application menu at all. Without it there was no About
+        // panel, no Preferences shortcut, no Hide, and critically no Quit — Cmd+Q had nothing
+        // bound to it.
+        let appItem = NSMenuItem(title: "Side", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu(title: "Side")
+        appMenu.addItem(withTitle: "About Side", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        let preferences = appMenu.addItem(withTitle: "Preferences…", action: #selector(AppDelegate.showPreferences), keyEquivalent: ",")
+        preferences.target = NSApp.delegate as? AppDelegate
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Hide Side", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Quit Side", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+
         let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
         let newWindowItem = fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow), keyEquivalent: "n")
         newWindowItem.keyEquivalentModifierMask = [.command, .shift]
         newWindowItem.target = NSApp.delegate as? AppDelegate
         fileMenu.addItem(withTitle: "New File", action: #selector(newFile), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "New Project…", action: #selector(newProject), keyEquivalent: "")
         fileMenu.addItem(withTitle: "Open Project…", action: #selector(openProject), keyEquivalent: "o")
         openRecentMenu.delegate = self
         let openRecentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
@@ -2166,7 +2425,28 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         runMenu.addItem(withTitle: "Rerun Last Command", action: #selector(RunWorkspaceViewController.rerunLastCommand), keyEquivalent: "")
         runItem.submenu = runMenu
 
-        main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); main.addItem(runItem); NSApp.mainMenu = main
+        // Same responder-chain pattern as Run above — TracksWorkspaceViewController picks this up
+        // while the Tracks stage is active.
+        let trackItem = NSMenuItem(title: "Track", action: nil, keyEquivalent: "")
+        let trackMenu = NSMenu(title: "Track")
+        let newTrack = trackMenu.addItem(withTitle: "New Track…", action: #selector(TracksWorkspaceViewController.newTrackTapped), keyEquivalent: "t")
+        newTrack.keyEquivalentModifierMask = [.command, .shift]
+        trackItem.submenu = trackMenu
+
+        // Standard macOS Window menu — AppKit populates the list of open windows (with
+        // checkmarks/ordering) into this automatically once assigned to NSApp.windowsMenu,
+        // on top of whatever's added here explicitly.
+        let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowItem.submenu = windowMenu
+
+        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(trackItem); main.addItem(windowItem)
+        NSApp.mainMenu = main
+        NSApp.windowsMenu = windowMenu
     }
     @objc private func focusQuickOpen() {
         searchMode = .files
@@ -2244,11 +2524,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = indexForTab(id: tabID) else { completion(false); return }
         let tab = openTabs[index]
         guard tab.kind == .text else { completion(false); return }
+        // Without this, pressing Cmd+S twice in quick succession (faster than the write +
+        // formatter-subprocess round trip) could launch two overlapping writes against the same
+        // path, one of them racing the other's formatter reading the file back from disk. The
+        // second call while one's already in flight is just ignored rather than raced.
+        guard !tab.isSaving else { completion(false); return }
+        openTabs[index].isSaving = true
+        let finish: (Bool) -> Void = { [weak self] success in
+            if let self, let index = self.indexForTab(id: tabID) { self.openTabs[index].isSaving = false }
+            completion(success)
+        }
         if tab.isUntitled {
-            performSaveAs(tabID: tabID, completion: completion)
+            performSaveAs(tabID: tabID, completion: finish)
             return
         }
-        writeTabToDisk(tabID: tabID, url: tab.url, completion: completion)
+        writeTabToDisk(tabID: tabID, url: tab.url, completion: finish)
     }
 
     private func performSaveAs(tabID: UUID, completion: @escaping (Bool) -> Void) {
@@ -2256,7 +2546,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let panel = NSSavePanel()
         let currentName = openTabs[index].url.lastPathComponent
         panel.nameFieldStringValue = openTabs[index].isUntitled ? "\(currentName).txt" : currentName
-        if let projectURL { panel.directoryURL = projectURL }
+        if let focusedRoot { panel.directoryURL = focusedRoot }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let newURL = panel.url else { completion(false); return }
             guard let index = self.indexForTab(id: tabID) else { completion(false); return }
@@ -2280,7 +2570,30 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func writeTabToDisk(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
         guard let index = indexForTab(id: tabID), let window = view.window else { completion(false); return }
         let tab = openTabs[index]
-        if let known = tab.knownModificationDate, let onDisk = modificationDate(of: url), onDisk > known {
+        let onDiskModDate = modificationDate(of: url)
+        // `modificationDate(of:)` returning nil while we have a known prior date doesn't mean
+        // "unchanged, nothing to check" — it means the file is *gone*. That case used to fall
+        // through the `onDisk > known` comparison entirely (nil isn't `> known`) straight to a
+        // forced write, silently resurrecting a file the user (or a branch switch, or a script)
+        // had deleted, with no indication anything unusual had happened.
+        if tab.knownModificationDate != nil, onDiskModDate == nil {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "\u{201C}\(url.lastPathComponent)\u{201D} was deleted"
+            alert.informativeText = "This file no longer exists on disk. Saving will recreate it with the contents currently open in Side."
+            alert.addButton(withTitle: "Recreate")
+            alert.addButton(withTitle: "Cancel")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard let self else { completion(false); return }
+                if response == .alertFirstButtonReturn {
+                    self.writeTabToDiskForced(tabID: tabID, url: url, completion: completion)
+                } else {
+                    completion(false)
+                }
+            }
+            return
+        }
+        if let known = tab.knownModificationDate, let onDisk = onDiskModDate, onDisk > known {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "\u{201C}\(url.lastPathComponent)\u{201D} has changed on disk"
@@ -2319,7 +2632,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func runFormatterIfNeeded(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
-        guard let projectURL, let formatter = Self.formatterCommand(for: url, projectRoot: projectURL) else {
+        guard let focusedRoot, let formatter = Self.formatterCommand(for: url, projectRoot: focusedRoot) else {
             finishSave(tabID: tabID)
             completion(true)
             return

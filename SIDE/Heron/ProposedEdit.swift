@@ -1,0 +1,60 @@
+import Foundation
+
+/// A file change an agent has asked for but that has **not** touched disk. This type is the
+/// mechanism behind the constitution's "agents propose; people promote": an `edit_file` or
+/// `write_file` tool call produces one of these and stops. Nothing is written until a human
+/// approves it, and rejecting one leaves the project byte-identical.
+struct ProposedEdit: Identifiable {
+    let id: UUID
+    let toolUseId: String
+    let url: URL
+    let relativePath: String
+    /// What the agent's change was computed against — the live unsaved buffer when the file is
+    /// open and dirty in Make, otherwise disk. Proposing against stale disk content while the
+    /// user has unsaved edits would silently discard those edits on apply.
+    let baseContent: String
+    let proposedContent: String
+    /// True when the file doesn't exist yet, so the UI can say "create" rather than "edit".
+    let isNewFile: Bool
+
+    init(toolUseId: String, url: URL, relativePath: String, baseContent: String, proposedContent: String, isNewFile: Bool) {
+        self.id = UUID()
+        self.toolUseId = toolUseId
+        self.url = url
+        self.relativePath = relativePath
+        self.baseContent = baseContent
+        self.proposedContent = proposedContent
+        self.isNewFile = isNewFile
+    }
+
+    var addedLineCount: Int {
+        proposedContent.components(separatedBy: "\n").count - baseContent.components(separatedBy: "\n").count
+    }
+}
+
+enum ProposedEditOutcome {
+    case applied
+    case rejected
+    /// The file changed underneath the proposal between it being made and approved — applying
+    /// would clobber whatever happened in between, so the user is told instead.
+    case staleBase
+    case writeFailed(String)
+
+    /// What gets fed back to the model as the tool result, so its next turn reflects reality
+    /// rather than assuming the edit landed.
+    var toolResultText: String {
+        switch self {
+        case .applied: return "Applied. The user approved this edit and it is now in the editor (unsaved)."
+        case .rejected: return "Rejected by the user. The file is unchanged. Ask what they'd prefer instead of retrying the same edit."
+        case .staleBase: return "Not applied: the file changed after this edit was proposed. Re-read the file and propose again."
+        case .writeFailed(let message): return "Not applied — writing failed: \(message)"
+        }
+    }
+
+    var isError: Bool {
+        switch self {
+        case .applied, .rejected: return false
+        case .staleBase, .writeFailed: return true
+        }
+    }
+}

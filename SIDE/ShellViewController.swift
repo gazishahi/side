@@ -1,20 +1,69 @@
 import AppKit
+import UserNotifications
+
+/// One system notification per transition into "needs you" — no queueing or coalescing across
+/// several tracks in quick succession; good enough for a first pass. Authorization is requested
+/// lazily on first use and never blocks the notification attempt — if the user hasn't granted it
+/// yet (or denies it), `add` just silently no-ops, which is the right degrade for something this
+/// non-essential.
+@MainActor
+private enum AgentAttentionNotifier {
+    private static var didRequestAuthorization = false
+
+    static func notify(trackIntent: String) {
+        let center = UNUserNotificationCenter.current()
+        if !didRequestAuthorization {
+            didRequestAuthorization = true
+            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "Needs your attention"
+        content.body = trackIntent
+        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+}
 
 private extension NSToolbarItem.Identifier {
     static let projectLabel = NSToolbarItem.Identifier("side.project-label")
     static let stageSwitcher = NSToolbarItem.Identifier("side.stage-switcher")
     static let quickOpen = NSToolbarItem.Identifier("side.quick-open")
+    static let lspStatus = NSToolbarItem.Identifier("side.lsp-status")
 }
 
 final class ShellViewController: NSViewController, NSToolbarDelegate {
-    enum Stage: String, CaseIterable { case make = "Make", run = "Run" }
+    // Think sits next to Make — those are the two stages a user bounces between most while
+    // an agent works, so they get adjacent segments.
+    enum Stage: String, CaseIterable { case make = "Make", think = "Think", run = "Run", tracks = "Tracks" }
 
     private let stageControl = NSSegmentedControl(labels: Stage.allCases.map(\.rawValue), trackingMode: .selectOne, target: nil, action: nil)
     private let projectLabel = NSTextField(labelWithString: "")
     private let container = NSView()
     private lazy var makeVC = MakeWorkspaceViewController()
+    private lazy var thinkVC = ThinkWorkspaceViewController()
     private lazy var runVC = RunWorkspaceViewController()
+    private lazy var tracksVC = TracksWorkspaceViewController()
     private var current: Stage?
+    /// Shared with every other window that has the same project open — see `ProjectContext`.
+    private var projectContext: ProjectContext?
+    private var trackStore: TrackStore? { projectContext?.trackStore }
+    private var trackStoreObserverToken = UUID()
+    private var runnerChangeObserverToken = UUID()
+    /// Track ids that were `.needsYou` as of the last `runnerActivityChanged()` — diffed against
+    /// the current set so a notification fires once per transition *into* needing attention, not
+    /// once per debounced recompute while it stays that way.
+    private var lastKnownNeedsYouTrackIDs: Set<UUID> = []
+    /// The track this window's stages (Make/Run/Think) are actually showing — distinct from
+    /// `trackStore?.activeTrack`, which can change out from under this window via another window
+    /// switching tracks on the shared store. Only updated at the same three points Make/Run/Think
+    /// themselves get reloaded, so it never claims a track this window hasn't actually switched
+    /// to yet. Backs `WorkspaceBridgeHost` — an `AgentRunner` uses it to decide whether *this*
+    /// window is the one to write an approved edit into.
+    private var currentTrackKey: String?
+    /// Where `currentTrackKey`'s stages actually operate — its own worktree if it has one, else
+    /// `projectURL`. Threaded into Make/Run's `reloadForTrackSwitch` and used as the root for
+    /// this window's own git-status/branch introspection (`refreshGitInfo`), so the title bar
+    /// reflects the track actually being looked at rather than always the shared main tree.
+    private var focusedRoot: URL?
 
     private var projectURL: URL?
     private var currentFileURL: URL?
@@ -36,6 +85,30 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             self.makeVC.revealFile(url, line: line)
         }
         runVC.onActivityChanged = { [weak self] in self?.updateStageLabels() }
+        tracksVC.onSwitchRequested = { [weak self] track, completion in
+            self?.switchToTrack(track, completion: completion)
+        }
+        tracksVC.onReviewRequested = { [weak self] track in
+            guard let self else { return }
+            guard track.status != .active else { self.show(.think); return }
+            self.switchToTrack(track, landOn: .think, completion: { _ in })
+        }
+        tracksVC.onCreateTrackRequested = { [weak self] completion in
+            self?.confirmCloseAllUnsaved(completion: completion)
+        }
+        tracksVC.onTrackCreated = { [weak self] track in
+            self?.branchIsNowActive(track.branchName)
+        }
+        tracksVC.onBranchSwitched = { [weak self] branchName in
+            self?.branchIsNowActive(branchName)
+        }
+        tracksVC.onTrackDeleted = { [weak self] track in
+            guard let self else { return }
+            self.makeVC.forgetLastFile(forTrackKey: track.branchName)
+            self.runVC.discardSessions(forTrackKey: track.branchName)
+            self.projectContext?.sessionStore.removeSession(forTrackKey: track.branchName)
+            self.projectContext?.runnerManager.discardRunner(forTrackKey: track.branchName)
+        }
         show(.make)
     }
 
@@ -44,7 +117,14 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     func restoreLastSessionIfAvailable() { makeVC.restoreLastSessionIfAvailable() }
     func prepareForClose() {
         makeVC.prepareForClose()
+        thinkVC.prepareForClose()
         runVC.prepareForClose()
+        if let projectURL {
+            trackStore?.removeChangeObserver(trackStoreObserverToken)
+            projectContext?.runnerManager.removeChangeObserver(runnerChangeObserverToken)
+            projectContext?.unregisterBridgeHost(self)
+            ProjectContextRegistry.shared.release(projectRoot: projectURL)
+        }
     }
 
     override func viewDidAppear() {
@@ -91,8 +171,8 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
     // MARK: - Toolbar
 
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.projectLabel, .flexibleSpace, .stageSwitcher, .flexibleSpace, .quickOpen] }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.projectLabel, .stageSwitcher, .quickOpen, .flexibleSpace] }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.projectLabel, .flexibleSpace, .stageSwitcher, .flexibleSpace, .lspStatus, .quickOpen] }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.projectLabel, .stageSwitcher, .lspStatus, .quickOpen, .flexibleSpace] }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
         case .projectLabel:
@@ -106,6 +186,14 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = stageControl
             item.label = "Stage"
+            return item
+        case .lspStatus:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            let button = makeVC.lspStatusButton
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            item.view = button
+            item.label = "Language Server"
             return item
         case .quickOpen:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
@@ -136,7 +224,13 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             child.removeFromParent()
         }
 
-        let next: NSViewController = stage == .make ? makeVC : runVC
+        let next: NSViewController
+        switch stage {
+        case .make: next = makeVC
+        case .think: next = thinkVC
+        case .run: next = runVC
+        case .tracks: next = tracksVC
+        }
         addChild(next)
         next.view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(next.view)
@@ -155,21 +249,200 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     private func updateStageLabels() {
         let runIndex = Stage.allCases.firstIndex(of: .run) ?? 1
         stageControl.setLabel(runVC.hasBackgroundActivity ? "Run \u{25CF}" : "Run", forSegment: runIndex)
+
+        // needsYou takes precedence over working — a track blocked on approval matters more
+        // than one that's merely busy, and this is the one predicate every other "reach the
+        // user" surface (dock badge, notification) also keys off, so a new blocking reason
+        // showing up here is structurally guaranteed to show up everywhere else too.
+        let tracksIndex = Stage.allCases.firstIndex(of: .tracks) ?? 3
+        let label: String
+        if !needsYouTrackIDs().isEmpty {
+            label = "Tracks \u{25D1}" // ◑ — distinct from Run's solid dot, reads as "half-done/waiting"
+        } else if hasWorkingTrack() {
+            label = "Tracks \u{25CF}"
+        } else {
+            label = "Tracks"
+        }
+        stageControl.setLabel(label, forSegment: tracksIndex)
+    }
+
+    // MARK: - Agent activity (dock badge, notifications)
+
+    private func needsYouTrackIDs() -> Set<UUID> {
+        guard let trackStore, let runnerManager = projectContext?.runnerManager else { return [] }
+        return Set(trackStore.tracks.filter { runnerManager.existingRunner(forTrackKey: $0.branchName)?.activity == .needsYou }.map(\.id))
+    }
+
+    private func hasWorkingTrack() -> Bool {
+        guard let trackStore, let runnerManager = projectContext?.runnerManager else { return false }
+        return trackStore.tracks.contains { runnerManager.existingRunner(forTrackKey: $0.branchName)?.activity == .working }
+    }
+
+    /// Read by `AppDelegate` to sum a dock badge across every open window — see
+    /// `AppDelegate.refreshDockBadge()`. Two windows on the same project will double-count its
+    /// tracks; an acceptable imprecision for a cosmetic badge, not worth deduplicating against
+    /// the added complexity of exposing project identity to `AppDelegate`.
+    var needsYouCount: Int { needsYouTrackIDs().count }
+
+    /// Called after every debounced runner-manager change. Diffs against `lastKnownNeedsYouTrackIDs`
+    /// so a notification fires once per transition *into* needing attention, not once per
+    /// recompute while it stays that way, and refreshes the dock badge either way.
+    private func runnerActivityChanged() {
+        let currentNeedsYou = needsYouTrackIDs()
+        let newlyNeedsYou = currentNeedsYou.subtracting(lastKnownNeedsYouTrackIDs)
+        lastKnownNeedsYouTrackIDs = currentNeedsYou
+        AppDelegate.shared?.refreshDockBadge()
+
+        guard !newlyNeedsYou.isEmpty else { return }
+        let tracks = (trackStore?.tracks ?? []).filter { newlyNeedsYou.contains($0.id) }
+        for track in tracks {
+            // Suppressed only when this window is both key (frontmost/focused) *and* already
+            // showing the relevant thing — the Tracks stage surfaces every needs-you track in
+            // its pinned section, so being on that stage at all counts as "already looking,"
+            // regardless of which track it is; Think only counts for the one track it's
+            // actually attached to. A non-key window (app backgrounded, another window
+            // focused) is never "already looking," however visible its own stage happens to be.
+            let alreadyLooking = view.window?.isKeyWindow == true
+                && (current == .tracks || (current == .think && track.branchName == currentTrackKey))
+            guard !alreadyLooking else { continue }
+            AgentAttentionNotifier.notify(trackIntent: track.intent)
+        }
     }
 
     // MARK: - Window chrome (title, subtitle, git info)
 
-    private func projectOpened(_ url: URL) {
-        projectURL = url
-        runVC.defaultWorkingDirectory = url.path
-        applyWindowChrome()
-        refreshGitInfo(for: url)
+    /// A track's own linked worktree if it has one, else the shared project root — the same
+    /// resolution `ProjectContext.workingDirectory(forTrackKey:)` does for Heron, just needed
+    /// here too since Make/Run are pushed-to rather than pull-based.
+    private func workingDirectoryURL(for trackKey: String?) -> URL {
+        projectContext?.workingDirectory(forTrackKey: trackKey ?? "") ?? projectURL ?? URL(fileURLWithPath: NSHomeDirectory())
     }
 
+    private func projectOpened(_ url: URL) {
+        // Opening a different project (or reopening after this window already had one) drops
+        // this window's claim on whatever it held before — without this, the old project's
+        // context would never hit zero refcount and would leak for the life of the app.
+        if let previousURL = projectURL, let previousContext = projectContext {
+            previousContext.trackStore.removeChangeObserver(trackStoreObserverToken)
+            previousContext.runnerManager.removeChangeObserver(runnerChangeObserverToken)
+            previousContext.unregisterBridgeHost(self)
+            ProjectContextRegistry.shared.release(projectRoot: previousURL)
+        }
+        projectURL = url
+        runVC.defaultWorkingDirectory = url.path
+        let context = ProjectContextRegistry.shared.acquire(projectRoot: url)
+        projectContext = context
+        context.registerBridgeHost(self)
+        let store = context.trackStore
+        // TrackStore's init resolves activeTrack/untrackedBranch synchronously specifically so
+        // this can be set before Make's own (already in-flight) project-open indexing reads it —
+        // otherwise the very first file restore after opening a project on an active track's
+        // branch would read the shared per-project bucket instead of that track's own memory.
+        currentTrackKey = store.activeTrack?.branchName
+        let workingDirectory = workingDirectoryURL(for: currentTrackKey)
+        focusedRoot = workingDirectory
+        // Only bother retargeting Make/Run's LSP/indexing/terminal-cwd machinery when the active
+        // track actually has its own worktree — the common case (no active track yet, or one
+        // that predates Phase C) needs nothing more than the plain track-key assignment Make's
+        // own `loadProject` already set up.
+        if workingDirectory == url {
+            makeVC.currentTrackKey = currentTrackKey
+            runVC.currentTrackKey = currentTrackKey
+        } else {
+            makeVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
+            runVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
+        }
+        thinkVC.configure(runnerManager: context.runnerManager, trackKey: currentTrackKey)
+        // Registered rather than assigned: `store` may already be shared with another window
+        // (same project, two windows), and a plain single-assignment `onChange` would let this
+        // window's registration silently replace that other window's.
+        trackStoreObserverToken = store.addChangeObserver { [weak self] in
+            guard let self else { return }
+            self.tracksVC.refresh()
+            self.makeVC.currentTrackKey = store.activeTrack?.branchName
+            self.applyWindowChrome()
+        }
+        // Same multicast reasoning as the TrackStore observer above — `context.runnerManager`
+        // is shared across every window on this project, so this can't be a single-assignment
+        // closure without the same clobbering bug A1 fixed for tracks.
+        runnerChangeObserverToken = context.runnerManager.addChangeObserver { [weak self] in
+            guard let self else { return }
+            self.tracksVC.refresh()
+            self.updateStageLabels()
+            self.runnerActivityChanged()
+        }
+        tracksVC.configure(with: store, runnerManager: context.runnerManager)
+        applyWindowChrome()
+        refreshGitInfo(for: workingDirectory)
+    }
+
+    /// Switching to a track with its own worktree is instant bookkeeping — no checkout, so no
+    /// unsaved-changes risk from *that* alone — but this still goes through the same
+    /// unsaved-changes guard tab-closing uses, because Make's own tabs are about to be closed
+    /// and reopened against the new track's files regardless of how the switch itself happened.
+    private func switchToTrack(_ track: Track, landOn: Stage = .make, completion: @escaping (TrackSwitchOutcome?) -> Void) {
+        confirmCloseAllUnsaved { [weak self] proceed in
+            guard let self, proceed, let store = self.trackStore else { completion(nil); return }
+            store.switchTo(track) { [weak self] result in
+                guard let self else { completion(nil); return }
+                switch result {
+                case .success(let outcome):
+                    // Read fresh from the store, not the `track` value captured above — `switchTo`
+                    // may have just materialized a worktree and updated `workingDirectoryPath` on
+                    // its own copy, which this closure's `track` snapshot predates.
+                    let workingDirectory = self.workingDirectoryURL(for: track.branchName)
+                    self.focusedRoot = workingDirectory
+                    self.refreshGitInfo(for: workingDirectory)
+                    self.currentTrackKey = track.branchName
+                    self.makeVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
+                    self.runVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
+                    self.thinkVC.reloadForTrackSwitch(trackKey: track.branchName)
+                    self.show(landOn)
+                    completion(outcome)
+                case .failure(let error):
+                    if let window = self.view.window {
+                        let alert = NSAlert()
+                        alert.alertStyle = .warning
+                        alert.messageText = "Couldn't switch tracks"
+                        alert.informativeText = error.localizedDescription
+                        alert.addButton(withTitle: "OK")
+                        alert.beginSheetModal(for: window)
+                    }
+                    completion(nil)
+                }
+            }
+        }
+    }
+
+    /// A brand-new track (or a newly-adopted existing branch — same shape, no `Track` object
+    /// needed here since only the branch name matters) is checked out as part of creating/adopting
+    /// it, not a separate step — so there's no second checkout to wait on here, just reflecting
+    /// what already happened: refresh git info, reload Make/Run onto this branch's own remembered
+    /// state, and land on Make so there's somewhere to actually start working.
+    private func branchIsNowActive(_ branchName: String) {
+        let workingDirectory = workingDirectoryURL(for: branchName)
+        focusedRoot = workingDirectory
+        refreshGitInfo(for: workingDirectory)
+        currentTrackKey = branchName
+        makeVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
+        runVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
+        thinkVC.reloadForTrackSwitch(trackKey: branchName)
+        show(.make)
+    }
+
+    /// `url` is non-nil for an actual file open — from anywhere reachable regardless of stage
+    /// (the toolbar's Quick Open field, the file explorer), not just from Make itself. Without
+    /// jumping to Make here, opening a file while looking at Run or Tracks would silently update
+    /// this window's title/represented-file and nothing else, since there's no visible editor to
+    /// show it in — same fix Run's own "open file from a terminal link" feature already needed
+    /// and had to do by hand; this makes it automatic for every path instead of one at a time.
+    /// `nil` means a close (e.g. the last tab), which shouldn't yank you onto Make from wherever
+    /// you are.
     private func fileOpened(_ url: URL?) {
         currentFileURL = url
         isDirty = false
         applyWindowChrome()
+        if url != nil { show(.make) }
     }
 
     private func applyWindowChrome() {
@@ -187,18 +460,26 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             subtitleParts.append(projectName)
         }
         if let branch = gitBranch {
-            subtitleParts.append(gitDirtyCount > 0 ? "\(branch) · \(gitDirtyCount) changed" : branch)
+            // The branch slug is precise but not what the user actually typed — showing the
+            // track's own intent alongside it (when one's active) reads as "what am I doing"
+            // rather than "which ref am I on."
+            let branchLabel = trackStore?.activeTrack.map { "\($0.intent) (\(branch))" } ?? branch
+            subtitleParts.append(gitDirtyCount > 0 ? "\(branchLabel) · \(gitDirtyCount) changed" : branchLabel)
         }
         window.subtitle = subtitleParts.joined(separator: " — ")
     }
 
     private func refreshGitInfo(for project: URL) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let branch = Self.runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: project.path)
+            // `symbolic-ref`, not `rev-parse --abbrev-ref HEAD`: the latter's output is
+            // inconsistent on a zero-commit repo (can print a bare "HEAD" the same way real
+            // detached HEAD does). `nil` here just means detached, which the subtitle omits
+            // rather than showing a misleading branch name for.
+            let branch = Self.runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], in: project.path)
             let status = Self.runGit(["status", "--porcelain"], in: project.path)
             let dirtyCount = status?.split(separator: "\n").count ?? 0
             DispatchQueue.main.async {
-                guard let self, self.projectURL == project else { return }
+                guard let self, self.focusedRoot == project else { return }
                 self.gitBranch = (branch?.isEmpty == false) ? branch : nil
                 self.gitDirtyCount = dirtyCount
                 self.applyWindowChrome()
@@ -217,5 +498,26 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         process.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// MARK: - WorkspaceBridgeHost
+
+/// Lets `AgentRunner`s reach into whichever window is actually showing the track they belong
+/// to — see `ProjectContext.bridge(forTrackKey:)`. Deliberately not exposing `NSWindow` itself
+/// to `ProjectContext`: it only ever needs a yes/no on "is this window key," not the window.
+extension ShellViewController: WorkspaceBridgeHost {
+    var bridgeTrackKey: String? { currentTrackKey }
+    var isKeyWindow: Bool { view.window?.isKeyWindow == true }
+    func liveBufferContent(for url: URL) -> String? { makeVC.unsavedContent(for: url) }
+    func applyApprovedEdit(url: URL, newContent: String) -> Bool { makeVC.applyApprovedEdit(url: url, newContent: newContent) }
+    // Approving an edit lands you in the file that changed — same reflex as Run's
+    // open-file-from-terminal-link jump, just triggered from Think.
+    func revealAfterApply(_ url: URL) {
+        show(.make)
+        makeVC.revealAfterApply(url)
+    }
+    func runShellCommand(_ command: String, trackKey: String, completion: @escaping (String) -> Void) {
+        runVC.runAgentCommand(command, cwd: workingDirectoryURL(for: trackKey), trackKey: trackKey, completion: completion)
     }
 }

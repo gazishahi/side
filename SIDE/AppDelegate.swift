@@ -2,9 +2,16 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    /// Set once in `applicationDidFinishLaunching` — lets `ShellViewController` (one per window,
+    /// no reference to its siblings) ask for a dock-badge refresh without `AppDelegate` having
+    /// to reach back into every window's Tracks state itself.
+    static private(set) var shared: AppDelegate?
+
     private var windows: [NSWindow] = []
+    private var preferencesWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.shared = self
         let window = makeWindow()
         windows.append(window)
         window.center()
@@ -24,6 +31,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         frame.origin.y -= offset
         window.setFrame(frame, display: false)
         window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func showPreferences() {
+        if preferencesWindow == nil {
+            let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "Preferences"
+            window.isReleasedWhenClosed = false
+            window.contentViewController = PreferencesViewController()
+            preferencesWindow = window
+        }
+        preferencesWindow?.center()
+        preferencesWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -88,13 +108,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         windows.removeAll { $0 === window }
     }
 
+    /// Always runs every shell's `prepareForClose()` before actually terminating — not just on
+    /// the individual-window-close path (`windowShouldClose`). Without this, quitting with no
+    /// unsaved *editor* changes (the only thing `hasUnsavedChanges` checks) skipped
+    /// `prepareForClose()` entirely, so `ProjectContextRegistry` never released and an
+    /// `AgentRunner` mid-approval-pause never got the chance to write its synthetic "closed
+    /// before decided" tool results — leaving `think.json` with an orphaned `tool_use` the
+    /// Messages API rejects outright on the next launch.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let dirtyShells = windows.compactMap { $0.contentViewController as? ShellViewController }.filter { $0.hasUnsavedChanges }
-        guard !dirtyShells.isEmpty else { return .terminateNow }
+        let shells = windows.compactMap { $0.contentViewController as? ShellViewController }
+        let dirtyShells = shells.filter { $0.hasUnsavedChanges }
+        guard !dirtyShells.isEmpty else {
+            shells.forEach { $0.prepareForClose() }
+            return .terminateNow
+        }
         confirmAll(dirtyShells) { proceed in
+            if proceed { shells.forEach { $0.prepareForClose() } }
             NSApp.reply(toApplicationShouldTerminate: proceed)
         }
         return .terminateLater
+    }
+
+    /// The only signal that survives the app not being frontmost at all — everything else
+    /// (stage badge, Tracks' pinned section, notifications) requires the app or a specific
+    /// window/stage to already be in view. Summed across every open window; two windows on the
+    /// same project double-count its tracks, an acceptable imprecision for a cosmetic badge.
+    func refreshDockBadge() {
+        let total = windows.compactMap { $0.contentViewController as? ShellViewController }.reduce(0) { $0 + $1.needsYouCount }
+        NSApp.dockTile.badgeLabel = total > 0 ? "\(total)" : nil
     }
 
     private func confirmAll(_ shells: [ShellViewController], completion: @escaping (Bool) -> Void) {

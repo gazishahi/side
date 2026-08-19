@@ -7,15 +7,27 @@ enum LanguageServerRegistry {
         let languageId: String
         let binaryName: String
         let arguments: [String]
+        /// A Homebrew formula to offer installing when `binaryName` isn't found on PATH — nil
+        /// for servers that aren't independently installable (sourcekit-lsp ships with Xcode).
+        let installFormula: String?
     }
 
     private static let entriesByExtension: [String: Entry] = [
-        "py": Entry(languageId: "python", binaryName: "pyright-langserver", arguments: ["--stdio"]),
-        "ts": Entry(languageId: "typescript", binaryName: "typescript-language-server", arguments: ["--stdio"]),
-        "tsx": Entry(languageId: "typescriptreact", binaryName: "typescript-language-server", arguments: ["--stdio"]),
-        "js": Entry(languageId: "javascript", binaryName: "typescript-language-server", arguments: ["--stdio"]),
-        "jsx": Entry(languageId: "javascriptreact", binaryName: "typescript-language-server", arguments: ["--stdio"]),
-        "swift": Entry(languageId: "swift", binaryName: "sourcekit-lsp", arguments: []),
+        "py": Entry(languageId: "python", binaryName: "pyright-langserver", arguments: ["--stdio"], installFormula: "pyright"),
+        "ts": Entry(languageId: "typescript", binaryName: "typescript-language-server", arguments: ["--stdio"], installFormula: "typescript-language-server"),
+        "tsx": Entry(languageId: "typescriptreact", binaryName: "typescript-language-server", arguments: ["--stdio"], installFormula: "typescript-language-server"),
+        "js": Entry(languageId: "javascript", binaryName: "typescript-language-server", arguments: ["--stdio"], installFormula: "typescript-language-server"),
+        "jsx": Entry(languageId: "javascriptreact", binaryName: "typescript-language-server", arguments: ["--stdio"], installFormula: "typescript-language-server"),
+        "swift": Entry(languageId: "swift", binaryName: "sourcekit-lsp", arguments: [], installFormula: nil),
+        "rs": Entry(languageId: "rust", binaryName: "rust-analyzer", arguments: [], installFormula: "rust-analyzer"),
+        "go": Entry(languageId: "go", binaryName: "gopls", arguments: [], installFormula: "gopls"),
+        "lua": Entry(languageId: "lua", binaryName: "lua-language-server", arguments: [], installFormula: "lua-language-server"),
+        "c": Entry(languageId: "c", binaryName: "clangd", arguments: [], installFormula: "llvm"),
+        "h": Entry(languageId: "c", binaryName: "clangd", arguments: [], installFormula: "llvm"),
+        "cpp": Entry(languageId: "cpp", binaryName: "clangd", arguments: [], installFormula: "llvm"),
+        "cc": Entry(languageId: "cpp", binaryName: "clangd", arguments: [], installFormula: "llvm"),
+        "cxx": Entry(languageId: "cpp", binaryName: "clangd", arguments: [], installFormula: "llvm"),
+        "hpp": Entry(languageId: "cpp", binaryName: "clangd", arguments: [], installFormula: "llvm"),
     ]
 
     static func entry(forExtension ext: String) -> Entry? {
@@ -129,18 +141,42 @@ enum LanguageServerRegistry {
     /// plain `Process` launch. Resolve it by asking the user's actual shell, the same way
     /// TerminalViewController spawns $SHELL for the integrated terminal.
     ///
+    /// `installFormula`, when given, backs a second attempt via `brew --prefix <formula>` —
+    /// covers keg-only formulas (clangd's `llvm`, notably) that Homebrew deliberately doesn't
+    /// symlink onto PATH at all, so a plain `which` can never find them regardless of shell
+    /// setup. Harmless to pass for non-keg-only formulas too: it just never gets reached since
+    /// the plain `which` already succeeds first.
+    ///
     /// Not thread-safe on its own — callers (LSPManager) are expected to serialize access.
-    static func resolveExecutable(named binaryName: String) -> URL? {
+    static func resolveExecutable(named binaryName: String, installFormula: String? = nil) -> URL? {
         if let cached = resolutionCache[binaryName] {
             switch cached {
             case .found(let url): return url
             case .notFound: return nil
             }
         }
+        if let url = runShell("which \(binaryName)").flatMap(URL.init(fileURLWithPath:)) {
+            resolutionCache[binaryName] = .found(url)
+            return url
+        }
+        if let formula = installFormula, let prefix = runShell("brew --prefix \(formula)") {
+            let candidate = URL(fileURLWithPath: prefix).appendingPathComponent("bin/\(binaryName)")
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                resolutionCache[binaryName] = .found(candidate)
+                return candidate
+            }
+        }
+        resolutionCache[binaryName] = .notFound
+        return nil
+    }
+
+    /// Runs a command through the user's actual login shell and returns trimmed stdout, or nil
+    /// on any non-zero exit / empty output / launch failure.
+    private static func runShell(_ command: String) -> String? {
         let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shellPath)
-        process.arguments = ["-lic", "which \(binaryName)"]
+        process.arguments = ["-lic", command]
         let stdout = Pipe()
         process.standardOutput = stdout
         process.standardError = Pipe()
@@ -150,16 +186,16 @@ enum LanguageServerRegistry {
             let data = stdout.fileHandleForReading.readDataToEndOfFile()
             guard process.terminationStatus == 0,
                   let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !output.isEmpty else {
-                resolutionCache[binaryName] = .notFound
-                return nil
-            }
-            let url = URL(fileURLWithPath: output)
-            resolutionCache[binaryName] = .found(url)
-            return url
+                  !output.isEmpty else { return nil }
+            return output
         } catch {
-            resolutionCache[binaryName] = .notFound
             return nil
         }
+    }
+
+    /// Called after an install completes so the next spawn attempt re-checks PATH instead of
+    /// trusting a stale `.notFound` cached from before the binary existed.
+    static func invalidateResolution(for binaryName: String) {
+        resolutionCache[binaryName] = nil
     }
 }

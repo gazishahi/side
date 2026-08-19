@@ -13,6 +13,9 @@ final class LSPManager: @unchecked Sendable {
     private var startingServers: Set<String> = []
     private var documentVersions: [URL: Int] = [:]
     private var buildServerSetup: BuildServerSetupState = .notStarted
+    /// Binaries that failed to resolve on PATH at least once this session — drives the Make
+    /// stage's missing-LSP indicator. Cleared for a binary once `retryAfterInstall` succeeds.
+    private(set) var unavailableBinaries: Set<String> = []
 
     private enum BuildServerSetupState {
         case notStarted
@@ -21,6 +24,22 @@ final class LSPManager: @unchecked Sendable {
     }
 
     var onDiagnostics: ((URL, [LSPDiagnostic]) -> Void)?
+    /// Fires whenever `unavailableBinaries` changes, so the UI can re-check whether the
+    /// currently active file's language server is missing.
+    var onAvailabilityChanged: (() -> Void)?
+
+    func isUnavailable(forExtension ext: String) -> Bool {
+        guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return false }
+        return unavailableBinaries.contains(entry.binaryName)
+    }
+
+    /// Call after an install completes for `binaryName` — clears the cached PATH miss and the
+    /// unavailable flag so the next `opened(url:content:)` for that language spawns for real.
+    func retryAfterInstall(binaryName: String) {
+        LanguageServerRegistry.invalidateResolution(for: binaryName)
+        guard unavailableBinaries.remove(binaryName) != nil else { return }
+        onAvailabilityChanged?()
+    }
 
     init(projectRoot: URL) {
         self.projectRoot = projectRoot
@@ -162,8 +181,9 @@ final class LSPManager: @unchecked Sendable {
             }
             return
         }
-        guard let executable = LanguageServerRegistry.resolveExecutable(named: entry.binaryName) else {
+        guard let executable = LanguageServerRegistry.resolveExecutable(named: entry.binaryName, installFormula: entry.installFormula) else {
             print("[LSP] \(entry.binaryName) not found on PATH — diagnostics disabled for \(entry.languageId)")
+            if unavailableBinaries.insert(entry.binaryName).inserted { onAvailabilityChanged?() }
             completion(nil)
             return
         }
@@ -181,6 +201,18 @@ final class LSPManager: @unchecked Sendable {
                 await client.setOnDiagnostics { [weak self] params in
                     guard let url = URL(string: params.uri) else { return }
                     DispatchQueue.main.async { self?.onDiagnostics?(url, params.diagnostics) }
+                }
+                // Without this, a crashed server stays in `clients` forever — every subsequent
+                // didOpen/didChange/completion/definition call finds this same dead client and
+                // silently no-ops against it (`try?` swallowing `ClientError.notRunning`),
+                // permanently disabling diagnostics/autocomplete for the language for the rest
+                // of the session. Evicting it here means the next call to `withClient` finds
+                // nothing cached and transparently spawns a fresh server instead.
+                await client.setOnTerminate { [weak self] in
+                    DispatchQueue.main.async {
+                        guard let self, self.clients[entry.binaryName] === client else { return }
+                        self.clients[entry.binaryName] = nil
+                    }
                 }
                 guard let self else { return }
                 self.clients[entry.binaryName] = client

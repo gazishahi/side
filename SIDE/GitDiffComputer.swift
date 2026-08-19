@@ -35,6 +35,34 @@ enum GitDiffComputer {
         }
     }
 
+    /// Unified diff *text* between two arbitrary strings, for review UI that shows the actual
+    /// added/removed lines rather than the gutter's line-range marks. Same `--no-index`
+    /// temp-file mechanism as `diffResult`, just with context lines and without hunk parsing —
+    /// added for Heron's proposed-edit review, where the point is for a human to read the
+    /// change before it touches disk.
+    static func unifiedDiffText(original: String, proposed: String, projectRoot: URL, contextLines: Int = 3) -> String {
+        guard original != proposed else { return "" }
+        let tmpDir = FileManager.default.temporaryDirectory
+        let originalFile = tmpDir.appendingPathComponent("side-proposed-orig-\(UUID().uuidString).txt")
+        let proposedFile = tmpDir.appendingPathComponent("side-proposed-new-\(UUID().uuidString).txt")
+        defer {
+            try? FileManager.default.removeItem(at: originalFile)
+            try? FileManager.default.removeItem(at: proposedFile)
+        }
+        do {
+            try original.write(to: originalFile, atomically: true, encoding: .utf8)
+            try proposed.write(to: proposedFile, atomically: true, encoding: .utf8)
+        } catch { return "" }
+        let output = runGit(["diff", "--no-index", "--no-color", "-U\(contextLines)", originalFile.path, proposedFile.path], cwd: projectRoot.path)
+        // Drop git's file-header lines (diff --git, index, ---, +++) — they name temp files,
+        // which would be noise at best and confusing at worst in a review pane.
+        return output
+            .components(separatedBy: "\n")
+            .filter { !$0.hasPrefix("diff --git") && !$0.hasPrefix("index ") && !$0.hasPrefix("--- ") && !$0.hasPrefix("+++ ") }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .newlines)
+    }
+
     private static func diffResult(original: String?, current: String, projectRoot: URL) -> GitDiffResult {
         guard let original else {
             guard !current.isEmpty else { return GitDiffResult(marks: [:], hunks: [], headContent: nil) }

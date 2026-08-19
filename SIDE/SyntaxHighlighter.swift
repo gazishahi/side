@@ -76,6 +76,21 @@ enum SyntaxHighlighter {
         case "py":
             return codeRules(keywords: pyKeywords, lineComment: "#", blockComment: false)
                 + declarationRules(varKeywords: [], funcKeywords: ["def"])
+        case "rs":
+            return codeRules(keywords: rustKeywords, lineComment: "//", blockComment: true)
+                + declarationRules(varKeywords: ["let", "const", "static"], funcKeywords: ["fn"])
+        case "go":
+            return codeRules(keywords: goKeywords, lineComment: "//", blockComment: true)
+                + declarationRules(varKeywords: ["var", "const"], funcKeywords: ["func"])
+        case "lua":
+            return codeRules(keywords: luaKeywords, lineComment: "--", blockComment: false)
+                + declarationRules(varKeywords: ["local"], funcKeywords: ["function"])
+        case "rb":
+            return codeRules(keywords: rubyKeywords, lineComment: "#", blockComment: false)
+                + declarationRules(varKeywords: [], funcKeywords: ["def"])
+        case "c", "h", "cpp", "hpp", "cc", "cxx":
+            return codeRules(keywords: cKeywords, lineComment: "//", blockComment: true)
+                + declarationRules(varKeywords: [], funcKeywords: [])
         case "json": return jsonRules
         case "md", "markdown": return markdownRules
         default: return []
@@ -140,4 +155,9 @@ enum SyntaxHighlighter {
     private static let swiftKeywords = ["func", "let", "var", "if", "else", "guard", "return", "struct", "class", "enum", "protocol", "extension", "import", "private", "public", "internal", "fileprivate", "static", "final", "override", "init", "self", "Self", "nil", "true", "false", "for", "in", "while", "switch", "case", "default", "break", "continue", "throw", "throws", "try", "catch", "do", "async", "await", "weak", "unowned", "typealias", "associatedtype", "where", "as", "is", "some", "any"]
     private static let jsKeywords = ["function", "const", "let", "var", "if", "else", "return", "class", "extends", "import", "export", "from", "default", "new", "this", "null", "undefined", "true", "false", "for", "of", "in", "while", "switch", "case", "break", "continue", "throw", "try", "catch", "finally", "async", "await", "typeof", "instanceof", "interface", "type", "enum", "implements", "public", "private", "protected", "readonly", "static"]
     private static let pyKeywords = ["def", "class", "if", "elif", "else", "return", "import", "from", "as", "for", "while", "break", "continue", "pass", "try", "except", "finally", "raise", "with", "lambda", "None", "True", "False", "and", "or", "not", "in", "is", "yield", "async", "await", "self"]
+    private static let rustKeywords = ["fn", "let", "mut", "if", "else", "match", "return", "struct", "enum", "impl", "trait", "pub", "use", "mod", "crate", "self", "Self", "super", "for", "while", "loop", "break", "continue", "true", "false", "None", "Some", "Ok", "Err", "async", "await", "move", "ref", "where", "as", "in", "dyn", "unsafe", "static", "const", "type"]
+    private static let goKeywords = ["func", "package", "import", "var", "const", "type", "struct", "interface", "if", "else", "for", "range", "return", "break", "continue", "switch", "case", "default", "go", "defer", "chan", "select", "map", "true", "false", "nil", "iota"]
+    private static let luaKeywords = ["function", "local", "if", "then", "else", "elseif", "end", "return", "for", "while", "do", "repeat", "until", "break", "true", "false", "nil", "and", "or", "not", "in"]
+    private static let rubyKeywords = ["def", "end", "if", "elsif", "else", "unless", "class", "module", "return", "do", "while", "until", "case", "when", "then", "begin", "rescue", "ensure", "raise", "yield", "self", "nil", "true", "false", "and", "or", "not", "require", "require_relative", "attr_accessor", "private", "public", "protected", "new"]
+    private static let cKeywords = ["int", "float", "double", "char", "void", "if", "else", "for", "while", "do", "switch", "case", "default", "break", "continue", "return", "struct", "class", "public", "private", "protected", "namespace", "using", "static", "const", "unsigned", "signed", "long", "short", "typedef", "enum", "union", "template", "virtual", "new", "delete", "this", "true", "false", "nullptr", "auto", "sizeof", "volatile", "extern", "inline", "try", "catch", "throw"]
 }
