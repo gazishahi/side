@@ -19,6 +19,11 @@ private struct PendingToolBatch {
     let declaredIntent: String
     var changedFilePaths: Set<String> = []
     var commandsRun: [String] = []
+    /// Every path git considered dirty in the track's worktree *before* this batch executed
+    /// anything — a checkpoint only stages paths that became newly dirty since this snapshot
+    /// (plus whatever `changedFilePaths` names directly), so a concurrent manual edit sitting in
+    /// the same worktree never gets swept into the agent's commit.
+    let baselineDirtyPaths: Set<String>
 
     var remaining: Int { unresolvedToolUseIds.count }
 }
@@ -303,7 +308,25 @@ final class AgentRunner {
         guard !batch.changedFilePaths.isEmpty || !batch.commandsRun.isEmpty,
               let session = sessionStore.session(forTrackKey: trackKey) else { return }
         let root = rootProvider().path
-        guard GitPaths.runGit(["add", "-A"], cwd: root).success else { return }
+
+        // Stage only what this batch actually touched: paths a command left newly dirty (not
+        // already dirty before the batch started — that's a concurrent manual edit sitting in
+        // the same worktree, not the agent's work) plus every path an approved edit is known for
+        // certain to have touched, even if that path happened to already be dirty. Deliberately
+        // not `git add -A` — that would sweep any unrelated in-progress change in this worktree
+        // into the agent's commit and misattribute it.
+        let currentDirtyPaths = GitPaths.dirtyPaths(cwd: root)
+        let newlyDirtyPaths = currentDirtyPaths.subtracting(batch.baselineDirtyPaths)
+        let pathsToStage = newlyDirtyPaths.union(batch.changedFilePaths)
+        guard !pathsToStage.isEmpty else {
+            // Everything the batch did left the tree exactly as it already was (e.g. a command
+            // that ran but touched nothing) — nothing to checkpoint.
+            return
+        }
+        guard GitPaths.runGit(["add", "--"] + pathsToStage.sorted(), cwd: root).success else {
+            appendEntry(.meta("⚠︎ Checkpoint failed: could not stage changed files."))
+            return
+        }
         let diffNames = GitPaths.runGit(["diff", "--cached", "--name-only"], cwd: root)
         let changedFiles = diffNames.success && !diffNames.output.isEmpty ? diffNames.output.split(separator: "\n").map(String.init) : []
 
@@ -514,7 +537,8 @@ final class AgentRunner {
 
         pendingBatch = PendingToolBatch(
             callOrder: outcomes.map(\.id), resultsById: resultsById, unresolvedToolUseIds: unresolvedToolUseIds,
-            lastAppliedURL: nil, roundTrip: roundTrip, modelId: modelId, declaredIntent: declaredIntent
+            lastAppliedURL: nil, roundTrip: roundTrip, modelId: modelId, declaredIntent: declaredIntent,
+            baselineDirtyPaths: GitPaths.dirtyPaths(cwd: root.path)
         )
         setPhase(.awaitingApproval)
         // Kicked off after `pendingBatch` is in place, since `executeCommand` looks it up to

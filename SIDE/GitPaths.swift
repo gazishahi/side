@@ -74,4 +74,21 @@ enum GitPaths {
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus == 0, output)
     }
+
+    /// Every path git considers dirty (staged, unstaged, or untracked) relative to `cwd`'s repo
+    /// root — used to snapshot a worktree's state before/after a batch of agent actions, so a
+    /// checkpoint can stage only what actually changed *during* the batch instead of everything
+    /// sitting in the tree (which would misattribute a concurrent manual edit to the agent).
+    static func dirtyPaths(cwd: String) -> Set<String> {
+        let result = runGit(["status", "--porcelain"], cwd: cwd)
+        guard result.success, !result.output.isEmpty else { return [] }
+        return Set(result.output.split(separator: "\n").compactMap { line -> String? in
+            guard line.count > 3 else { return nil }
+            let pathPart = line.dropFirst(3)
+            if let arrowRange = pathPart.range(of: " -> ") {
+                return String(pathPart[arrowRange.upperBound...])
+            }
+            return String(pathPart)
+        })
+    }
 }
