@@ -1,0 +1,193 @@
+import Foundation
+
+/// Adapter for the OpenAI chat-completions wire shape (`POST {baseURL}/chat/completions`, SSE
+/// streaming) — deliberately generic rather than "the OpenAI adapter," since Ollama and LM
+/// Studio both mimic this exact shape. This one file is what makes OpenAI BYOK and local models
+/// both work with zero extra adapter code: only `baseURL` (and whether a key is required)
+/// differs between them, and that lives in `ProviderDefinition`, not here.
+///
+/// `baseURL` is expected to already include the API version root (e.g.
+/// `https://api.openai.com/v1`, `http://localhost:11434/v1`) — this adapter only appends
+/// `/chat/completions` to it.
+final class OpenAICompatibleChatProvider: ChatModelProvider {
+    private let apiKey: String?
+    private let modelId: String
+    private let baseURL: URL
+    private let contextWindowTokens: Int
+
+    init(apiKey: String?, modelId: String, baseURL: URL, contextWindowTokens: Int = 128_000) {
+        self.apiKey = apiKey
+        self.modelId = modelId
+        self.baseURL = baseURL
+        self.contextWindowTokens = contextWindowTokens
+    }
+
+    var capabilities: ProviderCapabilities {
+        ProviderCapabilities(supportsToolUse: true, supportsStreaming: true, contextWindowTokens: contextWindowTokens, supportsPromptCaching: false)
+    }
+
+    func streamTurn(
+        messages: [AgentMessage],
+        system: String?,
+        tools: [ToolSpec],
+        onEvent: @escaping @Sendable (AgentStreamEvent) -> Void
+    ) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
+        request.httpMethod = "POST"
+        if let apiKey, !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(messages: messages, system: system, tools: tools))
+
+        let state = TurnState()
+        do {
+            try await SSEHTTPClient.stream(request: request) { sse in
+                Self.handle(sse: sse, state: state, onEvent: onEvent)
+            }
+        } catch let error as SSEHTTPClientError {
+            guard case .httpError(let statusCode, let body) = error else { throw error }
+            onEvent(.error(Self.providerError(fromHTTPStatus: statusCode, body: body)))
+        }
+    }
+
+    // MARK: - Request building
+
+    private func requestBody(messages: [AgentMessage], system: String?, tools: [ToolSpec]) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": modelId,
+            "stream": true,
+            "messages": Self.openAIMessages(from: messages, system: system),
+        ]
+        if !tools.isEmpty {
+            body["tools"] = tools.map {
+                ["type": "function", "function": ["name": $0.name, "description": $0.description, "parameters": $0.inputSchema.anyValue]]
+            }
+            body["tool_choice"] = "auto"
+        }
+        return body
+    }
+
+    /// Unlike Anthropic (one content-block array per turn), OpenAI wants one message per role
+    /// occurrence: a single assistant message carries its own text *and* every tool call it
+    /// made in one shot, and each tool result is its own separate `role: "tool"` message rather
+    /// than several content blocks bundled into one user message.
+    private static func openAIMessages(from messages: [AgentMessage], system: String?) -> [[String: Any]] {
+        var result: [[String: Any]] = []
+        if let system, !system.isEmpty {
+            result.append(["role": "system", "content": system])
+        }
+        for message in messages {
+            switch message.role {
+            case .system:
+                continue // already folded into the top-level system message above
+            case .user, .tool:
+                var textParts: [String] = []
+                var toolResultMessages: [[String: Any]] = []
+                for block in message.content {
+                    switch block {
+                    case .text(let text): textParts.append(text)
+                    case .toolResult(let toolUseId, let content, _):
+                        toolResultMessages.append(["role": "tool", "tool_call_id": toolUseId, "content": content])
+                    case .toolUse: break // never appears in a user-role turn
+                    }
+                }
+                if !textParts.isEmpty {
+                    result.append(["role": "user", "content": textParts.joined(separator: "\n")])
+                }
+                result.append(contentsOf: toolResultMessages)
+            case .assistant:
+                var textParts: [String] = []
+                var toolCalls: [[String: Any]] = []
+                for block in message.content {
+                    switch block {
+                    case .text(let text): textParts.append(text)
+                    case .toolUse(let id, let name, let input):
+                        let argumentsData = (try? JSONSerialization.data(withJSONObject: input.anyValue)) ?? Data("{}".utf8)
+                        let argumentsString = String(data: argumentsData, encoding: .utf8) ?? "{}"
+                        toolCalls.append(["id": id, "type": "function", "function": ["name": name, "arguments": argumentsString]])
+                    case .toolResult: break // never appears in an assistant-role turn
+                    }
+                }
+                var assistantMessage: [String: Any] = ["role": "assistant", "content": textParts.isEmpty ? NSNull() : textParts.joined(separator: "\n")]
+                if !toolCalls.isEmpty { assistantMessage["tool_calls"] = toolCalls }
+                result.append(assistantMessage)
+            }
+        }
+        return result
+    }
+
+    // MARK: - Stream parsing
+
+    /// Per-turn accumulation across SSE chunks. Only touched from the SSE callback, which
+    /// `SSEHTTPClient` invokes serially from the awaiting task — no synchronization needed.
+    private final class TurnState {
+        /// OpenAI streams tool calls as deltas keyed by array *index*, with the id/name arriving
+        /// only on the first chunk for that index and `arguments` streaming incrementally after
+        /// — the same index-keyed-delta shape Anthropic uses for content blocks, just for tool
+        /// calls specifically rather than every block.
+        var toolCallsByIndex: [Int: String] = [:] // index -> id
+        var finishReason: String?
+        var promptTokens: Int?
+        var completionTokens: Int?
+    }
+
+    /// Returns `true` once the terminal `[DONE]` marker arrives, so the caller knows the stream
+    /// is finished — unlike Anthropic's explicit `message_stop` event type, OpenAI signals end
+    /// of stream with a literal, non-JSON sentinel payload.
+    @discardableResult
+    private static func handle(sse: SSEEvent, state: TurnState, onEvent: (AgentStreamEvent) -> Void) -> Bool {
+        if sse.data == "[DONE]" {
+            for id in state.toolCallsByIndex.values { onEvent(.toolUseEnd(id: id)) }
+            let usage = state.promptTokens.map { TokenUsage(inputTokens: $0, outputTokens: state.completionTokens ?? 0, cachedInputTokens: nil) }
+            onEvent(.messageEnd(stopReason: stopReason(from: state.finishReason), usage: usage))
+            return true
+        }
+        guard let data = sse.data.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
+        if let usage = object["usage"] as? [String: Any] {
+            state.promptTokens = usage["prompt_tokens"] as? Int
+            state.completionTokens = usage["completion_tokens"] as? Int
+        }
+        guard let choices = object["choices"] as? [[String: Any]], let choice = choices.first else { return false }
+        if let finishReason = choice["finish_reason"] as? String { state.finishReason = finishReason }
+        guard let delta = choice["delta"] as? [String: Any] else { return false }
+        if let content = delta["content"] as? String, !content.isEmpty {
+            onEvent(.textDelta(content))
+        }
+        if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
+            for call in toolCalls {
+                guard let index = call["index"] as? Int else { continue }
+                let function = call["function"] as? [String: Any]
+                if state.toolCallsByIndex[index] == nil, let id = call["id"] as? String, let name = function?["name"] as? String {
+                    state.toolCallsByIndex[index] = id
+                    onEvent(.toolUseStart(id: id, name: name))
+                }
+                if let id = state.toolCallsByIndex[index], let arguments = function?["arguments"] as? String, !arguments.isEmpty {
+                    onEvent(.toolUseInputDelta(id: id, partialJSON: arguments))
+                }
+            }
+        }
+        return false
+    }
+
+    private static func stopReason(from raw: String?) -> StopReason {
+        switch raw {
+        case "stop": return .endTurn
+        case "tool_calls": return .toolUse
+        case "length": return .maxTokens
+        case let other?: return .other(other)
+        case nil: return .endTurn
+        }
+    }
+
+    private static func providerError(fromHTTPStatus statusCode: Int, body: String) -> AgentProviderError {
+        if let data = body.data(using: .utf8),
+           let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let error = object["error"] as? [String: Any],
+           let message = error["message"] as? String {
+            return AgentProviderError(message: message, typeSlug: error["type"] as? String)
+        }
+        return AgentProviderError(message: "HTTP \(statusCode): \(body.prefix(500))", typeSlug: nil)
+    }
+}

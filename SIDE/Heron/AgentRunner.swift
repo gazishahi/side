@@ -75,7 +75,6 @@ final class AgentRunner {
     /// agent (`SSEHTTPClient`'s own request timeout is the transport-level backstop under this).
     private var stallWatchdog: DispatchWorkItem?
 
-    private static let providerId = "anthropic"
     /// Bounds one send: the model can chain tools, but a loop that never stops asking for them
     /// shouldn't be able to run forever (or bill forever) without the user re-engaging.
     private static let maxToolRoundTrips = 12
@@ -154,13 +153,13 @@ final class AgentRunner {
         guard !phase.isBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard case .ready(_, _, let model) = ProviderRegistryStore.shared.resolveAdapter(providerId: Self.providerId) else {
+        guard case .ready(_, _, let model) = ProviderRegistryStore.shared.resolveAdapter(providerId: ProviderRegistryStore.shared.activeProviderId) else {
             appendMissingKeyHint()
             return
         }
         sessionStore.appendTurn(
             AgentTurn(role: .user, content: [.text(trimmed)]),
-            trackKey: trackKey, providerId: Self.providerId, modelId: model.id
+            trackKey: trackKey, providerId: ProviderRegistryStore.shared.activeProviderId, modelId: model.id
         )
         appendEntry(.userText(trimmed))
         runTurn(roundTrip: 0)
@@ -193,7 +192,7 @@ final class AgentRunner {
         }
         let blocks = batch.callOrder.compactMap { resultsById[$0] }
         guard blocks.count == batch.callOrder.count else { return }
-        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: Self.providerId, modelId: batch.modelId)
+        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: ProviderRegistryStore.shared.activeProviderId, modelId: batch.modelId)
     }
 
     // MARK: - Proposal resolution
@@ -343,7 +342,7 @@ final class AgentRunner {
         let checkpoint = Checkpoint(
             trackKey: trackKey, agentSessionId: session.id, declaredIntent: batch.declaredIntent,
             changedFilePaths: changedFiles, commandsRun: batch.commandsRun,
-            provenance: AgentProvenance(providerId: Self.providerId, modelId: batch.modelId, instructionSourceSummary: "Think conversation"),
+            provenance: AgentProvenance(providerId: ProviderRegistryStore.shared.activeProviderId, modelId: batch.modelId, instructionSourceSummary: "Think conversation"),
             gitCommitSHA: commitSHA
         )
         sessionStore.appendCheckpoint(checkpoint)
@@ -372,7 +371,7 @@ final class AgentRunner {
             setPhase(.blocked(.roundTripLimit))
             return
         }
-        guard case .ready(let provider, _, let model) = ProviderRegistryStore.shared.resolveAdapter(providerId: Self.providerId) else {
+        guard case .ready(let provider, _, let model) = ProviderRegistryStore.shared.resolveAdapter(providerId: ProviderRegistryStore.shared.activeProviderId) else {
             appendMissingKeyHint()
             finishRun(completed: false)
             return
@@ -451,7 +450,7 @@ final class AgentRunner {
             }
         }
         if !content.isEmpty {
-            sessionStore.appendTurn(AgentTurn(role: .assistant, content: content), trackKey: trackKey, providerId: Self.providerId, modelId: modelId)
+            sessionStore.appendTurn(AgentTurn(role: .assistant, content: content), trackKey: trackKey, providerId: ProviderRegistryStore.shared.activeProviderId, modelId: modelId)
         }
         pendingAssistantText = ""
         pendingToolCalls = []
@@ -555,7 +554,7 @@ final class AgentRunner {
             finishRun(completed: false)
             return
         }
-        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: Self.providerId, modelId: modelId)
+        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: ProviderRegistryStore.shared.activeProviderId, modelId: modelId)
         runTurn(roundTrip: roundTrip + 1)
     }
 
@@ -591,7 +590,8 @@ final class AgentRunner {
     }
 
     private func appendMissingKeyHint() {
-        appendEntry(.meta("No Anthropic API key found. Open Settings (⌘,) to add one — it's stored in your Keychain."))
+        let name = ProviderRegistryStore.shared.provider(for: ProviderRegistryStore.shared.activeProviderId)?.displayName ?? "the active provider"
+        appendEntry(.meta("No API key found for \(name). Open Settings (⌘,) to add one — it's stored in your Keychain."))
     }
 
     /// Builds the initial `entries` from whatever's already persisted for this track — the

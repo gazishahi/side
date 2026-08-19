@@ -210,7 +210,7 @@ final class ThinkWorkspaceViewController: NSViewController {
 
     private func refreshModelLabel() {
         let registry = ProviderRegistryStore.shared
-        guard let definition = registry.provider(for: "anthropic") else { return }
+        guard let definition = registry.provider(for: registry.activeProviderId) else { return }
         let modelName = definition.models.first { $0.id == definition.defaultModelId }?.displayName ?? definition.defaultModelId
         modelLabel.stringValue = "\(definition.displayName) · \(modelName)"
     }

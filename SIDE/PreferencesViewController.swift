@@ -1,15 +1,27 @@
 import AppKit
 
 /// The first real content behind Cmd+, — replaces the "no preferences yet" stub now that
-/// there's something genuinely configurable: model providers. Phase 2 scope is the built-in
-/// Anthropic entry (key + default model); the provider list generalizes with BYOK/local
-/// entries in Phase 6.
+/// there's something genuinely configurable: model providers. Generalized beyond the built-in
+/// Anthropic entry to cover BYOK (OpenAI-compatible) and local (Ollama/LM Studio-shaped)
+/// providers — all flowing through the same `ProviderDefinition`, `Add Provider…` sheet, and
+/// `OpenAICompatibleChatProvider` adapter, with no special-casing of how a provider got here.
 final class PreferencesViewController: NSViewController {
+    private let providerPopup = NSPopUpButton()
+    private let removeProviderButton = NSButton()
+
     private let keyField = NSSecureTextField()
     private let keyStatusLabel = NSTextField(labelWithString: "")
     private let modelPopup = NSPopUpButton()
+    private let saveKeyButton = NSButton()
+    private let removeKeyButton = NSButton()
+    private let keyRow = NSStackView()
+    private let baseURLLabel = NSTextField(labelWithString: "")
 
-    private var anthropic: ProviderDefinition? { ProviderRegistryStore.shared.provider(for: "anthropic") }
+    private var registry: ProviderRegistryStore { .shared }
+    private var selectedProviderId: String {
+        providerPopup.selectedItem?.representedObject as? String ?? registry.activeProviderId
+    }
+    private var selectedProvider: ProviderDefinition? { registry.provider(for: selectedProviderId) }
 
     override func loadView() { view = NSView() }
 
@@ -19,22 +31,42 @@ final class PreferencesViewController: NSViewController {
         let title = NSTextField(labelWithString: "Model Providers")
         title.font = .systemFont(ofSize: 13, weight: .semibold)
 
-        let providerName = NSTextField(labelWithString: anthropic?.displayName ?? "Anthropic")
-        providerName.font = .systemFont(ofSize: 12, weight: .medium)
+        providerPopup.target = self
+        providerPopup.action = #selector(providerSelectionChanged)
+        let addButton = NSButton(title: "Add Provider…", target: self, action: #selector(addProvider))
+        addButton.bezelStyle = .rounded
+        addButton.controlSize = .small
+        removeProviderButton.title = "Remove"
+        removeProviderButton.bezelStyle = .rounded
+        removeProviderButton.controlSize = .small
+        removeProviderButton.target = self
+        removeProviderButton.action = #selector(removeProvider)
+        let providerRow = NSStackView(views: [providerPopup, addButton, removeProviderButton])
+        providerRow.orientation = .horizontal
+        providerRow.spacing = 8
 
-        keyField.placeholderString = "sk-ant-…"
+        baseURLLabel.font = .systemFont(ofSize: 11)
+        baseURLLabel.textColor = .secondaryLabelColor
+
+        keyField.placeholderString = "sk-…"
         keyField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         keyField.translatesAutoresizingMaskIntoConstraints = false
         keyField.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
-        let saveButton = NSButton(title: "Save Key", target: self, action: #selector(saveKey))
-        saveButton.bezelStyle = .rounded
-        saveButton.controlSize = .small
-        let removeButton = NSButton(title: "Remove", target: self, action: #selector(removeKey))
-        removeButton.bezelStyle = .rounded
-        removeButton.controlSize = .small
+        saveKeyButton.title = "Save Key"
+        saveKeyButton.bezelStyle = .rounded
+        saveKeyButton.controlSize = .small
+        saveKeyButton.target = self
+        saveKeyButton.action = #selector(saveKey)
+        removeKeyButton.title = "Remove"
+        removeKeyButton.bezelStyle = .rounded
+        removeKeyButton.controlSize = .small
+        removeKeyButton.target = self
+        removeKeyButton.action = #selector(removeKey)
 
-        let keyRow = NSStackView(views: [keyField, saveButton, removeButton])
+        keyRow.addArrangedSubview(keyField)
+        keyRow.addArrangedSubview(saveKeyButton)
+        keyRow.addArrangedSubview(removeKeyButton)
         keyRow.orientation = .horizontal
         keyRow.spacing = 8
 
@@ -49,7 +81,7 @@ final class PreferencesViewController: NSViewController {
         modelRow.orientation = .horizontal
         modelRow.spacing = 8
 
-        let stack = NSStackView(views: [title, providerName, keyRow, keyStatusLabel, modelRow])
+        let stack = NSStackView(views: [title, providerRow, baseURLLabel, keyRow, keyStatusLabel, modelRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -62,53 +94,178 @@ final class PreferencesViewController: NSViewController {
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 440),
+            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 460),
         ])
 
-        reloadModelPopup()
-        refreshKeyStatus()
+        reloadProviderPopup()
+        reloadForSelectedProvider()
     }
 
-    private func reloadModelPopup() {
+    private func reloadProviderPopup() {
+        providerPopup.removeAllItems()
+        for provider in registry.providers {
+            let isActive = provider.id == registry.activeProviderId
+            providerPopup.addItem(withTitle: isActive ? "\(provider.displayName) (active)" : provider.displayName)
+            providerPopup.lastItem?.representedObject = provider.id
+        }
+        if let index = registry.providers.firstIndex(where: { $0.id == registry.activeProviderId }) {
+            providerPopup.selectItem(at: index)
+        }
+    }
+
+    /// Rebuilds the key/model section for whichever provider is currently selected in the
+    /// popup — the same controls serve every provider, since they're all just a
+    /// `ProviderDefinition` underneath, but Anthropic (the one provider that can never be
+    /// removed) hides the Remove-provider button.
+    private func reloadForSelectedProvider() {
+        guard let provider = selectedProvider else { return }
+        removeProviderButton.isHidden = provider.id == "anthropic"
+        baseURLLabel.stringValue = provider.baseURL.absoluteString
+        keyRow.isHidden = !provider.requiresAPIKey
+        keyField.stringValue = ""
+        reloadModelPopup(for: provider)
+        refreshKeyStatus(for: provider)
+    }
+
+    private func reloadModelPopup(for provider: ProviderDefinition) {
         modelPopup.removeAllItems()
-        guard let anthropic else { return }
-        for model in anthropic.models {
+        for model in provider.models {
             modelPopup.addItem(withTitle: model.displayName)
             modelPopup.lastItem?.representedObject = model.id
         }
-        if let index = anthropic.models.firstIndex(where: { $0.id == anthropic.defaultModelId }) {
+        if let index = provider.models.firstIndex(where: { $0.id == provider.defaultModelId }) {
             modelPopup.selectItem(at: index)
         }
     }
 
-    private func refreshKeyStatus() {
-        if KeychainStore.hasSecret(account: "anthropic") {
+    private func refreshKeyStatus(for provider: ProviderDefinition) {
+        guard provider.requiresAPIKey else {
+            keyStatusLabel.stringValue = "No key required."
+            return
+        }
+        if KeychainStore.hasSecret(account: provider.id) {
             keyStatusLabel.stringValue = "A key is saved in your Keychain."
-        } else if ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.isEmpty == false {
+        } else if provider.id == "anthropic", ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.isEmpty == false {
             keyStatusLabel.stringValue = "No key saved — currently using ANTHROPIC_API_KEY from the environment."
         } else {
-            keyStatusLabel.stringValue = "No key set — Think can't reach Anthropic without one."
+            keyStatusLabel.stringValue = "No key set — Think can't reach \(provider.displayName) without one."
         }
     }
 
+    @objc private func providerSelectionChanged() {
+        registry.setActiveProvider(selectedProviderId)
+        reloadProviderPopup()
+        reloadForSelectedProvider()
+    }
+
+    @objc private func addProvider() {
+        guard let window = view.window else { return }
+        let form = AddProviderForm()
+        let alert = NSAlert()
+        alert.messageText = "Add Provider"
+        alert.informativeText = "OpenAI-compatible only — covers OpenAI itself, and local servers like Ollama or LM Studio."
+        alert.accessoryView = form.view
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = form.nameField
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn, let definition = form.makeDefinition() else { return }
+            self.registry.addOrUpdate(definition)
+            if !form.apiKey.isEmpty { KeychainStore.set(secret: form.apiKey, account: definition.id) }
+            self.registry.setActiveProvider(definition.id)
+            self.reloadProviderPopup()
+            self.reloadForSelectedProvider()
+        }
+    }
+
+    @objc private func removeProvider() {
+        guard let provider = selectedProvider, provider.id != "anthropic" else { return }
+        KeychainStore.delete(account: provider.id)
+        registry.removeProvider(provider.id)
+        reloadProviderPopup()
+        reloadForSelectedProvider()
+    }
+
     @objc private func saveKey() {
+        guard let provider = selectedProvider else { return }
         let secret = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !secret.isEmpty else { return }
-        if KeychainStore.set(secret: secret, account: "anthropic") {
+        if KeychainStore.set(secret: secret, account: provider.id) {
             keyField.stringValue = ""
         } else {
             keyStatusLabel.stringValue = "Couldn't write to the Keychain."
         }
-        refreshKeyStatus()
+        refreshKeyStatus(for: provider)
     }
 
     @objc private func removeKey() {
-        KeychainStore.delete(account: "anthropic")
-        refreshKeyStatus()
+        guard let provider = selectedProvider else { return }
+        KeychainStore.delete(account: provider.id)
+        refreshKeyStatus(for: provider)
     }
 
     @objc private func modelChanged() {
-        guard let modelId = modelPopup.selectedItem?.representedObject as? String else { return }
-        ProviderRegistryStore.shared.setDefaultModel(providerId: "anthropic", modelId: modelId)
+        guard let provider = selectedProvider, let modelId = modelPopup.selectedItem?.representedObject as? String else { return }
+        registry.setDefaultModel(providerId: provider.id, modelId: modelId)
+    }
+}
+
+/// The accessory view for the "Add Provider" sheet — a plain field group, not a separate
+/// `NSViewController`, since it only ever exists for the lifetime of one `NSAlert`.
+@MainActor
+private final class AddProviderForm {
+    let view: NSView
+    let nameField = NSTextField(string: "")
+    private let baseURLField = NSTextField(string: "")
+    private let modelIdField = NSTextField(string: "")
+    private let apiKeyField = NSSecureTextField()
+    private let requiresKeyCheckbox = NSButton(checkboxWithTitle: "Requires an API key", target: nil, action: nil)
+
+    var apiKey: String { apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    init() {
+        nameField.placeholderString = "Display name (e.g. \"OpenAI\" or \"Local Llama\")"
+        baseURLField.placeholderString = "Base URL, including /v1 (e.g. https://api.openai.com/v1)"
+        modelIdField.placeholderString = "Model id (e.g. gpt-4o or llama3.1)"
+        apiKeyField.placeholderString = "API key (leave blank for a local server)"
+        requiresKeyCheckbox.state = .on
+
+        for field in [nameField, baseURLField, modelIdField, apiKeyField] as [NSControl] {
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        }
+
+        let stack = NSStackView(views: [nameField, baseURLField, modelIdField, requiresKeyCheckbox, apiKeyField])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        // NSAlert sizes its sheet from accessoryView.frame *before* Auto Layout has a chance to
+        // resolve constraints — an accessory view with translatesAutoresizingMaskIntoConstraints
+        // = false and no explicit frame renders at {0,0} and gets clipped/overlapped by the
+        // alert's own text. An explicit frame here (kept in sync with the width constraints
+        // above) is what the working `Rename Track` accessory field elsewhere in this codebase
+        // relies on too, just via a plain NSRect init instead of Auto Layout.
+        stack.frame = NSRect(x: 0, y: 0, width: 340, height: 180)
+        view = stack
+    }
+
+    /// `nil` if the form's required fields aren't filled in — the caller shows nothing rather
+    /// than adding a half-configured provider that would just fail on first use.
+    func makeDefinition() -> ProviderDefinition? {
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlText = baseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelId = modelIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !modelId.isEmpty, let baseURL = URL(string: urlText), baseURL.scheme != nil else { return nil }
+        let requiresKey = requiresKeyCheckbox.state == .on
+        // Slug the display name into a stable id — providers are keyed by id everywhere
+        // (Keychain account, track/session `providerId`), so this must be filesystem/Keychain
+        // safe and stay constant across saves.
+        let id = "custom-" + name.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }.reduce(into: "") { $0.append($1) }
+        return ProviderDefinition(
+            id: id, displayName: name, kind: requiresKey ? .byokOpenAICompatible : .local,
+            baseURL: baseURL, requiresAPIKey: requiresKey,
+            models: [ProviderModel(id: modelId, displayName: modelId, contextWindowTokens: 128_000)],
+            defaultModelId: modelId
+        )
     }
 }

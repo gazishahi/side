@@ -9,6 +9,10 @@ final class ProviderRegistryStore: @unchecked Sendable {
     static let shared = ProviderRegistryStore()
 
     private(set) var providers: [ProviderDefinition] = []
+    /// Which provider Think actually talks to — app-wide, not per-track (switching providers
+    /// mid-project is a machine-level preference, same footing as the key itself). Defaults to
+    /// the built-in Anthropic entry, which always exists.
+    private(set) var activeProviderId: String = "anthropic"
     private let storeURL: URL
 
     /// Resolution is deliberately a typed result, not an Optional — a missing credential must
@@ -72,12 +76,28 @@ final class ProviderRegistryStore: @unchecked Sendable {
         addOrUpdate(definition)
     }
 
+    func setActiveProvider(_ id: String) {
+        guard provider(for: id) != nil else { return }
+        activeProviderId = id
+        save()
+    }
+
+    func removeProvider(_ id: String) {
+        guard id != "anthropic" else { return } // the one provider that must always exist
+        providers.removeAll { $0.id == id }
+        if activeProviderId == id { activeProviderId = "anthropic" }
+        save()
+    }
+
     func resolveAdapter(providerId: String) -> AdapterResolution {
         guard let definition = provider(for: providerId) else { return .unknownProvider }
         guard let model = definition.models.first(where: { $0.id == definition.defaultModelId }) ?? definition.models.first else {
             return .unknownProvider
         }
-        var apiKey = KeychainStore.get(account: definition.id)
+        // Only touch the Keychain at all when this provider actually needs a key — a local
+        // server that never asked for one shouldn't trigger a Keychain ACL prompt just because
+        // it happens to be the active provider.
+        var apiKey = definition.requiresAPIKey ? KeychainStore.get(account: definition.id) : nil
         // Env-var fallback survives on purpose — launching from a terminal with
         // ANTHROPIC_API_KEY set should keep working for development even with nothing in
         // the Keychain.
@@ -90,19 +110,52 @@ final class ProviderRegistryStore: @unchecked Sendable {
         switch definition.kind {
         case .builtIn where definition.id == "anthropic":
             return .ready(AnthropicMessagesProvider(apiKey: apiKey ?? "", modelId: model.id, baseURL: definition.baseURL), definition, model)
-        case .builtIn, .byokOpenAICompatible, .local:
-            // OpenAICompatibleChatProvider arrives in Phase 6.
-            return .unknownProvider
+        case .builtIn:
+            return .unknownProvider // no other builtIn ids are modeled yet
+        case .byokOpenAICompatible, .local:
+            // Covers OpenAI BYOK and local servers (Ollama, LM Studio) alike — both speak the
+            // same chat-completions wire shape, so one adapter serves both `kind`s.
+            return .ready(
+                OpenAICompatibleChatProvider(apiKey: apiKey, modelId: model.id, baseURL: definition.baseURL, contextWindowTokens: model.contextWindowTokens),
+                definition, model
+            )
         }
     }
 
     // MARK: - Persistence (TrackStore's conventions: .iso8601, .prettyPrinted, try?-swallowed)
 
+    /// Wraps `providers` + `activeProviderId` together so both persist in one file. Decodes the
+    /// pre-BYOK bare-array shape as a fallback, the same pattern `AgentSessionStore` uses for its
+    /// own persisted format — a file written before this field existed shouldn't need a migration
+    /// step, just a default.
+    private struct RegistryState: Codable {
+        var providers: [ProviderDefinition]
+        var activeProviderId: String
+
+        init(providers: [ProviderDefinition], activeProviderId: String) {
+            self.providers = providers
+            self.activeProviderId = activeProviderId
+        }
+
+        init(from decoder: Decoder) throws {
+            if let container = try? decoder.container(keyedBy: CodingKeys.self),
+               let providers = try? container.decode([ProviderDefinition].self, forKey: .providers) {
+                self.providers = providers
+                self.activeProviderId = (try? container.decode(String.self, forKey: .activeProviderId)) ?? "anthropic"
+            } else {
+                self.providers = (try? [ProviderDefinition](from: decoder)) ?? []
+                self.activeProviderId = "anthropic"
+            }
+        }
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: storeURL) else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        providers = (try? decoder.decode([ProviderDefinition].self, from: data)) ?? []
+        guard let state = try? decoder.decode(RegistryState.self, from: data) else { return }
+        providers = state.providers
+        activeProviderId = state.activeProviderId
     }
 
     private func save() {
@@ -110,7 +163,7 @@ final class ProviderRegistryStore: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = .prettyPrinted
-        guard let data = try? encoder.encode(providers) else { return }
+        guard let data = try? encoder.encode(RegistryState(providers: providers, activeProviderId: activeProviderId)) else { return }
         try? data.write(to: storeURL)
     }
 
