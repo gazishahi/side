@@ -525,7 +525,10 @@ final class AgentRunner {
             case .commandProposal(let command):
                 let index = appendEntry(.commandProposal(CommandPresentation(command: command, resolution: nil)))
                 unresolvedToolUseIds.insert(command.toolUseId)
-                if autoRunCommandsProvider() { autoRunEntryIndices.append(index) }
+                // A command flagged destructive never benefits from the track's auto-run
+                // opt-out — that toggle is meant for "skip approval on ordinary commands," not
+                // "let an agent force-push or rm -rf unattended."
+                if autoRunCommandsProvider(), command.riskLevel == .normal { autoRunEntryIndices.append(index) }
             }
         }
 

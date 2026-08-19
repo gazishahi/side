@@ -9,10 +9,14 @@ final class CommandProposalView: NSView {
 
     private let headerLabel = NSTextField(labelWithString: "")
     private let commandLabel = NSTextField(wrappingLabelWithString: "")
+    private let warningLabel = NSTextField(wrappingLabelWithString: "")
     private let applyButton = NSButton(title: "Run", target: nil, action: nil)
     private let rejectButton = NSButton(title: "Reject", target: nil, action: nil)
     private let resolutionLabel = NSTextField(labelWithString: "")
     private let buttonRow = NSStackView()
+
+    private static let destructiveBorderColor = NSColor.systemRed.withAlphaComponent(0.6)
+    private static let normalBorderColor = NSColor(white: 0.28, alpha: 1)
 
     init(command: ProposedCommand) {
         super.init(frame: .zero)
@@ -20,7 +24,6 @@ final class CommandProposalView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor(white: 0.28, alpha: 1).cgColor
         layer?.backgroundColor = NSColor(white: 0.13, alpha: 1).cgColor
 
         headerLabel.stringValue = "Run in terminal"
@@ -31,6 +34,27 @@ final class CommandProposalView: NSView {
         commandLabel.textColor = .labelColor
         commandLabel.isSelectable = true
         commandLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        warningLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        warningLabel.textColor = .systemRed
+        warningLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // Destructive commands never auto-run (see AgentRunner.handleToolOutcomes) and get a
+        // visible warning here too — a red border alone is easy to miss scrolling past a
+        // transcript; a human still has to read *why* before clicking Run.
+        if case .destructive(let reason) = command.riskLevel {
+            layer?.borderColor = Self.destructiveBorderColor.cgColor
+            warningLabel.stringValue = "⚠︎ \(reason)"
+            warningLabel.isHidden = false
+        } else {
+            layer?.borderColor = Self.normalBorderColor.cgColor
+            warningLabel.isHidden = true
+            // A hidden NSView still participates in Auto Layout (unlike a collapsed stack view
+            // arranged subview) — without pinning its height to zero, its intrinsic
+            // single-empty-line height would still push the button row down, leaving an
+            // unexplained gap on every ordinary command's card.
+            warningLabel.heightAnchor.constraint(equalToConstant: 0).isActive = true
+        }
 
         applyButton.bezelStyle = .rounded
         applyButton.controlSize = .small
@@ -55,6 +79,7 @@ final class CommandProposalView: NSView {
         headerLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(headerLabel)
         addSubview(commandLabel)
+        addSubview(warningLabel)
         addSubview(buttonRow)
         NSLayoutConstraint.activate([
             headerLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
@@ -63,7 +88,10 @@ final class CommandProposalView: NSView {
             commandLabel.topAnchor.constraint(equalTo: headerLabel.bottomAnchor, constant: 6),
             commandLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             commandLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            buttonRow.topAnchor.constraint(equalTo: commandLabel.bottomAnchor, constant: 8),
+            warningLabel.topAnchor.constraint(equalTo: commandLabel.bottomAnchor, constant: warningLabel.isHidden ? 0 : 6),
+            warningLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            warningLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            buttonRow.topAnchor.constraint(equalTo: warningLabel.bottomAnchor, constant: 8),
             buttonRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             buttonRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
         ])
