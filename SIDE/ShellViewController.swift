@@ -118,6 +118,21 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     var hasUnsavedChanges: Bool { makeVC.hasUnsavedChanges }
     func confirmCloseAllUnsaved(completion: @escaping (Bool) -> Void) { makeVC.confirmCloseAllUnsaved(completion: completion) }
     func restoreLastSessionIfAvailable() { makeVC.restoreLastSessionIfAvailable() }
+
+    /// Loads a project into this (freshly-created) window and, if given, switches straight to
+    /// one specific track — the entry point for Tracks' "Open in New Window", which is meant to
+    /// land on the requested track directly rather than whatever this project's globally-active
+    /// track happens to be. `loadProject` runs `projectOpened` synchronously (see its own
+    /// comment), so `trackStore` is already populated by the time this looks the track up.
+    func openProject(at url: URL, focusingTrackKey: String?) {
+        makeVC.loadProject(at: url)
+        guard let focusingTrackKey, let store = trackStore,
+              let track = store.tracks.first(where: { $0.branchName == focusingTrackKey }),
+              track.status != .active
+        else { return }
+        switchToTrack(track, completion: { _ in })
+    }
+
     func prepareForClose() {
         makeVC.prepareForClose()
         thinkVC.prepareForClose()
@@ -365,7 +380,14 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         trackStoreObserverToken = store.addChangeObserver { [weak self] in
             guard let self else { return }
             self.tracksVC.refresh()
-            self.makeVC.currentTrackKey = store.activeTrack?.branchName
+            // Deliberately does *not* reassign `makeVC.currentTrackKey` here — this fires on
+            // *any* change to the shared store, including one driven by a different window on
+            // the same project. `currentTrackKey` is this window's own authoritative field
+            // (set only by `projectOpened`/`switchToTrack`/`branchIsNowActive`, all explicit
+            // actions taken *in this window*); overwriting it with `store.activeTrack` here used
+            // to silently snap every window back to whichever track was globally active,
+            // defeating "Open Track in New Window" (and any other case of two windows
+            // deliberately looking at two different tracks) the moment either one changed.
             self.applyWindowChrome()
         }
         // Same multicast reasoning as the TrackStore observer above — `context.runnerManager`
@@ -469,9 +491,13 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         }
         if let branch = gitBranch {
             // The branch slug is precise but not what the user actually typed — showing the
-            // track's own intent alongside it (when one's active) reads as "what am I doing"
-            // rather than "which ref am I on."
-            let branchLabel = trackStore?.activeTrack.map { "\($0.intent) (\(branch))" } ?? branch
+            // track's own intent alongside it reads as "what am I doing" rather than "which ref
+            // am I on." Looked up by *this window's* `currentTrackKey`, not `trackStore
+            // .activeTrack` — the latter is the single globally-active track, which isn't
+            // necessarily what this specific window is showing (two windows can each be
+            // watching a different track on the same project).
+            let track = trackStore?.tracks.first { $0.branchName == currentTrackKey }
+            let branchLabel = track.map { "\($0.intent) (\(branch))" } ?? branch
             subtitleParts.append(gitDirtyCount > 0 ? "\(branchLabel) · \(gitDirtyCount) changed" : branchLabel)
         }
         window.subtitle = subtitleParts.joined(separator: " — ")

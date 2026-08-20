@@ -1076,7 +1076,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// guessing a "probably the main file" default by extension. A project with nothing
     /// remembered (first time opening it, or session storage cleared) just opens to an
     /// empty canvas; the file explorer/quick-open are one keystroke away regardless.
-    private func loadProject(at url: URL) {
+    /// Not private: `ShellViewController.openProject(at:focusingTrackKey:)` calls this directly
+    /// to load a project into a freshly-created window — the same entry point "Open Project…"
+    /// and session restore already go through, just invoked from outside this file.
+    func loadProject(at url: URL) {
         projectURL = url
         retarget(to: url)
         // A fresh project open starts at the shared per-project bucket; if this project has an

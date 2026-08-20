@@ -748,6 +748,10 @@ final class TracksWorkspaceViewController: NSViewController {
         let autoRunItem = menu.addItem(withTitle: "Auto-run Commands", action: #selector(toggleAutoRunCommands(_:)), keyEquivalent: "")
         autoRunItem.representedObject = track
         autoRunItem.state = track.autoRunCommands ? .on : .off
+        // Available regardless of status — the whole point is watching/working on two tracks
+        // side by side, and that's just as useful for a parked or completed track as an active
+        // one (reviewing old work while something else runs, say).
+        addItem(to: menu, title: "Open in New Window", action: #selector(openInNewWindowMenuItem(_:)), track: track)
         menu.addItem(NSMenuItem.separator())
 
         switch track.status {
@@ -810,6 +814,13 @@ final class TracksWorkspaceViewController: NSViewController {
     @objc private func toggleAutoRunCommands(_ sender: NSMenuItem) {
         guard let track = sender.representedObject as? Track else { return }
         trackStore?.setAutoRunCommands(!track.autoRunCommands, for: track)
+    }
+
+    /// Opens a brand-new window on this same project, landed directly on this track — never
+    /// disturbs whatever track this window (or any other) is currently showing.
+    @objc private func openInNewWindowMenuItem(_ sender: NSMenuItem) {
+        guard let track = sender.representedObject as? Track, let projectRoot = trackStore?.projectRoot else { return }
+        AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectRoot, trackKey: track.branchName)
     }
 
     @objc private func markReviewReadyTrack(_ sender: NSMenuItem) {

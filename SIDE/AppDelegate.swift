@@ -21,6 +21,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func newWindow() {
+        presentNewWindow()
+    }
+
+    /// Tracks' "Open in New Window" — a fresh window on the same project, landed directly on one
+    /// specific track rather than whatever this project's globally-active track happens to be,
+    /// so two tracks can be watched or worked on side by side without either window's track
+    /// switch disturbing the other.
+    func openTrackInNewWindow(projectRoot: URL, trackKey: String) {
+        let window = presentNewWindow()
+        (window.contentViewController as? ShellViewController)?.openProject(at: projectRoot, focusingTrackKey: trackKey)
+    }
+
+    @discardableResult
+    private func presentNewWindow() -> NSWindow {
         let window = makeWindow()
         windows.append(window)
         window.center()
@@ -32,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.setFrame(frame, display: false)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        return window
     }
 
     @objc func showPreferences() {
