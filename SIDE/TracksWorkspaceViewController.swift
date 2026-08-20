@@ -23,6 +23,32 @@ private enum TracksPalette {
     static let hairline = NSColor(white: 0.24, alpha: 1)
     static let rowHover = NSColor(white: 0.195, alpha: 1)
     static let chip = NSColor(white: 0.21, alpha: 1)
+    /// The lineage rail drawn to the left of a stacked child's row, connecting it visually to its
+    /// parent above — deliberately faint, since it's a wayfinding aid, not something that should
+    /// compete with the row's own content for attention.
+    static let rail = NSColor(white: 0.32, alpha: 1)
+
+    static func statusColor(for status: TrackStatus) -> NSColor {
+        switch status {
+        case .active: return .systemGreen
+        case .waiting: return .systemOrange
+        case .reviewReady: return .systemPurple
+        case .parked: return .systemGray
+        case .completed: return .systemTeal
+        case .archived: return .tertiaryLabelColor
+        }
+    }
+
+    static func statusText(for status: TrackStatus) -> String {
+        switch status {
+        case .active: return "Active"
+        case .waiting: return "Waiting"
+        case .reviewReady: return "Review Ready"
+        case .parked: return "Parked"
+        case .completed: return "Completed"
+        case .archived: return "Archived"
+        }
+    }
 }
 
 final class TracksWorkspaceViewController: NSViewController {
@@ -266,8 +292,8 @@ final class TracksWorkspaceViewController: NSViewController {
         }
 
         let needsYou = needsYouTracks()
-        let sections = groupedSections()
-        if needsYou.isEmpty && sections.isEmpty {
+        let families = families()
+        if needsYou.isEmpty && families.isEmpty {
             let empty = NSTextField(labelWithString: "No tracks yet — create one to get started.")
             empty.font = .systemFont(ofSize: 12.5)
             empty.textColor = .tertiaryLabelColor
@@ -283,34 +309,47 @@ final class TracksWorkspaceViewController: NSViewController {
                 contentStack.addArrangedSubview(group)
                 group.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
             }
-            for section in sections {
-                let group = makeGroup(label: section.label, tracks: section.tracks)
-                contentStack.addArrangedSubview(group)
-                group.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            for family in families {
+                let card = makeCard(tracks: family)
+                contentStack.addArrangedSubview(card)
+                card.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
             }
         }
 
         updateArchivedCountLabel()
     }
 
-    /// Grouped by status rather than one flat sorted list — the point of the redesign. Active is
-    /// never empty-but-shown (there's either exactly one active track or none); Archived only
-    /// appears at all once the checkbox reveals it.
-    private func groupedSections() -> [(label: String, tracks: [Track])] {
+    private func visibleTracks() -> [Track] {
         let all = trackStore?.tracks ?? []
-        func tracks(for status: TrackStatus) -> [Track] {
-            all.filter { $0.status == status }.sorted { $0.lastActiveAt > $1.lastActiveAt }
+        return showArchived ? all : all.filter { $0.status != .archived }
+    }
+
+    /// Grouped by lineage rather than by status — a stacked track's card is its root plus every
+    /// descendant, so "your branch, and its worktrees underneath it" is the shape on screen, not
+    /// an artifact you have to reconstruct from a breadcrumb. Status now lives on each row (see
+    /// `TrackRowView`'s status pill) instead of being the thing that decides which card a track
+    /// lands in. Families are ordered by whichever member was active most recently, so a family
+    /// with fresh child activity still surfaces near the top even if its root has gone quiet.
+    private func families() -> [[Track]] {
+        let all = visibleTracks()
+        let byId = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
+        var childrenOf: [UUID: [Track]] = [:]
+        var roots: [Track] = []
+        for track in all {
+            if let parentId = track.parentTrackId, byId[parentId] != nil {
+                childrenOf[parentId, default: []].append(track)
+            } else {
+                roots.append(track)
+            }
         }
-        var sections: [(String, [Track])] = []
-        for (label, status) in [("Active", TrackStatus.active), ("Waiting", .waiting), ("Review Ready", .reviewReady), ("Parked", .parked), ("Completed", .completed)] {
-            let list = tracks(for: status)
-            if !list.isEmpty { sections.append((label, list)) }
+        func collect(_ track: Track) -> [Track] {
+            [track] + (childrenOf[track.id] ?? []).flatMap(collect)
         }
-        if showArchived {
-            let archived = tracks(for: .archived)
-            if !archived.isEmpty { sections.append(("Archived", archived)) }
-        }
-        return sections
+        return roots
+            .map(collect)
+            .sorted { lhs, rhs in
+                (lhs.map(\.lastActiveAt).max() ?? .distantPast) > (rhs.map(\.lastActiveAt).max() ?? .distantPast)
+            }
     }
 
     /// The runner never writes `TrackStatus` — this is entirely a machine-computed, ephemeral
@@ -425,11 +464,6 @@ final class TracksWorkspaceViewController: NSViewController {
         return result
     }
 
-    private func parentTrack(of track: Track) -> Track? {
-        guard let parentId = track.parentTrackId else { return nil }
-        return trackStore?.tracks.first(where: { $0.id == parentId })
-    }
-
     private func makeRow(for track: Track, indent: Bool = false) -> TrackRowView {
         var metaText = track.status == .active
             ? "active now"
@@ -438,15 +472,12 @@ final class TracksWorkspaceViewController: NSViewController {
             let gitBits = gitSummaryText(summary)
             if !gitBits.isEmpty { metaText += " · \(gitBits)" }
         }
-        if let parent = parentTrack(of: track) {
-            metaText += " · forked from \u{201C}\(parent.intent)\u{201D}"
-        }
         let row = TrackRowView(
             intentText: track.intent,
             branchText: track.branchName,
             metaText: metaText,
             activity: activity(for: track),
-            isActiveTrack: track.status == .active,
+            status: track.status,
             indent: indent
         )
         row.menu = buildContextMenu(for: track)
@@ -1017,7 +1048,8 @@ private final class TrackRowView: NSView {
     private var trackingArea: NSTrackingArea?
     private let primaryAction: TrackRowPrimaryAction?
 
-    init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, isActiveTrack: Bool, indent: Bool = false) {
+    init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, status: TrackStatus, indent: Bool = false) {
+        let isActiveTrack = status == .active
         switch activity {
         case .needsYou: primaryAction = .review
         case .doneUnread: primaryAction = .markReviewReady
@@ -1051,6 +1083,26 @@ private final class TrackRowView: NSView {
             branchLabel.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -1)
         ])
 
+        // Now that cards are grouped by lineage rather than by status, a row's status is no
+        // longer implied by which section it's filed under — it needs to say so itself.
+        let statusColor = TracksPalette.statusColor(for: status)
+        let statusPill = NSView()
+        statusPill.wantsLayer = true
+        statusPill.layer?.backgroundColor = statusColor.withAlphaComponent(0.16).cgColor
+        statusPill.layer?.cornerRadius = 4
+        statusPill.translatesAutoresizingMaskIntoConstraints = false
+        let statusLabel = NSTextField(labelWithString: TracksPalette.statusText(for: status))
+        statusLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        statusLabel.textColor = statusColor
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusPill.addSubview(statusLabel)
+        NSLayoutConstraint.activate([
+            statusLabel.leadingAnchor.constraint(equalTo: statusPill.leadingAnchor, constant: 5),
+            statusLabel.trailingAnchor.constraint(equalTo: statusPill.trailingAnchor, constant: -5),
+            statusLabel.topAnchor.constraint(equalTo: statusPill.topAnchor, constant: 1),
+            statusLabel.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: -1)
+        ])
+
         let sepLabel = NSTextField(labelWithString: "\u{00B7}")
         sepLabel.font = .systemFont(ofSize: 11.5)
         sepLabel.textColor = .tertiaryLabelColor
@@ -1059,7 +1111,7 @@ private final class TrackRowView: NSView {
         metaLabel.font = .systemFont(ofSize: 11.5)
         metaLabel.textColor = .secondaryLabelColor
 
-        var metaRowViews: [NSView] = [chip, sepLabel, metaLabel]
+        var metaRowViews: [NSView] = [statusPill, chip, sepLabel, metaLabel]
         if let chipInfo = Self.agentChipInfo(for: activity) {
             let agentSep = NSTextField(labelWithString: "\u{00B7}")
             agentSep.font = .systemFont(ofSize: 11.5)
@@ -1111,7 +1163,7 @@ private final class TrackRowView: NSView {
 
         addSubview(mainStack)
         addSubview(actionsStack)
-        NSLayoutConstraint.activate([
+        var constraints = [
             mainStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent ? 34 : 14),
             mainStack.topAnchor.constraint(equalTo: topAnchor, constant: 9),
             mainStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
@@ -1119,7 +1171,24 @@ private final class TrackRowView: NSView {
             actionsStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             actionsStack.centerYAnchor.constraint(equalTo: centerYAnchor),
             heightAnchor.constraint(greaterThanOrEqualToConstant: 42)
-        ])
+        ]
+        // The rail is what actually reads as "this is a child of the row above" — the extra
+        // indent alone just looks like a margin. Runs the full row height so consecutive
+        // children chain into one continuous line down the card.
+        if indent {
+            let rail = NSView()
+            rail.wantsLayer = true
+            rail.layer?.backgroundColor = TracksPalette.rail.cgColor
+            rail.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(rail)
+            constraints.append(contentsOf: [
+                rail.widthAnchor.constraint(equalToConstant: 2),
+                rail.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+                rail.topAnchor.constraint(equalTo: topAnchor),
+                rail.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
