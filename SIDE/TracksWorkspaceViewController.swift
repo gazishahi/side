@@ -370,11 +370,12 @@ final class TracksWorkspaceViewController: NSViewController {
         rowsStack.spacing = 0
         rowsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        for (index, track) in tracks.enumerated() {
-            let row = makeRow(for: track)
+        let ordered = nestedOrder(tracks)
+        for (index, entry) in ordered.enumerated() {
+            let row = makeRow(for: entry.track, indent: entry.indent)
             rowsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
-            if index < tracks.count - 1 {
+            if index < ordered.count - 1 {
                 let hairline = NSBox()
                 hairline.boxType = .custom
                 hairline.borderType = .noBorder
@@ -396,7 +397,40 @@ final class TracksWorkspaceViewController: NSViewController {
         return card
     }
 
-    private func makeRow(for track: Track) -> TrackRowView {
+    /// Reorders a status section's tracks so a stacked track's row immediately follows its
+    /// parent's row (when both landed in the same section), rather than sitting wherever
+    /// `lastActiveAt` happened to place it — the hierarchy should read top-to-bottom, not be
+    /// inferred from a breadcrumb alone. A track whose parent isn't in this same section (or
+    /// whose parent id doesn't resolve to a live track) renders as its own root, unindented;
+    /// the breadcrumb in its meta text is what still communicates its real parent in that case.
+    private func nestedOrder(_ tracks: [Track]) -> [(track: Track, indent: Bool)] {
+        let idsInSection = Set(tracks.map(\.id))
+        var childrenOf: [UUID: [Track]] = [:]
+        var roots: [Track] = []
+        for track in tracks {
+            if let parentId = track.parentTrackId, idsInSection.contains(parentId) {
+                childrenOf[parentId, default: []].append(track)
+            } else {
+                roots.append(track)
+            }
+        }
+        var result: [(Track, Bool)] = []
+        func append(_ track: Track, indent: Bool) {
+            result.append((track, indent))
+            for child in childrenOf[track.id] ?? [] {
+                append(child, indent: true)
+            }
+        }
+        for root in roots { append(root, indent: false) }
+        return result
+    }
+
+    private func parentTrack(of track: Track) -> Track? {
+        guard let parentId = track.parentTrackId else { return nil }
+        return trackStore?.tracks.first(where: { $0.id == parentId })
+    }
+
+    private func makeRow(for track: Track, indent: Bool = false) -> TrackRowView {
         var metaText = track.status == .active
             ? "active now"
             : Self.relativeDateFormatter.localizedString(for: track.lastActiveAt, relativeTo: Date())
@@ -404,12 +438,16 @@ final class TracksWorkspaceViewController: NSViewController {
             let gitBits = gitSummaryText(summary)
             if !gitBits.isEmpty { metaText += " · \(gitBits)" }
         }
+        if let parent = parentTrack(of: track) {
+            metaText += " · forked from \u{201C}\(parent.intent)\u{201D}"
+        }
         let row = TrackRowView(
             intentText: track.intent,
             branchText: track.branchName,
             metaText: metaText,
             activity: activity(for: track),
-            isActiveTrack: track.status == .active
+            isActiveTrack: track.status == .active,
+            indent: indent
         )
         row.menu = buildContextMenu(for: track)
         row.onDoubleClick = { [weak self] in self?.requestSwitch(to: track) }
@@ -979,7 +1017,7 @@ private final class TrackRowView: NSView {
     private var trackingArea: NSTrackingArea?
     private let primaryAction: TrackRowPrimaryAction?
 
-    init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, isActiveTrack: Bool) {
+    init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, isActiveTrack: Bool, indent: Bool = false) {
         switch activity {
         case .needsYou: primaryAction = .review
         case .doneUnread: primaryAction = .markReviewReady
@@ -1074,7 +1112,7 @@ private final class TrackRowView: NSView {
         addSubview(mainStack)
         addSubview(actionsStack)
         NSLayoutConstraint.activate([
-            mainStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            mainStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent ? 34 : 14),
             mainStack.topAnchor.constraint(equalTo: topAnchor, constant: 9),
             mainStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
             mainStack.trailingAnchor.constraint(lessThanOrEqualTo: actionsStack.leadingAnchor, constant: -12),
