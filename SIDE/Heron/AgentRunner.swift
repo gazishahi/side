@@ -57,6 +57,12 @@ final class AgentRunner {
     /// `AgentActivity.init(phase:hasUnseenCompletion:)`.
     private(set) var hasUnseenCompletion = false
     var activity: AgentActivity { AgentActivity(phase: phase, hasUnseenCompletion: hasUnseenCompletion) }
+    /// When this run most recently *became* `.needsYou` — `nil` whenever it isn't right now.
+    /// Distinct from `Track.lastActiveAt` (which only updates on a track switch, not on an agent
+    /// blocking): this is what lets Tracks' pinned "Needs You" section order by how long
+    /// something has actually been waiting on a decision, oldest first, instead of by whatever
+    /// track the user happened to look at most recently.
+    private(set) var needsYouSince: Date?
     private var pendingBatch: PendingToolBatch?
     /// Non-nil only while a tool batch is genuinely awaiting a human decision — exposed so a
     /// caller doesn't have to reach into private state to know whether `resolve` even applies.
@@ -111,7 +117,14 @@ final class AgentRunner {
 
     private func setPhase(_ newPhase: AgentRunPhase) {
         guard phase != newPhase else { return }
+        let wasNeedsYou = activity == .needsYou
         phase = newPhase
+        let isNeedsYou = activity == .needsYou
+        if isNeedsYou, !wasNeedsYou {
+            needsYouSince = Date()
+        } else if !isNeedsYou {
+            needsYouSince = nil
+        }
         notify(.phaseChanged)
     }
 

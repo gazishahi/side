@@ -319,8 +319,20 @@ final class TracksWorkspaceViewController: NSViewController {
         runnerManager?.existingRunner(forTrackKey: track.branchName)?.activity ?? .none
     }
 
+    /// Ordered by how long each track has actually been waiting on a decision — oldest first —
+    /// rather than `Track.lastActiveAt` (which only updates on a track switch, so a track you
+    /// left the instant before it blocked would misleadingly rank above one that's been sitting
+    /// unaddressed for hours). Falls back to `lastActiveAt` only for the situation that should
+    /// never happen (a track reads as `.needsYou` but its runner has no `needsYouSince` recorded),
+    /// so a row still renders somewhere sane instead of silently vanishing from this section.
     private func needsYouTracks() -> [Track] {
-        (trackStore?.tracks ?? []).filter { activity(for: $0) == .needsYou }.sorted { $0.lastActiveAt > $1.lastActiveAt }
+        (trackStore?.tracks ?? [])
+            .filter { activity(for: $0) == .needsYou }
+            .sorted { needsYouSince(for: $0) < needsYouSince(for: $1) }
+    }
+
+    private func needsYouSince(for track: Track) -> Date {
+        runnerManager?.existingRunner(forTrackKey: track.branchName)?.needsYouSince ?? track.lastActiveAt
     }
 
     private func makeGroup(label: String, tracks: [Track]) -> NSView {
