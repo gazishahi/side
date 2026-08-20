@@ -322,7 +322,7 @@ final class AgentRunner {
             // that ran but touched nothing) — nothing to checkpoint.
             return
         }
-        guard GitPaths.runGit(["add", "--"] + pathsToStage.sorted(), cwd: root).success else {
+        guard Self.runGitWithRetry(["add", "--"] + pathsToStage.sorted(), cwd: root) else {
             appendEntry(.meta("⚠︎ Checkpoint failed: could not stage changed files."))
             return
         }
@@ -620,6 +620,29 @@ final class AgentRunner {
     }
 
     // MARK: - Static helpers
+
+    /// Other git activity in this app (window-subtitle status polling, Tracks' uncommitted-file
+    /// counts) can legitimately land at the same instant as a checkpoint's own `git add` — both
+    /// sides just want a quick read or a stage, but git's index lock makes even that transient
+    /// overlap fail outright with no automatic retry of its own. A short bounded retry absorbs
+    /// that instead of surfacing a spurious "checkpoint failed" for what was actually just bad
+    /// timing. Caught live, twice: a mixed edit+command batch (the edit's file-reveal triggers a
+    /// git-status refresh) reliably reproduced the failure — and a fixed attempt-count retry (3,
+    /// then 8, both tried live) still wasn't reliably enough margin, meaning the real contention
+    /// window can run longer than a couple seconds (plausible cause: a git-aware shell prompt —
+    /// oh-my-zsh's git plugin, starship, powerlevel10k, all common — runs several of its own git
+    /// subcommands on every prompt redraw in the very same repo `run_shell_command` just used).
+    /// A time-based deadline rather than a fixed attempt count is the more principled fix: keep
+    /// retrying for up to `maxWait`, however many attempts that takes, instead of guessing a
+    /// count and being wrong about it a second time.
+    private static func runGitWithRetry(_ args: [String], cwd: String, maxWait: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(maxWait)
+        while true {
+            if GitPaths.runGit(args, cwd: cwd).success { return true }
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+    }
 
     private static let systemPrompt = """
     You are an assistant embedded in Side, a native macOS development environment. You are \
