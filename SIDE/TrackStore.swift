@@ -90,7 +90,7 @@ final class TrackStore {
         }
     }
 
-    enum TrackError: Error, LocalizedError {
+    enum TrackError: Error, LocalizedError, Equatable {
         case emptyIntent
         case gitCheckoutFailed(String)
         case nothingToPromote
@@ -98,6 +98,14 @@ final class TrackStore {
         case gitBranchDeleteFailed(String)
         case gitInitFailed(String)
         case gitWorktreeFailed(String)
+        /// A parent track can't be deleted out from under tracks still stacked on it — their
+        /// base resolution (`ReviewWorkspaceViewController.baseRef`) depends on the parent's
+        /// `Track` record existing, not just its branch, so deleting it would silently strand
+        /// every child's base/promote-target logic.
+        case cannotDeleteTrackWithLiveChildren
+        /// `pullFromParent` on a root track — there's no parent branch to pull.
+        case noParentTrack
+        case nothingToPull
 
         var errorDescription: String? {
             switch self {
@@ -108,6 +116,9 @@ final class TrackStore {
             case .gitBranchDeleteFailed(let detail): return "The track was removed, but its branch couldn't be deleted: \(detail)"
             case .gitInitFailed(let detail): return "Git init failed: \(detail)"
             case .gitWorktreeFailed(let detail): return "Git worktree operation failed: \(detail)"
+            case .cannotDeleteTrackWithLiveChildren: return "This track still has stacked tracks forked from it — park, complete, or archive them first."
+            case .noParentTrack: return "This track doesn't fork from another track — there's nothing to pull."
+            case .nothingToPull: return "Already up to date with its parent branch."
             }
         }
     }
@@ -505,6 +516,10 @@ final class TrackStore {
     /// out in a worktree.
     func deleteTrack(_ track: Track, alsoDeleteBranch: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
         guard track.status != .active else { completion(.failure(TrackError.cannotDeleteActive)); return }
+        // Archived children don't count — they're already treated as gone from the working set,
+        // so they can't be silently stranded by anything this does.
+        let hasLiveChildren = tracks.contains { $0.parentTrackId == track.id && $0.status != .archived }
+        guard !hasLiveChildren else { completion(.failure(TrackError.cannotDeleteTrackWithLiveChildren)); return }
         guard alsoDeleteBranch else {
             if let path = track.workingDirectoryPath {
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -572,6 +587,47 @@ final class TrackStore {
                 completion(.success(()))
             }
         }
+    }
+
+    /// Merges the parent's branch into this stacked track's *own* worktree — the inverse of
+    /// Promote (which moves the track's changes onto its base), this moves the base's changes
+    /// onto the track, so a long-lived child doesn't drift further from its parent every time the
+    /// parent moves forward. Always runs in the child's own worktree, never the parent's — unlike
+    /// Promote, there's no "which working copy" ambiguity here since a pull only ever touches the
+    /// track pulling. A root track (`parentTrackId == nil`) has no parent branch to pull from.
+    func pullFromParent(_ track: Track, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let parentId = track.parentTrackId, let parent = tracks.first(where: { $0.id == parentId }) else {
+            completion(.failure(TrackError.noParentTrack))
+            return
+        }
+        guard let cwd = track.workingDirectoryPath else {
+            completion(.failure(TrackError.gitWorktreeFailed("This track has no working copy — resume it (Tracks) first.")))
+            return
+        }
+        let parentBranch = parent.branchName
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let outcome = self.performPull(parentBranch: parentBranch, cwd: cwd)
+            DispatchQueue.main.async { completion(outcome) }
+        }
+    }
+
+    private func performPull(parentBranch: String, cwd: String) -> Result<String, Error> {
+        let dirty = runGit(["status", "--porcelain"], cwd: cwd)
+        guard dirty.output.isEmpty else {
+            return .failure(TrackError.gitWorktreeFailed("This track's working copy has uncommitted changes — commit or stash them first."))
+        }
+        let behind = runGit(["rev-list", "--count", "HEAD..\(parentBranch)"], cwd: cwd)
+        if behind.success, Int(behind.output) == 0 {
+            return .failure(TrackError.nothingToPull)
+        }
+        let mergeAttempt = runGit(["merge", "--no-ff", parentBranch], cwd: cwd)
+        guard mergeAttempt.success else {
+            _ = runGit(["merge", "--abort"], cwd: cwd)
+            return .failure(TrackError.gitWorktreeFailed("Merging \(parentBranch) would conflict — resolve manually (e.g. rebase) and try again."))
+        }
+        let sha = runGit(["rev-parse", "--short", "HEAD"], cwd: cwd)
+        return .success("✓ Pulled \(parentBranch) (\(sha.success ? sha.output : "?")).")
     }
 
     private func demoteActiveTrack() {

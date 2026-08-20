@@ -847,6 +847,9 @@ final class TracksWorkspaceViewController: NSViewController {
         // side by side, and that's just as useful for a parked or completed track as an active
         // one (reviewing old work while something else runs, say).
         addItem(to: menu, title: "Open in New Window", action: #selector(openInNewWindowMenuItem(_:)), track: track)
+        if let parentId = track.parentTrackId, let parent = trackStore?.tracks.first(where: { $0.id == parentId }) {
+            addItem(to: menu, title: "Pull from \u{201C}\(parent.intent)\u{201D}", action: #selector(pullFromParentMenuItem(_:)), track: track)
+        }
         menu.addItem(NSMenuItem.separator())
 
         switch track.status {
@@ -979,6 +982,28 @@ final class TracksWorkspaceViewController: NSViewController {
         }
     }
 
+    /// Blocked while the track's own agent has something in flight — a pull rewrites the working
+    /// copy underneath it (a merge commit, possibly conflicted files) exactly the kind of
+    /// out-from-under-you change the approval pause exists to prevent. `.blocked`/`.finishedTurn`
+    /// aren't busy in that sense — nothing is actively touching the worktree in those phases — so
+    /// this is deliberately narrower than "does this track have a runner at all."
+    @objc private func pullFromParentMenuItem(_ sender: NSMenuItem) {
+        guard let track = sender.representedObject as? Track, let window = view.window else { return }
+        if runnerManager?.existingRunner(forTrackKey: track.branchName)?.phase.isBusy == true {
+            showStatus("⚠︎ This track's agent is still running — wait for it to finish before pulling.")
+            return
+        }
+        trackStore?.pullFromParent(track) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                self.showStatus(message)
+            case .failure(let error):
+                self.showError(error, title: "Couldn't pull", window: window)
+            }
+        }
+    }
+
     @objc private func deleteTrackMenuItem(_ sender: NSMenuItem) {
         guard let track = sender.representedObject as? Track, let window = view.window else { return }
         let alert = NSAlert()
@@ -998,7 +1023,15 @@ final class TracksWorkspaceViewController: NSViewController {
                 switch result {
                 case .success:
                     self.onTrackDeleted?(track)
+                case .failure(let error as TrackStore.TrackError) where error == .cannotDeleteTrackWithLiveChildren || error == .cannotDeleteActive:
+                    // Refused before touching anything — unlike `.gitBranchDeleteFailed` below,
+                    // the track record is still fully intact, so cleaning up its sessions/runner
+                    // here would discard live state for a track that never actually went away.
+                    self.showError(error, title: "Couldn't delete track", window: window)
                 case .failure(let error):
+                    // The track record really was removed already (this is only reachable via
+                    // `TrackError.gitBranchDeleteFailed`, which fires after `tracks.removeAll`) —
+                    // only the branch cleanup failed, so the ledger-side cleanup below still applies.
                     self.onTrackDeleted?(track)
                     self.showError(error, title: "Track deleted", window: window)
                 }
