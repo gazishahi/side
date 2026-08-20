@@ -32,14 +32,17 @@ private extension NSToolbarItem.Identifier {
 
 final class ShellViewController: NSViewController, NSToolbarDelegate {
     // Think sits next to Make — those are the two stages a user bounces between most while
-    // an agent works, so they get adjacent segments.
-    enum Stage: String, CaseIterable { case make = "Make", think = "Think", run = "Run", tracks = "Tracks" }
+    // an agent works, so they get adjacent segments. Review sits right after Think (where its
+    // checkpoints come from) and before Run (where its tests run) — the same order the
+    // constitution's own stage table uses.
+    enum Stage: String, CaseIterable { case make = "Make", think = "Think", review = "Review", run = "Run", tracks = "Tracks" }
 
     private let stageControl = NSSegmentedControl(labels: Stage.allCases.map(\.rawValue), trackingMode: .selectOne, target: nil, action: nil)
     private let projectLabel = NSTextField(labelWithString: "")
     private let container = NSView()
     private lazy var makeVC = MakeWorkspaceViewController()
     private lazy var thinkVC = ThinkWorkspaceViewController()
+    private lazy var reviewVC = ReviewWorkspaceViewController()
     private lazy var runVC = RunWorkspaceViewController()
     private lazy var tracksVC = TracksWorkspaceViewController()
     private var current: Stage?
@@ -228,6 +231,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         switch stage {
         case .make: next = makeVC
         case .think: next = thinkVC
+        case .review: next = reviewVC
         case .run: next = runVC
         case .tracks: next = tracksVC
         }
@@ -353,6 +357,8 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             runVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
         }
         thinkVC.configure(runnerManager: context.runnerManager, trackKey: currentTrackKey)
+        reviewVC.configure(trackStore: store, sessionStore: context.sessionStore, canonicalRoot: url)
+        reviewVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
         // Registered rather than assigned: `store` may already be shared with another window
         // (same project, two windows), and a plain single-assignment `onChange` would let this
         // window's registration silently replace that other window's.
@@ -397,6 +403,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
                     self.makeVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
                     self.runVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
                     self.thinkVC.reloadForTrackSwitch(trackKey: track.branchName)
+                    self.reviewVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
                     self.show(landOn)
                     completion(outcome)
                 case .failure(let error):
@@ -427,6 +434,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         makeVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
         runVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
         thinkVC.reloadForTrackSwitch(trackKey: branchName)
+        reviewVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
         show(.make)
     }
 

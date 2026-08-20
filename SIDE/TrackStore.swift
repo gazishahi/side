@@ -572,7 +572,7 @@ final class TrackStore {
     /// currently checked out. Tries the remote's default branch first (what GitHub/GitLab call
     /// the repo's primary branch), then falls back to a local `main` or `master`, then finally to
     /// whatever's currently checked out for a repo with neither (e.g. a brand-new local-only repo).
-    private func defaultBranchName() -> String {
+    func defaultBranchName() -> String {
         let cwd = projectRoot.path
         let remoteHead = runGit(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd: cwd)
         if remoteHead.success, let name = remoteHead.output.split(separator: "/").last {

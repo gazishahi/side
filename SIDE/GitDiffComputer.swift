@@ -63,6 +63,16 @@ enum GitDiffComputer {
             .trimmingCharacters(in: .newlines)
     }
 
+    /// A unified diff between two refs — `git diff <fromRef>...<toRef>` (triple-dot: against
+    /// their merge-base, so a base branch that's moved on since the track forked doesn't pollute
+    /// the diff with unrelated upstream changes). Used by Review to show a track's full change
+    /// stream against its base, distinct from `unifiedDiffText`'s single-file string-vs-string
+    /// comparison for a proposed edit.
+    static func refDiff(fromRef: String, toRef: String, cwd: String, contextLines: Int = 3) -> String {
+        let output = runGit(["diff", "--no-color", "-U\(contextLines)", "\(fromRef)...\(toRef)"], cwd: cwd)
+        return output.trimmingCharacters(in: .newlines)
+    }
+
     private static func diffResult(original: String?, current: String, projectRoot: URL) -> GitDiffResult {
         guard let original else {
             guard !current.isEmpty else { return GitDiffResult(marks: [:], hunks: [], headContent: nil) }
