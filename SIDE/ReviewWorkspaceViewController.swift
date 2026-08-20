@@ -25,7 +25,9 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let diffHeader = NSTextField(labelWithString: "")
     private let diffTextView = NSTextView()
     private let diffScroll = NSScrollView()
-    private let promoteButton = NSButton(title: "Promote to main", target: nil, action: nil)
+    // Real label set per-track in refresh() — "to main" isn't right for a stacked track, whose
+    // actual base is its parent's branch.
+    private let promoteButton = NSButton(title: "Promote", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
     private let bottomBar = NSStackView()
 
@@ -149,9 +151,10 @@ final class ReviewWorkspaceViewController: NSViewController {
         showEmptyState(false)
         statusLabel.stringValue = ""
 
-        let baseRef = trackStore.defaultBranchName()
+        let baseRef = Self.baseRef(for: track, trackStore: trackStore)
         titleLabel.stringValue = track.intent.isEmpty ? track.branchName : track.intent
         subtitleLabel.stringValue = "\(track.branchName) → \(baseRef)"
+        promoteButton.title = "Promote to \(baseRef)"
 
         checkpointsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let checkpoints = (sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []).sorted { $0.createdAt > $1.createdAt }
@@ -224,27 +227,56 @@ final class ReviewWorkspaceViewController: NSViewController {
     // MARK: - Promote
 
     @objc private func promoteTapped() {
-        guard let track = currentTrack, let canonicalRoot, let trackStore, let window = view.window else { return }
-        let baseRef = trackStore.defaultBranchName()
+        guard let track = currentTrack, let trackStore, let window = view.window else { return }
+        let baseRef = Self.baseRef(for: track, trackStore: trackStore)
+        guard let target = mergeTarget(for: track, trackStore: trackStore) else {
+            statusLabel.stringValue = "⚠︎ \u{201C}\(baseRef)\u{201D}'s working copy has been removed — resume it (Tracks) before promoting into it."
+            statusLabel.textColor = .systemOrange
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Promote to \(baseRef)?"
-        alert.informativeText = "This merges \(track.branchName) into \(baseRef) in your main working copy. \(track.intent.isEmpty ? "" : "\u{201C}\(track.intent)\u{201D}")"
+        alert.informativeText = "This merges \(track.branchName) into \(baseRef) in \(target.isParent ? "that track's" : "your main") working copy. \(track.intent.isEmpty ? "" : "\u{201C}\(track.intent)\u{201D}")"
         alert.addButton(withTitle: "Promote")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
-            self.promote(track: track, baseRef: baseRef, canonicalRoot: canonicalRoot, trackStore: trackStore)
+            self.promote(track: track, baseRef: baseRef, mergeRoot: target.root, trackStore: trackStore)
         }
     }
 
-    /// Runs entirely against `canonicalRoot` — the shared main checkout, never the track's own
-    /// worktree — since promoting means moving the *base* branch forward, not the track's. Never
-    /// leaves that shared checkout mid-merge: any conflict aborts immediately rather than leaving
-    /// other windows/stages looking at a half-merged `main`.
-    private func promote(track: Track, baseRef: String, canonicalRoot: URL, trackStore: TrackStore) {
+    /// Where a track's changes actually land, and what they land on top of. A root track's base
+    /// is the project default, merged into the canonical (shared) checkout — unchanged from
+    /// before stacking existed. A stacked track's base is its *parent's own branch*, and that
+    /// only exists checked out in the parent's own worktree — never the canonical root, which
+    /// might be sitting on a completely different branch. `nil` means there's nowhere to merge
+    /// into right now (a stacked track whose parent's worktree was removed via "Remove Working
+    /// Copy" and hasn't been re-materialized).
+    private func mergeTarget(for track: Track, trackStore: TrackStore) -> (root: URL, isParent: Bool)? {
+        guard let parentId = track.parentTrackId, let parent = trackStore.tracks.first(where: { $0.id == parentId }) else {
+            guard let canonicalRoot else { return nil }
+            return (canonicalRoot, false)
+        }
+        guard let parentPath = parent.workingDirectoryPath else { return nil }
+        return (URL(fileURLWithPath: parentPath), true)
+    }
+
+    private static func baseRef(for track: Track, trackStore: TrackStore) -> String {
+        guard let parentId = track.parentTrackId, let parent = trackStore.tracks.first(where: { $0.id == parentId }) else {
+            return trackStore.defaultBranchName()
+        }
+        return parent.branchName
+    }
+
+    /// Runs entirely against `mergeRoot` — the track's actual base's own working copy (the
+    /// canonical checkout for a root track, the parent track's own worktree for a stacked one) —
+    /// never the track's own worktree, since promoting means moving the *base* forward, not the
+    /// track's. Never leaves that working copy mid-merge: any conflict aborts immediately rather
+    /// than leaving other windows/stages looking at a half-merged base.
+    private func promote(track: Track, baseRef: String, mergeRoot: URL, trackStore: TrackStore) {
         promoteButton.isEnabled = false
         statusLabel.stringValue = "Promoting…"
-        let cwd = canonicalRoot.path
+        let cwd = mergeRoot.path
         let branchName = track.branchName
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = Self.performMerge(branchName: branchName, baseRef: baseRef, intent: track.intent, cwd: cwd)
