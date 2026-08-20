@@ -415,6 +415,12 @@ final class TrackStore {
         /// that's never been materialized into a worktree and isn't the one active in the shared
         /// main tree either.
         var uncommittedCount: Int?
+        /// Disk space this track's own worktree takes up, in bytes — `nil` for a track with no
+        /// worktree of its own (never materialized, a legacy track still living in the shared
+        /// main tree, or one already reclaimed via "Remove Working Copy"). Measured for the
+        /// active track too, same as any other — its worktree is real, reclaimable disk space
+        /// just like any other track's.
+        var diskUsageBytes: Int?
     }
 
     /// Cheap, synchronous git introspection for the ledger row — this is what lets Tracks show a
@@ -441,7 +447,30 @@ final class TrackStore {
                 summary.uncommittedCount = status.output.isEmpty ? 0 : status.output.split(separator: "\n").count
             }
         }
+        if let path = track.workingDirectoryPath {
+            summary.diskUsageBytes = Self.directorySizeBytes(at: path)
+        }
         return summary
+    }
+
+    /// `du -sk` rather than walking the tree in Swift — one process spawn reports a single
+    /// number for the whole worktree instead of a `FileManager` enumeration touching every file
+    /// individually. Runs on the same background thread the rest of `gitSummary` already does
+    /// (see `TracksWorkspaceViewController.refreshGitSummariesIfNeeded`), so a worktree with a
+    /// large `node_modules` doesn't block the main thread.
+    private static func directorySizeBytes(at path: String) -> Int? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
+        process.arguments = ["-sk", path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do { try process.run() } catch { return nil }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8),
+              let kilobytes = output.split(separator: "\t").first.flatMap({ Int($0) }) else { return nil }
+        return kilobytes * 1024
     }
 
     /// Renaming only ever touches the human-readable intent — the branch name a track was created

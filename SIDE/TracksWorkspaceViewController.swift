@@ -119,6 +119,12 @@ final class TracksWorkspaceViewController: NSViewController {
         return formatter
     }()
 
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
     override func loadView() { view = NSView() }
 
     override func viewDidLoad() {
@@ -421,6 +427,9 @@ final class TracksWorkspaceViewController: NSViewController {
         if summary.behindCount > 0 { parts.append("\(summary.behindCount) behind") }
         if let uncommitted = summary.uncommittedCount, uncommitted > 0 {
             parts.append("\(uncommitted) uncommitted")
+        }
+        if let bytes = summary.diskUsageBytes {
+            parts.append(Self.byteCountFormatter.string(fromByteCount: Int64(bytes)))
         }
         return parts.joined(separator: ", ")
     }
