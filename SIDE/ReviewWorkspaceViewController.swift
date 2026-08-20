@@ -1,5 +1,13 @@
 import AppKit
 
+/// Shared with Tracks' card/chip look — kept as a private duplicate rather than a cross-file
+/// import since each stage still owns its own visual constants independently for now.
+private enum ReviewPalette {
+    static let cardBackground = NSColor(white: 0.145, alpha: 1)
+    static let cardBorder = NSColor(white: 0.24, alpha: 1)
+    static let chip = NSColor(white: 0.21, alpha: 1)
+}
+
 /// The Review stage: "checkpoints, diffs, rationale, test evidence, and promotion decisions"
 /// per the constitution's stage table — the surface where a track's accumulated work (its
 /// checkpoints, and the cumulative diff they produced against the project's base branch) gets
@@ -19,12 +27,18 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let contentStack = NSStackView()
     private let scrollView = NSScrollView()
     private let titleLabel = NSTextField(labelWithString: "")
-    private let subtitleLabel = NSTextField(labelWithString: "")
+    private let subtitleRow = NSStackView()
+    private let branchChip = NSView()
+    private let branchChipLabel = NSTextField(labelWithString: "")
+    private let baseChip = NSView()
+    private let baseChipLabel = NSTextField(labelWithString: "")
+    private let arrowLabel = NSTextField(labelWithString: "\u{2192}")
     private let checkpointsHeader = NSTextField(labelWithString: "Checkpoints")
     private let checkpointsStack = NSStackView()
     private let diffHeader = NSTextField(labelWithString: "")
     private let diffTextView = NSTextView()
     private let diffScroll = NSScrollView()
+    private let diffCard = NSView()
     // Real label set per-track in refresh() — "to main" isn't right for a stacked track, whose
     // actual base is its parent's branch.
     private let promoteButton = NSButton(title: "Promote", target: nil, action: nil)
@@ -42,15 +56,25 @@ final class ReviewWorkspaceViewController: NSViewController {
         emptyStateLabel.textColor = .tertiaryLabelColor
         emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        subtitleLabel.font = .systemFont(ofSize: 12)
-        subtitleLabel.textColor = .secondaryLabelColor
+        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+
+        Self.styleChip(branchChip, branchChipLabel)
+        Self.styleChip(baseChip, baseChipLabel)
+        arrowLabel.font = .systemFont(ofSize: 11)
+        arrowLabel.textColor = .tertiaryLabelColor
+        subtitleRow.orientation = .horizontal
+        subtitleRow.alignment = .centerY
+        subtitleRow.spacing = 6
+        subtitleRow.addArrangedSubview(branchChip)
+        subtitleRow.addArrangedSubview(arrowLabel)
+        subtitleRow.addArrangedSubview(baseChip)
+        subtitleRow.translatesAutoresizingMaskIntoConstraints = false
 
         checkpointsHeader.font = .systemFont(ofSize: 12, weight: .semibold)
         checkpointsHeader.textColor = .secondaryLabelColor
         checkpointsStack.orientation = .vertical
         checkpointsStack.alignment = .leading
-        checkpointsStack.spacing = 6
+        checkpointsStack.spacing = 8
         checkpointsStack.translatesAutoresizingMaskIntoConstraints = false
 
         diffHeader.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -58,14 +82,30 @@ final class ReviewWorkspaceViewController: NSViewController {
 
         diffTextView.isEditable = false
         diffTextView.drawsBackground = false
-        diffTextView.textContainerInset = NSSize(width: 8, height: 6)
+        diffTextView.textContainerInset = NSSize(width: 4, height: 4)
         diffScroll.documentView = diffTextView
         diffScroll.drawsBackground = false
         diffScroll.hasVerticalScroller = true
         diffScroll.translatesAutoresizingMaskIntoConstraints = false
         diffScroll.heightAnchor.constraint(equalToConstant: 360).isActive = true
 
+        diffCard.wantsLayer = true
+        diffCard.layer?.cornerRadius = 10
+        diffCard.layer?.borderWidth = 1
+        diffCard.layer?.borderColor = ReviewPalette.cardBorder.cgColor
+        diffCard.layer?.backgroundColor = ReviewPalette.cardBackground.cgColor
+        diffCard.translatesAutoresizingMaskIntoConstraints = false
+        diffCard.addSubview(diffScroll)
+        NSLayoutConstraint.activate([
+            diffScroll.topAnchor.constraint(equalTo: diffCard.topAnchor, constant: 6),
+            diffScroll.leadingAnchor.constraint(equalTo: diffCard.leadingAnchor, constant: 8),
+            diffScroll.trailingAnchor.constraint(equalTo: diffCard.trailingAnchor, constant: -8),
+            diffScroll.bottomAnchor.constraint(equalTo: diffCard.bottomAnchor, constant: -6),
+        ])
+
         promoteButton.bezelStyle = .rounded
+        promoteButton.controlSize = .large
+        promoteButton.contentTintColor = .controlAccentColor
         promoteButton.target = self
         promoteButton.action = #selector(promoteTapped)
         statusLabel.font = .systemFont(ofSize: 11)
@@ -85,17 +125,17 @@ final class ReviewWorkspaceViewController: NSViewController {
         contentStack.spacing = 12
         contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
-        for view in [titleLabel, subtitleLabel, checkpointsHeader, checkpointsStack, diffHeader, diffScroll, bottomBar] {
+        for view in [titleLabel, subtitleRow, checkpointsHeader, checkpointsStack, diffHeader, diffCard, bottomBar] {
             contentStack.addArrangedSubview(view)
             // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
-            // width by default — without this, a wrapping label or the diff scroll view would
-            // collapse to whatever width its content happens to need instead of spanning the
-            // stage, same reasoning as Think's transcript `addBlock`.
+            // width by default — without this, a wrapping label or the diff card would collapse
+            // to whatever width its content happens to need instead of spanning the stage, same
+            // reasoning as Think's transcript `addBlock`.
             view.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -32).isActive = true
         }
-        contentStack.setCustomSpacing(4, after: titleLabel)
-        contentStack.setCustomSpacing(16, after: subtitleLabel)
-        contentStack.setCustomSpacing(16, after: checkpointsStack)
+        contentStack.setCustomSpacing(6, after: titleLabel)
+        contentStack.setCustomSpacing(20, after: subtitleRow)
+        contentStack.setCustomSpacing(20, after: checkpointsStack)
 
         scrollView.documentView = contentStack
         scrollView.drawsBackground = false
@@ -153,7 +193,8 @@ final class ReviewWorkspaceViewController: NSViewController {
 
         let baseRef = Self.baseRef(for: track, trackStore: trackStore)
         titleLabel.stringValue = track.intent.isEmpty ? track.branchName : track.intent
-        subtitleLabel.stringValue = "\(track.branchName) → \(baseRef)"
+        branchChipLabel.stringValue = track.branchName
+        baseChipLabel.stringValue = baseRef
         promoteButton.title = "Promote to \(baseRef)"
 
         checkpointsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -188,12 +229,13 @@ final class ReviewWorkspaceViewController: NSViewController {
     private func makeCheckpointCard(_ checkpoint: Checkpoint) -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = 6
+        card.layer?.cornerRadius = 10
         card.layer?.borderWidth = 1
-        card.layer?.borderColor = NSColor(white: 0.28, alpha: 1).cgColor
+        card.layer?.borderColor = ReviewPalette.cardBorder.cgColor
+        card.layer?.backgroundColor = ReviewPalette.cardBackground.cgColor
 
         let intentLabel = NSTextField(wrappingLabelWithString: checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)
-        intentLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        intentLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         intentLabel.translatesAutoresizingMaskIntoConstraints = false
 
         var metaParts: [String] = [Self.relativeTime(checkpoint.createdAt)]
@@ -212,16 +254,33 @@ final class ReviewWorkspaceViewController: NSViewController {
         card.addSubview(intentLabel)
         card.addSubview(metaLabel)
         NSLayoutConstraint.activate([
-            intentLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
-            intentLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
-            intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -10),
-            metaLabel.topAnchor.constraint(equalTo: intentLabel.bottomAnchor, constant: 4),
-            metaLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
-            metaLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+            intentLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            intentLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -12),
+            metaLabel.topAnchor.constraint(equalTo: intentLabel.bottomAnchor, constant: 5),
+            metaLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            metaLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
         ])
         card.translatesAutoresizingMaskIntoConstraints = false
         card.widthAnchor.constraint(equalTo: checkpointsStack.widthAnchor).isActive = true
         return card
+    }
+
+    private static func styleChip(_ chip: NSView, _ label: NSTextField) {
+        chip.wantsLayer = true
+        chip.layer?.backgroundColor = ReviewPalette.chip.cgColor
+        chip.layer?.cornerRadius = 4
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        chip.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 5),
+            label.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -5),
+            label.topAnchor.constraint(equalTo: chip.topAnchor, constant: 1),
+            label.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -1),
+        ])
     }
 
     // MARK: - Promote

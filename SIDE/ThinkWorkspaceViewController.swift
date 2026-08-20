@@ -70,6 +70,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         view.addSubview(inputField)
 
         sendButton.bezelStyle = .rounded
+        sendButton.contentTintColor = .controlAccentColor
         sendButton.target = self
         sendButton.action = #selector(sendTapped)
         sendButton.translatesAutoresizingMaskIntoConstraints = false
@@ -272,15 +273,15 @@ final class ThinkWorkspaceViewController: NSViewController {
         case .meta(let text):
             return makeLabel(text, font: .systemFont(ofSize: 12), color: .tertiaryLabelColor)
         case .userText(let text):
-            return TextBlockView(header: "You", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor)
+            return TextBlockView(header: "You", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor, accent: .controlAccentColor)
         case .assistantText(let text):
-            return TextBlockView(header: "Assistant", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor)
+            return TextBlockView(header: "Assistant", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor, accent: NSColor(white: 0.6, alpha: 1))
         case .toolCall(let name, let summary):
             return makeLabel("→ \(name)\(summary)", font: .monospacedSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
         case .toolResult(let text, let isError):
             return makeLabel(text, font: .monospacedSystemFont(ofSize: 11, weight: .regular), color: isError ? .systemOrange : .secondaryLabelColor)
         case .failure(let text):
-            return TextBlockView(header: "Error", body: text, headerColor: .systemRed, bodyColor: .systemRed)
+            return TextBlockView(header: "Error", body: text, headerColor: .systemRed, bodyColor: .systemRed, accent: .systemRed)
         case .proposal(let presentation):
             let card = ProposedEditView(edit: presentation.edit, diffText: presentation.diffText)
             if let resolution = presentation.resolution {
@@ -376,7 +377,7 @@ final class ThinkWorkspaceViewController: NSViewController {
 private final class TextBlockView: NSStackView {
     let bodyLabel: NSTextField
 
-    init(header: String, body: String, headerColor: NSColor, bodyColor: NSColor) {
+    init(header: String, body: String, headerColor: NSColor, bodyColor: NSColor, accent: NSColor) {
         let headerLabel = NSTextField(labelWithString: header)
         headerLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         headerLabel.textColor = headerColor
@@ -390,11 +391,20 @@ private final class TextBlockView: NSStackView {
         super.init(frame: .zero)
         orientation = .vertical
         alignment = .leading
-        spacing = 3
+        spacing = 4
+        // Turns each turn into its own card rather than bare stacked text — the accent (subtly
+        // tinted border + fill) is what distinguishes "You" from "Assistant" from "Error" at a
+        // glance, since the header label alone reads as too quiet once a transcript gets long.
+        edgeInsets = NSEdgeInsets(top: 8, left: 11, bottom: 9, right: 11)
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.borderWidth = 1
+        layer?.borderColor = accent.withAlphaComponent(0.35).cgColor
+        layer?.backgroundColor = accent.withAlphaComponent(0.10).cgColor
         translatesAutoresizingMaskIntoConstraints = false
         addArrangedSubview(headerLabel)
         addArrangedSubview(bodyLabel)
-        bodyLabel.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        bodyLabel.widthAnchor.constraint(equalTo: widthAnchor, constant: -(edgeInsets.left + edgeInsets.right)).isActive = true
     }
 
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
