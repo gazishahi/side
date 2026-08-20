@@ -469,12 +469,22 @@ final class AgentRunner {
         pendingToolCalls = []
 
         if let transportError {
-            if transportError is CancellationError {
-                appendEntry(.meta("Stopped."))
-            } else {
-                appendEntry(.failure(transportError.localizedDescription))
+            // handleStall() already fully handled this: it appended the "no response" failure
+            // and set .blocked(.stalled) itself, before cancelling streamTask — the
+            // CancellationError/URLError this produces here is just an echo of that cancellation,
+            // not a new failure. Without this guard, finishRun(completed: false) below would
+            // silently overwrite .blocked(.stalled) back to .idle moments after it was set
+            // (defeating the entire point of a stall being distinguishable from idle in Tracks/
+            // dock badge/notifications), and the transcript would show a redundant second error.
+            guard case .blocked(.stalled) = phase else {
+                if transportError is CancellationError {
+                    appendEntry(.meta("Stopped."))
+                } else {
+                    appendEntry(.failure(transportError.localizedDescription))
+                }
+                finishRun(completed: false)
+                return
             }
-            finishRun(completed: false)
             return
         }
         guard willRunTools else {
