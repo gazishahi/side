@@ -525,25 +525,51 @@ final class TracksWorkspaceViewController: NSViewController {
     /// (MakeWorkspaceViewController.buildMenu()), which reaches this through the responder chain
     /// while the Tracks stage is active — same pattern already used for Run's menu items.
     @objc func newTrackTapped() {
-        guard let window = view.window else { return }
+        guard let window = view.window, let store = trackStore else { return }
         let alert = NSAlert()
         alert.messageText = "New Track"
         alert.informativeText = "What are you working on?"
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
         field.placeholderString = "Fix the save-conflict race"
-        alert.accessoryView = field
+
+        // A base-track picker only makes sense once there's another track worth forking from —
+        // completed/archived tracks are presumed already merged up, so they're not offered as a
+        // base. With nothing eligible, keep the dialog exactly as simple as it's always been
+        // rather than showing a picker with only the default-branch option in it.
+        let stackableBases = store.tracks.filter { [.active, .waiting, .reviewReady].contains($0.status) }
+        let basePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        if !stackableBases.isEmpty {
+            basePopup.addItem(withTitle: "Fork from \(store.defaultBranchName())")
+            for track in stackableBases {
+                basePopup.addItem(withTitle: "Fork from \u{201C}\(track.intent)\u{201D} (\(track.branchName))")
+                basePopup.lastItem?.representedObject = track
+            }
+            let stack = NSStackView(views: [field, basePopup])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 8
+            // NSAlert sizes the sheet from accessoryView.frame before Auto Layout resolves
+            // anything — see CommandProposalView/AddProviderForm for the same lesson learned
+            // the hard way earlier.
+            stack.frame = NSRect(x: 0, y: 0, width: 280, height: 60)
+            alert.accessoryView = stack
+        } else {
+            alert.accessoryView = field
+        }
+
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             let intent = field.stringValue
+            let baseTrack = basePopup.selectedItem?.representedObject as? Track
             // Creating a track moves HEAD immediately (it's checked out as part of creation, not
             // as a separate step), so unsaved Make edits need resolving first — same guard a
             // switch to an existing track goes through.
             self.onCreateTrackRequested? { [weak self] proceed in
                 guard let self, proceed else { return }
-                self.trackStore?.createTrack(intent: intent) { [weak self] result in
+                self.trackStore?.createTrack(intent: intent, baseTrack: baseTrack) { [weak self] result in
                     guard let self else { return }
                     switch result {
                     case .success(let (track, outcome)):

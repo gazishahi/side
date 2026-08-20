@@ -28,8 +28,15 @@ struct Track: Codable, Identifiable {
     /// "agents propose; people promote" applies to commands exactly as much as edits. Decoded
     /// with a default so tracks persisted before this field existed don't fail to load.
     var autoRunCommands: Bool
+    /// `nil` means this track forks from the project's default branch — every track before this
+    /// field existed, and still the common case. Non-nil means it forks from *another track's*
+    /// branch instead (see "Stacked tracks" in the constitution's Change model section) — that
+    /// track's own worktree, own agent, own checkpoint/review/promote cycle, nested rather than
+    /// sitting side by side. Stored as an id, not a branch name, so renaming the parent track
+    /// (which never touches its branch name) can't silently orphan the relationship.
+    var parentTrackId: UUID?
 
-    init(intent: String, branchName: String) {
+    init(intent: String, branchName: String, parentTrackId: UUID? = nil) {
         self.id = UUID()
         self.intent = intent
         self.branchName = branchName
@@ -38,10 +45,11 @@ struct Track: Codable, Identifiable {
         self.lastActiveAt = Date()
         self.workingDirectoryPath = nil
         self.autoRunCommands = false
+        self.parentTrackId = parentTrackId
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands
+        case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands, parentTrackId
     }
 
     init(from decoder: Decoder) throws {
@@ -54,5 +62,6 @@ struct Track: Codable, Identifiable {
         lastActiveAt = try container.decode(Date.self, forKey: .lastActiveAt)
         workingDirectoryPath = try container.decodeIfPresent(String.self, forKey: .workingDirectoryPath)
         autoRunCommands = try container.decodeIfPresent(Bool.self, forKey: .autoRunCommands) ?? false
+        parentTrackId = try container.decodeIfPresent(UUID.self, forKey: .parentTrackId)
     }
 }

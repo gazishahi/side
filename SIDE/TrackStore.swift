@@ -254,12 +254,15 @@ final class TrackStore {
         completion(.success(track))
     }
 
-    /// New tracks always branch off the project's default branch, never off whatever happens to
-    /// be checked out — otherwise creating a track while another track's branch is active would
-    /// silently stack them, which is surprising rather than useful. Deliberate stacking can still
-    /// be done from the command line; it's just not the default. Gets its own linked worktree —
-    /// the shared main tree is never touched, so there's nothing to guard against losing there.
-    func createTrack(intent: String, completion: @escaping (Result<(Track, TrackSwitchOutcome), Error>) -> Void) {
+    /// New tracks branch off the project's default branch by default, never off whatever happens
+    /// to be checked out — otherwise creating a track while another track's branch is active
+    /// would silently stack them, which is surprising rather than useful. Deliberate stacking is
+    /// opt-in via `baseTrack`: a track forking from another track's own branch instead — its own
+    /// worktree, own agent, own checkpoint/review/promote cycle, nested rather than sitting side
+    /// by side (see "Stacked tracks" in the constitution). Either way this gets its own linked
+    /// worktree — the shared main tree is never touched, so there's nothing to guard against
+    /// losing there.
+    func createTrack(intent: String, baseTrack: Track? = nil, completion: @escaping (Result<(Track, TrackSwitchOutcome), Error>) -> Void) {
         let trimmed = intent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { completion(.failure(TrackError.emptyIntent)); return }
         let branchName = uniqueBranchName(from: trimmed)
@@ -267,11 +270,19 @@ final class TrackStore {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let cwd = self.projectRoot.path
-            // A brand-new repo has no commits yet, so the default branch isn't a valid base to
-            // fork from — there's only one branch anyway in that case, so just branch from
-            // wherever HEAD is.
-            let hasCommits = self.runGit(["rev-parse", "--verify", "-q", "HEAD"], cwd: cwd).success
-            let baseRef = hasCommits ? self.defaultBranchName() : "HEAD"
+            let baseRef: String
+            if let baseTrack {
+                // The parent's branch always exists once the parent track does, regardless of
+                // whether its own worktree happens to be materialized right now — branches and
+                // worktrees are independent, so there's nothing to lazily create here first.
+                baseRef = baseTrack.branchName
+            } else {
+                // A brand-new repo has no commits yet, so the default branch isn't a valid base
+                // to fork from — there's only one branch anyway in that case, so just branch from
+                // wherever HEAD is.
+                let hasCommits = self.runGit(["rev-parse", "--verify", "-q", "HEAD"], cwd: cwd).success
+                baseRef = hasCommits ? self.defaultBranchName() : "HEAD"
+            }
             let result = self.addWorktree(branchName: branchName, baseRef: baseRef, newBranch: true)
             DispatchQueue.main.async {
                 switch result {
@@ -279,7 +290,7 @@ final class TrackStore {
                     completion(.failure(error))
                 case .success(let worktreePath):
                     self.demoteActiveTrack()
-                    var track = Track(intent: trimmed, branchName: branchName)
+                    var track = Track(intent: trimmed, branchName: branchName, parentTrackId: baseTrack?.id)
                     track.workingDirectoryPath = worktreePath.path
                     self.tracks.append(track)
                     self.untrackedBranch = nil
