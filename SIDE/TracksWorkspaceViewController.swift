@@ -761,6 +761,12 @@ final class TracksWorkspaceViewController: NSViewController {
         // — not offered here; TrackStore itself also refuses it as a last line of defense.
         if track.status != .active {
             menu.addItem(NSMenuItem.separator())
+            // Only offered once there's actually a worktree to reclaim — a track that's never
+            // been materialized, or one that's already had its working copy removed, has
+            // nothing here to free.
+            if track.workingDirectoryPath != nil {
+                addItem(to: menu, title: "Remove Working Copy…", action: #selector(removeWorkingCopyMenuItem(_:)), track: track)
+            }
             addItem(to: menu, title: "Delete…", action: #selector(deleteTrackMenuItem(_:)), track: track)
         }
         menu.items.forEach { $0.target = self }
@@ -821,6 +827,27 @@ final class TracksWorkspaceViewController: NSViewController {
             self.trackStore?.renameTrack(track, to: field.stringValue) { [weak self] result in
                 guard let self, case .failure(let error) = result else { return }
                 self.showError(error, title: "Couldn't rename track", window: window)
+            }
+        }
+    }
+
+    /// Reversible, unlike Delete — the branch and its history stay exactly as they are; only
+    /// the worktree directory on disk goes away, and the row's own "Resume"/"Watch" action
+    /// re-materializes it on demand later, same as a legacy pre-worktree track.
+    @objc private func removeWorkingCopyMenuItem(_ sender: NSMenuItem) {
+        guard let track = sender.representedObject as? Track, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove Working Copy for \u{201C}\(track.intent)\u{201D}?"
+        alert.informativeText = "Frees the disk space this track's checkout uses. The \u{201C}\(track.branchName)\u{201D} branch and its history are untouched — switching back to this track re-creates the working copy."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            self.trackStore?.removeWorkingCopy(for: track) { [weak self] result in
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    self.showError(error, title: "Couldn't remove working copy", window: window)
+                }
             }
         }
     }

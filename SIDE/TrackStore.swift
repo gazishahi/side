@@ -505,6 +505,35 @@ final class TrackStore {
         }
     }
 
+    /// Frees the disk space a materialized track's worktree takes up, without touching its
+    /// branch or removing it from the ledger — unlike `deleteTrack`, this is meant to be
+    /// reversible: the branch and all its history stay exactly as they are, and the row's
+    /// existing "Watch"/"Resume" action already re-materializes a worktree-less track on demand,
+    /// the same path a legacy pre-worktree track already went through. Refuses for the active
+    /// track (same reasoning as `deleteTrack`) and never passes `--force` — a dirty worktree
+    /// makes `git worktree remove` refuse on its own, which is exactly right here: silently
+    /// discarding uncommitted work would contradict "just free disk space, keep everything else."
+    func removeWorkingCopy(for track: Track, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard track.status != .active else { completion(.failure(TrackError.cannotDeleteActive)); return }
+        guard let path = track.workingDirectoryPath else { completion(.success(())); return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let result = self.runGit(["worktree", "remove", path], cwd: self.projectRoot.path)
+            DispatchQueue.main.async {
+                guard result.success else {
+                    completion(.failure(TrackError.gitWorktreeFailed(result.output)))
+                    return
+                }
+                if let index = self.tracks.firstIndex(where: { $0.id == track.id }) {
+                    self.tracks[index].workingDirectoryPath = nil
+                }
+                self.save()
+                self.notifyChange()
+                completion(.success(()))
+            }
+        }
+    }
+
     private func demoteActiveTrack() {
         if let index = tracks.firstIndex(where: { $0.status == .active }) {
             tracks[index].status = .waiting
