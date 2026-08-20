@@ -94,15 +94,22 @@ final class ProviderRegistryStore: @unchecked Sendable {
         guard let model = definition.models.first(where: { $0.id == definition.defaultModelId }) ?? definition.models.first else {
             return .unknownProvider
         }
-        // Only touch the Keychain at all when this provider actually needs a key — a local
-        // server that never asked for one shouldn't trigger a Keychain ACL prompt just because
-        // it happens to be the active provider.
-        var apiKey = definition.requiresAPIKey ? KeychainStore.get(account: definition.id) : nil
-        // Env-var fallback survives on purpose — launching from a terminal with
-        // ANTHROPIC_API_KEY set should keep working for development even with nothing in
-        // the Keychain.
-        if apiKey?.isEmpty != false, definition.id == "anthropic" {
+        // Env var checked *before* Keychain, not just as a fallback after it — a Keychain read
+        // triggers a real ACL permission prompt (macOS ties the grant to the app's code
+        // signature, which an ad-hoc-signed debug build gets a fresh one of on every rebuild, so
+        // this would otherwise re-prompt on every single relaunch during development). With
+        // ANTHROPIC_API_KEY set, there's no reason to ever touch the Keychain at all — checking
+        // it first means the prompt genuinely never fires as long as the env var is present, not
+        // just "recovers gracefully after" one already did.
+        var apiKey: String?
+        if definition.id == "anthropic" {
             apiKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
+        }
+        // Only touch the Keychain at all when this provider actually needs a key and nothing
+        // above already resolved one — a local server that never asked for a key shouldn't
+        // trigger a Keychain ACL prompt just because it happens to be the active provider.
+        if apiKey?.isEmpty != false, definition.requiresAPIKey {
+            apiKey = KeychainStore.get(account: definition.id)
         }
         if definition.requiresAPIKey, apiKey?.isEmpty != false {
             return .missingAPIKey(definition)
@@ -170,10 +177,15 @@ final class ProviderRegistryStore: @unchecked Sendable {
     /// Phase 1 stored a dev key in UserDefaults; anyone who set it up that way shouldn't have
     /// their working configuration silently break when Keychain storage lands — move the key
     /// over once, then remove the old one.
+    /// Runs on every launch, so the `UserDefaults` check — free, no Keychain access — comes
+    /// first: there's a real legacy key to migrate on essentially no launches at this point, and
+    /// `KeychainStore.hasSecret` triggers a genuine Keychain ACL prompt, which used to mean this
+    /// one check alone re-prompted on every single relaunch regardless of anything else touching
+    /// the Keychain that session.
     private func migrateLegacyDevKeyIfNeeded() {
         let legacyKey = "side.dev.anthropic-api-key"
-        guard !KeychainStore.hasSecret(account: "anthropic"),
-              let legacy = UserDefaults.standard.string(forKey: legacyKey), !legacy.isEmpty else { return }
+        guard let legacy = UserDefaults.standard.string(forKey: legacyKey), !legacy.isEmpty,
+              !KeychainStore.hasSecret(account: "anthropic") else { return }
         if KeychainStore.set(secret: legacy, account: "anthropic") {
             UserDefaults.standard.removeObject(forKey: legacyKey)
         }

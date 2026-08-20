@@ -143,10 +143,13 @@ final class PreferencesViewController: NSViewController {
             keyStatusLabel.stringValue = "No key required."
             return
         }
-        if KeychainStore.hasSecret(account: provider.id) {
-            keyStatusLabel.stringValue = "A key is saved in your Keychain."
-        } else if provider.id == "anthropic", ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.isEmpty == false {
+        // Checked in the same order resolveAdapter actually resolves a key in — env var before
+        // Keychain — so opening Preferences doesn't itself trigger a Keychain ACL prompt that
+        // having the env var set was specifically meant to avoid.
+        if provider.id == "anthropic", ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.isEmpty == false {
             keyStatusLabel.stringValue = "No key saved — currently using ANTHROPIC_API_KEY from the environment."
+        } else if KeychainStore.hasSecret(account: provider.id) {
+            keyStatusLabel.stringValue = "A key is saved in your Keychain."
         } else {
             keyStatusLabel.stringValue = "No key set — Think can't reach \(provider.displayName) without one."
         }
