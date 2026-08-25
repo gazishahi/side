@@ -11,11 +11,16 @@ struct ProposedEdit: Identifiable {
     let relativePath: String
     /// What the agent's change was computed against — the live unsaved buffer when the file is
     /// open and dirty in Make, otherwise disk. Proposing against stale disk content while the
-    /// user has unsaved edits would silently discard those edits on apply.
-    let baseContent: String
-    let proposedContent: String
+    /// user has unsaved edits would silently discard those edits on apply. `var`, not `let` — see
+    /// `stripContent()`: these two fields are the entire reason a resolved proposal used to keep
+    /// a full duplicate copy of a file (old *and* new) alive in `AgentRunner.entries` forever.
+    var baseContent: String
+    var proposedContent: String
     /// True when the file doesn't exist yet, so the UI can say "create" rather than "edit".
     let isNewFile: Bool
+    /// Computed once, from the real content, at construction time — so it survives
+    /// `stripContent()` clearing `baseContent`/`proposedContent` out from under it later.
+    let addedLineCount: Int
 
     init(toolUseId: String, url: URL, relativePath: String, baseContent: String, proposedContent: String, isNewFile: Bool) {
         self.id = UUID()
@@ -25,10 +30,18 @@ struct ProposedEdit: Identifiable {
         self.baseContent = baseContent
         self.proposedContent = proposedContent
         self.isNewFile = isNewFile
+        self.addedLineCount = proposedContent.components(separatedBy: "\n").count - baseContent.components(separatedBy: "\n").count
     }
 
-    var addedLineCount: Int {
-        proposedContent.components(separatedBy: "\n").count - baseContent.components(separatedBy: "\n").count
+    /// Called once a proposal is resolved and its `diffText` has already been computed —
+    /// `AgentRunner.entries` keeps every resolved proposal around for the life of the session
+    /// purely to redraw an already-decided card on reattach, which only ever needs
+    /// `relativePath`/`isNewFile`/`addedLineCount`/the separately-stored diff text again, never
+    /// the raw file content. Dropping it here is what keeps a long Think session's memory
+    /// bounded to "diffs shown," not "every file version ever proposed, twice."
+    mutating func stripContent() {
+        baseContent = ""
+        proposedContent = ""
     }
 }
 

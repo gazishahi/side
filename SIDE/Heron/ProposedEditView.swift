@@ -38,7 +38,7 @@ final class ProposedEditView: NSView {
         diffView.isEditable = false
         diffView.drawsBackground = false
         diffView.textContainerInset = NSSize(width: 8, height: 6)
-        diffView.textStorage?.setAttributedString(Self.attributedDiff(diffText, isNewFile: edit.isNewFile, proposedContent: edit.proposedContent))
+        diffView.textStorage?.setAttributedString(Self.attributedDiff(diffText))
         diffScroll.documentView = diffView
         diffScroll.drawsBackground = false
         diffScroll.hasVerticalScroller = true
@@ -101,15 +101,10 @@ final class ProposedEditView: NSView {
     @objc private func applyTapped() { onApply?() }
     @objc private func rejectTapped() { onReject?() }
 
-    private static func attributedDiff(_ diffText: String, isNewFile: Bool, proposedContent: String) -> NSAttributedString {
-        // A brand-new file has no `git diff` output worth showing (everything is an addition),
-        // so show its content as added lines directly.
-        let source = diffText.isEmpty && isNewFile
-            ? proposedContent.components(separatedBy: "\n").map { "+" + $0 }.joined(separator: "\n")
-            : diffText
+    private static func attributedDiff(_ diffText: String) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        for (index, line) in source.components(separatedBy: "\n").enumerated() {
+        for (index, line) in diffText.components(separatedBy: "\n").enumerated() {
             let color: NSColor
             if line.hasPrefix("+") {
                 color = addedColor

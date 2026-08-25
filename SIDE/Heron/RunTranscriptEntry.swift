@@ -51,7 +51,10 @@ struct CommandPresentation {
 /// relaunch — once a session is reloaded from disk, a resolved proposal renders as a plain
 /// toolCall/toolResult pair, same as any other completed tool exchange.
 struct ProposalPresentation {
-    let edit: ProposedEdit
+    /// `var`, not `let` — resolution strips `edit`'s full file content (see
+    /// `ProposedEdit.stripContent()`) once it's no longer needed, so this entry doesn't hold a
+    /// duplicate old-and-new copy of the file for the rest of the session.
+    var edit: ProposedEdit
     let diffText: String
     var resolution: Resolution?
 

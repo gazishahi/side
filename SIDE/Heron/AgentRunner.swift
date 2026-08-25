@@ -245,6 +245,7 @@ final class AgentRunner {
         }
 
         presentation.resolution = ProposalPresentation.Resolution(outcome)
+        presentation.edit.stripContent()
         updateEntry(at: entryIndex, .proposal(presentation))
 
         batch.resultsById[presentation.edit.toolUseId] = .toolResult(toolUseId: presentation.edit.toolUseId, content: outcome.toolResultText, isError: outcome.isError)
@@ -542,7 +543,15 @@ final class AgentRunner {
                 appendEntry(.toolResult(text: isError ? "⚠︎ \(outcome.name): \(String(output.prefix(140)))" : "✓ \(outcome.name) — \(Self.describeResultSize(output))", isError: isError))
                 resultsById[outcome.id] = .toolResult(toolUseId: outcome.id, content: output, isError: isError)
             case .proposal(let edit):
-                let diffText = GitDiffComputer.unifiedDiffText(original: edit.baseContent, proposed: edit.proposedContent, projectRoot: root)
+                var diffText = GitDiffComputer.unifiedDiffText(original: edit.baseContent, proposed: edit.proposedContent, projectRoot: root)
+                // A brand-new file has no meaningful `git diff` (nothing to diff against), so
+                // synthesize one here, eagerly, while `proposedContent` is still around — rather
+                // than leaving `diffText` empty and making the view reach into `proposedContent`
+                // again later, which is exactly the content `stripContent()` needs to be able to
+                // drop once this proposal is resolved.
+                if diffText.isEmpty && edit.isNewFile {
+                    diffText = edit.proposedContent.components(separatedBy: "\n").map { "+" + $0 }.joined(separator: "\n")
+                }
                 appendEntry(.proposal(ProposalPresentation(edit: edit, diffText: diffText, resolution: nil)))
                 unresolvedToolUseIds.insert(edit.toolUseId)
             case .commandProposal(let command):
