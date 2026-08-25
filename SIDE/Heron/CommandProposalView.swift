@@ -16,15 +16,15 @@ final class CommandProposalView: NSView {
     private let buttonRow = NSStackView()
 
     private static let destructiveBorderColor = NSColor.systemRed.withAlphaComponent(0.6)
-    private static let normalBorderColor = NSColor(white: 0.28, alpha: 1)
+    private static let normalBorderColor = DS.Color.hairline
 
     init(command: ProposedCommand) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = DS.Radius.card
         layer?.borderWidth = 1
-        layer?.backgroundColor = NSColor(white: 0.13, alpha: 1).cgColor
+        layer?.backgroundColor = DS.Color.bg1.cgColor
 
         headerLabel.stringValue = "Run in terminal"
         headerLabel.font = .systemFont(ofSize: 12, weight: .semibold)

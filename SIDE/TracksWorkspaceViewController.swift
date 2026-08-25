@@ -17,26 +17,18 @@ private final class FocusableContainerView: NSView {
 /// Colors for the grouped-card ledger. Deliberately restrained: one neutral card surface, one
 /// hairline, no per-status color coding — the section label already says the status in words, so
 /// a colored dot repeating it would just be noise. The app's own accent shows up only on buttons.
+/// Thin forwarding layer onto `DS` (the charter's token file) — kept so Tracks' many call sites
+/// didn't all churn in the migration, but every value now has exactly one definition.
 private enum TracksPalette {
-    static let cardBackground = NSColor(white: 0.145, alpha: 1)
-    static let cardBorder = NSColor(white: 0.24, alpha: 1)
-    static let hairline = NSColor(white: 0.24, alpha: 1)
-    static let rowHover = NSColor(white: 0.195, alpha: 1)
-    static let chip = NSColor(white: 0.21, alpha: 1)
-    /// The lineage rail drawn to the left of a stacked child's row, connecting it visually to its
-    /// parent above — deliberately faint, since it's a wayfinding aid, not something that should
-    /// compete with the row's own content for attention.
-    static let rail = NSColor(white: 0.32, alpha: 1)
+    static let cardBackground = DS.Color.bg1
+    static let cardBorder = DS.Color.hairline
+    static let hairline = DS.Color.hairline
+    static let rowHover = DS.Color.rowHover
+    static let chip = DS.Color.bg3
+    static let rail = DS.Color.rail
 
     static func statusColor(for status: TrackStatus) -> NSColor {
-        switch status {
-        case .active: return .systemGreen
-        case .waiting: return .systemOrange
-        case .reviewReady: return .systemPurple
-        case .parked: return .systemGray
-        case .completed: return .systemTeal
-        case .archived: return .tertiaryLabelColor
-        }
+        DS.Color.status(for: status)
     }
 
     static func statusText(for status: TrackStatus) -> String {

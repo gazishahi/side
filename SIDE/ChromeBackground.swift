@@ -7,7 +7,7 @@ import AppKit
 /// editor's explicit solid color, and isn't something reliably tunable without live visual
 /// verification — a plain solid fill removes that ambiguity entirely.
 enum ChromeBackground {
-    static let color = NSColor(white: 0.098, alpha: 1)
+    static let color = DS.Color.chrome
 
     static func install(in view: NSView) {
         let fill = NSView()

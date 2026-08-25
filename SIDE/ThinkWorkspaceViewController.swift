@@ -250,26 +250,10 @@ final class ThinkWorkspaceViewController: NSViewController {
         animateIn(view)
     }
 
-    /// The iMessage arrival: rise a few points while fading and scaling in. Purely a layer
-    /// animation over the block's settled Auto Layout position, so it can't fight layout.
+    /// The standard arrival (see `DS.Motion`) over the block's settled Auto Layout position.
     private func animateIn(_ view: NSView) {
-        view.wantsLayer = true
         transcriptContainer.layoutSubtreeIfNeeded()
-        guard let layer = view.layer else { return }
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0
-        fade.toValue = 1
-        let rise = CABasicAnimation(keyPath: "transform.translation.y")
-        rise.fromValue = 16
-        rise.toValue = 0
-        let scale = CABasicAnimation(keyPath: "transform.scale")
-        scale.fromValue = 0.96
-        scale.toValue = 1
-        let group = CAAnimationGroup()
-        group.animations = [fade, rise, scale]
-        group.duration = 0.3
-        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        layer.add(group, forKey: "bubbleArrival")
+        DS.Motion.appear(view)
     }
 
     private func updateEntryView(at index: Int) {
@@ -415,7 +399,7 @@ private final class TextBlockView: NSView {
         var fillColor: NSColor {
             switch self {
             case .sent: return .controlAccentColor
-            case .received: return NSColor(white: 0.24, alpha: 1)
+            case .received: return DS.Color.bg4
             case .error: return NSColor.systemRed.withAlphaComponent(0.18)
             }
         }
@@ -446,7 +430,7 @@ private final class TextBlockView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 17
+        layer?.cornerRadius = DS.Radius.bubble
         layer?.backgroundColor = style.fillColor.cgColor
 
         bodyLabel.isSelectable = true

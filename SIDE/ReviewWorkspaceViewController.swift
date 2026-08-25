@@ -1,11 +1,10 @@
 import AppKit
 
-/// Shared with Tracks' card/chip look — kept as a private duplicate rather than a cross-file
-/// import since each stage still owns its own visual constants independently for now.
+/// Thin forwarding layer onto `DS` (the charter's token file).
 private enum ReviewPalette {
-    static let cardBackground = NSColor(white: 0.145, alpha: 1)
-    static let cardBorder = NSColor(white: 0.24, alpha: 1)
-    static let chip = NSColor(white: 0.21, alpha: 1)
+    static let cardBackground = DS.Color.bg1
+    static let cardBorder = DS.Color.hairline
+    static let chip = DS.Color.bg3
 }
 
 /// The Review stage: "checkpoints, diffs, rationale, test evidence, and promotion decisions"
@@ -50,7 +49,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
+        view.layer?.backgroundColor = DS.Color.chrome.cgColor
 
         emptyStateLabel.font = .systemFont(ofSize: 13)
         emptyStateLabel.textColor = .tertiaryLabelColor

@@ -23,10 +23,10 @@ final class ProposedEditView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = DS.Radius.card
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor(white: 0.28, alpha: 1).cgColor
-        layer?.backgroundColor = NSColor(white: 0.13, alpha: 1).cgColor
+        layer?.borderColor = DS.Color.hairline.cgColor
+        layer?.backgroundColor = DS.Color.bg1.cgColor
 
         let action = edit.isNewFile ? "Create" : "Edit"
         let delta = edit.addedLineCount
