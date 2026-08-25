@@ -73,7 +73,7 @@ final class RunWorkspaceViewController: NSViewController {
         let divider = NSBox()
         divider.boxType = .custom
         divider.borderType = .noBorder
-        divider.fillColor = DS.Color.hairline
+        divider.fillColor = DS.Color.tabEdge
         divider.translatesAutoresizingMaskIntoConstraints = false
         // Behind the chips, so the active tab's fill covers it and attaches to the content.
         tabBar.addSubview(divider, positioned: .below, relativeTo: tabBarStack)

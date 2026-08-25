@@ -24,6 +24,10 @@ enum DS {
         static let bg4 = NSColor(white: 0.24, alpha: 1)
         /// The only border color in the app.
         static let hairline = NSColor(white: 0.24, alpha: 1)
+        /// The tab strip's bottom hairline *and* the active tab's outline — one token, one
+        /// opaque value, because those two lines must read as a single continuous edge where
+        /// the tab's flares meet the strip.
+        static let tabEdge = NSColor(white: 0.30, alpha: 1)
         static let rowHover = NSColor(white: 0.195, alpha: 1)
         /// The lineage rail connecting a stacked track to its parent in Tracks.
         static let rail = NSColor(white: 0.32, alpha: 1)

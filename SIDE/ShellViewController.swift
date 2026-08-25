@@ -521,7 +521,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
         var subtitleParts: [String] = []
         if let projectURL, let currentFileURL {
-            subtitleParts.append(Self.humanePath(for: currentFileURL, projectURL: projectURL))
+            subtitleParts.append(humanePath(for: currentFileURL, projectURL: projectURL))
         } else if let projectName = projectURL?.lastPathComponent {
             subtitleParts.append(projectName)
         }
@@ -545,12 +545,12 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     /// `…/Application Support/Side/Worktrees/…` path into the window chrome. Tries the project
     /// root, then the worktrees root (skipping the per-track directory segment), then falls
     /// back to the file's last two path components — always something a person would say.
-    private static func humanePath(for fileURL: URL, projectURL: URL) -> String {
+    private func humanePath(for fileURL: URL, projectURL: URL) -> String {
         let filePath = fileURL.path
         if filePath.hasPrefix(projectURL.path + "/") {
             return String(filePath.dropFirst(projectURL.path.count + 1))
         }
-        if let worktreesRoot = GitPaths.worktreesRootDirectory(for: projectURL)?.path,
+        if let worktreesRoot = cachedWorktreesRootPath,
            filePath.hasPrefix(worktreesRoot + "/") {
             let insideWorktrees = filePath.dropFirst(worktreesRoot.count + 1)
             if let slash = insideWorktrees.firstIndex(of: "/") {
@@ -560,7 +560,17 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         return fileURL.pathComponents.suffix(2).joined(separator: "/")
     }
 
+    /// The project's worktrees root, resolved once per project on the git background queue —
+    /// never synchronously in `applyWindowChrome`, which runs on the main thread on every title
+    /// update. The original version shelled out to git from there on each call, and a tear-out
+    /// (two windows both rebuilding chrome at once) turned that into a burst of main-thread
+    /// `Process` spawns that crashed inside Foundation.
+    private var cachedWorktreesRootPath: String?
+
     private func refreshGitInfo(for project: URL) {
+        // The worktrees root must be derived from the canonical project, not `project` (which
+        // is this window's focused root and may itself be a worktree).
+        let canonicalProject = projectURL
         DispatchQueue.global(qos: .utility).async { [weak self] in
             // `symbolic-ref`, not `rev-parse --abbrev-ref HEAD`: the latter's output is
             // inconsistent on a zero-commit repo (can print a bare "HEAD" the same way real
@@ -569,10 +579,12 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             let branch = Self.runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], in: project.path)
             let status = Self.runGit(["status", "--porcelain"], in: project.path)
             let dirtyCount = status?.split(separator: "\n").count ?? 0
+            let worktreesRoot = canonicalProject.flatMap { GitPaths.worktreesRootDirectory(for: $0)?.path }
             DispatchQueue.main.async {
                 guard let self, self.focusedRoot == project else { return }
                 self.gitBranch = (branch?.isEmpty == false) ? branch : nil
                 self.gitDirtyCount = dirtyCount
+                self.cachedWorktreesRootPath = worktreesRoot
                 self.applyWindowChrome()
             }
         }

@@ -193,7 +193,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let divider = NSBox()
         divider.boxType = .custom
         divider.borderType = .noBorder
-        divider.fillColor = DS.Color.hairline
+        divider.fillColor = DS.Color.tabEdge
         divider.translatesAutoresizingMaskIntoConstraints = false
         tabBar.addSubview(divider)
         tabBarStack.orientation = .horizontal
@@ -3130,9 +3130,9 @@ final class TabChipView: NSView {
     /// corners. Returned open (bottom-left flare tip → around the top → bottom-right flare tip)
     /// so the same path both fills the shape and strokes its outline without underlining the
     /// bottom edge, where tab and content are one surface.
-    private static func attachedTabOutline(in rect: NSRect, topRadius: CGFloat, flare: CGFloat) -> NSBezierPath {
+    private static func attachedTabOutline(in rect: NSRect, topRadius: CGFloat, flare: CGFloat, bottomInset: CGFloat = 0) -> NSBezierPath {
         let body = rect.insetBy(dx: flare, dy: 0)
-        let bottom = rect.maxY
+        let bottom = rect.maxY - bottomInset
         let path = NSBezierPath()
         path.move(to: NSPoint(x: body.minX - flare, y: bottom))
         // Concave quarter-curves at the feet, convex at the shoulders — a single control point
@@ -3157,17 +3157,19 @@ final class TabChipView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         if isActive {
-            let outline = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare)
-            let fill = outline.copy() as! NSBezierPath
+            let fill = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare)
             fill.close()
             DS.Color.chrome.setFill()
             fill.fill()
             // The thin light edge that ties the tab to the surface it overlaps — traced along
-            // the silhouette only, never the bottom, so the line pours into the content edge
-            // exactly the way the shape does.
-            NSColor(white: 1, alpha: 0.14).setStroke()
-            outline.lineWidth = 1
-            outline.stroke()
+            // the silhouette only, never the bottom. Stroked on a path whose flare tips land
+            // exactly on the strip's bottom hairline (centered in its 1px row, same color
+            // token), so the line reads as one continuous edge flowing around the tab rather
+            // than two lines that visibly stop where they meet.
+            let stroke = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare, bottomInset: 0.5)
+            DS.Color.tabEdge.setStroke()
+            stroke.lineWidth = 1
+            stroke.stroke()
         } else if isHovered {
             NSColor(white: 1, alpha: 0.05).setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: Self.flare - 2, dy: 4), xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
