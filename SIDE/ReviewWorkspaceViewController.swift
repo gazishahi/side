@@ -1,5 +1,13 @@
 import AppKit
 
+/// Flipped scroll-document container — same arrangement Think's transcript uses. Review used to
+/// hand its content stack directly to the scroll view with only a width constraint, which left
+/// the document's height ambiguous on the *first* layout pass: the stage rendered completely
+/// blank after a fresh launch until a second stage switch forced a new pass.
+private final class ReviewDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 /// Thin forwarding layer onto `DS` (the charter's token file).
 private enum ReviewPalette {
     static let cardBackground = DS.Color.bg1
@@ -35,9 +43,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let checkpointsHeader = NSTextField(labelWithString: "Checkpoints")
     private let checkpointsStack = NSStackView()
     private let diffHeader = NSTextField(labelWithString: "")
-    private let diffTextView = NSTextView()
-    private let diffScroll = NSScrollView()
-    private let diffCard = NSView()
+    private let diffViewer = DiffViewer()
     // Real label set per-track in refresh() — "to main" isn't right for a stacked track, whose
     // actual base is its parent's branch.
     private let promoteButton = NSButton(title: "Promote", target: nil, action: nil)
@@ -79,28 +85,6 @@ final class ReviewWorkspaceViewController: NSViewController {
         diffHeader.font = .systemFont(ofSize: 12, weight: .semibold)
         diffHeader.textColor = .secondaryLabelColor
 
-        diffTextView.isEditable = false
-        diffTextView.drawsBackground = false
-        diffTextView.textContainerInset = NSSize(width: 4, height: 4)
-        diffScroll.documentView = diffTextView
-        diffScroll.drawsBackground = false
-        diffScroll.hasVerticalScroller = true
-        diffScroll.translatesAutoresizingMaskIntoConstraints = false
-        diffScroll.heightAnchor.constraint(equalToConstant: 360).isActive = true
-
-        diffCard.wantsLayer = true
-        diffCard.layer?.cornerRadius = 10
-        diffCard.layer?.borderWidth = 1
-        diffCard.layer?.borderColor = ReviewPalette.cardBorder.cgColor
-        diffCard.layer?.backgroundColor = ReviewPalette.cardBackground.cgColor
-        diffCard.translatesAutoresizingMaskIntoConstraints = false
-        diffCard.addSubview(diffScroll)
-        NSLayoutConstraint.activate([
-            diffScroll.topAnchor.constraint(equalTo: diffCard.topAnchor, constant: 6),
-            diffScroll.leadingAnchor.constraint(equalTo: diffCard.leadingAnchor, constant: 8),
-            diffScroll.trailingAnchor.constraint(equalTo: diffCard.trailingAnchor, constant: -8),
-            diffScroll.bottomAnchor.constraint(equalTo: diffCard.bottomAnchor, constant: -6),
-        ])
 
         promoteButton.bezelStyle = .rounded
         promoteButton.controlSize = .large
@@ -124,7 +108,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         contentStack.spacing = 12
         contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
-        for view in [titleLabel, subtitleRow, checkpointsHeader, checkpointsStack, diffHeader, diffCard, bottomBar] {
+        for view in [titleLabel, subtitleRow, checkpointsHeader, checkpointsStack, diffHeader, diffViewer, bottomBar] {
             contentStack.addArrangedSubview(view)
             // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
             // width by default — without this, a wrapping label or the diff card would collapse
@@ -136,7 +120,10 @@ final class ReviewWorkspaceViewController: NSViewController {
         contentStack.setCustomSpacing(20, after: subtitleRow)
         contentStack.setCustomSpacing(20, after: checkpointsStack)
 
-        scrollView.documentView = contentStack
+        let documentView = ReviewDocumentView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(contentStack)
+        scrollView.documentView = documentView
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -148,7 +135,11 @@ final class ReviewWorkspaceViewController: NSViewController {
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
+            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            contentStack.topAnchor.constraint(equalTo: documentView.topAnchor),
+            contentStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            contentStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+            contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
             emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
@@ -202,14 +193,19 @@ final class ReviewWorkspaceViewController: NSViewController {
             checkpointsStack.addArrangedSubview(Self.makeMetaLabel("No checkpoints yet — one is created automatically the first time an approved edit or command lands on this track."))
         } else {
             for checkpoint in checkpoints {
-                checkpointsStack.addArrangedSubview(makeCheckpointCard(checkpoint))
+                let card = makeCheckpointCard(checkpoint)
+                checkpointsStack.addArrangedSubview(card)
+                // Only after the card is in the stack's hierarchy — activating this inside the
+                // factory (before addArrangedSubview) threw NSGenericException, which AppKit
+                // swallowed mid-viewDidLoad and left the whole stage blank on first visit. That
+                // was the "Review renders blank after a fresh launch" bug: it only fired for
+                // tracks that actually had a checkpoint to build a card for.
+                card.widthAnchor.constraint(equalTo: checkpointsStack.widthAnchor).isActive = true
             }
         }
 
         diffHeader.stringValue = "Changes vs \(baseRef)"
-        diffTextView.textStorage?.setAttributedString(NSAttributedString(string: "Loading diff…", attributes: [
-            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor,
-        ]))
+        diffViewer.renderLoading()
         promoteButton.isEnabled = false
 
         guard let canonicalRoot else { return }
@@ -219,7 +215,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             let diffText = GitDiffComputer.refDiff(fromRef: baseRef, toRef: branchName, cwd: cwd)
             DispatchQueue.main.async {
                 guard let self, self.currentTrack?.branchName == branchName else { return }
-                self.diffTextView.textStorage?.setAttributedString(Self.attributedDiff(diffText))
+                self.diffViewer.render(diffText: diffText)
                 self.promoteButton.isEnabled = !diffText.isEmpty
             }
         }
@@ -261,7 +257,6 @@ final class ReviewWorkspaceViewController: NSViewController {
             metaLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
         ])
         card.translatesAutoresizingMaskIntoConstraints = false
-        card.widthAnchor.constraint(equalTo: checkpointsStack.widthAnchor).isActive = true
         return card
     }
 
@@ -381,33 +376,6 @@ final class ReviewWorkspaceViewController: NSViewController {
     }
 
     // MARK: - Static helpers
-
-    private static let addedColor = NSColor(red: 0.45, green: 0.82, blue: 0.55, alpha: 1)
-    private static let removedColor = NSColor(red: 0.92, green: 0.50, blue: 0.48, alpha: 1)
-    private static let hunkColor = NSColor(red: 0.55, green: 0.72, blue: 0.95, alpha: 1)
-
-    private static func attributedDiff(_ diffText: String) -> NSAttributedString {
-        guard !diffText.isEmpty else {
-            return NSAttributedString(string: "No changes against this base.", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor])
-        }
-        let result = NSMutableAttributedString()
-        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        for (index, line) in diffText.components(separatedBy: "\n").enumerated() {
-            let color: NSColor
-            if line.hasPrefix("+") {
-                color = addedColor
-            } else if line.hasPrefix("-") {
-                color = removedColor
-            } else if line.hasPrefix("@@") || line.hasPrefix("diff --git") {
-                color = hunkColor
-            } else {
-                color = .secondaryLabelColor
-            }
-            let prefix = index == 0 ? "" : "\n"
-            result.append(NSAttributedString(string: prefix + line, attributes: [.font: font, .foregroundColor: color]))
-        }
-        return result
-    }
 
     private static func makeMetaLabel(_ text: String) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: text)
