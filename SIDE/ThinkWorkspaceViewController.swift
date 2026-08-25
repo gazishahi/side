@@ -252,7 +252,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         let entry = entries[index]
         switch entry.kind {
         case .assistantText(let text):
-            (entryViews[index] as? TextBlockView)?.bodyLabel.stringValue = text
+            (entryViews[index] as? TextBlockView)?.setBody(text)
         case .proposal(let presentation):
             guard let card = entryViews[index] as? ProposedEditView, let resolution = presentation.resolution else { return }
             let label = resolution.label
@@ -273,7 +273,11 @@ final class ThinkWorkspaceViewController: NSViewController {
         case .meta(let text):
             return makeLabel(text, font: .systemFont(ofSize: 12), color: .tertiaryLabelColor)
         case .userText(let text):
-            return TextBlockView(header: "You", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor, accent: .controlAccentColor)
+            // Right-aligned and width-capped, ChatGPT-style — a user turn is normally short, so
+            // hugging its actual content (rather than spanning the transcript like everything
+            // else) is what makes it read as "a bubble" instead of just another tinted panel.
+            let bubble = TextBlockView(header: "You", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor, accent: .controlAccentColor, maxBubbleWidth: 480)
+            return Self.wrapAsBubbleRow(bubble, alignRight: true)
         case .assistantText(let text):
             return TextBlockView(header: "Assistant", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor, accent: NSColor(white: 0.6, alpha: 1))
         case .toolCall(let name, let summary):
@@ -304,6 +308,29 @@ final class ThinkWorkspaceViewController: NSViewController {
             }
             return card
         }
+    }
+
+    /// A transparent full-width row holding one bubble pinned to one side — this is what lets a
+    /// user turn hug its own content and sit against the trailing edge instead of stretching
+    /// across the whole transcript like every other block here.
+    private static func wrapAsBubbleRow(_ bubble: NSView, alignRight: Bool) -> NSView {
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        bubble.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(bubble)
+        var constraints = [
+            bubble.topAnchor.constraint(equalTo: row.topAnchor),
+            bubble.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+        ]
+        if alignRight {
+            constraints.append(bubble.trailingAnchor.constraint(equalTo: row.trailingAnchor))
+            constraints.append(bubble.leadingAnchor.constraint(greaterThanOrEqualTo: row.leadingAnchor))
+        } else {
+            constraints.append(bubble.leadingAnchor.constraint(equalTo: row.leadingAnchor))
+            constraints.append(bubble.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor))
+        }
+        NSLayoutConstraint.activate(constraints)
+        return row
     }
 
     private static func showCommandResolution(_ card: CommandProposalView, _ resolution: CommandPresentation.Resolution) {
@@ -373,29 +400,41 @@ final class ThinkWorkspaceViewController: NSViewController {
 }
 
 /// A header ("You" / "Assistant" / "Error") stacked above its body text, as one view — so a
-/// streamed delta can update `bodyLabel` in place without touching the header.
+/// streamed delta can update `bodyLabel` in place without touching the header. Body text renders
+/// through `MarkdownRenderer` (the same one Make's preview already uses) rather than as plain
+/// text, since a model's output is markdown whether or not anything renders it that way.
 private final class TextBlockView: NSStackView {
     let bodyLabel: NSTextField
+    private let bodyColor: NSColor
+    /// The raw source text (not the rendered `NSAttributedString`) — kept so Copy hands back
+    /// what was actually said, not whatever `MarkdownRenderer` happened to produce.
+    private var plainText: String = ""
+    private let copyButton = NSButton(image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")!, target: nil, action: nil)
+    private var trackingArea: NSTrackingArea?
 
-    init(header: String, body: String, headerColor: NSColor, bodyColor: NSColor, accent: NSColor) {
+    /// Non-nil only for a right-aligned user bubble (see `wrapAsBubbleRow`) — clamps the body to
+    /// this width and lets the bubble hug its actual content instead of spanning the transcript,
+    /// which is what makes it read as a bubble instead of just another tinted panel. `nil` keeps
+    /// the original full-width-panel behavior (assistant/error turns).
+    init(header: String, body: String, headerColor: NSColor, bodyColor: NSColor, accent: NSColor, maxBubbleWidth: CGFloat? = nil) {
         let headerLabel = NSTextField(labelWithString: header)
         headerLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         headerLabel.textColor = headerColor
 
-        let bodyLabel = NSTextField(wrappingLabelWithString: body)
-        bodyLabel.font = .systemFont(ofSize: 13)
-        bodyLabel.textColor = bodyColor
+        let bodyLabel = NSTextField(wrappingLabelWithString: "")
         bodyLabel.isSelectable = true
         self.bodyLabel = bodyLabel
+        self.bodyColor = bodyColor
 
         super.init(frame: .zero)
         orientation = .vertical
         alignment = .leading
         spacing = 4
+        let insets = NSEdgeInsets(top: 8, left: 11, bottom: 9, right: 11)
         // Turns each turn into its own card rather than bare stacked text — the accent (subtly
         // tinted border + fill) is what distinguishes "You" from "Assistant" from "Error" at a
         // glance, since the header label alone reads as too quiet once a transcript gets long.
-        edgeInsets = NSEdgeInsets(top: 8, left: 11, bottom: 9, right: 11)
+        edgeInsets = insets
         wantsLayer = true
         layer?.cornerRadius = 10
         layer?.borderWidth = 1
@@ -404,8 +443,59 @@ private final class TextBlockView: NSStackView {
         translatesAutoresizingMaskIntoConstraints = false
         addArrangedSubview(headerLabel)
         addArrangedSubview(bodyLabel)
-        bodyLabel.widthAnchor.constraint(equalTo: widthAnchor, constant: -(edgeInsets.left + edgeInsets.right)).isActive = true
+        if let maxBubbleWidth {
+            let availableWidth = maxBubbleWidth - insets.left - insets.right
+            let font = NSFont.systemFont(ofSize: 13)
+            let naturalWidth = (body as NSString).boundingRect(
+                with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]
+            ).width
+            bodyLabel.widthAnchor.constraint(equalToConstant: min(ceil(naturalWidth) + 2, availableWidth)).isActive = true
+        } else {
+            bodyLabel.widthAnchor.constraint(equalTo: widthAnchor, constant: -(insets.left + insets.right)).isActive = true
+        }
+        setBody(body)
+
+        // Hover-revealed, same pattern Tracks' row actions use — a copy affordance sitting
+        // always-visible on every turn would just be visual noise once a transcript gets long.
+        copyButton.isBordered = false
+        copyButton.imageScaling = .scaleProportionallyDown
+        copyButton.contentTintColor = headerColor
+        copyButton.alphaValue = 0
+        copyButton.target = self
+        copyButton.action = #selector(copyTapped)
+        copyButton.translatesAutoresizingMaskIntoConstraints = false
+        copyButton.toolTip = "Copy message"
+        addSubview(copyButton)
+        NSLayoutConstraint.activate([
+            copyButton.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            copyButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            copyButton.widthAnchor.constraint(equalToConstant: 16),
+            copyButton.heightAnchor.constraint(equalToConstant: 16),
+        ])
     }
 
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setBody(_ text: String) {
+        plainText = text
+        bodyLabel.attributedStringValue = MarkdownRenderer.render(text, baseFont: .systemFont(ofSize: 13), textColor: bodyColor)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { copyButton.animator().alphaValue = 1 }
+    override func mouseExited(with event: NSEvent) { copyButton.animator().alphaValue = 0 }
+
+    @objc private func copyTapped() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(plainText, forType: .string)
+    }
 }
