@@ -23,7 +23,9 @@ struct UnifiedDiff {
         let isDeleted: Bool
         var hunks: [Hunk] = []
         var addedCount: Int { hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .added }.count } }
-        var removedCount: Int { hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .removed }.count } }
+        var removedCount: Int {
+            hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .removed }.count }
+        }
     }
 
     var files: [File] = []
@@ -57,9 +59,23 @@ struct UnifiedDiff {
                 currentFile = File(path: bPath, isNew: false, isDeleted: false)
                 continue
             }
-            if line.hasPrefix("new file mode") { currentFile = currentFile.map { File(path: $0.path, isNew: true, isDeleted: false, hunks: $0.hunks) }; continue }
-            if line.hasPrefix("deleted file mode") { currentFile = currentFile.map { File(path: $0.path, isNew: false, isDeleted: true, hunks: $0.hunks) }; continue }
-            if line.hasPrefix("index ") || line.hasPrefix("--- ") || line.hasPrefix("+++ ") || line.hasPrefix("old mode") || line.hasPrefix("new mode") || line.hasPrefix("similarity index") || line.hasPrefix("rename ") || line.hasPrefix("Binary files") {
+            if line.hasPrefix("new file mode") {
+                currentFile = currentFile.map {
+                    File(path: $0.path, isNew: true, isDeleted: false, hunks: $0.hunks)
+                }
+                continue
+            }
+            if line.hasPrefix("deleted file mode") {
+                currentFile = currentFile.map {
+                    File(path: $0.path, isNew: false, isDeleted: true, hunks: $0.hunks)
+                }
+                continue
+            }
+            if line.hasPrefix("index ") || line.hasPrefix("--- ") || line.hasPrefix("+++ ")
+                || line.hasPrefix("old mode") || line.hasPrefix("new mode")
+                || line.hasPrefix("similarity index") || line.hasPrefix("rename ")
+                || line.hasPrefix("Binary files")
+            {
                 continue
             }
             if line.hasPrefix("@@") {
@@ -68,22 +84,35 @@ struct UnifiedDiff {
                 // "@@ -oldStart,oldCount +newStart,newCount @@ …"
                 let parts = line.split(separator: " ")
                 if parts.count >= 3 {
-                    oldLine = Int(parts[1].dropFirst().split(separator: ",").first.map(String.init) ?? "") ?? 0
-                    newLine = Int(parts[2].dropFirst().split(separator: ",").first.map(String.init) ?? "") ?? 0
+                    oldLine =
+                        Int(parts[1].dropFirst().split(separator: ",").first.map(String.init) ?? "")
+                        ?? 0
+                    newLine =
+                        Int(parts[2].dropFirst().split(separator: ",").first.map(String.init) ?? "")
+                        ?? 0
                 }
                 continue
             }
             guard currentHunk != nil else { continue }
             if line.hasPrefix("+") {
-                currentHunk?.lines.append(Line(kind: .added, oldNumber: nil, newNumber: newLine, text: String(line.dropFirst())))
+                currentHunk?.lines.append(
+                    Line(
+                        kind: .added, oldNumber: nil, newNumber: newLine,
+                        text: String(line.dropFirst())))
                 newLine += 1
             } else if line.hasPrefix("-") {
-                currentHunk?.lines.append(Line(kind: .removed, oldNumber: oldLine, newNumber: nil, text: String(line.dropFirst())))
+                currentHunk?.lines.append(
+                    Line(
+                        kind: .removed, oldNumber: oldLine, newNumber: nil,
+                        text: String(line.dropFirst())))
                 oldLine += 1
             } else if line.hasPrefix("\\") {
-                continue // "\ No newline at end of file" — metadata, not content.
+                continue  // "\ No newline at end of file" — metadata, not content.
             } else {
-                currentHunk?.lines.append(Line(kind: .context, oldNumber: oldLine, newNumber: newLine, text: String(line.dropFirst(line.isEmpty ? 0 : 1))))
+                currentHunk?.lines.append(
+                    Line(
+                        kind: .context, oldNumber: oldLine, newNumber: newLine,
+                        text: String(line.dropFirst(line.isEmpty ? 0 : 1))))
                 oldLine += 1
                 newLine += 1
             }
@@ -138,7 +167,7 @@ final class DiffViewer: NSStackView {
 /// hunk body; clicking the header collapses/expands the body.
 final class DiffFileCardView: NSView {
     private let bodyScroll = NSScrollView()
-    private let chevron = NSTextField(labelWithString: "")
+    private let chevron = NSImageView()
     private var isCollapsed = false
     private var bodyHeightConstraint: NSLayoutConstraint?
     private let bodyHeight: CGFloat
@@ -164,9 +193,11 @@ final class DiffFileCardView: NSView {
         layer?.backgroundColor = DS.Color.bg1.cgColor
         layer?.masksToBounds = true
 
-        chevron.stringValue = "▾"
-        chevron.font = .systemFont(ofSize: 10)
-        chevron.textColor = .tertiaryLabelColor
+        chevron.image = NSImage(
+            systemSymbolName: "chevron.down", accessibilityDescription: "Collapse")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+        chevron.contentTintColor = .secondaryLabelColor
+        chevron.wantsLayer = true
 
         let pathLabel = NSTextField(labelWithString: file.path)
         pathLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
@@ -175,8 +206,20 @@ final class DiffFileCardView: NSView {
 
         let counts = NSTextField(labelWithString: "")
         let countsText = NSMutableAttributedString()
-        countsText.append(NSAttributedString(string: "+\(file.addedCount)", attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold), .foregroundColor: Self.addedText]))
-        countsText.append(NSAttributedString(string: "  −\(file.removedCount)", attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold), .foregroundColor: Self.removedText]))
+        countsText.append(
+            NSAttributedString(
+                string: "+\(file.addedCount)",
+                attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+                    .foregroundColor: Self.addedText,
+                ]))
+        countsText.append(
+            NSAttributedString(
+                string: "  −\(file.removedCount)",
+                attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+                    .foregroundColor: Self.removedText,
+                ]))
         counts.attributedStringValue = countsText
 
         var headerViews: [NSView] = [chevron, pathLabel]
@@ -186,7 +229,7 @@ final class DiffFileCardView: NSView {
             badge.textColor = file.isNew ? Self.addedText : Self.removedText
             headerViews.append(badge)
         }
-        headerViews.append(NSView()) // flexible spacer
+        headerViews.append(NSView())  // flexible spacer
         headerViews.append(counts)
         let header = NSStackView(views: headerViews)
         header.orientation = .horizontal
@@ -202,15 +245,29 @@ final class DiffFileCardView: NSView {
         headerButton.translatesAutoresizingMaskIntoConstraints = false
         headerButton.addSubview(header)
 
-        let bodyText = NSTextView()
+        // Manual text stack so the layout manager can extend background fills to the full
+        // line width (see FullWidthBackgroundLayoutManager).
+        let storage = NSTextStorage()
+        let layoutManager = FullWidthBackgroundLayoutManager()
+        storage.addLayoutManager(layoutManager)
+        let textContainer = NSTextContainer(
+            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+        let bodyText = NSTextView(frame: .zero, textContainer: textContainer)
         bodyText.isEditable = false
         bodyText.drawsBackground = false
         bodyText.textContainerInset = NSSize(width: 0, height: 4)
-        bodyText.textStorage?.setAttributedString(Self.renderBody(file))
+        bodyText.autoresizingMask = [.width]
+        storage.setAttributedString(Self.renderBody(file))
         bodyScroll.documentView = bodyText
         bodyScroll.drawsBackground = false
         bodyScroll.hasVerticalScroller = true
         bodyScroll.translatesAutoresizingMaskIntoConstraints = false
+        // Without this, the text view draws past the shrinking scroll frame during the fold
+        // animation and slides visibly over the header row above it.
+        bodyScroll.wantsLayer = true
+        bodyScroll.layer?.masksToBounds = true
 
         let divider = NSBox()
         divider.boxType = .custom
@@ -247,7 +304,20 @@ final class DiffFileCardView: NSView {
 
     private func toggleCollapsed() {
         isCollapsed.toggle()
-        chevron.stringValue = isCollapsed ? "▸" : "▾"
+        // Rotate the chevron a quarter turn rather than swapping glyphs — same duration as the
+        // fold itself so the two read as one gesture.
+        if let layer = chevron.layer {
+            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            layer.position = CGPoint(x: chevron.frame.midX, y: chevron.frame.midY)
+            let rotate = CABasicAnimation(keyPath: "transform.rotation.z")
+            rotate.fromValue = isCollapsed ? 0 : CGFloat.pi / 2
+            rotate.toValue = isCollapsed ? CGFloat.pi / 2 : 0
+            rotate.duration = 0.18
+            rotate.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            rotate.isRemovedOnCompletion = false
+            rotate.fillMode = .forwards
+            layer.add(rotate, forKey: "chevronTurn")
+        }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -273,20 +343,34 @@ final class DiffFileCardView: NSView {
         }
 
         for hunk in file.hunks {
-            result.append(NSAttributedString(string: (result.length == 0 ? "" : "\n") + "  \(hunk.header)\n", attributes: [
-                .font: font, .foregroundColor: hunkColor, .paragraphStyle: paragraph,
-            ]))
+            result.append(
+                NSAttributedString(
+                    string: (result.length == 0 ? "" : "\n") + "  \(hunk.header)\n",
+                    attributes: [
+                        .font: font, .foregroundColor: hunkColor, .paragraphStyle: paragraph,
+                    ]))
             for line in hunk.lines {
                 let textColor: NSColor
                 var background: NSColor?
                 switch line.kind {
-                case .added: textColor = addedText; background = addedFill
-                case .removed: textColor = removedText; background = removedFill
-                case .context: textColor = .secondaryLabelColor; background = nil
+                case .added:
+                    textColor = addedText
+                    background = addedFill
+                case .removed:
+                    textColor = removedText
+                    background = removedFill
+                case .context:
+                    textColor = .secondaryLabelColor
+                    background = nil
                 }
-                var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: numberColor, .paragraphStyle: paragraph]
+                var attrs: [NSAttributedString.Key: Any] = [
+                    .font: font, .foregroundColor: numberColor, .paragraphStyle: paragraph,
+                ]
                 if let background { attrs[.backgroundColor] = background }
-                result.append(NSAttributedString(string: "\(pad(line.oldNumber)) \(pad(line.newNumber))  ", attributes: attrs))
+                result.append(
+                    NSAttributedString(
+                        string: "\(pad(line.oldNumber)) \(pad(line.newNumber))  ", attributes: attrs
+                    ))
                 attrs[.foregroundColor] = textColor
                 result.append(NSAttributedString(string: line.text + "\n", attributes: attrs))
             }
@@ -299,5 +383,35 @@ final class DiffFileCardView: NSView {
 /// (not just the chevron glyph) toggles the fold.
 private final class HeaderClickView: NSView {
     var onClick: (() -> Void)?
-    override func mouseDown(with event: NSEvent) { onClick?() }
+    override func mouseDown(with event: NSEvent) {
+        NSLog("DEBUG header mouseDown")
+        onClick?()
+    }
+    /// The path/count labels inside the header would otherwise swallow the click — same
+    /// route-decorative-hits-to-the-row trick TrackRowView uses.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+}
+
+/// Extends `.backgroundColor` attribute fills to the container's full width — a text
+/// background normally stops at the last glyph, which left the diff's add/remove tints
+/// looking like highlighter strokes instead of full-line row tints.
+private final class FullWidthBackgroundLayoutManager: NSLayoutManager {
+    override func fillBackgroundRectArray(
+        _ rectArray: UnsafePointer<NSRect>, count rectCount: Int,
+        forCharacterRange charRange: NSRange, color: NSColor
+    ) {
+        let fullWidth = textContainers.first?.size.width ?? 0
+        var extended = (0..<rectCount).map { index -> NSRect in
+            var rect = rectArray[index]
+            rect.origin.x = 0
+            rect.size.width = max(rect.width, fullWidth)
+            return rect
+        }
+        extended.withUnsafeBufferPointer { buffer in
+            super.fillBackgroundRectArray(
+                buffer.baseAddress!, count: rectCount, forCharacterRange: charRange, color: color)
+        }
+    }
 }

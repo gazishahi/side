@@ -260,7 +260,17 @@ final class ThinkWorkspaceViewController: NSViewController {
         let entry = entries[index]
         switch entry.kind {
         case .assistantText(let text):
-            ((entryViews[index] as? BubbleRowView)?.bubble)?.setBody(text)
+            // Streamed growth glides instead of jumping — a short implicit animation around the
+            // re-measure/relayout makes the bubble read as continuously expanding while tokens
+            // arrive, which is the whole charm of streaming.
+            guard let bubble = (entryViews[index] as? BubbleRowView)?.bubble else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                bubble.setBody(text)
+                bubble.layoutSubtreeIfNeeded()
+            }
         case .proposal(let presentation):
             guard let card = entryViews[index] as? ProposedEditView, let resolution = presentation.resolution else { return }
             let label = resolution.label
@@ -551,6 +561,37 @@ private final class BubbleRowView: NSView {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(bubble.plainText, forType: .string)
+        // Quick confirmation: the icon crossfades to a green check, then back — the "it worked"
+        // beat every copy affordance owes the user.
+        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            copyButton.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            guard let self else { return }
+            self.copyButton.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied")?.withSymbolConfiguration(config)
+            self.copyButton.contentTintColor = .systemGreen
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                self.copyButton.animator().alphaValue = 1
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak self] in
+                guard let self else { return }
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.15
+                    self.copyButton.animator().alphaValue = 0
+                } completionHandler: { [weak self] in
+                    guard let self else { return }
+                    let normalConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+                    self.copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")?.withSymbolConfiguration(normalConfig)
+                    self.copyButton.contentTintColor = .tertiaryLabelColor
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = 0.15
+                        self.copyButton.animator().alphaValue = 1
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -614,7 +655,11 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
         actionButton.isBordered = false
         actionButton.wantsLayer = true
-        actionButton.layer?.cornerRadius = 13
+        // A circle by construction: fixed 28×28 frame (constraints below), radius exactly half,
+        // and no cell press-highlight (which draws a rounded *rect* flash — the pill look).
+        (actionButton.cell as? NSButtonCell)?.highlightsBy = []
+        actionButton.layer?.cornerRadius = 14
+        actionButton.layer?.masksToBounds = true
         actionButton.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
         actionButton.contentTintColor = .white
         actionButton.imagePosition = .imageOnly
@@ -638,8 +683,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             placeholderLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             actionButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-            actionButton.widthAnchor.constraint(equalToConstant: 26),
-            actionButton.heightAnchor.constraint(equalToConstant: 26),
+            actionButton.widthAnchor.constraint(equalToConstant: 28),
+            actionButton.heightAnchor.constraint(equalToConstant: 28),
         ])
     }
 

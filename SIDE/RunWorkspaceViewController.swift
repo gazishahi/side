@@ -79,14 +79,13 @@ final class RunWorkspaceViewController: NSViewController {
         tabBar.addSubview(divider, positioned: .below, relativeTo: tabBarStack)
 
         view.addSubview(tabBar)
-        // The terminal used to sit flush against the toolbar with zero padding — the shell
-        // prompt literally touched the window chrome. It now lives in a rounded card with
-        // breathing room, matching every other surface in the app.
+        // The terminal sheet: edge-to-edge on the sides and bottom, but with rounded top
+        // corners and a breath of space under the tab strip — the terminal reads as a surface
+        // sliding up under the tabs, not a floating card and not a flush slab touching chrome.
         container.translatesAutoresizingMaskIntoConstraints = false
         container.wantsLayer = true
         container.layer?.cornerRadius = DS.Radius.card
-        container.layer?.borderWidth = 1
-        container.layer?.borderColor = DS.Color.hairline.cgColor
+        container.layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
         container.layer?.backgroundColor = NSColor.black.cgColor
         container.clipsToBounds = true
         view.addSubview(container)
@@ -96,7 +95,7 @@ final class RunWorkspaceViewController: NSViewController {
             tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
             tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
-            container.topAnchor.constraint(equalTo: tabBar.bottomAnchor, constant: 12), container.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), container.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), container.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12)
+            container.topAnchor.constraint(equalTo: tabBar.bottomAnchor, constant: 10), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
 
@@ -255,16 +254,19 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func closeSession(at index: Int) {
         guard sessions.indices.contains(index) else { return }
-        sessions[index].viewController.prepareForClose()
-        sessions.remove(at: index)
-        if sessions.isEmpty {
-            // Run always has at least one session — no empty state to design for.
-            createSession()
-            return
+        animateChipClosed(at: index) { [weak self] in
+            guard let self, self.sessions.indices.contains(index) else { return }
+            self.sessions[index].viewController.prepareForClose()
+            self.sessions.remove(at: index)
+            if self.sessions.isEmpty {
+                // Run always has at least one session — no empty state to design for.
+                self.createSession()
+                return
+            }
+            self.activeSessionIndex = min(index, self.sessions.count - 1)
+            self.rebuildTabBar()
+            self.showActiveSession()
         }
-        activeSessionIndex = min(index, sessions.count - 1)
-        rebuildTabBar()
-        showActiveSession()
     }
 
     private func switchToSession(_ index: Int) {
@@ -329,12 +331,16 @@ final class RunWorkspaceViewController: NSViewController {
 
     // MARK: - Tab bar
 
+    private var lastKnownSessionCount = 0
+
     private func rebuildTabBar() {
+        let previousCount = lastKnownSessionCount
+        lastKnownSessionCount = sessions.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         tabChips.removeAll()
         let showBar = sessions.count > 1
         tabBar.isHidden = !showBar
-        tabBarHeightConstraint.constant = showBar ? 30 : 0
+        tabBarHeightConstraint.constant = showBar ? TabChipView.height : 0
         guard showBar else { return }
         for (index, session) in sessions.enumerated() {
             let chip = TabChipView()
@@ -366,6 +372,31 @@ final class RunWorkspaceViewController: NSViewController {
 
             tabBarStack.addArrangedSubview(chip)
             tabChips.append(chip)
+        }
+        // Same arrival as Make's file tabs — a new session's chip animates in on live creation,
+        // full rebuilds (track switches, reorders) lay out instantly.
+        if sessions.count == previousCount + 1, let newest = activeSessionIndex.flatMap({ tabChips.indices.contains($0) ? tabChips[$0] : nil }) {
+            tabBarStack.layoutSubtreeIfNeeded()
+            DS.Motion.appear(newest, distance: 8)
+        }
+    }
+
+    /// Mirrors Make's close animation: the chip shrinks and fades, siblings glide together,
+    /// then the model removes the session.
+    private func animateChipClosed(at index: Int, completion: @escaping () -> Void) {
+        guard tabChips.indices.contains(index), sessions.count > 2 else { completion(); return }
+        let chip = tabChips[index]
+        let widthConstraint = chip.widthAnchor.constraint(equalToConstant: chip.frame.width)
+        widthConstraint.isActive = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.allowsImplicitAnimation = true
+            chip.animator().alphaValue = 0
+            widthConstraint.constant = 0
+            tabBarStack.layoutSubtreeIfNeeded()
+        } completionHandler: {
+            completion()
         }
     }
 
