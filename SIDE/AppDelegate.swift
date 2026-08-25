@@ -28,9 +28,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// specific track rather than whatever this project's globally-active track happens to be,
     /// so two tracks can be watched or worked on side by side without either window's track
     /// switch disturbing the other.
-    func openTrackInNewWindow(projectRoot: URL, trackKey: String) {
+    func openTrackInNewWindow(projectRoot: URL, trackKey: String?, focusingFile: URL? = nil, at screenPoint: NSPoint? = nil) {
         let window = presentNewWindow()
-        (window.contentViewController as? ShellViewController)?.openProject(at: projectRoot, focusingTrackKey: trackKey)
+        if let screenPoint {
+            // A torn-out tab lands where it was dropped, not wherever the cascade would put it.
+            window.setFrameTopLeftPoint(screenPoint)
+        }
+        let shell = window.contentViewController as? ShellViewController
+        shell?.openProject(at: projectRoot, focusingTrackKey: trackKey)
+        if let focusingFile { shell?.revealFile(focusingFile) }
     }
 
     @discardableResult

@@ -351,7 +351,7 @@ final class RunWorkspaceViewController: NSViewController {
             chip.addSubview(closeButton)
             chip.closeButton = closeButton
             NSLayoutConstraint.activate([
-                closeButton.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -5), closeButton.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+                closeButton.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
                 closeButton.widthAnchor.constraint(equalToConstant: 16), closeButton.heightAnchor.constraint(equalToConstant: 16)
             ])
 

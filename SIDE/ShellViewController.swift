@@ -82,6 +82,10 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         makeVC.onProjectOpened = { [weak self] url in self?.projectOpened(url) }
         makeVC.onFileOpened = { [weak self] url in self?.fileOpened(url) }
         makeVC.onDirtyChanged = { [weak self] dirty in self?.isDirty = dirty; self?.applyWindowChrome() }
+        makeVC.onTearOutRequested = { [weak self] url, screenPoint in
+            guard let self, let projectURL = self.projectURL else { return }
+            AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectURL, trackKey: self.currentTrackKey, focusingFile: url, at: screenPoint)
+        }
         runVC.onOpenFileRequested = { [weak self] url, line in
             guard let self else { return }
             self.show(.make)
@@ -199,6 +203,12 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             projectLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 200).isActive = true
             item.view = projectLabel
             item.label = "Project"
+            // This is the item that's allowed to collapse into the overflow chevron at narrow
+            // widths — but a collapsed custom-view item renders as a dead menu entry unless it's
+            // given a real menu form. Make it do the one obviously-useful project-level thing.
+            let menuForm = NSMenuItem(title: "Reveal Project in Finder", action: #selector(revealProjectInFinder), keyEquivalent: "")
+            menuForm.target = self
+            item.menuFormRepresentation = menuForm
             return item
         case .stageSwitcher:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
@@ -217,6 +227,9 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             button.widthAnchor.constraint(equalToConstant: 24).isActive = true
             item.view = button
             item.label = "Language Server"
+            // 24pt wide and hidden most of the time — never worth collapsing into the overflow
+            // chevron, where it would only ever appear as a dead "Language Server" entry.
+            item.visibilityPriority = .high
             return item
         case .quickOpen:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
@@ -243,6 +256,17 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     @objc func jumpToStage(_ sender: NSMenuItem) {
         guard Stage.allCases.indices.contains(sender.tag) else { return }
         show(Stage.allCases[sender.tag])
+    }
+
+    @objc private func revealProjectInFinder() {
+        guard let projectURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([projectURL])
+    }
+
+    /// A tab torn out of another window landing here — jump to Make and show that file.
+    func revealFile(_ url: URL) {
+        show(.make)
+        makeVC.revealFile(url, line: nil)
     }
 
     private func show(_ stage: Stage) {

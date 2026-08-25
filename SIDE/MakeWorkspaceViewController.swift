@@ -110,6 +110,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     var onProjectOpened: ((URL) -> Void)?
     var onFileOpened: ((URL?) -> Void)?
     var onDirtyChanged: ((Bool) -> Void)?
+    /// A tab torn off the strip (drag-out or "Move to New Window") — the shell owns windows, so
+    /// it decides what a new one on this project/track looks like. Point is in screen coords.
+    var onTearOutRequested: ((URL, NSPoint) -> Void)?
     private let lastProjectKey = "side.last-project-path"
     private let lastFilesByProjectKey = "side.last-files-by-project"
     private let recentProjectsKey = "side.recent-projects"
@@ -1557,19 +1560,26 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc private func closeTabButton(_ sender: NSButton) { closeTab(at: sender.tag) }
-    @objc private func closeTabFromMenu(_ sender: NSMenuItem) { closeTab(at: sender.tag) }
+    @objc private func closeTabFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID, let index = indexForTab(id: id) else { return }
+        closeTab(at: index)
+    }
     @objc private func closeActiveTab() { guard let index = activeTabIndex else { return }; closeTab(at: index) }
 
     /// Uses a stable tab id (not the raw index) beyond this point: closing this tab involves
     /// an async alert sheet, and another tab's own async save/formatter pipeline could shift
     /// array indices in the meantime, which would otherwise make a stale index silently
     /// resolve to the wrong tab.
-    private func closeTab(at index: Int) {
-        guard openTabs.indices.contains(index) else { return }
+    private func closeTab(at index: Int, completion: ((Bool) -> Void)? = nil) {
+        guard openTabs.indices.contains(index) else { completion?(false); return }
         let tab = openTabs[index]
         let tabID = tab.id
-        guard tab.dirty else { finishCloseTab(id: tabID); return }
-        guard let window = view.window else { return }
+        guard tab.dirty else {
+            finishCloseTab(id: tabID)
+            completion?(true)
+            return
+        }
+        guard let window = view.window else { completion?(false); return }
         let alert = NSAlert()
         alert.messageText = "Do you want to save the changes you made to \u{201C}\(tab.isUntitled ? "Untitled" : tab.url.lastPathComponent)\u{201D}?"
         alert.informativeText = "Your changes will be lost if you don't save them."
@@ -1577,15 +1587,32 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         alert.addButton(withTitle: "Don't Save")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }
+            guard let self else { completion?(false); return }
             switch response {
             case .alertFirstButtonReturn:
-                self.performSave(tabID: tabID) { success in if success { self.finishCloseTab(id: tabID) } }
+                self.performSave(tabID: tabID) { success in
+                    if success { self.finishCloseTab(id: tabID) }
+                    completion?(success)
+                }
             case .alertSecondButtonReturn:
                 self.finishCloseTab(id: tabID)
+                completion?(true)
             default:
-                break
+                completion?(false)
             }
+        }
+    }
+
+    /// One at a time, front to back — a dirty tab in the batch gets its normal Save/Don't
+    /// Save/Cancel sheet, and Cancel stops the whole batch (matching how every editor treats a
+    /// bulk close as a sequence the user can bail out of).
+    private func closeTabs(ids: [UUID]) {
+        var remaining = ids
+        guard let first = remaining.first else { return }
+        remaining.removeFirst()
+        guard let index = indexForTab(id: first) else { closeTabs(ids: remaining); return }
+        closeTab(at: index) { [weak self] proceeded in
+            if proceeded { self?.closeTabs(ids: remaining) }
         }
     }
 
@@ -1701,7 +1728,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             chip.index = i
             chip.isActive = (i == activeTabIndex)
             chip.closeButton?.tag = i
-            chip.closeMenuItem?.tag = i
         }
     }
 
@@ -1763,6 +1789,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             guard let self, let container else { return }
             self.handleTabDragging(container, toWindowX: windowX)
         }
+        container.onTearOut = { [weak self, weak container] screenPoint in
+            guard let self, let container else { return }
+            self.tearOutTab(at: container.index, to: screenPoint)
+        }
 
         let closeButton = TabCloseButton(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
         closeButton.tag = index
@@ -1773,18 +1803,90 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         container.addSubview(closeButton)
         container.closeButton = closeButton
         NSLayoutConstraint.activate([
-            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -5), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 16), closeButton.heightAnchor.constraint(equalToConstant: 16)
         ])
 
+        // Every item carries the tab's stable id, not its index — the menu can outlive several
+        // reorders/closes between being built and being clicked.
         let menu = NSMenu()
-        let closeItem = menu.addItem(withTitle: "Close Tab", action: #selector(closeTabFromMenu(_:)), keyEquivalent: "")
-        closeItem.tag = index
-        closeItem.target = self
-        container.closeMenuItem = closeItem
+        func item(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = tab.id
+            return item
+        }
+        container.closeMenuItem = item("Close", #selector(closeTabFromMenu(_:)))
+        item("Close Others", #selector(closeOtherTabsFromMenu(_:)))
+        item("Close to the Right", #selector(closeTabsToRightFromMenu(_:)))
+        item("Close Saved", #selector(closeSavedTabsFromMenu(_:)))
+        item("Close All", #selector(closeAllTabsFromMenu(_:)))
+        menu.addItem(NSMenuItem.separator())
+        item("Copy Path", #selector(copyTabPathFromMenu(_:)))
+        item("Copy Relative Path", #selector(copyTabRelativePathFromMenu(_:)))
+        menu.addItem(NSMenuItem.separator())
+        item("Reveal in Finder", #selector(revealTabInFinderFromMenu(_:)))
+        menu.addItem(NSMenuItem.separator())
+        item("Move to New Window", #selector(moveTabToNewWindowFromMenu(_:)))
         container.menu = menu
 
         return container
+    }
+
+    // MARK: - Tab context-menu actions (sender.representedObject is the tab's stable UUID)
+
+    private func tabID(from sender: NSMenuItem) -> UUID? { sender.representedObject as? UUID }
+
+    @objc private func closeOtherTabsFromMenu(_ sender: NSMenuItem) {
+        guard let keep = tabID(from: sender) else { return }
+        closeTabs(ids: openTabs.filter { $0.id != keep }.map(\.id))
+    }
+
+    @objc private func closeTabsToRightFromMenu(_ sender: NSMenuItem) {
+        guard let id = tabID(from: sender), let index = indexForTab(id: id) else { return }
+        closeTabs(ids: openTabs.suffix(from: index + 1).map(\.id))
+    }
+
+    @objc private func closeSavedTabsFromMenu(_ sender: NSMenuItem) {
+        closeTabs(ids: openTabs.filter { !$0.dirty }.map(\.id))
+    }
+
+    @objc private func closeAllTabsFromMenu(_ sender: NSMenuItem) {
+        closeTabs(ids: openTabs.map(\.id))
+    }
+
+    @objc private func copyTabPathFromMenu(_ sender: NSMenuItem) {
+        guard let id = tabID(from: sender), let index = indexForTab(id: id) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(openTabs[index].url.path, forType: .string)
+    }
+
+    @objc private func copyTabRelativePathFromMenu(_ sender: NSMenuItem) {
+        guard let id = tabID(from: sender), let index = indexForTab(id: id) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(relativePath(openTabs[index].url), forType: .string)
+    }
+
+    @objc private func revealTabInFinderFromMenu(_ sender: NSMenuItem) {
+        guard let id = tabID(from: sender), let index = indexForTab(id: id) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([openTabs[index].url])
+    }
+
+    @objc private func moveTabToNewWindowFromMenu(_ sender: NSMenuItem) {
+        guard let id = tabID(from: sender), let index = indexForTab(id: id) else { return }
+        tearOutTab(at: index, to: NSEvent.mouseLocation)
+    }
+
+    /// The tear-out itself: close here (with the normal unsaved-changes sheet — a cancelled
+    /// save cancels the move), then hand the file to a fresh window on the same project and
+    /// track, positioned where the drop happened.
+    private func tearOutTab(at index: Int, to screenPoint: NSPoint) {
+        guard openTabs.indices.contains(index) else { return }
+        let url = openTabs[index].url
+        closeTab(at: index) { [weak self] proceeded in
+            guard proceeded else { return }
+            self?.onTearOutRequested?(url, screenPoint)
+        }
     }
 
     private func relativePath(_ url: URL) -> String {
@@ -2968,6 +3070,10 @@ final class TabChipView: NSView {
     var onSelect: ((Int) -> Void)?
     var onDragging: ((CGFloat) -> Void)?
     var onDragEnded: (() -> Void)?
+    /// Fired instead of `onDragEnded` when a drag ends far enough below/above the tab strip —
+    /// the tear-out gesture. The point is in screen coordinates (where the new window should
+    /// appear). Left nil by owners whose tabs can't become windows (Run's terminal sessions).
+    var onTearOut: ((NSPoint) -> Void)?
     var title: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
     var isActive: Bool = false { didSet { needsDisplay = true } }
     /// Used by Run's terminal tabs (unused by Make's file tabs, which never set these) to show
@@ -2979,11 +3085,18 @@ final class TabChipView: NSView {
     private static let trailingReserve: CGFloat = 26
     private static let maxTextWidth: CGFloat = 200
     static let height: CGFloat = 30
+    /// Horizontal margin reserved on each side for the active tab's bottom flares — the outward
+    /// curves that let the tab pour into the content surface below instead of meeting it at a
+    /// hard corner. Reserved on every chip (not just the active one) so activating a tab never
+    /// changes its width and shuffles the whole row.
+    static let flare: CGFloat = 8
 
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
     private var grabOffsetX: CGFloat = 0
     private var didDrag = false
+    private var isTearArmed = false
+    private static let tearThreshold: CGFloat = 36
     private var isHovered = false { didSet { needsDisplay = true } }
 
     override var isFlipped: Bool { true }
@@ -2991,7 +3104,7 @@ final class TabChipView: NSView {
     override var intrinsicContentSize: NSSize {
         let font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
         let textWidth = min((title as NSString).size(withAttributes: [.font: font]).width, Self.maxTextWidth)
-        return NSSize(width: textWidth + Self.textInset + Self.trailingReserve, height: Self.height)
+        return NSSize(width: textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2, height: Self.height)
     }
 
     override func updateTrackingAreas() {
@@ -3011,27 +3124,53 @@ final class TabChipView: NSView {
         isHovered = false
     }
 
-    /// A full-height rect rounded only at the top — the active tab shares the editor's fill and
-    /// runs flush into it, so it reads as physically part of the content surface (the strip
-    /// behind it is darker, and the hairline at the strip's bottom passes *behind* this shape).
-    /// Built as a union (rounded rect + square lower half) rather than hand-traced arcs — arc
-    /// direction in a flipped view is exactly the kind of thing that silently draws a slanted
-    /// tail off one corner.
-    private static func attachedTabPath(in rect: NSRect, radius: CGFloat) -> NSBezierPath {
-        let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
-        // Flipped coordinates: the visual bottom half is midY...maxY.
-        path.appendRect(NSRect(x: rect.minX, y: rect.midY, width: rect.width, height: rect.height / 2))
-        path.windingRule = .nonZero
+    /// The Safari/Chrome tab silhouette, in flipped coordinates (minY = top): rounded top
+    /// corners, straight sides, and *outward* bottom flares — the tab's bottom corners curve
+    /// away into the content surface it shares a fill with, instead of meeting it at hard
+    /// corners. Returned open (bottom-left flare tip → around the top → bottom-right flare tip)
+    /// so the same path both fills the shape and strokes its outline without underlining the
+    /// bottom edge, where tab and content are one surface.
+    private static func attachedTabOutline(in rect: NSRect, topRadius: CGFloat, flare: CGFloat) -> NSBezierPath {
+        let body = rect.insetBy(dx: flare, dy: 0)
+        let bottom = rect.maxY
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: body.minX - flare, y: bottom))
+        // Concave quarter-curves at the feet, convex at the shoulders — a single control point
+        // at each corner traces the quarter turn without any flipped-arc direction guesswork.
+        path.curve(to: NSPoint(x: body.minX, y: bottom - flare),
+                   controlPoint1: NSPoint(x: body.minX, y: bottom),
+                   controlPoint2: NSPoint(x: body.minX, y: bottom))
+        path.line(to: NSPoint(x: body.minX, y: rect.minY + topRadius))
+        path.curve(to: NSPoint(x: body.minX + topRadius, y: rect.minY),
+                   controlPoint1: NSPoint(x: body.minX, y: rect.minY),
+                   controlPoint2: NSPoint(x: body.minX, y: rect.minY))
+        path.line(to: NSPoint(x: body.maxX - topRadius, y: rect.minY))
+        path.curve(to: NSPoint(x: body.maxX, y: rect.minY + topRadius),
+                   controlPoint1: NSPoint(x: body.maxX, y: rect.minY),
+                   controlPoint2: NSPoint(x: body.maxX, y: rect.minY))
+        path.line(to: NSPoint(x: body.maxX, y: bottom - flare))
+        path.curve(to: NSPoint(x: body.maxX + flare, y: bottom),
+                   controlPoint1: NSPoint(x: body.maxX, y: bottom),
+                   controlPoint2: NSPoint(x: body.maxX, y: bottom))
         return path
     }
 
     override func draw(_ dirtyRect: NSRect) {
         if isActive {
+            let outline = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare)
+            let fill = outline.copy() as! NSBezierPath
+            fill.close()
             DS.Color.chrome.setFill()
-            Self.attachedTabPath(in: bounds, radius: 8).fill()
+            fill.fill()
+            // The thin light edge that ties the tab to the surface it overlaps — traced along
+            // the silhouette only, never the bottom, so the line pours into the content edge
+            // exactly the way the shape does.
+            NSColor(white: 1, alpha: 0.14).setStroke()
+            outline.lineWidth = 1
+            outline.stroke()
         } else if isHovered {
             NSColor(white: 1, alpha: 0.05).setFill()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 4), xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: Self.flare - 2, dy: 4), xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
         }
 
         let dimmed = isDead ? 0.35 : 1.0
@@ -3041,14 +3180,15 @@ final class TabChipView: NSView {
         ]
         let text = title as NSString
         let size = text.size(withAttributes: attributes)
-        let maxWidth = max(0, bounds.width - Self.textInset - Self.trailingReserve)
-        let drawRect = NSRect(x: Self.textInset, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
+        let textX = Self.flare + Self.textInset
+        let maxWidth = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
+        let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
         text.draw(in: drawRect, withAttributes: attributes)
 
         if hasUnseenOutput {
             NSColor.controlAccentColor.setFill()
             let dotSize: CGFloat = 6
-            NSBezierPath(ovalIn: NSRect(x: 4, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
+            NSBezierPath(ovalIn: NSRect(x: Self.flare + 2, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
         }
     }
 
@@ -3074,21 +3214,41 @@ final class TabChipView: NSView {
         }
         guard didDrag else { return }
 
-        // Reorder the model/stack first (siblings animate into their new slots)...
-        onDragging?(event.locationInWindow.x)
+        // Pulled far enough off the strip, the gesture stops being a reorder and becomes a
+        // tear-out — the chip follows the cursor vertically and fades to signal "this is about
+        // to become its own window." Dragging back within range re-arms reordering.
+        let dy = event.locationInWindow.y - dragOrigin.y
+        isTearArmed = onTearOut != nil && abs(dy) > Self.tearThreshold
+        alphaValue = isTearArmed ? 0.6 : 1
+
+        if !isTearArmed {
+            // Reorder the model/stack first (siblings animate into their new slots)...
+            onDragging?(event.locationInWindow.x)
+        }
 
         // ...then keep this chip glued to the cursor regardless of where that reorder
         // just placed it in the stack, by transforming relative to its *current* laid-out
         // position rather than the position at mouseDown.
         let naturalXInWindow = convert(NSPoint.zero, to: nil).x
         let desiredXInWindow = event.locationInWindow.x - grabOffsetX
-        layer?.setAffineTransform(CGAffineTransform(translationX: desiredXInWindow - naturalXInWindow, y: 0).scaledBy(x: 1.04, y: 1.04))
+        // Flipped view: window +y is up, layer translation follows view coords (down-positive).
+        let liftY = isTearArmed ? -dy : 0
+        layer?.setAffineTransform(CGAffineTransform(translationX: desiredXInWindow - naturalXInWindow, y: liftY).scaledBy(x: 1.04, y: 1.04))
     }
 
     override func mouseUp(with event: NSEvent) {
         defer { dragOrigin = nil }
         guard dragOrigin != nil else { return }
         if didDrag {
+            if isTearArmed {
+                isTearArmed = false
+                alphaValue = 1
+                layer?.setAffineTransform(.identity)
+                layer?.zPosition = 0
+                layer?.shadowOpacity = 0
+                onTearOut?(NSEvent.mouseLocation)
+                return
+            }
             // The set-down: glide into the slot instead of snapping.
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.18
