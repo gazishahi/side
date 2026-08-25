@@ -270,6 +270,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         markdownPreviewView.backgroundColor = Self.editorBackground
         markdownPreviewView.textContainerInset = NSSize(width: 20, height: 16)
         markdownPreviewView.textContainer?.widthTracksTextView = true
+        // For `textView(_:clickedOnLink:at:)` — in-document `#anchor` links scroll the preview
+        // instead of being handed to the OS as if they were web URLs.
+        markdownPreviewView.delegate = self
         markdownPreviewScroll.documentView = markdownPreviewView
         markdownPreviewScroll.hasVerticalScroller = true
         markdownPreviewScroll.backgroundColor = Self.editorBackground
@@ -2252,6 +2255,31 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return false
         }
 
+        return true
+    }
+
+    /// In-document markdown anchors (`[Contents](#setup)` etc.) — `MarkdownRenderer` renders
+    /// these under its own scheme, and every rendered header carries its slug as a custom
+    /// attribute, so resolving a click is just "find the first header run with this slug and
+    /// scroll to it." Real web links return false and keep the default open-in-browser behavior.
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard textView === markdownPreviewView,
+              let url = link as? URL, url.scheme == MarkdownRenderer.anchorScheme,
+              let storage = textView.textStorage else { return false }
+        let targetSlug = url.absoluteString.dropFirst(MarkdownRenderer.anchorScheme.count + 1)
+        var found: NSRange?
+        storage.enumerateAttribute(MarkdownRenderer.anchorSlugKey, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+            if let slug = value as? String, slug == targetSlug {
+                found = range
+                stop.pointee = true
+            }
+        }
+        if let found {
+            textView.scrollRangeToVisible(found)
+            textView.showFindIndicator(for: found)
+        }
+        // Consumed either way — a dangling anchor (no matching header) should be a no-op, not a
+        // fallthrough into the OS trying to open our custom scheme.
         return true
     }
 

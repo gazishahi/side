@@ -5,6 +5,26 @@ import AppKit
 /// codebase's existing preference for lightweight hand-rolled text processing (see
 /// SyntaxHighlighter) over pulling in a full CommonMark implementation for a preview feature.
 enum MarkdownRenderer {
+    /// Marks each rendered header run with its GitHub-style slug, so a preview view can resolve
+    /// an in-document `[label](#some-header)` link to a real location in the attributed string
+    /// instead of handing `#some-header` to the OS as if it were a web URL (which either fails
+    /// or bounces uselessly into the browser).
+    static let anchorSlugKey = NSAttributedString.Key("SideMarkdownAnchorSlug")
+    /// The custom scheme fragment links render as (`side-anchor:<slug>`) — a preview's link
+    /// delegate intercepts these and scrolls; real http(s) links keep their default behavior.
+    static let anchorScheme = "side-anchor"
+
+    /// GitHub-style: lowercase, alphanumerics kept, spaces to hyphens, everything else dropped.
+    static func anchorSlug(for headerText: String) -> String {
+        var slug = ""
+        for character in headerText.lowercased() {
+            if character.isLetter || character.isNumber { slug.append(character) }
+            else if character == " " || character == "-" { slug.append("-") }
+        }
+        while slug.contains("--") { slug = slug.replacingOccurrences(of: "--", with: "-") }
+        return slug.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
     static func render(_ markdown: String, baseFont: NSFont, textColor: NSColor) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let lines = markdown.components(separatedBy: "\n")
@@ -45,24 +65,40 @@ enum MarkdownRenderer {
                 flushParagraph()
                 let size: CGFloat = [28, 24, 20, 17, 15, 14][min(level - 1, 5)]
                 let font = NSFont.systemFont(ofSize: size, weight: .bold)
-                result.append(renderInline(text, baseFont: font, textColor: textColor))
+                let header = NSMutableAttributedString(attributedString: renderInline(text, baseFont: font, textColor: textColor))
+                header.addAttribute(anchorSlugKey, value: anchorSlug(for: text), range: NSRange(location: 0, length: header.length))
+                result.append(header)
                 result.append(NSAttributedString(string: "\n\n"))
                 continue
             }
-            if line.hasPrefix("- ") || line.hasPrefix("* ") {
+            if let (marker, itemText) = matchListItem(line) {
                 flushParagraph()
-                let bullet = NSMutableAttributedString(string: "\u{2022}  ", attributes: [.font: baseFont, .foregroundColor: textColor])
-                bullet.append(renderInline(String(line.dropFirst(2)), baseFont: baseFont, textColor: textColor))
-                bullet.append(NSAttributedString(string: "\n"))
-                result.append(bullet)
+                // Hanging indent: wrapped lines align under the item's *text*, not under the
+                // bullet/number — without this, any list item long enough to wrap collapsed
+                // back to the left margin and stopped reading as a list at all.
+                let markerString = NSAttributedString(string: marker, attributes: [.font: baseFont, .foregroundColor: textColor])
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.firstLineHeadIndent = 0
+                paragraph.headIndent = ceil(markerString.size().width)
+                paragraph.paragraphSpacing = 2
+                let item = NSMutableAttributedString(attributedString: markerString)
+                item.append(renderInline(itemText, baseFont: baseFont, textColor: textColor))
+                item.append(NSAttributedString(string: "\n"))
+                item.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: item.length))
+                result.append(item)
                 continue
             }
             if line.hasPrefix(">") {
                 flushParagraph()
                 let text = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
-                let quote = NSMutableAttributedString(string: "\u{258E} ", attributes: [.font: baseFont, .foregroundColor: NSColor.systemGray])
+                let markerString = NSAttributedString(string: "\u{258E} ", attributes: [.font: baseFont, .foregroundColor: NSColor.systemGray])
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.firstLineHeadIndent = 0
+                paragraph.headIndent = ceil(markerString.size().width)
+                let quote = NSMutableAttributedString(attributedString: markerString)
                 quote.append(renderInline(text, baseFont: baseFont, textColor: textColor.withAlphaComponent(0.75)))
                 quote.append(NSAttributedString(string: "\n"))
+                quote.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: quote.length))
                 result.append(quote)
                 continue
             }
@@ -71,6 +107,25 @@ enum MarkdownRenderer {
         flushParagraph()
         flushCodeBlock()
         return result
+    }
+
+    /// `- `/`* ` bullets and `1. `-style ordered items, returned as (rendered marker prefix,
+    /// remaining item text). Ordered items keep their own number rather than being renumbered —
+    /// this is a renderer, not a formatter.
+    private static func matchListItem(_ line: String) -> (marker: String, text: String)? {
+        if line.hasPrefix("- ") || line.hasPrefix("* ") {
+            return ("\u{2022}  ", String(line.dropFirst(2)))
+        }
+        var index = line.startIndex
+        var digits = 0
+        while index < line.endIndex, line[index].isNumber, digits < 4 {
+            digits += 1
+            index = line.index(after: index)
+        }
+        guard digits > 0, index < line.endIndex, line[index] == "." else { return nil }
+        let afterDot = line.index(after: index)
+        guard afterDot < line.endIndex, line[afterDot] == " " else { return nil }
+        return ("\(line[line.startIndex..<index]).  ", String(line[line.index(after: afterDot)...]))
     }
 
     private static func matchHeader(_ line: String) -> (Int, String)? {
@@ -121,7 +176,14 @@ enum MarkdownRenderer {
                 var linkAttrs = baseAttrs
                 linkAttrs[.foregroundColor] = NSColor.linkColor
                 linkAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
-                if let url = URL(string: urlString) { linkAttrs[.link] = url }
+                if urlString.hasPrefix("#") {
+                    // In-document fragment — never a web URL. Rendered under a custom scheme so
+                    // the preview's link delegate scrolls to the matching header (see
+                    // `anchorSlugKey`) instead of the OS trying to open "#section" externally.
+                    linkAttrs[.link] = URL(string: "\(anchorScheme):\(anchorSlug(for: String(urlString.dropFirst())))") as Any
+                } else if let url = URL(string: urlString) {
+                    linkAttrs[.link] = url
+                }
                 result.append(NSAttributedString(string: label, attributes: linkAttrs))
                 i = closeParen + 1
                 continue

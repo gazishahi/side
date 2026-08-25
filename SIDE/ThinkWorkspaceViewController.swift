@@ -245,6 +245,31 @@ final class ThinkWorkspaceViewController: NSViewController {
         let view = makeEntryView(entry)
         entryViews.append(view)
         addBlock(view, topSpacing: index == 0 ? 0 : Self.spacing(before: entry.kind))
+        // Only live appends animate — `renderFull` (reattach, track switch) lays the whole
+        // history out instantly rather than replaying every arrival.
+        animateIn(view)
+    }
+
+    /// The iMessage arrival: rise a few points while fading and scaling in. Purely a layer
+    /// animation over the block's settled Auto Layout position, so it can't fight layout.
+    private func animateIn(_ view: NSView) {
+        view.wantsLayer = true
+        transcriptContainer.layoutSubtreeIfNeeded()
+        guard let layer = view.layer else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        let rise = CABasicAnimation(keyPath: "transform.translation.y")
+        rise.fromValue = 16
+        rise.toValue = 0
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.96
+        scale.toValue = 1
+        let group = CAAnimationGroup()
+        group.animations = [fade, rise, scale]
+        group.duration = 0.3
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(group, forKey: "bubbleArrival")
     }
 
     private func updateEntryView(at index: Int) {
@@ -252,7 +277,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         let entry = entries[index]
         switch entry.kind {
         case .assistantText(let text):
-            (entryViews[index] as? TextBlockView)?.setBody(text)
+            ((entryViews[index] as? BubbleRowView)?.bubble)?.setBody(text)
         case .proposal(let presentation):
             guard let card = entryViews[index] as? ProposedEditView, let resolution = presentation.resolution else { return }
             let label = resolution.label
@@ -273,19 +298,20 @@ final class ThinkWorkspaceViewController: NSViewController {
         case .meta(let text):
             return makeLabel(text, font: .systemFont(ofSize: 12), color: .tertiaryLabelColor)
         case .userText(let text):
-            // Right-aligned and width-capped, ChatGPT-style — a user turn is normally short, so
-            // hugging its actual content (rather than spanning the transcript like everything
-            // else) is what makes it read as "a bubble" instead of just another tinted panel.
-            let bubble = TextBlockView(header: "You", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor, accent: .controlAccentColor, maxBubbleWidth: 480)
-            return Self.wrapAsBubbleRow(bubble, alignRight: true)
+            // iMessage-shaped: sent messages are solid-accent bubbles hugging their own content
+            // against the trailing edge; no "You" header — the side and color carry that.
+            let bubble = TextBlockView(style: .sent, body: text, maxBubbleWidth: 460)
+            return BubbleRowView(bubble: bubble, alignRight: true)
         case .assistantText(let text):
-            return TextBlockView(header: "Assistant", body: text, headerColor: .secondaryLabelColor, bodyColor: .labelColor, accent: NSColor(white: 0.6, alpha: 1))
+            let bubble = TextBlockView(style: .received, body: text, maxBubbleWidth: 620)
+            return BubbleRowView(bubble: bubble, alignRight: false)
         case .toolCall(let name, let summary):
             return makeLabel("→ \(name)\(summary)", font: .monospacedSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
         case .toolResult(let text, let isError):
             return makeLabel(text, font: .monospacedSystemFont(ofSize: 11, weight: .regular), color: isError ? .systemOrange : .secondaryLabelColor)
         case .failure(let text):
-            return TextBlockView(header: "Error", body: text, headerColor: .systemRed, bodyColor: .systemRed, accent: .systemRed)
+            let bubble = TextBlockView(style: .error, body: text, maxBubbleWidth: 620)
+            return BubbleRowView(bubble: bubble, alignRight: false)
         case .proposal(let presentation):
             let card = ProposedEditView(edit: presentation.edit, diffText: presentation.diffText)
             if let resolution = presentation.resolution {
@@ -308,29 +334,6 @@ final class ThinkWorkspaceViewController: NSViewController {
             }
             return card
         }
-    }
-
-    /// A transparent full-width row holding one bubble pinned to one side — this is what lets a
-    /// user turn hug its own content and sit against the trailing edge instead of stretching
-    /// across the whole transcript like every other block here.
-    private static func wrapAsBubbleRow(_ bubble: NSView, alignRight: Bool) -> NSView {
-        let row = NSView()
-        row.translatesAutoresizingMaskIntoConstraints = false
-        bubble.translatesAutoresizingMaskIntoConstraints = false
-        row.addSubview(bubble)
-        var constraints = [
-            bubble.topAnchor.constraint(equalTo: row.topAnchor),
-            bubble.bottomAnchor.constraint(equalTo: row.bottomAnchor),
-        ]
-        if alignRight {
-            constraints.append(bubble.trailingAnchor.constraint(equalTo: row.trailingAnchor))
-            constraints.append(bubble.leadingAnchor.constraint(greaterThanOrEqualTo: row.leadingAnchor))
-        } else {
-            constraints.append(bubble.leadingAnchor.constraint(equalTo: row.leadingAnchor))
-            constraints.append(bubble.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor))
-        }
-        NSLayoutConstraint.activate(constraints)
-        return row
     }
 
     private static func showCommandResolution(_ card: CommandProposalView, _ resolution: CommandPresentation.Resolution) {
@@ -399,88 +402,156 @@ final class ThinkWorkspaceViewController: NSViewController {
     }
 }
 
-/// A header ("You" / "Assistant" / "Error") stacked above its body text, as one view — so a
-/// streamed delta can update `bodyLabel` in place without touching the header. Body text renders
-/// through `MarkdownRenderer` (the same one Make's preview already uses) rather than as plain
-/// text, since a model's output is markdown whether or not anything renders it that way.
-private final class TextBlockView: NSStackView {
-    let bodyLabel: NSTextField
-    private let bodyColor: NSColor
-    /// The raw source text (not the rendered `NSAttributedString`) — kept so Copy hands back
-    /// what was actually said, not whatever `MarkdownRenderer` happened to produce.
-    private var plainText: String = ""
-    private let copyButton = NSButton(image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")!, target: nil, action: nil)
-    private var trackingArea: NSTrackingArea?
+/// One chat bubble, iMessage-shaped: a solid rounded fill hugging its own content, no header —
+/// which side it sits on and what color it is carry "who said this." Body text renders through
+/// `MarkdownRenderer` (the same one Make's preview uses), and a streamed delta re-measures the
+/// bubble's width in place so it grows with the response instead of being sized once.
+private final class TextBlockView: NSView {
+    enum Style {
+        case sent      // the user: accent-filled, white text
+        case received  // the assistant: gray-filled, standard text
+        case error     // a failure: red-tinted, keeps a small header since it isn't a chat turn
 
-    /// Non-nil only for a right-aligned user bubble (see `wrapAsBubbleRow`) — clamps the body to
-    /// this width and lets the bubble hug its actual content instead of spanning the transcript,
-    /// which is what makes it read as a bubble instead of just another tinted panel. `nil` keeps
-    /// the original full-width-panel behavior (assistant/error turns).
-    init(header: String, body: String, headerColor: NSColor, bodyColor: NSColor, accent: NSColor, maxBubbleWidth: CGFloat? = nil) {
-        let headerLabel = NSTextField(labelWithString: header)
-        headerLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        headerLabel.textColor = headerColor
-
-        let bodyLabel = NSTextField(wrappingLabelWithString: "")
-        bodyLabel.isSelectable = true
-        self.bodyLabel = bodyLabel
-        self.bodyColor = bodyColor
-
-        super.init(frame: .zero)
-        orientation = .vertical
-        alignment = .leading
-        spacing = 4
-        let insets = NSEdgeInsets(top: 8, left: 11, bottom: 9, right: 11)
-        // Turns each turn into its own card rather than bare stacked text — the accent (subtly
-        // tinted border + fill) is what distinguishes "You" from "Assistant" from "Error" at a
-        // glance, since the header label alone reads as too quiet once a transcript gets long.
-        edgeInsets = insets
-        wantsLayer = true
-        layer?.cornerRadius = 10
-        layer?.borderWidth = 1
-        layer?.borderColor = accent.withAlphaComponent(0.35).cgColor
-        layer?.backgroundColor = accent.withAlphaComponent(0.10).cgColor
-        translatesAutoresizingMaskIntoConstraints = false
-        addArrangedSubview(headerLabel)
-        addArrangedSubview(bodyLabel)
-        if let maxBubbleWidth {
-            let availableWidth = maxBubbleWidth - insets.left - insets.right
-            let font = NSFont.systemFont(ofSize: 13)
-            let naturalWidth = (body as NSString).boundingRect(
-                with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]
-            ).width
-            bodyLabel.widthAnchor.constraint(equalToConstant: min(ceil(naturalWidth) + 2, availableWidth)).isActive = true
-        } else {
-            bodyLabel.widthAnchor.constraint(equalTo: widthAnchor, constant: -(insets.left + insets.right)).isActive = true
+        var fillColor: NSColor {
+            switch self {
+            case .sent: return .controlAccentColor
+            case .received: return NSColor(white: 0.24, alpha: 1)
+            case .error: return NSColor.systemRed.withAlphaComponent(0.18)
+            }
         }
-        setBody(body)
-
-        // Hover-revealed, same pattern Tracks' row actions use — a copy affordance sitting
-        // always-visible on every turn would just be visual noise once a transcript gets long.
-        copyButton.isBordered = false
-        copyButton.imageScaling = .scaleProportionallyDown
-        copyButton.contentTintColor = headerColor
-        copyButton.alphaValue = 0
-        copyButton.target = self
-        copyButton.action = #selector(copyTapped)
-        copyButton.translatesAutoresizingMaskIntoConstraints = false
-        copyButton.toolTip = "Copy message"
-        addSubview(copyButton)
-        NSLayoutConstraint.activate([
-            copyButton.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            copyButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            copyButton.widthAnchor.constraint(equalToConstant: 16),
-            copyButton.heightAnchor.constraint(equalToConstant: 16),
-        ])
+        var textColor: NSColor {
+            switch self {
+            case .sent: return .white
+            case .received: return .labelColor
+            case .error: return .systemRed
+            }
+        }
     }
 
-    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    private let bodyLabel = NSTextField(wrappingLabelWithString: "")
+    private let style: Style
+    private let maxBubbleWidth: CGFloat
+    private let bodyWidthConstraint: NSLayoutConstraint
+    /// The raw source text (not the rendered `NSAttributedString`) — kept so Copy hands back
+    /// what was actually said, not whatever `MarkdownRenderer` happened to produce.
+    private(set) var plainText: String = ""
+
+    private static let insets = NSEdgeInsets(top: 7, left: 12, bottom: 8, right: 12)
+
+    init(style: Style, body: String, maxBubbleWidth: CGFloat) {
+        self.style = style
+        self.maxBubbleWidth = maxBubbleWidth
+        self.bodyWidthConstraint = bodyLabel.widthAnchor.constraint(equalToConstant: 10)
+
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 17
+        layer?.backgroundColor = style.fillColor.cgColor
+
+        bodyLabel.isSelectable = true
+        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        var topAnchorForBody = topAnchor
+        var topConstant = Self.insets.top
+        if case .error = style {
+            let headerLabel = NSTextField(labelWithString: "Error")
+            headerLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+            headerLabel.textColor = .systemRed
+            headerLabel.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(headerLabel)
+            NSLayoutConstraint.activate([
+                headerLabel.topAnchor.constraint(equalTo: topAnchor, constant: Self.insets.top),
+                headerLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.insets.left),
+            ])
+            topAnchorForBody = headerLabel.bottomAnchor
+            topConstant = 3
+        }
+
+        addSubview(bodyLabel)
+        NSLayoutConstraint.activate([
+            bodyLabel.topAnchor.constraint(equalTo: topAnchorForBody, constant: topConstant),
+            bodyLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.insets.left),
+            bodyLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.insets.right),
+            bodyLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.insets.bottom),
+            bodyWidthConstraint,
+        ])
+        setBody(body)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func setBody(_ text: String) {
         plainText = text
-        bodyLabel.attributedStringValue = MarkdownRenderer.render(text, baseFont: .systemFont(ofSize: 13), textColor: bodyColor)
+        let rendered = NSMutableAttributedString(attributedString: MarkdownRenderer.render(text, baseFont: .systemFont(ofSize: 13), textColor: style.textColor))
+        // The renderer terminates every block with "\n\n" — fine in a document preview, but in
+        // a bubble that trailing run becomes visible empty space below the last line.
+        while rendered.length > 0, let last = rendered.string.last, last.isNewline || last == " " {
+            rendered.deleteCharacters(in: NSRange(location: rendered.length - 1, length: 1))
+        }
+        bodyLabel.attributedStringValue = rendered
+        // Hug the content: measure the rendered text against the cap and clamp the label to
+        // exactly what it needs — this (re-run on every streamed delta) is what makes a short
+        // "ok" a small pill and a long reply a full-width-capped block, live, like a real chat.
+        let availableWidth = maxBubbleWidth - Self.insets.left - Self.insets.right
+        let bounding = rendered.boundingRect(
+            with: NSSize(width: availableWidth, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        bodyWidthConstraint.constant = max(10, min(ceil(bounding.width) + 2, availableWidth))
     }
+}
+
+/// A transparent full-width transcript row holding one bubble pinned to its side, plus the
+/// hover-revealed Copy affordance sitting *outside* the bubble (inside, it collided with text
+/// and got clipped by the bubble's rounded corners) — iMessage's "actions live beside the
+/// bubble, not on it" arrangement.
+private final class BubbleRowView: NSView {
+    let bubble: TextBlockView
+    private let copyButton = NSButton(title: "", target: nil, action: nil)
+    private var trackingArea: NSTrackingArea?
+
+    init(bubble: TextBlockView, alignRight: Bool) {
+        self.bubble = bubble
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        addSubview(bubble)
+
+        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")?.withSymbolConfiguration(config)
+        copyButton.isBordered = false
+        copyButton.contentTintColor = .tertiaryLabelColor
+        copyButton.alphaValue = 0
+        copyButton.target = self
+        copyButton.action = #selector(copyTapped)
+        copyButton.toolTip = "Copy message"
+        copyButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(copyButton)
+
+        var constraints = [
+            bubble.topAnchor.constraint(equalTo: topAnchor),
+            bubble.bottomAnchor.constraint(equalTo: bottomAnchor),
+            copyButton.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
+            copyButton.widthAnchor.constraint(equalToConstant: 22),
+            copyButton.heightAnchor.constraint(equalToConstant: 22),
+        ]
+        if alignRight {
+            constraints += [
+                bubble.trailingAnchor.constraint(equalTo: trailingAnchor),
+                bubble.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 60),
+                copyButton.trailingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: -6),
+            ]
+        } else {
+            constraints += [
+                bubble.leadingAnchor.constraint(equalTo: leadingAnchor),
+                bubble.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -60),
+                copyButton.leadingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: 6),
+            ]
+        }
+        NSLayoutConstraint.activate(constraints)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -496,6 +567,6 @@ private final class TextBlockView: NSStackView {
     @objc private func copyTapped() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(plainText, forType: .string)
+        pasteboard.setString(bubble.plainText, forType: .string)
     }
 }
