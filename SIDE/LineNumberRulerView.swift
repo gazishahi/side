@@ -69,11 +69,24 @@ final class LineNumberGutterView: NSView {
             if safetyCounter > maxIterations { break }
             guard index >= 0, index <= textLength else { break }
 
-            let lineRange = text.lineRange(for: NSRange(location: index, length: 0))
-            guard lineRange.location <= layoutManager.numberOfGlyphs || lineRange.location == textLength else { break }
-            let glyphIndex = layoutManager.glyphIndexForCharacter(at: lineRange.location)
-            guard glyphIndex >= 0 else { break }
-            var lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            var lineRect: NSRect
+            var lineRange = NSRange(location: index, length: 0)
+            if index >= textLength {
+                // Past the last character. Only an actual phantom final line — an empty document,
+                // or text ending in a newline — gets a number here, at the layout manager's
+                // extraLineFragmentRect. The old code resolved this position through
+                // lineRange/glyphIndexForCharacter, which clamps back onto the *previous* line's
+                // fragment and printed this number on top of that line's — the "1 and 2
+                // overlapped" bug on short files.
+                guard layoutManager.extraLineFragmentTextContainer != nil else { break }
+                lineRect = layoutManager.extraLineFragmentRect
+            } else {
+                lineRange = text.lineRange(for: NSRange(location: index, length: 0))
+                guard lineRange.location <= layoutManager.numberOfGlyphs else { break }
+                let glyphIndex = layoutManager.glyphIndexForCharacter(at: lineRange.location)
+                guard glyphIndex >= 0 else { break }
+                lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            }
             lineRect.origin.y += textView.textContainerInset.height
 
             let numberString = "\(lineNumber)" as NSString
@@ -102,7 +115,7 @@ final class LineNumberGutterView: NSView {
                 NSBezierPath(ovalIn: dotRect).fill()
             }
 
-            if lineRange.location >= textLength { break }
+            if index >= textLength { break }
             let nextIndex = NSMaxRange(lineRange)
             guard nextIndex > index else { break }
             index = nextIndex

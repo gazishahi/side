@@ -179,25 +179,31 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         searchField.placeholderString = "Open file, symbol, or command"
         searchField.delegate = self
 
+        // The strip is the one surface allowed to be darker than the editor (DS.Color.tabStrip)
+        // — that contrast, plus the hairline passing *behind* the chips, is what lets the active
+        // tab (filled with the editor's own color, flush to the strip's bottom edge) read as
+        // attached to the content below rather than floating in a bar.
         tabBar.wantsLayer = true
-        ChromeBackground.install(in: tabBar)
+        tabBar.layer?.backgroundColor = DS.Color.tabStrip.cgColor
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
-        tabBarStack.orientation = .horizontal
-        tabBarStack.alignment = .centerY
-        tabBarStack.spacing = 4
-        tabBarStack.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.addSubview(tabBarStack)
         let divider = NSBox()
-        divider.boxType = .separator
+        divider.boxType = .custom
+        divider.borderType = .noBorder
+        divider.fillColor = DS.Color.hairline
         divider.translatesAutoresizingMaskIntoConstraints = false
         tabBar.addSubview(divider)
+        tabBarStack.orientation = .horizontal
+        tabBarStack.alignment = .bottom
+        tabBarStack.spacing = 2
+        tabBarStack.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.addSubview(tabBarStack)
         view.addSubview(tabBar)
         tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
-            tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
-            divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor)
+            tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
+            divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1)
         ])
 
         editor.isRichText = false
@@ -1168,6 +1174,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func open(_ url: URL, completion: (() -> Void)? = nil) {
+        // Tab identity is raw URL equality everywhere downstream — canonicalize here, at the one
+        // entry point, so the same file reached through two spellings of its path (a symlinked
+        // segment, a lingering `..`) can't open as two duplicate tabs.
+        let url = url.standardizedFileURL.resolvingSymlinksInPath()
         captureActiveTabSelection()
         if let existingIndex = openTabs.firstIndex(where: { $0.url == url }) {
             activeTabIndex = existingIndex
@@ -1198,6 +1208,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 }
                 DispatchQueue.main.async {
                     guard let self else { completion?(); return }
+                    // Same append-time duplicate re-check as the text path below.
+                    if let existingIndex = self.openTabs.firstIndex(where: { $0.url == url }) {
+                        self.activeTabIndex = existingIndex
+                        self.loadActiveTabIntoEditor()
+                        self.finishOpenUI(url: url)
+                        completion?()
+                        return
+                    }
                     var tab = OpenTab(url: url, kind: .image, textStorage: NSTextStorage(), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: nil)
                     tab.cachedImage = image
                     self.openTabs.append(tab)
@@ -1238,6 +1256,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let rows = isCSV ? CSVParser.parse(source) : []
             DispatchQueue.main.async {
                 guard let self else { completion?(); return }
+                // Re-check now that we're back on main: two near-simultaneous opens of the same
+                // file (e.g. two launch-time restore paths) both pass the synchronous duplicate
+                // check up top, then both land here after their background loads — the second
+                // must adopt the first's tab, not append a twin.
+                if let existingIndex = self.openTabs.firstIndex(where: { $0.url == url }) {
+                    self.activeTabIndex = existingIndex
+                    self.loadActiveTabIntoEditor()
+                    self.finishOpenUI(url: url)
+                    completion?()
+                    return
+                }
                 var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, textStorage: NSTextStorage(string: source), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
                 tab.csvRows = rows
                 self.openTabs.append(tab)
@@ -1564,15 +1593,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func finishCloseTab(id tabID: UUID) {
         guard let index = indexForTab(id: tabID) else { return }
-        let closedTab = openTabs[index]
-        openTabs.remove(at: index)
-        if closedTab.kind == .text { lspManager?.closed(url: closedTab.url) }
-        if openTabs.isEmpty {
-            closeAllTabsImmediately()
-        } else {
-            activeTabIndex = min(index, openTabs.count - 1)
-            loadActiveTabIntoEditor()
-            rebuildTabBar()
+        animateChipClosed(at: index) { [weak self] in
+            guard let self, let index = self.indexForTab(id: tabID) else { return }
+            let closedTab = self.openTabs[index]
+            self.openTabs.remove(at: index)
+            if closedTab.kind == .text { self.lspManager?.closed(url: closedTab.url) }
+            if self.openTabs.isEmpty {
+                self.closeAllTabsImmediately()
+            } else {
+                self.activeTabIndex = min(index, self.openTabs.count - 1)
+                self.loadActiveTabIntoEditor()
+                self.rebuildTabBar()
+            }
         }
     }
 
@@ -1673,17 +1705,48 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    private var lastKnownTabCount = 0
+
     private func rebuildTabBar() {
+        let previousCount = lastKnownTabCount
+        lastKnownTabCount = openTabs.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         tabChips.removeAll()
         let showBar = openTabs.count > 1
         tabBar.isHidden = !showBar
-        tabBarHeightConstraint.constant = showBar ? 30 : 0
+        tabBarHeightConstraint.constant = showBar ? TabChipView.height : 0
         guard showBar else { return }
         for (index, tab) in openTabs.enumerated() {
             let chip = makeTabChip(index: index, tab: tab, isActive: index == activeTabIndex)
             tabBarStack.addArrangedSubview(chip)
             tabChips.append(chip)
+        }
+        // A freshly opened tab (always appended, always becomes active) arrives, not appears —
+        // the standard entrance, scaled down for a 30pt element. Full rebuilds for any other
+        // reason lay out instantly.
+        if openTabs.count == previousCount + 1, let newest = tabChips.last {
+            tabBarStack.layoutSubtreeIfNeeded()
+            DS.Motion.appear(newest, distance: 8)
+        }
+    }
+
+    /// The closing chip shrinks and fades out, its siblings gliding into the gap, before the
+    /// model actually removes it — the counterpart to the arrival above.
+    private func animateChipClosed(at index: Int, completion: @escaping () -> Void) {
+        guard tabChips.indices.contains(index), openTabs.count > 2 else { completion(); return }
+        let chip = tabChips[index]
+        let width = chip.frame.width
+        let widthConstraint = chip.widthAnchor.constraint(equalToConstant: width)
+        widthConstraint.isActive = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.allowsImplicitAnimation = true
+            chip.animator().alphaValue = 0
+            widthConstraint.constant = 0
+            tabBarStack.layoutSubtreeIfNeeded()
+        } completionHandler: {
+            completion()
         }
     }
 
@@ -1694,7 +1757,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         container.title = tab.dirty ? "\(tab.url.lastPathComponent) •" : tab.url.lastPathComponent
         container.toolTip = tab.isUntitled ? "Unsaved" : relativePath(tab.url)
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        container.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
         container.onSelect = { [weak self] i in self?.switchToTab(i) }
         container.onDragging = { [weak self, weak container] windowX in
             guard let self, let container else { return }
@@ -2394,7 +2457,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let saveAsItem = fileMenu.addItem(withTitle: "Save As…", action: #selector(saveAs), keyEquivalent: "s")
         saveAsItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(revertToSaved), keyEquivalent: "")
-        fileMenu.addItem(withTitle: "Toggle Markdown Preview", action: #selector(toggleMarkdownPreview), keyEquivalent: "m")
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: "w")
         fileItem.submenu = fileMenu
@@ -2425,23 +2487,44 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         findPrevious.tag = NSTextFinder.Action.previousMatch.rawValue
         editItem.submenu = editMenu
 
+        // What the user actually toggles about the *presentation* of the workspace, as its own
+        // top-level menu — a markdown preview toggle buried in File read as a file operation.
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(withTitle: "Toggle Markdown Preview", action: #selector(toggleMarkdownPreview), keyEquivalent: "m")
+        let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "e")
+        explorer.keyEquivalentModifierMask = [.command, .shift]
+        viewItem.submenu = viewMenu
+
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
         let navigateMenu = NSMenu(title: "Navigate")
         navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p")
         navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l")
         let goToSymbol = navigateMenu.addItem(withTitle: "Go to Symbol…", action: #selector(focusSymbolSearch), keyEquivalent: "o")
         goToSymbol.keyEquivalentModifierMask = [.command, .shift]
-        let explorer = navigateMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "e")
-        explorer.keyEquivalentModifierMask = [.command, .shift]
         let jumpToDef = navigateMenu.addItem(withTitle: "Jump to Definition", action: #selector(jumpToDefinition), keyEquivalent: "j")
         jumpToDef.keyEquivalentModifierMask = [.command, .control]
         navigateMenu.addItem(NSMenuItem.separator())
+        // First-class stage navigation — ⌃1–⌃5, reaching ShellViewController via the responder
+        // chain (⌘1–⌘8 stay with tabs, matching every browser/editor convention).
+        for (index, stage) in ShellViewController.Stage.allCases.enumerated() {
+            let item = navigateMenu.addItem(withTitle: "Go to \(stage.rawValue)", action: #selector(ShellViewController.jumpToStage(_:)), keyEquivalent: "\(index + 1)")
+            item.keyEquivalentModifierMask = [.control]
+            item.tag = index
+        }
+        navigateMenu.addItem(NSMenuItem.separator())
+        // Eight sibling items at the top level was clutter; the shortcuts still work from the
+        // submenu — a keyEquivalent doesn't care how deeply its item is nested.
+        let tabsItem = NSMenuItem(title: "Tabs", action: nil, keyEquivalent: "")
+        let tabsMenu = NSMenu(title: "Tabs")
         for i in 1...8 {
-            let item = navigateMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "\(i)")
+            let item = tabsMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "\(i)")
             item.tag = i - 1
         }
-        let lastTab = navigateMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "9")
+        let lastTab = tabsMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "9")
         lastTab.tag = -1
+        tabsItem.submenu = tabsMenu
+        navigateMenu.addItem(tabsItem)
         navigateItem.submenu = navigateMenu
 
         // Targets nothing here — RunWorkspaceViewController implements these selectors and
@@ -2475,7 +2558,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         windowItem.submenu = windowMenu
 
-        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(trackItem); main.addItem(windowItem)
+        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(viewItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(trackItem); main.addItem(windowItem)
         NSApp.mainMenu = main
         NSApp.windowsMenu = windowMenu
     }
@@ -2895,18 +2978,20 @@ final class TabChipView: NSView {
     private static let textInset: CGFloat = 12
     private static let trailingReserve: CGFloat = 26
     private static let maxTextWidth: CGFloat = 200
+    static let height: CGFloat = 30
 
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
     private var grabOffsetX: CGFloat = 0
     private var didDrag = false
+    private var isHovered = false { didSet { needsDisplay = true } }
 
     override var isFlipped: Bool { true }
 
     override var intrinsicContentSize: NSSize {
         let font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
         let textWidth = min((title as NSString).size(withAttributes: [.font: font]).width, Self.maxTextWidth)
-        return NSSize(width: textWidth + Self.textInset + Self.trailingReserve, height: 24)
+        return NSSize(width: textWidth + Self.textInset + Self.trailingReserve, height: Self.height)
     }
 
     override func updateTrackingAreas() {
@@ -2917,13 +3002,37 @@ final class TabChipView: NSView {
         trackingArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) { closeButton?.isHidden = false }
-    override func mouseExited(with event: NSEvent) { closeButton?.isHidden = true }
+    override func mouseEntered(with event: NSEvent) {
+        closeButton?.isHidden = false
+        isHovered = true
+    }
+    override func mouseExited(with event: NSEvent) {
+        closeButton?.isHidden = true
+        isHovered = false
+    }
+
+    /// A full-height rect rounded only at the top — the active tab shares the editor's fill and
+    /// runs flush into it, so it reads as physically part of the content surface (the strip
+    /// behind it is darker, and the hairline at the strip's bottom passes *behind* this shape).
+    /// Built as a union (rounded rect + square lower half) rather than hand-traced arcs — arc
+    /// direction in a flipped view is exactly the kind of thing that silently draws a slanted
+    /// tail off one corner.
+    private static func attachedTabPath(in rect: NSRect, radius: CGFloat) -> NSBezierPath {
+        let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+        // Flipped coordinates: the visual bottom half is midY...maxY.
+        path.appendRect(NSRect(x: rect.minX, y: rect.midY, width: rect.width, height: rect.height / 2))
+        path.windingRule = .nonZero
+        return path
+    }
 
     override func draw(_ dirtyRect: NSRect) {
-        let background = isActive ? NSColor(white: 0.17, alpha: 1) : NSColor.clear
-        background.setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+        if isActive {
+            DS.Color.chrome.setFill()
+            Self.attachedTabPath(in: bounds, radius: 8).fill()
+        } else if isHovered {
+            NSColor(white: 1, alpha: 0.05).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 4), xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
+        }
 
         let dimmed = isDead ? 0.35 : 1.0
         let attributes: [NSAttributedString.Key: Any] = [
@@ -2939,7 +3048,7 @@ final class TabChipView: NSView {
         if hasUnseenOutput {
             NSColor.controlAccentColor.setFill()
             let dotSize: CGFloat = 6
-            NSBezierPath(ovalIn: NSRect(x: 2, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
+            NSBezierPath(ovalIn: NSRect(x: 4, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
         }
     }
 
@@ -2952,7 +3061,17 @@ final class TabChipView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let dragOrigin else { return }
         let totalDX = event.locationInWindow.x - dragOrigin.x
-        if abs(totalDX) > 4 { didDrag = true }
+        if abs(totalDX) > 4, !didDrag {
+            didDrag = true
+            // The pickup: lift the chip — shadow and a slight grow — so the drag reads as
+            // physically holding something, not sliding a flat rectangle.
+            wantsLayer = true
+            layer?.zPosition = 10
+            layer?.shadowColor = NSColor.black.cgColor
+            layer?.shadowOpacity = 0.5
+            layer?.shadowRadius = 6
+            layer?.shadowOffset = CGSize(width: 0, height: -2)
+        }
         guard didDrag else { return }
 
         // Reorder the model/stack first (siblings animate into their new slots)...
@@ -2961,51 +3080,71 @@ final class TabChipView: NSView {
         // ...then keep this chip glued to the cursor regardless of where that reorder
         // just placed it in the stack, by transforming relative to its *current* laid-out
         // position rather than the position at mouseDown.
-        wantsLayer = true
-        layer?.zPosition = 10
         let naturalXInWindow = convert(NSPoint.zero, to: nil).x
         let desiredXInWindow = event.locationInWindow.x - grabOffsetX
-        layer?.setAffineTransform(CGAffineTransform(translationX: desiredXInWindow - naturalXInWindow, y: 0))
+        layer?.setAffineTransform(CGAffineTransform(translationX: desiredXInWindow - naturalXInWindow, y: 0).scaledBy(x: 1.04, y: 1.04))
     }
 
     override func mouseUp(with event: NSEvent) {
         defer { dragOrigin = nil }
         guard dragOrigin != nil else { return }
         if didDrag {
-            layer?.setAffineTransform(.identity)
-            layer?.zPosition = 0
+            // The set-down: glide into the slot instead of snapping.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                layer?.setAffineTransform(.identity)
+            } completionHandler: { [weak self] in
+                self?.layer?.zPosition = 0
+                self?.layer?.shadowOpacity = 0
+            }
             onDragEnded?()
         } else {
             onSelect?(index)
         }
     }
+
+    // Hand-drawn view — invisible to accessibility without saying what it is ourselves.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { title }
+    override func accessibilityPerformPress() -> Bool {
+        onSelect?(index)
+        return true
+    }
 }
 
 final class TabCloseButton: NSButton {
     private var trackingArea: NSTrackingArea?
+    /// One fixed size everywhere (both Make's and Run's chips constrain to exactly this), so the
+    /// hover fill is a *circle* by construction — the old min(width,height)/2-at-layout-time
+    /// approach left a non-circular highlight whenever the laid-out size wasn't what init saw.
+    static let diameter: CGFloat = 16
 
     override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
         wantsLayer = true
         isBordered = false
         imagePosition = .imageOnly
+        // The cell's own press highlight draws a rounded *rect* behind the image, which is the
+        // ellipse-looking flash users saw — the circular layer fill below is the only
+        // highlight this button should have.
+        (cell as? NSButtonCell)?.highlightsBy = []
         let config = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
-        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?.withSymbolConfiguration(config)
+        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close Tab")?.withSymbolConfiguration(config)
         contentTintColor = NSColor(white: 0.62, alpha: 1)
         setContentHuggingPriority(.required, for: .horizontal)
         setContentHuggingPriority(.required, for: .vertical)
         setContentCompressionResistancePriority(.required, for: .horizontal)
         setContentCompressionResistancePriority(.required, for: .vertical)
-        layer?.cornerRadius = frameRect.width / 2
+        layer?.cornerRadius = Self.diameter / 2
         layer?.masksToBounds = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func layout() {
-        super.layout()
-        layer?.cornerRadius = min(bounds.width, bounds.height) / 2
-    }
+    override var intrinsicContentSize: NSSize { NSSize(width: Self.diameter, height: Self.diameter) }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -3016,10 +3155,13 @@ final class TabCloseButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.cornerRadius = min(bounds.width, bounds.height) / 2
         layer?.backgroundColor = NSColor(white: 1, alpha: 0.16).cgColor
+        contentTintColor = NSColor(white: 0.9, alpha: 1)
     }
-    override func mouseExited(with event: NSEvent) { layer?.backgroundColor = NSColor.clear.cgColor }
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.clear.cgColor
+        contentTintColor = NSColor(white: 0.62, alpha: 1)
+    }
 }
 
 final class QuickOpenSearchField: NSSearchField {

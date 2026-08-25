@@ -21,6 +21,9 @@ final class ThinkWorkspaceViewController: NSViewController {
     private let inputField = NSTextField()
     private let sendButton = NSButton(title: "Send", target: nil, action: nil)
     private let modelLabel = NSTextField(labelWithString: "")
+    /// The explainer lives here now — visible only while there's nothing else to look at,
+    /// instead of as a permanent first line of every conversation.
+    private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
 
     private var runnerManager: AgentRunnerManager?
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
@@ -76,7 +79,16 @@ final class ThinkWorkspaceViewController: NSViewController {
         sendButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sendButton)
 
+        emptyStateLabel.font = .systemFont(ofSize: 12.5)
+        emptyStateLabel.textColor = .tertiaryLabelColor
+        emptyStateLabel.alignment = .center
+        emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(emptyStateLabel)
+
         NSLayoutConstraint.activate([
+            emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyStateLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
             modelLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
             modelLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
             divider.topAnchor.constraint(equalTo: modelLabel.bottomAnchor, constant: 9),
@@ -229,6 +241,7 @@ final class ThinkWorkspaceViewController: NSViewController {
             entryViews.append(view)
             addBlock(view, topSpacing: index == 0 ? 0 : Self.spacing(before: entry.kind))
         }
+        emptyStateLabel.isHidden = !(runner?.entries.isEmpty ?? true)
         updateSendButton()
         scrollToBottom()
     }
@@ -245,6 +258,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         let view = makeEntryView(entry)
         entryViews.append(view)
         addBlock(view, topSpacing: index == 0 ? 0 : Self.spacing(before: entry.kind))
+        emptyStateLabel.isHidden = true
         // Only live appends animate — `renderFull` (reattach, track switch) lays the whole
         // history out instantly rather than replaying every arrival.
         animateIn(view)

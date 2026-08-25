@@ -204,6 +204,11 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = stageControl
             item.label = "Stage"
+            // Never collapses into the overflow chevron — the stage switcher *is* the app's
+            // navigation; a hidden one means a stranded user. Same for Quick Open below: a
+            // collapsed toolbar search field renders as a dead button, so both stay visible and
+            // the window's minimum size (AppDelegate) is what guarantees they fit.
+            item.visibilityPriority = .high
             return item
         case .lspStatus:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
@@ -220,6 +225,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             field.widthAnchor.constraint(equalToConstant: 320).isActive = true
             item.view = field
             item.label = "Quick Open"
+            item.visibilityPriority = .high
             return item
         default:
             return nil
@@ -230,6 +236,13 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
     @objc private func stageChanged(_ sender: NSSegmentedControl) {
         show(Stage.allCases[sender.selectedSegment])
+    }
+
+    /// Navigate-menu stage jumps (⌃1–⌃5), reached via the responder chain — the constitution
+    /// promised "keyboard shortcuts … move between stages" from day one; this is finally them.
+    @objc func jumpToStage(_ sender: NSMenuItem) {
+        guard Stage.allCases.indices.contains(sender.tag) else { return }
+        show(Stage.allCases[sender.tag])
     }
 
     private func show(_ stage: Stage) {
@@ -484,8 +497,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
         var subtitleParts: [String] = []
         if let projectURL, let currentFileURL {
-            let relative = currentFileURL.path.replacingOccurrences(of: projectURL.path + "/", with: "")
-            subtitleParts.append(relative)
+            subtitleParts.append(Self.humanePath(for: currentFileURL, projectURL: projectURL))
         } else if let projectName = projectURL?.lastPathComponent {
             subtitleParts.append(projectName)
         }
@@ -501,6 +513,27 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             subtitleParts.append(gitDirtyCount > 0 ? "\(branchLabel) · \(gitDirtyCount) changed" : branchLabel)
         }
         window.subtitle = subtitleParts.joined(separator: " — ")
+    }
+
+    /// A project-relative path for the subtitle, never an absolute one. The old naive
+    /// projectURL-prefix strip silently failed for any file living in a track's *worktree*
+    /// (whose root isn't the project folder), leaking the full
+    /// `…/Application Support/Side/Worktrees/…` path into the window chrome. Tries the project
+    /// root, then the worktrees root (skipping the per-track directory segment), then falls
+    /// back to the file's last two path components — always something a person would say.
+    private static func humanePath(for fileURL: URL, projectURL: URL) -> String {
+        let filePath = fileURL.path
+        if filePath.hasPrefix(projectURL.path + "/") {
+            return String(filePath.dropFirst(projectURL.path.count + 1))
+        }
+        if let worktreesRoot = GitPaths.worktreesRootDirectory(for: projectURL)?.path,
+           filePath.hasPrefix(worktreesRoot + "/") {
+            let insideWorktrees = filePath.dropFirst(worktreesRoot.count + 1)
+            if let slash = insideWorktrees.firstIndex(of: "/") {
+                return String(insideWorktrees[insideWorktrees.index(after: slash)...])
+            }
+        }
+        return fileURL.pathComponents.suffix(2).joined(separator: "/")
     }
 
     private func refreshGitInfo(for project: URL) {

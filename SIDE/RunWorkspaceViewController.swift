@@ -61,19 +61,22 @@ final class RunWorkspaceViewController: NSViewController {
         ChromeBackground.install(in: view)
 
         tabBar.wantsLayer = true
-        ChromeBackground.install(in: tabBar)
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
+        tabBar.layer?.backgroundColor = DS.Color.tabStrip.cgColor
         tabBarStack.orientation = .horizontal
-        tabBarStack.alignment = .centerY
-        tabBarStack.spacing = 4
+        tabBarStack.alignment = .bottom
+        tabBarStack.spacing = 2
         tabBarStack.translatesAutoresizingMaskIntoConstraints = false
         tabBar.addSubview(tabBarStack)
 
         let divider = NSBox()
-        divider.boxType = .separator
+        divider.boxType = .custom
+        divider.borderType = .noBorder
+        divider.fillColor = DS.Color.hairline
         divider.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.addSubview(divider)
+        // Behind the chips, so the active tab's fill covers it and attaches to the content.
+        tabBar.addSubview(divider, positioned: .below, relativeTo: tabBarStack)
 
         view.addSubview(tabBar)
         container.translatesAutoresizingMaskIntoConstraints = false
@@ -82,8 +85,8 @@ final class RunWorkspaceViewController: NSViewController {
         tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 30)
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
-            tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
-            divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
+            divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
             container.topAnchor.constraint(equalTo: tabBar.bottomAnchor), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
@@ -332,7 +335,7 @@ final class RunWorkspaceViewController: NSViewController {
             chip.isDead = !session.viewController.isAlive
             chip.hasUnseenOutput = session.hasUnseenOutput
             chip.translatesAutoresizingMaskIntoConstraints = false
-            chip.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            chip.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
             chip.onSelect = { [weak self] i in self?.switchToSession(i) }
             chip.onDragging = { [weak self, weak chip] windowX in
                 guard let self, let chip else { return }

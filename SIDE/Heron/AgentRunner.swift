@@ -635,7 +635,8 @@ final class AgentRunner {
     /// runner's `entries` is the source of truth, not the session (which it keeps writing to,
     /// but never re-reads wholesale).
     private func hydrateFromSession() {
-        appendEntry(.meta("Think — talk to a model about this project. It can read your files, propose edits, and propose commands to run; conversations are saved per track."))
+        // No permanent explainer line — per the design charter, explaining belongs in empty
+        // states, not chrome that every conversation carries forever.
         guard let session = sessionStore.session(forTrackKey: trackKey) else { return }
         for turn in session.turns {
             for block in turn.content {
