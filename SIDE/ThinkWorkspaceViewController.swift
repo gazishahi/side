@@ -18,8 +18,7 @@ final class ThinkWorkspaceViewController: NSViewController {
     private let transcriptScroll = NSScrollView()
     private let transcriptContainer = TranscriptContainerView()
     private let transcriptStack = NSStackView()
-    private let inputField = NSTextField()
-    private let sendButton = NSButton(title: "Send", target: nil, action: nil)
+    private let composer = ComposerView()
     private let modelLabel = NSTextField(labelWithString: "")
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
@@ -65,19 +64,9 @@ final class ThinkWorkspaceViewController: NSViewController {
         transcriptScroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(transcriptScroll)
 
-        inputField.placeholderString = "Ask about this project…"
-        inputField.font = .systemFont(ofSize: 13)
-        inputField.target = self
-        inputField.action = #selector(sendTapped)
-        inputField.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(inputField)
-
-        sendButton.bezelStyle = .rounded
-        sendButton.contentTintColor = .controlAccentColor
-        sendButton.target = self
-        sendButton.action = #selector(sendTapped)
-        sendButton.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(sendButton)
+        composer.placeholder = "Ask about this project…"
+        composer.onAction = { [weak self] in self?.composerActionTapped() }
+        view.addSubview(composer)
 
         emptyStateLabel.font = .systemFont(ofSize: 12.5)
         emptyStateLabel.textColor = .tertiaryLabelColor
@@ -104,13 +93,10 @@ final class ThinkWorkspaceViewController: NSViewController {
             transcriptStack.leadingAnchor.constraint(equalTo: transcriptContainer.leadingAnchor),
             transcriptStack.trailingAnchor.constraint(equalTo: transcriptContainer.trailingAnchor),
             transcriptStack.bottomAnchor.constraint(equalTo: transcriptContainer.bottomAnchor),
-            inputField.topAnchor.constraint(equalTo: transcriptScroll.bottomAnchor, constant: 10),
-            inputField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            inputField.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -8),
-            inputField.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
-            sendButton.centerYAnchor.constraint(equalTo: inputField.centerYAnchor),
-            sendButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
-            sendButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 60),
+            composer.topAnchor.constraint(equalTo: transcriptScroll.bottomAnchor, constant: 10),
+            composer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
         ])
 
         renderFull()
@@ -122,7 +108,7 @@ final class ThinkWorkspaceViewController: NSViewController {
     override func viewDidAppear() {
         super.viewDidAppear()
         refreshModelLabel()
-        view.window?.makeFirstResponder(inputField)
+        composer.focus()
         // Mirrors RunWorkspaceViewController.clearUnseenOutput: becoming visible is what counts
         // as "the human looked at this," clearing the doneUnread badge Tracks would otherwise
         // keep showing for a finished run nobody's actually seen yet.
@@ -194,7 +180,7 @@ final class ThinkWorkspaceViewController: NSViewController {
 
     // MARK: - Sending
 
-    @objc private func sendTapped() {
+    private func composerActionTapped() {
         guard let runner else {
             appendLocalNotice("Open a project first — Think conversations belong to a project.")
             return
@@ -204,19 +190,18 @@ final class ThinkWorkspaceViewController: NSViewController {
             return
         }
         guard runner.phase != .awaitingApproval else { return }
-        let text = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        inputField.stringValue = ""
+        composer.clear()
         runner.send(text)
     }
 
     private func updateSendButton() {
         let phase = runner?.phase ?? .idle
-        sendButton.title = (phase == .streaming || phase == .runningTools) ? "Stop" : "Send"
+        composer.setBusy(phase == .streaming || phase == .runningTools)
         let awaitingApproval = phase == .awaitingApproval
-        sendButton.isEnabled = !awaitingApproval
-        inputField.isEnabled = !awaitingApproval
-        inputField.placeholderString = awaitingApproval
+        composer.isEnabled = !awaitingApproval
+        composer.placeholder = awaitingApproval
             ? "Apply or reject the proposed change above to continue…"
             : "Ask about this project…"
     }
@@ -566,5 +551,135 @@ private final class BubbleRowView: NSView {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(bubble.plainText, forType: .string)
+    }
+}
+
+/// The chat input: a rounded container that grows with its text (one to six lines), an embedded
+/// circular send button that becomes a stop button while the agent is busy, Return to send and
+/// Shift-Return for a newline — the input treatment every real chat app trains people to expect,
+/// replacing the single-line text field + "Send" push button.
+private final class ComposerView: NSView, NSTextViewDelegate {
+    /// One handler for the button and Return alike — the owner decides whether that means
+    /// send or stop based on the runner's phase.
+    var onAction: (() -> Void)?
+
+    private let textView = NSTextView()
+    private let scroll = NSScrollView()
+    private let placeholderLabel = NSTextField(labelWithString: "")
+    private let actionButton = NSButton(title: "", target: nil, action: nil)
+    private var heightConstraint: NSLayoutConstraint!
+    private static let minHeight: CGFloat = 38
+    private static let maxHeight: CGFloat = 122
+
+    var text: String { textView.string }
+
+    var placeholder: String = "" {
+        didSet { placeholderLabel.stringValue = placeholder }
+    }
+
+    var isEnabled: Bool = true {
+        didSet {
+            textView.isEditable = isEnabled
+            actionButton.isEnabled = isEnabled
+            alphaValue = isEnabled ? 1 : 0.6
+        }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = DS.Radius.card
+        layer?.borderWidth = 1
+        layer?.borderColor = DS.Color.hairline.cgColor
+        layer?.backgroundColor = DS.Color.bg1.cgColor
+
+        textView.font = .systemFont(ofSize: 13)
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.delegate = self
+        textView.textContainerInset = NSSize(width: 0, height: 2)
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.autoresizingMask = [.width]
+        scroll.documentView = textView
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        placeholderLabel.font = .systemFont(ofSize: 13)
+        placeholderLabel.textColor = .tertiaryLabelColor
+        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        placeholderLabel.lineBreakMode = .byTruncatingTail
+
+        actionButton.isBordered = false
+        actionButton.wantsLayer = true
+        actionButton.layer?.cornerRadius = 13
+        actionButton.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        actionButton.contentTintColor = .white
+        actionButton.imagePosition = .imageOnly
+        actionButton.target = self
+        actionButton.action = #selector(actionTapped)
+        actionButton.translatesAutoresizingMaskIntoConstraints = false
+        setBusy(false)
+
+        addSubview(scroll)
+        addSubview(placeholderLabel)
+        addSubview(actionButton)
+        heightConstraint = heightAnchor.constraint(equalToConstant: Self.minHeight)
+        NSLayoutConstraint.activate([
+            heightConstraint,
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            scroll.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -8),
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 2),
+            placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
+            placeholderLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            actionButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            actionButton.widthAnchor.constraint(equalToConstant: 26),
+            actionButton.heightAnchor.constraint(equalToConstant: 26),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func clear() {
+        textView.string = ""
+        textDidChange(Notification(name: NSText.didChangeNotification))
+    }
+
+    func focus() {
+        window?.makeFirstResponder(textView)
+    }
+
+    func setBusy(_ busy: Bool) {
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold)
+        let symbol = busy ? "stop.fill" : "arrow.up"
+        actionButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: busy ? "Stop" : "Send")?.withSymbolConfiguration(config)
+        actionButton.toolTip = busy ? "Stop" : "Send"
+    }
+
+    @objc private func actionTapped() { onAction?() }
+
+    func textDidChange(_ notification: Notification) {
+        placeholderLabel.isHidden = !textView.string.isEmpty
+        guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        let used = layoutManager.usedRect(for: textContainer).height
+        let target = min(max(used + 20, Self.minHeight), Self.maxHeight)
+        if heightConstraint.constant != target {
+            heightConstraint.constant = target
+            scroll.hasVerticalScroller = target >= Self.maxHeight
+        }
+    }
+
+    /// Return sends, Shift-Return inserts the newline.
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { return false }
+        onAction?()
+        return true
     }
 }

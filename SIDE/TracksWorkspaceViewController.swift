@@ -403,18 +403,33 @@ final class TracksWorkspaceViewController: NSViewController {
 
         let ordered = nestedOrder(tracks)
         for (index, entry) in ordered.enumerated() {
-            let row = makeRow(for: entry.track, indent: entry.indent)
+            // A child's connector keeps running downward when the next row is a sibling child;
+            // for the last child it stops at this row's curve.
+            let nextIsChild = index + 1 < ordered.count && ordered[index + 1].indent
+            let row = makeRow(for: entry.track, indent: entry.indent, connectorContinues: entry.indent && nextIsChild)
             rowsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
             if index < ordered.count - 1 {
+                // When the next row is a child, inset the hairline past the connector column so
+                // the branch line runs unbroken from parent to child instead of being sliced.
+                let inset: CGFloat = nextIsChild ? 34 : 0
+                let hairlineRow = NSView()
+                hairlineRow.translatesAutoresizingMaskIntoConstraints = false
                 let hairline = NSBox()
                 hairline.boxType = .custom
                 hairline.borderType = .noBorder
                 hairline.fillColor = TracksPalette.hairline
                 hairline.translatesAutoresizingMaskIntoConstraints = false
-                hairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
-                rowsStack.addArrangedSubview(hairline)
-                hairline.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
+                hairlineRow.addSubview(hairline)
+                NSLayoutConstraint.activate([
+                    hairlineRow.heightAnchor.constraint(equalToConstant: 1),
+                    hairline.leadingAnchor.constraint(equalTo: hairlineRow.leadingAnchor, constant: inset),
+                    hairline.trailingAnchor.constraint(equalTo: hairlineRow.trailingAnchor),
+                    hairline.topAnchor.constraint(equalTo: hairlineRow.topAnchor),
+                    hairline.bottomAnchor.constraint(equalTo: hairlineRow.bottomAnchor),
+                ])
+                rowsStack.addArrangedSubview(hairlineRow)
+                hairlineRow.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
             }
         }
 
@@ -456,7 +471,7 @@ final class TracksWorkspaceViewController: NSViewController {
         return result
     }
 
-    private func makeRow(for track: Track, indent: Bool = false) -> TrackRowView {
+    private func makeRow(for track: Track, indent: Bool = false, connectorContinues: Bool = false) -> TrackRowView {
         var metaText = track.status == .active
             ? "active now"
             : Self.relativeDateFormatter.localizedString(for: track.lastActiveAt, relativeTo: Date())
@@ -470,7 +485,8 @@ final class TracksWorkspaceViewController: NSViewController {
             metaText: metaText,
             activity: activity(for: track),
             status: track.status,
-            indent: indent
+            indent: indent,
+            connectorContinues: connectorContinues
         )
         row.menu = buildContextMenu(for: track)
         row.onDoubleClick = { [weak self] in self?.requestSwitch(to: track) }
@@ -1032,6 +1048,47 @@ final class TracksWorkspaceViewController: NSViewController {
     }
 }
 
+/// The git-graph-style branch line for a stacked child row: drops from the top edge (where the
+/// parent row, or the previous sibling's continuation, sits) and curves rightward into this
+/// row's content at its vertical center. When more siblings follow, the vertical line also
+/// continues through to the bottom edge, so consecutive children chain into one trunk with a
+/// curve peeling off at each row.
+private final class TrackConnectorView: NSView {
+    private let continues: Bool
+    private static let trunkX: CGFloat = 20
+    private static let curveRadius: CGFloat = 9
+
+    init(continues: Bool) {
+        self.continues = continues
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath()
+        path.lineWidth = 1.5
+        path.lineCapStyle = .round
+        let x = Self.trunkX
+        let midY = bounds.midY
+        // Drop from the top, then peel off into the row.
+        path.move(to: NSPoint(x: x, y: 0))
+        path.line(to: NSPoint(x: x, y: midY - Self.curveRadius))
+        path.curve(to: NSPoint(x: x + Self.curveRadius, y: midY),
+                   controlPoint1: NSPoint(x: x, y: midY),
+                   controlPoint2: NSPoint(x: x, y: midY))
+        path.line(to: NSPoint(x: x + Self.curveRadius + 4, y: midY))
+        if continues {
+            path.move(to: NSPoint(x: x, y: midY - Self.curveRadius))
+            path.line(to: NSPoint(x: x, y: bounds.maxY))
+        }
+        TracksPalette.rail.setStroke()
+        path.stroke()
+    }
+}
+
 /// What the row's single primary button does — exactly the three states the plan calls for,
 /// plus no button at all (the active track with nothing to report — you're already looking at
 /// it, there's nothing to switch to or review yet).
@@ -1073,7 +1130,7 @@ private final class TrackRowView: NSView {
     private var trackingArea: NSTrackingArea?
     private let primaryAction: TrackRowPrimaryAction?
 
-    init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, status: TrackStatus, indent: Bool = false) {
+    init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, status: TrackStatus, indent: Bool = false, connectorContinues: Bool = false) {
         let isActiveTrack = status == .active
         switch activity {
         case .needsYou: primaryAction = .review
@@ -1197,20 +1254,18 @@ private final class TrackRowView: NSView {
             actionsStack.centerYAnchor.constraint(equalTo: centerYAnchor),
             heightAnchor.constraint(greaterThanOrEqualToConstant: 42)
         ]
-        // The rail is what actually reads as "this is a child of the row above" — the extra
-        // indent alone just looks like a margin. Runs the full row height so consecutive
-        // children chain into one continuous line down the card.
+        // The connector is what actually reads as "this branches from the row above" — a line
+        // dropping from the parent that curves into this row, git-graph style, continuing
+        // downward past this row when more siblings follow.
         if indent {
-            let rail = NSView()
-            rail.wantsLayer = true
-            rail.layer?.backgroundColor = TracksPalette.rail.cgColor
-            rail.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(rail)
+            let connector = TrackConnectorView(continues: connectorContinues)
+            connector.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(connector)
             constraints.append(contentsOf: [
-                rail.widthAnchor.constraint(equalToConstant: 2),
-                rail.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-                rail.topAnchor.constraint(equalTo: topAnchor),
-                rail.bottomAnchor.constraint(equalTo: bottomAnchor)
+                connector.widthAnchor.constraint(equalToConstant: 34),
+                connector.leadingAnchor.constraint(equalTo: leadingAnchor),
+                connector.topAnchor.constraint(equalTo: topAnchor),
+                connector.bottomAnchor.constraint(equalTo: bottomAnchor)
             ])
         }
         NSLayoutConstraint.activate(constraints)

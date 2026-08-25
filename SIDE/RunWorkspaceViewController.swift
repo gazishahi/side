@@ -79,7 +79,16 @@ final class RunWorkspaceViewController: NSViewController {
         tabBar.addSubview(divider, positioned: .below, relativeTo: tabBarStack)
 
         view.addSubview(tabBar)
+        // The terminal used to sit flush against the toolbar with zero padding — the shell
+        // prompt literally touched the window chrome. It now lives in a rounded card with
+        // breathing room, matching every other surface in the app.
         container.translatesAutoresizingMaskIntoConstraints = false
+        container.wantsLayer = true
+        container.layer?.cornerRadius = DS.Radius.card
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = DS.Color.hairline.cgColor
+        container.layer?.backgroundColor = NSColor.black.cgColor
+        container.clipsToBounds = true
         view.addSubview(container)
 
         tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 30)
@@ -87,7 +96,7 @@ final class RunWorkspaceViewController: NSViewController {
             tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
             tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
-            container.topAnchor.constraint(equalTo: tabBar.bottomAnchor), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            container.topAnchor.constraint(equalTo: tabBar.bottomAnchor, constant: 12), container.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), container.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), container.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12)
         ])
     }
 
@@ -274,8 +283,8 @@ final class RunWorkspaceViewController: NSViewController {
         vc.view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(vc.view)
         NSLayoutConstraint.activate([
-            vc.view.topAnchor.constraint(equalTo: container.topAnchor), vc.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor), vc.view.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            vc.view.topAnchor.constraint(equalTo: container.topAnchor, constant: 8), vc.view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10), vc.view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8)
         ])
         vc.activate()
     }
