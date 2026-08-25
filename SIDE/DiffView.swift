@@ -318,12 +318,20 @@ final class DiffFileCardView: NSView {
             rotate.fillMode = .forwards
             layer.add(rotate, forKey: "chevronTurn")
         }
+        // Expanding pairs the height animation with a fade-in — revealing already-laid-out
+        // text through a growing clip reads as glitchy clipping; fading it in as the card
+        // grows reads as content arriving.
+        if !isCollapsed { bodyScroll.alphaValue = 0 }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
             bodyHeightConstraint?.constant = isCollapsed ? 0 : bodyHeight
+            bodyScroll.animator().alphaValue = isCollapsed ? 0 : 1
             window?.layoutIfNeeded()
+        } completionHandler: { [weak self] in
+            guard let self else { return }
+            if self.isCollapsed { self.bodyScroll.alphaValue = 1 }
         }
     }
 

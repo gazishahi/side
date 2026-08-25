@@ -221,10 +221,23 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// — process group membership doesn't matter once you're killing by PID.
     private func terminateProcessTree() {
         let pid = terminalView.process.shellPid
-        let descendants = pid != 0 ? Self.descendantPIDs(of: pid) : []
-        terminalView.process.terminate()
-        for descendantPID in descendants {
-            kill(descendantPID, SIGTERM)
+        guard pid != 0 else {
+            terminalView.process.terminate()
+            return
+        }
+        // Everything here happens off the main thread. The old version ran `/bin/ps` with a
+        // synchronous waitUntilExit on main while tearing down the pty — the same
+        // Foundation-Process-on-main pattern that crashed window tear-out, except here it could
+        // also wedge against the dying shell's tty in an uninterruptible kernel wait (observed
+        // live: a Side process that survived kill -9). Descendants are enumerated *before* the
+        // shell is signaled, since killing the shell reparents its children to launchd and makes
+        // them unfindable by walking down from the shell's pid.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let descendants = Self.descendantPIDs(of: pid)
+            kill(pid, SIGTERM)
+            for descendantPID in descendants {
+                kill(descendantPID, SIGTERM)
+            }
         }
     }
 

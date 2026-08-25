@@ -200,12 +200,24 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tabBarStack.alignment = .bottom
         tabBarStack.spacing = 2
         tabBarStack.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.addSubview(tabBarStack)
+        // The strip scrolls once chips outgrow the window — the old required trailing
+        // constraint literally forced the *window* to widen with every opened tab.
+        let tabScroll = NSScrollView()
+        tabScroll.drawsBackground = false
+        tabScroll.hasHorizontalScroller = false
+        tabScroll.hasVerticalScroller = false
+        tabScroll.verticalScrollElasticity = .none
+        tabScroll.horizontalScrollElasticity = .allowed
+        tabScroll.automaticallyAdjustsContentInsets = false
+        tabScroll.translatesAutoresizingMaskIntoConstraints = false
+        tabScroll.documentView = tabBarStack
+        tabBar.addSubview(tabScroll)
         view.addSubview(tabBar)
         tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
-            tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
+            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabScroll.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -10), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1)
         ])
 
@@ -1794,7 +1806,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             self.tearOutTab(at: container.index, to: screenPoint)
         }
 
-        let closeButton = TabCloseButton(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
+        let closeButton = TabCloseButton()
         closeButton.tag = index
         closeButton.target = self
         closeButton.action = #selector(closeTabButton(_:))
@@ -1803,8 +1815,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         container.addSubview(closeButton)
         container.closeButton = closeButton
         NSLayoutConstraint.activate([
-            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: 16), closeButton.heightAnchor.constraint(equalToConstant: 16)
+            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
 
         // Every item carries the tab's stable id, not its index — the menu can outlive several
@@ -3064,7 +3075,7 @@ final class QuickOpenPanel: NSPanel {
 }
 
 final class TabChipView: NSView {
-    weak var closeButton: NSButton?
+    weak var closeButton: TabCloseButton?
     weak var closeMenuItem: NSMenuItem?
     var index: Int = 0
     var onSelect: ((Int) -> Void)?
@@ -3156,6 +3167,11 @@ final class TabChipView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // During the close animation the chip's width sweeps to zero — the tab silhouette's
+        // geometry degenerates below ~2×flare and NSBezierPath's curveToPoint throws
+        // (crash observed live closing the active tab). Nothing meaningful fits at those
+        // sizes anyway, so skip drawing entirely.
+        guard bounds.width > Self.flare * 2 + 16, bounds.height > 4 else { return }
         if isActive {
             let fill = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare)
             fill.close()
@@ -3277,53 +3293,14 @@ final class TabChipView: NSView {
     }
 }
 
-final class TabCloseButton: NSButton {
-    private var trackingArea: NSTrackingArea?
-    /// One fixed size everywhere (both Make's and Run's chips constrain to exactly this), so the
-    /// hover fill is a *circle* by construction — the old min(width,height)/2-at-layout-time
-    /// approach left a non-circular highlight whenever the laid-out size wasn't what init saw.
-    static let diameter: CGFloat = 16
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
-        wantsLayer = true
-        isBordered = false
-        imagePosition = .imageOnly
-        // The cell's own press highlight draws a rounded *rect* behind the image, which is the
-        // ellipse-looking flash users saw — the circular layer fill below is the only
-        // highlight this button should have.
-        (cell as? NSButtonCell)?.highlightsBy = []
-        let config = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
-        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close Tab")?.withSymbolConfiguration(config)
-        contentTintColor = NSColor(white: 0.62, alpha: 1)
-        setContentHuggingPriority(.required, for: .horizontal)
-        setContentHuggingPriority(.required, for: .vertical)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
-        setContentCompressionResistancePriority(.required, for: .vertical)
-        layer?.cornerRadius = Self.diameter / 2
-        layer?.masksToBounds = true
+final class TabCloseButton: CircularIconButton {
+    init() {
+        super.init(diameter: 16)
+        setSymbol("xmark", pointSize: 8, weight: .semibold, color: NSColor(white: 0.62, alpha: 1), accessibilityLabel: "Close Tab")
+        hoverBackgroundColor = NSColor(white: 1, alpha: 0.16)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override var intrinsicContentSize: NSSize { NSSize(width: Self.diameter, height: Self.diameter) }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor(white: 1, alpha: 0.16).cgColor
-        contentTintColor = NSColor(white: 0.9, alpha: 1)
-    }
-    override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.clear.cgColor
-        contentTintColor = NSColor(white: 0.62, alpha: 1)
-    }
 }
 
 final class QuickOpenSearchField: NSSearchField {

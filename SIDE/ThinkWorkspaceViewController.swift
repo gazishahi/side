@@ -265,11 +265,15 @@ final class ThinkWorkspaceViewController: NSViewController {
             // arrive, which is the whole charm of streaming.
             guard let bubble = (entryViews[index] as? BubbleRowView)?.bubble else { return }
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.12
+                context.duration = 0.16
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 context.allowsImplicitAnimation = true
                 bubble.setBody(text)
-                bubble.layoutSubtreeIfNeeded()
+                // The whole transcript's layout, not just the bubble's own subtree — the
+                // bubble's height growth is meaningless unless the rows below it glide down
+                // in the same animation. Animating only the bubble was exactly the "some
+                // animation but the bubble itself jumps" complaint.
+                self.transcriptContainer.layoutSubtreeIfNeeded()
             }
         case .proposal(let presentation):
             guard let card = entryViews[index] as? ProposedEditView, let resolution = presentation.resolution else { return }
@@ -607,7 +611,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     private let textView = NSTextView()
     private let scroll = NSScrollView()
     private let placeholderLabel = NSTextField(labelWithString: "")
-    private let actionButton = NSButton(title: "", target: nil, action: nil)
+    private let actionButton = CircularIconButton(diameter: 28)
     private var heightConstraint: NSLayoutConstraint!
     private static let minHeight: CGFloat = 38
     private static let maxHeight: CGFloat = 122
@@ -653,19 +657,9 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
         placeholderLabel.lineBreakMode = .byTruncatingTail
 
-        actionButton.isBordered = false
-        actionButton.wantsLayer = true
-        // A circle by construction: fixed 28×28 frame (constraints below), radius exactly half,
-        // and no cell press-highlight (which draws a rounded *rect* flash — the pill look).
-        (actionButton.cell as? NSButtonCell)?.highlightsBy = []
-        actionButton.layer?.cornerRadius = 14
-        actionButton.layer?.masksToBounds = true
-        actionButton.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
-        actionButton.contentTintColor = .white
-        actionButton.imagePosition = .imageOnly
+        actionButton.backgroundColor = .controlAccentColor
         actionButton.target = self
         actionButton.action = #selector(actionTapped)
-        actionButton.translatesAutoresizingMaskIntoConstraints = false
         setBusy(false)
 
         addSubview(scroll)
@@ -683,8 +677,6 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             placeholderLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             actionButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-            actionButton.widthAnchor.constraint(equalToConstant: 28),
-            actionButton.heightAnchor.constraint(equalToConstant: 28),
         ])
     }
 
@@ -700,10 +692,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     }
 
     func setBusy(_ busy: Bool) {
-        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold)
-        let symbol = busy ? "stop.fill" : "arrow.up"
-        actionButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: busy ? "Stop" : "Send")?.withSymbolConfiguration(config)
-        actionButton.toolTip = busy ? "Stop" : "Send"
+        actionButton.setSymbol(busy ? "stop.fill" : "arrow.up", pointSize: 11, weight: .bold, color: .white, accessibilityLabel: busy ? "Stop" : "Send")
     }
 
     @objc private func actionTapped() { onAction?() }

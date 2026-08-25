@@ -78,6 +78,19 @@ final class RunWorkspaceViewController: NSViewController {
         // Behind the chips, so the active tab's fill covers it and attaches to the content.
         tabBar.addSubview(divider, positioned: .below, relativeTo: tabBarStack)
 
+        // Same scrolling strip as Make — the strip scrolls, the window never widens.
+        let tabScroll = NSScrollView()
+        tabScroll.drawsBackground = false
+        tabScroll.hasHorizontalScroller = false
+        tabScroll.hasVerticalScroller = false
+        tabScroll.verticalScrollElasticity = .none
+        tabScroll.horizontalScrollElasticity = .allowed
+        tabScroll.automaticallyAdjustsContentInsets = false
+        tabScroll.translatesAutoresizingMaskIntoConstraints = false
+        tabBarStack.removeFromSuperview()
+        tabScroll.documentView = tabBarStack
+        tabBar.addSubview(tabScroll)
+
         view.addSubview(tabBar)
         // The terminal sheet: edge-to-edge on the sides and bottom, but with rounded top
         // corners and a breath of space under the tab strip — the terminal reads as a surface
@@ -93,7 +106,8 @@ final class RunWorkspaceViewController: NSViewController {
         tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 30)
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
-            tabBarStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabBarStack.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), tabBarStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -10),
+            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabScroll.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -10), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
             container.topAnchor.constraint(equalTo: tabBar.bottomAnchor, constant: 10), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
@@ -357,7 +371,7 @@ final class RunWorkspaceViewController: NSViewController {
                 self.handleTabDragging(chip, toWindowX: windowX)
             }
 
-            let closeButton = TabCloseButton(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
+            let closeButton = TabCloseButton()
             closeButton.tag = index
             closeButton.target = self
             closeButton.action = #selector(closeSessionButton(_:))
@@ -366,8 +380,7 @@ final class RunWorkspaceViewController: NSViewController {
             chip.addSubview(closeButton)
             chip.closeButton = closeButton
             NSLayoutConstraint.activate([
-                closeButton.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
-                closeButton.widthAnchor.constraint(equalToConstant: 16), closeButton.heightAnchor.constraint(equalToConstant: 16)
+                closeButton.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: chip.centerYAnchor)
             ])
 
             tabBarStack.addArrangedSubview(chip)

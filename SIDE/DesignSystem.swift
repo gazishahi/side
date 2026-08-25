@@ -75,3 +75,96 @@ enum DS {
         }
     }
 }
+
+/// A truly circular icon button. `NSButton` on modern macOS routes sizing through its cell,
+/// which quietly widens the frame past a square width/height constraint — every "circle" built
+/// on it rendered as a subtle capsule. This is a bare `NSControl`: fixed square frame, layer
+/// circle, a centered SF symbol, no cell anywhere in the path.
+class CircularIconButton: NSControl {
+    private let diameter: CGFloat
+    private var symbolImage: NSImage?
+    private var hoverColor: NSColor?
+    private var restingBackground: NSColor?
+    private var trackingArea: NSTrackingArea?
+
+    init(diameter: CGFloat) {
+        self.diameter = diameter
+        super.init(frame: NSRect(x: 0, y: 0, width: diameter, height: diameter))
+        wantsLayer = true
+        layer?.cornerRadius = diameter / 2
+        layer?.masksToBounds = true
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: diameter),
+            heightAnchor.constraint(equalToConstant: diameter),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: diameter, height: diameter) }
+
+    /// The symbol is pre-tinted via a palette configuration, so drawing is just "center the image."
+    func setSymbol(_ name: String, pointSize: CGFloat, weight: NSFont.Weight, color: NSColor, accessibilityLabel: String) {
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+            .applying(.init(paletteColors: [color]))
+        symbolImage = NSImage(systemSymbolName: name, accessibilityDescription: accessibilityLabel)?.withSymbolConfiguration(config)
+        toolTip = accessibilityLabel
+        setAccessibilityLabel(accessibilityLabel)
+        needsDisplay = true
+    }
+
+    var backgroundColor: NSColor? {
+        didSet {
+            restingBackground = backgroundColor
+            layer?.backgroundColor = backgroundColor?.cgColor
+        }
+    }
+
+    /// Optional hover fill (the tab close button's gray circle); nil means no hover change.
+    var hoverBackgroundColor: NSColor? {
+        didSet { hoverColor = hoverBackgroundColor }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let symbolImage else { return }
+        let size = symbolImage.size
+        let rect = NSRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
+        symbolImage.draw(in: rect, from: .zero, operation: .sourceOver, fraction: isEnabled ? 1 : 0.5)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        guard hoverColor != nil else { return }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        if let hoverColor { layer?.backgroundColor = hoverColor.cgColor }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = restingBackground?.cgColor
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        alphaValue = 0.7
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        alphaValue = 1
+        guard isEnabled, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        sendAction(action, to: target)
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityPerformPress() -> Bool {
+        sendAction(action, to: target)
+        return true
+    }
+}
