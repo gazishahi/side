@@ -129,6 +129,12 @@ final class ProjectContextRegistry {
     /// (bumping its refcount), or creates a fresh one. Every call must be paired with
     /// `release(projectRoot:)` once the caller is done with this project — closing the window, or
     /// opening a different project in the same window.
+    /// Every project some window currently has open. Used by Preferences, which isn't scoped to
+    /// a project but still has to act on them (deleting conversation history).
+    static func openContexts() -> [ProjectContext] {
+        Array(shared.contexts.values)
+    }
+
     func acquire(projectRoot: URL) -> ProjectContext {
         let key = key(for: projectRoot)
         if let existing = contexts[key] {

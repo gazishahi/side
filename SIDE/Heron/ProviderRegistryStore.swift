@@ -157,21 +157,13 @@ final class ProviderRegistryStore: @unchecked Sendable {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let state = try? decoder.decode(RegistryState.self, from: data) else { return }
+        guard let state = JSONStore.read(RegistryState.self, from: storeURL)?.payload else { return }
         providers = state.providers
         activeProviderId = state.activeProviderId
     }
 
     private func save() {
-        try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
-        guard let data = try? encoder.encode(RegistryState(providers: providers, activeProviderId: activeProviderId)) else { return }
-        try? data.write(to: storeURL, options: .atomic)
+        JSONStore.write(RegistryState(providers: providers, activeProviderId: activeProviderId), to: storeURL)
     }
 
     /// Phase 1 stored a dev key in UserDefaults; anyone who set it up that way shouldn't have

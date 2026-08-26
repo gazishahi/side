@@ -675,20 +675,11 @@ final class TrackStore {
     // MARK: - Persistence
 
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        tracks = (try? decoder.decode([Track].self, from: data)) ?? []
+        tracks = JSONStore.read([Track].self, from: storeURL)?.payload ?? []
     }
 
     private func save() {
-        let directory = storeURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
-        guard let data = try? encoder.encode(tracks) else { return }
-        try? data.write(to: storeURL, options: .atomic)
+        JSONStore.write(tracks, to: storeURL)
     }
 
     // MARK: - Git

@@ -93,10 +93,8 @@ final class AgentSessionStore {
     private func loadedSession(forTrackKey trackKey: String) -> AgentSession? {
         if let cached = loadedSessions[trackKey] { return cached }
         guard index.contains(where: { $0.trackKey == trackKey }),
-              let data = try? Data(contentsOf: sessionFileURL(forTrackKey: trackKey)) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard var session = try? decoder.decode(AgentSession.self, from: data) else { return nil }
+              var session = JSONStore.read(AgentSession.self, from: sessionFileURL(forTrackKey: trackKey))?.payload
+        else { return nil }
         // Repair before anything can read it — a session with a dangling tool_use is not just
         // cosmetically odd, it's unusable (see `Self.repairingDanglingToolUses`).
         if let repaired = Self.repairingDanglingToolUses(session) {
@@ -166,16 +164,39 @@ final class AgentSessionStore {
     // MARK: - Persistence
 
     private func load() {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        if let data = try? Data(contentsOf: indexURL), let decoded = try? decoder.decode([SessionIndexEntry].self, from: data) {
-            index = decoded
-            if let checkpointData = try? Data(contentsOf: checkpointsURL) {
-                checkpoints = (try? decoder.decode([Checkpoint].self, from: checkpointData)) ?? []
-            }
+        if let loaded = JSONStore.read([SessionIndexEntry].self, from: indexURL) {
+            index = loaded.payload
+            checkpoints = JSONStore.read([Checkpoint].self, from: checkpointsURL)?.payload ?? []
+            pruneExpiredSessions()
             return
         }
         migrateLegacyStateIfPresent()
+    }
+
+    /// Applies the user's retention setting. At load, rather than on a timer: a project's
+    /// history can only expire while someone's looking at that project, and a background sweep
+    /// deleting files for projects nobody has open is a worse trade than a slightly late one.
+    private func pruneExpiredSessions() {
+        guard let cutoff = HistoryRetention.current.cutoffDate() else { return }
+        let expired = index.filter { $0.lastActiveAt < cutoff }
+        guard !expired.isEmpty else { return }
+        for entry in expired {
+            loadedSessions.removeValue(forKey: entry.trackKey)
+            try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: entry.trackKey))
+        }
+        index.removeAll { $0.lastActiveAt < cutoff }
+        saveIndex()
+    }
+
+    /// Drops every conversation in this project, keeping tracks and checkpoints. The blunt
+    /// instrument behind Preferences' "Delete All Conversations."
+    func deleteAllSessions() {
+        loadedSessions.removeAll()
+        for entry in index {
+            try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: entry.trackKey))
+        }
+        index.removeAll()
+        saveIndex()
     }
 
     /// One-time split of the old single `think.json` (every track's full history, eagerly
@@ -206,30 +227,15 @@ final class AgentSessionStore {
     }
 
     private func saveIndex() {
-        try? FileManager.default.createDirectory(at: indexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
-        guard let data = try? encoder.encode(index) else { return }
-        try? data.write(to: indexURL, options: .atomic)
+        JSONStore.write(index, to: indexURL)
     }
 
     private func saveCheckpoints() {
-        try? FileManager.default.createDirectory(at: checkpointsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
-        guard let data = try? encoder.encode(checkpoints) else { return }
-        try? data.write(to: checkpointsURL, options: .atomic)
+        JSONStore.write(checkpoints, to: checkpointsURL)
     }
 
     private func saveSession(_ session: AgentSession) {
-        try? FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
-        guard let data = try? encoder.encode(session) else { return }
-        try? data.write(to: sessionFileURL(forTrackKey: session.trackKey), options: .atomic)
+        JSONStore.write(session, to: sessionFileURL(forTrackKey: session.trackKey))
     }
 }
 

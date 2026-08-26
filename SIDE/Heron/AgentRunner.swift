@@ -275,7 +275,7 @@ final class AgentRunner {
         presentation.edit.stripContent()
         updateEntry(at: entryIndex, .proposal(presentation))
 
-        batch.resultsById[presentation.edit.toolUseId] = .toolResult(toolUseId: presentation.edit.toolUseId, content: outcome.toolResultText, isError: outcome.isError)
+        batch.resultsById[presentation.edit.toolUseId] = Self.toolResult(toolUseId: presentation.edit.toolUseId, content: outcome.toolResultText, isError: outcome.isError)
         batch.unresolvedToolUseIds.remove(presentation.edit.toolUseId)
         if case .applied = outcome {
             batch.lastAppliedURL = presentation.edit.url
@@ -316,7 +316,7 @@ final class AgentRunner {
         presentation.resolution = resolution
         updateEntry(at: entryIndex, .commandProposal(presentation))
 
-        batch.resultsById[toolUseId] = .toolResult(toolUseId: toolUseId, content: resultText, isError: isError)
+        batch.resultsById[toolUseId] = Self.toolResult(toolUseId: toolUseId, content: resultText, isError: isError)
         batch.unresolvedToolUseIds.remove(toolUseId)
         if case .executed = resolution { batch.commandsRun.append(presentation.command.command) }
         pendingBatch = batch
@@ -435,6 +435,20 @@ final class AgentRunner {
                 self.finishModelTurn(transportError: finalError, modelId: model.id, roundTrip: roundTrip)
             }
         }
+    }
+
+    /// The one place a tool's output becomes part of the conversation — and so the one place
+    /// that can keep a credential out of both the session file on disk and every future request
+    /// that replays it. See `SecretRedactor` for what this can and can't catch.
+    private static func toolResult(toolUseId: String, content: String, isError: Bool) -> AgentContentBlock {
+        let redaction = SecretRedactor.redacting(content)
+        guard redaction.didRedact else {
+            return .toolResult(toolUseId: toolUseId, content: content, isError: isError)
+        }
+        // Told to the model explicitly: without this it may read a redaction marker as the
+        // file's literal contents and, say, "fix" a config by writing that string back.
+        let note = "\n\n[Side replaced credential-shaped values above before storing this output. The real values are unchanged on disk.]"
+        return .toolResult(toolUseId: toolUseId, content: redaction.text + note, isError: isError)
     }
 
     private func handle(_ event: AgentStreamEvent) {
@@ -591,7 +605,7 @@ final class AgentRunner {
             switch outcome.result {
             case .completed(let output, let isError):
                 appendEntry(.toolResult(text: isError ? "⚠︎ \(outcome.name): \(String(output.prefix(140)))" : "✓ \(outcome.name) — \(Self.describeResultSize(output))", isError: isError))
-                resultsById[outcome.id] = .toolResult(toolUseId: outcome.id, content: output, isError: isError)
+                resultsById[outcome.id] = Self.toolResult(toolUseId: outcome.id, content: output, isError: isError)
             case .proposal(let edit):
                 var diffText = GitDiffComputer.unifiedDiffText(original: edit.baseContent, proposed: edit.proposedContent, projectRoot: root)
                 // A brand-new file has no meaningful `git diff` (nothing to diff against), so

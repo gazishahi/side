@@ -12,6 +12,22 @@ struct AgentTurn: Codable, Identifiable {
         self.content = content
         self.createdAt = Date()
     }
+
+    // Tolerant decoding, for the same reason `Track` has it: a persisted turn written by an
+    // older build is missing whatever field the newer build added, and synthesized Codable
+    // treats that as a hard failure — which would take the whole conversation file down with
+    // it. Identity and content are the only fields worth refusing to load without.
+    private enum CodingKeys: String, CodingKey {
+        case id, role, content, createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        role = try container.decode(AgentMessage.Role.self, forKey: .role)
+        content = try container.decode([AgentContentBlock].self, forKey: .content)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+    }
 }
 
 /// One conversation with an agent, tied to one track. Keyed by branch name (`""` for "no
@@ -35,5 +51,22 @@ struct AgentSession: Codable, Identifiable {
         self.turns = []
         self.createdAt = Date()
         self.lastActiveAt = Date()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, trackKey, providerId, modelId, turns, createdAt, lastActiveAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        trackKey = try container.decode(String.self, forKey: .trackKey)
+        turns = try container.decodeIfPresent([AgentTurn].self, forKey: .turns) ?? []
+        // Provider/model are metadata about who answered, not part of the conversation — a file
+        // missing them should still open, with the active provider filling in on the next turn.
+        providerId = try container.decodeIfPresent(String.self, forKey: .providerId) ?? ""
+        modelId = try container.decodeIfPresent(String.self, forKey: .modelId) ?? ""
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        lastActiveAt = try container.decodeIfPresent(Date.self, forKey: .lastActiveAt) ?? createdAt
     }
 }

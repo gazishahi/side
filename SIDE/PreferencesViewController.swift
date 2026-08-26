@@ -290,5 +290,10 @@ final class PreferencesTabViewController: NSTabViewController {
         usage.label = "Usage"
         usage.image = NSImage(systemSymbolName: "chart.bar", accessibilityDescription: "Usage")
         addTabViewItem(usage)
+
+        let history = NSTabViewItem(viewController: HistoryViewController())
+        history.label = "History"
+        history.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: "History")
+        addTabViewItem(history)
     }
 }

@@ -108,6 +108,12 @@ final class ThinkWorkspaceViewController: NSViewController {
         usageObserverToken = UsageStore.shared.addChangeObserver { [weak self] in
             self?.refreshModelLabel()
         }
+        // History deleted from Preferences tears down the runners this view is projecting, so
+        // it has to re-attach — otherwise the transcript on screen outlives its own file.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(conversationsDeleted),
+            name: HistoryViewController.conversationsDeletedNotification, object: nil
+        )
 
         renderFull()
     }
@@ -219,6 +225,10 @@ final class ThinkWorkspaceViewController: NSViewController {
         composer.placeholder = awaitingApproval
             ? "Apply or reject the proposed change above to continue…"
             : "Ask about this project…"
+    }
+
+    @objc private func conversationsDeleted() {
+        attach(trackKey: attachedTrackKey)
     }
 
     private func refreshModelLabel() {

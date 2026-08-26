@@ -166,19 +166,11 @@ final class UsageStore: @unchecked Sendable {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        records = (try? decoder.decode([UsageRecord].self, from: data)) ?? []
+        records = JSONStore.read([UsageRecord].self, from: storeURL)?.payload ?? []
     }
 
     private func save() {
-        try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
-        guard let data = try? encoder.encode(records) else { return }
-        try? data.write(to: storeURL, options: .atomic)
+        JSONStore.write(records, to: storeURL)
     }
 }
 

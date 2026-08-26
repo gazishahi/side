@@ -12,12 +12,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
+        // Persistence failures used to be swallowed by `try?` — a full disk or a revoked
+        // permission lost the user's tracks and conversations without a word. They arrive here
+        // now and get said out loud, once per file.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(persistenceFailed(_:)),
+            name: PersistenceFailureReporter.failureNotification, object: nil
+        )
         let window = makeWindow()
         windows.append(window)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         (window.contentViewController as? ShellViewController)?.restoreLastSessionIfAvailable()
+    }
+
+    @objc private func persistenceFailed(_ notification: Notification) {
+        guard let failure = notification.object as? PersistenceFailureReporter.Failure else { return }
+        let isWrite = failure.operation == .write
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = isWrite
+            ? "Side couldn't save \(failure.url.lastPathComponent)"
+            : "Side couldn't read \(failure.url.lastPathComponent)"
+        let consequence = isWrite
+            ? "Recent changes may not have been saved."
+            : "That file's contents were skipped."
+        alert.informativeText = "\(failure.error.localizedDescription)\n\n\(failure.url.path)\n\n\(consequence)"
+        alert.addButton(withTitle: "OK")
+        // A sheet, never `runModal()`: a store that saves on every change can fail repeatedly,
+        // and a modal run loop here blocks the whole app (including whatever is mid-save) until
+        // someone clicks. With no window yet — a failure during launch — the log line
+        // `PersistenceFailureReporter` already wrote is the only report available.
+        guard let window = NSApp.keyWindow ?? windows.first else { return }
+        alert.beginSheetModal(for: window)
     }
 
     /// The key window's shell, or the first one if none is key — File-menu project commands
