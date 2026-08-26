@@ -481,6 +481,9 @@ private final class TextBlockView: NSView {
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
     override func accessibilityLabel() -> String? { plainText }
+    /// The bubble speaks for its content, so the label inside it must not also be an element —
+    /// otherwise VoiceOver reads every message twice (an audit caught exactly that).
+    override func accessibilityChildren() -> [Any]? { [] }
 
     func setBody(_ text: String) {
         plainText = text

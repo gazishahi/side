@@ -51,7 +51,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let editor = EditorTextView()
     private let editorScroll = NSScrollView()
     private var gutter: LineNumberGutterView!
-    private let tabBar = NSView()
+    private let tabBar = TabStripView()
     /// Shown when a project is open but nothing is — the charter's empty-state rule: one quiet
     /// sentence plus the action that fixes it.
     private let noFileLabel = NSTextField(labelWithString: "No file open — press ⌘P to find one.")
@@ -1760,6 +1760,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private var lastKnownTabCount = 0
 
+    /// Publishes the current chips as the tab bar's accessibility children. Required because the
+    /// chips live inside the overflow `NSScrollView`, which otherwise hides them from the AX tree
+    /// entirely — an audit found the chips absent despite `TabChipView`'s own AX overrides being
+    /// correct, and adding the scroll view for tab overflow is what put them out of reach.
+    private func publishTabAccessibility() {
+        tabBar.accessibilityGroupLabel = "Editor tabs"
+        tabBar.accessibleTabs = tabChips
+    }
+
     private func rebuildTabBar() {
         noFileLabel.isHidden = !openTabs.isEmpty || projectURL == nil
         let previousCount = lastKnownTabCount
@@ -1769,12 +1778,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let showBar = openTabs.count > 1
         tabBar.isHidden = !showBar
         tabBarHeightConstraint.constant = showBar ? TabChipView.height : 0
-        guard showBar else { return }
+        guard showBar else { publishTabAccessibility(); return }
         for (index, tab) in openTabs.enumerated() {
             let chip = makeTabChip(index: index, tab: tab, isActive: index == activeTabIndex)
             tabBarStack.addArrangedSubview(chip)
             tabChips.append(chip)
         }
+        publishTabAccessibility()
         // A freshly opened tab (always appended, always becomes active) arrives, not appears —
         // the standard entrance, scaled down for a 30pt element. Full rebuilds for any other
         // reason lay out instantly.
@@ -3308,9 +3318,12 @@ final class TabChipView: NSView {
     }
 
     // Hand-drawn view — invisible to accessibility without saying what it is ourselves.
+    // A tab is a radio button inside its strip's tab group, and must announce whether it's the
+    // selected one.
     override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityRole() -> NSAccessibility.Role? { .radioButton }
     override func accessibilityLabel() -> String? { title }
+    override func accessibilityValue() -> Any? { isActive ? 1 : 0 }
     override func accessibilityPerformPress() -> Bool {
         onSelect?(index)
         return true

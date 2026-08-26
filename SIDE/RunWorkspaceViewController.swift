@@ -25,7 +25,7 @@ final class RunWorkspaceViewController: NSViewController {
         get { activeSessionIndexByTrackKey[currentTrackKey ?? ""] }
         set { activeSessionIndexByTrackKey[currentTrackKey ?? ""] = newValue }
     }
-    private let tabBar = NSView()
+    private let tabBar = TabStripView()
     private let tabBarStack = NSStackView()
     private var tabBarHeightConstraint: NSLayoutConstraint!
     private let container = NSView()
@@ -386,6 +386,8 @@ final class RunWorkspaceViewController: NSViewController {
             tabBarStack.addArrangedSubview(chip)
             tabChips.append(chip)
         }
+        tabBar.accessibilityGroupLabel = "Terminal sessions"
+        tabBar.accessibleTabs = tabChips
         // Same arrival as Make's file tabs — a new session's chip animates in on live creation,
         // full rebuilds (track switches, reorders) lay out instantly.
         if sessions.count == previousCount + 1, let newest = activeSessionIndex.flatMap({ tabChips.indices.contains($0) ? tabChips[$0] : nil }) {

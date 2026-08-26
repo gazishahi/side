@@ -168,3 +168,21 @@ class CircularIconButton: NSControl {
         return true
     }
 }
+
+/// The container for a tab strip. Exists as a subclass purely for accessibility: the chips live
+/// inside an overflow `NSScrollView`, which does not surface arbitrary custom document-view
+/// descendants to the AX tree, and the `setAccessibility*` setters on a plain `NSView` are
+/// unreliable for a view AppKit otherwise treats as a non-element pass-through. Overriding the
+/// methods works; setting the properties did not.
+final class TabStripView: NSView {
+    /// The chips to publish, in visual order. Set on every strip rebuild.
+    var accessibleTabs: [NSView] = []
+    var accessibilityGroupLabel: String = "Tabs"
+
+    override func isAccessibilityElement() -> Bool { !accessibleTabs.isEmpty }
+    override func accessibilityRole() -> NSAccessibility.Role? { .tabGroup }
+    override func accessibilityLabel() -> String? { accessibilityGroupLabel }
+    override func accessibilityChildren() -> [Any]? { accessibleTabs }
+    /// AppKit asks for these separately from `accessibilityChildren` for a tab group.
+    override func accessibilityTabs() -> [Any]? { accessibleTabs }
+}
