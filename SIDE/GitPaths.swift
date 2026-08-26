@@ -59,12 +59,20 @@ enum GitPaths {
         return digest.prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// `extraEnvironment` exists for `GIT_INDEX_FILE` — the only safe way to stage a commit
+    /// without touching whatever the user already has staged in the repository's real index
+    /// (see `AgentRunner.createCheckpointIfNeeded`).
     @discardableResult
-    static func runGit(_ args: [String], cwd: String) -> (success: Bool, output: String) {
+    static func runGit(_ args: [String], cwd: String, extraEnvironment: [String: String] = [:]) -> (success: Bool, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git"] + args
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        if !extraEnvironment.isEmpty {
+            var environment = ProcessInfo.processInfo.environment
+            for (key, value) in extraEnvironment { environment[key] = value }
+            process.environment = environment
+        }
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe

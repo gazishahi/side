@@ -20,6 +20,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         (window.contentViewController as? ShellViewController)?.restoreLastSessionIfAvailable()
     }
 
+    /// The key window's shell, or the first one if none is key — File-menu project commands
+    /// act on whichever window the user is actually looking at.
+    private var activeShell: ShellViewController? {
+        (NSApp.keyWindow?.contentViewController as? ShellViewController)
+            ?? (windows.first?.contentViewController as? ShellViewController)
+    }
+
+    @objc func openProjectFromMenu() {
+        if activeShell == nil { presentNewWindow() }
+        activeShell?.presentOpenProject()
+    }
+
+    @objc func newProjectFromMenu() {
+        if activeShell == nil { presentNewWindow() }
+        activeShell?.presentNewProject()
+    }
+
     @objc func newWindow() {
         presentNewWindow()
     }

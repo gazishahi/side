@@ -14,6 +14,10 @@ private struct PendingToolBatch {
     var lastAppliedURL: URL?
     let roundTrip: Int
     let modelId: String
+    /// Captured alongside `modelId` when the request went out — never re-read from the live
+    /// registry at checkpoint time, so switching providers mid-approval can't produce a
+    /// checkpoint claiming the new provider ran the old model.
+    let providerId: String
     /// The assistant's own text just before it asked for these tools — used as a checkpoint's
     /// `declaredIntent` if anything in this batch actually gets applied or executed.
     let declaredIntent: String
@@ -336,27 +340,19 @@ final class AgentRunner {
             // that ran but touched nothing) — nothing to checkpoint.
             return
         }
-        guard Self.runGitWithRetry(["add", "--"] + pathsToStage.sorted(), cwd: root) else {
-            appendEntry(.meta("⚠︎ Checkpoint failed: could not stage changed files."))
-            return
-        }
-        let diffNames = GitPaths.runGit(["diff", "--cached", "--name-only"], cwd: root)
-        let changedFiles = diffNames.success && !diffNames.output.isEmpty ? diffNames.output.split(separator: "\n").map(String.init) : []
-
-        var commitSHA: String?
-        if !changedFiles.isEmpty {
-            let message = batch.declaredIntent.trimmingCharacters(in: .whitespacesAndNewlines)
-            let commitMessage = message.isEmpty ? "Agent checkpoint" : String(message.prefix(72))
-            if GitPaths.runGit(["commit", "-m", commitMessage], cwd: root).success {
-                let sha = GitPaths.runGit(["rev-parse", "HEAD"], cwd: root)
-                commitSHA = sha.success ? sha.output : nil
-            }
-        }
+        let message = batch.declaredIntent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commitMessage = message.isEmpty ? "Agent checkpoint" : String(message.prefix(72))
+        let commit = Self.commitPathsInIsolatedIndex(pathsToStage.sorted(), message: commitMessage, cwd: root)
+        let commitSHA = commit?.sha
+        let changedFiles = commit?.committedPaths ?? []
 
         let checkpoint = Checkpoint(
             trackKey: trackKey, agentSessionId: session.id, declaredIntent: batch.declaredIntent,
             changedFilePaths: changedFiles, commandsRun: batch.commandsRun,
-            provenance: AgentProvenance(providerId: ProviderRegistryStore.shared.activeProviderId, modelId: batch.modelId, instructionSourceSummary: "Think conversation"),
+            // Provider and model both come from the batch — captured together when the request
+            // was made. Reading the provider from the live registry here (as this used to) could
+            // pair a new provider with the old model if the user switched during the approval.
+            provenance: AgentProvenance(providerId: batch.providerId, modelId: batch.modelId, instructionSourceSummary: "Think conversation"),
             gitCommitSHA: commitSHA
         )
         sessionStore.appendCheckpoint(checkpoint)
@@ -561,7 +557,9 @@ final class AgentRunner {
                 // A command flagged destructive never benefits from the track's auto-run
                 // opt-out — that toggle is meant for "skip approval on ordinary commands," not
                 // "let an agent force-push or rm -rf unattended."
-                if autoRunCommandsProvider(), command.riskLevel == .normal { autoRunEntryIndices.append(index) }
+                // Allowlist, not "didn't match the destructive blacklist" — see
+                // CommandAutoRunPolicy. Anything unrecognized goes to the human.
+                if autoRunCommandsProvider(), CommandAutoRunPolicy.isAutoRunnable(command.command) { autoRunEntryIndices.append(index) }
             }
         }
 
@@ -572,7 +570,7 @@ final class AgentRunner {
 
         pendingBatch = PendingToolBatch(
             callOrder: outcomes.map(\.id), resultsById: resultsById, unresolvedToolUseIds: unresolvedToolUseIds,
-            lastAppliedURL: nil, roundTrip: roundTrip, modelId: modelId, declaredIntent: declaredIntent,
+            lastAppliedURL: nil, roundTrip: roundTrip, modelId: modelId, providerId: ProviderRegistryStore.shared.activeProviderId, declaredIntent: declaredIntent,
             baselineDirtyPaths: GitPaths.dirtyPaths(cwd: root.path)
         )
         setPhase(.awaitingApproval)
@@ -669,13 +667,57 @@ final class AgentRunner {
     /// A time-based deadline rather than a fixed attempt count is the more principled fix: keep
     /// retrying for up to `maxWait`, however many attempts that takes, instead of guessing a
     /// count and being wrong about it a second time.
-    private static func runGitWithRetry(_ args: [String], cwd: String, maxWait: TimeInterval = 5) -> Bool {
+    private static func runGitWithRetry(_ args: [String], cwd: String, maxWait: TimeInterval = 5, extraEnvironment: [String: String] = [:]) -> Bool {
         let deadline = Date().addingTimeInterval(maxWait)
         while true {
-            if GitPaths.runGit(args, cwd: cwd).success { return true }
+            if GitPaths.runGit(args, cwd: cwd, extraEnvironment: extraEnvironment).success { return true }
             guard Date() < deadline else { return false }
             Thread.sleep(forTimeInterval: 0.2)
         }
+    }
+
+    /// Commits exactly `paths` without ever consuming the repository's real index.
+    ///
+    /// The old implementation staged with `git add` and committed with `git commit`, both of
+    /// which operate on the shared index — so anything the *user* had already staged rode along
+    /// in the agent's commit and got attributed to the agent (reproduced by the audit: a staged
+    /// `manual.txt` landing in a checkpoint for `agent.txt`). This builds the commit in a
+    /// private index instead: seed it from HEAD, add only the agent's paths, write a tree,
+    /// commit that tree with HEAD as parent, then move the branch. The user's index is touched
+    /// only at the very end, and only to refresh those same paths so they don't linger as
+    /// phantom modifications.
+    private static func commitPathsInIsolatedIndex(_ paths: [String], message: String, cwd: String) -> (sha: String, committedPaths: [String])? {
+        let indexPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("side-checkpoint-index-\(UUID().uuidString)").path
+        let environment = ["GIT_INDEX_FILE": indexPath]
+        defer { try? FileManager.default.removeItem(atPath: indexPath) }
+
+        let headSHA = GitPaths.runGit(["rev-parse", "HEAD"], cwd: cwd)
+        let hasParent = headSHA.success && !headSHA.output.isEmpty
+        // Seed from HEAD so the commit's baseline is the last commit, never the user's staged
+        // state. A repo with no commits yet starts from an empty index instead.
+        if hasParent {
+            guard runGitWithRetry(["read-tree", "HEAD"], cwd: cwd, extraEnvironment: environment) else { return nil }
+        }
+        guard runGitWithRetry(["add", "--"] + paths, cwd: cwd, extraEnvironment: environment) else { return nil }
+
+        let staged = GitPaths.runGit(["diff", "--cached", "--name-only"] + (hasParent ? ["HEAD"] : []), cwd: cwd, extraEnvironment: environment)
+        let committedPaths = staged.success && !staged.output.isEmpty
+            ? staged.output.split(separator: "\n").map(String.init) : []
+        guard !committedPaths.isEmpty else { return nil }
+
+        let tree = GitPaths.runGit(["write-tree"], cwd: cwd, extraEnvironment: environment)
+        guard tree.success, !tree.output.isEmpty else { return nil }
+        var commitArgs = ["commit-tree", tree.output, "-m", message]
+        if hasParent { commitArgs += ["-p", headSHA.output] }
+        let commit = GitPaths.runGit(commitArgs, cwd: cwd, extraEnvironment: environment)
+        guard commit.success, !commit.output.isEmpty else { return nil }
+        guard GitPaths.runGit(["update-ref", "HEAD", commit.output], cwd: cwd).success else { return nil }
+
+        // Refresh just these paths in the real index so they read as committed rather than as
+        // modified-vs-index. Explicit pathspecs, so unrelated staged entries stay staged.
+        _ = runGitWithRetry(["add", "--"] + paths, cwd: cwd)
+        return (commit.output, committedPaths)
     }
 
     private static let systemPrompt = """

@@ -258,6 +258,11 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         show(Stage.allCases[sender.tag])
     }
 
+    /// Routed from the app delegate's File-menu items, which are app-level commands and must
+    /// stay enabled regardless of what holds first responder.
+    func presentOpenProject() { makeVC.openProjectFromMenuAction() }
+    func presentNewProject() { makeVC.newProjectFromMenuAction() }
+
     @objc private func revealProjectInFinder() {
         guard let projectURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([projectURL])

@@ -1041,6 +1041,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    @objc func openProjectFromMenuAction() { openProject() }
+
     @objc private func openProject() {
         confirmAllUnsavedChanges { [weak self] proceed in
             guard let self, proceed, let window = self.view.window else { return }
@@ -1061,6 +1063,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Creates a brand-new project folder and `git init`s it, so it's never in the broken
     /// "opened a plain folder with no `.git`" state Tracks otherwise has to detect and recover
     /// from — new projects start correctly rather than needing a separate repair step.
+    @objc func newProjectFromMenuAction() { newProject() }
+
     @objc private func newProject() {
         confirmAllUnsavedChanges { [weak self] proceed in
             guard let self, proceed, let window = self.view.window else { return }
@@ -2571,8 +2575,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         newWindowItem.keyEquivalentModifierMask = [.command, .shift]
         newWindowItem.target = NSApp.delegate as? AppDelegate
         fileMenu.addItem(withTitle: "New File", action: #selector(newFile), keyEquivalent: "n")
-        fileMenu.addItem(withTitle: "New Project…", action: #selector(newProject), keyEquivalent: "")
-        fileMenu.addItem(withTitle: "Open Project…", action: #selector(openProject), keyEquivalent: "o")
+        // Explicitly targeted at the app delegate rather than left nil-target: as
+        // responder-chain actions these went *disabled* whenever no editor held first responder,
+        // which stranded anyone in the no-file state — the exact "Open Project was disabled"
+        // dogfood failure. Opening a project is an app-level command, not an editor one.
+        let newProjectItem = fileMenu.addItem(withTitle: "New Project…", action: #selector(AppDelegate.newProjectFromMenu), keyEquivalent: "")
+        newProjectItem.target = NSApp.delegate as? AppDelegate
+        let openProjectItem = fileMenu.addItem(withTitle: "Open Project…", action: #selector(AppDelegate.openProjectFromMenu), keyEquivalent: "o")
+        openProjectItem.target = NSApp.delegate as? AppDelegate
         openRecentMenu.delegate = self
         let openRecentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         openRecentItem.submenu = openRecentMenu
@@ -2616,7 +2626,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // top-level menu — a markdown preview toggle buried in File read as a file operation.
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         let viewMenu = NSMenu(title: "View")
-        viewMenu.addItem(withTitle: "Toggle Markdown Preview", action: #selector(toggleMarkdownPreview), keyEquivalent: "m")
+        // ⇧⌘V, not ⌘M — ⌘M is the system's Minimize, which this used to shadow.
+        let markdownPreview = viewMenu.addItem(withTitle: "Toggle Markdown Preview", action: #selector(toggleMarkdownPreview), keyEquivalent: "v")
+        markdownPreview.keyEquivalentModifierMask = [.command, .shift]
         let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "e")
         explorer.keyEquivalentModifierMask = [.command, .shift]
         viewItem.submenu = viewMenu

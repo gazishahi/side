@@ -2,10 +2,13 @@ import Foundation
 
 /// How risky a proposed shell command looks, from a quick pattern match against its text —
 /// deliberately not a security boundary (a determined or obfuscated command can still slip
-/// past this), just enough to stop a genuinely destructive command from ever benefiting from a
-/// track's `autoRunCommands` opt-out the same way `ls` does. Every command still goes through
-/// the same approval card either way; `.destructive` only removes the auto-run shortcut and
-/// adds a visible warning for the human actually clicking Run.
+/// past this), just enough to put a visible warning on the approval card. Every command goes
+/// through the same approval card either way.
+///
+/// **This must never gate auto-run.** See `CommandAutoRunPolicy` for that: a blacklist can't be
+/// complete (an audit found `rm --recursive --force`, `git push origin +main`, `find . -delete`,
+/// and `wget … | sh` all classifying as `.normal`), so auto-run is decided by an allowlist of
+/// affirmatively read-only commands instead of by the absence of a match here.
 enum CommandRiskLevel: Equatable {
     case normal
     case destructive(reason: String)
@@ -17,8 +20,8 @@ enum CommandRiskClassifier {
     /// sees — order roughly follows how commonly each pattern shows up in real destructive
     /// commands, not severity.
     private static let patterns: [(regex: String, reason: String, caseSensitive: Bool)] = [
-        (#"rm\s+(-\w*r\w*f\w*|-\w*f\w*r\w*)\b"#, "Recursively deletes files (rm -rf)", false),
-        (#"git\s+push\s+.*(--force(?!-with-lease)\b|(?<!\S)-f\b)"#, "Force-pushes, which can overwrite remote history", false),
+        (#"rm\s+(-\w*r\w*f\w*|-\w*f\w*r\w*|.*--recursive|.*--force)"#, "Recursively or forcibly deletes files", false),
+        (#"git\s+push\s+.*(--force(?!-with-lease)\b|(?<!\S)-f\b|\s\+\S)"#, "Force-pushes, which can overwrite remote history", false),
         (#"git\s+reset\s+--hard\b"#, "Discards uncommitted changes (git reset --hard)", false),
         (#"git\s+clean\s+.*-\w*[fd]"#, "Deletes untracked files (git clean)", false),
         // Case-sensitive on purpose: `-D` force-deletes even an unmerged branch, `-d` refuses to
@@ -30,7 +33,11 @@ enum CommandRiskClassifier {
         (#"\bchown\s+.*-R\b"#, "Recursively changes file ownership", false),
         (#"\bdd\s+if="#, "Low-level disk copy — can overwrite an entire disk", false),
         (#"\bkill(all)?\s+-9\b"#, "Force-kills a process, skipping its own cleanup", false),
-        (#"curl\s+.*\|\s*(sudo\s+)?(sh|bash|zsh)\b"#, "Pipes a downloaded script directly into a shell", false),
+        // Any download piped into any shell, and process-substitution variants of the same trick.
+        (#"\b(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?\S*\b(sh|bash|zsh|fish|python\d?|ruby|perl|node)\b"#, "Pipes a downloaded script directly into an interpreter", false),
+        (#"<\(\s*(curl|wget|fetch)\b"#, "Runs a downloaded script via process substitution", false),
+        (#"\bfind\b.*\s(-delete|-exec\b|-execdir\b|-ok\b)"#, "Deletes or executes across matched files (find)", false),
+        (#"\bxargs\b.*\b(rm|kill|mv|dd|truncate)\b"#, "Pipes results into a destructive command (xargs)", false),
         (#"\bdrop\s+(table|database)\b"#, "Drops a database or table", false),
         (#"\btruncate\s+table\b"#, "Empties a database table", false),
     ]
@@ -44,5 +51,80 @@ enum CommandRiskClassifier {
             }
         }
         return .normal
+    }
+}
+
+/// Decides whether a command may skip its approval card when a track has `autoRunCommands` on.
+///
+/// Deliberately an **allowlist**: a command auto-runs only when we can affirmatively recognize
+/// every part of it as read-only. Anything unrecognized — an unknown binary, a shell operator, a
+/// flag that turns a reader into a writer — is not auto-runnable and goes to the human. That
+/// inversion is the point: the previous "auto-run anything the destructive blacklist didn't
+/// match" made an admittedly-incomplete heuristic into a consent boundary, so `rm --recursive
+/// --force` could execute unattended.
+enum CommandAutoRunPolicy {
+    /// Shell syntax that could chain, redirect, substitute, or background additional work. Their
+    /// presence alone disqualifies a command — we only ever auto-run a single simple command.
+    private static let disqualifyingSyntax = [
+        ";", "&&", "||", "|", ">", "<", "`", "$(", "${", "&", "\n", "\r",
+    ]
+
+    /// Read-only commands, with the flags that would make each one write. A `nil` flag list means
+    /// no flag makes it dangerous; matching is on the exact first token.
+    private static let readOnlyCommands: [String: [String]] = [
+        "ls": [], "pwd": [], "echo": [], "date": [], "whoami": [], "hostname": [],
+        "cat": [], "head": [], "tail": [], "wc": [], "file": [], "stat": [], "basename": [], "dirname": [],
+        "which": [], "type": [], "env": [], "printenv": [], "uname": [], "df": [], "du": [],
+        "grep": [], "rg": [], "egrep": [], "fgrep": [],
+        // Readers that become writers with one flag.
+        "sed": ["-i", "--in-place"],
+        "sort": ["-o", "--output"],
+        "awk": [],
+        "find": ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fprintf", "-fls"],
+        "tree": ["-o"],
+        "diff": [],
+        "node": ["-e", "--eval", "-p"],
+    ]
+
+    /// Read-only `git` subcommands. Everything else — push, reset, clean, checkout, commit,
+    /// merge, rebase, branch, worktree — needs a human.
+    private static let readOnlyGitSubcommands: Set<String> = [
+        "status", "log", "diff", "show", "blame", "rev-parse", "describe",
+        "ls-files", "ls-tree", "cat-file", "shortlog",
+    ]
+
+    /// `git config` is the one subcommand whose *write* form takes no flag at all
+    /// (`git config user.email someone@example.com`), so it can't be handled by forbidding
+    /// flags — it's only auto-runnable when it explicitly asks to read.
+    private static let readingGitConfigFlags: Set<String> = [
+        "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l",
+    ]
+
+    static func isAutoRunnable(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        // A blacklist hit is an immediate no even inside the allowlist path — belt and braces.
+        if case .destructive = CommandRiskClassifier.classify(trimmed) { return false }
+        for syntax in disqualifyingSyntax where trimmed.contains(syntax) { return false }
+
+        let tokens = trimmed.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard let executable = tokens.first else { return false }
+        // No paths — an allowlisted *name* only, so `./rm` or `/tmp/evil/ls` can't impersonate one.
+        guard !executable.contains("/") else { return false }
+        let arguments = Array(tokens.dropFirst())
+
+        if executable == "git" {
+            guard let subcommand = arguments.first(where: { !$0.hasPrefix("-") }) else { return false }
+            if subcommand == "config" {
+                return arguments.contains { readingGitConfigFlags.contains($0) }
+            }
+            return readOnlyGitSubcommands.contains(subcommand)
+        }
+
+        guard let forbiddenFlags = readOnlyCommands[executable] else { return false }
+        return !arguments.contains { argument in
+            forbiddenFlags.contains { argument == $0 || argument.hasPrefix($0 + "=") }
+        }
     }
 }
