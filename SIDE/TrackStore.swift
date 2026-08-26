@@ -688,7 +688,7 @@ final class TrackStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = .prettyPrinted
         guard let data = try? encoder.encode(tracks) else { return }
-        try? data.write(to: storeURL)
+        try? data.write(to: storeURL, options: .atomic)
     }
 
     // MARK: - Git

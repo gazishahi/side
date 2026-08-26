@@ -171,7 +171,7 @@ final class ProviderRegistryStore: @unchecked Sendable {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = .prettyPrinted
         guard let data = try? encoder.encode(RegistryState(providers: providers, activeProviderId: activeProviderId)) else { return }
-        try? data.write(to: storeURL)
+        try? data.write(to: storeURL, options: .atomic)
     }
 
     /// Phase 1 stored a dev key in UserDefaults; anyone who set it up that way shouldn't have

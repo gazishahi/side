@@ -96,9 +96,63 @@ final class AgentSessionStore {
               let data = try? Data(contentsOf: sessionFileURL(forTrackKey: trackKey)) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let session = try? decoder.decode(AgentSession.self, from: data) else { return nil }
+        guard var session = try? decoder.decode(AgentSession.self, from: data) else { return nil }
+        // Repair before anything can read it — a session with a dangling tool_use is not just
+        // cosmetically odd, it's unusable (see `Self.repairingDanglingToolUses`).
+        if let repaired = Self.repairingDanglingToolUses(session) {
+            session = repaired
+            saveSession(session)
+        }
         loadedSessions[trackKey] = session
         return session
+    }
+
+    /// Returns a repaired copy when the session contains `tool_use` blocks that no `tool_result`
+    /// ever answers, or `nil` when nothing needed fixing.
+    ///
+    /// `AgentRunner.teardown()` writes synthetic rejections for pending proposals, but only on a
+    /// *graceful* shutdown. Force-quit, a crash, or power loss between persisting the assistant's
+    /// tool_use turn and persisting its results leaves the conversation permanently broken rather
+    /// than merely incomplete: the full turn list is replayed to the provider on every send, and
+    /// a tool_use with no matching tool_result is a protocol violation the API rejects outright —
+    /// so every future message in that track fails. Repairing at load time (rather than only at
+    /// teardown) is what makes recovery independent of *how* the process died, and also fixes
+    /// sessions already on disk in that state.
+    ///
+    /// Synthesizing a rejection is the honest repair: nothing was applied, because approval never
+    /// happened. The result is inserted immediately after the assistant turn that made the call,
+    /// which is where the wire format requires it.
+    static func repairingDanglingToolUses(_ session: AgentSession) -> AgentSession? {
+        var answeredIds = Set<String>()
+        for turn in session.turns {
+            for block in turn.content {
+                if case .toolResult(let toolUseId, _, _) = block { answeredIds.insert(toolUseId) }
+            }
+        }
+
+        var repairedTurns: [AgentTurn] = []
+        var didRepair = false
+        for turn in session.turns {
+            repairedTurns.append(turn)
+            let unanswered = turn.content.compactMap { block -> String? in
+                guard case .toolUse(let id, _, _) = block, !answeredIds.contains(id) else { return nil }
+                return id
+            }
+            guard !unanswered.isEmpty else { continue }
+            didRepair = true
+            repairedTurns.append(AgentTurn(role: .user, content: unanswered.map {
+                .toolResult(
+                    toolUseId: $0,
+                    content: "Side closed before the user decided, so this never ran and nothing changed. Ask again if it's still needed.",
+                    isError: true
+                )
+            }))
+            answeredIds.formUnion(unanswered)
+        }
+        guard didRepair else { return nil }
+        var repaired = session
+        repaired.turns = repairedTurns
+        return repaired
     }
 
     /// Branch-name-shaped track keys can contain `/`; `""` means "no active track" — both need a
@@ -157,7 +211,7 @@ final class AgentSessionStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = .prettyPrinted
         guard let data = try? encoder.encode(index) else { return }
-        try? data.write(to: indexURL)
+        try? data.write(to: indexURL, options: .atomic)
     }
 
     private func saveCheckpoints() {
@@ -166,7 +220,7 @@ final class AgentSessionStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = .prettyPrinted
         guard let data = try? encoder.encode(checkpoints) else { return }
-        try? data.write(to: checkpointsURL)
+        try? data.write(to: checkpointsURL, options: .atomic)
     }
 
     private func saveSession(_ session: AgentSession) {
@@ -175,7 +229,7 @@ final class AgentSessionStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = .prettyPrinted
         guard let data = try? encoder.encode(session) else { return }
-        try? data.write(to: sessionFileURL(forTrackKey: session.trackKey))
+        try? data.write(to: sessionFileURL(forTrackKey: session.trackKey), options: .atomic)
     }
 }
 
