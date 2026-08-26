@@ -9,6 +9,7 @@ final class UsageViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let contentStack = NSStackView()
     private var usageObserverToken: UUID?
+    private let budgetField = NSTextField()
 
     private static let columnWidths: (name: CGFloat, requests: CGFloat, tokens: CGFloat, cost: CGFloat) = (200, 70, 90, 80)
 
@@ -69,6 +70,11 @@ final class UsageViewController: NSViewController {
             empty.font = .systemFont(ofSize: 12.5)
             empty.textColor = .tertiaryLabelColor
             contentStack.addArrangedSubview(empty)
+            // A budget is worth setting *before* spending anything, so this section shows up on
+            // a fresh install rather than only once there's history to look at.
+            contentStack.setCustomSpacing(20, after: empty)
+            contentStack.addArrangedSubview(makeSectionTitle("Monthly budget"))
+            contentStack.addArrangedSubview(makeBudgetControls())
             return
         }
 
@@ -110,6 +116,10 @@ final class UsageViewController: NSViewController {
                 ))
             }
         }
+
+        contentStack.setCustomSpacing(20, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
+        contentStack.addArrangedSubview(makeSectionTitle("Monthly budget"))
+        contentStack.addArrangedSubview(makeBudgetControls())
 
         let reset = NSButton(title: "Reset Usage History…", target: self, action: #selector(resetUsage))
         reset.bezelStyle = .rounded
@@ -251,6 +261,82 @@ final class UsageViewController: NSViewController {
         label.translatesAutoresizingMaskIntoConstraints = false
         label.widthAnchor.constraint(equalToConstant: width).isActive = true
         return label
+    }
+
+
+    /// The budget row: a dollar field, this month's standing against it, and a plain statement
+    /// of what it does and doesn't guarantee.
+    private func makeBudgetControls() -> NSView {
+        let label = NSTextField(labelWithString: "Stop sending above:")
+        label.font = .systemFont(ofSize: 12)
+
+        budgetField.placeholderString = "No limit"
+        budgetField.font = .systemFont(ofSize: 12)
+        budgetField.alignment = .right
+        budgetField.target = self
+        budgetField.action = #selector(budgetChanged)
+        budgetField.translatesAutoresizingMaskIntoConstraints = false
+        budgetField.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        budgetField.stringValue = UsageBudget.monthlyLimitUSD.map { String(format: "%.2f", $0) } ?? ""
+
+        let dollar = NSTextField(labelWithString: "$")
+        dollar.font = .systemFont(ofSize: 12)
+        let perMonth = NSTextField(labelWithString: "per month")
+        perMonth.font = .systemFont(ofSize: 12)
+        perMonth.textColor = .secondaryLabelColor
+
+        let row = NSStackView(views: [label, dollar, budgetField, perMonth])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+
+        let statusLabel = NSTextField(wrappingLabelWithString: budgetStatusText())
+        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.textColor = budgetStatusColor()
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true
+
+        let stack = NSStackView(views: [row, statusLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        return stack
+    }
+
+    private func budgetStatusText() -> String {
+        let month = UsageStore.shared.estimatedCostThisMonth()
+        let spent = UsageFormatting.cost(month.total)
+        let caveat = month.hasUnpricedModels
+            ? " Models with no published price here aren't counted, so the real figure is higher."
+            : ""
+        switch UsageBudget.status() {
+        case .unlimited:
+            return "No budget set — nothing is blocked. \(spent) estimated so far this month.\(caveat)"
+        case .withinBudget(_, let limit):
+            return "\(spent) of \(UsageFormatting.cost(limit)) estimated this month.\(caveat)"
+        case .approaching(_, let limit):
+            return "\(spent) of \(UsageFormatting.cost(limit)) estimated this month — close to the limit.\(caveat)"
+        case .exceeded(_, let limit):
+            return "\(spent) of \(UsageFormatting.cost(limit)) — the budget is reached, so Think won't send until you raise or clear it.\(caveat)"
+        }
+    }
+
+    private func budgetStatusColor() -> NSColor {
+        switch UsageBudget.status() {
+        case .unlimited, .withinBudget: return .tertiaryLabelColor
+        case .approaching: return .systemOrange
+        case .exceeded: return .systemRed
+        }
+    }
+
+    @objc private func budgetChanged() {
+        let text = budgetField.stringValue.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "$", with: "")
+            .replacingOccurrences(of: ",", with: "")
+        // Blank, zero, or unparseable all mean "no budget" — a zero-dollar limit that blocks
+        // everything is never what someone typing in this field meant.
+        UsageBudget.monthlyLimitUSD = Double(text).flatMap { $0 > 0 ? $0 : nil }
+        render()
     }
 
     @objc private func resetUsage() {

@@ -404,6 +404,15 @@ final class AgentRunner {
             setPhase(.blocked(.roundTripLimit))
             return
         }
+        // Checked here, immediately before the request, rather than at send: a tool chain can
+        // cross the limit mid-run, and the round-trip that crosses it is the one to stop.
+        if case .exceeded(let spent, let limit) = UsageBudget.status() {
+            appendEntry(.failure(UsageBudget.blockedMessage(spent: spent, limit: limit)))
+            streamTask = nil
+            streamingEntryIndex = nil
+            setPhase(.blocked(.budgetReached))
+            return
+        }
         guard case .ready(let provider, _, let model) = ProviderRegistryStore.shared.resolveAdapter(providerId: ProviderRegistryStore.shared.activeProviderId) else {
             appendMissingKeyHint()
             finishRun(completed: false)

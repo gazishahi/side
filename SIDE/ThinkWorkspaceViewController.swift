@@ -253,6 +253,18 @@ final class ThinkWorkspaceViewController: NSViewController {
                 }
             }
         }
+        // A budget that only shows up in Settings is a budget nobody sees coming; the warning
+        // belongs where the spend is already displayed.
+        switch UsageBudget.status() {
+        case .approaching(let spent, let limit):
+            label += "  ·  \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)) this month"
+            modelLabel.textColor = .systemOrange
+        case .exceeded(let spent, let limit):
+            label += "  ·  budget reached (\(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)))"
+            modelLabel.textColor = .systemRed
+        case .unlimited, .withinBudget:
+            modelLabel.textColor = .secondaryLabelColor
+        }
         modelLabel.stringValue = label
         modelLabel.toolTip = "Estimated spend for this track. Prices are approximate."
     }

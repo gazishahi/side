@@ -115,6 +115,10 @@ enum AgentRunPhase: Equatable {
         /// No stream event for `AgentRunner`'s stall window — a hung connection is otherwise
         /// indistinguishable from a working agent.
         case stalled
+        /// This month's estimated spend has reached the configured budget. Distinct from the
+        /// other two because the fix isn't "send again," it's "change the budget" — see
+        /// `UsageBudget`.
+        case budgetReached
     }
 
     /// Send is only meaningful when nothing is actively running — every other phase either has

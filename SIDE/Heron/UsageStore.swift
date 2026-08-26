@@ -29,11 +29,49 @@ struct UsageRecord: Codable, Equatable {
     let trackKey: String
     let providerId: String
     let modelId: String
+    /// Calendar month this row accumulates in, `yyyy-MM`. Part of the row's identity, which is
+    /// what makes a monthly budget answerable at all — the alternative (one row per request)
+    /// grows without bound. `""` on rows written before budgets existed: those still count
+    /// toward all-time totals but can't be attributed to a month, so they're left out of
+    /// monthly ones rather than silently inflating the current month.
+    var periodKey: String
     var totals: UsageTotals
     var lastUsedAt: Date
 
     var projectName: String {
         URL(fileURLWithPath: projectPath).lastPathComponent
+    }
+
+    init(projectPath: String, trackKey: String, providerId: String, modelId: String, periodKey: String, totals: UsageTotals, lastUsedAt: Date) {
+        self.projectPath = projectPath
+        self.trackKey = trackKey
+        self.providerId = providerId
+        self.modelId = modelId
+        self.periodKey = periodKey
+        self.totals = totals
+        self.lastUsedAt = lastUsedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case projectPath, trackKey, providerId, modelId, periodKey, totals, lastUsedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        projectPath = try container.decode(String.self, forKey: .projectPath)
+        trackKey = try container.decode(String.self, forKey: .trackKey)
+        providerId = try container.decodeIfPresent(String.self, forKey: .providerId) ?? ""
+        modelId = try container.decodeIfPresent(String.self, forKey: .modelId) ?? ""
+        periodKey = try container.decodeIfPresent(String.self, forKey: .periodKey) ?? ""
+        totals = try container.decodeIfPresent(UsageTotals.self, forKey: .totals) ?? UsageTotals()
+        lastUsedAt = try container.decodeIfPresent(Date.self, forKey: .lastUsedAt) ?? Date()
+    }
+
+    /// `yyyy-MM` in the user's own calendar — a budget is a human, local-time notion of "this
+    /// month," not a UTC one.
+    static func periodKey(for date: Date) -> String {
+        let components = Calendar.current.dateComponents([.year, .month], from: date)
+        return String(format: "%04d-%02d", components.year ?? 0, components.month ?? 0)
     }
 }
 
@@ -72,26 +110,48 @@ final class UsageStore: @unchecked Sendable {
 
     func removeChangeObserver(_ token: UUID) { changeObservers.removeValue(forKey: token) }
 
-    func record(projectPath: String, trackKey: String, providerId: String, modelId: String, usage: TokenUsage) {
+    func record(projectPath: String, trackKey: String, providerId: String, modelId: String, usage: TokenUsage, now: Date = Date()) {
         var incoming = UsageTotals()
         incoming.inputTokens = usage.inputTokens
         incoming.outputTokens = usage.outputTokens
         incoming.cachedInputTokens = usage.cachedInputTokens ?? 0
         incoming.requestCount = 1
 
+        let period = UsageRecord.periodKey(for: now)
         if let index = records.firstIndex(where: {
-            $0.projectPath == projectPath && $0.trackKey == trackKey && $0.providerId == providerId && $0.modelId == modelId
+            $0.projectPath == projectPath && $0.trackKey == trackKey && $0.providerId == providerId
+                && $0.modelId == modelId && $0.periodKey == period
         }) {
             records[index].totals.add(incoming)
-            records[index].lastUsedAt = Date()
+            records[index].lastUsedAt = now
         } else {
             records.append(UsageRecord(
                 projectPath: projectPath, trackKey: trackKey, providerId: providerId,
-                modelId: modelId, totals: incoming, lastUsedAt: Date()
+                modelId: modelId, periodKey: period, totals: incoming, lastUsedAt: now
             ))
         }
         save()
         notifyObservers()
+    }
+
+    /// Estimated spend inside one calendar month, and whether an unpriced model contributed
+    /// tokens to it — a budget can only be enforced against the priced part, and the caller has
+    /// to be able to say so rather than implying the figure is complete.
+    func estimatedCost(inPeriod period: String) -> (total: Double, hasUnpricedModels: Bool) {
+        var total = 0.0
+        var hasUnpriced = false
+        for record in records where record.periodKey == period {
+            if let cost = ModelPricing.estimatedCost(modelId: record.modelId, totals: record.totals) {
+                total += cost
+            } else if record.totals.totalTokens > 0 {
+                hasUnpriced = true
+            }
+        }
+        return (total, hasUnpriced)
+    }
+
+    func estimatedCostThisMonth(now: Date = Date()) -> (total: Double, hasUnpricedModels: Bool) {
+        estimatedCost(inPeriod: UsageRecord.periodKey(for: now))
     }
 
     func totals(projectPath: String, trackKey: String) -> UsageTotals {
