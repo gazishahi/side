@@ -84,6 +84,16 @@ final class AgentRunner {
     /// `stallTimeout`, since a hung SSE connection is otherwise indistinguishable from a working
     /// agent (`SSEHTTPClient`'s own request timeout is the transport-level backstop under this).
     private var stallWatchdog: DispatchWorkItem?
+    /// Whether this turn's stream delivered a well-formed terminator, and with what stop reason.
+    /// A stream that just *stops* — truncated response, a socket closed after malformed events —
+    /// produces no `messageEnd`, which is the only way to tell "the model had nothing to say"
+    /// apart from "the response never arrived." Without that distinction an empty turn finished
+    /// as a success and the agent appeared to answer with silence.
+    private var didReceiveMessageEnd = false
+    private var lastStopReason: StopReason?
+    /// A provider-level error (bad key, rate limit, overloaded) already surfaced as an entry this
+    /// turn — the turn must not then report success.
+    private var didReceiveProviderError = false
 
     /// Bounds one send: the model can chain tools, but a loop that never stops asking for them
     /// shouldn't be able to run forever (or bill forever) without the user re-engaging.
@@ -391,6 +401,9 @@ final class AgentRunner {
         pendingAssistantText = ""
         pendingToolCalls = []
         streamingEntryIndex = nil
+        didReceiveMessageEnd = false
+        lastStopReason = nil
+        didReceiveProviderError = false
 
         let messages = session.turns.map { AgentMessage(role: $0.role, content: $0.content) }
         let tools = ToolExecutor.specs
@@ -434,8 +447,10 @@ final class AgentRunner {
             appendEntry(.toolCall(name: call.name, summary: Self.summarize(argumentsJSON: call.partialJSON)))
         case .error(let error):
             appendEntry(.failure(error.message))
-        case .messageEnd:
-            break // Accounting isn't surfaced yet.
+            didReceiveProviderError = true
+        case .messageEnd(let stopReason, _):
+            didReceiveMessageEnd = true
+            lastStopReason = stopReason
         }
     }
 
@@ -485,6 +500,21 @@ final class AgentRunner {
             return
         }
         guard willRunTools else {
+            // Nothing to run and nothing said. Distinguish the three ways that happens instead
+            // of reporting a completed turn the user can't see the result of.
+            if content.isEmpty {
+                if didReceiveProviderError {
+                    // The provider's own error is already in the transcript; don't claim success.
+                    finishRun(completed: false)
+                } else if !didReceiveMessageEnd {
+                    appendEntry(.failure("The response ended before it completed — nothing was received. This is usually a dropped connection or a truncated reply; send again."))
+                    finishRun(completed: false)
+                } else {
+                    appendEntry(.failure(Self.emptyResponseMessage(for: lastStopReason)))
+                    finishRun(completed: false)
+                }
+                return
+            }
             finishRun(completed: true)
             return
         }
@@ -718,6 +748,21 @@ final class AgentRunner {
         // modified-vs-index. Explicit pathspecs, so unrelated staged entries stay staged.
         _ = runGitWithRetry(["add", "--"] + paths, cwd: cwd)
         return (commit.output, committedPaths)
+    }
+
+    /// A well-formed stream that carried no content at all — legal on the wire, useless to the
+    /// user, so it's reported rather than passed off as a finished turn.
+    private static func emptyResponseMessage(for stopReason: StopReason?) -> String {
+        switch stopReason {
+        case .maxTokens:
+            return "The response hit the model's output limit before producing anything. Try a shorter request."
+        case .stopSequence:
+            return "The response stopped immediately on a stop sequence and produced nothing."
+        case .other(let reason):
+            return "The model returned nothing (\(reason))."
+        case .endTurn, .toolUse, .none:
+            return "The model returned an empty response. Send again."
+        }
     }
 
     private static let systemPrompt = """
