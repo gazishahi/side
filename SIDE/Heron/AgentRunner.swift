@@ -550,7 +550,8 @@ final class AgentRunner {
                 // again later, which is exactly the content `stripContent()` needs to be able to
                 // drop once this proposal is resolved.
                 if diffText.isEmpty && edit.isNewFile {
-                    diffText = edit.proposedContent.components(separatedBy: "\n").map { "+" + $0 }.joined(separator: "\n")
+                    let lines = edit.proposedContent.components(separatedBy: "\n")
+                    diffText = "@@ -0,0 +\(lines.isEmpty ? 0 : 1),\(lines.count) @@\n" + lines.map { "+" + $0 }.joined(separator: "\n")
                 }
                 appendEntry(.proposal(ProposalPresentation(edit: edit, diffText: diffText, resolution: nil)))
                 unresolvedToolUseIds.insert(edit.toolUseId)

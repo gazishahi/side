@@ -478,6 +478,10 @@ private final class TextBlockView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+    override func accessibilityLabel() -> String? { plainText }
+
     func setBody(_ text: String) {
         plainText = text
         let rendered = NSMutableAttributedString(attributedString: MarkdownRenderer.render(text, baseFont: .systemFont(ofSize: 13), textColor: style.textColor))
@@ -634,7 +638,10 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = DS.Radius.card
+        // A capsule at rest — the radius is half the single-line height, matching the send
+        // button's own curvature exactly; grown multiline it becomes a soft rounded rect
+        // with the same corner circle.
+        layer?.cornerRadius = Self.minHeight / 2
         layer?.borderWidth = 1
         layer?.borderColor = DS.Color.hairline.cgColor
         layer?.backgroundColor = DS.Color.bg1.cgColor
@@ -668,7 +675,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         heightConstraint = heightAnchor.constraint(equalToConstant: Self.minHeight)
         NSLayoutConstraint.activate([
             heightConstraint,
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             scroll.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -8),
             scroll.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),

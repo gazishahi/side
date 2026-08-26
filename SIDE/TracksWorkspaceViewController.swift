@@ -1130,6 +1130,8 @@ private final class TrackRowView: NSView {
     private var trackingArea: NSTrackingArea?
     private let primaryAction: TrackRowPrimaryAction?
 
+    private var accessibilitySummary = ""
+
     init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, status: TrackStatus, indent: Bool = false, connectorContinues: Bool = false) {
         let isActiveTrack = status == .active
         switch activity {
@@ -1139,6 +1141,7 @@ private final class TrackRowView: NSView {
         }
 
         super.init(frame: .zero)
+        accessibilitySummary = "\(intentText), \(TracksPalette.statusText(for: status)), \(branchText)"
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
 
@@ -1303,6 +1306,15 @@ private final class TrackRowView: NSView {
         guard let result = super.hitTest(point) else { return nil }
         if result === self || result === primaryButton || result === menuButton { return result }
         return self
+    }
+
+    // The whole row is hand-assembled — name it for accessibility (press = switch to track).
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { accessibilitySummary }
+    override func accessibilityPerformPress() -> Bool {
+        onDoubleClick?()
+        return true
     }
 
     @objc private func handlePrimaryActionTapped() {

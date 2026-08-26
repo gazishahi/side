@@ -52,6 +52,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let editorScroll = NSScrollView()
     private var gutter: LineNumberGutterView!
     private let tabBar = NSView()
+    /// Shown when a project is open but nothing is — the charter's empty-state rule: one quiet
+    /// sentence plus the action that fixes it.
+    private let noFileLabel = NSTextField(labelWithString: "No file open — press ⌘P to find one.")
     private let tabBarStack = NSStackView()
     private var tabBarHeightConstraint: NSLayoutConstraint!
     private let emptyState = NSStackView()
@@ -213,6 +216,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tabScroll.documentView = tabBarStack
         tabBar.addSubview(tabScroll)
         view.addSubview(tabBar)
+        noFileLabel.font = .systemFont(ofSize: 12.5)
+        noFileLabel.textColor = .tertiaryLabelColor
+        noFileLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(noFileLabel)
+        NSLayoutConstraint.activate([
+            noFileLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            noFileLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
         tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
@@ -1746,6 +1757,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var lastKnownTabCount = 0
 
     private func rebuildTabBar() {
+        noFileLabel.isHidden = !openTabs.isEmpty || projectURL == nil
         let previousCount = lastKnownTabCount
         lastKnownTabCount = openTabs.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }

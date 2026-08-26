@@ -8,16 +8,12 @@ final class ProposedEditView: NSView {
     var onReject: (() -> Void)?
 
     private let headerLabel = NSTextField(labelWithString: "")
-    private let diffView = NSTextView()
+    private let diffView = DiffBody.makeBodyTextView()
     private let diffScroll = NSScrollView()
     private let applyButton = NSButton(title: "Apply", target: nil, action: nil)
     private let rejectButton = NSButton(title: "Reject", target: nil, action: nil)
     private let resolutionLabel = NSTextField(labelWithString: "")
     private let buttonRow = NSStackView()
-
-    private static let addedColor = NSColor(red: 0.45, green: 0.82, blue: 0.55, alpha: 1)
-    private static let removedColor = NSColor(red: 0.92, green: 0.50, blue: 0.48, alpha: 1)
-    private static let hunkColor = NSColor(red: 0.55, green: 0.72, blue: 0.95, alpha: 1)
 
     init(edit: ProposedEdit, diffText: String) {
         super.init(frame: .zero)
@@ -35,10 +31,9 @@ final class ProposedEditView: NSView {
         headerLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         headerLabel.lineBreakMode = .byTruncatingMiddle
 
-        diffView.isEditable = false
-        diffView.drawsBackground = false
-        diffView.textContainerInset = NSSize(width: 8, height: 6)
-        diffView.textStorage?.setAttributedString(Self.attributedDiff(diffText))
+        // Same renderer as Review's per-file cards — line-number gutters and full-line tints,
+        // so a proposal's diff reads identically to the diff the track's Review shows later.
+        diffView.textStorage?.setAttributedString(DiffBody.attributedBody(hunks: UnifiedDiff.parseHunks(diffText)))
         diffScroll.documentView = diffView
         diffScroll.drawsBackground = false
         diffScroll.hasVerticalScroller = true
@@ -101,23 +96,4 @@ final class ProposedEditView: NSView {
     @objc private func applyTapped() { onApply?() }
     @objc private func rejectTapped() { onReject?() }
 
-    private static func attributedDiff(_ diffText: String) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        for (index, line) in diffText.components(separatedBy: "\n").enumerated() {
-            let color: NSColor
-            if line.hasPrefix("+") {
-                color = addedColor
-            } else if line.hasPrefix("-") {
-                color = removedColor
-            } else if line.hasPrefix("@@") {
-                color = hunkColor
-            } else {
-                color = .secondaryLabelColor
-            }
-            let prefix = index == 0 ? "" : "\n"
-            result.append(NSAttributedString(string: prefix + line, attributes: [.font: font, .foregroundColor: color]))
-        }
-        return result
-    }
 }

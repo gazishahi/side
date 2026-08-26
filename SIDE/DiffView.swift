@@ -30,6 +30,14 @@ struct UnifiedDiff {
 
     var files: [File] = []
 
+    /// Hunk-only text (no `diff --git` headers) — what `GitDiffComputer.unifiedDiffText`
+    /// produces for proposal diffs. Wraps the shared line parser in a synthetic single file.
+    static func parseHunks(_ text: String) -> [Hunk] {
+        guard !text.isEmpty else { return [] }
+        let wrapped = "diff --git a/x b/x\n" + text
+        return parse(wrapped).files.first?.hunks ?? []
+    }
+
     /// Parses full `git diff` output (with `diff --git` file headers). Header-only oddities
     /// (mode changes, binary files) come through as a file with zero hunks, which the card
     /// renders as just its header row — better than dropping them silently.
@@ -172,11 +180,8 @@ final class DiffFileCardView: NSView {
     private var bodyHeightConstraint: NSLayoutConstraint?
     private let bodyHeight: CGFloat
 
-    private static let addedText = NSColor(red: 0.45, green: 0.82, blue: 0.55, alpha: 1)
-    private static let removedText = NSColor(red: 0.92, green: 0.50, blue: 0.48, alpha: 1)
-    private static let addedFill = NSColor(red: 0.30, green: 0.85, blue: 0.40, alpha: 0.09)
-    private static let removedFill = NSColor(red: 0.95, green: 0.35, blue: 0.30, alpha: 0.09)
-    private static let hunkColor = NSColor(red: 0.55, green: 0.72, blue: 0.95, alpha: 1)
+    private static let addedText = DiffBody.addedText
+    private static let removedText = DiffBody.removedText
 
     init(file: UnifiedDiff.File) {
         // Sized to content up to a cap, so one file's giant diff scrolls inside its own card
@@ -245,21 +250,8 @@ final class DiffFileCardView: NSView {
         headerButton.translatesAutoresizingMaskIntoConstraints = false
         headerButton.addSubview(header)
 
-        // Manual text stack so the layout manager can extend background fills to the full
-        // line width (see FullWidthBackgroundLayoutManager).
-        let storage = NSTextStorage()
-        let layoutManager = FullWidthBackgroundLayoutManager()
-        storage.addLayoutManager(layoutManager)
-        let textContainer = NSTextContainer(
-            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        textContainer.widthTracksTextView = true
-        layoutManager.addTextContainer(textContainer)
-        let bodyText = NSTextView(frame: .zero, textContainer: textContainer)
-        bodyText.isEditable = false
-        bodyText.drawsBackground = false
-        bodyText.textContainerInset = NSSize(width: 0, height: 4)
-        bodyText.autoresizingMask = [.width]
-        storage.setAttributedString(Self.renderBody(file))
+        let bodyText = DiffBody.makeBodyTextView()
+        bodyText.textStorage?.setAttributedString(DiffBody.attributedBody(hunks: file.hunks))
         bodyScroll.documentView = bodyText
         bodyScroll.drawsBackground = false
         bodyScroll.hasVerticalScroller = true
@@ -335,10 +327,22 @@ final class DiffFileCardView: NSView {
         }
     }
 
-    /// The body as one attributed string — `[old# pad][new# pad] text` per line, full-line
-    /// background tints for adds/removes — rather than a view per line, which would melt on a
-    /// thousand-line diff.
-    private static func renderBody(_ file: UnifiedDiff.File) -> NSAttributedString {
+}
+
+/// The shared hunk-body renderer — one attributed string with line-number gutters and
+/// full-line tints, plus the custom text stack whose layout manager extends those tints to the
+/// full line width. Used by Review's per-file cards and Think's proposal cards, so a diff reads
+/// identically wherever it appears.
+enum DiffBody {
+    static let addedText = NSColor(red: 0.45, green: 0.82, blue: 0.55, alpha: 1)
+    static let removedText = NSColor(red: 0.92, green: 0.50, blue: 0.48, alpha: 1)
+    static let addedFill = NSColor(red: 0.30, green: 0.85, blue: 0.40, alpha: 0.09)
+    static let removedFill = NSColor(red: 0.95, green: 0.35, blue: 0.30, alpha: 0.09)
+    static let hunkColor = NSColor(red: 0.55, green: 0.72, blue: 0.95, alpha: 1)
+
+    /// `[old# pad][new# pad] text` per line — one attributed string, not a view per line,
+    /// which would melt on a thousand-line diff.
+    static func attributedBody(hunks: [UnifiedDiff.Hunk]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         let numberColor = NSColor(white: 0.42, alpha: 1)
@@ -350,40 +354,43 @@ final class DiffFileCardView: NSView {
             return String(repeating: " ", count: max(0, 5 - "\(number)".count)) + "\(number)"
         }
 
-        for hunk in file.hunks {
-            result.append(
-                NSAttributedString(
-                    string: (result.length == 0 ? "" : "\n") + "  \(hunk.header)\n",
-                    attributes: [
-                        .font: font, .foregroundColor: hunkColor, .paragraphStyle: paragraph,
-                    ]))
+        for hunk in hunks {
+            result.append(NSAttributedString(
+                string: (result.length == 0 ? "" : "\n") + "  \(hunk.header)\n",
+                attributes: [.font: font, .foregroundColor: hunkColor, .paragraphStyle: paragraph]))
             for line in hunk.lines {
                 let textColor: NSColor
                 var background: NSColor?
                 switch line.kind {
-                case .added:
-                    textColor = addedText
-                    background = addedFill
-                case .removed:
-                    textColor = removedText
-                    background = removedFill
-                case .context:
-                    textColor = .secondaryLabelColor
-                    background = nil
+                case .added: textColor = addedText; background = addedFill
+                case .removed: textColor = removedText; background = removedFill
+                case .context: textColor = .secondaryLabelColor; background = nil
                 }
-                var attrs: [NSAttributedString.Key: Any] = [
-                    .font: font, .foregroundColor: numberColor, .paragraphStyle: paragraph,
-                ]
+                var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: numberColor, .paragraphStyle: paragraph]
                 if let background { attrs[.backgroundColor] = background }
-                result.append(
-                    NSAttributedString(
-                        string: "\(pad(line.oldNumber)) \(pad(line.newNumber))  ", attributes: attrs
-                    ))
+                result.append(NSAttributedString(string: "\(pad(line.oldNumber)) \(pad(line.newNumber))  ", attributes: attrs))
                 attrs[.foregroundColor] = textColor
                 result.append(NSAttributedString(string: line.text + "\n", attributes: attrs))
             }
         }
         return result
+    }
+
+    /// A text view whose layout manager extends `.backgroundColor` fills to the full line
+    /// width — assembled manually because that requires a custom NSLayoutManager.
+    static func makeBodyTextView() -> NSTextView {
+        let storage = NSTextStorage()
+        let layoutManager = FullWidthBackgroundLayoutManager()
+        storage.addLayoutManager(layoutManager)
+        let textContainer = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+        let textView = NSTextView(frame: .zero, textContainer: textContainer)
+        textView.isEditable = false
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 0, height: 4)
+        textView.autoresizingMask = [.width]
+        return textView
     }
 }
 
@@ -391,14 +398,20 @@ final class DiffFileCardView: NSView {
 /// (not just the chevron glyph) toggles the fold.
 private final class HeaderClickView: NSView {
     var onClick: (() -> Void)?
-    override func mouseDown(with event: NSEvent) {
-        NSLog("DEBUG header mouseDown")
-        onClick?()
-    }
+    override func mouseDown(with event: NSEvent) { onClick?() }
     /// The path/count labels inside the header would otherwise swallow the click — same
     /// route-decorative-hits-to-the-row trick TrackRowView uses.
     override func hitTest(_ point: NSPoint) -> NSView? {
         super.hitTest(point) == nil ? nil : self
+    }
+
+    // Hand-rolled click target — invisible and dead to accessibility without these.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .disclosureTriangle }
+    override func accessibilityLabel() -> String? { "Toggle diff" }
+    override func accessibilityPerformPress() -> Bool {
+        onClick?()
+        return true
     }
 }
 
