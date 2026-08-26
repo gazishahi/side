@@ -66,9 +66,13 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// queue, the second call overwrote this slot and the first command's completion was never
     /// called at all — a dropped `tool_result`, i.e. precisely the dangling-`tool_use` shape that
     /// wedges a conversation.
-    private var pendingAgentCommand: (sentinel: String, buffer: String, command: String, completion: (String) -> Void)?
+    private var pendingAgentCommand: (sentinel: String, buffer: String, command: String, usesMarks: Bool, completion: (String) -> Void)?
     /// Commands waiting for the terminal to free up, in the order they were requested.
     private var queuedAgentCommands: [(command: String, completion: (String) -> Void)] = []
+    /// Whether the shell confirmed it emits OSC 133 marks. Commands that arrive while this is
+    /// still `.probing` wait rather than committing to the wrong capture strategy.
+    private enum ShellIntegration { case probing, confirmed, unavailable }
+    private var shellIntegration: ShellIntegration = .probing
     /// Guards against a stale timeout resolving a *later* command that happens to occupy the slot.
     private var pendingAgentCommandGeneration = 0
     private static let agentCommandTimeout: TimeInterval = 30
@@ -126,6 +130,45 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         isAlive = true
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         terminalView.startProcess(executable: shell, args: ["-l"], currentDirectory: workingDirectory)
+        installShellIntegration(shell: shell)
+    }
+
+    /// Asks the shell to emit OSC 133 semantic-prompt marks — the same protocol VS Code, iTerm2,
+    /// and WezTerm use — so a command's output can be delimited exactly instead of guessed at.
+    ///
+    /// Without this, the only way to know what a command printed was "everything between the
+    /// echoed command line and a sentinel," which unavoidably swept up the user's shell prompt
+    /// (git segments, box-drawing, redraw artifacts) into every tool result: noise the model pays
+    /// for in context on every single command. With the marks, the shell itself says where output
+    /// begins (`C`, at preexec) and ends (`D;<exit code>`, at precmd), so prompts fall outside the
+    /// captured region by construction.
+    ///
+    /// Registered through `add-zsh-hook` rather than by defining `precmd`/`preexec` directly —
+    /// defining them would silently clobber the user's own hooks, which is how you break a
+    /// powerlevel10k prompt. Unsupported shells simply never confirm and fall back to the
+    /// sentinel path.
+    private func installShellIntegration(shell: String) {
+        let setup: String
+        if shell.contains("zsh") {
+            // `precmd_functions` is *prepended*, not appended: hooks run in array order, and a
+            // themed prompt (powerlevel10k) prints in its own precmd. Registering after it put
+            // that output inside the C..D window — a stray `%` showed up in every result — and
+            // `$?` would read the previous hook's status rather than the command's.
+            setup = "__side_done(){ printf '\\e]133;D;%s\\a' $?; }; __side_start(){ printf '\\e]133;C\\a'; }; typeset -ga precmd_functions preexec_functions; precmd_functions=(__side_done ${precmd_functions:#__side_done}); preexec_functions=(${preexec_functions:#__side_start} __side_start); printf '\\e]133;D;0\\a'"
+        } else if shell.contains("bash") {
+            setup = "__side_done(){ printf '\\e]133;D;%s\\a' \"$?\"; }; PROMPT_COMMAND=\"__side_done;${PROMPT_COMMAND}\"; trap 'printf \"\\e]133;C\\a\"' DEBUG; printf '\\e]133;D;0\\a'"
+        } else {
+            shellIntegration = .unavailable
+            return
+        }
+        // A space prefix keeps it out of history when HIST_IGNORE_SPACE is set; it stays visible
+        // in the terminal either way, which is consistent with never running hidden commands.
+        terminalView.send(source: terminalView, data: ArraySlice(Array((" " + setup + "\r").utf8)))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.shellIntegration == .probing else { return }
+            self.shellIntegration = .unavailable
+            self.drainQueuedAgentCommandsIfIdle()
+        }
     }
 
     /// Types `command` into this session the same way keystrokes go in — the human sees the
@@ -136,28 +179,41 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// visible terminal; this just stops blocking the conversation on it.
     func runAgentCommand(_ command: String, completion: @escaping (String) -> Void) {
         ensureStarted()
-        // Some commands can't be wrapped in a way that reliably reports completion. Saying so is
-        // far better than sending them and hanging until the timeout with a misleading answer.
-        if let reason = Self.unwrappableReason(for: command) {
+        // Only the sentinel fallback needs these refusals: it appends a line the shell must be
+        // ready to parse, so anything leaving the shell mid-parse eats it. With shell-integration
+        // marks nothing is appended, so heredocs and multi-line commands are fine.
+        if shellIntegration != .confirmed, let reason = Self.unwrappableReason(for: command) {
             completion(reason)
             return
         }
-        guard pendingAgentCommand == nil else {
+        // Also queued while the integration probe is outstanding — starting now would pick a
+        // capture strategy before knowing which one actually works.
+        guard pendingAgentCommand == nil, shellIntegration != .probing else {
             queuedAgentCommands.append((command, completion))
             return
         }
         startAgentCommand(command, completion: completion)
     }
 
+    private func drainQueuedAgentCommandsIfIdle() {
+        guard pendingAgentCommand == nil, shellIntegration != .probing,
+              !queuedAgentCommands.isEmpty else { return }
+        let next = queuedAgentCommands.removeFirst()
+        startAgentCommand(next.command, completion: next.completion)
+    }
+
     private func startAgentCommand(_ command: String, completion: @escaping (String) -> Void) {
         let sentinel = "__SIDE_AGENT_DONE_\(UUID().uuidString)__"
         pendingAgentCommandGeneration += 1
         let generation = pendingAgentCommandGeneration
-        pendingAgentCommand = (sentinel, "", command, completion)
-        // The sentinel goes on its *own* line rather than being appended after `;` — a command
-        // ending in a `#` comment used to swallow the appended echo entirely, so the command ran
-        // and then nothing ever reported it finished.
-        let wrapped = "\(command)\recho \"\(sentinel):$?\"\r"
+        let usesMarks = shellIntegration == .confirmed
+        pendingAgentCommand = (sentinel, "", command, usesMarks, completion)
+        // With shell integration the command is sent exactly as-is: the shell's own marks report
+        // completion, so nothing has to be appended to the user's command line at all.
+        // Without it, fall back to a sentinel echo on its own line — on its own line because a
+        // command ending in a `#` comment used to swallow an appended echo entirely, so the
+        // command ran and nothing ever reported it finished.
+        let wrapped = usesMarks ? "\(command)\r" : "\(command)\recho \"\(sentinel):$?\"\r"
         terminalView.send(source: terminalView, data: ArraySlice(Array(wrapped.utf8)))
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.agentCommandTimeout) { [weak self] in
             guard let self, self.pendingAgentCommandGeneration == generation,
@@ -253,7 +309,42 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// past any occurrence whose exit-code text isn't purely numeric rather than resolving on
     /// the first (false) match.
     private func handleAgentCommandData(_ slice: ArraySlice<UInt8>) {
+        let chunk = String(decoding: slice, as: UTF8.self)
+        // The probe: any `D` mark proves the shell is emitting OSC 133, whoever caused it.
+        if shellIntegration == .probing, chunk.contains(Self.markPrefix + "D;") {
+            shellIntegration = .confirmed
+            drainQueuedAgentCommandsIfIdle()
+        }
         guard var pending = pendingAgentCommand else { return }
+        if pending.usesMarks {
+            pending.buffer += chunk
+            // Output is exactly what falls between the shell's own "output starts here" and
+            // "command finished" marks, so the prompt is excluded by construction rather than by
+            // filtering — the whole point of doing this properly.
+            guard let outputStart = pending.buffer.range(of: Self.markPrefix + "C" + Self.markTerminator) else {
+                pendingAgentCommand = pending
+                return
+            }
+            let afterStart = pending.buffer[outputStart.upperBound...]
+            guard let doneRange = afterStart.range(of: Self.markPrefix + "D;") else {
+                pendingAgentCommand = pending
+                return
+            }
+            let afterDone = afterStart[doneRange.upperBound...]
+            guard let terminator = afterDone.range(of: Self.markTerminator) else {
+                pendingAgentCommand = pending
+                return
+            }
+            let exitCode = Int(afterDone[afterDone.startIndex..<terminator.lowerBound]) ?? 0
+            var output = Self.strippingPromptEOLMark(
+                Self.stripANSI(String(afterStart[afterStart.startIndex..<doneRange.lowerBound]))
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            if output.isEmpty { output = "(no output)" }
+            if exitCode != 0 { output += "\n[exit code: \(exitCode)]" }
+            pendingAgentCommand = pending
+            finishPendingAgentCommand(output)
+            return
+        }
         // Stripped per-chunk, before accumulating — a shell that re-colors the line live as it
         // "types" (zsh-syntax-highlighting and similar) interleaves ANSI codes into the raw byte
         // stream mid-token, which can split the sentinel across escape sequences and make a
@@ -324,14 +415,40 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// Strips ANSI escape/control sequences from a raw PTY byte stream — best-effort, not a real
     /// terminal parser. The human's own ground truth is the actual, visible terminal; this is
     /// only what gets fed back to the model afterward as a tool result.
-    private static func stripANSI(_ raw: String) -> String {
-        // CSI (colors, cursor moves, bracketed-paste toggles like `\u{1B}[?2004l`), then OSC
-        // (`\u{1B}]0;title\u{07}` — zsh sets the window title on every prompt, which is what
-        // used to glue the echoed command and its real output into one unbroken run), then
-        // two-character escapes (`\u{1B}>`), then stray BELs.
+    /// zsh prints an inverse-video `%` (PROMPT_EOL_MARK) when the previous output didn't end in
+    /// a newline, and it emits it *before* precmd hooks run — so it lands inside the captured
+    /// region and would otherwise appear at the end of every tool result. Only a final line that
+    /// is exactly that marker is dropped; a command whose real last line is a lone `%` is
+    /// conceivable but not worth carrying the noise for.
+    static func strippingPromptEOLMark(_ output: String) -> String {
+        // Split on `isNewline`, never on the literal "\n": Swift treats "\r\n" as a *single*
+        // Character, so `split(separator: "\n")` doesn't split CRLF at all — the whole capture
+        // stayed one "line" and the marker was never found. (Same grapheme trap as the CRLF
+        // check in `unwrappableReason`; it bites anywhere terminal output is split by hand.)
+        // Trailing CR also has to be trimmed, since zsh emits `\r` and padding after the mark.
+        var lines = output.split(whereSeparator: { $0.isNewline })
+        while let last = lines.last {
+            let trimmed = last.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed == "%" || trimmed.isEmpty else { break }
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// OSC 133 semantic-prompt marks: `ESC ] 133 ; <kind> BEL`.
+    private static let markPrefix = "\u{1B}]133;"
+    private static let markTerminator = "\u{07}"
+
+    static func stripANSI(_ raw: String) -> String {
+        // Order matters. CSI first (colors, cursor moves, `\u{1B}[?2004l` bracketed paste), then
+        // the string-payload sequences — OSC/DCS/APC/PM — which carry text up to a BEL or ST
+        // terminator; zsh sets the window title with an OSC on every prompt, and leaving those
+        // in was what glued a command's echoed line to its real output. Only then the generic
+        // two-character escapes (`\u{1B}>`, `\u{1B}=` keypad modes), which is safe as a catch-all
+        // precisely because the sequences with payloads are already gone.
         var result = raw.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "\u{1B}\\][^\u{07}\u{1B}]*(\u{07}|\u{1B}\\\\)", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "\u{1B}[@-Z\\\\-_]", with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: "\u{1B}[\\]P^_][^\u{07}\u{1B}]*(\u{07}|\u{1B}\\\\)", with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: "\u{1B}.", with: "", options: .regularExpression)
         return result.replacingOccurrences(of: "\u{07}", with: "")
     }
 

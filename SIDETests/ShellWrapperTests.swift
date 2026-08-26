@@ -62,3 +62,45 @@ final class ShellWrapperTests: XCTestCase {
         XCTAssertTrue(reason!.contains("write_file"), "should point at the tool that does this properly")
     }
 }
+
+/// With shell integration, output is delimited by the shell's own OSC 133 marks, so the only
+/// post-processing left is removing zsh's end-of-line marker — which it emits *before* precmd,
+/// i.e. inside the captured region. These are the exact byte shapes observed from a real zsh
+/// with powerlevel10k.
+final class TerminalOutputCleanupTests: XCTestCase {
+    func testStripsPromptEOLMarkAfterCRLF() {
+        // Captured verbatim from a live session: output, CRLF, then the inverse-video `%`
+        // padded with spaces and reset with CRs.
+        let raw = "greeter.ts   index.js     mathUtils.ts\r\n\u{1B}[1m\u{1B}[7m%\u{1B}[27m\u{1B}[1m\u{1B}[0m                    \r \r"
+        let cleaned = TerminalViewController.strippingPromptEOLMark(TerminalViewController.stripANSI(raw))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(cleaned, "greeter.ts   index.js     mathUtils.ts")
+    }
+
+    /// CRLF is a single Swift Character, so hand-splitting on "\n" silently fails to split it —
+    /// the bug that made the marker survive twice.
+    func testMultiLineOutputSurvivesIntact() {
+        let raw = "one\r\ntwo\r\nthree\r\n\u{1B}[7m%\u{1B}[0m   \r \r"
+        let cleaned = TerminalViewController.strippingPromptEOLMark(TerminalViewController.stripANSI(raw))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(cleaned, "one\ntwo\nthree")
+    }
+
+    func testOutputWithoutMarkIsUnchanged() {
+        let raw = "plain output\r\n"
+        let cleaned = TerminalViewController.strippingPromptEOLMark(TerminalViewController.stripANSI(raw))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(cleaned, "plain output")
+    }
+
+    /// OSC sequences (zsh sets the window title every prompt) used to survive stripping and glue
+    /// separate lines together.
+    func testStripsOSCAndCSIAndBEL() {
+        let raw = "\u{1B}]0;title\u{07}hello\u{1B}[0m\u{07} world\u{1B}]1;tab\u{07}"
+        XCTAssertEqual(TerminalViewController.stripANSI(raw), "hello world")
+    }
+
+    func testStripsTwoCharacterEscapes() {
+        XCTAssertEqual(TerminalViewController.stripANSI("a\u{1B}>b\u{1B}[?2004lc"), "abc")
+    }
+}
