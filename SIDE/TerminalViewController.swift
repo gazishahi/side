@@ -59,10 +59,18 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private(set) var currentDirectory: String?
     private(set) var lastSubmittedCommand: String?
     /// Non-nil while an agent-submitted command is waiting for its sentinel to show up in the
-    /// output stream. One at a time per terminal — `run_shell_command` always pauses for
-    /// approval or executes synchronously-from-the-caller's-perspective before the next tool
-    /// call, so there's never a second command racing the first for this slot.
-    private var pendingAgentCommand: (sentinel: String, buffer: String, completion: (String) -> Void)?
+    /// output stream. Exactly one runs at a time per terminal — they share one visible shell, so
+    /// two commands typed simultaneously would interleave into nonsense — but "one at a time" is
+    /// enforced by `queuedAgentCommands` rather than assumed: a single batch can contain several
+    /// auto-runnable commands, and `AgentRunner` fires them in a loop without waiting. Before the
+    /// queue, the second call overwrote this slot and the first command's completion was never
+    /// called at all — a dropped `tool_result`, i.e. precisely the dangling-`tool_use` shape that
+    /// wedges a conversation.
+    private var pendingAgentCommand: (sentinel: String, buffer: String, command: String, completion: (String) -> Void)?
+    /// Commands waiting for the terminal to free up, in the order they were requested.
+    private var queuedAgentCommands: [(command: String, completion: (String) -> Void)] = []
+    /// Guards against a stale timeout resolving a *later* command that happens to occupy the slot.
+    private var pendingAgentCommandGeneration = 0
     private static let agentCommandTimeout: TimeInterval = 30
 
     /// (isAlive, exitCode) — exitCode is nil if the process never actually started or died
@@ -128,15 +136,110 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// visible terminal; this just stops blocking the conversation on it.
     func runAgentCommand(_ command: String, completion: @escaping (String) -> Void) {
         ensureStarted()
+        // Some commands can't be wrapped in a way that reliably reports completion. Saying so is
+        // far better than sending them and hanging until the timeout with a misleading answer.
+        if let reason = Self.unwrappableReason(for: command) {
+            completion(reason)
+            return
+        }
+        guard pendingAgentCommand == nil else {
+            queuedAgentCommands.append((command, completion))
+            return
+        }
+        startAgentCommand(command, completion: completion)
+    }
+
+    private func startAgentCommand(_ command: String, completion: @escaping (String) -> Void) {
         let sentinel = "__SIDE_AGENT_DONE_\(UUID().uuidString)__"
-        pendingAgentCommand = (sentinel, "", completion)
-        let wrapped = "\(command); echo \"\(sentinel):$?\"\r"
+        pendingAgentCommandGeneration += 1
+        let generation = pendingAgentCommandGeneration
+        pendingAgentCommand = (sentinel, "", command, completion)
+        // The sentinel goes on its *own* line rather than being appended after `;` — a command
+        // ending in a `#` comment used to swallow the appended echo entirely, so the command ran
+        // and then nothing ever reported it finished.
+        let wrapped = "\(command)\recho \"\(sentinel):$?\"\r"
         terminalView.send(source: terminalView, data: ArraySlice(Array(wrapped.utf8)))
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.agentCommandTimeout) { [weak self] in
-            guard let self, self.pendingAgentCommand?.sentinel == sentinel else { return }
-            self.pendingAgentCommand = nil
-            completion("Still running — check Run for output.")
+            guard let self, self.pendingAgentCommandGeneration == generation,
+                  self.pendingAgentCommand?.sentinel == sentinel else { return }
+            // Deliberately *not* interrupted: a slow build or test run is legitimate, and it
+            // keeps running in the real terminal where the user can watch it. The message says
+            // exactly that instead of the old "Still running — check Run for output," which
+            // implied output was available and said nothing about the command's fate.
+            self.finishPendingAgentCommand(
+                "No result after \(Int(Self.agentCommandTimeout))s. The command was NOT interrupted — it is still running in this track's terminal, where its output is visible. Do not assume it succeeded or failed; ask the user what it did, or run something that inspects the result."
+            )
         }
+    }
+
+    /// Resolves whatever command currently holds the slot and starts the next queued one.
+    private func finishPendingAgentCommand(_ output: String) {
+        guard let pending = pendingAgentCommand else { return }
+        pendingAgentCommand = nil
+        pending.completion(output)
+        guard !queuedAgentCommands.isEmpty else { return }
+        let next = queuedAgentCommands.removeFirst()
+        startAgentCommand(next.command, completion: next.completion)
+    }
+
+    /// Why this command can't be wrapped with a completion sentinel, or `nil` if it can.
+    ///
+    /// The wrapper submits the command, then a second line that echoes a sentinel and `$?`. That
+    /// only works if the shell finishes parsing the command at end-of-line. Anything that leaves
+    /// the shell waiting for continuation — an unbalanced quote, a trailing backslash, a heredoc,
+    /// an embedded newline — consumes the sentinel line as part of the command instead, so no
+    /// completion is ever reported.
+    static func unwrappableReason(for command: String) -> String? {
+        // Scalars, not Characters: Swift treats "\r\n" as a *single* grapheme cluster, so
+        // `contains("\n")` is false for CRLF and a command with Windows line endings would sail
+        // through this guard and hang the terminal waiting for continuation.
+        if command.unicodeScalars.contains(where: { $0 == "\n" || $0 == "\r" }) {
+            return "Not run: multi-line shell commands can't be tracked to completion here. Send a single-line command (join steps with `&&`), or use write_file to create file contents."
+        }
+        if command.contains("<<") {
+            return "Not run: heredocs can't be tracked to completion here. Use write_file to create file contents instead."
+        }
+        if command.hasSuffix("\\") {
+            return "Not run: a trailing backslash continues onto another line, which can't be tracked to completion here. Send the whole command on one line."
+        }
+        if hasUnbalancedQuotes(command) {
+            return "Not run: the command has an unterminated quote, so the shell would wait for more input instead of finishing. Check the quoting and send it again."
+        }
+        return nil
+    }
+
+    /// Tracks single/double quotes, honoring backslash escapes outside single quotes (inside
+    /// single quotes a backslash is literal, per POSIX).
+    private static func hasUnbalancedQuotes(_ command: String) -> Bool {
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        for character in command {
+            if escaped { escaped = false; continue }
+            switch character {
+            case "\\" where !inSingle: escaped = true
+            case "'" where !inDouble: inSingle.toggle()
+            case "\"" where !inSingle: inDouble.toggle()
+            default: break
+            }
+        }
+        return inSingle || inDouble
+    }
+
+    /// Interrupts a running agent command (Ctrl-C to the foreground process group) and reports it
+    /// truthfully. This is the cancellation path the runner's Stop uses — without it, a runaway
+    /// command had no way to be stopped except the user typing into the terminal themselves.
+    func interruptAgentCommand() {
+        guard pendingAgentCommand != nil else { return }
+        let queuedCount = queuedAgentCommands.count
+        queuedAgentCommands.removeAll()
+        // 0x03 = ETX, what Ctrl-C sends; the pty turns it into SIGINT for the foreground group.
+        terminalView.send(source: terminalView, data: ArraySlice([0x03]))
+        var message = "Interrupted by the user (Ctrl-C) before it reported a result. Whether it partially completed is unknown — check before assuming."
+        if queuedCount > 0 {
+            message += " \(queuedCount) queued command\(queuedCount == 1 ? "" : "s") were also cancelled and did not run."
+        }
+        finishPendingAgentCommand(message)
     }
 
     /// Waits for the sentinel *and* the `:<exit code>` that follows it (`echo` prints both on
@@ -158,39 +261,78 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // sentinel as one clean, contiguous line.
         pending.buffer += Self.stripANSI(String(decoding: slice, as: UTF8.self))
 
+        // Scan for `<sentinel>:<digits>` rather than reasoning about line structure.
+        //
+        // The buffer legitimately contains the sentinel more than once: the terminal echoes the
+        // line as it's "typed" (with `$?` still unexpanded), zsh may redraw it while
+        // highlighting, and only the final occurrence carries a real exit code. The previous
+        // approach — take everything up to the next newline and require it to be numeric — broke
+        // because the echoed line and the real output are *not* newline-separated in the raw
+        // stream: zsh emits OSC title sequences and other non-CSI escapes between them, which
+        // `stripANSI` didn't remove, so the echo and the result ran together as one "line". The
+        // scan then consumed the real `:0` as part of the echo's text and skipped past it, and
+        // the command never resolved. Matching digits directly is immune to that: `:$?` has no
+        // digits after the colon, `:0` does.
         var searchStart = pending.buffer.startIndex
         while let sentinelRange = pending.buffer.range(of: pending.sentinel, range: searchStart..<pending.buffer.endIndex) {
             let afterSentinel = pending.buffer[sentinelRange.upperBound...]
-            guard afterSentinel.hasPrefix(":") else {
+            guard afterSentinel.first == ":" else {
                 searchStart = sentinelRange.upperBound
                 continue
             }
-            guard let newlineIndex = afterSentinel.firstIndex(where: \.isNewline) else {
-                // This occurrence's line hasn't finished printing yet — it may still turn out to
-                // be the real completion line once more bytes arrive, so wait rather than skip.
+            let digitsStart = afterSentinel.index(after: afterSentinel.startIndex)
+            var cursor = digitsStart
+            while cursor < afterSentinel.endIndex, afterSentinel[cursor].isNumber {
+                cursor = afterSentinel.index(after: cursor)
+            }
+            guard cursor > digitsStart else {
+                // No digits — this is the input echo, where `$?` is still literal.
+                searchStart = sentinelRange.upperBound
+                continue
+            }
+            guard cursor < afterSentinel.endIndex else {
+                // Digits are still arriving; resolving now could read 1 out of a 130.
                 pendingAgentCommand = pending
                 return
             }
-            let exitCodeText = pending.buffer[afterSentinel.index(after: afterSentinel.startIndex)..<newlineIndex].trimmingCharacters(in: .whitespaces)
-            guard let exitCode = Int(exitCodeText) else {
-                // Unexpanded "$?" — this is the input echo, not real completion. Keep looking.
-                searchStart = newlineIndex
-                continue
-            }
-            var output = String(pending.buffer[pending.buffer.startIndex..<sentinelRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let exitCode = Int(afterSentinel[digitsStart..<cursor]) ?? 0
+            var output = Self.commandOutput(from: pending.buffer[pending.buffer.startIndex..<sentinelRange.lowerBound], sentinel: pending.sentinel, command: pending.command)
             if exitCode != 0 { output += "\n[exit code: \(exitCode)]" }
-            pendingAgentCommand = nil
-            pending.completion(output)
+            pendingAgentCommand = pending
+            finishPendingAgentCommand(output)
             return
         }
         pendingAgentCommand = pending
+    }
+
+    /// What the model should see: the command's own output, with the wrapper's echoed sentinel
+    /// lines removed so it never reads its own bookkeeping back as program output.
+    private static func commandOutput(from raw: Substring, sentinel: String, command: String) -> String {
+        // Split on *any* newline, CR included: zsh redraws a line in place with a bare `\r`
+        // rather than `\n`, so splitting on `\n` alone leaves the wrapper's echoed sentinel
+        // line and the command's real output inside one segment — and dropping that segment
+        // threw the output away, reporting "(no output)" for a command that had printed.
+        raw.split(whereSeparator: { $0.isNewline })
+            .filter { segment in
+                let trimmed = segment.trimmingCharacters(in: .whitespaces)
+                return !trimmed.isEmpty && !trimmed.contains(sentinel) && trimmed != command
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Strips ANSI escape/control sequences from a raw PTY byte stream — best-effort, not a real
     /// terminal parser. The human's own ground truth is the actual, visible terminal; this is
     /// only what gets fed back to the model afterward as a tool result.
     private static func stripANSI(_ raw: String) -> String {
-        raw.replacingOccurrences(of: "\u{1B}\\[[0-9;]*[a-zA-Z]", with: "", options: .regularExpression)
+        // CSI (colors, cursor moves, bracketed-paste toggles like `\u{1B}[?2004l`), then OSC
+        // (`\u{1B}]0;title\u{07}` — zsh sets the window title on every prompt, which is what
+        // used to glue the echoed command and its real output into one unbroken run), then
+        // two-character escapes (`\u{1B}>`), then stray BELs.
+        var result = raw.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: "\u{1B}\\][^\u{07}\u{1B}]*(\u{07}|\u{1B}\\\\)", with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: "\u{1B}[@-Z\\\\-_]", with: "", options: .regularExpression)
+        return result.replacingOccurrences(of: "\u{07}", with: "")
     }
 
     /// Kills the process without tearing down the view — used by "Stop", distinct from
@@ -285,6 +427,18 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         isAlive = false
+        // A command like `exit` kills the shell, so the sentinel can never print. Without this
+        // the call sat until the timeout and then claimed it was "still running" — of a shell
+        // that no longer existed.
+        if pendingAgentCommand != nil {
+            let queuedCount = queuedAgentCommands.count
+            queuedAgentCommands.removeAll()
+            var message = "The shell exited before reporting a result, so this command's outcome is unknown (a command that ends the shell — `exit`, `logout` — can't report back)."
+            if queuedCount > 0 {
+                message += " \(queuedCount) queued command\(queuedCount == 1 ? "" : "s") did not run."
+            }
+            finishPendingAgentCommand(message)
+        }
         onExitStatusChanged?(false, exitCode)
     }
 }

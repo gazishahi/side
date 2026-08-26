@@ -20,6 +20,9 @@ struct WorkspaceBridge: @unchecked Sendable {
     /// currently displayed (same as Run already does for ordinary background processes), so any
     /// window with this project open can serve it. See `ProjectContext.bridge(forTrackKey:)`.
     var runShellCommand: (String, @escaping (String) -> Void) -> Void
+    /// Interrupts whatever agent command is running for this track, if any. Nothing to fall back
+    /// to when no window is open — there is no terminal to interrupt.
+    var interruptShellCommand: () -> Void
 
     /// No window is currently both key and showing this track — reads fall back to disk, writes
     /// go straight to disk via `ProposedEditApplier`, and there's nowhere to jump to. Every one
@@ -31,7 +34,8 @@ struct WorkspaceBridge: @unchecked Sendable {
         liveBufferProvider: { _ in nil },
         applyEditIntoOpenTab: { _, _ in false },
         onRevealFileRequested: { _ in },
-        runShellCommand: { _, completion in completion("No window is open for this project — nowhere to run this command.") }
+        runShellCommand: { _, completion in completion("No window is open for this project — nowhere to run this command.") },
+        interruptShellCommand: {}
     )
 }
 
@@ -49,4 +53,5 @@ protocol WorkspaceBridgeHost: AnyObject {
     func applyApprovedEdit(url: URL, newContent: String) -> Bool
     func revealAfterApply(_ url: URL)
     func runShellCommand(_ command: String, trackKey: String, completion: @escaping (String) -> Void)
+    func interruptShellCommand(trackKey: String)
 }

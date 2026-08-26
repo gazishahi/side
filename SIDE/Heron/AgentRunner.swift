@@ -195,6 +195,11 @@ final class AgentRunner {
     func stop() {
         stopStallWatchdog()
         streamTask?.cancel()
+        // Stop has to reach the shell too. A command runs in the track's visible terminal and
+        // keeps running after its result is reported (or times out), so cancelling only the
+        // network stream left a runaway command with no stop path except the user typing Ctrl-C
+        // into the terminal themselves. The interrupt resolves the pending tool result honestly.
+        bridgeProvider().interruptShellCommand()
     }
 
     /// Called only when the last window watching this project closes (see

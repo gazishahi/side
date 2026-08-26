@@ -83,6 +83,9 @@ final class ProjectContext {
             runShellCommand: { [weak shellHost] command, completion in
                 guard let shellHost else { completion("No window is open for this project — nowhere to run this command."); return }
                 shellHost.runShellCommand(command, trackKey: trackKey, completion: completion)
+            },
+            interruptShellCommand: { [weak shellHost] in
+                shellHost?.interruptShellCommand(trackKey: trackKey)
             }
         )
     }

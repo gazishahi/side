@@ -97,11 +97,13 @@
 		A00000000000000000000201 = {isa = PBXBuildFile; fileRef = A00000000000000000000200; };
 		A00000000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UnifiedDiffTests.swift"; sourceTree = "<group>"; };
 		A00000000000000000000203 = {isa = PBXBuildFile; fileRef = A00000000000000000000202; };
+		A00000000000000000000215 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ShellWrapperTests.swift"; sourceTree = "<group>"; };
+		A00000000000000000000216 = {isa = PBXBuildFile; fileRef = A00000000000000000000215; };
 		A00000000000000000000213 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SessionRecoveryTests.swift"; sourceTree = "<group>"; };
 		A00000000000000000000214 = {isa = PBXBuildFile; fileRef = A00000000000000000000213; };
 		A00000000000000000000204 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SIDETests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A00000000000000000000205 = {isa = PBXGroup; children = (A00000000000000000000200, A00000000000000000000202, A00000000000000000000213); path = SIDETests; sourceTree = "<group>"; };
-		A00000000000000000000206 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000201, A00000000000000000000203, A00000000000000000000214,); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000205 = {isa = PBXGroup; children = (A00000000000000000000200, A00000000000000000000202, A00000000000000000000213, A00000000000000000000215); path = SIDETests; sourceTree = "<group>"; };
+		A00000000000000000000206 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000201, A00000000000000000000203, A00000000000000000000214, A00000000000000000000216,); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000207 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000208; buildPhases = (A00000000000000000000206,); buildRules = (); dependencies = (A00000000000000000000212,); name = SIDETests; productName = SIDETests; productReference = A00000000000000000000204; productType = "com.apple.product-type.bundle.unit-test"; };
 		A00000000000000000000208 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000209, A00000000000000000000210,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		A00000000000000000000209 = {isa = XCBuildConfiguration; buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.shahi.side.tests; PRODUCT_NAME = SIDETests; MACOSX_DEPLOYMENT_TARGET = 15.0; SWIFT_VERSION = 6.0; SWIFT_STRICT_CONCURRENCY = minimal; GENERATE_INFOPLIST_FILE = YES; CODE_SIGN_STYLE = Automatic; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Side.app/Contents/MacOS/Side"; BUNDLE_LOADER = "$(TEST_HOST)"; SWIFT_OBJC_BRIDGING_HEADER = ""; }; name = Debug; };

@@ -214,6 +214,15 @@ final class RunWorkspaceViewController: NSViewController {
     /// track is *currently displayed*): the agent may be running against a track this window
     /// isn't even looking at, and creating its session here must not steal focus or disturb
     /// whatever tab bar is currently on screen for a different track.
+    /// Cancellation path for an agent command — Ctrl-C into whichever session the agent is
+    /// actually using for this track, which is not necessarily the one on screen.
+    func interruptAgentCommand(trackKey: String) {
+        guard let list = sessionsByTrackKey[trackKey] else { return }
+        let index = activeSessionIndexByTrackKey[trackKey] ?? 0
+        guard list.indices.contains(index) else { return }
+        list[index].viewController.interruptAgentCommand()
+    }
+
     func runAgentCommand(_ command: String, cwd: URL, trackKey: String, completion: @escaping (String) -> Void) {
         var list = sessionsByTrackKey[trackKey] ?? []
         let targetIndex: Int
