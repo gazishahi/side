@@ -77,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "Preferences"
             window.isReleasedWhenClosed = false
-            window.contentViewController = PreferencesViewController()
+            window.contentViewController = PreferencesTabViewController()
             preferencesWindow = window
         }
         preferencesWindow?.center()

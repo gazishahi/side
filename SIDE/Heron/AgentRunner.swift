@@ -43,6 +43,12 @@ private struct PendingToolBatch {
 final class AgentRunner {
     let trackKey: String
     private let sessionStore: AgentSessionStore
+    /// Which project's ledger this runner's token usage is filed under.
+    private let projectPath: String
+    /// The model the in-flight request went out to — captured when the stream starts so a
+    /// usage report is filed against the model that actually produced it, even if the user
+    /// switches models while it's streaming.
+    private var activeModelId = ""
     /// Resolved fresh on every use, never captured once — see `WorkspaceBridge`.
     private let bridgeProvider: () -> WorkspaceBridge
     /// The directory this track's tools actually operate in — its linked worktree if it has one,
@@ -101,11 +107,13 @@ final class AgentRunner {
     private static let stallTimeout: TimeInterval = 90
 
     init(
-        trackKey: String, sessionStore: AgentSessionStore, bridgeProvider: @escaping () -> WorkspaceBridge,
+        trackKey: String, sessionStore: AgentSessionStore, projectPath: String,
+        bridgeProvider: @escaping () -> WorkspaceBridge,
         rootProvider: @escaping () -> URL, autoRunCommandsProvider: @escaping () -> Bool
     ) {
         self.trackKey = trackKey
         self.sessionStore = sessionStore
+        self.projectPath = projectPath
         self.bridgeProvider = bridgeProvider
         self.rootProvider = rootProvider
         self.autoRunCommandsProvider = autoRunCommandsProvider
@@ -402,6 +410,7 @@ final class AgentRunner {
             return
         }
         setPhase(.streaming)
+        activeModelId = model.id
         armStallWatchdog()
         pendingAssistantText = ""
         pendingToolCalls = []
@@ -453,9 +462,19 @@ final class AgentRunner {
         case .error(let error):
             appendEntry(.failure(error.message))
             didReceiveProviderError = true
-        case .messageEnd(let stopReason, _):
+        case .messageEnd(let stopReason, let usage):
             didReceiveMessageEnd = true
             lastStopReason = stopReason
+            // Every round trip is billed separately, so this accumulates per streamed turn
+            // rather than per user message — a reply that chains four tool calls reports four
+            // times, which is what the provider actually charges for.
+            if let usage {
+                UsageStore.shared.record(
+                    projectPath: projectPath, trackKey: trackKey,
+                    providerId: ProviderRegistryStore.shared.activeProviderId,
+                    modelId: activeModelId, usage: usage
+                )
+            }
         }
     }
 

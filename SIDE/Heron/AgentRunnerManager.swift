@@ -7,6 +7,9 @@ import Foundation
 @MainActor
 final class AgentRunnerManager {
     private let sessionStore: AgentSessionStore
+    /// The project these runners belong to, used to file their token usage — the *project* root,
+    /// not a track's worktree, so usage rolls up per project no matter which worktree ran it.
+    private let projectPath: String
     private let bridgeProvider: (String) -> WorkspaceBridge
     /// Resolves the directory a track's tools should actually operate in — its linked worktree
     /// if it has one, else the shared project root. Resolved fresh per tool call (see
@@ -30,8 +33,9 @@ final class AgentRunnerManager {
     private var debounceWorkItem: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.2
 
-    init(sessionStore: AgentSessionStore, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, autoRunCommandsProvider: @escaping (String) -> Bool) {
+    init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, autoRunCommandsProvider: @escaping (String) -> Bool) {
         self.sessionStore = sessionStore
+        self.projectPath = projectPath
         self.bridgeProvider = bridgeProvider
         self.rootProvider = rootProvider
         self.autoRunCommandsProvider = autoRunCommandsProvider
@@ -67,6 +71,7 @@ final class AgentRunnerManager {
         let runner = AgentRunner(
             trackKey: trackKey,
             sessionStore: sessionStore,
+            projectPath: projectPath,
             bridgeProvider: { [bridgeProvider] in bridgeProvider(trackKey) },
             rootProvider: { [rootProvider] in rootProvider(trackKey) },
             autoRunCommandsProvider: { [autoRunCommandsProvider] in autoRunCommandsProvider(trackKey) }

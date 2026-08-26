@@ -272,3 +272,23 @@ private final class AddProviderForm {
         )
     }
 }
+
+/// The Preferences window's shell. Preferences was a single flat pane while providers were the
+/// only thing configurable; usage accounting is a second, unrelated concern, so the two get
+/// their own tabs rather than one scrolling wall.
+final class PreferencesTabViewController: NSTabViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tabStyle = .toolbar
+
+        let providers = NSTabViewItem(viewController: PreferencesViewController())
+        providers.label = "Providers"
+        providers.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: "Providers")
+        addTabViewItem(providers)
+
+        let usage = NSTabViewItem(viewController: UsageViewController())
+        usage.label = "Usage"
+        usage.image = NSImage(systemSymbolName: "chart.bar", accessibilityDescription: "Usage")
+        addTabViewItem(usage)
+    }
+}

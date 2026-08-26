@@ -114,6 +114,9 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             self.makeVC.forgetLastFile(forTrackKey: track.branchName)
             self.runVC.discardSessions(forTrackKey: track.branchName)
             self.projectContext?.sessionStore.removeSession(forTrackKey: track.branchName)
+            if let projectPath = self.projectContext?.projectRoot.path {
+                UsageStore.shared.removeUsage(projectPath: projectPath, trackKey: track.branchName)
+            }
             self.projectContext?.runnerManager.discardRunner(forTrackKey: track.branchName)
         }
         show(.make)
@@ -413,7 +416,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             makeVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
             runVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
         }
-        thinkVC.configure(runnerManager: context.runnerManager, trackKey: currentTrackKey)
+        thinkVC.configure(runnerManager: context.runnerManager, projectPath: context.projectRoot.path, trackKey: currentTrackKey)
         reviewVC.configure(trackStore: store, sessionStore: context.sessionStore, canonicalRoot: url)
         reviewVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
         // Registered rather than assigned: `store` may already be shared with another window

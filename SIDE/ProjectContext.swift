@@ -19,6 +19,7 @@ final class ProjectContext {
         let fallbackRoot = projectRoot
         return AgentRunnerManager(
             sessionStore: sessionStore,
+            projectPath: fallbackRoot.path,
             bridgeProvider: { [weak self] trackKey in self?.bridge(forTrackKey: trackKey) ?? .none },
             rootProvider: { [weak self] trackKey in self?.workingDirectory(forTrackKey: trackKey) ?? fallbackRoot },
             autoRunCommandsProvider: { [weak self] trackKey in self?.trackStore.tracks.first { $0.branchName == trackKey }?.autoRunCommands ?? false }

@@ -25,6 +25,9 @@ final class ThinkWorkspaceViewController: NSViewController {
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
 
     private var runnerManager: AgentRunnerManager?
+    /// Which project's usage the header reports — set alongside `runnerManager`.
+    private var projectPath: String?
+    private var usageObserverToken: UUID?
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
     private var attachedTrackKey: String?
     private var runner: AgentRunner?
@@ -99,7 +102,18 @@ final class ThinkWorkspaceViewController: NSViewController {
             composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
         ])
 
+        // The header's token/cost figures come from a store the runner writes to directly, so
+        // they need their own refresh signal — a run's usage lands after `.phaseChanged`, not
+        // with it.
+        usageObserverToken = UsageStore.shared.addChangeObserver { [weak self] in
+            self?.refreshModelLabel()
+        }
+
         renderFull()
+    }
+
+    deinit {
+        if let usageObserverToken { UsageStore.shared.removeChangeObserver(usageObserverToken) }
     }
 
     /// Same responder-chain lesson Make/Tracks already learned: without explicitly claiming
@@ -124,8 +138,9 @@ final class ThinkWorkspaceViewController: NSViewController {
 
     // MARK: - Project/track wiring (ShellViewController calls these)
 
-    func configure(runnerManager: AgentRunnerManager, trackKey: String?) {
+    func configure(runnerManager: AgentRunnerManager, projectPath: String, trackKey: String?) {
         self.runnerManager = runnerManager
+        self.projectPath = projectPath
         attach(trackKey: trackKey)
     }
 
@@ -210,7 +225,26 @@ final class ThinkWorkspaceViewController: NSViewController {
         let registry = ProviderRegistryStore.shared
         guard let definition = registry.provider(for: registry.activeProviderId) else { return }
         let modelName = definition.models.first { $0.id == definition.defaultModelId }?.displayName ?? definition.defaultModelId
-        modelLabel.stringValue = "\(definition.displayName) · \(modelName)"
+        var label = "\(definition.displayName) · \(modelName)"
+        // What this track has spent so far, right where the model it spent it on is named. Cost
+        // is appended only when every model this track used has a published price — a partial
+        // figure presented as a total would mislead in exactly the direction that matters.
+        if let projectPath {
+            let trackKey = attachedTrackKey ?? ""
+            let totals = UsageStore.shared.totals(projectPath: projectPath, trackKey: trackKey)
+            if totals.totalTokens > 0 {
+                label += "  ·  \(UsageFormatting.tokens(totals.totalTokens)) tokens"
+                let priced = UsageStore.shared.records.filter {
+                    $0.projectPath == projectPath && $0.trackKey == trackKey
+                }
+                if priced.allSatisfy({ ModelPricing.isPriced(modelId: $0.modelId) }) {
+                    let cost = priced.reduce(0.0) { $0 + (ModelPricing.estimatedCost(modelId: $1.modelId, totals: $1.totals) ?? 0) }
+                    label += "  ·  ~\(UsageFormatting.cost(cost))"
+                }
+            }
+        }
+        modelLabel.stringValue = label
+        modelLabel.toolTip = "Estimated spend for this track. Prices are approximate."
     }
 
     // MARK: - Transcript rendering
