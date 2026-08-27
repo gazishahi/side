@@ -3,7 +3,7 @@ import AppKit
 final class LineNumberGutterView: NSView {
     private weak var textView: NSTextView?
     private weak var scrollView: NSScrollView?
-    private let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    private let font = DS.Text.code(11, weight: .regular)
     static let width: CGFloat = 44
     var lineDiffMarks: [Int: GitDiffMark] = [:] { didSet { needsDisplay = true } }
     var onMarkClicked: ((Int, GitDiffMark, NSEvent) -> Void)?

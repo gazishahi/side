@@ -29,7 +29,7 @@ final class PreferencesViewController: NSViewController {
         super.viewDidLoad()
 
         let title = NSTextField(labelWithString: "Model Providers")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.font = DS.Text.heading(.semibold)
 
         providerPopup.target = self
         providerPopup.action = #selector(providerSelectionChanged)
@@ -45,11 +45,11 @@ final class PreferencesViewController: NSViewController {
         providerRow.orientation = .horizontal
         providerRow.spacing = 8
 
-        baseURLLabel.font = .systemFont(ofSize: 11)
+        baseURLLabel.font = DS.Text.caption()
         baseURLLabel.textColor = .secondaryLabelColor
 
         keyField.placeholderString = "sk-…"
-        keyField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        keyField.font = DS.Text.code(12, weight: .regular)
         keyField.translatesAutoresizingMaskIntoConstraints = false
         keyField.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
@@ -70,11 +70,11 @@ final class PreferencesViewController: NSViewController {
         keyRow.orientation = .horizontal
         keyRow.spacing = 8
 
-        keyStatusLabel.font = .systemFont(ofSize: 11)
+        keyStatusLabel.font = DS.Text.caption()
         keyStatusLabel.textColor = .secondaryLabelColor
 
         let modelLabel = NSTextField(labelWithString: "Default model:")
-        modelLabel.font = .systemFont(ofSize: 12)
+        modelLabel.font = DS.Text.control()
         modelPopup.target = self
         modelPopup.action = #selector(modelChanged)
         let modelRow = NSStackView(views: [modelLabel, modelPopup])
@@ -290,6 +290,11 @@ final class PreferencesTabViewController: NSTabViewController {
         usage.label = "Usage"
         usage.image = NSImage(systemSymbolName: "chart.bar", accessibilityDescription: "Usage")
         addTabViewItem(usage)
+
+        let appearance = NSTabViewItem(viewController: AppearanceViewController())
+        appearance.label = "Appearance"
+        appearance.image = NSImage(systemSymbolName: "textformat.size", accessibilityDescription: "Appearance")
+        addTabViewItem(appearance)
 
         let history = NSTabViewItem(viewController: HistoryViewController())
         history.label = "History"

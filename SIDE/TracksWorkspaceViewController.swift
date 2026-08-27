@@ -74,6 +74,8 @@ final class TracksWorkspaceViewController: NSViewController {
     /// sync), so it calls this instead of this controller wiring either callback itself.
     func refresh() { refreshUI() }
 
+    @objc private func textScaleChanged() { refreshUI() }
+
     /// ShellViewController supplies this — it owns the cross-stage guard (unsaved Make edits)
     /// and decides what happens after a successful switch (land on Make). `nil` in the
     /// completion means the switch failed or was cancelled; otherwise it carries what happened
@@ -148,6 +150,10 @@ final class TracksWorkspaceViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         buildView()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textScaleChanged),
+            name: DS.Text.scaleDidChangeNotification, object: nil
+        )
     }
 
     private func buildView() {
@@ -165,10 +171,10 @@ final class TracksWorkspaceViewController: NSViewController {
         showArchivedButton.target = self
         showArchivedButton.action = #selector(showArchivedToggled)
 
-        archivedCountLabel.font = .systemFont(ofSize: 11)
+        archivedCountLabel.font = DS.Text.caption()
         archivedCountLabel.textColor = .tertiaryLabelColor
 
-        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.font = DS.Text.caption()
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.alphaValue = 0
@@ -287,7 +293,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let families = families()
         if needsYou.isEmpty && families.isEmpty {
             let empty = NSTextField(labelWithString: "No tracks yet — create one to get started.")
-            empty.font = .systemFont(ofSize: 12.5)
+            empty.font = DS.Text.body()
             empty.textColor = .tertiaryLabelColor
             contentStack.addArrangedSubview(empty)
             empty.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
@@ -373,7 +379,7 @@ final class TracksWorkspaceViewController: NSViewController {
         groupStack.spacing = 7
 
         let labelField = NSTextField(labelWithString: label)
-        labelField.font = .systemFont(ofSize: 12, weight: .semibold)
+        labelField.font = DS.Text.control(.semibold)
         labelField.textColor = .secondaryLabelColor
         groupStack.addArrangedSubview(labelField)
 
@@ -546,7 +552,7 @@ final class TracksWorkspaceViewController: NSViewController {
         ])
 
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 12.5)
+        label.font = DS.Text.body()
         label.textColor = .labelColor
         label.lineBreakMode = .byTruncatingTail
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1146,12 +1152,12 @@ private final class TrackRowView: NSView {
         wantsLayer = true
 
         let intentLabel = NSTextField(labelWithString: intentText)
-        intentLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        intentLabel.font = DS.Text.heading(.semibold)
         intentLabel.textColor = .labelColor
         intentLabel.lineBreakMode = .byTruncatingTail
 
         let branchLabel = NSTextField(labelWithString: branchText)
-        branchLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        branchLabel.font = DS.Text.code(11, weight: .regular)
         branchLabel.textColor = .secondaryLabelColor
 
         let chip = NSView()
@@ -1177,7 +1183,7 @@ private final class TrackRowView: NSView {
         statusPill.layer?.cornerRadius = 4
         statusPill.translatesAutoresizingMaskIntoConstraints = false
         let statusLabel = NSTextField(labelWithString: TracksPalette.statusText(for: status))
-        statusLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        statusLabel.font = DS.Text.micro(.semibold)
         statusLabel.textColor = statusColor
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusPill.addSubview(statusLabel)
@@ -1189,20 +1195,20 @@ private final class TrackRowView: NSView {
         ])
 
         let sepLabel = NSTextField(labelWithString: "\u{00B7}")
-        sepLabel.font = .systemFont(ofSize: 11.5)
+        sepLabel.font = DS.Text.caption()
         sepLabel.textColor = .tertiaryLabelColor
 
         let metaLabel = NSTextField(labelWithString: metaText)
-        metaLabel.font = .systemFont(ofSize: 11.5)
+        metaLabel.font = DS.Text.caption()
         metaLabel.textColor = .secondaryLabelColor
 
         var metaRowViews: [NSView] = [statusPill, chip, sepLabel, metaLabel]
         if let chipInfo = Self.agentChipInfo(for: activity) {
             let agentSep = NSTextField(labelWithString: "\u{00B7}")
-            agentSep.font = .systemFont(ofSize: 11.5)
+            agentSep.font = DS.Text.caption()
             agentSep.textColor = .tertiaryLabelColor
             let agentLabel = NSTextField(labelWithString: chipInfo.text)
-            agentLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+            agentLabel.font = DS.Text.caption(.medium)
             agentLabel.textColor = chipInfo.color
             metaRowViews.append(contentsOf: [agentSep, agentLabel])
         }
@@ -1227,7 +1233,7 @@ private final class TrackRowView: NSView {
         }
 
         menuButton.isBordered = false
-        menuButton.font = .systemFont(ofSize: 13)
+        menuButton.font = DS.Text.heading()
         menuButton.contentTintColor = .secondaryLabelColor
         menuButton.target = self
         menuButton.action = #selector(handleMenuTapped)

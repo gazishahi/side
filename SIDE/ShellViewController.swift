@@ -175,7 +175,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         stageControl.target = self
         stageControl.action = #selector(stageChanged(_:))
 
-        projectLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        projectLabel.font = DS.Text.control(.medium)
         projectLabel.textColor = .secondaryLabelColor
         projectLabel.lineBreakMode = .byTruncatingMiddle
 

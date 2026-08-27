@@ -48,12 +48,18 @@ final class UsageViewController: NSViewController {
         ])
 
         usageObserverToken = UsageStore.shared.addChangeObserver { [weak self] in self?.render() }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textScaleChanged),
+            name: DS.Text.scaleDidChangeNotification, object: nil
+        )
         render()
     }
 
     deinit {
         if let usageObserverToken { UsageStore.shared.removeChangeObserver(usageObserverToken) }
     }
+
+    @objc private func textScaleChanged() { render() }
 
     // MARK: - Rendering
 
@@ -67,7 +73,7 @@ final class UsageViewController: NSViewController {
         let grand = store.grandTotal()
         guard grand.totalTokens > 0 else {
             let empty = NSTextField(wrappingLabelWithString: "No agent runs recorded yet. Token usage appears here after the first Think conversation.")
-            empty.font = .systemFont(ofSize: 12.5)
+            empty.font = DS.Text.body()
             empty.textColor = .tertiaryLabelColor
             contentStack.addArrangedSubview(empty)
             // A budget is worth setting *before* spending anything, so this section shows up on
@@ -156,7 +162,7 @@ final class UsageViewController: NSViewController {
         card.addSubview(figures)
 
         let note = NSTextField(wrappingLabelWithString: "Cost is an estimate from published list prices and won't match your bill exactly. Models with no price here contribute tokens but no cost.")
-        note.font = .systemFont(ofSize: 11)
+        note.font = DS.Text.caption()
         note.textColor = .tertiaryLabelColor
         note.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(note)
@@ -176,10 +182,10 @@ final class UsageViewController: NSViewController {
 
     private func makeFigure(value: String, caption: String) -> NSView {
         let valueLabel = NSTextField(labelWithString: value)
-        valueLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+        valueLabel.font = DS.Text.figure(.semibold)
         valueLabel.textColor = .labelColor
         let captionLabel = NSTextField(wrappingLabelWithString: caption)
-        captionLabel.font = .systemFont(ofSize: 10.5)
+        captionLabel.font = DS.Text.micro()
         captionLabel.textColor = .secondaryLabelColor
 
         let stack = NSStackView(views: [valueLabel, captionLabel])
@@ -191,7 +197,7 @@ final class UsageViewController: NSViewController {
 
     private func makeSectionTitle(_ text: String) -> NSView {
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.font = DS.Text.heading(.semibold)
         return label
     }
 
@@ -207,10 +213,10 @@ final class UsageViewController: NSViewController {
 
     private func makeRow(title: String, subtitle: String, totals: UsageTotals, cost: Double?) -> NSView {
         let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 12)
+        titleLabel.font = DS.Text.control()
         titleLabel.lineBreakMode = .byTruncatingTail
         let subtitleLabel = NSTextField(labelWithString: subtitle)
-        subtitleLabel.font = .systemFont(ofSize: 10.5)
+        subtitleLabel.font = DS.Text.micro()
         subtitleLabel.textColor = .tertiaryLabelColor
         subtitleLabel.lineBreakMode = .byTruncatingMiddle
         subtitleLabel.toolTip = subtitle
@@ -268,10 +274,10 @@ final class UsageViewController: NSViewController {
     /// of what it does and doesn't guarantee.
     private func makeBudgetControls() -> NSView {
         let label = NSTextField(labelWithString: "Stop sending above:")
-        label.font = .systemFont(ofSize: 12)
+        label.font = DS.Text.control()
 
         budgetField.placeholderString = "No limit"
-        budgetField.font = .systemFont(ofSize: 12)
+        budgetField.font = DS.Text.control()
         budgetField.alignment = .right
         budgetField.target = self
         budgetField.action = #selector(budgetChanged)
@@ -280,9 +286,9 @@ final class UsageViewController: NSViewController {
         budgetField.stringValue = UsageBudget.monthlyLimitUSD.map { String(format: "%.2f", $0) } ?? ""
 
         let dollar = NSTextField(labelWithString: "$")
-        dollar.font = .systemFont(ofSize: 12)
+        dollar.font = DS.Text.control()
         let perMonth = NSTextField(labelWithString: "per month")
-        perMonth.font = .systemFont(ofSize: 12)
+        perMonth.font = DS.Text.control()
         perMonth.textColor = .secondaryLabelColor
 
         let row = NSStackView(views: [label, dollar, budgetField, perMonth])
@@ -291,7 +297,7 @@ final class UsageViewController: NSViewController {
         row.spacing = 6
 
         let statusLabel = NSTextField(wrappingLabelWithString: budgetStatusText())
-        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.font = DS.Text.caption()
         statusLabel.textColor = budgetStatusColor()
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true

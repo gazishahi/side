@@ -51,6 +51,84 @@ enum DS {
         static let bubble: CGFloat = 17
     }
 
+    /// Text sizes as named roles rather than magic numbers, all scaled by one user-controlled
+    /// factor.
+    ///
+    /// The app was built on ~60 hardcoded `NSFont.systemFont(ofSize:)` calls, which means someone
+    /// who needs larger text has no recourse at all: macOS has no app-wide Dynamic Type to fall
+    /// back on the way iOS does, so "use the system setting" isn't an answer here. The scale below
+    /// is the answer, and these roles are what makes it apply everywhere at once instead of
+    /// requiring 60 edits per adjustment.
+    ///
+    /// Sizes are the ones already in use, named — deliberately not a redesign. `scale` multiplies
+    /// them; `Scale.standard` is 1.0, so the default build renders identically to before.
+    enum Text {
+        /// Multiplier applied to every role below. Persisted, app-wide, and the only knob.
+        enum Scale: Double, CaseIterable {
+            case compact = 0.9
+            case standard = 1.0
+            case large = 1.15
+            case larger = 1.3
+
+            private static let defaultsKey = "SideTextScale"
+
+            var displayName: String {
+                switch self {
+                case .compact: return "Compact"
+                case .standard: return "Default"
+                case .large: return "Large"
+                case .larger: return "Larger"
+                }
+            }
+
+            static var current: Scale {
+                get {
+                    let stored = UserDefaults.standard.double(forKey: defaultsKey)
+                    return Scale(rawValue: stored) ?? .standard
+                }
+                set {
+                    guard newValue != current else { return }
+                    UserDefaults.standard.set(newValue.rawValue, forKey: defaultsKey)
+                    NotificationCenter.default.post(name: Text.scaleDidChangeNotification, object: nil)
+                }
+            }
+        }
+
+        /// Views that cache fonts (or set them once at build time) listen for this and restyle.
+        /// A text-size change that only applied to windows opened afterwards would be the kind of
+        /// half-measure that makes the setting untrustworthy.
+        static let scaleDidChangeNotification = Notification.Name("SideTextScaleDidChange")
+
+        private static func scaled(_ size: CGFloat) -> CGFloat {
+            (size * Scale.current.rawValue).rounded(.toNearestOrEven)
+        }
+
+        // MARK: Roles
+
+        /// The one-per-screen empty-state line ("No file open").
+        static func display(_ weight: NSFont.Weight = .medium) -> NSFont { .systemFont(ofSize: scaled(25), weight: weight) }
+        /// Supporting line under a display headline.
+        static func subtitle(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(14), weight: weight) }
+        /// Stage headings — Review's track name, Tracks' title.
+        static func title(_ weight: NSFont.Weight = .semibold) -> NSFont { .systemFont(ofSize: scaled(17), weight: weight) }
+        /// Section headings inside a stage, and Preferences pane titles.
+        static func heading(_ weight: NSFont.Weight = .semibold) -> NSFont { .systemFont(ofSize: scaled(13), weight: weight) }
+        /// Default running text: Think bubbles, explainers, list rows.
+        static func body(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(12.5), weight: weight) }
+        /// Controls and dense rows where body would crowd — table cells, popup labels.
+        static func control(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(12), weight: weight) }
+        /// Secondary/supporting text: captions, status lines, hints.
+        static func caption(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(11), weight: weight) }
+        /// The smallest thing allowed to carry meaning — badges, column headers.
+        static func micro(_ weight: NSFont.Weight = .medium) -> NSFont { .systemFont(ofSize: scaled(10.5), weight: weight) }
+        /// One big number — the Usage pane's figures.
+        static func figure(_ weight: NSFont.Weight = .semibold) -> NSFont { .systemFont(ofSize: scaled(20), weight: weight) }
+        /// Code, diffs, terminal-adjacent text, and anything that must stay column-aligned.
+        static func code(_ size: CGFloat = 12, weight: NSFont.Weight = .regular) -> NSFont {
+            .monospacedSystemFont(ofSize: scaled(size), weight: weight)
+        }
+    }
+
     enum Motion {
         /// The standard arrival: rise, fade, slight scale — Think's bubbles set the reference
         /// feel, everything else that appears reuses it. Purely a layer animation over the

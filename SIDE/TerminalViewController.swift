@@ -16,6 +16,7 @@ final class SideTerminalView: LocalProcessTerminalView {
     /// actual bytes.
     var onRawDataReceived: ((ArraySlice<UInt8>) -> Void)?
     private var currentLineBuffer = ""
+    private var accessibilityUpdateWorkItem: DispatchWorkItem?
 
     override func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         if onFileLinkRequested?(link) == true { return }
@@ -47,6 +48,56 @@ final class SideTerminalView: LocalProcessTerminalView {
         onDataReceived?()
         onRawDataReceived?(slice)
         super.dataReceived(slice: slice)
+        scheduleAccessibilityValueUpdate()
+    }
+
+    // MARK: - Accessibility
+
+    /// SwiftTerm ships an `AccessibilityService` for UIKit but nothing for AppKit, so the whole
+    /// Run stage was a hole in the AX tree: an inspector saw the window and a scrollbar, and
+    /// none of the terminal's text or prompt. Typing worked; reading the result didn't — which
+    /// makes Run unusable with VoiceOver no matter how well the keyboard path behaves.
+    ///
+    /// Exposed as one text area whose value is the visible screen (plus a bounded slice of
+    /// scrollback), rather than an element per row: rows are transient — a redraw replaces them
+    /// wholesale — and an element per row would churn the tree on every frame of output.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+    override func accessibilityLabel() -> String? { "Terminal" }
+    override func accessibilityHelp() -> String? {
+        "Terminal output. Type to send input to the shell."
+    }
+    override func accessibilityValue() -> Any? { accessibleText() }
+    override func accessibilityNumberOfCharacters() -> Int { accessibleText().count }
+    override func isAccessibilityEnabled() -> Bool { true }
+
+    /// The screen as text: every visible row, trailing blanks trimmed, empty trailing rows
+    /// dropped so a mostly-empty screen doesn't read as a wall of silence.
+    private func accessibleText() -> String {
+        guard let terminal = terminal else { return "" }
+        var lines: [String] = []
+        for row in 0..<terminal.rows {
+            guard let line = terminal.getLine(row: row) else { continue }
+            lines.append(line.translateToString(trimRight: true))
+        }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Output arrives byte-by-byte; posting a value-changed notification per chunk would make
+    /// VoiceOver stutter over its own announcements. Coalesced to one notification per quiet
+    /// moment, which is also when the text is worth reading.
+    private func scheduleAccessibilityValueUpdate() {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        accessibilityUpdateWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            NSAccessibility.post(element: self, notification: .valueChanged)
+        }
+        accessibilityUpdateWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
     }
 }
 
@@ -73,6 +124,8 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// still `.probing` wait rather than committing to the wrong capture strategy.
     private enum ShellIntegration { case probing, confirmed, unavailable }
     private var shellIntegration: ShellIntegration = .probing
+    /// One-shot guard for `tidyAfterSetup()`.
+    private var didTidyAfterSetup = false
     /// Guards against a stale timeout resolving a *later* command that happens to occupy the slot.
     private var pendingAgentCommandGeneration = 0
     private static let agentCommandTimeout: TimeInterval = 30
@@ -133,6 +186,19 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         installShellIntegration(shell: shell)
     }
 
+    /// Wipes the echoed setup line once the shell has confirmed it took effect.
+    ///
+    /// Sends Ctrl-L rather than a `clear` command or a locally-fed escape sequence: the shell's
+    /// own clear-screen redraws the prompt (and preserves anything half-typed), where feeding an
+    /// escape would leave the screen blank until the user pressed Return, and typing `clear`
+    /// would just echo a second line of our own noise. Only fires once, and only for the
+    /// startup install — a user's own Ctrl-L habit isn't something to duplicate.
+    private func tidyAfterSetup() {
+        guard !didTidyAfterSetup else { return }
+        didTidyAfterSetup = true
+        terminalView.send(source: terminalView, data: ArraySlice([0x0C]))
+    }
+
     /// Asks the shell to emit OSC 133 semantic-prompt marks — the same protocol VS Code, iTerm2,
     /// and WezTerm use — so a command's output can be delimited exactly instead of guessed at.
     ///
@@ -161,8 +227,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             shellIntegration = .unavailable
             return
         }
-        // A space prefix keeps it out of history when HIST_IGNORE_SPACE is set; it stays visible
-        // in the terminal either way, which is consistent with never running hidden commands.
+        // A space prefix keeps it out of history when HIST_IGNORE_SPACE is set. The line itself
+        // is echoed by the shell — Side never runs anything hidden — and `tidyAfterSetup()`
+        // then clears it away so the user's session doesn't open on two paragraphs of our
+        // plumbing.
         terminalView.send(source: terminalView, data: ArraySlice(Array((" " + setup + "\r").utf8)))
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             guard let self, self.shellIntegration == .probing else { return }
@@ -313,6 +381,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // The probe: any `D` mark proves the shell is emitting OSC 133, whoever caused it.
         if shellIntegration == .probing, chunk.contains(Self.markPrefix + "D;") {
             shellIntegration = .confirmed
+            tidyAfterSetup()
             drainQueuedAgentCommandsIfIdle()
         }
         guard var pending = pendingAgentCommand else { return }

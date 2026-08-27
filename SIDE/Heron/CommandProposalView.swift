@@ -27,15 +27,15 @@ final class CommandProposalView: NSView {
         layer?.backgroundColor = DS.Color.bg1.cgColor
 
         headerLabel.stringValue = "Run in terminal"
-        headerLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        headerLabel.font = DS.Text.control(.semibold)
 
         commandLabel.stringValue = command.command
-        commandLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        commandLabel.font = DS.Text.code(12, weight: .regular)
         commandLabel.textColor = .labelColor
         commandLabel.isSelectable = true
         commandLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        warningLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        warningLabel.font = DS.Text.caption(.semibold)
         warningLabel.textColor = .systemRed
         warningLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -66,7 +66,7 @@ final class CommandProposalView: NSView {
         rejectButton.target = self
         rejectButton.action = #selector(rejectTapped)
 
-        resolutionLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        resolutionLabel.font = DS.Text.caption(.medium)
         resolutionLabel.isHidden = true
 
         buttonRow.orientation = .horizontal

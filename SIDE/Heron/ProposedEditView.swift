@@ -28,7 +28,7 @@ final class ProposedEditView: NSView {
         let delta = edit.addedLineCount
         let deltaText = delta == 0 ? "" : (delta > 0 ? "  +\(delta) lines" : "  \(delta) lines")
         headerLabel.stringValue = "\(action) \(edit.relativePath)\(deltaText)"
-        headerLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        headerLabel.font = DS.Text.control(.semibold)
         headerLabel.lineBreakMode = .byTruncatingMiddle
 
         // Same renderer as Review's per-file cards — line-number gutters and full-line tints,
@@ -49,7 +49,7 @@ final class ProposedEditView: NSView {
         rejectButton.target = self
         rejectButton.action = #selector(rejectTapped)
 
-        resolutionLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        resolutionLabel.font = DS.Text.caption(.medium)
         resolutionLabel.isHidden = true
 
         buttonRow.orientation = .horizontal

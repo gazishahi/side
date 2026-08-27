@@ -44,7 +44,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         view.wantsLayer = true
         ChromeBackground.install(in: view)
 
-        modelLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        modelLabel.font = DS.Text.caption(.medium)
         modelLabel.textColor = .secondaryLabelColor
         modelLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(modelLabel)
@@ -71,7 +71,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         composer.onAction = { [weak self] in self?.composerActionTapped() }
         view.addSubview(composer)
 
-        emptyStateLabel.font = .systemFont(ofSize: 12.5)
+        emptyStateLabel.font = DS.Text.body()
         emptyStateLabel.textColor = .tertiaryLabelColor
         emptyStateLabel.alignment = .center
         emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -113,6 +113,13 @@ final class ThinkWorkspaceViewController: NSViewController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(conversationsDeleted),
             name: HistoryViewController.conversationsDeletedNotification, object: nil
+        )
+        // Fonts are set when each entry view is built, so a text-size change only reaches an
+        // open transcript by rebuilding it. A setting that applied to future windows only is a
+        // setting people stop trusting.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textScaleChanged),
+            name: DS.Text.scaleDidChangeNotification, object: nil
         )
 
         renderFull()
@@ -225,6 +232,11 @@ final class ThinkWorkspaceViewController: NSViewController {
         composer.placeholder = awaitingApproval
             ? "Apply or reject the proposed change above to continue…"
             : "Ask about this project…"
+    }
+
+    @objc private func textScaleChanged() {
+        refreshModelLabel()
+        renderFull()
     }
 
     @objc private func conversationsDeleted() {
@@ -349,7 +361,7 @@ final class ThinkWorkspaceViewController: NSViewController {
     private func makeEntryView(_ entry: RunTranscriptEntry) -> NSView {
         switch entry.kind {
         case .meta(let text):
-            return makeLabel(text, font: .systemFont(ofSize: 12), color: .tertiaryLabelColor)
+            return makeLabel(text, font: DS.Text.control(), color: .tertiaryLabelColor)
         case .userText(let text):
             // iMessage-shaped: sent messages are solid-accent bubbles hugging their own content
             // against the trailing edge; no "You" header — the side and color carry that.
@@ -359,9 +371,9 @@ final class ThinkWorkspaceViewController: NSViewController {
             let bubble = TextBlockView(style: .received, body: text, maxBubbleWidth: 620)
             return BubbleRowView(bubble: bubble, alignRight: false)
         case .toolCall(let name, let summary):
-            return makeLabel("→ \(name)\(summary)", font: .monospacedSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
+            return makeLabel("→ \(name)\(summary)", font: DS.Text.code(11, weight: .regular), color: .secondaryLabelColor)
         case .toolResult(let text, let isError):
-            return makeLabel(text, font: .monospacedSystemFont(ofSize: 11, weight: .regular), color: isError ? .systemOrange : .secondaryLabelColor)
+            return makeLabel(text, font: DS.Text.code(11, weight: .regular), color: isError ? .systemOrange : .secondaryLabelColor)
         case .failure(let text):
             let bubble = TextBlockView(style: .error, body: text, maxBubbleWidth: 620)
             return BubbleRowView(bubble: bubble, alignRight: false)
@@ -419,7 +431,7 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// project is open at all, since `configure` is always called before this stage is visible
     /// once a project exists.
     private func appendLocalNotice(_ text: String) {
-        addBlock(makeLabel(text, font: .systemFont(ofSize: 12), color: .tertiaryLabelColor), topSpacing: transcriptStack.arrangedSubviews.isEmpty ? 0 : 8)
+        addBlock(makeLabel(text, font: DS.Text.control(), color: .tertiaryLabelColor), topSpacing: transcriptStack.arrangedSubviews.isEmpty ? 0 : 8)
     }
 
     private func makeLabel(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
@@ -509,7 +521,7 @@ private final class TextBlockView: NSView {
         var topConstant = Self.insets.top
         if case .error = style {
             let headerLabel = NSTextField(labelWithString: "Error")
-            headerLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+            headerLabel.font = DS.Text.caption(.semibold)
             headerLabel.textColor = .systemRed
             headerLabel.translatesAutoresizingMaskIntoConstraints = false
             addSubview(headerLabel)
@@ -543,7 +555,7 @@ private final class TextBlockView: NSView {
 
     func setBody(_ text: String) {
         plainText = text
-        let rendered = NSMutableAttributedString(attributedString: MarkdownRenderer.render(text, baseFont: .systemFont(ofSize: 13), textColor: style.textColor))
+        let rendered = NSMutableAttributedString(attributedString: MarkdownRenderer.render(text, baseFont: DS.Text.heading(), textColor: style.textColor))
         // The renderer terminates every block with "\n\n" — fine in a document preview, but in
         // a bubble that trailing run becomes visible empty space below the last line.
         while rendered.length > 0, let last = rendered.string.last, last.isNewline || last == " " {
@@ -705,7 +717,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         layer?.borderColor = DS.Color.hairline.cgColor
         layer?.backgroundColor = DS.Color.bg1.cgColor
 
-        textView.font = .systemFont(ofSize: 13)
+        textView.font = DS.Text.heading()
         textView.drawsBackground = false
         textView.isRichText = false
         textView.allowsUndo = true
@@ -718,7 +730,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         scroll.hasVerticalScroller = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        placeholderLabel.font = .systemFont(ofSize: 13)
+        placeholderLabel.font = DS.Text.heading()
         placeholderLabel.textColor = .tertiaryLabelColor
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
         placeholderLabel.lineBreakMode = .byTruncatingTail

@@ -14,10 +14,10 @@ final class HistoryViewController: NSViewController {
         super.viewDidLoad()
 
         let title = NSTextField(labelWithString: "Conversation History")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.font = DS.Text.heading(.semibold)
 
         let explainer = NSTextField(wrappingLabelWithString: "Think conversations are stored in each project's own git directory, including the file contents and command output the agent read along the way. That history is also re-sent to your configured model provider on every message in the conversation. Credential-shaped values are replaced before either happens.")
-        explainer.font = .systemFont(ofSize: 11.5)
+        explainer.font = DS.Text.caption()
         explainer.textColor = .secondaryLabelColor
         explainer.translatesAutoresizingMaskIntoConstraints = false
         explainer.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true
@@ -31,13 +31,13 @@ final class HistoryViewController: NSViewController {
         retentionPopup.action = #selector(retentionChanged)
 
         let retentionLabel = NSTextField(labelWithString: "Keep conversations:")
-        retentionLabel.font = .systemFont(ofSize: 12)
+        retentionLabel.font = DS.Text.control()
         let retentionRow = NSStackView(views: [retentionLabel, retentionPopup])
         retentionRow.orientation = .horizontal
         retentionRow.spacing = 8
 
         let retentionNote = NSTextField(wrappingLabelWithString: "Expired conversations are removed the next time you open that project. Checkpoints are kept either way — they're the record of what an agent actually changed, and they point at real commits.")
-        retentionNote.font = .systemFont(ofSize: 11)
+        retentionNote.font = DS.Text.caption()
         retentionNote.textColor = .tertiaryLabelColor
         retentionNote.translatesAutoresizingMaskIntoConstraints = false
         retentionNote.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true

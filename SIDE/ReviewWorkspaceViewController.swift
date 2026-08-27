@@ -56,16 +56,20 @@ final class ReviewWorkspaceViewController: NSViewController {
         super.viewDidLoad()
         view.wantsLayer = true
         view.layer?.backgroundColor = DS.Color.chrome.cgColor
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textScaleChanged),
+            name: DS.Text.scaleDidChangeNotification, object: nil
+        )
 
-        emptyStateLabel.font = .systemFont(ofSize: 13)
+        emptyStateLabel.font = DS.Text.heading()
         emptyStateLabel.textColor = .tertiaryLabelColor
         emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.font = DS.Text.title(.semibold)
 
         Self.styleChip(branchChip, branchChipLabel)
         Self.styleChip(baseChip, baseChipLabel)
-        arrowLabel.font = .systemFont(ofSize: 11)
+        arrowLabel.font = DS.Text.caption()
         arrowLabel.textColor = .tertiaryLabelColor
         subtitleRow.orientation = .horizontal
         subtitleRow.alignment = .centerY
@@ -75,14 +79,14 @@ final class ReviewWorkspaceViewController: NSViewController {
         subtitleRow.addArrangedSubview(baseChip)
         subtitleRow.translatesAutoresizingMaskIntoConstraints = false
 
-        checkpointsHeader.font = .systemFont(ofSize: 12, weight: .semibold)
+        checkpointsHeader.font = DS.Text.control(.semibold)
         checkpointsHeader.textColor = .secondaryLabelColor
         checkpointsStack.orientation = .vertical
         checkpointsStack.alignment = .leading
         checkpointsStack.spacing = 8
         checkpointsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        diffHeader.font = .systemFont(ofSize: 12, weight: .semibold)
+        diffHeader.font = DS.Text.control(.semibold)
         diffHeader.textColor = .secondaryLabelColor
 
 
@@ -91,7 +95,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         promoteButton.contentTintColor = .controlAccentColor
         promoteButton.target = self
         promoteButton.action = #selector(promoteTapped)
-        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.font = DS.Text.caption()
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.maximumNumberOfLines = 2
@@ -173,6 +177,8 @@ final class ReviewWorkspaceViewController: NSViewController {
         scrollView.isHidden = empty
     }
 
+    @objc private func textScaleChanged() { refresh() }
+
     private func refresh() {
         guard isViewLoaded, let track = currentTrack, let trackStore else {
             showEmptyState(true)
@@ -230,7 +236,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         card.layer?.backgroundColor = ReviewPalette.cardBackground.cgColor
 
         let intentLabel = NSTextField(wrappingLabelWithString: checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)
-        intentLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        intentLabel.font = DS.Text.body(.medium)
         intentLabel.translatesAutoresizingMaskIntoConstraints = false
 
         var metaParts: [String] = [Self.relativeTime(checkpoint.createdAt)]
@@ -242,7 +248,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             metaParts.append("\(checkpoint.commandsRun.count) command\(checkpoint.commandsRun.count == 1 ? "" : "s")")
         }
         let metaLabel = NSTextField(labelWithString: metaParts.joined(separator: " · "))
-        metaLabel.font = .systemFont(ofSize: 11)
+        metaLabel.font = DS.Text.caption()
         metaLabel.textColor = .secondaryLabelColor
         metaLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -265,7 +271,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         chip.layer?.backgroundColor = ReviewPalette.chip.cgColor
         chip.layer?.cornerRadius = 4
         chip.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        label.font = DS.Text.code(11, weight: .regular)
         label.textColor = .secondaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         chip.addSubview(label)
@@ -379,7 +385,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     private static func makeMetaLabel(_ text: String) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: text)
-        label.font = .systemFont(ofSize: 12)
+        label.font = DS.Text.control()
         label.textColor = .tertiaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         return label

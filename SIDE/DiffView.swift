@@ -148,7 +148,7 @@ final class DiffViewer: NSStackView {
     func renderLoading() {
         arrangedSubviews.forEach { $0.removeFromSuperview() }
         let loading = NSTextField(labelWithString: "Loading diff…")
-        loading.font = .systemFont(ofSize: 12)
+        loading.font = DS.Text.control()
         loading.textColor = .tertiaryLabelColor
         addArrangedSubview(loading)
     }
@@ -158,7 +158,7 @@ final class DiffViewer: NSStackView {
         let diff = UnifiedDiff.parse(diffText)
         guard !diff.files.isEmpty else {
             let empty = NSTextField(labelWithString: "No changes against this base.")
-            empty.font = .systemFont(ofSize: 12)
+            empty.font = DS.Text.control()
             empty.textColor = .tertiaryLabelColor
             addArrangedSubview(empty)
             return
@@ -176,6 +176,7 @@ final class DiffViewer: NSStackView {
 final class DiffFileCardView: NSView {
     private let bodyScroll = NSScrollView()
     private let chevron = NSImageView()
+    private let headerButton = HeaderClickView()
     private var isCollapsed = false
     private var bodyHeightConstraint: NSLayoutConstraint?
     private let bodyHeight: CGFloat
@@ -205,7 +206,7 @@ final class DiffFileCardView: NSView {
         chevron.wantsLayer = true
 
         let pathLabel = NSTextField(labelWithString: file.path)
-        pathLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
+        pathLabel.font = DS.Text.code(12, weight: .semibold)
         pathLabel.textColor = .labelColor
         pathLabel.lineBreakMode = .byTruncatingMiddle
 
@@ -215,14 +216,14 @@ final class DiffFileCardView: NSView {
             NSAttributedString(
                 string: "+\(file.addedCount)",
                 attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+                    .font: DS.Text.code(11, weight: .semibold),
                     .foregroundColor: Self.addedText,
                 ]))
         countsText.append(
             NSAttributedString(
                 string: "  −\(file.removedCount)",
                 attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+                    .font: DS.Text.code(11, weight: .semibold),
                     .foregroundColor: Self.removedText,
                 ]))
         counts.attributedStringValue = countsText
@@ -230,7 +231,7 @@ final class DiffFileCardView: NSView {
         var headerViews: [NSView] = [chevron, pathLabel]
         if file.isNew || file.isDeleted {
             let badge = NSTextField(labelWithString: file.isNew ? "NEW" : "DELETED")
-            badge.font = .systemFont(ofSize: 9.5, weight: .bold)
+            badge.font = DS.Text.micro(.bold)
             badge.textColor = file.isNew ? Self.addedText : Self.removedText
             headerViews.append(badge)
         }
@@ -245,8 +246,9 @@ final class DiffFileCardView: NSView {
             spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         }
 
-        let headerButton = HeaderClickView()
         headerButton.onClick = { [weak self] in self?.toggleCollapsed() }
+        headerButton.fileDescription = Self.accessibilityDescription(for: file)
+        headerButton.isCollapsed = false
         headerButton.translatesAutoresizingMaskIntoConstraints = false
         headerButton.addSubview(header)
 
@@ -294,8 +296,23 @@ final class DiffFileCardView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Reads the way someone would say it out loud, and leads with the filename so a rotor
+    /// list of these is scannable: "greeter.ts, 12 added, 3 removed, new file".
+    private static func accessibilityDescription(for file: UnifiedDiff.File) -> String {
+        var parts = [file.path]
+        parts.append(file.addedCount == 1 ? "1 line added" : "\(file.addedCount) lines added")
+        parts.append(file.removedCount == 1 ? "1 line removed" : "\(file.removedCount) lines removed")
+        if file.isNew { parts.append("new file") }
+        if file.isDeleted { parts.append("deleted file") }
+        return parts.joined(separator: ", ")
+    }
+
     private func toggleCollapsed() {
         isCollapsed.toggle()
+        headerButton.isCollapsed = isCollapsed
+        // Without this, VoiceOver keeps reading the state it was told at build time — the
+        // element's own value changed, and nothing else announces it.
+        NSAccessibility.post(element: headerButton, notification: .valueChanged)
         // Rotate the chevron a quarter turn rather than swapping glyphs — same duration as the
         // fold itself so the two read as one gesture.
         if let layer = chevron.layer {
@@ -344,7 +361,7 @@ enum DiffBody {
     /// which would melt on a thousand-line diff.
     static func attributedBody(hunks: [UnifiedDiff.Hunk]) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let font = DS.Text.code(11, weight: .regular)
         let numberColor = NSColor(white: 0.42, alpha: 1)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byClipping
@@ -398,6 +415,12 @@ enum DiffBody {
 /// (not just the chevron glyph) toggles the fold.
 private final class HeaderClickView: NSView {
     var onClick: (() -> Void)?
+    /// Everything the header says visually, so the AX label can say it too. "Toggle diff" told
+    /// a screen-reader user there was a control here but not what it acted on — with a dozen
+    /// cards on a Review page that's a dozen identical, useless announcements.
+    var fileDescription = ""
+    var isCollapsed = false
+
     override func mouseDown(with event: NSEvent) { onClick?() }
     /// The path/count labels inside the header would otherwise swallow the click — same
     /// route-decorative-hits-to-the-row trick TrackRowView uses.
@@ -407,8 +430,16 @@ private final class HeaderClickView: NSView {
 
     // Hand-rolled click target — invisible and dead to accessibility without these.
     override func isAccessibilityElement() -> Bool { true }
+    /// A disclosure triangle is what it behaves like, and the role is what tells VoiceOver to
+    /// read the expanded state at all.
     override func accessibilityRole() -> NSAccessibility.Role? { .disclosureTriangle }
-    override func accessibilityLabel() -> String? { "Toggle diff" }
+    override func accessibilityLabel() -> String? { fileDescription }
+    override func accessibilityValue() -> Any? { isCollapsed ? "collapsed" : "expanded" }
+    /// Named for the *effect*, which is what a rotor's action list shows.
+    override func accessibilityActionDescription(_ action: NSAccessibility.Action) -> String? {
+        action == .press ? (isCollapsed ? "Expand" : "Collapse") : nil
+    }
+    override func isAccessibilityExpanded() -> Bool { !isCollapsed }
     override func accessibilityPerformPress() -> Bool {
         onClick?()
         return true

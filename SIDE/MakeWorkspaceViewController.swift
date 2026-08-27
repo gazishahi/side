@@ -123,7 +123,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
     private static let editorBackground = NSColor(white: 0.098, alpha: 1)
-    private static let editorFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+    private static let editorFont = DS.Text.code(14, weight: .regular)
     private static let editorTextColor = NSColor(white: 0.85, alpha: 1)
 
     override func loadView() { view = NSView() }
@@ -216,7 +216,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tabScroll.documentView = tabBarStack
         tabBar.addSubview(tabScroll)
         view.addSubview(tabBar)
-        noFileLabel.font = .systemFont(ofSize: 12.5)
+        noFileLabel.font = DS.Text.body()
         noFileLabel.textColor = .tertiaryLabelColor
         noFileLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(noFileLabel)
@@ -314,10 +314,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(markdownPreviewScroll)
 
         let headline = NSTextField(labelWithString: "Open a project")
-        headline.font = .systemFont(ofSize: 25, weight: .medium)
+        headline.font = DS.Text.display(.medium)
         headline.alignment = .center
         let detail = NSTextField(wrappingLabelWithString: "Start with the code. Side will restore this workspace when you come back.")
-        detail.font = .systemFont(ofSize: 14)
+        detail.font = DS.Text.subtitle()
         detail.textColor = .secondaryLabelColor
         detail.alignment = .center
         detail.maximumNumberOfLines = 2
@@ -868,7 +868,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.imageView = icon
             text.translatesAutoresizingMaskIntoConstraints = false
             icon.translatesAutoresizingMaskIntoConstraints = false
-            text.font = .systemFont(ofSize: 12)
+            text.font = DS.Text.control()
             text.lineBreakMode = .byTruncatingMiddle
             cell.addSubview(icon)
             cell.addSubview(text)
@@ -971,7 +971,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let recents = recentProjects()
         guard !recents.isEmpty else { return }
         let label = NSTextField(labelWithString: "Recent Projects")
-        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.font = DS.Text.caption(.semibold)
         label.textColor = .tertiaryLabelColor
         recentProjectsStack.addArrangedSubview(label)
         recentProjectsStack.setCustomSpacing(8, after: label)
@@ -990,7 +990,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             nameButton.identifier = NSUserInterfaceItemIdentifier(url.path)
 
             let pathLabel = NSTextField(labelWithString: abbreviatedParentPath(of: url))
-            pathLabel.font = .systemFont(ofSize: 11)
+            pathLabel.font = DS.Text.caption()
             pathLabel.textColor = .tertiaryLabelColor
             pathLabel.lineBreakMode = .byTruncatingMiddle
             pathLabel.maximumNumberOfLines = 1
@@ -2144,7 +2144,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             if cell.textField == nil {
                 cell.textField = text
                 text.translatesAutoresizingMaskIntoConstraints = false
-                text.font = .systemFont(ofSize: 12)
+                text.font = DS.Text.control()
                 text.lineBreakMode = .byTruncatingTail
                 cell.addSubview(text)
                 NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
@@ -2164,7 +2164,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             if cell.textField == nil {
                 cell.textField = text
                 text.translatesAutoresizingMaskIntoConstraints = false
-                text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+                text.font = DS.Text.code(12, weight: .regular)
                 text.lineBreakMode = .byTruncatingTail
                 cell.addSubview(text)
                 NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
@@ -2188,7 +2188,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if cell.textField == nil {
             cell.textField = text
             text.translatesAutoresizingMaskIntoConstraints = false
-            text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            text.font = DS.Text.code(12, weight: .regular)
             text.lineBreakMode = .byTruncatingMiddle
             cell.addSubview(text)
             NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
@@ -3147,7 +3147,7 @@ final class TabChipView: NSView {
     override var isFlipped: Bool { true }
 
     override var intrinsicContentSize: NSSize {
-        let font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        let font = DS.Text.control(isActive ? .semibold : .regular)
         let textWidth = min((title as NSString).size(withAttributes: [.font: font]).width, Self.maxTextWidth)
         return NSSize(width: textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2, height: Self.height)
     }
@@ -3228,7 +3228,7 @@ final class TabChipView: NSView {
         let dimmed = isDead ? 0.35 : 1.0
         let attributes: [NSAttributedString.Key: Any] = [
             .foregroundColor: (isActive ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.55, alpha: 1)).withAlphaComponent(dimmed),
-            .font: NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+            .font: DS.Text.control(isActive ? .semibold : .regular)
         ]
         let text = title as NSString
         let size = text.size(withAttributes: attributes)
