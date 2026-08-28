@@ -38,8 +38,23 @@ final class ProjectFileIndex {
 
     /// Best matches for a partial path, ranked by the same fuzzy scorer Quick Open uses so
     /// `@thvc` finds `ThinkWorkspaceViewController.swift` here too.
+    ///
+    /// An *empty* query (a bare `@`) is answered with the shallowest paths, alphabetically —
+    /// enumeration order is an implementation detail of the filesystem walk and would look
+    /// random. Shallow-first puts a project's top-level files where someone typing `@` with
+    /// nothing in mind is most likely to be heading.
     func matches(for query: String, limit: Int = 12) -> [String] {
-        guard !query.isEmpty else { return Array(relativePaths.prefix(limit)) }
+        guard !query.isEmpty else {
+            return relativePaths
+                .sorted { left, right in
+                    let leftDepth = left.filter { $0 == "/" }.count
+                    let rightDepth = right.filter { $0 == "/" }.count
+                    if leftDepth != rightDepth { return leftDepth < rightDepth }
+                    return left.localizedStandardCompare(right) == .orderedAscending
+                }
+                .prefix(limit)
+                .map { $0 }
+        }
         return relativePaths
             .compactMap { path in FuzzyMatcher.score(query: query, candidate: path).map { (path, $0) } }
             .sorted { $0.1 > $1.1 }

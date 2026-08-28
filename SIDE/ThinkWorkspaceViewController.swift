@@ -42,6 +42,8 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// changes — a track's worktree is its own directory, so the candidate list has to follow.
     private let fileIndex = ProjectFileIndex()
     private var usageObserverToken: UUID?
+    /// Set by `ShellViewController` — Think can't reach Make directly, and shouldn't.
+    var onRevealFileRequested: ((URL) -> Void)?
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
     private var attachedTrackKey: String?
     private var runner: AgentRunner?
@@ -400,6 +402,18 @@ final class ThinkWorkspaceViewController: NSViewController {
         fileIndex.refresh(root: url) {}
     }
 
+    /// Opens a clicked mention in Make, resolved against the same directory the mention itself
+    /// resolved against. Silently does nothing for a path that no longer exists — a stale
+    /// mention in old scrollback shouldn't produce an error dialog years later.
+    private func openMentionedFile(_ path: String) {
+        guard let projectPath else { return }
+        let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath
+        let url = URL(fileURLWithPath: root).appendingPathComponent(path)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { return }
+        onRevealFileRequested?(url)
+    }
+
     private func currentMode() -> AgentMode {
         trackStore?.mode(forTrackKey: attachedTrackKey ?? "") ?? .default
     }
@@ -578,9 +592,13 @@ final class ThinkWorkspaceViewController: NSViewController {
             // iMessage-shaped: sent messages are solid-accent bubbles hugging their own content
             // against the trailing edge; no "You" header — the side and color carry that.
             let bubble = TextBlockView(style: .sent, body: text, maxBubbleWidth: 460)
+            bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
             return BubbleRowView(bubble: bubble, alignRight: true)
         case .assistantText(let text):
             let bubble = TextBlockView(style: .received, body: text, maxBubbleWidth: 620)
+            // The agent quotes paths back constantly; making those live too means "@" and a
+            // plain mention behave the same wherever they appear.
+            bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
             return BubbleRowView(bubble: bubble, alignRight: false)
         case .toolCall(let name, let summary):
             return makeLabel("→ \(name)\(summary)", font: DS.Text.code(11, weight: .regular), color: .secondaryLabelColor)
@@ -706,6 +724,10 @@ private final class TextBlockView: NSView {
     }
 
     private let bodyLabel = NSTextField(wrappingLabelWithString: "")
+    /// Called with a project-relative path when a mention in this bubble is clicked. Set by the
+    /// row builder; nil for bubbles where mentions aren't meaningful.
+    var onMentionClicked: ((String) -> Void)?
+    private var mentionRanges: [(range: NSRange, path: String)] = []
     private let style: Style
     private let maxBubbleWidth: CGFloat
     private let bodyWidthConstraint: NSLayoutConstraint
@@ -758,6 +780,67 @@ private final class TextBlockView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Claims clicks that land on a mention, and only those.
+    ///
+    /// Needed because `bodyLabel` is selectable, and a selectable `NSTextField` consumes
+    /// `mouseDown` before the bubble ever sees it — the first version of this looked wired up and
+    /// did nothing. Everything outside a mention still falls through to the label, so selecting
+    /// and copying message text is unaffected.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard onMentionClicked != nil, !mentionRanges.isEmpty else { return super.hitTest(point) }
+        let local = superview.map { convert(point, from: $0) } ?? point
+        let inLabel = bodyLabel.convert(local, from: self)
+        if bodyLabel.bounds.contains(inLabel), mentionPath(at: inLabel) != nil { return self }
+        return super.hitTest(point)
+    }
+
+    /// Hit-tests the click against the laid-out glyphs rather than a stored rect, so it stays
+    /// correct after the bubble is re-measured on a streamed delta or a window resize.
+    override func mouseDown(with event: NSEvent) {
+        guard onMentionClicked != nil, !mentionRanges.isEmpty else { return super.mouseDown(with: event) }
+        let point = bodyLabel.convert(event.locationInWindow, from: nil)
+        guard bodyLabel.bounds.contains(point),
+              let path = mentionPath(at: point) else { return super.mouseDown(with: event) }
+        onMentionClicked?(path)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard onMentionClicked != nil else { return }
+        // A pointing hand is the only cue that these are live; without it the underline just
+        // looks decorative.
+        for (range, _) in mentionRanges {
+            for rect in glyphRects(for: range) {
+                addCursorRect(convert(rect, from: bodyLabel), cursor: .pointingHand)
+            }
+        }
+    }
+
+    private func mentionPath(at point: NSPoint) -> String? {
+        for (range, path) in mentionRanges where glyphRects(for: range).contains(where: { $0.contains(point) }) {
+            return path
+        }
+        return nil
+    }
+
+    /// Lays the bubble's attributed text out in a throwaway text stack to find where a range
+    /// actually drew. `NSTextField` exposes no glyph geometry of its own.
+    private func glyphRects(for range: NSRange) -> [NSRect] {
+        let storage = NSTextStorage(attributedString: bodyLabel.attributedStringValue)
+        let container = NSTextContainer(size: NSSize(width: bodyWidthConstraint.constant, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        let layout = NSLayoutManager()
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        let glyphRange = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        var rects: [NSRect] = []
+        layout.enumerateEnclosingRects(forGlyphRange: glyphRange, withinSelectedGlyphRange: glyphRange, in: container) { rect, _ in
+            rects.append(rect)
+        }
+        return rects
+    }
+
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
     override func accessibilityLabel() -> String? { plainText }
@@ -772,6 +855,22 @@ private final class TextBlockView: NSView {
         // a bubble that trailing run becomes visible empty space below the last line.
         while rendered.length > 0, let last = rendered.string.last, last.isNewline || last == " " {
             rendered.deleteCharacters(in: NSRange(location: rendered.length - 1, length: 1))
+        }
+        // Mentions read as references and act like them: tinted, underlined, and clickable
+        // straight into Make. Styling the *rendered* string (rather than the source) keeps the
+        // ranges aligned with what's actually on screen after markdown processing.
+        mentionRanges = []
+        for range in FileMentionResolver.tokenRanges(in: rendered.string) {
+            let token = (rendered.string as NSString).substring(with: range)
+            let path = String(token.dropFirst())
+            mentionRanges.append((range, path))
+            rendered.addAttributes([
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                // On the accent-filled sent bubble, accent-on-accent would vanish; white already
+                // reads as emphasis there, so underline carries it instead.
+                .foregroundColor: style == .sent ? NSColor.white : NSColor.controlAccentColor,
+                .font: DS.Text.code(11.5, weight: .medium),
+            ], range: range)
         }
         bodyLabel.attributedStringValue = rendered
         // Hug the content: measure the rendered text against the cap and clamp the label to
@@ -1026,6 +1125,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         placeholderLabel.isHidden = !textView.string.isEmpty
         updateMentionPopup()
+        highlightMentions()
         guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
         let used = layoutManager.usedRect(for: textContainer).height
@@ -1064,11 +1164,32 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         return true
     }
 
+    /// Tints `@…` tokens so a mention reads as a reference rather than as prose.
+    ///
+    /// Applied as *temporary* layout attributes, not to the text storage: editing storage inside
+    /// a change notification is how the earlier recursion crash happened, and temporary
+    /// attributes exist precisely for transient styling like this. They also can't end up in the
+    /// text the user copies out.
+    private func highlightMentions() {
+        guard let layoutManager = textView.layoutManager else { return }
+        let full = NSRange(location: 0, length: (textView.string as NSString).length)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: full)
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+        for range in FileMentionResolver.tokenRanges(in: textView.string) {
+            layoutManager.addTemporaryAttributes([
+                .foregroundColor: NSColor.controlAccentColor,
+                .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.12),
+            ], forCharacterRange: range)
+        }
+    }
+
     /// Shows or hides the candidate list for whatever mention is under the caret. Only ever
     /// *displays* — the text is untouched until someone accepts a row, which is what keeps this
     /// from fighting the keystrokes that triggered it.
     private func updateMentionPopup() {
-        guard let range = textView.mentionRange, range.length > 1, let mentionCandidates else {
+        // `length >= 1` — a bare `@` opens the list immediately, which is what every other
+        // harness does and what someone typing `@` is asking for.
+        guard let range = textView.mentionRange, range.length >= 1, let mentionCandidates else {
             return mentionPopup.hide()
         }
         let token = (textView.string as NSString).substring(with: range)

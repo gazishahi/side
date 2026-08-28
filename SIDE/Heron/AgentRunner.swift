@@ -206,19 +206,15 @@ final class AgentRunner {
             appendMissingKeyHint()
             return
         }
-        // `@path` mentions travel as *paths*, appended as a short note — never as inlined file
-        // content, which would be re-sent on every later turn and persisted forever. See
-        // `FileMentionResolver`.
-        let resolution = FileMentionResolver.resolve(text: trimmed, projectRoot: rootProvider())
-        let note = FileMentionResolver.contextNote(mentions: resolution.mentions, unresolved: resolution.unresolved)
-        let sentText = note.map { "\(trimmed)\n\n\($0)" } ?? trimmed
-
+        // What's persisted is exactly what the user typed. The `@`-mention note is *not* stored
+        // with it: a stored note shows up in the bubble when the transcript is rebuilt from disk
+        // (the live transcript and the reloaded one disagreed, which is how this was caught), and
+        // it would freeze the resolution — a path that didn't exist when the message was sent
+        // would stay "doesn't exist" forever. It's attached per request instead, in `runTurn`.
         sessionStore.appendTurn(
-            AgentTurn(role: .user, content: [.text(sentText)]),
+            AgentTurn(role: .user, content: [.text(trimmed)]),
             trackKey: trackKey, providerId: selection.providerId, modelId: model.id
         )
-        // The transcript shows what the *user* wrote; the resolved-path note is plumbing, and
-        // showing it would make every mention look like the app talking back at you.
         appendEntry(.userText(trimmed))
         runTurn(roundTrip: 0)
     }
@@ -455,7 +451,19 @@ final class AgentRunner {
         lastStopReason = nil
         didReceiveProviderError = false
 
-        let messages = session.turns.map { AgentMessage(role: $0.role, content: $0.content) }
+        // Mentions resolve here, against the project as it is *now*, and the note rides along
+        // with the most recent user message rather than being baked into stored history. Paths
+        // only — never file contents; see `FileMentionResolver`.
+        var messages = session.turns.map { AgentMessage(role: $0.role, content: $0.content) }
+        if let lastUserIndex = messages.lastIndex(where: { $0.role == .user }),
+           case .text(let userText)? = messages[lastUserIndex].content.first(where: { if case .text = $0 { return true } else { return false } }) {
+            let resolution = FileMentionResolver.resolve(text: userText, projectRoot: rootProvider())
+            if let note = FileMentionResolver.contextNote(mentions: resolution.mentions, unresolved: resolution.unresolved) {
+                var content = messages[lastUserIndex].content
+                content.append(.text(note))
+                messages[lastUserIndex] = AgentMessage(role: .user, content: content)
+            }
+        }
         let mode = modeProvider()
         let tools = ToolExecutor.specs(for: mode.scope)
         streamTask = Task {

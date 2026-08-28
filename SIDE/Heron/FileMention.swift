@@ -46,8 +46,10 @@ enum FileMentionResolver {
             let rest = text[afterAt...]
             let end = rest.rangeOfCharacter(from: terminators)?.lowerBound ?? rest.endIndex
             let token = String(rest[..<end])
-            // A bare "@" is someone typing, not a reference.
-            if !token.isEmpty { tokens.append(token) }
+            // A bare "@" is someone typing. A token with no name-shaped character in it ("@.",
+            // "@-") is punctuation in prose, not a path — and this is the one place that rule
+            // lives, so highlighting and resolution can't drift apart.
+            if !token.isEmpty, token.rangeOfCharacter(from: .alphanumerics) != nil { tokens.append(token) }
             index = end
         }
         return tokens
@@ -89,6 +91,41 @@ enum FileMentionResolver {
             mentions.append(FileMention(raw: token, relativePath: relativePath, isDirectory: isDirectory.boolValue))
         }
         return (mentions, unresolved)
+    }
+
+    /// Ranges of every `@`-token in the text, for highlighting. Includes tokens that don't
+    /// resolve to a real file: styling is about showing the user what Side *read as* a mention,
+    /// so a typo should look like a mention and fail visibly rather than blend into prose.
+    static func tokenRanges(in text: String) -> [NSRange] {
+        let ns = text as NSString
+        var ranges: [NSRange] = []
+        var searchStart = 0
+        while searchStart < ns.length {
+            let found = ns.range(of: "@", range: NSRange(location: searchStart, length: ns.length - searchStart))
+            guard found.location != NSNotFound else { break }
+            searchStart = found.location + 1
+            // Same boundary rule as `mentionTokens`, so highlighting can't disagree with what
+            // actually gets sent.
+            if found.location > 0 {
+                let previous = ns.character(at: found.location - 1)
+                guard let scalar = Unicode.Scalar(previous),
+                      CharacterSet.whitespacesAndNewlines.contains(scalar) || previous == unichar(UInt8(ascii: "(")) else { continue }
+            }
+            var end = found.location + 1
+            while end < ns.length {
+                guard let scalar = Unicode.Scalar(ns.character(at: end)),
+                      !terminators.contains(scalar) else { break }
+                end += 1
+            }
+            guard end > found.location + 1 else { continue }
+            // A token has to contain something name-shaped: `@.` or `@-` in ordinary prose is
+            // punctuation, and styling it as a file reference (as an early version did) makes
+            // the highlighting look broken.
+            let body = ns.substring(with: NSRange(location: found.location + 1, length: end - found.location - 1))
+            guard body.rangeOfCharacter(from: .alphanumerics) != nil else { continue }
+            ranges.append(NSRange(location: found.location, length: end - found.location))
+        }
+        return ranges
     }
 
     /// The note appended to a message that carries mentions — paths and nothing else.

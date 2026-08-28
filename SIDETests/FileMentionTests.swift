@@ -122,3 +122,83 @@ final class FileMentionTests: XCTestCase {
 /// completion no longer calls `NSTextView.complete(_:)` at all, so there is no
 /// insert-during-textDidChange path to recurse through. `MentionCompletionPopup` only displays;
 /// text changes exclusively when a row is accepted. See that file's note for the full account.
+
+/// Covers the highlighting/click surface: which spans of text get styled as mentions, and the
+/// empty-query behaviour behind a bare `@`.
+final class MentionPresentationTests: XCTestCase {
+
+    private func highlighted(_ text: String) -> [String] {
+        let ns = text as NSString
+        return FileMentionResolver.tokenRanges(in: text).map { ns.substring(with: $0) }
+    }
+
+    func testHighlightsMentionsAndNothingElse() {
+        XCTAssertEqual(
+            highlighted("look at @src/greeter.ts then @README.md"),
+            ["@src/greeter.ts", "@README.md"]
+        )
+        XCTAssertEqual(highlighted("mail me@example.com about it"), [])
+        XCTAssertEqual(highlighted("what does @ mean"), [])
+    }
+
+    func testHighlightRangesAgreeWithWhatGetsSent() {
+        // Two code paths read the same text — one decides what's *shown* as a mention, the other
+        // what's *sent*. If they disagree, the user sees a styled reference the agent was never
+        // told about (or the reverse).
+        let text = "compare @a.swift, @b/c.swift; ignore me@example.com and a bare @"
+        XCTAssertEqual(
+            highlighted(text).map { String($0.dropFirst()) },
+            FileMentionResolver.mentionTokens(in: text)
+        )
+    }
+
+    func testHighlightsATypoTheSameAsARealPath() throws {
+        // Styling reflects "Side read this as a mention," so a wrong path has to look like one
+        // and fail visibly rather than blend into the sentence.
+        XCTAssertEqual(highlighted("check @src/nope.ts"), ["@src/nope.ts"])
+    }
+
+    func testBareAtOffersShallowPathsFirst() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bare-at-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("a/b/c"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("x".utf8).write(to: root.appendingPathComponent("TOP.md"))
+        try Data("x".utf8).write(to: root.appendingPathComponent("a/mid.swift"))
+        try Data("x".utf8).write(to: root.appendingPathComponent("a/b/c/deep.swift"))
+
+        let index = ProjectFileIndex()
+        let done = expectation(description: "indexed")
+        index.refresh(root: root) { done.fulfill() }
+        wait(for: [done], timeout: 5)
+
+        // Filesystem enumeration order would look arbitrary; a bare `@` should open on the
+        // project's top level.
+        XCTAssertEqual(index.matches(for: "").first, "TOP.md")
+        XCTAssertEqual(index.matches(for: "").last, "a/b/c/deep.swift")
+    }
+}
+
+/// The note must never be persisted into the user's turn — a stored note appears in the bubble
+/// when the transcript is rebuilt from disk (the live and reloaded transcripts disagreed, which
+/// is how this was found) and freezes resolution at send time.
+final class MentionNoteHandlingTests: XCTestCase {
+
+    func testPunctuationOnlyTokensAreNotMentions() {
+        // "with @." in prose is punctuation. An early version styled it as a file reference,
+        // which made the highlighting look broken.
+        XCTAssertTrue(FileMentionResolver.tokenRanges(in: "referenced with @.").isEmpty)
+        XCTAssertTrue(FileMentionResolver.mentionTokens(in: "referenced with @.").isEmpty)
+        XCTAssertTrue(FileMentionResolver.tokenRanges(in: "a @- b").isEmpty)
+        // …but a real dotfile still counts.
+        XCTAssertEqual(FileMentionResolver.mentionTokens(in: "see @.gitignore"), [".gitignore"])
+    }
+
+    func testResolutionAndHighlightingAgreeAboutPunctuation() {
+        let text = "check @. and @src/a.swift plus @-"
+        let ns = text as NSString
+        XCTAssertEqual(
+            FileMentionResolver.tokenRanges(in: text).map { String(ns.substring(with: $0).dropFirst()) },
+            FileMentionResolver.mentionTokens(in: text)
+        )
+    }
+}
