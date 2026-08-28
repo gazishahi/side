@@ -206,10 +206,19 @@ final class AgentRunner {
             appendMissingKeyHint()
             return
         }
+        // `@path` mentions travel as *paths*, appended as a short note — never as inlined file
+        // content, which would be re-sent on every later turn and persisted forever. See
+        // `FileMentionResolver`.
+        let resolution = FileMentionResolver.resolve(text: trimmed, projectRoot: rootProvider())
+        let note = FileMentionResolver.contextNote(mentions: resolution.mentions, unresolved: resolution.unresolved)
+        let sentText = note.map { "\(trimmed)\n\n\($0)" } ?? trimmed
+
         sessionStore.appendTurn(
-            AgentTurn(role: .user, content: [.text(trimmed)]),
+            AgentTurn(role: .user, content: [.text(sentText)]),
             trackKey: trackKey, providerId: selection.providerId, modelId: model.id
         )
+        // The transcript shows what the *user* wrote; the resolved-path note is plumbing, and
+        // showing it would make every mention look like the app talking back at you.
         appendEntry(.userText(trimmed))
         runTurn(roundTrip: 0)
     }

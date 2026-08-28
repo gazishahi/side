@@ -38,6 +38,9 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// Where a track's model choice lives. Weak isn't needed — `TrackStore` outlives this view
     /// (it's owned by `ProjectContext`), and this is reassigned on every `configure`.
     private var trackStore: TrackStore?
+    /// Backs `@`-mention completion. Rebuilt when the attached track's working directory
+    /// changes — a track's worktree is its own directory, so the candidate list has to follow.
+    private let fileIndex = ProjectFileIndex()
     private var usageObserverToken: UUID?
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
     private var attachedTrackKey: String?
@@ -95,6 +98,9 @@ final class ThinkWorkspaceViewController: NSViewController {
         view.addSubview(transcriptScroll)
 
         composer.placeholder = "Ask about this project…"
+        composer.mentionCandidates = { [weak self] partial in
+            self?.fileIndex.matches(for: partial) ?? []
+        }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
         view.addSubview(composer)
 
@@ -200,6 +206,7 @@ final class ThinkWorkspaceViewController: NSViewController {
     private func attach(trackKey: String?) {
         detach()
         attachedTrackKey = trackKey
+        refreshFileIndex()
         if let runnerManager {
             let newRunner = runnerManager.runner(forTrackKey: trackKey ?? "")
             runner = newRunner
@@ -382,6 +389,15 @@ final class ThinkWorkspaceViewController: NSViewController {
     @objc private func useAppDefault() {
         trackStore?.setModelSelection(providerId: nil, modelId: nil, effort: nil, for: attachedTrackKey ?? "")
         refreshModelLabel()
+    }
+
+    /// The directory `@`-mentions resolve against: the track's own worktree when it has one,
+    /// which is the same directory `AgentRunner` hands its tools.
+    private func refreshFileIndex() {
+        guard let projectPath else { return }
+        let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath
+        let url = URL(fileURLWithPath: root ?? projectPath)
+        fileIndex.refresh(root: url) {}
     }
 
     private func currentMode() -> AgentMode {
@@ -874,12 +890,42 @@ private final class BubbleRowView: NSView {
 /// circular send button that becomes a stop button while the agent is busy, Return to send and
 /// Shift-Return for a newline — the input treatment every real chat app trains people to expect,
 /// replacing the single-line text field + "Send" push button.
+/// Extends AppKit's notion of a completable word back to the `@`, so `@src/gre` completes as one
+/// token instead of stopping at each `/`.
+///
+/// Using the built-in completion machinery (rather than a hand-rolled popup panel) means arrow
+/// keys, Return, Escape, and dismissal-on-click all behave natively — the parts a custom list
+/// invariably gets subtly wrong.
+private final class ComposerTextView: NSTextView {
+    override var rangeForUserCompletion: NSRange {
+        let text = string as NSString
+        let caret = selectedRange().location
+        guard caret > 0, caret <= text.length else { return super.rangeForUserCompletion }
+        var index = caret - 1
+        while index >= 0 {
+            let character = text.character(at: index)
+            if character == unichar(UInt8(ascii: "@")) {
+                return NSRange(location: index, length: caret - index)
+            }
+            // Whitespace before an `@` means there's no mention being typed here.
+            if let scalar = Unicode.Scalar(character), CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                break
+            }
+            index -= 1
+        }
+        return super.rangeForUserCompletion
+    }
+}
+
 private final class ComposerView: NSView, NSTextViewDelegate {
     /// One handler for the button and Return alike — the owner decides whether that means
     /// send or stop based on the runner's phase.
     var onAction: (() -> Void)?
 
-    private let textView = NSTextView()
+    private let textView = ComposerTextView()
+    /// Supplies `@`-mention candidates. Set by the owner, which knows the track's working
+    /// directory; nil until then, and completion simply does nothing in that case.
+    var mentionCandidates: ((String) -> [String])?
     private let scroll = NSScrollView()
     private let placeholderLabel = NSTextField(labelWithString: "")
     private let actionButton = CircularIconButton(diameter: 28)
@@ -973,6 +1019,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         placeholderLabel.isHidden = !textView.string.isEmpty
+        maybeOfferMentionCompletion()
         guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
         let used = layoutManager.usedRect(for: textContainer).height
@@ -989,5 +1036,28 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { return false }
         onAction?()
         return true
+    }
+
+    /// The candidate list AppKit asks for while its completion popup is open.
+    func textView(
+        _ textView: NSTextView, completions words: [String],
+        forPartialWordRange charRange: NSRange, indexOfSelectedItem index: UnsafeMutablePointer<Int>?
+    ) -> [String] {
+        let partial = (textView.string as NSString).substring(with: charRange)
+        guard partial.hasPrefix("@"), let mentionCandidates else { return [] }
+        // Candidates keep the `@` so accepting one replaces the whole token rather than
+        // appending a path after it.
+        return mentionCandidates(String(partial.dropFirst())).map { "@" + $0 }
+    }
+
+    /// Offers completion only while the caret sits inside an `@`-token, so the popup never
+    /// appears over ordinary prose. Word-completion is a no-op with no candidates, but calling it
+    /// unconditionally would still steal the caret's own dismissal behavior.
+    private func maybeOfferMentionCompletion() {
+        let range = textView.rangeForUserCompletion
+        guard range.location != NSNotFound, range.length > 0 else { return }
+        let token = (textView.string as NSString).substring(with: range)
+        guard token.hasPrefix("@") else { return }
+        textView.complete(nil)
     }
 }
