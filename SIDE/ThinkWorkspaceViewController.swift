@@ -26,9 +26,13 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// place. A popover rather than menus: roomier, anchors and flips natively (no upward-menu
     /// arithmetic), and lets three-way choices be segmented controls, which is how macOS says
     /// "pick one of three."
-    private let sessionPill = ChipButton(symbolName: "sparkles", accessibilityLabel: "Model, mode, and context for this track")
+    private let sessionPill = ChipButton(symbolName: nil, accessibilityLabel: "Model, mode, and context for this track")
     private let sessionPillGlass = DS.makeGlass(cornerRadius: 14)
     private var sessionPopover: NSPopover?
+    /// The + button: outside the composer on its own glass circle, exactly as Messages places
+    /// it. Attach-like actions plus the rare conversation-level ones.
+    private let plusButton = ChipButton(symbolName: "plus", accessibilityLabel: "Add a file reference, or manage this conversation")
+    private let plusGlass = DS.makeGlass(cornerRadius: 19)
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
@@ -62,8 +66,12 @@ final class ThinkWorkspaceViewController: NSViewController {
         ChromeBackground.install(in: view)
 
         sessionPill.onPress = { [weak self] in self?.showSessionPopover() }
+        sessionPill.glassBackdrop = sessionPillGlass
         sessionPill.translatesAutoresizingMaskIntoConstraints = false
-        composer.plusMenuProvider = { [weak self] in self?.plusMenu() ?? NSMenu() }
+        plusButton.setSymbol("plus", pointSize: 14)
+        plusButton.menuProvider = { [weak self] in self?.plusMenu() ?? NSMenu() }
+        plusButton.glassBackdrop = plusGlass
+        plusGlass.translatesAutoresizingMaskIntoConstraints = false
 
 
         transcriptStack.orientation = .vertical
@@ -94,9 +102,10 @@ final class ThinkWorkspaceViewController: NSViewController {
         composer.onSlashCommand = { [weak self] name in self?.performSlashCommand(name) }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
         view.addSubview(composer)
-        // Added after the scroll view on purpose: the pill floats over the transcript the same
-        // way the composer does, and subview order is what keeps scrolled bubbles from painting
-        // across it.
+        // Added after the scroll view on purpose: everything down here floats over the
+        // transcript, and subview order is what keeps scrolled bubbles from painting across it.
+        view.addSubview(plusGlass)
+        view.addSubview(plusButton)
         view.addSubview(sessionPillGlass)
         view.addSubview(sessionPill)
 
@@ -125,7 +134,14 @@ final class ThinkWorkspaceViewController: NSViewController {
             transcriptStack.leadingAnchor.constraint(equalTo: transcriptContainer.leadingAnchor),
             transcriptStack.trailingAnchor.constraint(equalTo: transcriptContainer.trailingAnchor),
             transcriptStack.bottomAnchor.constraint(equalTo: transcriptContainer.bottomAnchor),
-            composer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.xxl),
+            // The + sits beside the capsule, its glass circle bottom-aligned with it.
+            plusGlass.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.xxl),
+            plusGlass.bottomAnchor.constraint(equalTo: composer.bottomAnchor, constant: -3),
+            plusGlass.widthAnchor.constraint(equalToConstant: 38),
+            plusGlass.heightAnchor.constraint(equalToConstant: 38),
+            plusButton.centerXAnchor.constraint(equalTo: plusGlass.centerXAnchor),
+            plusButton.centerYAnchor.constraint(equalTo: plusGlass.centerYAnchor),
+            composer.leadingAnchor.constraint(equalTo: plusGlass.trailingAnchor, constant: DS.Spacing.m),
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
             composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.xl),
             // The session pill floats just above the composer's trailing corner.
@@ -1189,10 +1205,18 @@ private final class SessionSettingsViewController: NSViewController {
         let defaultName = defaultProvider?.models.first { $0.id == defaultProvider?.defaultModelId }?.displayName ?? "default"
         modelPopup.addItem(withTitle: "App Default (\(defaultName))")
         modelPopup.lastItem?.representedObject = ["", ""]
+        // Long lists: a separator between providers keeps the flat list scannable, and NSMenu
+        // scrolls natively once it outgrows the screen — a provider with forty models is a
+        // scrolling section, not a broken popover.
         for provider in registry.providers where !provider.models.isEmpty {
+            modelPopup.menu?.addItem(.separator())
+            if registry.providers.count > 1 {
+                let header = NSMenuItem(title: provider.displayName, action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                modelPopup.menu?.addItem(header)
+            }
             for model in provider.models {
-                let title = registry.providers.count > 1 ? "\(provider.displayName) — \(model.displayName)" : model.displayName
-                modelPopup.addItem(withTitle: title)
+                modelPopup.addItem(withTitle: (registry.providers.count > 1 ? "   " : "") + model.displayName)
                 modelPopup.lastItem?.representedObject = [provider.id, model.id]
             }
         }
@@ -1256,12 +1280,18 @@ private final class ChipButton: NSButton {
     var menuProvider: (() -> NSMenu)?
     /// Alternative to `menuProvider` for chips that present something other than a menu.
     var onPress: (() -> Void)?
+    /// The glass view rendered behind this button, so the press spring moves both as one object.
+    weak var glassBackdrop: NSView?
+    /// Hover pill for bare chips; off for buttons that sit on their own glass, where a
+    /// rounded-rect hover inside a capsule reads as a seam (the exact complaint).
+    var showsHover = false
     private var tracking: NSTrackingArea?
 
     init(symbolName: String?, accessibilityLabel: String) {
         super.init(frame: .zero)
         isBordered = false
-        imagePosition = .imageLeading
+        title = ""  // NSButton's default title is literally "Button"
+        imagePosition = symbolName == nil ? .noImage : .imageLeading
         font = DS.Text.caption(.medium)
         contentTintColor = .secondaryLabelColor
         wantsLayer = true
@@ -1276,24 +1306,43 @@ private final class ChipButton: NSButton {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func setSymbol(_ name: String) {
+    func setSymbol(_ name: String, pointSize: CGFloat = 10.5) {
         image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10.5, weight: .medium))
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium))
     }
 
     func setLabel(_ text: String, tint: NSColor = .secondaryLabelColor) {
-        // Padded by spaces rather than constraints — cheap, and keeps the intrinsic size honest.
         title = text.isEmpty ? "" : " \(text) "
         contentTintColor = tint
     }
 
     @objc private func pressed() {
+        // The Liquid Glass press: a quick dip and overshoot, applied to the button and its
+        // glass together so the whole pill moves as one object — replacing the hover
+        // rounded-rect, which fought the pill's own shape.
+        springPress(self)
+        if let glassBackdrop { springPress(glassBackdrop) }
         if let onPress { return onPress() }
         guard let menu = menuProvider?() else { return }
-        // Above the chip: these sit at the window's bottom edge, so downward menus fall off it.
-        // NSButton is *flipped*, so "above" is negative y — getting this sign wrong is what sent
-        // menus to the bottom-right corner of the screen.
+        // NSButton is *flipped*, so "above" is negative y.
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -menu.size.height - DS.Spacing.s), in: self)
+    }
+
+    private func springPress(_ view: NSView) {
+        view.wantsLayer = true
+        guard let layer = view.layer else { return }
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(x: view.frame.midX, y: view.frame.midY)
+        let spring = CAKeyframeAnimation(keyPath: "transform.scale")
+        spring.values = [1, 0.93, 1.03, 1]
+        spring.keyTimes = [0, 0.3, 0.72, 1]
+        spring.duration = 0.34
+        spring.timingFunctions = [
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeOut),
+        ]
+        layer.add(spring, forKey: "springPress")
     }
 
     override func updateTrackingAreas() {
@@ -1304,7 +1353,9 @@ private final class ChipButton: NSButton {
         tracking = area
     }
 
-    override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = DS.Color.scrimSoft.cgColor }
+    override func mouseEntered(with event: NSEvent) {
+        if showsHover { layer?.backgroundColor = DS.Color.scrimSoft.cgColor }
+    }
     override func mouseExited(with event: NSEvent) { layer?.backgroundColor = nil }
 }
 
@@ -1371,15 +1422,12 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     private let scroll = NSScrollView()
     private let placeholderLabel = NSTextField(labelWithString: "")
     private let actionButton = CircularIconButton(diameter: 28)
-    private let plusButton = NSButton()
     private let micButton = NSButton()
-    /// The hairline capsule around the text itself — the glass carries the material, this
-    /// carries the field's edge, same division of labor as Messages.
-    private let fieldOutline = NSView()
     private var textHeightConstraint: NSLayoutConstraint!
     private static let minTextHeight: CGFloat = 20
     private static let maxTextHeight: CGFloat = 120
-    private static let capsuleRadius: CGFloat = 24
+    /// Half the single-row height: 20pt of text + 12pt insets each side = 44.
+    static let capsuleRadius: CGFloat = 22
 
     var text: String { textView.string }
 
@@ -1399,18 +1447,10 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        // iMessage's anatomy: [+] [capsule text field · mic] [send], one thin row, on Liquid
-        // Glass so the transcript refracts underneath as it scrolls. The capsule is the *field*;
-        // + and send sit beside it, outside, exactly as Messages does it.
+        // The composer is *itself* the glass capsule — one pill, no pill-inside-a-pill. The +
+        // button lives outside in the stage on its own glass circle, as Messages arranges it.
         let glass = DS.makeGlass(cornerRadius: Self.capsuleRadius)
         addSubview(glass)
-
-        fieldOutline.wantsLayer = true
-        fieldOutline.layer?.borderWidth = 1
-        fieldOutline.layer?.borderColor = DS.Color.hairline.cgColor
-        fieldOutline.layer?.cornerRadius = Self.capsuleRadius - 6
-        fieldOutline.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(fieldOutline)
 
         textView.font = DS.Text.heading()
         textView.drawsBackground = false
@@ -1441,15 +1481,6 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
         placeholderLabel.lineBreakMode = .byTruncatingTail
 
-        plusButton.isBordered = false
-        plusButton.image = NSImage(systemSymbolName: "plus.circle.fill", accessibilityDescription: "Add")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 20, weight: .regular))
-        plusButton.contentTintColor = .tertiaryLabelColor
-        plusButton.target = self
-        plusButton.action = #selector(plusTapped)
-        plusButton.setAccessibilityLabel("Add a file reference, or manage this conversation")
-        plusButton.translatesAutoresizingMaskIntoConstraints = false
-
         micButton.isBordered = false
         micButton.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Dictate")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
@@ -1466,7 +1497,6 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
         addSubview(scroll)
         addSubview(placeholderLabel)
-        addSubview(plusButton)
         addSubview(micButton)
         addSubview(actionButton)
         textHeightConstraint = scroll.heightAnchor.constraint(equalToConstant: Self.minTextHeight)
@@ -1476,37 +1506,21 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             glass.leadingAnchor.constraint(equalTo: leadingAnchor),
             glass.trailingAnchor.constraint(equalTo: trailingAnchor),
             textHeightConstraint,
-            // + hugs the leading edge; the field capsule sits between it and the send button.
-            plusButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
-            plusButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.l),
-            fieldOutline.leadingAnchor.constraint(equalTo: plusButton.trailingAnchor, constant: DS.Spacing.m),
-            fieldOutline.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -DS.Spacing.m),
-            fieldOutline.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.s),
-            fieldOutline.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.s),
-            scroll.leadingAnchor.constraint(equalTo: fieldOutline.leadingAnchor, constant: DS.Spacing.xl),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xxl + 2),
             scroll.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -DS.Spacing.s),
-            scroll.topAnchor.constraint(equalTo: fieldOutline.topAnchor, constant: DS.Spacing.m),
-            scroll.bottomAnchor.constraint(equalTo: fieldOutline.bottomAnchor, constant: -DS.Spacing.m),
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.xl),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.xl),
             placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 2),
             placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
             placeholderLabel.topAnchor.constraint(equalTo: scroll.topAnchor),
-            // Mic lives *inside* the capsule at its trailing end, like Messages.
-            micButton.trailingAnchor.constraint(equalTo: fieldOutline.trailingAnchor, constant: -DS.Spacing.l),
-            micButton.bottomAnchor.constraint(equalTo: fieldOutline.bottomAnchor, constant: -DS.Spacing.m),
+            // Mic and send are centered on the *single-line band* — the bottom capsule-height of
+            // the field — not inset from the bottom edge, which is what left them sitting low.
+            // As the field grows they stay pinned to that band, like Messages.
+            micButton.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -DS.Spacing.m),
+            micButton.centerYAnchor.constraint(equalTo: bottomAnchor, constant: -Self.capsuleRadius),
             actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
-            actionButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.m),
+            actionButton.centerYAnchor.constraint(equalTo: bottomAnchor, constant: -Self.capsuleRadius),
         ])
-    }
-
-    /// The + menu: attach-like actions plus the rare conversation-level ones — what + means in
-    /// Messages ("other things I can add or do here").
-    var plusMenuProvider: (() -> NSMenu)?
-
-    @objc private func plusTapped() {
-        guard let menu = plusMenuProvider?() else { return }
-        // NSButton is *flipped*, so "above" is negative y — the bug that sent the chip menus to
-        // the bottom of the screen was exactly this sign.
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -menu.size.height - DS.Spacing.s), in: plusButton)
     }
 
     /// System dictation into the field — the same thing Edit → Start Dictation does. Honest

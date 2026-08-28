@@ -27,7 +27,7 @@ final class MentionCompletionPopup: NSObject {
     private let scrollView = NSScrollView()
     private var candidates: [String] = []
 
-    private static let rowHeight: CGFloat = 22
+    private static let rowHeight: CGFloat = 26
     private static let maxVisibleRows = 8
 
     var isVisible: Bool { panel.isVisible }
@@ -46,13 +46,18 @@ final class MentionCompletionPopup: NSObject {
         // the list appears would go somewhere else.
         panel.hidesOnDeactivate = true
 
-        let background = NSVisualEffectView()
-        background.material = .menu
-        background.blendingMode = .withinWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = DS.Radius.control
-        background.layer?.masksToBounds = true
+        // Liquid Glass, like the composer it floats over — the same DS.makeGlass the rest of
+        // the input area uses, so the palette reads as part of it rather than a system menu.
+        let container = NSView()
+        let background = container
+        let glass = DS.makeGlass(cornerRadius: DS.Radius.card)
+        container.addSubview(glass)
+        NSLayoutConstraint.activate([
+            glass.topAnchor.constraint(equalTo: container.topAnchor),
+            glass.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            glass.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            glass.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("path"))
         column.resizingMask = .autoresizingMask
@@ -100,11 +105,12 @@ final class MentionCompletionPopup: NSObject {
         let rows = min(candidates.count, Self.maxVisibleRows)
         let height = CGFloat(rows) * Self.rowHeight + DS.Spacing.m
         let width: CGFloat = truncatesHead ? 340 : 420
-        var frame = NSRect(x: caretRect.minX, y: caretRect.minY - height - 4, width: width, height: height)
-        // Flip above the caret when there's no room below — the composer sits at the bottom of
-        // the window, so this is the common case rather than an edge case.
-        if let screen = parent.screen, frame.minY < screen.visibleFrame.minY {
-            frame.origin.y = caretRect.maxY + 4
+        // Above the caret by default: the composer lives at the bottom of the window, so a
+        // downward list lands outside it — over whatever app happens to be behind. Below is the
+        // fallback for the rare caret near the top of a screen.
+        var frame = NSRect(x: caretRect.minX, y: caretRect.maxY + 6, width: width, height: height)
+        if let screen = parent.screen, frame.maxY > screen.visibleFrame.maxY {
+            frame.origin.y = caretRect.minY - height - 6
         }
         panel.setFrame(frame, display: false)
         if !panel.isVisible { parent.addChildWindow(panel, ordered: .above) }
@@ -159,7 +165,10 @@ extension MentionCompletionPopup: NSTableViewDataSource, NSTableViewDelegate {
             return cell
         }()
         cell.textField?.stringValue = candidates[row]
-        cell.textField?.font = DS.Text.code(11)
+        // System text, not monospace: these are UI rows, not code. Paths still read fine, and
+        // command descriptions stop looking like terminal output.
+        cell.textField?.font = DS.Text.control()
+        cell.textField?.textColor = .labelColor
         cell.textField?.lineBreakMode = truncatesHead ? .byTruncatingHead : .byTruncatingTail
         return cell
     }
