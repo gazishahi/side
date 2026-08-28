@@ -2201,10 +2201,23 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     /// Downscales, encodes, and queues an image for the next send, with a removable chip in
     /// the strip. Encoding happens here — at attach time, once — not at send time.
+    ///
+    /// Chips are added and removed *individually*, never rebuilt wholesale: tearing the strip
+    /// down and re-adding every chip replayed the appear animation on images that hadn't
+    /// changed, and the double layout pass read as a flicker on collapse.
     func addImageAttachment(_ image: NSImage) {
         guard let encoded = Self.encodeForUpload(image) else { return }
-        attachments.append(ImageAttachment(data: encoded.data, mediaType: encoded.mediaType, thumbnail: encoded.thumbnail))
-        rebuildAttachmentStrip()
+        let attachment = ImageAttachment(data: encoded.data, mediaType: encoded.mediaType, thumbnail: encoded.thumbnail)
+        attachments.append(attachment)
+        let chip = AttachmentChipView(
+            thumbnail: attachment.thumbnail,
+            onPreview: { ImagePreviewOpener.open(data: attachment.data, mediaType: attachment.mediaType) },
+            onRemove: { [weak self] in self?.removeAttachment(id: attachment.id) }
+        )
+        chip.identifier = NSUserInterfaceItemIdentifier(attachment.id.uuidString)
+        attachmentStrip.addArrangedSubview(chip)
+        updateStripSpace(animated: true)
+        DS.Motion.appear(chip)
     }
 
     func attachmentPayloads() -> [AgentImageAttachment] {
@@ -2213,33 +2226,38 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     private func removeAttachment(id: UUID) {
         attachments.removeAll { $0.id == id }
-        rebuildAttachmentStrip()
+        guard let chip = attachmentStrip.arrangedSubviews.first(where: { $0.identifier?.rawValue == id.uuidString }) else {
+            return updateStripSpace(animated: true)
+        }
+        // The object leaves, then the space closes — a short fade first, so the collapse never
+        // shows a band of empty strip where the chip just was.
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.12
+            chip.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            chip.removeFromSuperview()
+            self?.updateStripSpace(animated: true)
+        })
     }
 
-    private func rebuildAttachmentStrip() {
-        let previousCount = attachmentStrip.arrangedSubviews.count
-        attachmentStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for attachment in attachments {
-            let chip = AttachmentChipView(
-                thumbnail: attachment.thumbnail,
-                onPreview: { ImagePreviewOpener.open(data: attachment.data, mediaType: attachment.mediaType) },
-                onRemove: { [weak self] in self?.removeAttachment(id: attachment.id) }
-            )
-            attachmentStrip.addArrangedSubview(chip)
+    /// Opens or closes the strip's slot in the capsule. The grow/shrink is a layout shift right
+    /// under the cursor — animated so it reads as the composer making room, not jumping.
+    private func updateStripSpace(animated: Bool) {
+        let targetHeight: CGFloat = attachments.isEmpty ? 0 : 48
+        let targetTop: CGFloat = attachments.isEmpty ? 0 : DS.Spacing.m
+        guard stripHeightConstraint.constant != targetHeight || stripTopConstraint.constant != targetTop else { return }
+        guard animated else {
+            stripHeightConstraint.constant = targetHeight
+            stripTopConstraint.constant = targetTop
+            return
         }
-        // The capsule growing/shrinking is a layout shift right under the cursor — animated so
-        // it reads as the composer making room, not jumping. The chips themselves get the
-        // standard appear treatment on add only; removal just collapses.
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
-            stripHeightConstraint.constant = attachments.isEmpty ? 0 : 48
-            stripTopConstraint.constant = attachments.isEmpty ? 0 : DS.Spacing.m
+            stripHeightConstraint.constant = targetHeight
+            stripTopConstraint.constant = targetTop
             superview?.layoutSubtreeIfNeeded()
-        }
-        if attachments.count > previousCount, let newest = attachmentStrip.arrangedSubviews.last {
-            DS.Motion.appear(newest)
         }
     }
 
@@ -2297,8 +2315,10 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         // Sending has to take the candidate list down with it, or it hangs over an empty field.
         isDictating = false
         mentionPopup.hide()
+        // No animation on send: the whole composer resets at once, same as the text clearing.
         attachments.removeAll()
-        rebuildAttachmentStrip()
+        attachmentStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        updateStripSpace(animated: false)
         textView.string = ""
         textDidChange(Notification(name: NSText.didChangeNotification))
     }
