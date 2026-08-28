@@ -32,6 +32,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// "pick one of three."
     private let sessionPill = ChipButton(symbolName: nil, accessibilityLabel: "Model, mode, and context for this track")
     private let sessionPillGlass = DS.makeGlass(cornerRadius: 14)
+    /// A soft wash rising from the pill's bottom edge in the current scope's color.
+    private let pillModeTint = GradientEdgeView(cornerRadius: 14)
     private var sessionPopover: NSPopover?
     /// The + button: outside the composer on its own glass circle, exactly as Messages places
     /// it. Attach-like actions plus the rare conversation-level ones.
@@ -120,6 +122,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         view.addSubview(plusGlass)
         view.addSubview(plusButton)
         view.addSubview(sessionPillGlass)
+        view.addSubview(pillModeTint)
         view.addSubview(sessionPill)
 
         emptyStateLabel.font = DS.Text.body()
@@ -164,6 +167,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             sessionPillGlass.bottomAnchor.constraint(equalTo: sessionPill.bottomAnchor, constant: 2),
             sessionPillGlass.leadingAnchor.constraint(equalTo: sessionPill.leadingAnchor, constant: -DS.Spacing.s),
             sessionPillGlass.trailingAnchor.constraint(equalTo: sessionPill.trailingAnchor, constant: DS.Spacing.s),
+            pillModeTint.topAnchor.constraint(equalTo: sessionPillGlass.topAnchor),
+            pillModeTint.bottomAnchor.constraint(equalTo: sessionPillGlass.bottomAnchor),
+            pillModeTint.leadingAnchor.constraint(equalTo: sessionPillGlass.leadingAnchor),
+            pillModeTint.trailingAnchor.constraint(equalTo: sessionPillGlass.trailingAnchor),
         ])
 
         // The header's token/cost figures come from a store the runner writes to directly, so
@@ -487,6 +494,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         trackStore?.mode(forTrackKey: attachedTrackKey ?? "") ?? .default
     }
 
+    /// One hue per tool scope, applied sparingly (pill edge, send button): the mode is a safety
+    /// property, so the color is a signal, not a theme.
+    private static func tint(for scope: AgentToolScope) -> NSColor {
+        switch scope {
+        case .ask: return .systemBlue
+        case .plan: return .systemPurple
+        case .build: return .systemOrange
+        }
+    }
+
     func popoverDidClose(_ notification: Notification) {
         sessionPopover = nil
         if pillRefreshDeferred {
@@ -538,6 +555,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     /// The pill's face: model · scope · context, tinted by how full the window is.
     private func refreshSessionPill() {
+        // Color updates always land — changing a segmented control in the popover should recolor
+        // the pill edge and send button immediately, and color doesn't move the anchor.
+        let scopeTint = Self.tint(for: currentMode().scope)
+        pillModeTint.color = scopeTint.withAlphaComponent(0.32)
+        composer.setModeTint(scopeTint)
         // The popover is anchored to the pill: resizing the pill mid-edit visibly drags the
         // popover sideways. Hold the label until the popover closes.
         if sessionPopover?.isShown == true {
@@ -558,6 +580,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
         sessionPill.setLabel(title, tint: tint)
         sessionPillGlass.isHidden = sessionPill.isHidden
+        pillModeTint.isHidden = sessionPill.isHidden
     }
 
     // MARK: - Slash commands
@@ -649,7 +672,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // who scrolled up to read.
             let wasAtBottom = clip.bounds.maxY >= transcriptContainer.bounds.height - 80
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
+                context.duration = 0.14
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 context.allowsImplicitAnimation = true
                 bubble.setBody(text, streaming: true)
@@ -785,7 +808,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private func scheduleStreamFlush() {
         guard !streamFlushScheduled else { return }
         streamFlushScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) { [weak self] in
             guard let self else { return }
             self.streamFlushScheduled = false
             let indices = self.pendingStreamIndices
@@ -958,34 +981,35 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         switch tail {
         case .none:
             path.appendRoundedRect(bounds, xRadius: DS.Radius.bubble, yRadius: DS.Radius.bubble)
-        case .trailing:
-            // Body edge sits at w-6 (was w-4): the curl reaches 6pt past the bubble's side, so
-            // the tail reads as coming off the *side* of the bubble, not exactly the corner.
-            path.move(to: NSPoint(x: w - 24, y: h))
-            path.line(to: NSPoint(x: 17, y: h))
-            path.curve(to: NSPoint(x: 0, y: h - 17), controlPoint1: NSPoint(x: 7.61, y: h), controlPoint2: NSPoint(x: 0, y: h - 7.61))
-            path.line(to: NSPoint(x: 0, y: 17))
-            path.curve(to: NSPoint(x: 17, y: 0), controlPoint1: NSPoint(x: 0, y: 7.61), controlPoint2: NSPoint(x: 7.61, y: 0))
-            path.line(to: NSPoint(x: w - 23, y: 0))
-            path.curve(to: NSPoint(x: w - 6, y: 17), controlPoint1: NSPoint(x: w - 13.61, y: 0), controlPoint2: NSPoint(x: w - 6, y: 7.61))
-            path.line(to: NSPoint(x: w - 6, y: h - 11))
-            path.curve(to: NSPoint(x: w, y: h), controlPoint1: NSPoint(x: w - 6, y: h - 1), controlPoint2: NSPoint(x: w, y: h))
-            path.line(to: NSPoint(x: w + 0.05, y: h - 0.01))
-            path.curve(to: NSPoint(x: w - 13.04, y: h - 4.04), controlPoint1: NSPoint(x: w - 6.07, y: h + 0.43), controlPoint2: NSPoint(x: w - 10.16, y: h - 1.06))
-            path.curve(to: NSPoint(x: w - 24, y: h), controlPoint1: NSPoint(x: w - 18, y: h), controlPoint2: NSPoint(x: w - 21, y: h))
-        case .leading:
-            path.move(to: NSPoint(x: 24, y: h))
-            path.line(to: NSPoint(x: w - 17, y: h))
-            path.curve(to: NSPoint(x: w, y: h - 17), controlPoint1: NSPoint(x: w - 7.61, y: h), controlPoint2: NSPoint(x: w, y: h - 7.61))
-            path.line(to: NSPoint(x: w, y: 17))
-            path.curve(to: NSPoint(x: w - 17, y: 0), controlPoint1: NSPoint(x: w, y: 7.61), controlPoint2: NSPoint(x: w - 7.61, y: 0))
-            path.line(to: NSPoint(x: 23, y: 0))
-            path.curve(to: NSPoint(x: 6, y: 17), controlPoint1: NSPoint(x: 13.61, y: 0), controlPoint2: NSPoint(x: 6, y: 7.61))
-            path.line(to: NSPoint(x: 6, y: h - 11))
-            path.curve(to: NSPoint(x: 0, y: h), controlPoint1: NSPoint(x: 6, y: h - 1), controlPoint2: NSPoint(x: 0, y: h))
-            path.line(to: NSPoint(x: -0.05, y: h - 0.01))
-            path.curve(to: NSPoint(x: 13.04, y: h - 4.04), controlPoint1: NSPoint(x: 6.07, y: h + 0.43), controlPoint2: NSPoint(x: 10.16, y: h - 1.06))
-            path.curve(to: NSPoint(x: 24, y: h), controlPoint1: NSPoint(x: 18, y: h), controlPoint2: NSPoint(x: 21, y: h))
+        case .trailing, .leading:
+            // Fully-rounded body plus a separate curl overlapping the bottom tail-side corner —
+            // the classic single-outline path put the tail *on* the corner with a flat bottom
+            // run into it; iMessage's tail comes off the capsule's side, which needs the corner
+            // under it to stay round. Tuned against offscreen renders side-by-side with real
+            // iMessage bubbles. Nonzero winding: both subpaths must wind the same direction,
+            // which is why the leading tail's points run in reverse order.
+            let r = min(17, h / 2)
+            let bodyW = w - Self.tailWidth
+            path.appendRoundedRect(
+                NSRect(x: tail == .leading ? Self.tailWidth : 0, y: 0, width: bodyW, height: h),
+                xRadius: r, yRadius: r
+            )
+            let curl = NSBezierPath()
+            if tail == .trailing {
+                curl.move(to: NSPoint(x: bodyW - 3, y: h - 10))
+                curl.curve(to: NSPoint(x: w, y: h - 0.5),
+                           controlPoint1: NSPoint(x: bodyW + 3, y: h - 5), controlPoint2: NSPoint(x: w - 3, y: h - 2.5))
+                curl.curve(to: NSPoint(x: bodyW - 10, y: h - 0.5),
+                           controlPoint1: NSPoint(x: w - 7, y: h), controlPoint2: NSPoint(x: bodyW - 5, y: h))
+            } else {
+                curl.move(to: NSPoint(x: 18, y: h - 0.5))
+                curl.curve(to: NSPoint(x: 0, y: h - 0.5),
+                           controlPoint1: NSPoint(x: 13, y: h), controlPoint2: NSPoint(x: 7, y: h))
+                curl.curve(to: NSPoint(x: 11, y: h - 10),
+                           controlPoint1: NSPoint(x: 3, y: h - 2.5), controlPoint2: NSPoint(x: 5, y: h - 5))
+            }
+            curl.close()
+            path.append(curl)
         }
         path.close()
         style.fillColor.setFill()
@@ -1052,7 +1076,12 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
                 bodyText.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: attrs))
                 isShowingStreamingPlainText = true
             }
-            fitToContent(NSAttributedString(string: text, attributes: attrs), monotonicWidth: true)
+            // Measured with trailing newlines trimmed: the model often ends a chunk on "\n\n",
+            // and sizing to it left a blank band at the bubble's bottom until the final render
+            // stripped it.
+            var trimmed = text
+            while let last = trimmed.last, last.isNewline || last == " " { trimmed.removeLast() }
+            fitToContent(NSAttributedString(string: trimmed, attributes: attrs), monotonicWidth: true)
             return
         }
         isShowingStreamingPlainText = false
@@ -1313,6 +1342,33 @@ private final class SlidingSegmentedControl: NSView {
 /// A menu-style row for an action popover: accent highlight on hover, the classic menu blink on
 /// click. NSButton can't do either without fighting its cell, and the missing feedback was the
 /// complaint — you couldn't tell which option you'd picked.
+/// A rounded view whose backing layer is a bottom-up gradient wash of one color — the mode
+/// indicator on the session pill. Layer-hosting so the gradient tracks the view's size for free.
+private final class GradientEdgeView: NSView {
+    private let gradient = CAGradientLayer()
+
+    var color: NSColor = .clear {
+        didSet { gradient.colors = [color.cgColor, NSColor.clear.cgColor] }
+    }
+
+    init(cornerRadius: CGFloat) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        // y=0 is the bottom in an unflipped layer: the wash rises from the bottom edge and is
+        // gone by 80% of the height.
+        gradient.startPoint = CGPoint(x: 0.5, y: 0)
+        gradient.endPoint = CGPoint(x: 0.5, y: 0.8)
+        gradient.cornerRadius = cornerRadius
+        gradient.masksToBounds = true
+        layer = gradient
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 private final class PopoverActionRow: NSView {
     private let highlight = NSView()
     private let icon = NSImageView()
@@ -1861,6 +1917,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         micButton.translatesAutoresizingMaskIntoConstraints = false
 
         actionButton.backgroundColor = .controlAccentColor
+        actionButton.showsGradientSheen = true
         actionButton.target = self
         actionButton.action = #selector(actionTapped)
         setBusy(false)
@@ -1927,6 +1984,11 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// the same completion popup typing it by hand would.
     func insertText(_ text: String) {
         textView.insertText(text, replacementRange: textView.selectedRange())
+    }
+
+    /// The send button carries the scope color — the thing you look at as you commit a message.
+    func setModeTint(_ color: NSColor) {
+        actionButton.backgroundColor = color
     }
 
     func setBusy(_ busy: Bool) {

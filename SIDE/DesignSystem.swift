@@ -275,6 +275,26 @@ class CircularIconButton: NSControl {
         }
     }
 
+    /// A faint top-lit gradient over the fill, so a solid-color button reads as a lit surface
+    /// rather than a flat disc. The sheen is color-independent — the fill can change under it.
+    var showsGradientSheen: Bool = false {
+        didSet {
+            guard showsGradientSheen else { sheen.removeFromSuperlayer(); return }
+            sheen.colors = [NSColor.white.withAlphaComponent(0.28).cgColor, NSColor.white.withAlphaComponent(0.0).cgColor]
+            // y=1 is the top in an unflipped layer.
+            sheen.startPoint = CGPoint(x: 0.5, y: 1)
+            sheen.endPoint = CGPoint(x: 0.5, y: 0.25)
+            sheen.frame = bounds
+            layer?.addSublayer(sheen)
+        }
+    }
+    private let sheen = CAGradientLayer()
+
+    override func layout() {
+        super.layout()
+        sheen.frame = bounds
+    }
+
     /// Optional hover fill (the tab close button's gray circle); nil means no hover change.
     var hoverBackgroundColor: NSColor? {
         didSet { hoverColor = hoverBackgroundColor }
