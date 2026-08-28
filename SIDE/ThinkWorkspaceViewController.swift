@@ -1,5 +1,9 @@
 import AppKit
 
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
 /// Document view for the transcript. Flipped so blocks stack from the top down — an unflipped
 /// scroll-view document view pins sparse content to the bottom, the same trap the Tracks ledger
 /// hit.
@@ -57,6 +61,11 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// delta or a proposal resolution can update one block in place instead of rebuilding the
     /// whole transcript on every token.
     private var entryViews: [NSView] = []
+    /// Streamed-text updates waiting for the next flush tick, latest text per entry. Tokens
+    /// arrive far faster than a resize animation can play; applying each one restarted the
+    /// animation every few milliseconds, which *is* the jitter — nothing ever finished moving.
+    private var pendingStreamIndices: Set<Int> = []
+    private var streamFlushScheduled = false
 
     override func loadView() { view = NSView() }
 
@@ -69,7 +78,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         sessionPill.glassBackdrop = sessionPillGlass
         sessionPill.translatesAutoresizingMaskIntoConstraints = false
         plusButton.setSymbol("plus", pointSize: 14)
-        plusButton.menuProvider = { [weak self] in self?.plusMenu() ?? NSMenu() }
+        plusButton.onPress = { [weak self] in self?.showPlusPopover() }
         plusButton.glassBackdrop = plusGlass
         plusGlass.translatesAutoresizingMaskIntoConstraints = false
 
@@ -260,7 +269,12 @@ final class ThinkWorkspaceViewController: NSViewController {
             appendEntryView(at: index)
             refreshSessionPill()
         case .updated(let index):
-            updateEntryView(at: index)
+            if case .assistantText = runner?.entries[safe: index]?.kind {
+                pendingStreamIndices.insert(index)
+                scheduleStreamFlush()
+            } else {
+                updateEntryView(at: index)
+            }
         case .phaseChanged:
             updateSendButton()
             refreshSessionPill()
@@ -333,24 +347,16 @@ final class ThinkWorkspaceViewController: NSViewController {
         return (providerId, modelId, storedEffort ?? .default, isTrackSpecific)
     }
 
-    /// The + menu: attach-like actions and the rare conversation-level ones.
-    private func plusMenu() -> NSMenu {
-        let menu = NSMenu()
-        let attach = NSMenuItem(title: "Add File Reference", action: #selector(insertMentionTrigger), keyEquivalent: "")
-        attach.target = self
-        menu.addItem(attach)
-        menu.addItem(.separator())
-        let compact = NSMenuItem(title: "Compact Conversation…", action: #selector(compactConversation), keyEquivalent: "")
-        compact.target = self
-        compact.toolTip = "Replace the conversation with a summary of it, to free up context."
-        menu.addItem(compact)
-        // Deliberately adjacent to Compact, because the choice between them is the whole point:
-        // compaction keeps what was learned, this discards it.
-        let clear = NSMenuItem(title: "New Conversation…", action: #selector(startNewConversation), keyEquivalent: "")
-        clear.target = self
-        clear.toolTip = "Discard this conversation and start over. Checkpoints and files are kept."
-        menu.addItem(clear)
-        return menu
+    /// The + popover — same presentation as the pill, same feel.
+    private func showPlusPopover() {
+        let actions = PlusActionsViewController()
+        actions.onAttach = { [weak self] in self?.insertMentionTrigger() }
+        actions.onCompact = { [weak self] in self?.compactConversation() }
+        actions.onNewConversation = { [weak self] in self?.startNewConversation() }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = actions
+        popover.show(relativeTo: plusButton.bounds, of: plusButton, preferredEdge: .maxY)
     }
 
     @objc private func insertMentionTrigger() {
@@ -600,21 +606,30 @@ final class ThinkWorkspaceViewController: NSViewController {
         let entry = entries[index]
         switch entry.kind {
         case .assistantText(let text):
-            // Streamed growth glides instead of jumping — a short implicit animation around the
-            // re-measure/relayout makes the bubble read as continuously expanding while tokens
-            // arrive, which is the whole charm of streaming.
+            // One flush per tick, not one per token — see scheduleStreamFlush. The growth *and*
+            // the scroll ride the same animation group: the old code animated the bubble but
+            // snapped the scroll instantly on every token, so the view yanked downward against
+            // its own growth animation — that fight was most of the jitter.
             guard let bubble = (entryViews[index] as? BubbleRowView)?.bubble else { return }
+            let clip = transcriptScroll.contentView
+            // Only follow the stream if the user is already at the bottom; never yank someone
+            // who scrolled up to read.
+            let wasAtBottom = clip.bounds.maxY >= transcriptContainer.bounds.height - 80
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.16
+                context.duration = 0.18
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 context.allowsImplicitAnimation = true
-                bubble.setBody(text)
-                // The whole transcript's layout, not just the bubble's own subtree — the
-                // bubble's height growth is meaningless unless the rows below it glide down
-                // in the same animation. Animating only the bubble was exactly the "some
-                // animation but the bubble itself jumps" complaint.
+                bubble.setBody(text, streaming: true)
+                // The whole transcript's layout, not just the bubble's subtree — the rows below
+                // have to glide down in the same animation as the bubble's growth.
                 self.transcriptContainer.layoutSubtreeIfNeeded()
+                if wasAtBottom {
+                    let maxY = max(0, self.transcriptContainer.bounds.height - clip.bounds.height + self.transcriptScroll.contentInsets.bottom)
+                    clip.animator().setBoundsOrigin(NSPoint(x: 0, y: maxY))
+                }
             }
+            if wasAtBottom { transcriptScroll.reflectScrolledClipView(clip) }
+            return  // scrollToBottom below would snap; the animated follow above replaces it.
         case .proposal(let presentation):
             guard let card = entryViews[index] as? ProposedEditView, let resolution = presentation.resolution else { return }
             let label = resolution.label
@@ -647,9 +662,10 @@ final class ThinkWorkspaceViewController: NSViewController {
             bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
             return BubbleRowView(bubble: bubble, alignRight: false)
         case .toolCall(let name, let summary):
-            return makeLabel("→ \(name)\(summary)", font: DS.Text.code(11, weight: .regular), color: .secondaryLabelColor)
+            // System text: these are status lines in a chat, not terminal output.
+            return makeLabel("→ \(name)\(summary)", font: DS.Text.caption(), color: .secondaryLabelColor)
         case .toolResult(let text, let isError):
-            return makeLabel(text, font: DS.Text.code(11, weight: .regular), color: isError ? .systemOrange : .secondaryLabelColor)
+            return makeLabel(text, font: DS.Text.caption(), color: isError ? .systemOrange : .secondaryLabelColor)
         case .failure(let text):
             let bubble = TextBlockView(style: .error, body: text, maxBubbleWidth: 620)
             return BubbleRowView(bubble: bubble, alignRight: false)
@@ -728,6 +744,21 @@ final class ThinkWorkspaceViewController: NSViewController {
         // diff cards should span the transcript rather than hug their content.
         view.widthAnchor.constraint(equalTo: transcriptStack.widthAnchor, constant: -(transcriptStack.edgeInsets.left + transcriptStack.edgeInsets.right)).isActive = true
         scrollToBottom()
+    }
+
+    /// Applies at most one streamed-text update per ~50ms — comfortably faster than the eye
+    /// needs, comfortably slower than tokens arrive, and long enough for each growth animation
+    /// to actually play. Also caps markdown re-parsing at 20/s instead of per-token.
+    private func scheduleStreamFlush() {
+        guard !streamFlushScheduled else { return }
+        streamFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            self.streamFlushScheduled = false
+            let indices = self.pendingStreamIndices
+            self.pendingStreamIndices = []
+            for index in indices.sorted() { self.updateEntryView(at: index) }
+        }
     }
 
     private func scrollToBottom() {
@@ -950,7 +981,7 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         return rendered
     }
 
-    func setBody(_ text: String) {
+    func setBody(_ text: String, streaming: Bool = false) {
         plainText = text
         let rendered = NSMutableAttributedString(attributedString: Self.renderedMarkdown(text, style: style))
         // The renderer terminates every block with "\n\n" — fine in a document preview, but in
@@ -985,7 +1016,10 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
             with: NSSize(width: availableWidth, height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
-        bodyWidthConstraint.constant = max(10, min(ceil(bounding.width) + 2, availableWidth))
+        let measuredWidth = max(10, min(ceil(bounding.width) + 2, availableWidth))
+        // Mid-stream the width only grows: re-measuring both directions as words arrive made
+        // the bubble's edge wobble token by token.
+        bodyWidthConstraint.constant = streaming ? max(bodyWidthConstraint.constant, measuredWidth) : measuredWidth
         bodyHeightConstraint.constant = max(10, ceil(bounding.height) + 1)
     }
 }
@@ -1109,9 +1143,13 @@ private final class SlidingSegmentedControl: NSView {
         didSet { alphaValue = isEnabledControl ? 1 : 0.4 }
     }
 
-    private let thumb = DS.makeGlass(cornerRadius: 12)
+    /// The glass rides inside a plain container, and the *container* is what animates: glass
+    /// views don't reliably animate frame changes themselves, and animating a plain NSView with
+    /// the glass autoresizing inside it does.
+    private let thumbContainer = NSView()
     private let track = NSView()
     private var buttons: [NSButton] = []
+    private var lastLayoutBounds = NSRect.zero
 
     init(titles: [String]) {
         super.init(frame: .zero)
@@ -1122,7 +1160,11 @@ private final class SlidingSegmentedControl: NSView {
         track.layer?.backgroundColor = DS.Color.scrimFaint.cgColor
         track.layer?.cornerRadius = 14
         addSubview(track)
-        addSubview(thumb)
+        let glass = DS.makeGlass(cornerRadius: 12)
+        glass.translatesAutoresizingMaskIntoConstraints = true
+        glass.autoresizingMask = [.width, .height]
+        thumbContainer.addSubview(glass)
+        addSubview(thumbContainer)
         for (index, title) in titles.enumerated() {
             let button = NSButton(title: title, target: self, action: #selector(segmentTapped(_:)))
             button.isBordered = false
@@ -1145,8 +1187,14 @@ private final class SlidingSegmentedControl: NSView {
         for (index, button) in buttons.enumerated() {
             button.frame = NSRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
         }
-        thumb.frame = thumbFrame(for: selectedIndex)
-        refreshTitles()
+        // Snap the thumb only when the control actually resized. Unconditional placement here
+        // is why the slide never showed: selecting a segment re-bolds a label, that schedules a
+        // layout pass, and this line teleported the thumb to its destination mid-animation.
+        if bounds != lastLayoutBounds {
+            lastLayoutBounds = bounds
+            thumbContainer.frame = thumbFrame(for: selectedIndex)
+            thumbContainer.subviews.first?.frame = thumbContainer.bounds
+        }
     }
 
     private func thumbFrame(for index: Int) -> NSRect {
@@ -1157,9 +1205,10 @@ private final class SlidingSegmentedControl: NSView {
     func select(_ index: Int, animated: Bool) {
         guard buttons.indices.contains(index) else { return }
         selectedIndex = index
+        refreshTitles()
         guard animated else {
-            thumb.frame = thumbFrame(for: index)
-            refreshTitles()
+            thumbContainer.frame = thumbFrame(for: index)
+            thumbContainer.subviews.first?.frame = thumbContainer.bounds
             return
         }
         NSAnimationContext.runAnimationGroup { context in
@@ -1167,9 +1216,8 @@ private final class SlidingSegmentedControl: NSView {
             // A slight overshoot on the way in — the same spring language as the pill press.
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 1.2, 0.35, 1)
             context.allowsImplicitAnimation = true
-            thumb.animator().frame = thumbFrame(for: index)
+            thumbContainer.animator().frame = thumbFrame(for: index)
         }
-        refreshTitles()
     }
 
     private func refreshTitles() {
@@ -1183,6 +1231,63 @@ private final class SlidingSegmentedControl: NSView {
         select(sender.tag, animated: true)
         onChange?(sender.tag)
     }
+}
+
+
+/// The + button's popover — the same presentation as the session pill, because it feels right:
+/// anchored, arrowed, springy. Rows read like menu items but live in the popover material.
+private final class PlusActionsViewController: NSViewController {
+    var onAttach: (() -> Void)?
+    var onCompact: (() -> Void)?
+    var onNewConversation: (() -> Void)?
+
+    override func loadView() { view = NSView() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        let rows = [
+            makeRow(symbol: "at", title: "Add File Reference", action: #selector(attachTapped)),
+            makeRow(symbol: "arrow.down.right.and.arrow.up.left", title: "Compact Conversation…", action: #selector(compactTapped)),
+            makeRow(symbol: "square.and.pencil", title: "New Conversation…", action: #selector(newTapped)),
+        ]
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Spacing.xs
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.m, left: DS.Spacing.m, bottom: DS.Spacing.m, right: DS.Spacing.m)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
+        ])
+    }
+
+    private func makeRow(symbol: String, title: String, action: Selector) -> NSButton {
+        let button = NSButton(title: "  \(title)", target: self, action: action)
+        button.isBordered = false
+        button.imagePosition = .imageLeading
+        button.alignment = .left
+        button.font = DS.Text.control()
+        button.contentTintColor = .labelColor
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        return button
+    }
+
+    private func dismissThen(_ handler: (() -> Void)?) {
+        view.window?.performClose(nil)
+        handler?()
+    }
+
+    @objc private func attachTapped() { dismissThen(onAttach) }
+    @objc private func compactTapped() { dismissThen(onCompact) }
+    @objc private func newTapped() { dismissThen(onNewConversation) }
 }
 
 /// The session pill's popover: model, thinking effort, tool scope, autonomy, and the context /
