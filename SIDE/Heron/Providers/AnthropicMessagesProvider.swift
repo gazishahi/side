@@ -111,6 +111,8 @@ final class AnthropicMessagesProvider: ChatModelProvider {
             return ["type": "tool_use", "id": id, "name": name, "input": input.anyValue]
         case .toolResult(let toolUseId, let content, let isError):
             return ["type": "tool_result", "tool_use_id": toolUseId, "content": content, "is_error": isError]
+        case .image(let mediaType, let base64):
+            return ["type": "image", "source": ["type": "base64", "media_type": mediaType, "data": base64]]
         }
     }
 

@@ -31,6 +31,26 @@ final class ContextBudgetTests: XCTestCase {
         XCTAssertGreaterThan(ContextBudget.estimatedTokens(in: withResult), 9_000)
     }
 
+    func testImagesCountTowardTheEstimate() {
+        // Priced by pixels server-side; the estimate charges a flat figure per image so the
+        // gauge moves when screenshots pile up.
+        let withImage = [AgentTurn(role: .user, content: [.image(mediaType: "image/png", base64: "aGk=")])]
+        XCTAssertGreaterThan(ContextBudget.estimatedTokens(in: withImage), 1_000)
+    }
+
+    func testImageBlocksSurviveAPersistenceRoundTrip() throws {
+        let turn = AgentTurn(role: .user, content: [
+            .image(mediaType: "image/jpeg", base64: "c2NyZWVuc2hvdA=="),
+            .text("what's wrong with this UI?"),
+        ])
+        let decoded = try JSONDecoder().decode(AgentTurn.self, from: JSONEncoder().encode(turn))
+        guard case .image(let mediaType, let base64) = decoded.content.first else {
+            return XCTFail("image block lost in round trip")
+        }
+        XCTAssertEqual(mediaType, "image/jpeg")
+        XCTAssertEqual(base64, "c2NyZWVuc2hvdA==")
+    }
+
     func testEmptyConversationCostsNothing() {
         XCTAssertEqual(ContextBudget.estimatedTokens(in: []), 0)
     }

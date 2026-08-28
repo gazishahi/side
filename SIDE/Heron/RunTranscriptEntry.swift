@@ -12,6 +12,8 @@ struct RunTranscriptEntry: Identifiable {
     enum Kind {
         case meta(String)
         case userText(String)
+        /// An image the user attached, held as encoded bytes so any observer can render it.
+        case userImage(Data)
         /// Mutated in place while the model streams — each delta fires `.updated`, not a fresh
         /// `.appended`, so the transcript grows one paragraph, not one block per token.
         case assistantText(String)

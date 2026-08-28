@@ -41,6 +41,10 @@ enum ContextBudget {
                     characters += content.count
                 case .toolUse(_, let name, let input):
                     characters += name.count + String(describing: input).count
+                case .image:
+                    // The API prices images by pixels, not bytes; a downscaled screenshot runs
+                    // roughly 1,500 tokens. A flat figure keeps the gauge honest enough.
+                    characters += 6_000
                 }
             }
         }

@@ -90,16 +90,25 @@ final class OpenAICompatibleChatProvider: ChatModelProvider {
                 continue // already folded into the top-level system message above
             case .user, .tool:
                 var textParts: [String] = []
+                var imageParts: [[String: Any]] = []
                 var toolResultMessages: [[String: Any]] = []
                 for block in message.content {
                     switch block {
                     case .text(let text): textParts.append(text)
                     case .toolResult(let toolUseId, let content, _):
                         toolResultMessages.append(["role": "tool", "tool_call_id": toolUseId, "content": content])
+                    case .image(let mediaType, let base64):
+                        // OpenAI's inline-image shape: a data URL inside an image_url part.
+                        imageParts.append(["type": "image_url", "image_url": ["url": "data:\(mediaType);base64,\(base64)"]])
                     case .toolUse: break // never appears in a user-role turn
                     }
                 }
-                if !textParts.isEmpty {
+                if !imageParts.isEmpty {
+                    // With images the content must be the array-of-parts form; text joins in.
+                    var parts = imageParts
+                    if !textParts.isEmpty { parts.append(["type": "text", "text": textParts.joined(separator: "\n")]) }
+                    result.append(["role": "user", "content": parts])
+                } else if !textParts.isEmpty {
                     result.append(["role": "user", "content": textParts.joined(separator: "\n")])
                 }
                 result.append(contentsOf: toolResultMessages)
@@ -113,7 +122,7 @@ final class OpenAICompatibleChatProvider: ChatModelProvider {
                         let argumentsData = (try? JSONSerialization.data(withJSONObject: input.anyValue)) ?? Data("{}".utf8)
                         let argumentsString = String(data: argumentsData, encoding: .utf8) ?? "{}"
                         toolCalls.append(["id": id, "type": "function", "function": ["name": name, "arguments": argumentsString]])
-                    case .toolResult: break // never appears in an assistant-role turn
+                    case .toolResult, .image: break // never appear in an assistant-role turn
                     }
                 }
                 var assistantMessage: [String: Any] = ["role": "assistant", "content": textParts.isEmpty ? NSNull() : textParts.joined(separator: "\n")]

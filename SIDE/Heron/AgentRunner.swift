@@ -198,10 +198,10 @@ final class AgentRunner {
 
     // MARK: - Sending
 
-    func send(_ text: String) {
+    func send(_ text: String, attachments: [AgentImageAttachment] = []) {
         guard !phase.isBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
         let selection = resolvedSelection()
         guard case .ready(_, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
@@ -214,11 +214,18 @@ final class AgentRunner {
         // (the live transcript and the reloaded one disagreed, which is how this was caught), and
         // it would freeze the resolution — a path that didn't exist when the message was sent
         // would stay "doesn't exist" forever. It's attached per request instead, in `runTurn`.
+        // Images lead, text follows — the API reads a message top to bottom and the prose
+        // usually refers to "this screenshot."
+        var content: [AgentContentBlock] = attachments.map { .image(mediaType: $0.mediaType, base64: $0.base64) }
+        if !trimmed.isEmpty { content.append(.text(trimmed)) }
         sessionStore.appendTurn(
-            AgentTurn(role: .user, content: [.text(trimmed)]),
+            AgentTurn(role: .user, content: content),
             trackKey: trackKey, providerId: selection.providerId, modelId: model.id
         )
-        appendEntry(.userText(trimmed))
+        for attachment in attachments {
+            if let data = Data(base64Encoded: attachment.base64) { appendEntry(.userImage(data)) }
+        }
+        if !trimmed.isEmpty { appendEntry(.userText(trimmed)) }
         runTurn(roundTrip: 0)
     }
 
@@ -932,6 +939,8 @@ final class AgentRunner {
                     appendEntry(.toolCall(name: name, summary: Self.summarize(input: input)))
                 case .toolResult(_, let content, let isError):
                     appendEntry(.toolResult(text: isError ? "⚠︎ \(content.prefix(140))" : "✓ \(Self.describeResultSize(content))", isError: isError))
+                case .image(_, let base64):
+                    if let data = Data(base64Encoded: base64) { appendEntry(.userImage(data)) }
                 }
             }
         }

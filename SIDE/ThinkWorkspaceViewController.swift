@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 private extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
@@ -314,9 +315,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
         guard runner.phase != .awaitingApproval else { return }
         let text = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let attachments = composer.attachmentPayloads()
+        guard !text.isEmpty || !attachments.isEmpty else { return }
         composer.clear()
-        runner.send(text)
+        runner.send(text, attachments: attachments)
     }
 
     private func updateSendButton() {
@@ -365,12 +367,25 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private func showPlusPopover() {
         let actions = PlusActionsViewController()
         actions.onAttach = { [weak self] in self?.insertMentionTrigger() }
+        actions.onAttachImage = { [weak self] in self?.pickImageAttachment() }
         actions.onCompact = { [weak self] in self?.compactConversation() }
         actions.onNewConversation = { [weak self] in self?.startNewConversation() }
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = actions
         popover.show(relativeTo: plusButton.bounds, of: plusButton, preferredEdge: .maxY)
+    }
+
+    /// The + popover's "Attach Image…" — an open panel filtered to what the models accept.
+    private func pickImageAttachment() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .webP]
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            if let image = NSImage(contentsOf: url) { composer.addImageAttachment(image) }
+        }
     }
 
     @objc private func insertMentionTrigger() {
@@ -706,6 +721,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         switch entry.kind {
         case .meta(let text):
             return makeLabel(text, font: DS.Text.control(), color: .tertiaryLabelColor)
+        case .userImage(let data):
+            return ImageBubbleRowView(imageData: data, alignRight: true)
         case .userText(let text):
             // iMessage-shaped: sent messages are solid-accent bubbles hugging their own content
             // against the trailing edge; no "You" header — the side and color carry that.
@@ -762,7 +779,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private static func spacing(before kind: RunTranscriptEntry.Kind) -> CGFloat {
         switch kind {
-        case .meta, .userText, .assistantText, .proposal, .commandProposal: return 8
+        case .meta, .userText, .userImage, .assistantText, .proposal, .commandProposal: return 8
         case .toolCall, .toolResult, .failure: return 4
         }
     }
@@ -1127,6 +1144,42 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
     }
 }
 
+/// One attached image in the transcript: rounded, capped, pinned to its sender's side. Sized
+/// at init from the decoded image so layout never has to ask the bitmap anything again.
+private final class ImageBubbleRowView: NSView {
+    init(imageData: Data, alignRight: Bool) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let imageView = NSImageView()
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.wantsLayer = true
+        imageView.layer?.cornerRadius = DS.Radius.bubble
+        imageView.layer?.masksToBounds = true
+        var displaySize = NSSize(width: 160, height: 120)
+        if let image = NSImage(data: imageData), image.size.width > 0, image.size.height > 0 {
+            imageView.image = image
+            let cap: CGFloat = 260
+            let scale = min(1, min(cap / image.size.width, cap / image.size.height))
+            displaySize = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        }
+        addSubview(imageView)
+        NSLayoutConstraint.activate([
+            imageView.widthAnchor.constraint(equalToConstant: displaySize.width),
+            imageView.heightAnchor.constraint(equalToConstant: displaySize.height),
+            imageView.topAnchor.constraint(equalTo: topAnchor),
+            imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            alignRight
+                ? imageView.trailingAnchor.constraint(equalTo: trailingAnchor)
+                : imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
+        ])
+        setAccessibilityLabel("Attached image")
+        setAccessibilityRole(.image)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
 /// A transparent full-width transcript row holding one bubble pinned to its side, plus the
 /// hover-revealed Copy affordance sitting *outside* the bubble (inside, it collided with text
 /// and got clipped by the bubble's rounded corners) — iMessage's "actions live beside the
@@ -1448,6 +1501,7 @@ private final class PopoverActionRow: NSView {
 /// anchored, arrowed, springy. Rows read like menu items but live in the popover material.
 private final class PlusActionsViewController: NSViewController {
     var onAttach: (() -> Void)?
+    var onAttachImage: (() -> Void)?
     var onCompact: (() -> Void)?
     var onNewConversation: (() -> Void)?
 
@@ -1456,6 +1510,7 @@ private final class PlusActionsViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         let rows = [
+            PopoverActionRow(symbol: "photo", title: "Attach Image…") { [weak self] in self?.dismissThen(self?.onAttachImage) },
             PopoverActionRow(symbol: "at", title: "Add File Reference") { [weak self] in self?.dismissThen(self?.onAttach) },
             PopoverActionRow(symbol: "arrow.down.right.and.arrow.up.left", title: "Compact Conversation…") { [weak self] in self?.dismissThen(self?.onCompact) },
             PopoverActionRow(symbol: "square.and.pencil", title: "New Conversation…") { [weak self] in self?.dismissThen(self?.onNewConversation) },
@@ -1782,6 +1837,59 @@ private final class ChipButton: NSButton {
 }
 
 private final class ComposerTextView: NSTextView {
+    /// Handles images pasted or dropped into the field; returns true when consumed. Set by
+    /// ComposerView, which owns the attachment strip.
+    var onImagesDropped: (([NSImage]) -> Bool)?
+
+    private static func imageURLs(on pasteboard: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: [UTType.image.identifier],
+        ]
+        return (pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL]) ?? []
+    }
+
+    /// ⌘V with a screenshot on the clipboard attaches it. Text still wins when both are
+    /// present (copying from a browser often carries both) — attaching is only for pastes
+    /// that would otherwise do nothing.
+    override func paste(_ sender: Any?) {
+        let pasteboard = NSPasteboard.general
+        var images = Self.imageURLs(on: pasteboard).compactMap { NSImage(contentsOf: $0) }
+        if images.isEmpty, pasteboard.string(forType: .string) == nil {
+            images = (pasteboard.readObjects(forClasses: [NSImage.self]) as? [NSImage]) ?? []
+        }
+        if !images.isEmpty, onImagesDropped?(images) == true { return }
+        super.paste(sender)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if !Self.imageURLs(on: sender.draggingPasteboard).isEmpty { return .copy }
+        return super.draggingEntered(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let images = Self.imageURLs(on: sender.draggingPasteboard).compactMap { NSImage(contentsOf: $0) }
+        if !images.isEmpty, onImagesDropped?(images) == true { return true }
+        return super.performDragOperation(sender)
+    }
+
+    /// Drawn by the text view itself at the glyph origin the layout manager uses, so it can
+    /// never disagree with the insertion point — the overlay-label approach kept drifting by a
+    /// couple of points (the label cell pads its title rect; the container inset doesn't).
+    var placeholderString: String = ""
+    var showsPlaceholder = true
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard string.isEmpty, showsPlaceholder, !placeholderString.isEmpty else { return }
+        let origin = NSPoint(x: textContainerInset.width + (textContainer?.lineFragmentPadding ?? 0),
+                             y: textContainerInset.height)
+        NSAttributedString(string: placeholderString, attributes: [
+            .font: font ?? DS.Text.body(),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]).draw(at: origin)
+    }
+
     /// The range of the mention being typed, or nil when the caret isn't inside one. Extends back
     /// to the `@` so `@src/deep/nes` is one token rather than stopping at each `/`.
     /// The `/command` token being typed, or nil. Only at the very start of the message — a
@@ -1824,6 +1932,52 @@ private final class ComposerTextView: NSTextView {
     }
 }
 
+/// A queued image in the composer: 48pt rounded thumbnail with an always-visible ✕. No hover
+/// dance — on a surface this small, discoverable beats tidy.
+private final class AttachmentChipView: NSView {
+    private let onRemove: () -> Void
+
+    init(thumbnail: NSImage, onRemove: @escaping () -> Void) {
+        self.onRemove = onRemove
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        let imageView = NSImageView()
+        imageView.image = thumbnail
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.wantsLayer = true
+        imageView.layer?.cornerRadius = DS.Radius.control
+        imageView.layer?.masksToBounds = true
+        imageView.layer?.borderWidth = 1
+        imageView.layer?.borderColor = NSColor.separatorColor.cgColor
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(imageView)
+
+        let removeButton = NSButton(title: "", target: self, action: #selector(removeTapped))
+        removeButton.isBordered = false
+        removeButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Remove attachment")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        removeButton.contentTintColor = .secondaryLabelColor
+        removeButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(removeButton)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 48),
+            heightAnchor.constraint(equalToConstant: 48),
+            imageView.topAnchor.constraint(equalTo: topAnchor),
+            imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            removeButton.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            removeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func removeTapped() { onRemove() }
+}
+
 private final class ComposerView: NSView, NSTextViewDelegate {
     /// One handler for the button and Return alike — the owner decides whether that means
     /// send or stop based on the runner's phase.
@@ -1832,6 +1986,19 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     var onCycleMode: (() -> Void)?
 
     private let textView = ComposerTextView()
+
+    /// One image queued for the next send — already downscaled and encoded.
+    private struct ImageAttachment {
+        let id = UUID()
+        let data: Data
+        let mediaType: String
+        let thumbnail: NSImage
+    }
+    private var attachments: [ImageAttachment] = []
+    private let attachmentStrip = NSStackView()
+    private var stripHeightConstraint: NSLayoutConstraint!
+    private var stripTopConstraint: NSLayoutConstraint!
+    var hasAttachments: Bool { !attachments.isEmpty }
     /// Supplies `@`-mention candidates. Set by the owner, which knows the track's working
     /// directory; nil until then, and completion simply does nothing in that case.
     var mentionCandidates: ((String) -> [String])?
@@ -1847,7 +2014,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// from sitting underneath dictation's glowing cursor.
     private var isDictating = false
     private let scroll = NSScrollView()
-    private let placeholderLabel = NSTextField(labelWithString: "")
+
     private let actionButton = CircularIconButton(diameter: 28)
     private let micButton = NSButton()
     private var textHeightConstraint: NSLayoutConstraint!
@@ -1860,7 +2027,10 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     var text: String { textView.string }
 
     var placeholder: String = "" {
-        didSet { placeholderLabel.stringValue = placeholder }
+        didSet {
+            textView.placeholderString = placeholder
+            textView.needsDisplay = true
+        }
     }
 
     var isEnabled: Bool = true {
@@ -1908,11 +2078,6 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         scroll.hasVerticalScroller = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        placeholderLabel.font = DS.Text.body()
-        placeholderLabel.textColor = .tertiaryLabelColor
-        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
-        placeholderLabel.lineBreakMode = .byTruncatingTail
-
         micButton.isBordered = false
         micButton.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Dictate")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
@@ -1927,11 +2092,23 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         actionButton.action = #selector(actionTapped)
         setBusy(false)
 
+        attachmentStrip.orientation = .horizontal
+        attachmentStrip.alignment = .centerY
+        attachmentStrip.spacing = DS.Spacing.s
+        attachmentStrip.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(attachmentStrip)
+        textView.onImagesDropped = { [weak self] images in
+            guard let self, !images.isEmpty else { return false }
+            for image in images { self.addImageAttachment(image) }
+            return true
+        }
+
         addSubview(scroll)
-        addSubview(placeholderLabel)
         addSubview(micButton)
         addSubview(actionButton)
         textHeightConstraint = scroll.heightAnchor.constraint(equalToConstant: Self.minTextHeight)
+        stripHeightConstraint = attachmentStrip.heightAnchor.constraint(equalToConstant: 0)
+        stripTopConstraint = attachmentStrip.topAnchor.constraint(equalTo: topAnchor, constant: 0)
         NSLayoutConstraint.activate([
             glass.topAnchor.constraint(equalTo: topAnchor),
             glass.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -1943,14 +2120,15 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             // frame that glow clipped on every edge. Same visual text position, more headroom.
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.s),
             scroll.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -2),
-            scroll.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.xs),
+            // The attachment strip sits above the text inside the same capsule; both its
+            // height and its top pad collapse to zero when nothing is attached, so the empty
+            // composer's geometry is untouched.
+            stripTopConstraint,
+            stripHeightConstraint,
+            attachmentStrip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            attachmentStrip.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            scroll.topAnchor.constraint(equalTo: attachmentStrip.bottomAnchor, constant: DS.Spacing.xs),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.xs),
-            // Same origin as the text itself (the container's 12pt inset, zero fragment
-            // padding) — 14pt put the placeholder's first glyph under the insertion cursor.
-            placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 12),
-            placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
-            // Centered on the single-line band, exactly like the mic and send buttons.
-            placeholderLabel.centerYAnchor.constraint(equalTo: scroll.topAnchor, constant: Self.minTextHeight / 2),
             // Mic and send are centered on the *single-line band* — the bottom capsule-height of
             // the field — not inset from the bottom edge, which is what left them sitting low.
             // As the field grows they stay pinned to that band, like Messages.
@@ -1959,6 +2137,71 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
             actionButton.centerYAnchor.constraint(equalTo: bottomAnchor, constant: -Self.capsuleRadius),
         ])
+    }
+
+    // MARK: - Image attachments
+
+    /// Downscales, encodes, and queues an image for the next send, with a removable chip in
+    /// the strip. Encoding happens here — at attach time, once — not at send time.
+    func addImageAttachment(_ image: NSImage) {
+        guard let encoded = Self.encodeForUpload(image) else { return }
+        attachments.append(ImageAttachment(data: encoded.data, mediaType: encoded.mediaType, thumbnail: encoded.thumbnail))
+        rebuildAttachmentStrip()
+    }
+
+    func attachmentPayloads() -> [AgentImageAttachment] {
+        attachments.map { AgentImageAttachment(mediaType: $0.mediaType, base64: $0.data.base64EncodedString()) }
+    }
+
+    private func removeAttachment(id: UUID) {
+        attachments.removeAll { $0.id == id }
+        rebuildAttachmentStrip()
+    }
+
+    private func rebuildAttachmentStrip() {
+        attachmentStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for attachment in attachments {
+            let chip = AttachmentChipView(thumbnail: attachment.thumbnail) { [weak self] in
+                self?.removeAttachment(id: attachment.id)
+            }
+            attachmentStrip.addArrangedSubview(chip)
+        }
+        stripHeightConstraint.constant = attachments.isEmpty ? 0 : 48
+        stripTopConstraint.constant = attachments.isEmpty ? 0 : DS.Spacing.m
+    }
+
+    /// Longest side capped at 1568px (the API's documented sweet spot — anything bigger is
+    /// downscaled server-side anyway, after being paid for). PNG when there's alpha,
+    /// JPEG otherwise; a retina screenshot lands in the low hundreds of KB.
+    private static func encodeForUpload(_ image: NSImage) -> (data: Data, mediaType: String, thumbnail: NSImage)? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              cg.width > 0, cg.height > 0 else { return nil }
+        let scale = min(1, 1568 / CGFloat(max(cg.width, cg.height)))
+        let targetWidth = max(1, Int(CGFloat(cg.width) * scale))
+        let targetHeight = max(1, Int(CGFloat(cg.height) * scale))
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: targetWidth, pixelsHigh: targetHeight,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = NSSize(width: targetWidth, height: targetHeight)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            .draw(in: NSRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        NSGraphicsContext.restoreGraphicsState()
+        let alphaInfo = cg.alphaInfo
+        let hasAlpha = !(alphaInfo == .none || alphaInfo == .noneSkipLast || alphaInfo == .noneSkipFirst)
+        let encoded: (Data, String)?
+        if hasAlpha, let png = rep.representation(using: .png, properties: [:]) {
+            encoded = (png, "image/png")
+        } else if let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+            encoded = (jpeg, "image/jpeg")
+        } else {
+            encoded = nil
+        }
+        guard let (data, mediaType) = encoded, let thumbnail = NSImage(data: data) else { return nil }
+        return (data, mediaType, thumbnail)
     }
 
     /// System dictation into the field — the same thing Edit → Start Dictation does. Honest
@@ -1970,7 +2213,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         // text origin, and the placeholder sat under it until the first words arrived. (The
         // startup delay itself is macOS spinning up the dictation service — not ours to fix.)
         isDictating = true
-        placeholderLabel.isHidden = true
+        textView.showsPlaceholder = false
+        textView.needsDisplay = true
         NSApp.sendAction(Selector(("startDictation:")), to: nil, from: nil)
     }
 
@@ -1980,6 +2224,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         // Sending has to take the candidate list down with it, or it hangs over an empty field.
         isDictating = false
         mentionPopup.hide()
+        attachments.removeAll()
+        rebuildAttachmentStrip()
         textView.string = ""
         textDidChange(Notification(name: NSText.didChangeNotification))
     }
@@ -2007,7 +2253,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         if !textView.string.isEmpty { isDictating = false }
-        placeholderLabel.isHidden = isDictating || !textView.string.isEmpty
+        textView.showsPlaceholder = !isDictating
+        textView.needsDisplay = true
         updateMentionPopup()
         highlightMentions()
         guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }

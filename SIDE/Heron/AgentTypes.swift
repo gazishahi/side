@@ -71,7 +71,18 @@ enum AgentContentBlock: Codable, Sendable {
     case text(String)
     case toolUse(id: String, name: String, input: JSONValue)
     case toolResult(toolUseId: String, content: String, isError: Bool)
-    // image case deferred — not needed for the v1 tool set
+    /// A user-attached image, inline as base64. Inline rather than a file reference on purpose:
+    /// the image is *part of the conversation* — it must survive with the turn, ride every
+    /// replay, and vanish with compaction, all of which fall out of storing it in the turn
+    /// itself. The composer downscales before attaching (longest side ≤ 1568px, the API's
+    /// sweet spot), which keeps a screenshot to a few hundred KB.
+    case image(mediaType: String, base64: String)
+}
+
+/// What the composer hands the runner per attached image — already downscaled and encoded.
+struct AgentImageAttachment: Sendable {
+    let mediaType: String
+    let base64: String
 }
 
 struct ToolSpec: Codable, Sendable {
