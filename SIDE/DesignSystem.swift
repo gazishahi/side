@@ -275,25 +275,17 @@ class CircularIconButton: NSControl {
         }
     }
 
-    /// A faint top-lit gradient over the fill, so a solid-color button reads as a lit surface
-    /// rather than a flat disc. The sheen is color-independent — the fill can change under it.
-    var showsGradientSheen: Bool = false {
-        didSet {
-            guard showsGradientSheen else { sheen.removeFromSuperlayer(); return }
-            sheen.colors = [NSColor.white.withAlphaComponent(0.28).cgColor, NSColor.white.withAlphaComponent(0.0).cgColor]
-            // y=1 is the top in an unflipped layer.
-            sheen.startPoint = CGPoint(x: 0.5, y: 1)
-            sheen.endPoint = CGPoint(x: 0.5, y: 0.25)
-            sheen.frame = bounds
-            layer?.addSublayer(sheen)
-        }
+    /// Fills the circle with a smooth vertical gradient of one color — lighter at the top,
+    /// gently deeper at the bottom — so a colored button reads as a lit surface rather than a
+    /// flat disc. Drawn in draw(_:) *under* the symbol; a gradient sublayer would render over
+    /// the view's own contents and hide the icon. Replaces `backgroundColor` where used.
+    func setGradientFill(_ color: NSColor) {
+        gradientFillColor = color
+        restingBackground = nil
+        layer?.backgroundColor = nil
+        needsDisplay = true
     }
-    private let sheen = CAGradientLayer()
-
-    override func layout() {
-        super.layout()
-        sheen.frame = bounds
-    }
+    private var gradientFillColor: NSColor?
 
     /// Optional hover fill (the tab close button's gray circle); nil means no hover change.
     var hoverBackgroundColor: NSColor? {
@@ -301,6 +293,14 @@ class CircularIconButton: NSControl {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let fill = gradientFillColor {
+            let gradient = NSGradient(colorsAndLocations:
+                (fill.blended(withFraction: 0.22, of: .white) ?? fill, 1),
+                (fill, 0.45),
+                (fill.blended(withFraction: 0.14, of: .black) ?? fill, 0)
+            )
+            gradient?.draw(in: NSBezierPath(ovalIn: bounds), angle: 90)
+        }
         guard let symbolImage else { return }
         let size = symbolImage.size
         let rect = NSRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)

@@ -81,6 +81,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
         sessionPill.onPress = { [weak self] in self?.showSessionPopover() }
         sessionPill.glassBackdrop = sessionPillGlass
+        sessionPill.companionOverlay = pillModeTint
         sessionPill.translatesAutoresizingMaskIntoConstraints = false
         plusButton.setSymbol("plus", pointSize: 14)
         plusButton.onPress = { [weak self] in self?.showPlusPopover() }
@@ -558,7 +559,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // Color updates always land — changing a segmented control in the popover should recolor
         // the pill edge and send button immediately, and color doesn't move the anchor.
         let scopeTint = Self.tint(for: currentMode().scope)
-        pillModeTint.color = scopeTint.withAlphaComponent(0.32)
+        pillModeTint.color = scopeTint.withAlphaComponent(0.16)
         composer.setModeTint(scopeTint)
         // The popover is anchored to the pill: resizing the pill mid-edit visibly drags the
         // popover sideways. Hold the label until the popover closes.
@@ -905,7 +906,7 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
     enum Tail { case none, leading, trailing }
     /// How far the tail pokes past the bubble body. The body is inset by this on the tail side,
     /// so autolayout sees one rect and the curve lives inside it.
-    static let tailWidth: CGFloat = 8
+    static let tailWidth: CGFloat = 6
 
     init(style: Style, body: String, maxBubbleWidth: CGFloat) {
         self.style = style
@@ -981,35 +982,32 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         switch tail {
         case .none:
             path.appendRoundedRect(bounds, xRadius: DS.Radius.bubble, yRadius: DS.Radius.bubble)
-        case .trailing, .leading:
-            // Fully-rounded body plus a separate curl overlapping the bottom tail-side corner —
-            // the classic single-outline path put the tail *on* the corner with a flat bottom
-            // run into it; iMessage's tail comes off the capsule's side, which needs the corner
-            // under it to stay round. Tuned against offscreen renders side-by-side with real
-            // iMessage bubbles. Nonzero winding: both subpaths must wind the same direction,
-            // which is why the leading tail's points run in reverse order.
-            let r = min(17, h / 2)
-            let bodyW = w - Self.tailWidth
-            path.appendRoundedRect(
-                NSRect(x: tail == .leading ? Self.tailWidth : 0, y: 0, width: bodyW, height: h),
-                xRadius: r, yRadius: r
-            )
-            let curl = NSBezierPath()
-            if tail == .trailing {
-                curl.move(to: NSPoint(x: bodyW - 3, y: h - 10))
-                curl.curve(to: NSPoint(x: w, y: h - 0.5),
-                           controlPoint1: NSPoint(x: bodyW + 3, y: h - 5), controlPoint2: NSPoint(x: w - 3, y: h - 2.5))
-                curl.curve(to: NSPoint(x: bodyW - 10, y: h - 0.5),
-                           controlPoint1: NSPoint(x: w - 7, y: h), controlPoint2: NSPoint(x: bodyW - 5, y: h))
-            } else {
-                curl.move(to: NSPoint(x: 18, y: h - 0.5))
-                curl.curve(to: NSPoint(x: 0, y: h - 0.5),
-                           controlPoint1: NSPoint(x: 13, y: h), controlPoint2: NSPoint(x: 7, y: h))
-                curl.curve(to: NSPoint(x: 11, y: h - 10),
-                           controlPoint1: NSPoint(x: 3, y: h - 2.5), controlPoint2: NSPoint(x: 5, y: h - 5))
-            }
-            curl.close()
-            path.append(curl)
+        case .trailing:
+            path.move(to: NSPoint(x: w - 22, y: h))
+            path.line(to: NSPoint(x: 17, y: h))
+            path.curve(to: NSPoint(x: 0, y: h - 17), controlPoint1: NSPoint(x: 7.61, y: h), controlPoint2: NSPoint(x: 0, y: h - 7.61))
+            path.line(to: NSPoint(x: 0, y: 17))
+            path.curve(to: NSPoint(x: 17, y: 0), controlPoint1: NSPoint(x: 0, y: 7.61), controlPoint2: NSPoint(x: 7.61, y: 0))
+            path.line(to: NSPoint(x: w - 21, y: 0))
+            path.curve(to: NSPoint(x: w - 4, y: 17), controlPoint1: NSPoint(x: w - 11.61, y: 0), controlPoint2: NSPoint(x: w - 4, y: 7.61))
+            path.line(to: NSPoint(x: w - 4, y: h - 11))
+            path.curve(to: NSPoint(x: w, y: h), controlPoint1: NSPoint(x: w - 4, y: h - 1), controlPoint2: NSPoint(x: w, y: h))
+            path.line(to: NSPoint(x: w + 0.05, y: h - 0.01))
+            path.curve(to: NSPoint(x: w - 11.04, y: h - 4.04), controlPoint1: NSPoint(x: w - 4.07, y: h + 0.43), controlPoint2: NSPoint(x: w - 8.16, y: h - 1.06))
+            path.curve(to: NSPoint(x: w - 22, y: h), controlPoint1: NSPoint(x: w - 16, y: h), controlPoint2: NSPoint(x: w - 19, y: h))
+        case .leading:
+            path.move(to: NSPoint(x: 22, y: h))
+            path.line(to: NSPoint(x: w - 17, y: h))
+            path.curve(to: NSPoint(x: w, y: h - 17), controlPoint1: NSPoint(x: w - 7.61, y: h), controlPoint2: NSPoint(x: w, y: h - 7.61))
+            path.line(to: NSPoint(x: w, y: 17))
+            path.curve(to: NSPoint(x: w - 17, y: 0), controlPoint1: NSPoint(x: w, y: 7.61), controlPoint2: NSPoint(x: w - 7.61, y: 0))
+            path.line(to: NSPoint(x: 21, y: 0))
+            path.curve(to: NSPoint(x: 4, y: 17), controlPoint1: NSPoint(x: 11.61, y: 0), controlPoint2: NSPoint(x: 4, y: 7.61))
+            path.line(to: NSPoint(x: 4, y: h - 11))
+            path.curve(to: NSPoint(x: 0, y: h), controlPoint1: NSPoint(x: 4, y: h - 1), controlPoint2: NSPoint(x: 0, y: h))
+            path.line(to: NSPoint(x: -0.05, y: h - 0.01))
+            path.curve(to: NSPoint(x: 11.04, y: h - 4.04), controlPoint1: NSPoint(x: 4.07, y: h + 0.43), controlPoint2: NSPoint(x: 8.16, y: h - 1.06))
+            path.curve(to: NSPoint(x: 22, y: h), controlPoint1: NSPoint(x: 16, y: h), controlPoint2: NSPoint(x: 19, y: h))
         }
         path.close()
         style.fillColor.setFill()
@@ -1671,6 +1669,8 @@ private final class ChipButton: NSButton {
     var onPress: (() -> Void)?
     /// The glass view rendered behind this button, so the press spring moves both as one object.
     weak var glassBackdrop: NSView?
+    /// Anything else layered on the pill (the mode-tint wash) that must dip and spring with it.
+    weak var companionOverlay: NSView?
     /// Hover pill for bare chips; off for buttons that sit on their own glass, where a
     /// rounded-rect hover inside a capsule reads as a seam (the exact complaint).
     var showsHover = false
@@ -1717,9 +1717,11 @@ private final class ChipButton: NSButton {
     override func mouseDown(with event: NSEvent) {
         pressDown(self)
         if let glassBackdrop { pressDown(glassBackdrop) }
+        if let companionOverlay { pressDown(companionOverlay) }
         super.mouseDown(with: event)
         pressRelease(self)
         if let glassBackdrop { pressRelease(glassBackdrop) }
+        if let companionOverlay { pressRelease(companionOverlay) }
     }
 
     @objc private func pressed() {
@@ -1916,8 +1918,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         micButton.toolTip = "Dictate"
         micButton.translatesAutoresizingMaskIntoConstraints = false
 
-        actionButton.backgroundColor = .controlAccentColor
-        actionButton.showsGradientSheen = true
+        actionButton.setGradientFill(.controlAccentColor)
         actionButton.target = self
         actionButton.action = #selector(actionTapped)
         setBusy(false)
@@ -1988,7 +1989,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     /// The send button carries the scope color — the thing you look at as you commit a message.
     func setModeTint(_ color: NSColor) {
-        actionButton.backgroundColor = color
+        actionButton.setGradientFill(color)
     }
 
     func setBusy(_ busy: Bool) {
