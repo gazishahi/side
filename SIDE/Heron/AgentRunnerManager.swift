@@ -19,7 +19,8 @@ final class AgentRunnerManager {
     /// Whether a track has opted into skipping approval for `run_shell_command` — resolved
     /// fresh per tool call, same as `rootProvider`, so toggling it mid-conversation takes effect
     /// on the very next command rather than requiring a fresh runner.
-    private let autoRunCommandsProvider: (String) -> Bool
+    /// The track's mode (tool scope × autonomy), resolved fresh per request.
+    private let modeProvider: (String) -> AgentMode
     /// Per-track provider/model/effort, resolved fresh per request — same reasoning as
     /// `rootProvider`.
     private let modelSelectionProvider: (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?)
@@ -36,12 +37,12 @@ final class AgentRunnerManager {
     private var debounceWorkItem: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.2
 
-    init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, autoRunCommandsProvider: @escaping (String) -> Bool, modelSelectionProvider: @escaping (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?)) {
+    init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, modeProvider: @escaping (String) -> AgentMode, modelSelectionProvider: @escaping (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?)) {
         self.sessionStore = sessionStore
         self.projectPath = projectPath
         self.bridgeProvider = bridgeProvider
         self.rootProvider = rootProvider
-        self.autoRunCommandsProvider = autoRunCommandsProvider
+        self.modeProvider = modeProvider
         self.modelSelectionProvider = modelSelectionProvider
     }
 
@@ -78,7 +79,7 @@ final class AgentRunnerManager {
             projectPath: projectPath,
             bridgeProvider: { [bridgeProvider] in bridgeProvider(trackKey) },
             rootProvider: { [rootProvider] in rootProvider(trackKey) },
-            autoRunCommandsProvider: { [autoRunCommandsProvider] in autoRunCommandsProvider(trackKey) },
+            modeProvider: { [modeProvider] in modeProvider(trackKey) },
             modelSelectionProvider: { [modelSelectionProvider] in modelSelectionProvider(trackKey) }
         )
         runner.addObserver { [weak self] event in

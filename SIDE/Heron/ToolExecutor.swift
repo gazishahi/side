@@ -17,6 +17,19 @@ struct ToolExecutor {
     private static let maxListedFiles = 400
     private static let maxSearchMatches = 100
 
+    /// The tools a given scope actually exposes. Filtering the *specs* is the enforcement point
+    /// for `AgentToolScope`: a model that never sees `write_file` can't propose a write, which
+    /// makes Ask/Plan a real boundary rather than an instruction it might reason past.
+    static func specs(for scope: AgentToolScope) -> [ToolSpec] {
+        specs.filter { spec in
+            switch spec.name {
+            case "edit_file", "write_file": return scope.allowsWrites
+            case "run_shell_command": return scope.allowsCommands
+            default: return true
+            }
+        }
+    }
+
     static var specs: [ToolSpec] {
         [
             ToolSpec(

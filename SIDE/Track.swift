@@ -44,6 +44,20 @@ struct Track: Codable, Identifiable {
     var providerId: String?
     var modelId: String?
     var effort: AgentEffort?
+    /// The track's mode — what the agent may attempt (`AgentToolScope`) and what it may do
+    /// without asking (`AgentAutonomy`). Optional so a track written before modes existed can
+    /// be migrated from `autoRunCommands` at decode time instead of guessing later.
+    var toolScope: AgentToolScope?
+    var autonomy: AgentAutonomy?
+
+    /// Never nil in practice — resolves the stored values, the migrated old bool, or the
+    /// default, in that order.
+    var mode: AgentMode {
+        AgentMode(
+            scope: toolScope ?? .default,
+            autonomy: autonomy ?? (autoRunCommands ? .guarded : .manual)
+        )
+    }
 
     init(intent: String, branchName: String, parentTrackId: UUID? = nil) {
         self.id = UUID()
@@ -58,11 +72,13 @@ struct Track: Codable, Identifiable {
         self.providerId = nil
         self.modelId = nil
         self.effort = nil
+        self.toolScope = nil
+        self.autonomy = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands, parentTrackId
-        case providerId, modelId, effort
+        case providerId, modelId, effort, toolScope, autonomy
     }
 
     init(from decoder: Decoder) throws {
@@ -79,5 +95,7 @@ struct Track: Codable, Identifiable {
         providerId = try container.decodeIfPresent(String.self, forKey: .providerId)
         modelId = try container.decodeIfPresent(String.self, forKey: .modelId)
         effort = try container.decodeIfPresent(AgentEffort.self, forKey: .effort)
+        toolScope = try container.decodeIfPresent(AgentToolScope.self, forKey: .toolScope)
+        autonomy = try container.decodeIfPresent(AgentAutonomy.self, forKey: .autonomy)
     }
 }

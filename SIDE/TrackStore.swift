@@ -426,6 +426,8 @@ final class TrackStore {
     func setAutoRunCommands(_ autoRun: Bool, for track: Track) {
         guard let index = tracks.firstIndex(where: { $0.id == track.id }) else { return }
         tracks[index].autoRunCommands = autoRun
+        // Kept in step with the mode axes so the two can't disagree about the same track.
+        tracks[index].autonomy = autoRun ? .guarded : .manual
         save()
         notifyChange()
     }
@@ -441,6 +443,22 @@ final class TrackStore {
         tracks[index].effort = effort
         save()
         notifyChange()
+    }
+
+    /// The track's mode. Writing it also updates the legacy `autoRunCommands` bool so a
+    /// downgrade (or any code still reading the bool) sees a consistent picture rather than a
+    /// track that silently stopped auto-running.
+    func setMode(_ mode: AgentMode, forTrackKey trackKey: String) {
+        guard let index = tracks.firstIndex(where: { $0.branchName == trackKey }) else { return }
+        tracks[index].toolScope = mode.scope
+        tracks[index].autonomy = mode.autonomy
+        tracks[index].autoRunCommands = mode.autonomy.autoRunsAllowlistedCommands
+        save()
+        notifyChange()
+    }
+
+    func mode(forTrackKey trackKey: String) -> AgentMode {
+        tracks.first { $0.branchName == trackKey }?.mode ?? .default
     }
 
     func modelSelection(forTrackKey trackKey: String) -> (providerId: String?, modelId: String?, effort: AgentEffort?) {

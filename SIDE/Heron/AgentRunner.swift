@@ -61,7 +61,9 @@ final class AgentRunner {
     private let rootProvider: () -> URL
     /// Whether this track has opted out of approval for `run_shell_command`. Resolved fresh per
     /// batch, same reasoning as `rootProvider`.
-    private let autoRunCommandsProvider: () -> Bool
+    /// The track's mode, resolved fresh per request — same convention as `rootProvider`, so
+    /// changing mode mid-conversation takes effect on the very next turn.
+    private let modeProvider: () -> AgentMode
     /// The track's own model choice, resolved fresh per request — same convention as
     /// `rootProvider`, so switching model mid-conversation takes effect on the very next turn
     /// instead of needing a new runner.
@@ -116,7 +118,7 @@ final class AgentRunner {
     init(
         trackKey: String, sessionStore: AgentSessionStore, projectPath: String,
         bridgeProvider: @escaping () -> WorkspaceBridge,
-        rootProvider: @escaping () -> URL, autoRunCommandsProvider: @escaping () -> Bool,
+        rootProvider: @escaping () -> URL, modeProvider: @escaping () -> AgentMode = { .default },
         modelSelectionProvider: @escaping () -> (providerId: String?, modelId: String?, effort: AgentEffort?) = { (nil, nil, nil) }
     ) {
         self.trackKey = trackKey
@@ -124,7 +126,7 @@ final class AgentRunner {
         self.projectPath = projectPath
         self.bridgeProvider = bridgeProvider
         self.rootProvider = rootProvider
-        self.autoRunCommandsProvider = autoRunCommandsProvider
+        self.modeProvider = modeProvider
         self.modelSelectionProvider = modelSelectionProvider
         hydrateFromSession()
     }
@@ -445,11 +447,12 @@ final class AgentRunner {
         didReceiveProviderError = false
 
         let messages = session.turns.map { AgentMessage(role: $0.role, content: $0.content) }
-        let tools = ToolExecutor.specs
+        let mode = modeProvider()
+        let tools = ToolExecutor.specs(for: mode.scope)
         streamTask = Task {
             var transportError: Error?
             do {
-                try await provider.streamTurn(messages: messages, system: Self.systemPrompt, tools: tools) { event in
+                try await provider.streamTurn(messages: messages, system: Self.systemPrompt(for: mode.scope), tools: tools) { event in
                     DispatchQueue.main.async { self.handle(event) }
                 }
             } catch {
@@ -637,6 +640,7 @@ final class AgentRunner {
         var resultsById: [String: AgentContentBlock] = [:]
         var unresolvedToolUseIds: Set<String> = []
         var autoRunEntryIndices: [Int] = []
+        var autoApplyEntryIndices: [Int] = []
 
         for outcome in outcomes {
             switch outcome.result {
@@ -654,8 +658,13 @@ final class AgentRunner {
                     let lines = edit.proposedContent.components(separatedBy: "\n")
                     diffText = "@@ -0,0 +\(lines.isEmpty ? 0 : 1),\(lines.count) @@\n" + lines.map { "+" + $0 }.joined(separator: "\n")
                 }
-                appendEntry(.proposal(ProposalPresentation(edit: edit, diffText: diffText, resolution: nil)))
+                let editIndex = appendEntry(.proposal(ProposalPresentation(edit: edit, diffText: diffText, resolution: nil)))
                 unresolvedToolUseIds.insert(edit.toolUseId)
+                // `.full` autonomy applies edits without a click. Deliberately still routed
+                // through the same `resolveEditProposal` the button calls, so an auto-applied
+                // edit is indistinguishable afterwards: same transcript entry, same checkpoint,
+                // same revert path. See `AgentAutonomy.autoAppliesEdits` for why this exists.
+                if modeProvider().autonomy.autoAppliesEdits { autoApplyEntryIndices.append(editIndex) }
             case .commandProposal(let command):
                 let index = appendEntry(.commandProposal(CommandPresentation(command: command, resolution: nil)))
                 unresolvedToolUseIds.insert(command.toolUseId)
@@ -664,7 +673,8 @@ final class AgentRunner {
                 // "let an agent force-push or rm -rf unattended."
                 // Allowlist, not "didn't match the destructive blacklist" — see
                 // CommandAutoRunPolicy. Anything unrecognized goes to the human.
-                if autoRunCommandsProvider(), CommandAutoRunPolicy.isAutoRunnable(command.command) { autoRunEntryIndices.append(index) }
+                if modeProvider().autonomy.autoRunsAllowlistedCommands,
+                   CommandAutoRunPolicy.isAutoRunnable(command.command) { autoRunEntryIndices.append(index) }
             }
         }
 
@@ -682,6 +692,10 @@ final class AgentRunner {
         // Kicked off after `pendingBatch` is in place, since `executeCommand` looks it up to
         // confirm the tool_use is still unresolved before doing anything.
         for index in autoRunEntryIndices { executeCommand(entryIndex: index) }
+        for index in autoApplyEntryIndices {
+            guard entries.indices.contains(index), case .proposal(let presentation) = entries[index].kind else { continue }
+            resolveEditProposal(entryIndex: index, presentation: presentation, decision: .apply)
+        }
     }
 
     private func continueAfterTools(callOrder: [String], resultsById: [String: AgentContentBlock], modelId: String, roundTrip: Int) {
@@ -838,6 +852,14 @@ final class AgentRunner {
         case .endTurn, .toolUse, .none:
             return "The model returned an empty response. Send again."
         }
+    }
+
+    /// The base prompt plus whatever the current scope needs to say about itself. Appended, not
+    /// substituted: a read-only scope's tools are already filtered, so this only explains the
+    /// shape the agent finds itself in.
+    private static func systemPrompt(for scope: AgentToolScope) -> String {
+        guard let addendum = scope.systemPromptAddendum else { return systemPrompt }
+        return systemPrompt + "\n\n" + addendum
     }
 
     private static let systemPrompt = """

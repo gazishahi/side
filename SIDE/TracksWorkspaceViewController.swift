@@ -854,9 +854,18 @@ final class TracksWorkspaceViewController: NSViewController {
     private func buildContextMenu(for track: Track) -> NSMenu {
         let menu = NSMenu()
         addItem(to: menu, title: "Rename…", action: #selector(renameTrackMenuItem(_:)), track: track)
-        let autoRunItem = menu.addItem(withTitle: "Auto-run Commands", action: #selector(toggleAutoRunCommands(_:)), keyEquivalent: "")
-        autoRunItem.representedObject = track
-        autoRunItem.state = track.autoRunCommands ? .on : .off
+        // The old single "Auto-run Commands" checkbox is now the autonomy axis of the track's
+        // mode — same setting, said properly. Tool scope is chosen in Think, next to the
+        // conversation it shapes; this menu carries the part that's about *trust*, which is a
+        // property of the track a reader of the ledger wants to see.
+        let modeItem = menu.addItem(withTitle: "Autonomy", action: nil, keyEquivalent: "")
+        let modeMenu = NSMenu()
+        for autonomy in AgentAutonomy.allCases {
+            let item = modeMenu.addItem(withTitle: autonomy.displayName, action: #selector(setAutonomyMenuItem(_:)), keyEquivalent: "")
+            item.representedObject = [track, autonomy.rawValue] as [Any]
+            item.state = track.mode.autonomy == autonomy ? .on : .off
+        }
+        modeItem.submenu = modeMenu
         // Available regardless of status — the whole point is watching/working on two tracks
         // side by side, and that's just as useful for a parked or completed track as an active
         // one (reviewing old work while something else runs, say).
@@ -920,12 +929,15 @@ final class TracksWorkspaceViewController: NSViewController {
         requestSwitch(to: track)
     }
 
-    /// Per-track opt-out of approval for `run_shell_command` — see `Track.autoRunCommands`.
-    /// Everything else an agent proposes (edits) still always pauses for a human decision; this
-    /// only ever affects commands, and only for this one track.
-    @objc private func toggleAutoRunCommands(_ sender: NSMenuItem) {
-        guard let track = sender.representedObject as? Track else { return }
-        trackStore?.setAutoRunCommands(!track.autoRunCommands, for: track)
+    /// Sets the autonomy axis of this track's mode — how much the agent may do without asking.
+    /// Manual keeps every edit and command waiting; Guarded auto-runs allowlisted commands;
+    /// Full also auto-applies edits. The command allowlist is a floor at every level.
+    @objc private func setAutonomyMenuItem(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [Any], pair.count == 2,
+              let track = pair[0] as? Track, let raw = pair[1] as? String,
+              let autonomy = AgentAutonomy(rawValue: raw) else { return }
+        // Keeps the track's existing scope — this menu only sets trust.
+        trackStore?.setMode(AgentMode(scope: track.mode.scope, autonomy: autonomy), forTrackKey: track.branchName)
     }
 
     /// Opens a brand-new window on this same project, landed directly on this track — never

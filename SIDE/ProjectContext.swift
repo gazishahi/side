@@ -22,7 +22,7 @@ final class ProjectContext {
             projectPath: fallbackRoot.path,
             bridgeProvider: { [weak self] trackKey in self?.bridge(forTrackKey: trackKey) ?? .none },
             rootProvider: { [weak self] trackKey in self?.workingDirectory(forTrackKey: trackKey) ?? fallbackRoot },
-            autoRunCommandsProvider: { [weak self] trackKey in self?.trackStore.tracks.first { $0.branchName == trackKey }?.autoRunCommands ?? false },
+            modeProvider: { [weak self] trackKey in self?.trackStore.mode(forTrackKey: trackKey) ?? .default },
             modelSelectionProvider: { [weak self] trackKey in self?.trackStore.modelSelection(forTrackKey: trackKey) ?? (nil, nil, nil) }
         )
     }()

@@ -24,6 +24,10 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// previously a trip to Settings that changed it for the whole app; the choice belongs on
     /// the track, next to the conversation it applies to.
     private let modelButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    /// The mode axes — what the agent may attempt, and what it may do unasked. A second control
+    /// rather than more items in the model menu: they answer different questions, and someone
+    /// switching to Ask mode isn't thinking about which model to use.
+    private let modeButton = NSPopUpButton(frame: .zero, pullsDown: true)
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
@@ -65,6 +69,13 @@ final class ThinkWorkspaceViewController: NSViewController {
         modelButton.setAccessibilityLabel("Model and thinking effort for this track")
         view.addSubview(modelButton)
 
+        modeButton.isBordered = false
+        modeButton.controlSize = .small
+        modeButton.font = DS.Text.caption(.medium)
+        modeButton.translatesAutoresizingMaskIntoConstraints = false
+        modeButton.setAccessibilityLabel("Mode for this track: what the agent may do, and what it may do without asking")
+        view.addSubview(modeButton)
+
         let divider = NSBox()
         divider.boxType = .separator
         divider.translatesAutoresizingMaskIntoConstraints = false
@@ -99,8 +110,10 @@ final class ThinkWorkspaceViewController: NSViewController {
             emptyStateLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
             modelButton.topAnchor.constraint(equalTo: view.topAnchor, constant: DS.Spacing.s),
             modelButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.l),
+            modeButton.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
+            modeButton.leadingAnchor.constraint(equalTo: modelButton.trailingAnchor, constant: DS.Spacing.xs),
             modelLabel.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
-            modelLabel.leadingAnchor.constraint(equalTo: modelButton.trailingAnchor, constant: DS.Spacing.xs),
+            modelLabel.leadingAnchor.constraint(equalTo: modeButton.trailingAnchor, constant: DS.Spacing.xs),
             modelLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
             divider.topAnchor.constraint(equalTo: modelButton.bottomAnchor, constant: DS.Spacing.s),
             divider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -371,9 +384,65 @@ final class ThinkWorkspaceViewController: NSViewController {
         refreshModelLabel()
     }
 
+    private func currentMode() -> AgentMode {
+        trackStore?.mode(forTrackKey: attachedTrackKey ?? "") ?? .default
+    }
+
+    /// Rebuilt per refresh, same as the model menu, and for the same reason: it has to describe
+    /// the state a send would actually use.
+    private func rebuildModeMenu() {
+        let mode = currentMode()
+        let menu = NSMenu()
+        menu.addItem(withTitle: mode.shortLabel, action: nil, keyEquivalent: "")
+
+        let scopeHeader = NSMenuItem(title: "What the agent can do", action: nil, keyEquivalent: "")
+        scopeHeader.isEnabled = false
+        menu.addItem(scopeHeader)
+        for scope in AgentToolScope.allCases {
+            let item = NSMenuItem(title: "    \(scope.displayName)", action: #selector(scopeChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = scope.rawValue
+            item.state = scope == mode.scope ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        let autonomyHeader = NSMenuItem(title: "What it can do without asking", action: nil, keyEquivalent: "")
+        autonomyHeader.isEnabled = false
+        menu.addItem(autonomyHeader)
+        for autonomy in AgentAutonomy.allCases {
+            let item = NSMenuItem(title: "    \(autonomy.displayName)", action: #selector(autonomyChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = autonomy.rawValue
+            item.state = autonomy == mode.autonomy ? .on : .off
+            // Nothing to auto-approve in a read-only scope — disabled rather than hidden, so
+            // the axis doesn't appear to vanish when someone switches to Ask.
+            item.isEnabled = mode.autonomyIsMeaningful || autonomy == .manual
+            menu.addItem(item)
+        }
+        modeButton.menu = menu
+    }
+
+    @objc private func scopeChosen(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let scope = AgentToolScope(rawValue: raw) else { return }
+        let mode = currentMode()
+        // Leaving a read-only scope keeps whatever autonomy was set; entering one leaves it
+        // stored but inert (see `autonomyIsMeaningful`), so switching back restores it.
+        trackStore?.setMode(AgentMode(scope: scope, autonomy: mode.autonomy), forTrackKey: attachedTrackKey ?? "")
+        refreshModelLabel()
+    }
+
+    @objc private func autonomyChosen(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let autonomy = AgentAutonomy(rawValue: raw) else { return }
+        trackStore?.setMode(AgentMode(scope: currentMode().scope, autonomy: autonomy), forTrackKey: attachedTrackKey ?? "")
+        refreshModelLabel()
+    }
+
     private func refreshModelLabel() {
         modelButton.title = selectionTitle()
         rebuildModelMenu()
+        modeButton.title = currentMode().shortLabel
+        rebuildModeMenu()
         var label = ""
         // What this track has spent so far, right where the model it spent it on is named. Cost
         // is appended only when every model this track used has a published price — a partial
