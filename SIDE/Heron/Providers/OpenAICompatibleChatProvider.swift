@@ -14,12 +14,14 @@ final class OpenAICompatibleChatProvider: ChatModelProvider {
     private let modelId: String
     private let baseURL: URL
     private let contextWindowTokens: Int
+    private let effort: AgentEffort
 
-    init(apiKey: String?, modelId: String, baseURL: URL, contextWindowTokens: Int = 128_000) {
+    init(apiKey: String?, modelId: String, baseURL: URL, contextWindowTokens: Int = 128_000, effort: AgentEffort = .standard) {
         self.apiKey = apiKey
         self.modelId = modelId
         self.baseURL = baseURL
         self.contextWindowTokens = contextWindowTokens
+        self.effort = effort
     }
 
     var capabilities: ProviderCapabilities {
@@ -64,6 +66,11 @@ final class OpenAICompatibleChatProvider: ChatModelProvider {
                 ["type": "function", "function": ["name": $0.name, "description": $0.description, "parameters": $0.inputSchema.anyValue]]
             }
             body["tool_choice"] = "auto"
+        }
+        // Only sent when the user actually asked for it — some OpenAI-compatible servers 400 on
+        // an unknown field, and every local model is one of those.
+        if let reasoning = effort.openAIReasoningEffort {
+            body["reasoning_effort"] = reasoning
         }
         return body
     }

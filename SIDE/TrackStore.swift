@@ -430,6 +430,24 @@ final class TrackStore {
         notifyChange()
     }
 
+    /// The per-track model choice. `nil` provider/model means "follow the app default," which
+    /// is what a track gets until someone picks — never a snapshot of whatever the default
+    /// happened to be at creation time, so changing the default in Settings still moves every
+    /// track that hasn't chosen.
+    func setModelSelection(providerId: String?, modelId: String?, effort: AgentEffort?, for trackKey: String) {
+        guard let index = tracks.firstIndex(where: { $0.branchName == trackKey }) else { return }
+        tracks[index].providerId = providerId
+        tracks[index].modelId = modelId
+        tracks[index].effort = effort
+        save()
+        notifyChange()
+    }
+
+    func modelSelection(forTrackKey trackKey: String) -> (providerId: String?, modelId: String?, effort: AgentEffort?) {
+        guard let track = tracks.first(where: { $0.branchName == trackKey }) else { return (nil, nil, nil) }
+        return (track.providerId, track.modelId, track.effort)
+    }
+
     struct GitSummary {
         var aheadCount = 0
         var behindCount = 0

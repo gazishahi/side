@@ -20,6 +20,10 @@ final class ThinkWorkspaceViewController: NSViewController {
     private let transcriptStack = NSStackView()
     private let composer = ComposerView()
     private let modelLabel = NSTextField(labelWithString: "")
+    /// Provider · model · effort, as a control rather than a caption. Picking a model was
+    /// previously a trip to Settings that changed it for the whole app; the choice belongs on
+    /// the track, next to the conversation it applies to.
+    private let modelButton = NSPopUpButton(frame: .zero, pullsDown: true)
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
@@ -27,6 +31,9 @@ final class ThinkWorkspaceViewController: NSViewController {
     private var runnerManager: AgentRunnerManager?
     /// Which project's usage the header reports — set alongside `runnerManager`.
     private var projectPath: String?
+    /// Where a track's model choice lives. Weak isn't needed — `TrackStore` outlives this view
+    /// (it's owned by `ProjectContext`), and this is reassigned on every `configure`.
+    private var trackStore: TrackStore?
     private var usageObserverToken: UUID?
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
     private var attachedTrackKey: String?
@@ -48,6 +55,15 @@ final class ThinkWorkspaceViewController: NSViewController {
         modelLabel.textColor = .secondaryLabelColor
         modelLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(modelLabel)
+
+        // Borderless so the header still reads as a status line rather than a toolbar; it only
+        // looks like a control on hover, which is the same bargain Xcode's own jump bar makes.
+        modelButton.isBordered = false
+        modelButton.controlSize = .small
+        modelButton.font = DS.Text.caption(.medium)
+        modelButton.translatesAutoresizingMaskIntoConstraints = false
+        modelButton.setAccessibilityLabel("Model and thinking effort for this track")
+        view.addSubview(modelButton)
 
         let divider = NSBox()
         divider.boxType = .separator
@@ -81,9 +97,12 @@ final class ThinkWorkspaceViewController: NSViewController {
             emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyStateLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
-            modelLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
-            modelLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            divider.topAnchor.constraint(equalTo: modelLabel.bottomAnchor, constant: 9),
+            modelButton.topAnchor.constraint(equalTo: view.topAnchor, constant: DS.Spacing.s),
+            modelButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.l),
+            modelLabel.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
+            modelLabel.leadingAnchor.constraint(equalTo: modelButton.trailingAnchor, constant: DS.Spacing.xs),
+            modelLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
+            divider.topAnchor.constraint(equalTo: modelButton.bottomAnchor, constant: DS.Spacing.s),
             divider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             divider.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             transcriptScroll.topAnchor.constraint(equalTo: divider.bottomAnchor),
@@ -151,8 +170,9 @@ final class ThinkWorkspaceViewController: NSViewController {
 
     // MARK: - Project/track wiring (ShellViewController calls these)
 
-    func configure(runnerManager: AgentRunnerManager, projectPath: String, trackKey: String?) {
+    func configure(runnerManager: AgentRunnerManager, trackStore: TrackStore, projectPath: String, trackKey: String?) {
         self.runnerManager = runnerManager
+        self.trackStore = trackStore
         self.projectPath = projectPath
         attach(trackKey: trackKey)
     }
@@ -243,11 +263,118 @@ final class ThinkWorkspaceViewController: NSViewController {
         attach(trackKey: attachedTrackKey)
     }
 
-    private func refreshModelLabel() {
+    // MARK: - Model + effort
+
+    /// What this track will actually use: its own choice where it has one, the app default
+    /// otherwise. Mirrors `AgentRunner.resolvedSelection()` deliberately — the header must show
+    /// what the next request will do, not what someone once picked.
+    private func resolvedSelection() -> (providerId: String, modelId: String, effort: AgentEffort, isTrackSpecific: Bool) {
         let registry = ProviderRegistryStore.shared
-        guard let definition = registry.provider(for: registry.activeProviderId) else { return }
-        let modelName = definition.models.first { $0.id == definition.defaultModelId }?.displayName ?? definition.defaultModelId
-        var label = "\(definition.displayName) · \(modelName)"
+        let storedProviderId: String? = trackStore?.modelSelection(forTrackKey: attachedTrackKey ?? "").providerId
+        let storedModelId: String? = trackStore?.modelSelection(forTrackKey: attachedTrackKey ?? "").modelId
+        let storedEffort: AgentEffort? = trackStore?.modelSelection(forTrackKey: attachedTrackKey ?? "").effort
+
+        let providerId: String = storedProviderId ?? registry.activeProviderId
+        let definition = registry.provider(for: providerId) ?? registry.provider(for: registry.activeProviderId)
+        // Falls back rather than showing a model that no longer exists: a provider's model list
+        // can change under a stored selection, and `resolveAdapter` falls back the same way.
+        var modelId: String = definition?.defaultModelId ?? ""
+        if let requested = storedModelId, let match = definition?.models.first(where: { $0.id == requested }) {
+            modelId = match.id
+        }
+        let isTrackSpecific = storedProviderId != nil || storedModelId != nil || storedEffort != nil
+        return (providerId, modelId, storedEffort ?? .default, isTrackSpecific)
+    }
+
+    private func selectionTitle() -> String {
+        let selection = resolvedSelection()
+        let registry = ProviderRegistryStore.shared
+        guard let definition = registry.provider(for: selection.providerId) else { return "No provider" }
+        let modelName = definition.models.first { $0.id == selection.modelId }?.displayName ?? selection.modelId
+        var title = "\(definition.displayName) · \(modelName)"
+        // Effort is only worth the width when it's not the default.
+        if selection.effort != .standard { title += " · \(selection.effort.shortLabel)" }
+        return title
+    }
+
+    /// Rebuilt on every refresh rather than kept in sync: providers can be added or removed in
+    /// Settings while this view is open, and a stale menu here would offer a model that no
+    /// longer resolves.
+    private func rebuildModelMenu() {
+        let selection = resolvedSelection()
+        let registry = ProviderRegistryStore.shared
+        let menu = NSMenu()
+        // Index 0 is a pull-down's own title, never selectable.
+        menu.addItem(withTitle: selectionTitle(), action: nil, keyEquivalent: "")
+
+        for provider in registry.providers where !provider.models.isEmpty {
+            let header = NSMenuItem(title: provider.displayName, action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            for model in provider.models {
+                let item = NSMenuItem(title: "    \(model.displayName)", action: #selector(modelChosen(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [provider.id, model.id]
+                item.state = (provider.id == selection.providerId && model.id == selection.modelId) ? .on : .off
+                menu.addItem(item)
+            }
+        }
+
+        menu.addItem(.separator())
+        let effortHeader = NSMenuItem(title: "Thinking effort", action: nil, keyEquivalent: "")
+        effortHeader.isEnabled = false
+        menu.addItem(effortHeader)
+        for effort in AgentEffort.allCases {
+            let item = NSMenuItem(title: "    \(effort.displayName)", action: #selector(effortChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = effort.rawValue
+            item.state = effort == selection.effort ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        let reset = NSMenuItem(title: "Use App Default", action: #selector(useAppDefault), keyEquivalent: "")
+        reset.target = self
+        reset.state = selection.isTrackSpecific ? .off : .on
+        // "Follow the default" is a distinct state from "happens to match it today" — clearing
+        // means this track keeps tracking a change made in Settings later.
+        reset.toolTip = "Clear this track's own choice and follow the model set in Settings."
+        menu.addItem(reset)
+
+        modelButton.menu = menu
+    }
+
+    @objc private func modelChosen(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        let current = resolvedSelection()
+        trackStore?.setModelSelection(
+            providerId: pair[0], modelId: pair[1], effort: current.effort,
+            for: attachedTrackKey ?? ""
+        )
+        refreshModelLabel()
+    }
+
+    @objc private func effortChosen(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let effort = AgentEffort(rawValue: raw) else { return }
+        let current = resolvedSelection()
+        // Choosing effort pins the model too: otherwise "high effort" would silently move to a
+        // different model the moment someone changed the app default.
+        trackStore?.setModelSelection(
+            providerId: current.providerId, modelId: current.modelId, effort: effort,
+            for: attachedTrackKey ?? ""
+        )
+        refreshModelLabel()
+    }
+
+    @objc private func useAppDefault() {
+        trackStore?.setModelSelection(providerId: nil, modelId: nil, effort: nil, for: attachedTrackKey ?? "")
+        refreshModelLabel()
+    }
+
+    private func refreshModelLabel() {
+        modelButton.title = selectionTitle()
+        rebuildModelMenu()
+        var label = ""
         // What this track has spent so far, right where the model it spent it on is named. Cost
         // is appended only when every model this track used has a published price — a partial
         // figure presented as a total would mislead in exactly the direction that matters.
@@ -255,7 +382,7 @@ final class ThinkWorkspaceViewController: NSViewController {
             let trackKey = attachedTrackKey ?? ""
             let totals = UsageStore.shared.totals(projectPath: projectPath, trackKey: trackKey)
             if totals.totalTokens > 0 {
-                label += "  ·  \(UsageFormatting.tokens(totals.totalTokens)) tokens"
+                label += "·  \(UsageFormatting.tokens(totals.totalTokens)) tokens"
                 let priced = UsageStore.shared.records.filter {
                     $0.projectPath == projectPath && $0.trackKey == trackKey
                 }

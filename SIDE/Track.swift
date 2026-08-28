@@ -35,6 +35,15 @@ struct Track: Codable, Identifiable {
     /// sitting side by side. Stored as an id, not a branch name, so renaming the parent track
     /// (which never touches its branch name) can't silently orphan the relationship.
     var parentTrackId: UUID?
+    /// Which provider/model this track's agent should use, and how hard it should think.
+    ///
+    /// Per *track*, not app-wide: one track can be a cheap fast model doing mechanical edits
+    /// while another runs the expensive one on a design problem — which is the whole point of
+    /// tracks. `nil` means "follow the app default in Settings," which is every track that
+    /// existed before this and every one whose owner never chose.
+    var providerId: String?
+    var modelId: String?
+    var effort: AgentEffort?
 
     init(intent: String, branchName: String, parentTrackId: UUID? = nil) {
         self.id = UUID()
@@ -46,10 +55,14 @@ struct Track: Codable, Identifiable {
         self.workingDirectoryPath = nil
         self.autoRunCommands = false
         self.parentTrackId = parentTrackId
+        self.providerId = nil
+        self.modelId = nil
+        self.effort = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands, parentTrackId
+        case providerId, modelId, effort
     }
 
     init(from decoder: Decoder) throws {
@@ -63,5 +76,8 @@ struct Track: Codable, Identifiable {
         workingDirectoryPath = try container.decodeIfPresent(String.self, forKey: .workingDirectoryPath)
         autoRunCommands = try container.decodeIfPresent(Bool.self, forKey: .autoRunCommands) ?? false
         parentTrackId = try container.decodeIfPresent(UUID.self, forKey: .parentTrackId)
+        providerId = try container.decodeIfPresent(String.self, forKey: .providerId)
+        modelId = try container.decodeIfPresent(String.self, forKey: .modelId)
+        effort = try container.decodeIfPresent(AgentEffort.self, forKey: .effort)
     }
 }

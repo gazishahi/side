@@ -20,6 +20,9 @@ final class AgentRunnerManager {
     /// fresh per tool call, same as `rootProvider`, so toggling it mid-conversation takes effect
     /// on the very next command rather than requiring a fresh runner.
     private let autoRunCommandsProvider: (String) -> Bool
+    /// Per-track provider/model/effort, resolved fresh per request — same reasoning as
+    /// `rootProvider`.
+    private let modelSelectionProvider: (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?)
     private var runners: [String: AgentRunner] = [:]
 
     /// Fires whenever any owned runner's phase or unseen-completion state changes, debounced so
@@ -33,12 +36,13 @@ final class AgentRunnerManager {
     private var debounceWorkItem: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.2
 
-    init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, autoRunCommandsProvider: @escaping (String) -> Bool) {
+    init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, autoRunCommandsProvider: @escaping (String) -> Bool, modelSelectionProvider: @escaping (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?)) {
         self.sessionStore = sessionStore
         self.projectPath = projectPath
         self.bridgeProvider = bridgeProvider
         self.rootProvider = rootProvider
         self.autoRunCommandsProvider = autoRunCommandsProvider
+        self.modelSelectionProvider = modelSelectionProvider
     }
 
     @discardableResult
@@ -74,7 +78,8 @@ final class AgentRunnerManager {
             projectPath: projectPath,
             bridgeProvider: { [bridgeProvider] in bridgeProvider(trackKey) },
             rootProvider: { [rootProvider] in rootProvider(trackKey) },
-            autoRunCommandsProvider: { [autoRunCommandsProvider] in autoRunCommandsProvider(trackKey) }
+            autoRunCommandsProvider: { [autoRunCommandsProvider] in autoRunCommandsProvider(trackKey) },
+            modelSelectionProvider: { [modelSelectionProvider] in modelSelectionProvider(trackKey) }
         )
         runner.addObserver { [weak self] event in
             guard case .phaseChanged = event else { return }

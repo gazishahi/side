@@ -89,9 +89,16 @@ final class ProviderRegistryStore: @unchecked Sendable {
         save()
     }
 
-    func resolveAdapter(providerId: String) -> AdapterResolution {
+    /// `modelId` selects a specific model within the provider — a track's own choice. It falls
+    /// back to the provider's default rather than failing when the named model is gone (removed
+    /// from a BYOK provider, renamed upstream): a stale selection shouldn't brick a track's
+    /// conversation, and the header shows what actually resolved.
+    func resolveAdapter(providerId: String, modelId: String? = nil, effort: AgentEffort = .standard) -> AdapterResolution {
         guard let definition = provider(for: providerId) else { return .unknownProvider }
-        guard let model = definition.models.first(where: { $0.id == definition.defaultModelId }) ?? definition.models.first else {
+        guard let model = modelId.flatMap({ requested in definition.models.first { $0.id == requested } })
+            ?? definition.models.first(where: { $0.id == definition.defaultModelId })
+            ?? definition.models.first
+        else {
             return .unknownProvider
         }
         // Env var checked *before* Keychain, not just as a fallback after it — a Keychain read
@@ -116,14 +123,20 @@ final class ProviderRegistryStore: @unchecked Sendable {
         }
         switch definition.kind {
         case .builtIn where definition.id == "anthropic":
-            return .ready(AnthropicMessagesProvider(apiKey: apiKey ?? "", modelId: model.id, baseURL: definition.baseURL), definition, model)
+            return .ready(
+                AnthropicMessagesProvider(apiKey: apiKey ?? "", modelId: model.id, baseURL: definition.baseURL, effort: effort),
+                definition, model
+            )
         case .builtIn:
             return .unknownProvider // no other builtIn ids are modeled yet
         case .byokOpenAICompatible, .local:
             // Covers OpenAI BYOK and local servers (Ollama, LM Studio) alike — both speak the
             // same chat-completions wire shape, so one adapter serves both `kind`s.
             return .ready(
-                OpenAICompatibleChatProvider(apiKey: apiKey, modelId: model.id, baseURL: definition.baseURL, contextWindowTokens: model.contextWindowTokens),
+                OpenAICompatibleChatProvider(
+                    apiKey: apiKey, modelId: model.id, baseURL: definition.baseURL,
+                    contextWindowTokens: model.contextWindowTokens, effort: effort
+                ),
                 definition, model
             )
         }

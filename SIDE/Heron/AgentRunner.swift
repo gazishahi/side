@@ -49,6 +49,9 @@ final class AgentRunner {
     /// usage report is filed against the model that actually produced it, even if the user
     /// switches models while it's streaming.
     private var activeModelId = ""
+    /// The provider the in-flight request went to — recorded alongside `activeModelId` so usage
+    /// is filed against what actually answered, not whatever is active in Settings now.
+    private var activeProviderId = ProviderRegistryStore.shared.activeProviderId
     /// Resolved fresh on every use, never captured once — see `WorkspaceBridge`.
     private let bridgeProvider: () -> WorkspaceBridge
     /// The directory this track's tools actually operate in — its linked worktree if it has one,
@@ -59,6 +62,10 @@ final class AgentRunner {
     /// Whether this track has opted out of approval for `run_shell_command`. Resolved fresh per
     /// batch, same reasoning as `rootProvider`.
     private let autoRunCommandsProvider: () -> Bool
+    /// The track's own model choice, resolved fresh per request — same convention as
+    /// `rootProvider`, so switching model mid-conversation takes effect on the very next turn
+    /// instead of needing a new runner.
+    private let modelSelectionProvider: () -> (providerId: String?, modelId: String?, effort: AgentEffort?)
 
     private(set) var entries: [RunTranscriptEntry] = []
     private(set) var phase: AgentRunPhase = .idle
@@ -109,7 +116,8 @@ final class AgentRunner {
     init(
         trackKey: String, sessionStore: AgentSessionStore, projectPath: String,
         bridgeProvider: @escaping () -> WorkspaceBridge,
-        rootProvider: @escaping () -> URL, autoRunCommandsProvider: @escaping () -> Bool
+        rootProvider: @escaping () -> URL, autoRunCommandsProvider: @escaping () -> Bool,
+        modelSelectionProvider: @escaping () -> (providerId: String?, modelId: String?, effort: AgentEffort?) = { (nil, nil, nil) }
     ) {
         self.trackKey = trackKey
         self.sessionStore = sessionStore
@@ -117,6 +125,7 @@ final class AgentRunner {
         self.bridgeProvider = bridgeProvider
         self.rootProvider = rootProvider
         self.autoRunCommandsProvider = autoRunCommandsProvider
+        self.modelSelectionProvider = modelSelectionProvider
         hydrateFromSession()
     }
 
@@ -188,13 +197,16 @@ final class AgentRunner {
         guard !phase.isBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard case .ready(_, _, let model) = ProviderRegistryStore.shared.resolveAdapter(providerId: ProviderRegistryStore.shared.activeProviderId) else {
+        let selection = resolvedSelection()
+        guard case .ready(_, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
+            providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
+        ) else {
             appendMissingKeyHint()
             return
         }
         sessionStore.appendTurn(
             AgentTurn(role: .user, content: [.text(trimmed)]),
-            trackKey: trackKey, providerId: ProviderRegistryStore.shared.activeProviderId, modelId: model.id
+            trackKey: trackKey, providerId: selection.providerId, modelId: model.id
         )
         appendEntry(.userText(trimmed))
         runTurn(roundTrip: 0)
@@ -232,7 +244,7 @@ final class AgentRunner {
         }
         let blocks = batch.callOrder.compactMap { resultsById[$0] }
         guard blocks.count == batch.callOrder.count else { return }
-        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: ProviderRegistryStore.shared.activeProviderId, modelId: batch.modelId)
+        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: activeProviderId, modelId: batch.modelId)
     }
 
     // MARK: - Proposal resolution
@@ -413,13 +425,17 @@ final class AgentRunner {
             setPhase(.blocked(.budgetReached))
             return
         }
-        guard case .ready(let provider, _, let model) = ProviderRegistryStore.shared.resolveAdapter(providerId: ProviderRegistryStore.shared.activeProviderId) else {
+        let selection = resolvedSelection()
+        guard case .ready(let provider, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
+            providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
+        ) else {
             appendMissingKeyHint()
             finishRun(completed: false)
             return
         }
         setPhase(.streaming)
         activeModelId = model.id
+        activeProviderId = selection.providerId
         armStallWatchdog()
         pendingAssistantText = ""
         pendingToolCalls = []
@@ -460,6 +476,18 @@ final class AgentRunner {
         return .toolResult(toolUseId: toolUseId, content: redaction.text + note, isError: isError)
     }
 
+
+    /// The provider/model/effort this track's next request should use: its own choice where it
+    /// has one, the app default otherwise.
+    private func resolvedSelection() -> (providerId: String, modelId: String?, effort: AgentEffort) {
+        let selection = modelSelectionProvider()
+        return (
+            selection.providerId ?? ProviderRegistryStore.shared.activeProviderId,
+            selection.modelId,
+            selection.effort ?? .default
+        )
+    }
+
     private func handle(_ event: AgentStreamEvent) {
         // Any event is progress — re-arm regardless of kind, so a model that's slow to finish a
         // tool-call's JSON (all deltas, no text) doesn't trip the watchdog just because
@@ -494,7 +522,7 @@ final class AgentRunner {
             if let usage {
                 UsageStore.shared.record(
                     projectPath: projectPath, trackKey: trackKey,
-                    providerId: ProviderRegistryStore.shared.activeProviderId,
+                    providerId: activeProviderId,
                     modelId: activeModelId, usage: usage
                 )
             }
@@ -522,7 +550,7 @@ final class AgentRunner {
             }
         }
         if !content.isEmpty {
-            sessionStore.appendTurn(AgentTurn(role: .assistant, content: content), trackKey: trackKey, providerId: ProviderRegistryStore.shared.activeProviderId, modelId: modelId)
+            sessionStore.appendTurn(AgentTurn(role: .assistant, content: content), trackKey: trackKey, providerId: activeProviderId, modelId: modelId)
         }
         pendingAssistantText = ""
         pendingToolCalls = []
@@ -647,7 +675,7 @@ final class AgentRunner {
 
         pendingBatch = PendingToolBatch(
             callOrder: outcomes.map(\.id), resultsById: resultsById, unresolvedToolUseIds: unresolvedToolUseIds,
-            lastAppliedURL: nil, roundTrip: roundTrip, modelId: modelId, providerId: ProviderRegistryStore.shared.activeProviderId, declaredIntent: declaredIntent,
+            lastAppliedURL: nil, roundTrip: roundTrip, modelId: modelId, providerId: activeProviderId, declaredIntent: declaredIntent,
             baselineDirtyPaths: GitPaths.dirtyPaths(cwd: root.path)
         )
         setPhase(.awaitingApproval)
@@ -665,7 +693,7 @@ final class AgentRunner {
             finishRun(completed: false)
             return
         }
-        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: ProviderRegistryStore.shared.activeProviderId, modelId: modelId)
+        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: activeProviderId, modelId: modelId)
         runTurn(roundTrip: roundTrip + 1)
     }
 
@@ -701,7 +729,7 @@ final class AgentRunner {
     }
 
     private func appendMissingKeyHint() {
-        let name = ProviderRegistryStore.shared.provider(for: ProviderRegistryStore.shared.activeProviderId)?.displayName ?? "the active provider"
+        let name = ProviderRegistryStore.shared.provider(for: resolvedSelection().providerId)?.displayName ?? "the active provider"
         appendEntry(.meta("No API key found for \(name). Open Settings (⌘,) to add one — it's stored in your Keychain."))
     }
 

@@ -416,7 +416,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             makeVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
             runVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
         }
-        thinkVC.configure(runnerManager: context.runnerManager, projectPath: context.projectRoot.path, trackKey: currentTrackKey)
+        thinkVC.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: context.projectRoot.path, trackKey: currentTrackKey)
         reviewVC.configure(trackStore: store, sessionStore: context.sessionStore, canonicalRoot: url)
         reviewVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
         // Registered rather than assigned: `store` may already be shared with another window

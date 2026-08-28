@@ -9,12 +9,20 @@ final class AnthropicMessagesProvider: ChatModelProvider {
     private let modelId: String
     private let baseURL: URL
     private let maxTokens: Int
+    private let effort: AgentEffort
 
-    init(apiKey: String, modelId: String, baseURL: URL = URL(string: "https://api.anthropic.com")!, maxTokens: Int = 8192) {
+    init(
+        apiKey: String, modelId: String, baseURL: URL = URL(string: "https://api.anthropic.com")!,
+        maxTokens: Int = 8192, effort: AgentEffort = .standard
+    ) {
         self.apiKey = apiKey
         self.modelId = modelId
         self.baseURL = baseURL
-        self.maxTokens = maxTokens
+        // Extended thinking spends tokens before the answer starts, so the budget form's
+        // ceiling has to make room for both — see `AgentEffort.anthropicMaxTokens`. Adaptive
+        // thinking manages its own, so the ceiling stays where it was.
+        self.maxTokens = Self.usesAdaptiveThinking(modelId: modelId) ? maxTokens : effort.anthropicMaxTokens(base: maxTokens)
+        self.effort = effort
     }
 
     var capabilities: ProviderCapabilities {
@@ -48,6 +56,13 @@ final class AnthropicMessagesProvider: ChatModelProvider {
         }
     }
 
+    /// Model-family check rather than a capability flag on `ProviderModel`: the split is
+    /// Anthropic's own API-version detail, so it belongs in Anthropic's adapter. A BYOK provider
+    /// naming a Claude 5 model gets the same treatment, which is what you want.
+    static func usesAdaptiveThinking(modelId: String) -> Bool {
+        ["claude-opus-5", "claude-sonnet-5", "claude-fable-5"].contains { modelId.hasPrefix($0) }
+    }
+
     // MARK: - Request building
 
     private func requestBody(messages: [AgentMessage], system: String?, tools: [ToolSpec]) -> [String: Any] {
@@ -69,6 +84,21 @@ final class AnthropicMessagesProvider: ChatModelProvider {
         if let system, !system.isEmpty { body["system"] = system }
         if !tools.isEmpty {
             body["tools"] = tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.inputSchema.anyValue] }
+        }
+        // Omitted entirely at `.standard`: the API rejects a budget below its minimum, so
+        // "no thinking" has to mean "no block," not "a zero budget."
+        //
+        // Which shape depends on the model, and this was found the only way it could be — by a
+        // real request coming back rejected: Claude 5 refuses `thinking.type.enabled` and asks
+        // for `thinking.type.adaptive` + `output_config.effort`, while 4.x only knows the
+        // budget form.
+        if Self.usesAdaptiveThinking(modelId: modelId) {
+            if let effortName = effort.anthropicOutputEffort {
+                body["thinking"] = ["type": "adaptive"]
+                body["output_config"] = ["effort": effortName]
+            }
+        } else if let budget = effort.anthropicThinkingBudget {
+            body["thinking"] = ["type": "enabled", "budget_tokens": budget]
         }
         return body
     }
