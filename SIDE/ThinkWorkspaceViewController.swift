@@ -19,19 +19,16 @@ final class ThinkWorkspaceViewController: NSViewController {
     private let transcriptContainer = TranscriptContainerView()
     private let transcriptStack = NSStackView()
     private let composer = ComposerView()
-    private let modelLabel = NSTextField(labelWithString: "")
-    /// Provider · model · effort, as a control rather than a caption. Picking a model was
-    /// previously a trip to Settings that changed it for the whole app; the choice belongs on
-    /// the track, next to the conversation it applies to.
-    private let modelButton = NSPopUpButton(frame: .zero, pullsDown: true)
-    /// The mode axes — what the agent may attempt, and what it may do unasked. A second control
-    /// rather than more items in the model menu: they answer different questions, and someone
-    /// switching to Ask mode isn't thinking about which model to use.
-    private let modeButton = NSPopUpButton(frame: .zero, pullsDown: true)
-    /// How full the context window is, and where compaction lives. Its own control because it
-    /// answers a different question from model or mode — and because it needs to be visible
-    /// *before* a conversation stops working, not discovered afterwards.
-    private let contextButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    /// The composer's control chips — one decision per chip, one menu per decision. The
+    /// previous pull-downs each mixed two choices (model+effort, scope+autonomy) and carried
+    /// AppKit's bezel styling and long compound titles; splitting them is what the redesign
+    /// mostly *is*. Tokens/spend text moved off the row entirely, into the context chip's menu —
+    /// numbers you glance at occasionally shouldn't be permanent chrome.
+    private let scopeChip = ChipButton(symbolName: "hammer", accessibilityLabel: "What the agent can do on this track")
+    private let autonomyChip = ChipButton(symbolName: "hand.raised", accessibilityLabel: "What the agent may do without asking")
+    private let modelChip = ChipButton(symbolName: "sparkles", accessibilityLabel: "Model for this track")
+    private let effortChip = ChipButton(symbolName: "brain", accessibilityLabel: "Thinking effort for this track")
+    private let contextChip = ChipButton(symbolName: "chart.pie", accessibilityLabel: "Context window used, spend, and conversation actions")
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
@@ -64,31 +61,19 @@ final class ThinkWorkspaceViewController: NSViewController {
         view.wantsLayer = true
         ChromeBackground.install(in: view)
 
-        modelLabel.font = DS.Text.caption(.medium)
-        modelLabel.textColor = .secondaryLabelColor
-
-        // Borderless so the header still reads as a status line rather than a toolbar; it only
-        // looks like a control on hover, which is the same bargain Xcode's own jump bar makes.
-        modelButton.isBordered = false
-        modelButton.controlSize = .small
-        modelButton.font = DS.Text.caption(.medium)
-        modelButton.translatesAutoresizingMaskIntoConstraints = false
-        modelButton.setAccessibilityLabel("Model and thinking effort for this track")
-
-        modeButton.isBordered = false
-        modeButton.controlSize = .small
-        modeButton.font = DS.Text.caption(.medium)
-        modeButton.translatesAutoresizingMaskIntoConstraints = false
-        modeButton.setAccessibilityLabel("Mode for this track: what the agent may do, and what it may do without asking")
-
-        contextButton.isBordered = false
-        contextButton.controlSize = .small
-        contextButton.font = DS.Text.caption(.medium)
-        contextButton.translatesAutoresizingMaskIntoConstraints = false
-        contextButton.setAccessibilityLabel("Context window usage for this conversation")
-
-        for control in [modelButton, modeButton, contextButton] { composer.addControl(control) }
-        composer.addControl(modelLabel)
+        // Left: what the agent is (scope, autonomy). Right: what it runs on (model, effort) and
+        // how much room is left — nearest the send button, since they describe the send.
+        scopeChip.menuProvider = { [weak self] in self?.scopeMenu() ?? NSMenu() }
+        autonomyChip.menuProvider = { [weak self] in self?.autonomyMenu() ?? NSMenu() }
+        modelChip.menuProvider = { [weak self] in self?.modelMenu() ?? NSMenu() }
+        effortChip.menuProvider = { [weak self] in self?.effortMenu() ?? NSMenu() }
+        contextChip.menuProvider = { [weak self] in self?.contextMenu() ?? NSMenu() }
+        composer.addControl(scopeChip)
+        composer.addControl(autonomyChip)
+        composer.addControlSpacer()
+        composer.addControl(contextChip)
+        composer.addControl(modelChip)
+        composer.addControl(effortChip)
 
         let divider = NSBox()
         divider.boxType = .separator
@@ -115,6 +100,12 @@ final class ThinkWorkspaceViewController: NSViewController {
         composer.mentionCandidates = { [weak self] partial in
             self?.fileIndex.matches(for: partial) ?? []
         }
+        composer.slashCandidates = { partial in
+            Self.slashCommands
+                .filter { partial.isEmpty || $0.name.hasPrefix(partial.lowercased()) }
+                .map { "/\($0.name) — \($0.blurb)" }
+        }
+        composer.onSlashCommand = { [weak self] name in self?.performSlashCommand(name) }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
         view.addSubview(composer)
 
@@ -153,7 +144,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         // they need their own refresh signal — a run's usage lands after `.phaseChanged`, not
         // with it.
         usageObserverToken = UsageStore.shared.addChangeObserver { [weak self] in
-            self?.refreshModelLabel()
+            self?.refreshChips()
         }
         // History deleted from Preferences tears down the runners this view is projecting, so
         // it has to re-attach — otherwise the transcript on screen outlives its own file.
@@ -181,7 +172,7 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// menu-routed actions targeting this controller silently go nowhere.
     override func viewDidAppear() {
         super.viewDidAppear()
-        refreshModelLabel()
+        refreshChips()
         composer.focus()
         // Mirrors RunWorkspaceViewController.clearUnseenOutput: becoming visible is what counts
         // as "the human looked at this," clearing the doneUnread badge Tracks would otherwise
@@ -242,12 +233,12 @@ final class ThinkWorkspaceViewController: NSViewController {
             renderFull()
         case .appended(let index):
             appendEntryView(at: index)
-            refreshContextButton()
+            refreshChips()
         case .updated(let index):
             updateEntryView(at: index)
         case .phaseChanged:
             updateSendButton()
-            refreshContextButton()
+            refreshChips()
             // A blocked/finished phase change can happen while this stage is the one on screen
             // (a stall firing, a round-trip cap hitting) — same acknowledgement as viewDidAppear,
             // just triggered by the runner instead of by becoming visible. `view.window != nil`
@@ -286,7 +277,7 @@ final class ThinkWorkspaceViewController: NSViewController {
     }
 
     @objc private func textScaleChanged() {
-        refreshModelLabel()
+        refreshChips()
         renderFull()
     }
 
@@ -317,50 +308,47 @@ final class ThinkWorkspaceViewController: NSViewController {
         return (providerId, modelId, storedEffort ?? .default, isTrackSpecific)
     }
 
-    private func selectionTitle() -> String {
-        let selection = resolvedSelection()
-        let registry = ProviderRegistryStore.shared
-        guard let definition = registry.provider(for: selection.providerId) else { return "No provider" }
-        let modelName = definition.models.first { $0.id == selection.modelId }?.displayName ?? selection.modelId
-        var title = "\(definition.displayName) · \(modelName)"
-        // Effort is only worth the width when it's not the default.
-        if selection.effort != .standard { title += " · \(selection.effort.shortLabel)" }
-        return title
-    }
+    /// One menu per decision. Rebuilt on demand (the chip asks when pressed) rather than kept in
+    /// sync: providers can change in Settings while this view is open, and a stale menu would
+    /// offer a model that no longer resolves.
 
-    /// Rebuilt on every refresh rather than kept in sync: providers can be added or removed in
-    /// Settings while this view is open, and a stale menu here would offer a model that no
-    /// longer resolves.
-    private func rebuildModelMenu() {
+    private func modelMenu() -> NSMenu {
         let selection = resolvedSelection()
         let registry = ProviderRegistryStore.shared
         let menu = NSMenu()
-        // Index 0 is a pull-down's own title, never selectable.
-        menu.addItem(withTitle: selectionTitle(), action: nil, keyEquivalent: "")
+        let providers = registry.providers.filter { !$0.models.isEmpty }
+        let totalModels = providers.reduce(0) { $0 + $1.models.count }
 
-        for provider in registry.providers where !provider.models.isEmpty {
-            let header = NSMenuItem(title: provider.displayName, action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            menu.addItem(header)
-            for model in provider.models {
-                let item = NSMenuItem(title: "    \(model.displayName)", action: #selector(modelChosen(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = [provider.id, model.id]
-                item.state = (provider.id == selection.providerId && model.id == selection.modelId) ? .on : .off
-                menu.addItem(item)
-            }
+        func modelItem(_ provider: ProviderDefinition, _ model: ProviderModel, indent: Bool) -> NSMenuItem {
+            let item = NSMenuItem(title: (indent ? "    " : "") + model.displayName, action: #selector(modelChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = [provider.id, model.id]
+            item.state = (provider.id == selection.providerId && model.id == selection.modelId) ? .on : .off
+            return item
         }
 
-        menu.addItem(.separator())
-        let effortHeader = NSMenuItem(title: "Thinking effort", action: nil, keyEquivalent: "")
-        effortHeader.isEnabled = false
-        menu.addItem(effortHeader)
-        for effort in AgentEffort.allCases {
-            let item = NSMenuItem(title: "    \(effort.displayName)", action: #selector(effortChosen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = effort.rawValue
-            item.state = effort == selection.effort ? .on : .off
-            menu.addItem(item)
+        // Short lists read best flat; past that, a wall of models is exactly the clutter being
+        // complained about, so each provider folds into its own submenu.
+        if totalModels > 8 && providers.count > 1 {
+            for provider in providers {
+                let parent = NSMenuItem(title: provider.displayName, action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                for model in provider.models { submenu.addItem(modelItem(provider, model, indent: false)) }
+                parent.submenu = submenu
+                // The active provider's parent row carries the check, so the selection is
+                // findable without opening every submenu.
+                parent.state = provider.id == selection.providerId ? .on : .off
+                menu.addItem(parent)
+            }
+        } else {
+            for provider in providers {
+                if providers.count > 1 {
+                    let header = NSMenuItem(title: provider.displayName, action: nil, keyEquivalent: "")
+                    header.isEnabled = false
+                    menu.addItem(header)
+                }
+                for model in provider.models { menu.addItem(modelItem(provider, model, indent: providers.count > 1)) }
+            }
         }
 
         menu.addItem(.separator())
@@ -371,8 +359,111 @@ final class ThinkWorkspaceViewController: NSViewController {
         // means this track keeps tracking a change made in Settings later.
         reset.toolTip = "Clear this track's own choice and follow the model set in Settings."
         menu.addItem(reset)
+        return menu
+    }
 
-        modelButton.menu = menu
+    private func effortMenu() -> NSMenu {
+        let selection = resolvedSelection()
+        let menu = NSMenu()
+        for effort in AgentEffort.allCases {
+            let item = NSMenuItem(title: effort.displayName, action: #selector(effortChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = effort.rawValue
+            item.state = effort == selection.effort ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func scopeMenu() -> NSMenu {
+        let mode = currentMode()
+        let menu = NSMenu()
+        for scope in AgentToolScope.allCases {
+            let item = NSMenuItem(title: scope.displayName, action: #selector(scopeChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = scope.rawValue
+            item.state = scope == mode.scope ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func autonomyMenu() -> NSMenu {
+        let mode = currentMode()
+        let menu = NSMenu()
+        for autonomy in AgentAutonomy.allCases {
+            let item = NSMenuItem(title: autonomy.displayName, action: #selector(autonomyChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = autonomy.rawValue
+            item.state = autonomy == mode.autonomy ? .on : .off
+            // Nothing to auto-approve in a read-only scope — disabled rather than hidden, so
+            // the axis doesn't appear to vanish when someone switches to Ask.
+            item.isEnabled = mode.autonomyIsMeaningful || autonomy == .manual
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    /// Tokens, spend, and the two conversation actions — the numbers that used to be permanent
+    /// text on the row now live here, one click away instead of always in view.
+    private func contextMenu() -> NSMenu {
+        let menu = NSMenu()
+        guard let runner else { return menu }
+        let usage = runner.contextUsage()
+        let detail = NSMenuItem(
+            title: "Context: \(UsageFormatting.tokens(usage.usedTokens)) of \(UsageFormatting.tokens(usage.windowTokens)) tokens",
+            action: nil, keyEquivalent: ""
+        )
+        detail.isEnabled = false
+        menu.addItem(detail)
+        if let projectPath {
+            let trackKey = attachedTrackKey ?? ""
+            let totals = UsageStore.shared.totals(projectPath: projectPath, trackKey: trackKey)
+            if totals.totalTokens > 0 {
+                var spendTitle = "This track: \(UsageFormatting.tokens(totals.totalTokens)) tokens"
+                let priced = UsageStore.shared.records.filter { $0.projectPath == projectPath && $0.trackKey == trackKey }
+                if priced.allSatisfy({ ModelPricing.isPriced(modelId: $0.modelId) }) {
+                    let cost = priced.reduce(0.0) { $0 + (ModelPricing.estimatedCost(modelId: $1.modelId, totals: $1.totals) ?? 0) }
+                    spendTitle += " · ~\(UsageFormatting.cost(cost))"
+                }
+                let spend = NSMenuItem(title: spendTitle, action: nil, keyEquivalent: "")
+                spend.isEnabled = false
+                spend.toolTip = "Estimated spend for this track. Prices are approximate."
+                menu.addItem(spend)
+            }
+        }
+        switch UsageBudget.status() {
+        case .approaching(let spent, let limit):
+            let item = NSMenuItem(title: "Budget: \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)) this month", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        case .exceeded(let spent, let limit):
+            let item = NSMenuItem(title: "Budget reached — \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit))", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        case .unlimited, .withinBudget:
+            break
+        }
+        if usage.status.shouldSuggestCompaction {
+            let warning = NSMenuItem(
+                title: usage.status == .critical ? "Close to the limit — sends may start failing" : "Filling up",
+                action: nil, keyEquivalent: ""
+            )
+            warning.isEnabled = false
+            menu.addItem(warning)
+        }
+        menu.addItem(.separator())
+        let compact = NSMenuItem(title: "Compact Conversation…", action: #selector(compactConversation), keyEquivalent: "")
+        compact.target = self
+        compact.toolTip = "Replace the conversation with a summary of it, to free up context."
+        menu.addItem(compact)
+        // Deliberately adjacent to Compact, because the choice between them is the whole point:
+        // compaction keeps what was learned, this discards it.
+        let clear = NSMenuItem(title: "New Conversation…", action: #selector(startNewConversation), keyEquivalent: "")
+        clear.target = self
+        clear.toolTip = "Discard this conversation and start over. Checkpoints and files are kept."
+        menu.addItem(clear)
+        return menu
     }
 
     @objc private func modelChosen(_ sender: NSMenuItem) {
@@ -382,7 +473,7 @@ final class ThinkWorkspaceViewController: NSViewController {
             providerId: pair[0], modelId: pair[1], effort: current.effort,
             for: attachedTrackKey ?? ""
         )
-        refreshModelLabel()
+        refreshChips()
     }
 
     @objc private func effortChosen(_ sender: NSMenuItem) {
@@ -394,12 +485,12 @@ final class ThinkWorkspaceViewController: NSViewController {
             providerId: current.providerId, modelId: current.modelId, effort: effort,
             for: attachedTrackKey ?? ""
         )
-        refreshModelLabel()
+        refreshChips()
     }
 
     @objc private func useAppDefault() {
         trackStore?.setModelSelection(providerId: nil, modelId: nil, effort: nil, for: attachedTrackKey ?? "")
-        refreshModelLabel()
+        refreshChips()
     }
 
     /// The directory `@`-mentions resolve against: the track's own worktree when it has one,
@@ -427,106 +518,19 @@ final class ThinkWorkspaceViewController: NSViewController {
         trackStore?.mode(forTrackKey: attachedTrackKey ?? "") ?? .default
     }
 
-    /// Rebuilt per refresh, same as the model menu, and for the same reason: it has to describe
-    /// the state a send would actually use.
-    private func rebuildModeMenu() {
-        let mode = currentMode()
-        let menu = NSMenu()
-        menu.addItem(withTitle: mode.shortLabel, action: nil, keyEquivalent: "")
-
-        let scopeHeader = NSMenuItem(title: "What the agent can do", action: nil, keyEquivalent: "")
-        scopeHeader.isEnabled = false
-        menu.addItem(scopeHeader)
-        for scope in AgentToolScope.allCases {
-            let item = NSMenuItem(title: "    \(scope.displayName)", action: #selector(scopeChosen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = scope.rawValue
-            item.state = scope == mode.scope ? .on : .off
-            menu.addItem(item)
-        }
-
-        menu.addItem(.separator())
-        let autonomyHeader = NSMenuItem(title: "What it can do without asking", action: nil, keyEquivalent: "")
-        autonomyHeader.isEnabled = false
-        menu.addItem(autonomyHeader)
-        for autonomy in AgentAutonomy.allCases {
-            let item = NSMenuItem(title: "    \(autonomy.displayName)", action: #selector(autonomyChosen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = autonomy.rawValue
-            item.state = autonomy == mode.autonomy ? .on : .off
-            // Nothing to auto-approve in a read-only scope — disabled rather than hidden, so
-            // the axis doesn't appear to vanish when someone switches to Ask.
-            item.isEnabled = mode.autonomyIsMeaningful || autonomy == .manual
-            menu.addItem(item)
-        }
-        modeButton.menu = menu
-    }
-
     @objc private func scopeChosen(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let scope = AgentToolScope(rawValue: raw) else { return }
         let mode = currentMode()
         // Leaving a read-only scope keeps whatever autonomy was set; entering one leaves it
         // stored but inert (see `autonomyIsMeaningful`), so switching back restores it.
         trackStore?.setMode(AgentMode(scope: scope, autonomy: mode.autonomy), forTrackKey: attachedTrackKey ?? "")
-        refreshModelLabel()
+        refreshChips()
     }
 
     @objc private func autonomyChosen(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let autonomy = AgentAutonomy(rawValue: raw) else { return }
         trackStore?.setMode(AgentMode(scope: currentMode().scope, autonomy: autonomy), forTrackKey: attachedTrackKey ?? "")
-        refreshModelLabel()
-    }
-
-    /// The context gauge: a percentage, and the action that does something about it.
-    private func refreshContextButton() {
-        guard let runner else {
-            contextButton.isHidden = true
-            return
-        }
-        contextButton.isHidden = false
-        let usage = runner.contextUsage()
-        // Held in a local rather than read back from `contextButton.title`: on a pull-down that
-        // getter reports menu item 0, which doesn't exist yet here — reading it back produced a
-        // blank control.
-        let label = "context \(Int((usage.fraction * 100).rounded()))%"
-        contextButton.title = label
-        switch usage.status {
-        case .comfortable: contextButton.contentTintColor = .secondaryLabelColor
-        // Orange then red, matching the budget warnings — the two things that quietly stop a
-        // conversation working should look like the same class of problem.
-        case .approaching: contextButton.contentTintColor = .systemOrange
-        case .critical: contextButton.contentTintColor = .systemRed
-        }
-
-        let menu = NSMenu()
-        menu.addItem(withTitle: label, action: nil, keyEquivalent: "")
-        let detail = NSMenuItem(
-            title: "\(UsageFormatting.tokens(usage.usedTokens)) of \(UsageFormatting.tokens(usage.windowTokens)) tokens",
-            action: nil, keyEquivalent: ""
-        )
-        detail.isEnabled = false
-        menu.addItem(detail)
-        if usage.status.shouldSuggestCompaction {
-            let warning = NSMenuItem(
-                title: usage.status == .critical ? "Close to the limit — sends may start failing" : "Filling up",
-                action: nil, keyEquivalent: ""
-            )
-            warning.isEnabled = false
-            menu.addItem(warning)
-        }
-        menu.addItem(.separator())
-        let compact = NSMenuItem(title: "Compact Conversation…", action: #selector(compactConversation), keyEquivalent: "")
-        compact.target = self
-        compact.toolTip = "Replace the conversation with a summary of it, to free up context."
-        menu.addItem(compact)
-        // Deliberately adjacent to Compact, because the choice between them is the whole point:
-        // compaction keeps what was learned, this discards it. Starting fresh is the right move
-        // when the next topic has nothing to do with the last one.
-        let clear = NSMenuItem(title: "New Conversation…", action: #selector(startNewConversation), keyEquivalent: "")
-        clear.target = self
-        clear.toolTip = "Discard this conversation and start over. Checkpoints and files are kept."
-        menu.addItem(clear)
-        contextButton.menu = menu
+        refreshChips()
     }
 
     @objc private func compactConversation() {
@@ -543,7 +547,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         runner.compact { [weak self] _ in
             self?.renderFull()
-            self?.refreshModelLabel()
+            self?.refreshChips()
         }
     }
 
@@ -558,47 +562,84 @@ final class ThinkWorkspaceViewController: NSViewController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         runner.startNewConversation()
         renderFull()
-        refreshModelLabel()
+        refreshChips()
     }
 
-    private func refreshModelLabel() {
-        modelButton.title = selectionTitle()
-        rebuildModelMenu()
-        modeButton.title = currentMode().shortLabel
-        rebuildModeMenu()
-        refreshContextButton()
-        var label = ""
-        // What this track has spent so far, right where the model it spent it on is named. Cost
-        // is appended only when every model this track used has a published price — a partial
-        // figure presented as a total would mislead in exactly the direction that matters.
-        if let projectPath {
-            let trackKey = attachedTrackKey ?? ""
-            let totals = UsageStore.shared.totals(projectPath: projectPath, trackKey: trackKey)
-            if totals.totalTokens > 0 {
-                label += "·  \(UsageFormatting.tokens(totals.totalTokens)) tokens"
-                let priced = UsageStore.shared.records.filter {
-                    $0.projectPath == projectPath && $0.trackKey == trackKey
-                }
-                if priced.allSatisfy({ ModelPricing.isPriced(modelId: $0.modelId) }) {
-                    let cost = priced.reduce(0.0) { $0 + (ModelPricing.estimatedCost(modelId: $1.modelId, totals: $1.totals) ?? 0) }
-                    label += "  ·  ~\(UsageFormatting.cost(cost))"
-                }
+    /// The chips' faces: one short fact each. Menus are built on press, so only labels update.
+    private func refreshChips() {
+        let mode = currentMode()
+        let scopeSymbol: String
+        switch mode.scope {
+        case .ask: scopeSymbol = "questionmark.bubble"
+        case .plan: scopeSymbol = "list.bullet.rectangle"
+        case .build: scopeSymbol = "hammer"
+        }
+        scopeChip.setSymbol(scopeSymbol)
+        scopeChip.setLabel(mode.scope.displayName)
+
+        let autonomySymbol: String
+        switch mode.autonomy {
+        case .manual: autonomySymbol = "hand.raised"
+        case .guarded: autonomySymbol = "checkmark.shield"
+        case .full: autonomySymbol = "bolt"
+        }
+        autonomyChip.setSymbol(autonomySymbol)
+        autonomyChip.setLabel(mode.autonomy.shortLabel)
+
+        let selection = resolvedSelection()
+        let modelName = ProviderRegistryStore.shared.provider(for: selection.providerId)?
+            .models.first { $0.id == selection.modelId }?.displayName ?? selection.modelId
+        modelChip.setLabel(modelName)
+        // Standard effort is the quiet default — an icon is enough; a word would be noise.
+        effortChip.setLabel(selection.effort == .standard ? "" : selection.effort.shortLabel)
+        effortChip.toolTip = "Thinking effort: \(selection.effort.displayName)"
+
+        if let runner {
+            contextChip.isHidden = false
+            let usage = runner.contextUsage()
+            let tint: NSColor
+            switch usage.status {
+            case .comfortable: tint = .secondaryLabelColor
+            case .approaching: tint = .systemOrange
+            case .critical: tint = .systemRed
             }
+            contextChip.setLabel("\(Int((usage.fraction * 100).rounded()))%", tint: tint)
+        } else {
+            contextChip.isHidden = true
         }
-        // A budget that only shows up in Settings is a budget nobody sees coming; the warning
-        // belongs where the spend is already displayed.
-        switch UsageBudget.status() {
-        case .approaching(let spent, let limit):
-            label += "  ·  \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)) this month"
-            modelLabel.textColor = .systemOrange
-        case .exceeded(let spent, let limit):
-            label += "  ·  budget reached (\(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)))"
-            modelLabel.textColor = .systemRed
-        case .unlimited, .withinBudget:
-            modelLabel.textColor = .secondaryLabelColor
+    }
+
+
+    // MARK: - Slash commands
+
+    /// Everything a chip can do, reachable without leaving the keyboard. The list is the router
+    /// below, restated — a command that exists here but does nothing is worse than no palette.
+    private static let slashCommands: [(name: String, blurb: String)] = [
+        ("compact", "summarize the conversation to free up context"),
+        ("new", "discard this conversation and start fresh"),
+        ("ask", "read-only: answer questions"),
+        ("plan", "read-only: produce a plan"),
+        ("build", "full tools: edits and commands"),
+        ("manual", "approve every edit and command"),
+        ("guarded", "auto-run safe commands"),
+        ("full", "auto-apply edits too"),
+    ]
+
+    private func performSlashCommand(_ name: String) {
+        switch name {
+        case "compact": compactConversation()
+        case "new": startNewConversation()
+        case "ask", "plan", "build":
+            guard let scope = AgentToolScope(rawValue: name) else { return }
+            trackStore?.setMode(AgentMode(scope: scope, autonomy: currentMode().autonomy), forTrackKey: attachedTrackKey ?? "")
+            refreshChips()
+        case "manual", "guarded", "full":
+            guard let autonomy = AgentAutonomy(rawValue: name) else { return }
+            trackStore?.setMode(AgentMode(scope: currentMode().scope, autonomy: autonomy), forTrackKey: attachedTrackKey ?? "")
+            refreshChips()
+        default:
+            break
         }
-        modelLabel.stringValue = label
-        modelLabel.toolTip = "Estimated spend for this track. Prices are approximate."
     }
 
     // MARK: - Transcript rendering
@@ -795,7 +836,7 @@ final class ThinkWorkspaceViewController: NSViewController {
 /// which side it sits on and what color it is carry "who said this." Body text renders through
 /// `MarkdownRenderer` (the same one Make's preview uses), and a streamed delta re-measures the
 /// bubble's width in place so it grows with the response instead of being sized once.
-private final class TextBlockView: NSView {
+private final class TextBlockView: NSView, NSTextViewDelegate {
     enum Style {
         case sent      // the user: accent-filled, white text
         case received  // the assistant: gray-filled, standard text
@@ -817,14 +858,21 @@ private final class TextBlockView: NSView {
         }
     }
 
-    private let bodyLabel = NSTextField(wrappingLabelWithString: "")
+    /// An `NSTextView`, not an `NSTextField`. This is the scroll-stutter fix, third attempt and
+    /// the structural one: a text *field* draws its whole attributed string through
+    /// NSStringDrawing whenever any part of it needs display, so an 8,000-character compaction
+    /// summary re-rendered end-to-end on every scroll frame that clipped it. A text view owns a
+    /// layout manager and draws only the glyph ranges actually visible. It also gives mentions
+    /// real `.link` handling — click, pointing-hand cursor, and AX — replacing a hand-rolled
+    /// hitTest/cursor-rect/glyph-measurement stack that was itself a source of per-frame work.
+    private let bodyText = NSTextView()
     /// Called with a project-relative path when a mention in this bubble is clicked. Set by the
     /// row builder; nil for bubbles where mentions aren't meaningful.
     var onMentionClicked: ((String) -> Void)?
-    private var mentionRanges: [(range: NSRange, path: String)] = []
     private let style: Style
     private let maxBubbleWidth: CGFloat
     private let bodyWidthConstraint: NSLayoutConstraint
+    private let bodyHeightConstraint: NSLayoutConstraint
     /// The raw source text (not the rendered `NSAttributedString`) — kept so Copy hands back
     /// what was actually said, not whatever `MarkdownRenderer` happened to produce.
     private(set) var plainText: String = ""
@@ -834,22 +882,24 @@ private final class TextBlockView: NSView {
     init(style: Style, body: String, maxBubbleWidth: CGFloat) {
         self.style = style
         self.maxBubbleWidth = maxBubbleWidth
-        self.bodyWidthConstraint = bodyLabel.widthAnchor.constraint(equalToConstant: 10)
+        self.bodyWidthConstraint = bodyText.widthAnchor.constraint(equalToConstant: 10)
+        self.bodyHeightConstraint = bodyText.heightAnchor.constraint(equalToConstant: 10)
 
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        // Draws the label into this view's own layer, so a long bubble is rasterized once and
-        // *composited* while scrolling instead of re-drawn every frame. An unlayered
-        // `NSTextField` holding thousands of characters of attributed text (inline-code
-        // background runs, mixed fonts) redraws through NSStringDrawing on each scroll frame,
-        // which is the classic cause of exactly this stutter.
-        canDrawSubviewsIntoLayer = true
         layer?.cornerRadius = DS.Radius.bubble
         layer?.backgroundColor = style.fillColor.cgColor
 
-        bodyLabel.isSelectable = true
-        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
+        bodyText.isEditable = false
+        bodyText.isSelectable = true
+        bodyText.drawsBackground = false
+        bodyText.textContainerInset = .zero
+        bodyText.textContainer?.lineFragmentPadding = 0
+        bodyText.delegate = self
+        // Mentions carry their own colors; without this, AppKit repaints every link blue.
+        bodyText.linkTextAttributes = [.cursor: NSCursor.pointingHand]
+        bodyText.translatesAutoresizingMaskIntoConstraints = false
 
         var topAnchorForBody = topAnchor
         var topConstant = Self.insets.top
@@ -867,94 +917,28 @@ private final class TextBlockView: NSView {
             topConstant = 3
         }
 
-        addSubview(bodyLabel)
+        addSubview(bodyText)
         NSLayoutConstraint.activate([
-            bodyLabel.topAnchor.constraint(equalTo: topAnchorForBody, constant: topConstant),
-            bodyLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.insets.left),
-            bodyLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.insets.right),
-            bodyLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.insets.bottom),
+            bodyText.topAnchor.constraint(equalTo: topAnchorForBody, constant: topConstant),
+            bodyText.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.insets.left),
+            bodyText.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.insets.right),
+            bodyText.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.insets.bottom),
             bodyWidthConstraint,
+            bodyHeightConstraint,
         ])
         setBody(body)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Claims clicks that land on a mention, and only those.
-    ///
-    /// Needed because `bodyLabel` is selectable, and a selectable `NSTextField` consumes
-    /// `mouseDown` before the bubble ever sees it — the first version of this looked wired up and
-    /// did nothing. Everything outside a mention still falls through to the label, so selecting
-    /// and copying message text is unaffected.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard onMentionClicked != nil, !mentionRanges.isEmpty else { return super.hitTest(point) }
-        let local = superview.map { convert(point, from: $0) } ?? point
-        let inLabel = bodyLabel.convert(local, from: self)
-        if bodyLabel.bounds.contains(inLabel), mentionPath(at: inLabel) != nil { return self }
-        return super.hitTest(point)
-    }
-
-    /// Hit-tests the click against the laid-out glyphs rather than a stored rect, so it stays
-    /// correct after the bubble is re-measured on a streamed delta or a window resize.
-    override func mouseDown(with event: NSEvent) {
-        guard onMentionClicked != nil, !mentionRanges.isEmpty else { return super.mouseDown(with: event) }
-        let point = bodyLabel.convert(event.locationInWindow, from: nil)
-        guard bodyLabel.bounds.contains(point),
-              let path = mentionPath(at: point) else { return super.mouseDown(with: event) }
+    /// The text view's own link plumbing — replaces a hand-rolled hitTest/glyph-rect stack.
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL, url.scheme == "side-mention" else { return false }
+        let path = String(url.absoluteString.dropFirst("side-mention://".count))
+            .removingPercentEncoding ?? ""
+        guard !path.isEmpty else { return false }
         onMentionClicked?(path)
-    }
-
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        guard onMentionClicked != nil else { return }
-        // A pointing hand is the only cue that these are live; without it the underline just
-        // looks decorative.
-        for (range, _) in mentionRanges {
-            for rect in glyphRects(for: range) {
-                addCursorRect(convert(rect, from: bodyLabel), cursor: .pointingHand)
-            }
-        }
-    }
-
-    private func mentionPath(at point: NSPoint) -> String? {
-        for (range, path) in mentionRanges where glyphRects(for: range).contains(where: { $0.contains(point) }) {
-            return path
-        }
-        return nil
-    }
-
-    /// Lays the bubble's attributed text out in a throwaway text stack to find where a range
-    /// actually drew. `NSTextField` exposes no glyph geometry of its own.
-    ///
-    /// Cached per (text, width), and that caching is load-bearing rather than tidiness: this runs
-    /// from `hitTest` and `resetCursorRects`, which AppKit calls on mouse movement and on every
-    /// layout pass. Re-laying-out an 8,000-character bubble (a compaction summary, say) on every
-    /// one of those made the whole stage visibly stutter for seconds.
-    private var cachedGlyphRects: [NSRange: [NSRect]] = [:]
-    private var glyphCacheKey: (length: Int, width: CGFloat)?
-
-    private func glyphRects(for range: NSRange) -> [NSRect] {
-        let key = (bodyLabel.attributedStringValue.length, bodyWidthConstraint.constant)
-        if glyphCacheKey == nil || glyphCacheKey! != key {
-            cachedGlyphRects = [:]
-            glyphCacheKey = key
-        }
-        if let cached = cachedGlyphRects[range] { return cached }
-
-        let storage = NSTextStorage(attributedString: bodyLabel.attributedStringValue)
-        let container = NSTextContainer(size: NSSize(width: bodyWidthConstraint.constant, height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        let layout = NSLayoutManager()
-        layout.addTextContainer(container)
-        storage.addLayoutManager(layout)
-        layout.ensureLayout(for: container)
-        let glyphRange = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-        var rects: [NSRect] = []
-        layout.enumerateEnclosingRects(forGlyphRange: glyphRange, withinSelectedGlyphRange: glyphRange, in: container) { rect, _ in
-            rects.append(rect)
-        }
-        cachedGlyphRects[range] = rects
-        return rects
+        return true
     }
 
     override func isAccessibilityElement() -> Bool { true }
@@ -963,7 +947,6 @@ private final class TextBlockView: NSView {
     /// The bubble speaks for its content, so the label inside it must not also be an element —
     /// otherwise VoiceOver reads every message twice (an audit caught exactly that).
     override func accessibilityChildren() -> [Any]? { [] }
-
 
     /// Parsed-markdown cache, keyed by text + style + text scale.
     ///
@@ -991,8 +974,6 @@ private final class TextBlockView: NSView {
 
     func setBody(_ text: String) {
         plainText = text
-        cachedGlyphRects = [:]
-        glyphCacheKey = nil
         let rendered = NSMutableAttributedString(attributedString: Self.renderedMarkdown(text, style: style))
         // The renderer terminates every block with "\n\n" — fine in a document preview, but in
         // a bubble that trailing run becomes visible empty space below the last line.
@@ -1000,14 +981,16 @@ private final class TextBlockView: NSView {
             rendered.deleteCharacters(in: NSRange(location: rendered.length - 1, length: 1))
         }
         // Mentions read as references and act like them: tinted, underlined, and clickable
-        // straight into Make. Styling the *rendered* string (rather than the source) keeps the
-        // ranges aligned with what's actually on screen after markdown processing.
-        mentionRanges = []
+        // straight into Make — as real `.link` attributes, so the text view supplies the click
+        // handling and cursor itself. Styling the *rendered* string keeps ranges aligned with
+        // what's on screen after markdown processing.
         for range in FileMentionResolver.tokenRanges(in: rendered.string) {
             let token = (rendered.string as NSString).substring(with: range)
             let path = String(token.dropFirst())
-            mentionRanges.append((range, path))
+            let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+            guard let url = URL(string: "side-mention://\(encoded)") else { continue }
             rendered.addAttributes([
+                .link: url,
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
                 // On the accent-filled sent bubble, accent-on-accent would vanish; white already
                 // reads as emphasis there, so underline carries it instead.
@@ -1015,8 +998,8 @@ private final class TextBlockView: NSView {
                 .font: DS.Text.code(11.5, weight: .medium),
             ], range: range)
         }
-        bodyLabel.attributedStringValue = rendered
-        // Hug the content: measure the rendered text against the cap and clamp the label to
+        bodyText.textStorage?.setAttributedString(rendered)
+        // Hug the content: measure the rendered text against the cap and clamp the view to
         // exactly what it needs — this (re-run on every streamed delta) is what makes a short
         // "ok" a small pill and a long reply a full-width-capped block, live, like a real chat.
         let availableWidth = maxBubbleWidth - Self.insets.left - Self.insets.right
@@ -1025,6 +1008,7 @@ private final class TextBlockView: NSView {
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
         bodyWidthConstraint.constant = max(10, min(ceil(bounding.width) + 2, availableWidth))
+        bodyHeightConstraint.constant = max(10, ceil(bounding.height) + 1)
     }
 }
 
@@ -1134,9 +1118,86 @@ private final class BubbleRowView: NSView {
 /// replacing the single-line text field + "Send" push button.
 /// Finds the `@…` token under the caret. Not `rangeForUserCompletion` + `complete(_:)` — see
 /// `MentionCompletionPopup` for why that approach was abandoned.
+
+/// One control of the composer's bottom row: a small icon-plus-word capsule that pops a menu.
+///
+/// Not an `NSPopUpButton`. The pull-downs this replaces carried AppKit's arrow-and-bezel
+/// styling, crowded titles ("Anthropic · Claude Sonnet 5 · low"), and menus that mixed two
+/// decisions each — the visual noise being complained about was mostly *them*. A chip shows one
+/// short fact, reveals it's interactive on hover, and owns exactly one menu. The menu pops from
+/// the action (mouse-up), which is what makes an upward menu survive — popping from `mouseDown`
+/// gets dismissed by its own mouse-up, the failure recorded in the design charter.
+private final class ChipButton: NSButton {
+    var menuProvider: (() -> NSMenu)?
+    private var tracking: NSTrackingArea?
+
+    init(symbolName: String?, accessibilityLabel: String) {
+        super.init(frame: .zero)
+        isBordered = false
+        imagePosition = .imageLeading
+        font = DS.Text.caption(.medium)
+        contentTintColor = .secondaryLabelColor
+        wantsLayer = true
+        layer?.cornerRadius = DS.Radius.control
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 24).isActive = true
+        setAccessibilityLabel(accessibilityLabel)
+        if let symbolName { setSymbol(symbolName) }
+        target = self
+        action = #selector(pressed)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setSymbol(_ name: String) {
+        image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10.5, weight: .medium))
+    }
+
+    func setLabel(_ text: String, tint: NSColor = .secondaryLabelColor) {
+        // Padded by spaces rather than constraints — cheap, and keeps the intrinsic size honest.
+        title = text.isEmpty ? "" : " \(text) "
+        contentTintColor = tint
+    }
+
+    @objc private func pressed() {
+        guard let menu = menuProvider?() else { return }
+        // Above the chip: these sit at the window's bottom edge, so downward menus fall off it.
+        // Safe here (unlike the NSPopUpButton attempt) because an action fires on mouse-up.
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.maxY + menu.size.height + DS.Spacing.s), in: self)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = DS.Color.scrimSoft.cgColor }
+    override func mouseExited(with event: NSEvent) { layer?.backgroundColor = nil }
+}
+
 private final class ComposerTextView: NSTextView {
     /// The range of the mention being typed, or nil when the caret isn't inside one. Extends back
     /// to the `@` so `@src/deep/nes` is one token rather than stopping at each `/`.
+    /// The `/command` token being typed, or nil. Only at the very start of the message — a
+    /// slash mid-sentence is a path or a date, and hijacking it would make "src/main.c" untypable.
+    var slashRange: NSRange? {
+        let text = string as NSString
+        guard text.length > 0, text.character(at: 0) == unichar(UInt8(ascii: "/")) else { return nil }
+        let caret = selectedRange().location
+        var end = 0
+        while end < text.length {
+            guard let scalar = Unicode.Scalar(text.character(at: end)),
+                  !CharacterSet.whitespacesAndNewlines.contains(scalar) else { break }
+            end += 1
+        }
+        guard caret <= end else { return nil }
+        return NSRange(location: 0, length: end)
+    }
+
     var mentionRange: NSRange? {
         let text = string as NSString
         let caret = selectedRange().location
@@ -1170,7 +1231,14 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// Supplies `@`-mention candidates. Set by the owner, which knows the track's working
     /// directory; nil until then, and completion simply does nothing in that case.
     var mentionCandidates: ((String) -> [String])?
+    /// Slash commands: candidates for a typed prefix (rows shown as "/name — what it does"),
+    /// and the handler that runs one. Set by the owner, which knows what the commands mean.
+    var slashCandidates: ((String) -> [String])?
+    var onSlashCommand: ((String) -> Void)?
     private let mentionPopup = MentionCompletionPopup()
+    /// Whether the popup currently holds slash commands (accepting runs one) rather than
+    /// mention paths (accepting inserts one).
+    private var popupShowsCommands = false
     private let scroll = NSScrollView()
     private let placeholderLabel = NSTextField(labelWithString: "")
     private let actionButton = CircularIconButton(diameter: 28)
@@ -1211,7 +1279,17 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         textView.isRichText = false
         textView.allowsUndo = true
         textView.delegate = self
-        mentionPopup.onAccept = { [weak self] path in self?.insertMention(path) }
+        mentionPopup.onAccept = { [weak self] row in
+            guard let self else { return }
+            if self.popupShowsCommands {
+                // Rows read "/name — description"; the name is the command.
+                let name = String(row.split(separator: " ").first?.dropFirst() ?? "")
+                self.clear()
+                self.onSlashCommand?(name)
+            } else {
+                self.insertMention(row)
+            }
+        }
         textView.textContainerInset = NSSize(width: 0, height: 2)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.autoresizingMask = [.width]
@@ -1232,8 +1310,11 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
         controlRow.orientation = .horizontal
         controlRow.alignment = .centerY
-        controlRow.spacing = DS.Spacing.xs
+        controlRow.spacing = DS.Spacing.s
         controlRow.translatesAutoresizingMaskIntoConstraints = false
+        // Tall enough that the 28pt send button, centered on this row, keeps a real margin from
+        // the container's bottom edge instead of touching it.
+        controlRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
 
         addSubview(scroll)
         addSubview(placeholderLabel)
@@ -1255,7 +1336,9 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             controlRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xl),
             controlRow.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: DS.Spacing.s),
             controlRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.m),
-            controlRow.trailingAnchor.constraint(lessThanOrEqualTo: actionButton.leadingAnchor, constant: -DS.Spacing.m),
+            // Pinned (not ≤) so the spacer inside the row actually stretches — left cluster for
+            // what the agent is, right cluster for what it runs on, beside the send button.
+            controlRow.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -DS.Spacing.m),
             actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
             actionButton.centerYAnchor.constraint(equalTo: controlRow.centerYAnchor),
         ])
@@ -1265,6 +1348,13 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// rather than floating beneath it.
     func addControl(_ view: NSView) {
         controlRow.addArrangedSubview(view)
+    }
+
+    /// Pushes everything added after it to the row's right edge.
+    func addControlSpacer() {
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        controlRow.addArrangedSubview(spacer)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -1351,6 +1441,20 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// *displays* — the text is untouched until someone accepts a row, which is what keeps this
     /// from fighting the keystrokes that triggered it.
     private func updateMentionPopup() {
+        // A leading "/" is a command, and wins over mentions — same immediate-open rule as `@`.
+        if let slash = textView.slashRange, let slashCandidates {
+            let partial = String((textView.string as NSString).substring(with: slash).dropFirst())
+            let commands = slashCandidates(partial)
+            guard !commands.isEmpty else { return mentionPopup.hide() }
+            popupShowsCommands = true
+            mentionPopup.truncatesHead = false
+            var caretRect = textView.firstRect(forCharacterRange: NSRange(location: 0, length: 0), actualRange: nil)
+            if caretRect == .zero { caretRect = window?.convertToScreen(convert(bounds, to: nil)) ?? .zero }
+            mentionPopup.show(candidates: commands, below: caretRect, parent: window)
+            return
+        }
+        popupShowsCommands = false
+        mentionPopup.truncatesHead = true
         // `length >= 1` — a bare `@` opens the list immediately, which is what every other
         // harness does and what someone typing `@` is asking for.
         guard let range = textView.mentionRange, range.length >= 1, let mentionCandidates else {

@@ -85,6 +85,9 @@ final class MentionCompletionPopup: NSObject {
 
     /// Shows (or updates) the list under `caretRect`, in screen coordinates. An empty candidate
     /// list hides the panel rather than showing an empty box.
+    /// How rows truncate: paths keep their tail (the identifying part), commands keep their head.
+    var truncatesHead = true
+
     func show(candidates: [String], below caretRect: NSRect, parent: NSWindow?) {
         guard !candidates.isEmpty, let parent else { return hide() }
         let selectionSurvives = selectedCandidate.flatMap(candidates.firstIndex(of:))
@@ -96,7 +99,8 @@ final class MentionCompletionPopup: NSObject {
 
         let rows = min(candidates.count, Self.maxVisibleRows)
         let height = CGFloat(rows) * Self.rowHeight + DS.Spacing.m
-        var frame = NSRect(x: caretRect.minX, y: caretRect.minY - height - 4, width: 340, height: height)
+        let width: CGFloat = truncatesHead ? 340 : 420
+        var frame = NSRect(x: caretRect.minX, y: caretRect.minY - height - 4, width: width, height: height)
         // Flip above the caret when there's no room below — the composer sits at the bottom of
         // the window, so this is the common case rather than an edge case.
         if let screen = parent.screen, frame.minY < screen.visibleFrame.minY {
@@ -143,7 +147,7 @@ extension MentionCompletionPopup: NSTableViewDataSource, NSTableViewDelegate {
             let cell = NSTableCellView()
             let label = NSTextField(labelWithString: "")
             label.translatesAutoresizingMaskIntoConstraints = false
-            label.lineBreakMode = .byTruncatingHead  // the tail of a path is the identifying part
+            label.lineBreakMode = .byTruncatingHead
             cell.addSubview(label)
             cell.textField = label
             NSLayoutConstraint.activate([
@@ -156,6 +160,7 @@ extension MentionCompletionPopup: NSTableViewDataSource, NSTableViewDelegate {
         }()
         cell.textField?.stringValue = candidates[row]
         cell.textField?.font = DS.Text.code(11)
+        cell.textField?.lineBreakMode = truncatesHead ? .byTruncatingHead : .byTruncatingTail
         return cell
     }
 }
