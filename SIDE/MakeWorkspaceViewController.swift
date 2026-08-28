@@ -537,27 +537,24 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             scroll.trailingAnchor.constraint(equalTo: padded.trailingAnchor, constant: -4), scroll.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -10)
         ])
 
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            glass.contentView = padded
-            glass.cornerRadius = DS.Radius.card
-            glass.style = .regular
-            fileExplorerPanel.contentView = glass
-        } else {
-            let effect = NSVisualEffectView()
-            effect.material = .popover
-            effect.state = .active
-            effect.blendingMode = .withinWindow
-            effect.wantsLayer = true
-            effect.layer?.cornerRadius = DS.Radius.card
-            effect.layer?.masksToBounds = true
-            effect.addSubview(padded)
-            NSLayoutConstraint.activate([
-                padded.topAnchor.constraint(equalTo: effect.topAnchor), padded.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-                padded.trailingAnchor.constraint(equalTo: effect.trailingAnchor), padded.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
-            ])
-            fileExplorerPanel.contentView = effect
-        }
+        // Behind-window vibrancy, not NSGlassEffectView: the explorer is its own child *window*,
+        // and glass only refracts content within the window it lives in — with nothing behind it
+        // in-window it rendered as a flat overlay whose corners didn't read as the panel's (the
+        // same failure the mention palette had). This material samples the editor behind the
+        // panel, which is what the floating-panel version of Liquid Glass actually is.
+        let effect = NSVisualEffectView()
+        effect.material = .hudWindow
+        effect.state = .active
+        effect.blendingMode = .behindWindow
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = DS.Radius.card
+        effect.layer?.masksToBounds = true
+        effect.addSubview(padded)
+        NSLayoutConstraint.activate([
+            padded.topAnchor.constraint(equalTo: effect.topAnchor), padded.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            padded.trailingAnchor.constraint(equalTo: effect.trailingAnchor), padded.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
+        ])
+        fileExplorerPanel.contentView = effect
     }
 
     @objc private func toggleFileExplorer() {

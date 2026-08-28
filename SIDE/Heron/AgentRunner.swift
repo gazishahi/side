@@ -283,6 +283,25 @@ final class AgentRunner {
         }
     }
 
+    /// Cumulative +/- line counts per file for edits applied in this conversation — the data
+    /// behind Think's changed-files pill. Session-scoped and rebuilt from nothing on relaunch:
+    /// the durable record is the checkpoints in Review, this is just "what happened here."
+    private(set) var appliedEditCounts: [(path: String, added: Int, removed: Int)] = []
+
+    private func recordAppliedEdit(path: String, diffText: String) {
+        var added = 0, removed = 0
+        for line in diffText.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix("+"), !line.hasPrefix("+++") { added += 1 }
+            else if line.hasPrefix("-"), !line.hasPrefix("---") { removed += 1 }
+        }
+        if let index = appliedEditCounts.firstIndex(where: { $0.path == path }) {
+            appliedEditCounts[index].added += added
+            appliedEditCounts[index].removed += removed
+        } else {
+            appliedEditCounts.append((path, added, removed))
+        }
+    }
+
     private func resolveEditProposal(entryIndex: Int, presentation: ProposalPresentation, decision: ProposalDecision) {
         guard var batch = pendingBatch, batch.unresolvedToolUseIds.contains(presentation.edit.toolUseId) else { return }
         var presentation = presentation
@@ -309,6 +328,7 @@ final class AgentRunner {
         if case .applied = outcome {
             batch.lastAppliedURL = presentation.edit.url
             batch.changedFilePaths.insert(presentation.edit.relativePath)
+            recordAppliedEdit(path: presentation.edit.relativePath, diffText: presentation.diffText)
         }
         pendingBatch = batch
         finishBatchIfReady()
@@ -424,6 +444,7 @@ final class AgentRunner {
     /// Checkpoints, usage history, and files are untouched; only the turns go.
     func startNewConversation() {
         guard !phase.isBusy else { return }
+        appliedEditCounts = []
         let selection = resolvedSelection()
         sessionStore.replaceTurns([], trackKey: trackKey, providerId: selection.providerId, modelId: selection.modelId ?? "")
         entries = []

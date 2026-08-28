@@ -33,6 +33,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// "pick one of three."
     private let sessionPill = ChipButton(symbolName: nil, accessibilityLabel: "Model, mode, and context for this track")
     private let sessionPillGlass = DS.makeGlass(cornerRadius: 14)
+    /// Changed-files pill, bottom-left above the composer — the session pill's opposite number.
+    private let changesPill = ChipButton(symbolName: "pencil.line", accessibilityLabel: "Files changed in this conversation")
+    private let changesPillGlass = DS.makeGlass(cornerRadius: 14)
     /// A soft wash rising from the pill's bottom edge in the current scope's color.
     private let pillModeTint = GradientEdgeView(cornerRadius: 14)
     private var sessionPopover: NSPopover?
@@ -56,6 +59,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private var usageObserverToken: UUID?
     /// Set by `ShellViewController` — Think can't reach Make directly, and shouldn't.
     var onRevealFileRequested: ((URL) -> Void)?
+    /// Set by the shell: switches the window to the Review stage, where checkpoints hold the
+    /// durable record of what changed.
+    var onOpenReviewRequested: (() -> Void)?
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
     private var attachedTrackKey: String?
     private var runner: AgentRunner?
@@ -126,6 +132,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         view.addSubview(sessionPillGlass)
         view.addSubview(pillModeTint)
         view.addSubview(sessionPill)
+        changesPill.glassBackdrop = changesPillGlass
+        changesPill.onPress = { [weak self] in self?.onOpenReviewRequested?() }
+        changesPill.toolTip = "Open Review"
+        changesPill.isHidden = true
+        changesPillGlass.isHidden = true
+        view.addSubview(changesPillGlass)
+        view.addSubview(changesPill)
 
         emptyStateLabel.font = DS.Text.body()
         emptyStateLabel.textColor = .tertiaryLabelColor
@@ -173,6 +186,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             pillModeTint.bottomAnchor.constraint(equalTo: sessionPillGlass.bottomAnchor),
             pillModeTint.leadingAnchor.constraint(equalTo: sessionPillGlass.leadingAnchor),
             pillModeTint.trailingAnchor.constraint(equalTo: sessionPillGlass.trailingAnchor),
+            // Mirror of the session pill, on the composer's leading corner.
+            changesPill.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs),
+            changesPill.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
+            changesPillGlass.topAnchor.constraint(equalTo: changesPill.topAnchor, constant: -2),
+            changesPillGlass.bottomAnchor.constraint(equalTo: changesPill.bottomAnchor, constant: 2),
+            changesPillGlass.leadingAnchor.constraint(equalTo: changesPill.leadingAnchor, constant: -DS.Spacing.s),
+            changesPillGlass.trailingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.s),
         ])
 
         // The header's token/cost figures come from a store the runner writes to directly, so
@@ -485,6 +505,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         fileIndex.refresh(root: url) {}
     }
 
+    /// Existence check for bare-path linking — same root, same containment rule as opening.
+    private func mentionedFileExists(_ path: String) -> Bool {
+        guard let projectPath else { return false }
+        let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath
+        let url = URL(fileURLWithPath: root).appendingPathComponent(path).standardizedFileURL
+        guard url.path.hasPrefix(URL(fileURLWithPath: root).standardizedFileURL.path + "/") else { return false }
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && !isDirectory.boolValue
+    }
+
     /// Opens a clicked mention in Make, resolved against the same directory the mention itself
     /// resolved against. Silently does nothing for a path that no longer exists — a stale
     /// mention in old scrollback shouldn't produce an error dialog years later.
@@ -610,6 +640,25 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
         sessionPillGlass.isHidden = sessionPill.isHidden
         pillModeTint.isHidden = sessionPill.isHidden
+        refreshChangesPill()
+    }
+
+    /// "3 files +42 −7" — cumulative applied edits this conversation; click opens Review.
+    private func refreshChangesPill() {
+        let counts = runner?.appliedEditCounts ?? []
+        let isEmpty = counts.isEmpty
+        if !isEmpty {
+            let added = counts.reduce(0) { $0 + $1.added }
+            let removed = counts.reduce(0) { $0 + $1.removed }
+            let label = "\(counts.count) file\(counts.count == 1 ? "" : "s") +\(added) −\(removed)"
+            if changesPill.title != " \(label) " {
+                changesPill.setLabel(label, tint: .secondaryLabelColor)
+            }
+        }
+        guard changesPill.isHidden != isEmpty else { return }
+        changesPill.isHidden = isEmpty
+        changesPillGlass.isHidden = isEmpty
+        if !isEmpty { DS.Motion.appear(changesPill) }
     }
 
     // MARK: - Slash commands
@@ -739,11 +788,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case .userText(let text):
             // iMessage-shaped: sent messages are solid-accent bubbles hugging their own content
             // against the trailing edge; no "You" header — the side and color carry that.
-            let bubble = TextBlockView(style: .sent, body: text, maxBubbleWidth: 460)
+            let bubble = TextBlockView(style: .sent, body: text, maxBubbleWidth: 460, pathResolver: { [weak self] path in self?.mentionedFileExists(path) ?? false })
             bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
             return BubbleRowView(bubble: bubble, alignRight: true)
         case .assistantText(let text):
-            let bubble = TextBlockView(style: .received, body: text, maxBubbleWidth: 620)
+            let bubble = TextBlockView(style: .received, body: text, maxBubbleWidth: 620, pathResolver: { [weak self] path in self?.mentionedFileExists(path) ?? false })
             // The agent quotes paths back constantly; making those live too means "@" and a
             // plain mention behave the same wherever they appear.
             bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
@@ -938,9 +987,14 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
     /// so autolayout sees one rect and the curve lives inside it.
     static let tailWidth: CGFloat = 6
 
-    init(style: Style, body: String, maxBubbleWidth: CGFloat) {
+    /// Answers "is this token a real project file?" — set at init so the *first* render can
+    /// already link paths the agent quotes without an @ (which is how it usually writes them).
+    private let pathResolver: ((String) -> Bool)?
+
+    init(style: Style, body: String, maxBubbleWidth: CGFloat, pathResolver: ((String) -> Bool)? = nil) {
         self.style = style
         self.maxBubbleWidth = maxBubbleWidth
+        self.pathResolver = pathResolver
         self.bodyWidthConstraint = bodyText.widthAnchor.constraint(equalToConstant: 10)
         self.bodyHeightConstraint = bodyText.heightAnchor.constraint(equalToConstant: 10)
 
@@ -1138,8 +1192,35 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
                 .font: DS.Text.code(11.5, weight: .medium),
             ], range: range)
         }
+        linkBarePaths(in: rendered)
         bodyText.textStorage?.setAttributedString(rendered)
         fitToContent(rendered, monotonicWidth: false)
+    }
+
+    private static let barePathPattern = try? NSRegularExpression(
+        // Something/with/a/slash ending in .ext — the shape of a quoted project path. Existence
+        // is checked before linking, so prose that merely looks path-ish stays prose.
+        pattern: #"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8}"#
+    )
+
+    /// The agent quotes paths constantly without `@` — those become the same live links a
+    /// mention gets, but only when the file actually exists in the project.
+    private func linkBarePaths(in rendered: NSMutableAttributedString) {
+        guard let pathResolver, let regex = Self.barePathPattern else { return }
+        let text = rendered.string as NSString
+        for match in regex.matches(in: rendered.string, range: NSRange(location: 0, length: text.length)) {
+            let range = match.range
+            guard rendered.attribute(.link, at: range.location, effectiveRange: nil) == nil else { continue }
+            let path = text.substring(with: range)
+            guard pathResolver(path) else { continue }
+            let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+            guard let url = URL(string: "side-mention://\(encoded)") else { continue }
+            rendered.addAttributes([
+                .link: url,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .foregroundColor: style == .sent ? NSColor.white : NSColor.controlAccentColor,
+            ], range: range)
+        }
     }
 
     /// Hug the content: measure against the cap and clamp the view to exactly what it needs —

@@ -417,6 +417,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             runVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
         }
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
+        thinkVC.onOpenReviewRequested = { [weak self] in self?.show(.review) }
         thinkVC.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: context.projectRoot.path, trackKey: currentTrackKey)
         reviewVC.configure(trackStore: store, sessionStore: context.sessionStore, canonicalRoot: url)
         reviewVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
