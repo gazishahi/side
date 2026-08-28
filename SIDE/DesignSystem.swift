@@ -175,6 +175,36 @@ enum DS {
         }
     }
 
+    /// A Liquid Glass backdrop, with a graceful fallback.
+    ///
+    /// `NSGlassEffectView` is macOS 26 API and the deployment target is 15, so it's
+    /// availability-gated; older systems get an `NSVisualEffectView` — same shape, less
+    /// refraction. Returned as a plain `NSView` to be inserted as the *backmost* subview of
+    /// whatever it backs: content stays as ordinary siblings above it, which works identically
+    /// for both variants.
+    static func makeGlass(cornerRadius: CGFloat) -> NSView {
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = cornerRadius
+            // The material renders *around a contentView* — an empty glass view draws nothing,
+            // which showed up as a transparent composer with unblurred bubbles behind it.
+            let content = NSView()
+            content.translatesAutoresizingMaskIntoConstraints = false
+            glass.contentView = content
+            glass.translatesAutoresizingMaskIntoConstraints = false
+            return glass
+        }
+        let effect = NSVisualEffectView()
+        effect.material = .hudWindow
+        effect.blendingMode = .withinWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = cornerRadius
+        effect.layer?.masksToBounds = true
+        effect.translatesAutoresizingMaskIntoConstraints = false
+        return effect
+    }
+
     enum Motion {
         /// The standard arrival: rise, fade, slight scale — Think's bubbles set the reference
         /// feel, everything else that appears reuses it. Purely a layer animation over the

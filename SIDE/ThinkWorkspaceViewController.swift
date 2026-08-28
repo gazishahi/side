@@ -19,16 +19,16 @@ final class ThinkWorkspaceViewController: NSViewController {
     private let transcriptContainer = TranscriptContainerView()
     private let transcriptStack = NSStackView()
     private let composer = ComposerView()
-    /// The composer's control chips — one decision per chip, one menu per decision. The
-    /// previous pull-downs each mixed two choices (model+effort, scope+autonomy) and carried
-    /// AppKit's bezel styling and long compound titles; splitting them is what the redesign
-    /// mostly *is*. Tokens/spend text moved off the row entirely, into the context chip's menu —
-    /// numbers you glance at occasionally shouldn't be permanent chrome.
-    private let scopeChip = ChipButton(symbolName: "hammer", accessibilityLabel: "What the agent can do on this track")
-    private let autonomyChip = ChipButton(symbolName: "hand.raised", accessibilityLabel: "What the agent may do without asking")
-    private let modelChip = ChipButton(symbolName: "sparkles", accessibilityLabel: "Model for this track")
-    private let effortChip = ChipButton(symbolName: "brain", accessibilityLabel: "Thinking effort for this track")
-    private let contextChip = ChipButton(symbolName: "chart.pie", accessibilityLabel: "Context window used, spend, and conversation actions")
+    /// One glass pill above the composer's trailing end — "Claude Sonnet 5 · Build · 1%" —
+    /// opening a popover with the real controls. One pill instead of five chips: the composer
+    /// stays a thin iMessage capsule holding only input affordances, and everything that
+    /// describes the *session* (model, effort, scope, autonomy, context) lives together in one
+    /// place. A popover rather than menus: roomier, anchors and flips natively (no upward-menu
+    /// arithmetic), and lets three-way choices be segmented controls, which is how macOS says
+    /// "pick one of three."
+    private let sessionPill = ChipButton(symbolName: "sparkles", accessibilityLabel: "Model, mode, and context for this track")
+    private let sessionPillGlass = DS.makeGlass(cornerRadius: 14)
+    private var sessionPopover: NSPopover?
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
@@ -61,24 +61,10 @@ final class ThinkWorkspaceViewController: NSViewController {
         view.wantsLayer = true
         ChromeBackground.install(in: view)
 
-        // Left: what the agent is (scope, autonomy). Right: what it runs on (model, effort) and
-        // how much room is left — nearest the send button, since they describe the send.
-        scopeChip.menuProvider = { [weak self] in self?.scopeMenu() ?? NSMenu() }
-        autonomyChip.menuProvider = { [weak self] in self?.autonomyMenu() ?? NSMenu() }
-        modelChip.menuProvider = { [weak self] in self?.modelMenu() ?? NSMenu() }
-        effortChip.menuProvider = { [weak self] in self?.effortMenu() ?? NSMenu() }
-        contextChip.menuProvider = { [weak self] in self?.contextMenu() ?? NSMenu() }
-        composer.addControl(scopeChip)
-        composer.addControl(autonomyChip)
-        composer.addControlSpacer()
-        composer.addControl(contextChip)
-        composer.addControl(modelChip)
-        composer.addControl(effortChip)
+        sessionPill.onPress = { [weak self] in self?.showSessionPopover() }
+        sessionPill.translatesAutoresizingMaskIntoConstraints = false
+        composer.plusMenuProvider = { [weak self] in self?.plusMenu() ?? NSMenu() }
 
-        let divider = NSBox()
-        divider.boxType = .separator
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(divider)
 
         transcriptStack.orientation = .vertical
         transcriptStack.alignment = .leading
@@ -108,6 +94,11 @@ final class ThinkWorkspaceViewController: NSViewController {
         composer.onSlashCommand = { [weak self] name in self?.performSlashCommand(name) }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
         view.addSubview(composer)
+        // Added after the scroll view on purpose: the pill floats over the transcript the same
+        // way the composer does, and subview order is what keeps scrolled bubbles from painting
+        // across it.
+        view.addSubview(sessionPillGlass)
+        view.addSubview(sessionPill)
 
         emptyStateLabel.font = DS.Text.body()
         emptyStateLabel.textColor = .tertiaryLabelColor
@@ -119,14 +110,14 @@ final class ThinkWorkspaceViewController: NSViewController {
             emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyStateLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+            // Full bleed to the window's bottom: the composer *floats over* the transcript on
+            // glass, no separating line — the messages refract under it as they scroll, which is
+            // the whole point of the material. The scroll view gets a bottom content inset in
+            // viewDidLayout so the last message can still clear the composer.
             transcriptScroll.topAnchor.constraint(equalTo: view.topAnchor),
             transcriptScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             transcriptScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            // Separates the transcript from the composer area, not the composer from its own
-            // controls — those belong together.
-            divider.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
-            divider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            transcriptScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             // Width pinned to the clip view so wrapping labels lay out against a known width
             // instead of growing horizontally forever.
             transcriptContainer.widthAnchor.constraint(equalTo: transcriptScroll.contentView.widthAnchor),
@@ -134,17 +125,23 @@ final class ThinkWorkspaceViewController: NSViewController {
             transcriptStack.leadingAnchor.constraint(equalTo: transcriptContainer.leadingAnchor),
             transcriptStack.trailingAnchor.constraint(equalTo: transcriptContainer.trailingAnchor),
             transcriptStack.bottomAnchor.constraint(equalTo: transcriptContainer.bottomAnchor),
-            composer.topAnchor.constraint(equalTo: transcriptScroll.bottomAnchor, constant: DS.Spacing.l),
             composer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.xxl),
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
             composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.xl),
+            // The session pill floats just above the composer's trailing corner.
+            sessionPill.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
+            sessionPill.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
+            sessionPillGlass.topAnchor.constraint(equalTo: sessionPill.topAnchor, constant: -2),
+            sessionPillGlass.bottomAnchor.constraint(equalTo: sessionPill.bottomAnchor, constant: 2),
+            sessionPillGlass.leadingAnchor.constraint(equalTo: sessionPill.leadingAnchor, constant: -DS.Spacing.s),
+            sessionPillGlass.trailingAnchor.constraint(equalTo: sessionPill.trailingAnchor, constant: DS.Spacing.s),
         ])
 
         // The header's token/cost figures come from a store the runner writes to directly, so
         // they need their own refresh signal — a run's usage lands after `.phaseChanged`, not
         // with it.
         usageObserverToken = UsageStore.shared.addChangeObserver { [weak self] in
-            self?.refreshChips()
+            self?.refreshSessionPill()
         }
         // History deleted from Preferences tears down the runners this view is projecting, so
         // it has to re-attach — otherwise the transcript on screen outlives its own file.
@@ -167,12 +164,24 @@ final class ThinkWorkspaceViewController: NSViewController {
         if let usageObserverToken { UsageStore.shared.removeChangeObserver(usageObserverToken) }
     }
 
+    /// Keeps the last message reachable above the floating composer. Recomputed on layout
+    /// because the composer grows with wrapped text.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        transcriptScroll.automaticallyAdjustsContentInsets = false
+        let overlap = composer.frame.height + 26 /* pill */ + DS.Spacing.xl + DS.Spacing.l
+        if abs(transcriptScroll.contentInsets.bottom - overlap) > 0.5 {
+            transcriptScroll.contentInsets = NSEdgeInsets(top: DS.Spacing.m, left: 0, bottom: overlap, right: 0)
+            transcriptScroll.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: overlap - DS.Spacing.l, right: 0)
+        }
+    }
+
     /// Same responder-chain lesson Make/Tracks already learned: without explicitly claiming
     /// first responder on appearance, nothing in this stage's hierarchy holds it and
     /// menu-routed actions targeting this controller silently go nowhere.
     override func viewDidAppear() {
         super.viewDidAppear()
-        refreshChips()
+        refreshSessionPill()
         composer.focus()
         // Mirrors RunWorkspaceViewController.clearUnseenOutput: becoming visible is what counts
         // as "the human looked at this," clearing the doneUnread badge Tracks would otherwise
@@ -233,12 +242,12 @@ final class ThinkWorkspaceViewController: NSViewController {
             renderFull()
         case .appended(let index):
             appendEntryView(at: index)
-            refreshChips()
+            refreshSessionPill()
         case .updated(let index):
             updateEntryView(at: index)
         case .phaseChanged:
             updateSendButton()
-            refreshChips()
+            refreshSessionPill()
             // A blocked/finished phase change can happen while this stage is the one on screen
             // (a stall firing, a round-trip cap hitting) — same acknowledgement as viewDidAppear,
             // just triggered by the runner instead of by becoming visible. `view.window != nil`
@@ -277,7 +286,7 @@ final class ThinkWorkspaceViewController: NSViewController {
     }
 
     @objc private func textScaleChanged() {
-        refreshChips()
+        refreshSessionPill()
         renderFull()
     }
 
@@ -308,150 +317,12 @@ final class ThinkWorkspaceViewController: NSViewController {
         return (providerId, modelId, storedEffort ?? .default, isTrackSpecific)
     }
 
-    /// One menu per decision. Rebuilt on demand (the chip asks when pressed) rather than kept in
-    /// sync: providers can change in Settings while this view is open, and a stale menu would
-    /// offer a model that no longer resolves.
-
-    private func modelMenu() -> NSMenu {
-        let selection = resolvedSelection()
-        let registry = ProviderRegistryStore.shared
+    /// The + menu: attach-like actions and the rare conversation-level ones.
+    private func plusMenu() -> NSMenu {
         let menu = NSMenu()
-        let providers = registry.providers.filter { !$0.models.isEmpty }
-        let totalModels = providers.reduce(0) { $0 + $1.models.count }
-
-        func modelItem(_ provider: ProviderDefinition, _ model: ProviderModel, indent: Bool) -> NSMenuItem {
-            let item = NSMenuItem(title: (indent ? "    " : "") + model.displayName, action: #selector(modelChosen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = [provider.id, model.id]
-            item.state = (provider.id == selection.providerId && model.id == selection.modelId) ? .on : .off
-            return item
-        }
-
-        // Short lists read best flat; past that, a wall of models is exactly the clutter being
-        // complained about, so each provider folds into its own submenu.
-        if totalModels > 8 && providers.count > 1 {
-            for provider in providers {
-                let parent = NSMenuItem(title: provider.displayName, action: nil, keyEquivalent: "")
-                let submenu = NSMenu()
-                for model in provider.models { submenu.addItem(modelItem(provider, model, indent: false)) }
-                parent.submenu = submenu
-                // The active provider's parent row carries the check, so the selection is
-                // findable without opening every submenu.
-                parent.state = provider.id == selection.providerId ? .on : .off
-                menu.addItem(parent)
-            }
-        } else {
-            for provider in providers {
-                if providers.count > 1 {
-                    let header = NSMenuItem(title: provider.displayName, action: nil, keyEquivalent: "")
-                    header.isEnabled = false
-                    menu.addItem(header)
-                }
-                for model in provider.models { menu.addItem(modelItem(provider, model, indent: providers.count > 1)) }
-            }
-        }
-
-        menu.addItem(.separator())
-        let reset = NSMenuItem(title: "Use App Default", action: #selector(useAppDefault), keyEquivalent: "")
-        reset.target = self
-        reset.state = selection.isTrackSpecific ? .off : .on
-        // "Follow the default" is a distinct state from "happens to match it today" — clearing
-        // means this track keeps tracking a change made in Settings later.
-        reset.toolTip = "Clear this track's own choice and follow the model set in Settings."
-        menu.addItem(reset)
-        return menu
-    }
-
-    private func effortMenu() -> NSMenu {
-        let selection = resolvedSelection()
-        let menu = NSMenu()
-        for effort in AgentEffort.allCases {
-            let item = NSMenuItem(title: effort.displayName, action: #selector(effortChosen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = effort.rawValue
-            item.state = effort == selection.effort ? .on : .off
-            menu.addItem(item)
-        }
-        return menu
-    }
-
-    private func scopeMenu() -> NSMenu {
-        let mode = currentMode()
-        let menu = NSMenu()
-        for scope in AgentToolScope.allCases {
-            let item = NSMenuItem(title: scope.displayName, action: #selector(scopeChosen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = scope.rawValue
-            item.state = scope == mode.scope ? .on : .off
-            menu.addItem(item)
-        }
-        return menu
-    }
-
-    private func autonomyMenu() -> NSMenu {
-        let mode = currentMode()
-        let menu = NSMenu()
-        for autonomy in AgentAutonomy.allCases {
-            let item = NSMenuItem(title: autonomy.displayName, action: #selector(autonomyChosen(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = autonomy.rawValue
-            item.state = autonomy == mode.autonomy ? .on : .off
-            // Nothing to auto-approve in a read-only scope — disabled rather than hidden, so
-            // the axis doesn't appear to vanish when someone switches to Ask.
-            item.isEnabled = mode.autonomyIsMeaningful || autonomy == .manual
-            menu.addItem(item)
-        }
-        return menu
-    }
-
-    /// Tokens, spend, and the two conversation actions — the numbers that used to be permanent
-    /// text on the row now live here, one click away instead of always in view.
-    private func contextMenu() -> NSMenu {
-        let menu = NSMenu()
-        guard let runner else { return menu }
-        let usage = runner.contextUsage()
-        let detail = NSMenuItem(
-            title: "Context: \(UsageFormatting.tokens(usage.usedTokens)) of \(UsageFormatting.tokens(usage.windowTokens)) tokens",
-            action: nil, keyEquivalent: ""
-        )
-        detail.isEnabled = false
-        menu.addItem(detail)
-        if let projectPath {
-            let trackKey = attachedTrackKey ?? ""
-            let totals = UsageStore.shared.totals(projectPath: projectPath, trackKey: trackKey)
-            if totals.totalTokens > 0 {
-                var spendTitle = "This track: \(UsageFormatting.tokens(totals.totalTokens)) tokens"
-                let priced = UsageStore.shared.records.filter { $0.projectPath == projectPath && $0.trackKey == trackKey }
-                if priced.allSatisfy({ ModelPricing.isPriced(modelId: $0.modelId) }) {
-                    let cost = priced.reduce(0.0) { $0 + (ModelPricing.estimatedCost(modelId: $1.modelId, totals: $1.totals) ?? 0) }
-                    spendTitle += " · ~\(UsageFormatting.cost(cost))"
-                }
-                let spend = NSMenuItem(title: spendTitle, action: nil, keyEquivalent: "")
-                spend.isEnabled = false
-                spend.toolTip = "Estimated spend for this track. Prices are approximate."
-                menu.addItem(spend)
-            }
-        }
-        switch UsageBudget.status() {
-        case .approaching(let spent, let limit):
-            let item = NSMenuItem(title: "Budget: \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)) this month", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-        case .exceeded(let spent, let limit):
-            let item = NSMenuItem(title: "Budget reached — \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit))", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-        case .unlimited, .withinBudget:
-            break
-        }
-        if usage.status.shouldSuggestCompaction {
-            let warning = NSMenuItem(
-                title: usage.status == .critical ? "Close to the limit — sends may start failing" : "Filling up",
-                action: nil, keyEquivalent: ""
-            )
-            warning.isEnabled = false
-            menu.addItem(warning)
-        }
+        let attach = NSMenuItem(title: "Add File Reference", action: #selector(insertMentionTrigger), keyEquivalent: "")
+        attach.target = self
+        menu.addItem(attach)
         menu.addItem(.separator())
         let compact = NSMenuItem(title: "Compact Conversation…", action: #selector(compactConversation), keyEquivalent: "")
         compact.target = self
@@ -466,31 +337,91 @@ final class ThinkWorkspaceViewController: NSViewController {
         return menu
     }
 
-    @objc private func modelChosen(_ sender: NSMenuItem) {
-        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
-        let current = resolvedSelection()
-        trackStore?.setModelSelection(
-            providerId: pair[0], modelId: pair[1], effort: current.effort,
-            for: attachedTrackKey ?? ""
-        )
-        refreshChips()
+    @objc private func insertMentionTrigger() {
+        composer.focus()
+        composer.insertText("@")
     }
 
-    @objc private func effortChosen(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let effort = AgentEffort(rawValue: raw) else { return }
-        let current = resolvedSelection()
-        // Choosing effort pins the model too: otherwise "high effort" would silently move to a
-        // different model the moment someone changed the app default.
-        trackStore?.setModelSelection(
-            providerId: current.providerId, modelId: current.modelId, effort: effort,
-            for: attachedTrackKey ?? ""
-        )
-        refreshChips()
+    /// The pill's popover: every session control in one place, as real controls.
+    private func showSessionPopover() {
+        let settings = SessionSettingsViewController()
+        settings.snapshot = sessionSnapshot()
+        settings.onModelChosen = { [weak self] providerId, modelId in
+            guard let self else { return }
+            if let providerId, let modelId {
+                let current = self.resolvedSelection()
+                self.trackStore?.setModelSelection(providerId: providerId, modelId: modelId, effort: current.effort, for: self.attachedTrackKey ?? "")
+            } else {
+                // nil/nil is "App Default" — clear the track's own choice entirely.
+                self.trackStore?.setModelSelection(providerId: nil, modelId: nil, effort: nil, for: self.attachedTrackKey ?? "")
+            }
+            self.refreshSessionPill()
+            settings.snapshot = self.sessionSnapshot()
+        }
+        settings.onEffortChosen = { [weak self] effort in
+            guard let self else { return }
+            let current = self.resolvedSelection()
+            // Choosing effort pins the model too: otherwise "high effort" would silently move to
+            // a different model the moment someone changed the app default.
+            self.trackStore?.setModelSelection(providerId: current.providerId, modelId: current.modelId, effort: effort, for: self.attachedTrackKey ?? "")
+            self.refreshSessionPill()
+        }
+        settings.onScopeChosen = { [weak self] scope in
+            guard let self else { return }
+            // Leaving a read-only scope keeps whatever autonomy was set; entering one leaves it
+            // stored but inert, so switching back restores it.
+            self.trackStore?.setMode(AgentMode(scope: scope, autonomy: self.currentMode().autonomy), forTrackKey: self.attachedTrackKey ?? "")
+            self.refreshSessionPill()
+            settings.snapshot = self.sessionSnapshot()
+        }
+        settings.onAutonomyChosen = { [weak self] autonomy in
+            guard let self else { return }
+            self.trackStore?.setMode(AgentMode(scope: self.currentMode().scope, autonomy: autonomy), forTrackKey: self.attachedTrackKey ?? "")
+            self.refreshSessionPill()
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = settings
+        popover.show(relativeTo: sessionPill.bounds, of: sessionPill, preferredEdge: .maxY)
+        sessionPopover = popover
     }
 
-    @objc private func useAppDefault() {
-        trackStore?.setModelSelection(providerId: nil, modelId: nil, effort: nil, for: attachedTrackKey ?? "")
-        refreshChips()
+    private func sessionSnapshot() -> SessionSettingsViewController.Snapshot {
+        let selection = resolvedSelection()
+        let mode = currentMode()
+        var usageLine = ""
+        var spendLine: String?
+        var budgetLine: String?
+        if let runner {
+            let usage = runner.contextUsage()
+            usageLine = "Context: \(UsageFormatting.tokens(usage.usedTokens)) of \(UsageFormatting.tokens(usage.windowTokens)) tokens (\(Int((usage.fraction * 100).rounded()))%)"
+        }
+        if let projectPath {
+            let trackKey = attachedTrackKey ?? ""
+            let totals = UsageStore.shared.totals(projectPath: projectPath, trackKey: trackKey)
+            if totals.totalTokens > 0 {
+                var line = "This track: \(UsageFormatting.tokens(totals.totalTokens)) tokens"
+                let priced = UsageStore.shared.records.filter { $0.projectPath == projectPath && $0.trackKey == trackKey }
+                if priced.allSatisfy({ ModelPricing.isPriced(modelId: $0.modelId) }) {
+                    let cost = priced.reduce(0.0) { $0 + (ModelPricing.estimatedCost(modelId: $1.modelId, totals: $1.totals) ?? 0) }
+                    line += " · ~\(UsageFormatting.cost(cost))"
+                }
+                spendLine = line
+            }
+        }
+        switch UsageBudget.status() {
+        case .approaching(let spent, let limit):
+            budgetLine = "Budget: \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)) this month"
+        case .exceeded(let spent, let limit):
+            budgetLine = "Budget reached — \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit))"
+        case .unlimited, .withinBudget:
+            break
+        }
+        return .init(
+            providerId: selection.providerId, modelId: selection.modelId,
+            isTrackSpecific: selection.isTrackSpecific, effort: selection.effort, mode: mode,
+            usageLine: usageLine, spendLine: spendLine, budgetLine: budgetLine
+        )
     }
 
     /// The directory `@`-mentions resolve against: the track's own worktree when it has one,
@@ -518,19 +449,10 @@ final class ThinkWorkspaceViewController: NSViewController {
         trackStore?.mode(forTrackKey: attachedTrackKey ?? "") ?? .default
     }
 
-    @objc private func scopeChosen(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let scope = AgentToolScope(rawValue: raw) else { return }
-        let mode = currentMode()
-        // Leaving a read-only scope keeps whatever autonomy was set; entering one leaves it
-        // stored but inert (see `autonomyIsMeaningful`), so switching back restores it.
-        trackStore?.setMode(AgentMode(scope: scope, autonomy: mode.autonomy), forTrackKey: attachedTrackKey ?? "")
-        refreshChips()
-    }
-
-    @objc private func autonomyChosen(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let autonomy = AgentAutonomy(rawValue: raw) else { return }
-        trackStore?.setMode(AgentMode(scope: currentMode().scope, autonomy: autonomy), forTrackKey: attachedTrackKey ?? "")
-        refreshChips()
+    private func resolvedSelectionModelName() -> String {
+        let selection = resolvedSelection()
+        return ProviderRegistryStore.shared.provider(for: selection.providerId)?
+            .models.first { $0.id == selection.modelId }?.displayName ?? selection.modelId
     }
 
     @objc private func compactConversation() {
@@ -547,7 +469,7 @@ final class ThinkWorkspaceViewController: NSViewController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         runner.compact { [weak self] _ in
             self?.renderFull()
-            self?.refreshChips()
+            self?.refreshSessionPill()
         }
     }
 
@@ -562,53 +484,26 @@ final class ThinkWorkspaceViewController: NSViewController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         runner.startNewConversation()
         renderFull()
-        refreshChips()
+        refreshSessionPill()
     }
 
-    /// The chips' faces: one short fact each. Menus are built on press, so only labels update.
-    private func refreshChips() {
+    /// The pill's face: model · scope · context, tinted by how full the window is.
+    private func refreshSessionPill() {
         let mode = currentMode()
-        let scopeSymbol: String
-        switch mode.scope {
-        case .ask: scopeSymbol = "questionmark.bubble"
-        case .plan: scopeSymbol = "list.bullet.rectangle"
-        case .build: scopeSymbol = "hammer"
-        }
-        scopeChip.setSymbol(scopeSymbol)
-        scopeChip.setLabel(mode.scope.displayName)
-
-        let autonomySymbol: String
-        switch mode.autonomy {
-        case .manual: autonomySymbol = "hand.raised"
-        case .guarded: autonomySymbol = "checkmark.shield"
-        case .full: autonomySymbol = "bolt"
-        }
-        autonomyChip.setSymbol(autonomySymbol)
-        autonomyChip.setLabel(mode.autonomy.shortLabel)
-
-        let selection = resolvedSelection()
-        let modelName = ProviderRegistryStore.shared.provider(for: selection.providerId)?
-            .models.first { $0.id == selection.modelId }?.displayName ?? selection.modelId
-        modelChip.setLabel(modelName)
-        // Standard effort is the quiet default — an icon is enough; a word would be noise.
-        effortChip.setLabel(selection.effort == .standard ? "" : selection.effort.shortLabel)
-        effortChip.toolTip = "Thinking effort: \(selection.effort.displayName)"
-
+        var title = "\(resolvedSelectionModelName()) · \(mode.scope.displayName)"
+        var tint = NSColor.secondaryLabelColor
         if let runner {
-            contextChip.isHidden = false
             let usage = runner.contextUsage()
-            let tint: NSColor
+            title += " · \(Int((usage.fraction * 100).rounded()))%"
             switch usage.status {
-            case .comfortable: tint = .secondaryLabelColor
+            case .comfortable: break
             case .approaching: tint = .systemOrange
             case .critical: tint = .systemRed
             }
-            contextChip.setLabel("\(Int((usage.fraction * 100).rounded()))%", tint: tint)
-        } else {
-            contextChip.isHidden = true
         }
+        sessionPill.setLabel(title, tint: tint)
+        sessionPillGlass.isHidden = sessionPill.isHidden
     }
-
 
     // MARK: - Slash commands
 
@@ -632,11 +527,11 @@ final class ThinkWorkspaceViewController: NSViewController {
         case "ask", "plan", "build":
             guard let scope = AgentToolScope(rawValue: name) else { return }
             trackStore?.setMode(AgentMode(scope: scope, autonomy: currentMode().autonomy), forTrackKey: attachedTrackKey ?? "")
-            refreshChips()
+            refreshSessionPill()
         case "manual", "guarded", "full":
             guard let autonomy = AgentAutonomy(rawValue: name) else { return }
             trackStore?.setMode(AgentMode(scope: currentMode().scope, autonomy: autonomy), forTrackKey: attachedTrackKey ?? "")
-            refreshChips()
+            refreshSessionPill()
         default:
             break
         }
@@ -879,6 +774,19 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
 
     private static let insets = NSEdgeInsets(top: 7, left: 12, bottom: 8, right: 12)
 
+    /// Which side the speech tail points, if any. Errors are notices, not speech — no tail.
+    private var tail: Tail {
+        switch style {
+        case .sent: return .trailing
+        case .received: return .leading
+        case .error: return .none
+        }
+    }
+    enum Tail { case none, leading, trailing }
+    /// How far the tail pokes past the bubble body. The body is inset by this on the tail side,
+    /// so autolayout sees one rect and the curve lives inside it.
+    static let tailWidth: CGFloat = 6
+
     init(style: Style, body: String, maxBubbleWidth: CGFloat) {
         self.style = style
         self.maxBubbleWidth = maxBubbleWidth
@@ -887,9 +795,10 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
 
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        // The bubble shape — rounded rect plus the speech tail — is drawn in draw(_:), not a
+        // layer cornerRadius: a tail isn't expressible as a corner radius, which is the whole
+        // difference between "rounded rectangle" and "speech bubble."
         wantsLayer = true
-        layer?.cornerRadius = DS.Radius.bubble
-        layer?.backgroundColor = style.fillColor.cgColor
 
         bodyText.isEditable = false
         bodyText.isSelectable = true
@@ -918,10 +827,12 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         }
 
         addSubview(bodyText)
+        let leadingInset = Self.insets.left + (tail == .leading ? Self.tailWidth : 0)
+        let trailingInset = Self.insets.right + (tail == .trailing ? Self.tailWidth : 0)
         NSLayoutConstraint.activate([
             bodyText.topAnchor.constraint(equalTo: topAnchorForBody, constant: topConstant),
-            bodyText.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.insets.left),
-            bodyText.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.insets.right),
+            bodyText.leadingAnchor.constraint(equalTo: leadingAnchor, constant: leadingInset),
+            bodyText.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -trailingInset),
             bodyText.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.insets.bottom),
             bodyWidthConstraint,
             bodyHeightConstraint,
@@ -930,6 +841,57 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // UIKit-style coordinates so the classic bubble path (written for iOS, where y grows
+    // downward) transfers verbatim.
+    override var isFlipped: Bool { true }
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsDisplay = true
+    }
+
+    /// The iMessage bubble: a rounded rect whose bottom tail-side corner sweeps out into a small
+    /// curl. This is all a "speech bubble" is — the widely-circulated pair of bezier paths from
+    /// the shape Apple ships, one per direction, with the corner radius baked into the curve
+    /// control points (which is why it ignores DS.Radius).
+    override func draw(_ dirtyRect: NSRect) {
+        let w = bounds.width
+        let h = bounds.height
+        let path = NSBezierPath()
+        switch tail {
+        case .none:
+            path.appendRoundedRect(bounds, xRadius: DS.Radius.bubble, yRadius: DS.Radius.bubble)
+        case .trailing:
+            path.move(to: NSPoint(x: w - 22, y: h))
+            path.line(to: NSPoint(x: 17, y: h))
+            path.curve(to: NSPoint(x: 0, y: h - 17), controlPoint1: NSPoint(x: 7.61, y: h), controlPoint2: NSPoint(x: 0, y: h - 7.61))
+            path.line(to: NSPoint(x: 0, y: 17))
+            path.curve(to: NSPoint(x: 17, y: 0), controlPoint1: NSPoint(x: 0, y: 7.61), controlPoint2: NSPoint(x: 7.61, y: 0))
+            path.line(to: NSPoint(x: w - 21, y: 0))
+            path.curve(to: NSPoint(x: w - 4, y: 17), controlPoint1: NSPoint(x: w - 11.61, y: 0), controlPoint2: NSPoint(x: w - 4, y: 7.61))
+            path.line(to: NSPoint(x: w - 4, y: h - 11))
+            path.curve(to: NSPoint(x: w, y: h), controlPoint1: NSPoint(x: w - 4, y: h - 1), controlPoint2: NSPoint(x: w, y: h))
+            path.line(to: NSPoint(x: w + 0.05, y: h - 0.01))
+            path.curve(to: NSPoint(x: w - 11.04, y: h - 4.04), controlPoint1: NSPoint(x: w - 4.07, y: h + 0.43), controlPoint2: NSPoint(x: w - 8.16, y: h - 1.06))
+            path.curve(to: NSPoint(x: w - 22, y: h), controlPoint1: NSPoint(x: w - 16, y: h), controlPoint2: NSPoint(x: w - 19, y: h))
+        case .leading:
+            path.move(to: NSPoint(x: 22, y: h))
+            path.line(to: NSPoint(x: w - 17, y: h))
+            path.curve(to: NSPoint(x: w, y: h - 17), controlPoint1: NSPoint(x: w - 7.61, y: h), controlPoint2: NSPoint(x: w, y: h - 7.61))
+            path.line(to: NSPoint(x: w, y: 17))
+            path.curve(to: NSPoint(x: w - 17, y: 0), controlPoint1: NSPoint(x: w, y: 7.61), controlPoint2: NSPoint(x: w - 7.61, y: 0))
+            path.line(to: NSPoint(x: 21, y: 0))
+            path.curve(to: NSPoint(x: 4, y: 17), controlPoint1: NSPoint(x: 11.61, y: 0), controlPoint2: NSPoint(x: 4, y: 7.61))
+            path.line(to: NSPoint(x: 4, y: h - 11))
+            path.curve(to: NSPoint(x: 0, y: h), controlPoint1: NSPoint(x: 4, y: h - 1), controlPoint2: NSPoint(x: 0, y: h))
+            path.line(to: NSPoint(x: -0.05, y: h - 0.01))
+            path.curve(to: NSPoint(x: 11.04, y: h - 4.04), controlPoint1: NSPoint(x: 4.07, y: h + 0.43), controlPoint2: NSPoint(x: 8.16, y: h - 1.06))
+            path.curve(to: NSPoint(x: 22, y: h), controlPoint1: NSPoint(x: 16, y: h), controlPoint2: NSPoint(x: 19, y: h))
+        }
+        path.close()
+        style.fillColor.setFill()
+        path.fill()
+    }
 
     /// The text view's own link plumbing — replaces a hand-rolled hitTest/glyph-rect stack.
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
@@ -1119,6 +1081,169 @@ private final class BubbleRowView: NSView {
 /// Finds the `@…` token under the caret. Not `rangeForUserCompletion` + `complete(_:)` — see
 /// `MentionCompletionPopup` for why that approach was abandoned.
 
+
+/// The session pill's popover: model, thinking effort, tool scope, autonomy, and the context /
+/// spend figures — as real macOS controls rather than stacked menus. Three-way choices are
+/// segmented controls; the model list is a popup grouped by provider.
+private final class SessionSettingsViewController: NSViewController {
+    struct Snapshot {
+        var providerId: String
+        var modelId: String
+        var isTrackSpecific: Bool
+        var effort: AgentEffort
+        var mode: AgentMode
+        var usageLine: String
+        var spendLine: String?
+        var budgetLine: String?
+    }
+
+    var snapshot: Snapshot? { didSet { if isViewLoaded { apply() } } }
+    /// nil/nil means "App Default."
+    var onModelChosen: ((String?, String?) -> Void)?
+    var onEffortChosen: ((AgentEffort) -> Void)?
+    var onScopeChosen: ((AgentToolScope) -> Void)?
+    var onAutonomyChosen: ((AgentAutonomy) -> Void)?
+
+    private let modelPopup = NSPopUpButton()
+    private let effortControl = NSSegmentedControl()
+    private let scopeControl = NSSegmentedControl()
+    private let autonomyControl = NSSegmentedControl()
+    private let autonomyCaption = NSTextField(wrappingLabelWithString: "")
+    private let usageLabel = NSTextField(labelWithString: "")
+    private let spendLabel = NSTextField(labelWithString: "")
+    private let budgetLabel = NSTextField(labelWithString: "")
+
+    override func loadView() { view = NSView() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        func caption(_ text: String) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = DS.Text.micro()
+            label.textColor = .tertiaryLabelColor
+            return label
+        }
+
+        modelPopup.target = self
+        modelPopup.action = #selector(modelChanged)
+
+        for (control, titles, action) in [
+            (effortControl, AgentEffort.allCases.map { $0 == .standard ? "Standard" : $0.shortLabel.capitalized }, #selector(effortChanged)),
+            (scopeControl, AgentToolScope.allCases.map(\.displayName), #selector(scopeChanged)),
+            (autonomyControl, AgentAutonomy.allCases.map { $0.shortLabel.capitalized }, #selector(autonomyChanged)),
+        ] {
+            control.segmentCount = titles.count
+            for (index, title) in titles.enumerated() { control.setLabel(title, forSegment: index) }
+            control.segmentStyle = .capsule
+            control.target = self
+            control.action = action
+        }
+
+        autonomyCaption.font = DS.Text.micro()
+        autonomyCaption.textColor = .tertiaryLabelColor
+        autonomyCaption.preferredMaxLayoutWidth = 300
+
+        for label in [usageLabel, spendLabel, budgetLabel] {
+            label.font = DS.Text.caption()
+            label.textColor = .secondaryLabelColor
+        }
+
+        let separator = NSBox()
+        separator.boxType = .separator
+
+        let stack = NSStackView(views: [
+            caption("MODEL"), modelPopup,
+            caption("THINKING"), effortControl,
+            caption("WHAT THE AGENT CAN DO"), scopeControl,
+            caption("WITHOUT ASKING"), autonomyControl, autonomyCaption,
+            separator, usageLabel, spendLabel, budgetLabel,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Spacing.s
+        stack.setCustomSpacing(DS.Spacing.xl, after: modelPopup)
+        stack.setCustomSpacing(DS.Spacing.xl, after: effortControl)
+        stack.setCustomSpacing(DS.Spacing.xl, after: scopeControl)
+        stack.setCustomSpacing(DS.Spacing.xl, after: autonomyCaption)
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.xxl, left: DS.Spacing.xxl, bottom: DS.Spacing.xxl, right: DS.Spacing.xxl)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
+        ])
+        apply()
+    }
+
+    private func apply() {
+        guard let snapshot else { return }
+        let registry = ProviderRegistryStore.shared
+
+        modelPopup.removeAllItems()
+        // First row is "follow the app default" — a distinct state from "happens to match it."
+        let defaultProvider = registry.provider(for: registry.activeProviderId)
+        let defaultName = defaultProvider?.models.first { $0.id == defaultProvider?.defaultModelId }?.displayName ?? "default"
+        modelPopup.addItem(withTitle: "App Default (\(defaultName))")
+        modelPopup.lastItem?.representedObject = ["", ""]
+        for provider in registry.providers where !provider.models.isEmpty {
+            for model in provider.models {
+                let title = registry.providers.count > 1 ? "\(provider.displayName) — \(model.displayName)" : model.displayName
+                modelPopup.addItem(withTitle: title)
+                modelPopup.lastItem?.representedObject = [provider.id, model.id]
+            }
+        }
+        if snapshot.isTrackSpecific {
+            let index = (0..<modelPopup.numberOfItems).first { index in
+                (modelPopup.item(at: index)?.representedObject as? [String]) == [snapshot.providerId, snapshot.modelId]
+            }
+            modelPopup.selectItem(at: index ?? 0)
+        } else {
+            modelPopup.selectItem(at: 0)
+        }
+
+        effortControl.selectedSegment = AgentEffort.allCases.firstIndex(of: snapshot.effort) ?? 0
+        scopeControl.selectedSegment = AgentToolScope.allCases.firstIndex(of: snapshot.mode.scope) ?? 0
+        autonomyControl.selectedSegment = AgentAutonomy.allCases.firstIndex(of: snapshot.mode.autonomy) ?? 0
+        // Nothing to auto-approve in a read-only scope — disabled rather than hidden, so the
+        // axis doesn't appear to vanish when someone switches to Ask.
+        autonomyControl.isEnabled = snapshot.mode.autonomyIsMeaningful
+        autonomyCaption.stringValue = snapshot.mode.autonomyIsMeaningful
+            ? snapshot.mode.autonomy.displayName
+            : "Autonomy applies in Build — read-only scopes have nothing to auto-approve."
+
+        usageLabel.stringValue = snapshot.usageLine
+        spendLabel.stringValue = snapshot.spendLine ?? ""
+        spendLabel.isHidden = snapshot.spendLine == nil
+        budgetLabel.stringValue = snapshot.budgetLine ?? ""
+        budgetLabel.isHidden = snapshot.budgetLine == nil
+        budgetLabel.textColor = .systemOrange
+    }
+
+    @objc private func modelChanged() {
+        guard let pair = modelPopup.selectedItem?.representedObject as? [String], pair.count == 2 else { return }
+        if pair[0].isEmpty { onModelChosen?(nil, nil) } else { onModelChosen?(pair[0], pair[1]) }
+    }
+
+    @objc private func effortChanged() {
+        guard AgentEffort.allCases.indices.contains(effortControl.selectedSegment) else { return }
+        onEffortChosen?(AgentEffort.allCases[effortControl.selectedSegment])
+    }
+
+    @objc private func scopeChanged() {
+        guard AgentToolScope.allCases.indices.contains(scopeControl.selectedSegment) else { return }
+        onScopeChosen?(AgentToolScope.allCases[scopeControl.selectedSegment])
+    }
+
+    @objc private func autonomyChanged() {
+        guard AgentAutonomy.allCases.indices.contains(autonomyControl.selectedSegment) else { return }
+        onAutonomyChosen?(AgentAutonomy.allCases[autonomyControl.selectedSegment])
+    }
+}
+
 /// One control of the composer's bottom row: a small icon-plus-word capsule that pops a menu.
 ///
 /// Not an `NSPopUpButton`. The pull-downs this replaces carried AppKit's arrow-and-bezel
@@ -1129,6 +1254,8 @@ private final class BubbleRowView: NSView {
 /// gets dismissed by its own mouse-up, the failure recorded in the design charter.
 private final class ChipButton: NSButton {
     var menuProvider: (() -> NSMenu)?
+    /// Alternative to `menuProvider` for chips that present something other than a menu.
+    var onPress: (() -> Void)?
     private var tracking: NSTrackingArea?
 
     init(symbolName: String?, accessibilityLabel: String) {
@@ -1161,10 +1288,12 @@ private final class ChipButton: NSButton {
     }
 
     @objc private func pressed() {
+        if let onPress { return onPress() }
         guard let menu = menuProvider?() else { return }
         // Above the chip: these sit at the window's bottom edge, so downward menus fall off it.
-        // Safe here (unlike the NSPopUpButton attempt) because an action fires on mouse-up.
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.maxY + menu.size.height + DS.Spacing.s), in: self)
+        // NSButton is *flipped*, so "above" is negative y — getting this sign wrong is what sent
+        // menus to the bottom-right corner of the screen.
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -menu.size.height - DS.Spacing.s), in: self)
     }
 
     override func updateTrackingAreas() {
@@ -1242,12 +1371,15 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     private let scroll = NSScrollView()
     private let placeholderLabel = NSTextField(labelWithString: "")
     private let actionButton = CircularIconButton(diameter: 28)
-    /// The controls that belong to this field — model, mode, context, spend.
-    private let controlRow = NSStackView()
+    private let plusButton = NSButton()
+    private let micButton = NSButton()
+    /// The hairline capsule around the text itself — the glass carries the material, this
+    /// carries the field's edge, same division of labor as Messages.
+    private let fieldOutline = NSView()
     private var textHeightConstraint: NSLayoutConstraint!
-    /// Heights of the *text area*, not the whole field: the control row adds its own.
-    private static let minTextHeight: CGFloat = 22
+    private static let minTextHeight: CGFloat = 20
     private static let maxTextHeight: CGFloat = 120
+    private static let capsuleRadius: CGFloat = 24
 
     var text: String { textView.string }
 
@@ -1266,13 +1398,19 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        // A soft rounded rect rather than a capsule: the field is two rows tall now (text over
-        // its controls), and a capsule at that height reads as a pill-shaped card, not an input.
-        layer?.cornerRadius = DS.Radius.card + 4
-        layer?.borderWidth = 1
-        layer?.borderColor = DS.Color.hairline.cgColor
-        layer?.backgroundColor = DS.Color.bg1.cgColor
+
+        // iMessage's anatomy: [+] [capsule text field · mic] [send], one thin row, on Liquid
+        // Glass so the transcript refracts underneath as it scrolls. The capsule is the *field*;
+        // + and send sit beside it, outside, exactly as Messages does it.
+        let glass = DS.makeGlass(cornerRadius: Self.capsuleRadius)
+        addSubview(glass)
+
+        fieldOutline.wantsLayer = true
+        fieldOutline.layer?.borderWidth = 1
+        fieldOutline.layer?.borderColor = DS.Color.hairline.cgColor
+        fieldOutline.layer?.cornerRadius = Self.capsuleRadius - 6
+        fieldOutline.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(fieldOutline)
 
         textView.font = DS.Text.heading()
         textView.drawsBackground = false
@@ -1303,58 +1441,80 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
         placeholderLabel.lineBreakMode = .byTruncatingTail
 
+        plusButton.isBordered = false
+        plusButton.image = NSImage(systemSymbolName: "plus.circle.fill", accessibilityDescription: "Add")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 20, weight: .regular))
+        plusButton.contentTintColor = .tertiaryLabelColor
+        plusButton.target = self
+        plusButton.action = #selector(plusTapped)
+        plusButton.setAccessibilityLabel("Add a file reference, or manage this conversation")
+        plusButton.translatesAutoresizingMaskIntoConstraints = false
+
+        micButton.isBordered = false
+        micButton.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Dictate")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
+        micButton.contentTintColor = .tertiaryLabelColor
+        micButton.target = self
+        micButton.action = #selector(micTapped)
+        micButton.toolTip = "Dictate"
+        micButton.translatesAutoresizingMaskIntoConstraints = false
+
         actionButton.backgroundColor = .controlAccentColor
         actionButton.target = self
         actionButton.action = #selector(actionTapped)
         setBusy(false)
 
-        controlRow.orientation = .horizontal
-        controlRow.alignment = .centerY
-        controlRow.spacing = DS.Spacing.s
-        controlRow.translatesAutoresizingMaskIntoConstraints = false
-        // Tall enough that the 28pt send button, centered on this row, keeps a real margin from
-        // the container's bottom edge instead of touching it.
-        controlRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
-
         addSubview(scroll)
         addSubview(placeholderLabel)
-        addSubview(controlRow)
+        addSubview(plusButton)
+        addSubview(micButton)
         addSubview(actionButton)
-        // The container now grows to hold the text *plus* its control row, so the text's own
-        // height is tracked separately from the view's.
         textHeightConstraint = scroll.heightAnchor.constraint(equalToConstant: Self.minTextHeight)
         NSLayoutConstraint.activate([
+            glass.topAnchor.constraint(equalTo: topAnchor),
+            glass.bottomAnchor.constraint(equalTo: bottomAnchor),
+            glass.leadingAnchor.constraint(equalTo: leadingAnchor),
+            glass.trailingAnchor.constraint(equalTo: trailingAnchor),
             textHeightConstraint,
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xl),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.xl),
-            scroll.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.l),
+            // + hugs the leading edge; the field capsule sits between it and the send button.
+            plusButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
+            plusButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.l),
+            fieldOutline.leadingAnchor.constraint(equalTo: plusButton.trailingAnchor, constant: DS.Spacing.m),
+            fieldOutline.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -DS.Spacing.m),
+            fieldOutline.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.s),
+            fieldOutline.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.s),
+            scroll.leadingAnchor.constraint(equalTo: fieldOutline.leadingAnchor, constant: DS.Spacing.xl),
+            scroll.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -DS.Spacing.s),
+            scroll.topAnchor.constraint(equalTo: fieldOutline.topAnchor, constant: DS.Spacing.m),
+            scroll.bottomAnchor.constraint(equalTo: fieldOutline.bottomAnchor, constant: -DS.Spacing.m),
             placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 2),
             placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
             placeholderLabel.topAnchor.constraint(equalTo: scroll.topAnchor),
-            // Controls sit on the row beneath the text, inside the same rounded field — the
-            // arrangement ChatGPT and Claude use, where the whole thing reads as one input.
-            controlRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xl),
-            controlRow.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: DS.Spacing.s),
-            controlRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.m),
-            // Pinned (not ≤) so the spacer inside the row actually stretches — left cluster for
-            // what the agent is, right cluster for what it runs on, beside the send button.
-            controlRow.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -DS.Spacing.m),
+            // Mic lives *inside* the capsule at its trailing end, like Messages.
+            micButton.trailingAnchor.constraint(equalTo: fieldOutline.trailingAnchor, constant: -DS.Spacing.l),
+            micButton.bottomAnchor.constraint(equalTo: fieldOutline.bottomAnchor, constant: -DS.Spacing.m),
             actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
-            actionButton.centerYAnchor.constraint(equalTo: controlRow.centerYAnchor),
+            actionButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.m),
         ])
     }
 
-    /// The owner fills this with the model/mode/context controls, so they live inside the field
-    /// rather than floating beneath it.
-    func addControl(_ view: NSView) {
-        controlRow.addArrangedSubview(view)
+    /// The + menu: attach-like actions plus the rare conversation-level ones — what + means in
+    /// Messages ("other things I can add or do here").
+    var plusMenuProvider: (() -> NSMenu)?
+
+    @objc private func plusTapped() {
+        guard let menu = plusMenuProvider?() else { return }
+        // NSButton is *flipped*, so "above" is negative y — the bug that sent the chip menus to
+        // the bottom of the screen was exactly this sign.
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -menu.size.height - DS.Spacing.s), in: plusButton)
     }
 
-    /// Pushes everything added after it to the row's right edge.
-    func addControlSpacer() {
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        controlRow.addArrangedSubview(spacer)
+    /// System dictation into the field — the same thing Edit → Start Dictation does. Honest
+    /// speech-to-text without shipping a speech stack; a real transcription pipeline can replace
+    /// it later without the button moving.
+    @objc private func micTapped() {
+        window?.makeFirstResponder(textView)
+        NSApp.sendAction(Selector(("startDictation:")), to: nil, from: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -1368,6 +1528,12 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     func focus() {
         window?.makeFirstResponder(textView)
+    }
+
+    /// Types on the user's behalf — used by the + menu to start an @-mention, which then opens
+    /// the same completion popup typing it by hand would.
+    func insertText(_ text: String) {
+        textView.insertText(text, replacementRange: textView.selectedRange())
     }
 
     func setBusy(_ busy: Bool) {
