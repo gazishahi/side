@@ -46,18 +46,18 @@ final class MentionCompletionPopup: NSObject {
         // the list appears would go somewhere else.
         panel.hidesOnDeactivate = true
 
-        // Liquid Glass, like the composer it floats over — the same DS.makeGlass the rest of
-        // the input area uses, so the palette reads as part of it rather than a system menu.
-        let container = NSView()
-        let background = container
-        let glass = DS.makeGlass(cornerRadius: DS.Radius.card)
-        container.addSubview(glass)
-        NSLayoutConstraint.activate([
-            glass.topAnchor.constraint(equalTo: container.topAnchor),
-            glass.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            glass.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            glass.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ])
+        // A floating panel can't use NSGlassEffectView: glass refracts content behind it *in
+        // the same window*, and this panel is its own (transparent) window — the glass had
+        // nothing to sample and rendered as a flat dark rect, which is why the palette looked
+        // like it "lacked Liquid Glass." Behind-window vibrancy is the material that actually
+        // samples what's under a panel — it's what system menus are built on.
+        let background = NSVisualEffectView()
+        background.material = .hudWindow
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = DS.Radius.card
+        background.layer?.masksToBounds = true
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("path"))
         column.resizingMask = .autoresizingMask

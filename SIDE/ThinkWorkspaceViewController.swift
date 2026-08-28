@@ -594,7 +594,20 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             case .critical: tint = .systemRed
             }
         }
-        sessionPill.setLabel(title, tint: tint)
+        // Animated only on a real change — this refresh runs constantly (usage observer, phase
+        // changes) and animating a no-op layout pass would fight other in-flight animations.
+        let labelChanged = sessionPill.title != " \(title) "
+        if labelChanged, view.window != nil {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                sessionPill.setLabel(title, tint: tint)
+                view.layoutSubtreeIfNeeded()
+            }
+        } else {
+            sessionPill.setLabel(title, tint: tint)
+        }
         sessionPillGlass.isHidden = sessionPill.isHidden
         pillModeTint.isHidden = sessionPill.isHidden
     }
@@ -1147,7 +1160,10 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
 /// One attached image in the transcript: rounded, capped, pinned to its sender's side. Sized
 /// at init from the decoded image so layout never has to ask the bitmap anything again.
 private final class ImageBubbleRowView: NSView {
+    private let imageData: Data
+
     init(imageData: Data, alignRight: Bool) {
+        self.imageData = imageData
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         let imageView = NSImageView()
@@ -1173,11 +1189,21 @@ private final class ImageBubbleRowView: NSView {
                 ? imageView.trailingAnchor.constraint(equalTo: trailingAnchor)
                 : imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
         ])
+        toolTip = "Click to open"
         setAccessibilityLabel("Attached image")
         setAccessibilityRole(.image)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        ImagePreviewOpener.open(data: imageData)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
 }
 
 /// A transparent full-width transcript row holding one bubble pinned to its side, plus the
@@ -1433,7 +1459,9 @@ private final class PopoverActionRow: NSView {
         translatesAutoresizingMaskIntoConstraints = false
 
         highlight.wantsLayer = true
-        highlight.layer?.cornerRadius = DS.Radius.control
+        // Concentric with the popover's own corner: inner radius ≈ outer radius − inset. The
+        // control token (6) was tuned for chips and read as a mismatched rectangle in here.
+        highlight.layer?.cornerRadius = 8
         highlight.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
@@ -1935,9 +1963,11 @@ private final class ComposerTextView: NSTextView {
 /// A queued image in the composer: 48pt rounded thumbnail with an always-visible ✕. No hover
 /// dance — on a surface this small, discoverable beats tidy.
 private final class AttachmentChipView: NSView {
+    private let onPreview: () -> Void
     private let onRemove: () -> Void
 
-    init(thumbnail: NSImage, onRemove: @escaping () -> Void) {
+    init(thumbnail: NSImage, onPreview: @escaping () -> Void, onRemove: @escaping () -> Void) {
+        self.onPreview = onPreview
         self.onRemove = onRemove
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -1976,6 +2006,33 @@ private final class AttachmentChipView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     @objc private func removeTapped() { onRemove() }
+
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onPreview()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+
+/// Opens image bytes in the system viewer via a temp file — a full in-app lightbox isn't
+/// worth building until something needs more than "let me look at that closely."
+enum ImagePreviewOpener {
+    static func open(data: Data, mediaType: String? = nil) {
+        let ext: String
+        if let mediaType {
+            ext = mediaType == "image/png" ? "png" : "jpg"
+        } else {
+            // Sniff PNG's signature; everything else we produce is JPEG.
+            ext = data.starts(with: [0x89, 0x50, 0x4E, 0x47]) ? "png" : "jpg"
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("side-image-\(UUID().uuidString).\(ext)")
+        guard (try? data.write(to: url)) != nil else { return }
+        NSWorkspace.shared.open(url)
+    }
 }
 
 private final class ComposerView: NSView, NSTextViewDelegate {
@@ -2125,7 +2182,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             // composer's geometry is untouched.
             stripTopConstraint,
             stripHeightConstraint,
-            attachmentStrip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            // Same x as the first glyph of the text: the scroll's inset plus the container's.
+            attachmentStrip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.s + 12),
             attachmentStrip.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
             scroll.topAnchor.constraint(equalTo: attachmentStrip.bottomAnchor, constant: DS.Spacing.xs),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.xs),
@@ -2159,15 +2217,30 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     }
 
     private func rebuildAttachmentStrip() {
+        let previousCount = attachmentStrip.arrangedSubviews.count
         attachmentStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for attachment in attachments {
-            let chip = AttachmentChipView(thumbnail: attachment.thumbnail) { [weak self] in
-                self?.removeAttachment(id: attachment.id)
-            }
+            let chip = AttachmentChipView(
+                thumbnail: attachment.thumbnail,
+                onPreview: { ImagePreviewOpener.open(data: attachment.data, mediaType: attachment.mediaType) },
+                onRemove: { [weak self] in self?.removeAttachment(id: attachment.id) }
+            )
             attachmentStrip.addArrangedSubview(chip)
         }
-        stripHeightConstraint.constant = attachments.isEmpty ? 0 : 48
-        stripTopConstraint.constant = attachments.isEmpty ? 0 : DS.Spacing.m
+        // The capsule growing/shrinking is a layout shift right under the cursor — animated so
+        // it reads as the composer making room, not jumping. The chips themselves get the
+        // standard appear treatment on add only; removal just collapses.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.allowsImplicitAnimation = true
+            stripHeightConstraint.constant = attachments.isEmpty ? 0 : 48
+            stripTopConstraint.constant = attachments.isEmpty ? 0 : DS.Spacing.m
+            superview?.layoutSubtreeIfNeeded()
+        }
+        if attachments.count > previousCount, let newest = attachmentStrip.arrangedSubviews.last {
+            DS.Motion.appear(newest)
+        }
     }
 
     /// Longest side capped at 1568px (the API's documented sweet spot — anything bigger is
