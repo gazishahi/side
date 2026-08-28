@@ -32,9 +32,6 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// answers a different question from model or mode — and because it needs to be visible
     /// *before* a conversation stops working, not discovered afterwards.
     private let contextButton = NSPopUpButton(frame: .zero, pullsDown: true)
-    /// Model, mode, context, and spend — one row belonging to the composer rather than a header
-    /// strip at the top of the stage.
-    private let controlRow = NSStackView()
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
@@ -90,15 +87,8 @@ final class ThinkWorkspaceViewController: NSViewController {
         contextButton.translatesAutoresizingMaskIntoConstraints = false
         contextButton.setAccessibilityLabel("Context window usage for this conversation")
 
-        for control in [modelButton, modeButton, contextButton] {
-            controlRow.addArrangedSubview(control)
-        }
-        controlRow.addArrangedSubview(modelLabel)
-        controlRow.orientation = .horizontal
-        controlRow.alignment = .centerY
-        controlRow.spacing = DS.Spacing.xs
-        controlRow.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(controlRow)
+        for control in [modelButton, modeButton, contextButton] { composer.addControl(control) }
+        composer.addControl(modelLabel)
 
         let divider = NSBox()
         divider.boxType = .separator
@@ -112,6 +102,9 @@ final class ThinkWorkspaceViewController: NSViewController {
         transcriptStack.translatesAutoresizingMaskIntoConstraints = false
         transcriptContainer.addSubview(transcriptStack)
         transcriptContainer.translatesAutoresizingMaskIntoConstraints = false
+        // Layer-backed document view: lets the clip view translate a rasterized tree rather than
+        // asking every visible subview to redraw as it moves.
+        transcriptContainer.wantsLayer = true
         transcriptScroll.documentView = transcriptContainer
         transcriptScroll.hasVerticalScroller = true
         transcriptScroll.drawsBackground = false
@@ -153,14 +146,7 @@ final class ThinkWorkspaceViewController: NSViewController {
             composer.topAnchor.constraint(equalTo: transcriptScroll.bottomAnchor, constant: DS.Spacing.l),
             composer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.xxl),
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
-            // The controls belong to the composer, under it — the same arrangement ChatGPT and
-            // Claude use, and the reason is the same: these choices apply to the message you're
-            // about to send, so they should sit where you're typing it rather than in a strip at
-            // the far end of the window.
-            controlRow.topAnchor.constraint(equalTo: composer.bottomAnchor, constant: DS.Spacing.s),
-            controlRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.l),
-            controlRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -DS.Spacing.l),
-            controlRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.m),
+            composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.xl),
         ])
 
         // The header's token/cost figures come from a store the runner writes to directly, so
@@ -853,6 +839,12 @@ private final class TextBlockView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
+        // Draws the label into this view's own layer, so a long bubble is rasterized once and
+        // *composited* while scrolling instead of re-drawn every frame. An unlayered
+        // `NSTextField` holding thousands of characters of attributed text (inline-code
+        // background runs, mixed fonts) redraws through NSStringDrawing on each scroll frame,
+        // which is the classic cause of exactly this stutter.
+        canDrawSubviewsIntoLayer = true
         layer?.cornerRadius = DS.Radius.bubble
         layer?.backgroundColor = style.fillColor.cgColor
 
@@ -1182,9 +1174,12 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     private let scroll = NSScrollView()
     private let placeholderLabel = NSTextField(labelWithString: "")
     private let actionButton = CircularIconButton(diameter: 28)
-    private var heightConstraint: NSLayoutConstraint!
-    private static let minHeight: CGFloat = 38
-    private static let maxHeight: CGFloat = 122
+    /// The controls that belong to this field — model, mode, context, spend.
+    private let controlRow = NSStackView()
+    private var textHeightConstraint: NSLayoutConstraint!
+    /// Heights of the *text area*, not the whole field: the control row adds its own.
+    private static let minTextHeight: CGFloat = 22
+    private static let maxTextHeight: CGFloat = 120
 
     var text: String { textView.string }
 
@@ -1204,10 +1199,9 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        // A capsule at rest — the radius is half the single-line height, matching the send
-        // button's own curvature exactly; grown multiline it becomes a soft rounded rect
-        // with the same corner circle.
-        layer?.cornerRadius = Self.minHeight / 2
+        // A soft rounded rect rather than a capsule: the field is two rows tall now (text over
+        // its controls), and a capsule at that height reads as a pill-shaped card, not an input.
+        layer?.cornerRadius = DS.Radius.card + 4
         layer?.borderWidth = 1
         layer?.borderColor = DS.Color.hairline.cgColor
         layer?.backgroundColor = DS.Color.bg1.cgColor
@@ -1236,22 +1230,41 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         actionButton.action = #selector(actionTapped)
         setBusy(false)
 
+        controlRow.orientation = .horizontal
+        controlRow.alignment = .centerY
+        controlRow.spacing = DS.Spacing.xs
+        controlRow.translatesAutoresizingMaskIntoConstraints = false
+
         addSubview(scroll)
         addSubview(placeholderLabel)
+        addSubview(controlRow)
         addSubview(actionButton)
-        heightConstraint = heightAnchor.constraint(equalToConstant: Self.minHeight)
+        // The container now grows to hold the text *plus* its control row, so the text's own
+        // height is tracked separately from the view's.
+        textHeightConstraint = scroll.heightAnchor.constraint(equalToConstant: Self.minTextHeight)
         NSLayoutConstraint.activate([
-            heightConstraint,
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            scroll.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -8),
-            scroll.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            textHeightConstraint,
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xl),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.xl),
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.l),
             placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 2),
             placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
-            placeholderLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-            actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            actionButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            placeholderLabel.topAnchor.constraint(equalTo: scroll.topAnchor),
+            // Controls sit on the row beneath the text, inside the same rounded field — the
+            // arrangement ChatGPT and Claude use, where the whole thing reads as one input.
+            controlRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xl),
+            controlRow.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: DS.Spacing.s),
+            controlRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.m),
+            controlRow.trailingAnchor.constraint(lessThanOrEqualTo: actionButton.leadingAnchor, constant: -DS.Spacing.m),
+            actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
+            actionButton.centerYAnchor.constraint(equalTo: controlRow.centerYAnchor),
         ])
+    }
+
+    /// The owner fills this with the model/mode/context controls, so they live inside the field
+    /// rather than floating beneath it.
+    func addControl(_ view: NSView) {
+        controlRow.addArrangedSubview(view)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -1280,10 +1293,10 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
         let used = layoutManager.usedRect(for: textContainer).height
-        let target = min(max(used + 20, Self.minHeight), Self.maxHeight)
-        if heightConstraint.constant != target {
-            heightConstraint.constant = target
-            scroll.hasVerticalScroller = target >= Self.maxHeight
+        let target = min(max(used, Self.minTextHeight), Self.maxTextHeight)
+        if textHeightConstraint.constant != target {
+            textHeightConstraint.constant = target
+            scroll.hasVerticalScroller = target >= Self.maxTextHeight
         }
     }
 
