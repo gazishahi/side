@@ -68,6 +68,25 @@ final class AgentSessionStore {
         return session
     }
 
+    /// Wholesale replacement of a track's turns — how compaction lands. Deliberately not an
+    /// in-place edit of `turns`: the replacement has to be written and re-read as one unit, or a
+    /// crash mid-compaction could leave half a conversation.
+    @discardableResult
+    func replaceTurns(_ turns: [AgentTurn], trackKey: String, providerId: String, modelId: String) -> AgentSession {
+        var session = loadedSession(forTrackKey: trackKey) ?? AgentSession(trackKey: trackKey, providerId: providerId, modelId: modelId)
+        session.turns = turns
+        session.lastActiveAt = Date()
+        loadedSessions[trackKey] = session
+        saveSession(session)
+        if let indexPosition = index.firstIndex(where: { $0.trackKey == trackKey }) {
+            index[indexPosition].lastActiveAt = session.lastActiveAt
+        } else {
+            index.append(SessionIndexEntry(id: session.id, trackKey: trackKey, providerId: providerId, modelId: modelId, lastActiveAt: session.lastActiveAt))
+        }
+        saveIndex()
+        return session
+    }
+
     func checkpoints(forTrackKey trackKey: String) -> [Checkpoint] {
         checkpoints.filter { $0.trackKey == trackKey }
     }

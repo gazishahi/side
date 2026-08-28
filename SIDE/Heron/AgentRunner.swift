@@ -49,6 +49,9 @@ final class AgentRunner {
     /// usage report is filed against the model that actually produced it, even if the user
     /// switches models while it's streaming.
     private var activeModelId = ""
+    /// The provider's own input-token count for the most recent request — `nil` until one
+    /// completes, in which case the gauge falls back to an estimate.
+    private(set) var lastReportedInputTokens: Int?
     /// The provider the in-flight request went to — recorded alongside `activeModelId` so usage
     /// is filed against what actually answered, not whatever is active in Settings now.
     private var activeProviderId = ProviderRegistryStore.shared.activeProviderId
@@ -404,6 +407,127 @@ final class AgentRunner {
         appendEntry(.meta(marker))
     }
 
+
+    // MARK: - Context budget
+
+    /// How full this track's context window is. Uses the resolved model's window, so switching
+    /// to a model with a different window immediately re-reads the same conversation against it.
+    func contextUsage() -> (usedTokens: Int, windowTokens: Int, fraction: Double, status: ContextBudget.Status) {
+        let turns = sessionStore.session(forTrackKey: trackKey)?.turns ?? []
+        let selection = resolvedSelection()
+        var window = 200_000
+        if case .ready(_, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
+            providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
+        ) {
+            window = model.contextWindowTokens
+        }
+        return ContextBudget.usage(turns: turns, windowTokens: window, lastReportedInputTokens: lastReportedInputTokens)
+    }
+
+    /// Replaces the conversation with a model-written summary of it.
+    ///
+    /// The summary is produced by a real request (a local heuristic summary reads like a changelog
+    /// and loses the reasoning that makes a continuation coherent), then *all* turns are replaced
+    /// with one user turn holding it. Replacing everything — rather than keeping a tail of recent
+    /// turns — is what guarantees no `tool_use` is left without its `tool_result`, which the API
+    /// rejects outright.
+    ///
+    /// Costs one request. That's the trade being made explicit: a summarization request now, or a
+    /// conversation that stops working later.
+    func compact(completion: @escaping (Result<Void, Error>) -> Void) {
+        guard !phase.isBusy else {
+            return completion(.failure(CompactionError.busy))
+        }
+        guard let session = sessionStore.session(forTrackKey: trackKey), !session.turns.isEmpty else {
+            return completion(.failure(CompactionError.nothingToCompact))
+        }
+        let selection = resolvedSelection()
+        guard case .ready(let provider, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
+            providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
+        ) else {
+            return completion(.failure(CompactionError.noProvider))
+        }
+
+        appendEntry(.meta("Compacting conversation…"))
+        setPhase(.streaming)
+        var messages = session.turns.map { AgentMessage(role: $0.role, content: $0.content) }
+        messages.append(AgentMessage(role: .user, content: [.text(ContextBudget.compactionInstruction)]))
+
+        // The stream callback is `@Sendable` and fires off-actor, so the accumulating text needs
+        // a reference box rather than a captured `var`.
+        let collector = SummaryCollector()
+        Task { [weak self] in
+            var failure: Error?
+            do {
+                // No tools: this request is meant to produce prose, and offering tools invites a
+                // model to go read more files while summarizing.
+                try await provider.streamTurn(messages: messages, system: nil, tools: []) { event in
+                    if case .textDelta(let delta) = event { collector.append(delta) }
+                }
+            } catch {
+                failure = error
+            }
+            let collected = collector.text
+            let error = failure
+            await MainActor.run {
+                guard let self else { return }
+                self.setPhase(.idle)
+                if let error {
+                    self.appendEntry(.failure("Couldn't compact: \(error.localizedDescription). The conversation is unchanged."))
+                    return completion(.failure(error))
+                }
+                let trimmed = collected.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    // An empty summary must not be allowed to eat the conversation.
+                    self.appendEntry(.failure("Compaction produced no summary, so the conversation is unchanged."))
+                    return completion(.failure(CompactionError.emptySummary))
+                }
+                let replacement = AgentTurn(role: .user, content: [.text(ContextBudget.summaryTurnText(trimmed))])
+                self.sessionStore.replaceTurns(
+                    [replacement], trackKey: self.trackKey,
+                    providerId: selection.providerId, modelId: model.id
+                )
+                // The gauge's measured value describes the *old* request; drop it so the estimate
+                // of the compacted conversation is what shows.
+                self.lastReportedInputTokens = nil
+                self.hydrateFromSession()
+                self.appendEntry(.meta("Conversation compacted. Earlier turns are gone; the summary above is what the agent now knows."))
+                completion(.success(()))
+            }
+        }
+    }
+
+    /// Thread-safe accumulator for a streamed summary.
+    private final class SummaryCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = ""
+
+        func append(_ delta: String) {
+            lock.lock()
+            value += delta
+            lock.unlock()
+        }
+
+        var text: String {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    enum CompactionError: LocalizedError {
+        case busy, nothingToCompact, noProvider, emptySummary
+
+        var errorDescription: String? {
+            switch self {
+            case .busy: return "Wait for the current run to finish before compacting."
+            case .nothingToCompact: return "There's nothing to compact yet."
+            case .noProvider: return "No model provider is configured."
+            case .emptySummary: return "The model returned an empty summary."
+            }
+        }
+    }
+
     // MARK: - The loop
 
     /// One request/response cycle, recursing while the model keeps asking for tools. Re-resolves
@@ -540,6 +664,9 @@ final class AgentRunner {
             // rather than per user message — a reply that chains four tool calls reports four
             // times, which is what the provider actually charges for.
             if let usage {
+                // Kept for the context gauge: a measured count beats an estimate, and the next
+                // request is this conversation plus a little.
+                lastReportedInputTokens = usage.inputTokens + (usage.cachedInputTokens ?? 0)
                 UsageStore.shared.record(
                     projectPath: projectPath, trackKey: trackKey,
                     providerId: activeProviderId,

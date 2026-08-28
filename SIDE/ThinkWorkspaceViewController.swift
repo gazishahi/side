@@ -28,6 +28,10 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// rather than more items in the model menu: they answer different questions, and someone
     /// switching to Ask mode isn't thinking about which model to use.
     private let modeButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    /// How full the context window is, and where compaction lives. Its own control because it
+    /// answers a different question from model or mode — and because it needs to be visible
+    /// *before* a conversation stops working, not discovered afterwards.
+    private let contextButton = NSPopUpButton(frame: .zero, pullsDown: true)
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
@@ -81,6 +85,13 @@ final class ThinkWorkspaceViewController: NSViewController {
         modeButton.setAccessibilityLabel("Mode for this track: what the agent may do, and what it may do without asking")
         view.addSubview(modeButton)
 
+        contextButton.isBordered = false
+        contextButton.controlSize = .small
+        contextButton.font = DS.Text.caption(.medium)
+        contextButton.translatesAutoresizingMaskIntoConstraints = false
+        contextButton.setAccessibilityLabel("Context window usage for this conversation")
+        view.addSubview(contextButton)
+
         let divider = NSBox()
         divider.boxType = .separator
         divider.translatesAutoresizingMaskIntoConstraints = false
@@ -121,7 +132,9 @@ final class ThinkWorkspaceViewController: NSViewController {
             modeButton.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
             modeButton.leadingAnchor.constraint(equalTo: modelButton.trailingAnchor, constant: DS.Spacing.xs),
             modelLabel.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
-            modelLabel.leadingAnchor.constraint(equalTo: modeButton.trailingAnchor, constant: DS.Spacing.xs),
+            contextButton.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
+            contextButton.leadingAnchor.constraint(equalTo: modeButton.trailingAnchor, constant: DS.Spacing.xs),
+            modelLabel.leadingAnchor.constraint(equalTo: contextButton.trailingAnchor, constant: DS.Spacing.xs),
             modelLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
             divider.topAnchor.constraint(equalTo: modelButton.bottomAnchor, constant: DS.Spacing.s),
             divider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -235,10 +248,12 @@ final class ThinkWorkspaceViewController: NSViewController {
             renderFull()
         case .appended(let index):
             appendEntryView(at: index)
+            refreshContextButton()
         case .updated(let index):
             updateEntryView(at: index)
         case .phaseChanged:
             updateSendButton()
+            refreshContextButton()
             // A blocked/finished phase change can happen while this stage is the one on screen
             // (a stall firing, a round-trip cap hitting) — same acknowledgement as viewDidAppear,
             // just triggered by the runner instead of by becoming visible. `view.window != nil`
@@ -468,11 +483,75 @@ final class ThinkWorkspaceViewController: NSViewController {
         refreshModelLabel()
     }
 
+    /// The context gauge: a percentage, and the action that does something about it.
+    private func refreshContextButton() {
+        guard let runner else {
+            contextButton.isHidden = true
+            return
+        }
+        contextButton.isHidden = false
+        let usage = runner.contextUsage()
+        // Held in a local rather than read back from `contextButton.title`: on a pull-down that
+        // getter reports menu item 0, which doesn't exist yet here — reading it back produced a
+        // blank control.
+        let label = "context \(Int((usage.fraction * 100).rounded()))%"
+        contextButton.title = label
+        switch usage.status {
+        case .comfortable: contextButton.contentTintColor = .secondaryLabelColor
+        // Orange then red, matching the budget warnings — the two things that quietly stop a
+        // conversation working should look like the same class of problem.
+        case .approaching: contextButton.contentTintColor = .systemOrange
+        case .critical: contextButton.contentTintColor = .systemRed
+        }
+
+        let menu = NSMenu()
+        menu.addItem(withTitle: label, action: nil, keyEquivalent: "")
+        let detail = NSMenuItem(
+            title: "\(UsageFormatting.tokens(usage.usedTokens)) of \(UsageFormatting.tokens(usage.windowTokens)) tokens",
+            action: nil, keyEquivalent: ""
+        )
+        detail.isEnabled = false
+        menu.addItem(detail)
+        if usage.status.shouldSuggestCompaction {
+            let warning = NSMenuItem(
+                title: usage.status == .critical ? "Close to the limit — sends may start failing" : "Filling up",
+                action: nil, keyEquivalent: ""
+            )
+            warning.isEnabled = false
+            menu.addItem(warning)
+        }
+        menu.addItem(.separator())
+        let compact = NSMenuItem(title: "Compact Conversation…", action: #selector(compactConversation), keyEquivalent: "")
+        compact.target = self
+        compact.toolTip = "Replace the conversation with a summary of it, to free up context."
+        menu.addItem(compact)
+        contextButton.menu = menu
+    }
+
+    @objc private func compactConversation() {
+        guard let runner else { return }
+        let usage = runner.contextUsage()
+        let alert = NSAlert()
+        alert.messageText = "Compact this conversation?"
+        // Says what is lost, what it costs, and that it can't be undone — all three, because this
+        // deletes the user's conversation to make room.
+        alert.informativeText = "The turns so far (\(UsageFormatting.tokens(usage.usedTokens)) tokens) are replaced by a summary the model writes of them. Detail beyond that summary is gone, and this can't be undone. Checkpoints and your files are untouched.\n\nWriting the summary costs one request."
+        alert.addButton(withTitle: "Compact")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        runner.compact { [weak self] _ in
+            self?.renderFull()
+            self?.refreshModelLabel()
+        }
+    }
+
     private func refreshModelLabel() {
         modelButton.title = selectionTitle()
         rebuildModelMenu()
         modeButton.title = currentMode().shortLabel
         rebuildModeMenu()
+        refreshContextButton()
         var label = ""
         // What this track has spent so far, right where the model it spent it on is named. Cost
         // is appended only when every model this track used has a published price — a partial
