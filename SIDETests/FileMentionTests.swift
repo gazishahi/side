@@ -117,3 +117,8 @@ final class FileMentionTests: XCTestCase {
         XCTAssertTrue(index.matches(for: "sdn").contains("src/deep/nested.swift"))
     }
 }
+
+/// The crash this feature first shipped with is gone by construction rather than by guard:
+/// completion no longer calls `NSTextView.complete(_:)` at all, so there is no
+/// insert-during-textDidChange path to recurse through. `MentionCompletionPopup` only displays;
+/// text changes exclusively when a row is accepted. See that file's note for the full account.

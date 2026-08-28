@@ -890,30 +890,32 @@ private final class BubbleRowView: NSView {
 /// circular send button that becomes a stop button while the agent is busy, Return to send and
 /// Shift-Return for a newline — the input treatment every real chat app trains people to expect,
 /// replacing the single-line text field + "Send" push button.
-/// Extends AppKit's notion of a completable word back to the `@`, so `@src/gre` completes as one
-/// token instead of stopping at each `/`.
-///
-/// Using the built-in completion machinery (rather than a hand-rolled popup panel) means arrow
-/// keys, Return, Escape, and dismissal-on-click all behave natively — the parts a custom list
-/// invariably gets subtly wrong.
+/// Finds the `@…` token under the caret. Not `rangeForUserCompletion` + `complete(_:)` — see
+/// `MentionCompletionPopup` for why that approach was abandoned.
 private final class ComposerTextView: NSTextView {
-    override var rangeForUserCompletion: NSRange {
+    /// The range of the mention being typed, or nil when the caret isn't inside one. Extends back
+    /// to the `@` so `@src/deep/nes` is one token rather than stopping at each `/`.
+    var mentionRange: NSRange? {
         let text = string as NSString
         let caret = selectedRange().location
-        guard caret > 0, caret <= text.length else { return super.rangeForUserCompletion }
+        guard caret > 0, caret <= text.length else { return nil }
         var index = caret - 1
         while index >= 0 {
             let character = text.character(at: index)
             if character == unichar(UInt8(ascii: "@")) {
+                // An `@` inside a word (an email address) isn't a mention.
+                if index > 0, let previous = Unicode.Scalar(text.character(at: index - 1)),
+                   !CharacterSet.whitespacesAndNewlines.contains(previous) {
+                    return nil
+                }
                 return NSRange(location: index, length: caret - index)
             }
-            // Whitespace before an `@` means there's no mention being typed here.
             if let scalar = Unicode.Scalar(character), CharacterSet.whitespacesAndNewlines.contains(scalar) {
-                break
+                return nil
             }
             index -= 1
         }
-        return super.rangeForUserCompletion
+        return nil
     }
 }
 
@@ -926,6 +928,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// Supplies `@`-mention candidates. Set by the owner, which knows the track's working
     /// directory; nil until then, and completion simply does nothing in that case.
     var mentionCandidates: ((String) -> [String])?
+    private let mentionPopup = MentionCompletionPopup()
     private let scroll = NSScrollView()
     private let placeholderLabel = NSTextField(labelWithString: "")
     private let actionButton = CircularIconButton(diameter: 28)
@@ -964,6 +967,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         textView.isRichText = false
         textView.allowsUndo = true
         textView.delegate = self
+        mentionPopup.onAccept = { [weak self] path in self?.insertMention(path) }
         textView.textContainerInset = NSSize(width: 0, height: 2)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.autoresizingMask = [.width]
@@ -1003,6 +1007,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func clear() {
+        // Sending has to take the candidate list down with it, or it hangs over an empty field.
+        mentionPopup.hide()
         textView.string = ""
         textDidChange(Notification(name: NSText.didChangeNotification))
     }
@@ -1019,7 +1025,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         placeholderLabel.isHidden = !textView.string.isEmpty
-        maybeOfferMentionCompletion()
+        updateMentionPopup()
         guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
         let used = layoutManager.usedRect(for: textContainer).height
@@ -1032,32 +1038,59 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     /// Return sends, Shift-Return inserts the newline.
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        // While the list is up it owns the arrows, Return, Tab, and Escape — anything else falls
+        // through to normal editing, so typing never stops working.
+        if mentionPopup.isVisible {
+            switch commandSelector {
+            case #selector(NSResponder.moveUp(_:)):
+                mentionPopup.moveSelection(by: -1)
+                return true
+            case #selector(NSResponder.moveDown(_:)):
+                mentionPopup.moveSelection(by: 1)
+                return true
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+                mentionPopup.acceptSelection()
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                mentionPopup.hide()
+                return true
+            default:
+                break
+            }
+        }
         guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
         if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { return false }
         onAction?()
         return true
     }
 
-    /// The candidate list AppKit asks for while its completion popup is open.
-    func textView(
-        _ textView: NSTextView, completions words: [String],
-        forPartialWordRange charRange: NSRange, indexOfSelectedItem index: UnsafeMutablePointer<Int>?
-    ) -> [String] {
-        let partial = (textView.string as NSString).substring(with: charRange)
-        guard partial.hasPrefix("@"), let mentionCandidates else { return [] }
-        // Candidates keep the `@` so accepting one replaces the whole token rather than
-        // appending a path after it.
-        return mentionCandidates(String(partial.dropFirst())).map { "@" + $0 }
+    /// Shows or hides the candidate list for whatever mention is under the caret. Only ever
+    /// *displays* — the text is untouched until someone accepts a row, which is what keeps this
+    /// from fighting the keystrokes that triggered it.
+    private func updateMentionPopup() {
+        guard let range = textView.mentionRange, range.length > 1, let mentionCandidates else {
+            return mentionPopup.hide()
+        }
+        let token = (textView.string as NSString).substring(with: range)
+        let partial = String(token.dropFirst())
+        let matches = mentionCandidates(partial)
+        guard !matches.isEmpty else { return mentionPopup.hide() }
+
+        // Positioned against the caret's own rect so the list tracks the text, not the field.
+        var caretRect = textView.firstRect(forCharacterRange: NSRange(location: range.location, length: 0), actualRange: nil)
+        if caretRect == .zero { caretRect = window?.convertToScreen(convert(bounds, to: nil)) ?? .zero }
+        mentionPopup.show(candidates: matches, below: caretRect, parent: window)
     }
 
-    /// Offers completion only while the caret sits inside an `@`-token, so the popup never
-    /// appears over ordinary prose. Word-completion is a no-op with no candidates, but calling it
-    /// unconditionally would still steal the caret's own dismissal behavior.
-    private func maybeOfferMentionCompletion() {
-        let range = textView.rangeForUserCompletion
-        guard range.location != NSNotFound, range.length > 0 else { return }
-        let token = (textView.string as NSString).substring(with: range)
-        guard token.hasPrefix("@") else { return }
-        textView.complete(nil)
+    /// Replaces the typed token with the accepted path, plus a trailing space so the next word
+    /// isn't swallowed into the mention.
+    private func insertMention(_ path: String) {
+        guard let range = textView.mentionRange else { return }
+        let replacement = "@\(path) "
+        if textView.shouldChangeText(in: range, replacementString: replacement) {
+            textView.replaceCharacters(in: range, with: replacement)
+            textView.didChangeText()
+        }
+        textView.setSelectedRange(NSRange(location: range.location + (replacement as NSString).length, length: 0))
     }
 }
