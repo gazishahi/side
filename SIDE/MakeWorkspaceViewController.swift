@@ -3251,6 +3251,16 @@ final class TabChipView: NSView {
         didDrag = false
     }
 
+    /// While dragged, this chip's own frame changes must land instantly: the cursor-glue
+    /// transform in `mouseDragged` is computed against the *final* frame, so letting the
+    /// reorder's animation group also animate this chip's frame slid it off the cursor for
+    /// 0.16s and the next mouse event yanked it back — a rubber-band "snapping" feel.
+    /// Siblings still animate; only the held chip opts out.
+    override func animation(forKey key: NSAnimatablePropertyKey) -> Any? {
+        if didDrag, key == "frameOrigin" || key == "frame" || key == "frameSize" { return nil }
+        return super.animation(forKey: key)
+    }
+
     override func mouseDragged(with event: NSEvent) {
         guard let dragOrigin else { return }
         let totalDX = event.locationInWindow.x - dragOrigin.x

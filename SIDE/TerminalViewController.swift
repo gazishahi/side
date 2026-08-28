@@ -157,6 +157,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         terminalView.terminal.foregroundColor = Color(red: 55704, green: 55704, blue: 55704)
         terminalView.terminal.backgroundColor = Color(red: 1310, green: 1310, blue: 1310)
         terminalView.processDelegate = self
+        // Side genuinely handles OSC 133 (the semantic-prompt marks it asks the shell to emit),
+        // but detection scans the raw PTY stream in handleAgentCommandData — SwiftTerm's parser
+        // has no handler of its own and logged "Unknown OSC code: 133" for every mark.
+        // Registering a no-op tells the parser the code is spoken for.
+        terminalView.terminal.registerOscHandler(code: 133) { _ in }
         terminalView.onFileLinkRequested = { [weak self] link in self?.onFileLinkRequested?(link) ?? false }
         terminalView.onLineSubmitted = { [weak self] line in self?.lastSubmittedCommand = line }
         terminalView.onDataReceived = { [weak self] in self?.onOutputReceived?() }
