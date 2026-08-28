@@ -1896,7 +1896,11 @@ private final class ComposerView: NSView, NSTextViewDelegate {
                 self.insertMention(row)
             }
         }
-        textView.textContainerInset = NSSize(width: 12, height: 8)
+        // Vertical inset computed so one line of the actual font sits centered in the
+        // single-line band — a fixed 8pt left the text riding high once the font shrank to the
+        // body role (36 - ~16 line = 20 of slack, split 8/12 toward the top).
+        let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: textView.font ?? DS.Text.body()))
+        textView.textContainerInset = NSSize(width: 12, height: max(8, (Self.minTextHeight - lineHeight) / 2))
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.autoresizingMask = [.width]
         scroll.documentView = textView
@@ -1941,9 +1945,12 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             scroll.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -2),
             scroll.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.xs),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.xs),
-            placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 14),
+            // Same origin as the text itself (the container's 12pt inset, zero fragment
+            // padding) — 14pt put the placeholder's first glyph under the insertion cursor.
+            placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 12),
             placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
-            placeholderLabel.topAnchor.constraint(equalTo: scroll.topAnchor, constant: DS.Spacing.m),
+            // Centered on the single-line band, exactly like the mic and send buttons.
+            placeholderLabel.centerYAnchor.constraint(equalTo: scroll.topAnchor, constant: Self.minTextHeight / 2),
             // Mic and send are centered on the *single-line band* — the bottom capsule-height of
             // the field — not inset from the bottom edge, which is what left them sitting low.
             // As the field grows they stay pinned to that band, like Messages.
