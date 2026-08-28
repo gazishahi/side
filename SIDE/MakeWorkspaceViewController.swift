@@ -1722,10 +1722,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func handleTabDragging(_ chip: TabChipView, toWindowX x: CGFloat) {
         guard let draggedIndex = tabChips.firstIndex(where: { $0 === chip }) else { return }
-        var dropIndex = draggedIndex
-        for (i, sibling) in tabChips.enumerated() where sibling !== chip {
+        // The drop index is "how many siblings sit left of the cursor" — counting, not the
+        // sibling's own index. The old code assigned the *last passed sibling's index*, which
+        // after a swap pointed one slot short, so the next mouse event swapped straight back:
+        // the tab oscillated between two slots for as long as you dragged past the end.
+        var dropIndex = 0
+        for sibling in tabChips where sibling !== chip {
             let siblingMidXInWindow = sibling.convert(NSPoint(x: sibling.bounds.midX, y: 0), to: nil).x
-            if x > siblingMidXInWindow { dropIndex = i }
+            if x > siblingMidXInWindow { dropIndex += 1 }
         }
         guard dropIndex != draggedIndex else { return }
 

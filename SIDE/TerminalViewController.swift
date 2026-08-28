@@ -126,6 +126,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private var shellIntegration: ShellIntegration = .probing
     /// One-shot guard for `tidyAfterSetup()`.
     private var didTidyAfterSetup = false
+    /// True once the shell is past its integration setup (tidied, or integration gave up) —
+    /// output before this is startup plumbing, not something to badge as unseen.
+    var startupSettled: Bool { didTidyAfterSetup || shellIntegration == .unavailable }
     /// Guards against a stale timeout resolving a *later* command that happens to occupy the slot.
     private var pendingAgentCommandGeneration = 0
     private static let agentCommandTimeout: TimeInterval = 30

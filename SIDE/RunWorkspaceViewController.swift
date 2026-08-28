@@ -281,6 +281,9 @@ final class RunWorkspaceViewController: NSViewController {
             guard let self, self.sessions.indices.contains(index) else { return }
             self.sessions[index].viewController.prepareForClose()
             self.sessions.remove(at: index)
+            // The closed tab may have been the last one holding unseen output — without this
+            // the stage's ● outlived every tab that caused it.
+            self.onActivityChanged?()
             if self.sessions.isEmpty {
                 // Run always has at least one session — no empty state to design for.
                 self.createSession()
@@ -332,6 +335,10 @@ final class RunWorkspaceViewController: NSViewController {
             // found here at all, so its unseen-output flag could never be set in the first
             // place, silently defeating the whole point of a cross-track activity badge.
             guard let self, let vc else { return }
+            // A shell that's still settling (integration line echoing, first prompt painting)
+            // is producing plumbing, not output anyone needs to come back for — spam-opening
+            // tabs used to light the badge purely from the previous tabs' startup noise.
+            guard vc.startupSettled else { return }
             for (key, var sessionList) in self.sessionsByTrackKey {
                 guard let index = sessionList.firstIndex(where: { $0.viewController === vc }) else { continue }
                 let isCurrentlyVisible = key == (self.currentTrackKey ?? "") && index == self.activeSessionIndexByTrackKey[key]
@@ -428,10 +435,14 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func handleTabDragging(_ chip: TabChipView, toWindowX x: CGFloat) {
         guard let draggedIndex = tabChips.firstIndex(where: { $0 === chip }) else { return }
-        var dropIndex = draggedIndex
-        for (i, sibling) in tabChips.enumerated() where sibling !== chip {
+        // The drop index is "how many siblings sit left of the cursor" — counting, not the
+        // sibling's own index. The old code assigned the *last passed sibling's index*, which
+        // after a swap pointed one slot short, so the next mouse event swapped straight back:
+        // the tab oscillated between two slots for as long as you dragged past the end.
+        var dropIndex = 0
+        for sibling in tabChips where sibling !== chip {
             let siblingMidXInWindow = sibling.convert(NSPoint(x: sibling.bounds.midX, y: 0), to: nil).x
-            if x > siblingMidXInWindow { dropIndex = i }
+            if x > siblingMidXInWindow { dropIndex += 1 }
         }
         guard dropIndex != draggedIndex else { return }
 
