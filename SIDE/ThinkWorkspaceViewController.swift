@@ -32,6 +32,9 @@ final class ThinkWorkspaceViewController: NSViewController {
     /// answers a different question from model or mode — and because it needs to be visible
     /// *before* a conversation stops working, not discovered afterwards.
     private let contextButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    /// Model, mode, context, and spend — one row belonging to the composer rather than a header
+    /// strip at the top of the stage.
+    private let controlRow = NSStackView()
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
     private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
@@ -66,8 +69,6 @@ final class ThinkWorkspaceViewController: NSViewController {
 
         modelLabel.font = DS.Text.caption(.medium)
         modelLabel.textColor = .secondaryLabelColor
-        modelLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(modelLabel)
 
         // Borderless so the header still reads as a status line rather than a toolbar; it only
         // looks like a control on hover, which is the same bargain Xcode's own jump bar makes.
@@ -76,21 +77,28 @@ final class ThinkWorkspaceViewController: NSViewController {
         modelButton.font = DS.Text.caption(.medium)
         modelButton.translatesAutoresizingMaskIntoConstraints = false
         modelButton.setAccessibilityLabel("Model and thinking effort for this track")
-        view.addSubview(modelButton)
 
         modeButton.isBordered = false
         modeButton.controlSize = .small
         modeButton.font = DS.Text.caption(.medium)
         modeButton.translatesAutoresizingMaskIntoConstraints = false
         modeButton.setAccessibilityLabel("Mode for this track: what the agent may do, and what it may do without asking")
-        view.addSubview(modeButton)
 
         contextButton.isBordered = false
         contextButton.controlSize = .small
         contextButton.font = DS.Text.caption(.medium)
         contextButton.translatesAutoresizingMaskIntoConstraints = false
         contextButton.setAccessibilityLabel("Context window usage for this conversation")
-        view.addSubview(contextButton)
+
+        for control in [modelButton, modeButton, contextButton] {
+            controlRow.addArrangedSubview(control)
+        }
+        controlRow.addArrangedSubview(modelLabel)
+        controlRow.orientation = .horizontal
+        controlRow.alignment = .centerY
+        controlRow.spacing = DS.Spacing.xs
+        controlRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(controlRow)
 
         let divider = NSBox()
         divider.boxType = .separator
@@ -127,21 +135,14 @@ final class ThinkWorkspaceViewController: NSViewController {
             emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyStateLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
-            modelButton.topAnchor.constraint(equalTo: view.topAnchor, constant: DS.Spacing.s),
-            modelButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.l),
-            modeButton.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
-            modeButton.leadingAnchor.constraint(equalTo: modelButton.trailingAnchor, constant: DS.Spacing.xs),
-            modelLabel.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
-            contextButton.centerYAnchor.constraint(equalTo: modelButton.centerYAnchor),
-            contextButton.leadingAnchor.constraint(equalTo: modeButton.trailingAnchor, constant: DS.Spacing.xs),
-            modelLabel.leadingAnchor.constraint(equalTo: contextButton.trailingAnchor, constant: DS.Spacing.xs),
-            modelLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
-            divider.topAnchor.constraint(equalTo: modelButton.bottomAnchor, constant: DS.Spacing.s),
-            divider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            transcriptScroll.topAnchor.constraint(equalTo: divider.bottomAnchor),
+            transcriptScroll.topAnchor.constraint(equalTo: view.topAnchor),
             transcriptScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             transcriptScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            // Separates the transcript from the composer area, not the composer from its own
+            // controls — those belong together.
+            divider.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
+            divider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             // Width pinned to the clip view so wrapping labels lay out against a known width
             // instead of growing horizontally forever.
             transcriptContainer.widthAnchor.constraint(equalTo: transcriptScroll.contentView.widthAnchor),
@@ -149,10 +150,17 @@ final class ThinkWorkspaceViewController: NSViewController {
             transcriptStack.leadingAnchor.constraint(equalTo: transcriptContainer.leadingAnchor),
             transcriptStack.trailingAnchor.constraint(equalTo: transcriptContainer.trailingAnchor),
             transcriptStack.bottomAnchor.constraint(equalTo: transcriptContainer.bottomAnchor),
-            composer.topAnchor.constraint(equalTo: transcriptScroll.bottomAnchor, constant: 10),
-            composer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
-            composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            composer.topAnchor.constraint(equalTo: transcriptScroll.bottomAnchor, constant: DS.Spacing.l),
+            composer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.xxl),
+            composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
+            // The controls belong to the composer, under it — the same arrangement ChatGPT and
+            // Claude use, and the reason is the same: these choices apply to the message you're
+            // about to send, so they should sit where you're typing it rather than in a strip at
+            // the far end of the window.
+            controlRow.topAnchor.constraint(equalTo: composer.bottomAnchor, constant: DS.Spacing.s),
+            controlRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.l),
+            controlRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -DS.Spacing.l),
+            controlRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.m),
         ])
 
         // The header's token/cost figures come from a store the runner writes to directly, so
@@ -525,6 +533,13 @@ final class ThinkWorkspaceViewController: NSViewController {
         compact.target = self
         compact.toolTip = "Replace the conversation with a summary of it, to free up context."
         menu.addItem(compact)
+        // Deliberately adjacent to Compact, because the choice between them is the whole point:
+        // compaction keeps what was learned, this discards it. Starting fresh is the right move
+        // when the next topic has nothing to do with the last one.
+        let clear = NSMenuItem(title: "New Conversation…", action: #selector(startNewConversation), keyEquivalent: "")
+        clear.target = self
+        clear.toolTip = "Discard this conversation and start over. Checkpoints and files are kept."
+        menu.addItem(clear)
         contextButton.menu = menu
     }
 
@@ -544,6 +559,20 @@ final class ThinkWorkspaceViewController: NSViewController {
             self?.renderFull()
             self?.refreshModelLabel()
         }
+    }
+
+    @objc private func startNewConversation() {
+        guard let runner, !runner.entries.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Start a new conversation?"
+        alert.informativeText = "This conversation is discarded — not summarized. Use Compact instead if the agent should carry what it learned forward. Checkpoints, usage history, and your files are untouched."
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        runner.startNewConversation()
+        renderFull()
+        refreshModelLabel()
     }
 
     private func refreshModelLabel() {
@@ -904,7 +933,22 @@ private final class TextBlockView: NSView {
 
     /// Lays the bubble's attributed text out in a throwaway text stack to find where a range
     /// actually drew. `NSTextField` exposes no glyph geometry of its own.
+    ///
+    /// Cached per (text, width), and that caching is load-bearing rather than tidiness: this runs
+    /// from `hitTest` and `resetCursorRects`, which AppKit calls on mouse movement and on every
+    /// layout pass. Re-laying-out an 8,000-character bubble (a compaction summary, say) on every
+    /// one of those made the whole stage visibly stutter for seconds.
+    private var cachedGlyphRects: [NSRange: [NSRect]] = [:]
+    private var glyphCacheKey: (length: Int, width: CGFloat)?
+
     private func glyphRects(for range: NSRange) -> [NSRect] {
+        let key = (bodyLabel.attributedStringValue.length, bodyWidthConstraint.constant)
+        if glyphCacheKey == nil || glyphCacheKey! != key {
+            cachedGlyphRects = [:]
+            glyphCacheKey = key
+        }
+        if let cached = cachedGlyphRects[range] { return cached }
+
         let storage = NSTextStorage(attributedString: bodyLabel.attributedStringValue)
         let container = NSTextContainer(size: NSSize(width: bodyWidthConstraint.constant, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
@@ -917,6 +961,7 @@ private final class TextBlockView: NSView {
         layout.enumerateEnclosingRects(forGlyphRange: glyphRange, withinSelectedGlyphRange: glyphRange, in: container) { rect, _ in
             rects.append(rect)
         }
+        cachedGlyphRects[range] = rects
         return rects
     }
 
@@ -927,9 +972,36 @@ private final class TextBlockView: NSView {
     /// otherwise VoiceOver reads every message twice (an audit caught exactly that).
     override func accessibilityChildren() -> [Any]? { [] }
 
+
+    /// Parsed-markdown cache, keyed by text + style + text scale.
+    ///
+    /// Think re-renders every bubble whenever the stage is entered (it's a projection of the
+    /// runner, not a retained view tree), and markdown parsing dominates that. A single large
+    /// bubble — a compaction summary is thousands of characters — made entering Think stutter
+    /// every time. Bounded so a long conversation can't turn the cache into the leak that
+    /// `AgentSessionStore` was restructured to remove.
+    private static var renderCache: [String: NSAttributedString] = [:]
+    private static var renderCacheKeys: [String] = []
+    private static let renderCacheLimit = 64
+
+    private static func renderedMarkdown(_ text: String, style: Style) -> NSAttributedString {
+        let key = "\(style)|\(DS.Text.Scale.current.rawValue)|\(text)"
+        if let cached = renderCache[key] { return cached }
+        let rendered = MarkdownRenderer.render(text, baseFont: DS.Text.heading(), textColor: style.textColor)
+        renderCache[key] = rendered
+        renderCacheKeys.append(key)
+        if renderCacheKeys.count > renderCacheLimit, let oldest = renderCacheKeys.first {
+            renderCacheKeys.removeFirst()
+            renderCache.removeValue(forKey: oldest)
+        }
+        return rendered
+    }
+
     func setBody(_ text: String) {
         plainText = text
-        let rendered = NSMutableAttributedString(attributedString: MarkdownRenderer.render(text, baseFont: DS.Text.heading(), textColor: style.textColor))
+        cachedGlyphRects = [:]
+        glyphCacheKey = nil
+        let rendered = NSMutableAttributedString(attributedString: Self.renderedMarkdown(text, style: style))
         // The renderer terminates every block with "\n\n" — fine in a document preview, but in
         // a bubble that trailing run becomes visible empty space below the last line.
         while rendered.length > 0, let last = rendered.string.last, last.isNewline || last == " " {

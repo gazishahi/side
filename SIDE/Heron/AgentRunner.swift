@@ -408,6 +408,24 @@ final class AgentRunner {
     }
 
 
+
+    /// Discards the conversation without summarizing it.
+    ///
+    /// Distinct from `compact` on purpose: compaction preserves what was learned, this throws it
+    /// away. That's the right tool when the next thing you want to talk about has nothing to do
+    /// with the last thing — a summary would just drag irrelevant context into every future turn.
+    /// Checkpoints, usage history, and files are untouched; only the turns go.
+    func startNewConversation() {
+        guard !phase.isBusy else { return }
+        let selection = resolvedSelection()
+        sessionStore.replaceTurns([], trackKey: trackKey, providerId: selection.providerId, modelId: selection.modelId ?? "")
+        entries = []
+        lastReportedInputTokens = nil
+        pendingBatch = nil
+        setPhase(.idle)
+        notify(.reset)
+    }
+
     // MARK: - Context budget
 
     /// How full this track's context window is. Uses the resolved model's window, so switching
@@ -490,7 +508,12 @@ final class AgentRunner {
                 // The gauge's measured value describes the *old* request; drop it so the estimate
                 // of the compacted conversation is what shows.
                 self.lastReportedInputTokens = nil
+                // Clear first: `hydrateFromSession` *appends*, so without this the old turns
+                // stayed on screen next to the summary until the app restarted — the transcript
+                // claimed context that was already gone.
+                self.entries = []
                 self.hydrateFromSession()
+                self.notify(.reset)
                 self.appendEntry(.meta("Conversation compacted. Earlier turns are gone; the summary above is what the agent now knows."))
                 completion(.success(()))
             }
