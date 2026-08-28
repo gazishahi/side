@@ -56,8 +56,8 @@ final class ThinkWorkspaceViewController: NSViewController {
 
         transcriptStack.orientation = .vertical
         transcriptStack.alignment = .leading
-        transcriptStack.spacing = 6
-        transcriptStack.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+        transcriptStack.spacing = DS.Spacing.s
+        transcriptStack.edgeInsets = NSEdgeInsets(top: DS.Spacing.xl, left: DS.Spacing.xxl, bottom: DS.Spacing.xl, right: DS.Spacing.xxl)
         transcriptStack.translatesAutoresizingMaskIntoConstraints = false
         transcriptContainer.addSubview(transcriptStack)
         transcriptContainer.translatesAutoresizingMaskIntoConstraints = false

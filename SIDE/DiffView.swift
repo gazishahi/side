@@ -240,7 +240,7 @@ final class DiffFileCardView: NSView {
         let header = NSStackView(views: headerViews)
         header.orientation = .horizontal
         header.alignment = .centerY
-        header.spacing = 8
+        header.spacing = DS.Spacing.m
         header.translatesAutoresizingMaskIntoConstraints = false
         if let spacer = headerViews.dropLast().last {
             spacer.setContentHuggingPriority(.init(1), for: .horizontal)
@@ -253,7 +253,7 @@ final class DiffFileCardView: NSView {
         headerButton.addSubview(header)
 
         let bodyText = DiffBody.makeBodyTextView()
-        bodyText.textStorage?.setAttributedString(DiffBody.attributedBody(hunks: file.hunks))
+        DiffBody.fill(bodyText, hunks: file.hunks)
         bodyScroll.documentView = bodyText
         bodyScroll.drawsBackground = false
         bodyScroll.hasVerticalScroller = true
@@ -362,7 +362,7 @@ enum DiffBody {
     static func attributedBody(hunks: [UnifiedDiff.Hunk]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let font = DS.Text.code(11, weight: .regular)
-        let numberColor = NSColor(white: 0.42, alpha: 1)
+        let numberColor = DS.Color.textFaint
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byClipping
 
@@ -395,20 +395,89 @@ enum DiffBody {
 
     /// A text view whose layout manager extends `.backgroundColor` fills to the full line
     /// width — assembled manually because that requires a custom NSLayoutManager.
-    static func makeBodyTextView() -> NSTextView {
+    static func makeBodyTextView() -> DiffBodyTextView {
         let storage = NSTextStorage()
         let layoutManager = FullWidthBackgroundLayoutManager()
         storage.addLayoutManager(layoutManager)
         let textContainer = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         textContainer.widthTracksTextView = true
         layoutManager.addTextContainer(textContainer)
-        let textView = NSTextView(frame: .zero, textContainer: textContainer)
+        let textView = DiffBodyTextView(frame: .zero, textContainer: textContainer)
         textView.isEditable = false
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 0, height: 4)
         textView.autoresizingMask = [.width]
         return textView
     }
+
+    /// Fills a body view with a file's hunks *and* the per-line kinds its accessibility text
+    /// needs. Always use this rather than assigning the text storage directly, or the AX
+    /// reading silently falls back to unmarked text.
+    static func fill(_ textView: DiffBodyTextView, hunks: [UnifiedDiff.Hunk]) {
+        textView.textStorage?.setAttributedString(attributedBody(hunks: hunks))
+        textView.setLineKinds(hunks)
+    }
+}
+
+/// The diff body, with the gutter's meaning available as words.
+///
+/// The visual design carries add/remove in color and a gutter bar — deliberately, since `+`/`-`
+/// prefixes make a diff harder to read and can't be copied cleanly. But color is the *only*
+/// carrier, which means the text a screen reader (or anyone who can't distinguish those greens
+/// and reds) receives is a flat wall of code where nothing says which lines changed. That's the
+/// gutter-meaning gap the audit named.
+///
+/// The fix keeps the visible text untouched and marks up only what accessibility reads: each
+/// changed line is prefixed "added, " or "removed, ", and hunk headers become "section, ".
+final class DiffBodyTextView: NSTextView {
+    /// One entry per rendered line, in order, mirroring `DiffBody.attributedBody`'s output.
+    private enum LineKind { case hunkHeader, added, removed, context }
+    private var lineKinds: [LineKind] = []
+
+    func setLineKinds(_ hunks: [UnifiedDiff.Hunk]) {
+        var kinds: [LineKind] = []
+        for hunk in hunks {
+            if !kinds.isEmpty { kinds.append(.context) }  // the blank separator line
+            kinds.append(.hunkHeader)
+            for line in hunk.lines {
+                switch line.kind {
+                case .added: kinds.append(.added)
+                case .removed: kinds.append(.removed)
+                case .context: kinds.append(.context)
+                }
+            }
+        }
+        lineKinds = kinds
+    }
+
+    /// Marked text, built from the real content so it can't drift out of sync with what's shown.
+    /// Exposed as the AX value: VoiceOver reads a text area's value, and a value that omits the
+    /// one thing a diff is *for* isn't worth the fidelity of leaving it unmarked.
+    private func accessibleText() -> String {
+        let raw = string
+        guard !lineKinds.isEmpty else { return raw }
+        var marked: [String] = []
+        for (index, line) in raw.components(separatedBy: "\n").enumerated() {
+            // A trailing empty component from the final newline has no kind and no content.
+            guard index < lineKinds.count else {
+                if !line.isEmpty { marked.append(line) }
+                continue
+            }
+            switch lineKinds[index] {
+            case .added: marked.append("added, " + line)
+            case .removed: marked.append("removed, " + line)
+            case .hunkHeader: marked.append("section, " + line)
+            case .context: marked.append(line)
+            }
+        }
+        return marked.joined(separator: "\n")
+    }
+
+    override func accessibilityLabel() -> String? { "Diff" }
+    override func accessibilityValue() -> String? { accessibleText() }
+    /// Kept consistent with the value above — a length that describes different text than the
+    /// value is worse than either alone.
+    override func accessibilityNumberOfCharacters() -> Int { accessibleText().count }
 }
 
 /// The card header's click target — a plain view with a click handler, so the whole header row

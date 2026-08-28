@@ -43,7 +43,7 @@ final class PreferencesViewController: NSViewController {
         removeProviderButton.action = #selector(removeProvider)
         let providerRow = NSStackView(views: [providerPopup, addButton, removeProviderButton])
         providerRow.orientation = .horizontal
-        providerRow.spacing = 8
+        providerRow.spacing = DS.Spacing.m
 
         baseURLLabel.font = DS.Text.caption()
         baseURLLabel.textColor = .secondaryLabelColor
@@ -68,7 +68,7 @@ final class PreferencesViewController: NSViewController {
         keyRow.addArrangedSubview(saveKeyButton)
         keyRow.addArrangedSubview(removeKeyButton)
         keyRow.orientation = .horizontal
-        keyRow.spacing = 8
+        keyRow.spacing = DS.Spacing.m
 
         keyStatusLabel.font = DS.Text.caption()
         keyStatusLabel.textColor = .secondaryLabelColor
@@ -79,14 +79,14 @@ final class PreferencesViewController: NSViewController {
         modelPopup.action = #selector(modelChanged)
         let modelRow = NSStackView(views: [modelLabel, modelPopup])
         modelRow.orientation = .horizontal
-        modelRow.spacing = 8
+        modelRow.spacing = DS.Spacing.m
 
         let stack = NSStackView(views: [title, providerRow, baseURLLabel, keyRow, keyStatusLabel, modelRow])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
-        stack.setCustomSpacing(16, after: title)
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        stack.spacing = DS.Spacing.l
+        stack.setCustomSpacing(DS.Spacing.section, after: title)
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.section, left: DS.Spacing.section, bottom: DS.Spacing.section, right: DS.Spacing.section)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -241,7 +241,7 @@ private final class AddProviderForm {
         let stack = NSStackView(views: [nameField, baseURLField, modelIdField, requiresKeyCheckbox, apiKeyField])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
+        stack.spacing = DS.Spacing.m
         // NSAlert sizes its sheet from accessoryView.frame *before* Auto Layout has a chance to
         // resolve constraints — an accessory view with translatesAutoresizingMaskIntoConstraints
         // = false and no explicit frame renders at {0,0} and gets clipped/overlapped by the

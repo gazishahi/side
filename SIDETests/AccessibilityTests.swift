@@ -77,6 +77,75 @@ final class AccessibilityTests: XCTestCase {
 
     // MARK: - Terminal
 
+    func testDiffBodySpeaksTheGuttersMeaning() throws {
+        // The gutter carries added/removed in *color* only — deliberately, since +/- prefixes
+        // hurt readability and copy badly. That leaves the text a screen reader receives (or
+        // anyone who can't separate those greens and reds) as a flat wall of code with nothing
+        // marking what changed.
+        let file = makeDiff(path: "a.swift", added: 1, removed: 1)
+        let body = DiffBody.makeBodyTextView()
+        DiffBody.fill(body, hunks: file.hunks)
+
+        let spoken = try XCTUnwrap(body.accessibilityValue())
+        XCTAssertTrue(spoken.contains("added, "), spoken)
+        XCTAssertTrue(spoken.contains("removed, "), spoken)
+        // The rendered header line is indented, so the marker sits before that indent.
+        let headerLine = try XCTUnwrap(spoken.components(separatedBy: "\n").first { $0.contains("@@") })
+        XCTAssertTrue(headerLine.hasPrefix("section, "), headerLine)
+        XCTAssertEqual(body.accessibilityLabel(), "Diff")
+        // The visible text is untouched: markers are for the AX layer only, so copy/paste and
+        // the on-screen diff stay exactly as designed.
+        XCTAssertFalse(body.string.contains("added, "))
+    }
+
+    func testDiffBodyLeavesContextLinesUnmarked() throws {
+        var hunk = UnifiedDiff.Hunk(header: "@@ -1,2 +1,2 @@")
+        hunk.lines = [
+            UnifiedDiff.Line(kind: .context, oldNumber: 1, newNumber: 1, text: "unchanged line"),
+            UnifiedDiff.Line(kind: .added, oldNumber: nil, newNumber: 2, text: "new line"),
+        ]
+        let body = DiffBody.makeBodyTextView()
+        DiffBody.fill(body, hunks: [hunk])
+
+        let lines = try XCTUnwrap(body.accessibilityValue()).components(separatedBy: "\n")
+        // Marking every line would make the announcement unusable — only changes are news.
+        let contextLine = try XCTUnwrap(lines.first { $0.contains("unchanged line") })
+        XCTAssertFalse(contextLine.hasPrefix("added"))
+        XCTAssertFalse(contextLine.hasPrefix("removed"))
+    }
+
+    // MARK: - Containment
+
+    func testDiffCardsStayInTheAXTreeInsideAWindow() throws {
+        // The audit's tab-chip finding was a *containment* failure: the elements had correct
+        // labels and still never reached the tree once they were nested in a scroll view. Roles
+        // asserted on a detached view can't catch that, so this one walks a real window.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        let host = NSView(frame: window.contentLayoutRect)
+        let scroll = NSScrollView(frame: host.bounds)
+        let document = NSView(frame: host.bounds)
+        let card = DiffFileCardView(file: makeDiff(path: "in/a/window.swift", added: 3, removed: 1))
+        document.addSubview(card)
+        scroll.documentView = document
+        host.addSubview(scroll)
+        window.contentView = host
+        window.layoutIfNeeded()
+
+        let found = firstElement(in: window.contentView, role: .disclosureTriangle)
+        let label = try XCTUnwrap(found?.accessibilityLabel(), "the fold control vanished once nested in a scroll view")
+        XCTAssertTrue(label.hasPrefix("in/a/window.swift"), label)
+    }
+
+    private func firstElement(in view: NSView?, role: NSAccessibility.Role) -> NSView? {
+        guard let view else { return nil }
+        if view.accessibilityRole() == role { return view }
+        for child in view.subviews {
+            if let found = firstElement(in: child, role: role) { return found }
+        }
+        return nil
+    }
+
     func testTerminalIsExposedAsAReadableTextArea() {
         // SwiftTerm ships accessibility for UIKit only, so on macOS the entire Run stage was
         // absent from the AX tree — window and scrollbar, no text, no prompt.

@@ -24,7 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        (window.contentViewController as? ShellViewController)?.restoreLastSessionIfAvailable()
+        // UI tests launch with `-SideUITesting YES` (which lands in UserDefaults' argument
+        // domain). Restoring the developer's real last project would make a test run poke at
+        // their working tree — and make the tests depend on whatever was open last.
+        if !UserDefaults.standard.bool(forKey: "SideUITesting") {
+            (window.contentViewController as? ShellViewController)?.restoreLastSessionIfAvailable()
+        }
     }
 
     @objc private func persistenceFailed(_ notification: Notification) {
@@ -131,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // resolve their vibrancy against that light backdrop too — which is exactly why the
         // chrome still read as too bright/gray despite our own views using dark colors.
         window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(white: 0.098, alpha: 1)
+        window.backgroundColor = DS.Color.chrome
         // Even with dark appearance forced, the native title/toolbar strip still renders
         // using the system's own dark-mode material — a medium charcoal, visibly lighter
         // than the app's near-black content. This is very likely the real source of "still

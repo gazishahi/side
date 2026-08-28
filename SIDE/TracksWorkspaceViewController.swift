@@ -181,19 +181,19 @@ final class TracksWorkspaceViewController: NSViewController {
 
         topControlsRow.orientation = .horizontal
         topControlsRow.alignment = .centerY
-        topControlsRow.spacing = 12
+        topControlsRow.spacing = DS.Spacing.xl
         [newTrackButton, switchExistingBranchButton, showArchivedButton, archivedCountLabel, statusLabel].forEach(topControlsRow.addArrangedSubview)
 
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
-        headerStack.spacing = 10
+        headerStack.spacing = DS.Spacing.l
         headerStack.translatesAutoresizingMaskIntoConstraints = false
         headerStack.addArrangedSubview(topControlsRow)
         view.addSubview(headerStack)
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 20
+        contentStack.spacing = DS.Spacing.section
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         // NSScrollView doesn't auto-manage this for its documentView the way NSStackView does
         // for arranged subviews — without it, AppKit's autoresizing-mask-derived constraints
@@ -376,7 +376,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let groupStack = NSStackView()
         groupStack.orientation = .vertical
         groupStack.alignment = .leading
-        groupStack.spacing = 7
+        groupStack.spacing = DS.Spacing.s
 
         let labelField = NSTextField(labelWithString: label)
         labelField.font = DS.Text.control(.semibold)
@@ -396,7 +396,7 @@ final class TracksWorkspaceViewController: NSViewController {
     private func makeCard(tracks: [Track]) -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = 10
+        card.layer?.cornerRadius = DS.Radius.card
         card.layer?.borderWidth = 1
         card.layer?.borderColor = TracksPalette.cardBorder.cgColor
         card.layer?.backgroundColor = TracksPalette.cardBackground.cgColor
@@ -536,7 +536,7 @@ final class TracksWorkspaceViewController: NSViewController {
     private func makeInfoBannerCard(symbolName: String, text: String, buttonTitle: String, action: Selector) -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = 10
+        card.layer?.cornerRadius = DS.Radius.card
         card.layer?.borderWidth = 1
         card.layer?.borderColor = TracksPalette.cardBorder.cgColor
         card.layer?.backgroundColor = TracksPalette.cardBackground.cgColor
@@ -564,7 +564,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let stack = NSStackView(views: [glyph, label, button])
         stack.orientation = .horizontal
         stack.alignment = .centerY
-        stack.spacing = 10
+        stack.spacing = DS.Spacing.l
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         card.addSubview(stack)
@@ -630,7 +630,7 @@ final class TracksWorkspaceViewController: NSViewController {
             let stack = NSStackView(views: [field, basePopup])
             stack.orientation = .vertical
             stack.alignment = .leading
-            stack.spacing = 8
+            stack.spacing = DS.Spacing.m
             // NSAlert sizes the sheet from accessoryView.frame before Auto Layout resolves
             // anything — see CommandProposalView/AddProviderForm for the same lesson learned
             // the hard way earlier.
@@ -1163,7 +1163,7 @@ private final class TrackRowView: NSView {
         let chip = NSView()
         chip.wantsLayer = true
         chip.layer?.backgroundColor = TracksPalette.chip.cgColor
-        chip.layer?.cornerRadius = 4
+        chip.layer?.cornerRadius = DS.Radius.chip
         chip.translatesAutoresizingMaskIntoConstraints = false
         branchLabel.translatesAutoresizingMaskIntoConstraints = false
         chip.addSubview(branchLabel)
@@ -1180,7 +1180,7 @@ private final class TrackRowView: NSView {
         let statusPill = NSView()
         statusPill.wantsLayer = true
         statusPill.layer?.backgroundColor = statusColor.withAlphaComponent(0.16).cgColor
-        statusPill.layer?.cornerRadius = 4
+        statusPill.layer?.cornerRadius = DS.Radius.chip
         statusPill.translatesAutoresizingMaskIntoConstraints = false
         let statusLabel = NSTextField(labelWithString: TracksPalette.statusText(for: status))
         statusLabel.font = DS.Text.micro(.semibold)
@@ -1215,12 +1215,12 @@ private final class TrackRowView: NSView {
         let metaRow = NSStackView(views: metaRowViews)
         metaRow.orientation = .horizontal
         metaRow.alignment = .centerY
-        metaRow.spacing = 6
+        metaRow.spacing = DS.Spacing.s
 
         let mainStack = NSStackView(views: [intentLabel, metaRow])
         mainStack.orientation = .vertical
         mainStack.alignment = .leading
-        mainStack.spacing = 2
+        mainStack.spacing = DS.Spacing.xxs
         mainStack.translatesAutoresizingMaskIntoConstraints = false
 
         primaryButton.bezelStyle = .rounded
@@ -1240,7 +1240,7 @@ private final class TrackRowView: NSView {
 
         actionsStack.orientation = .horizontal
         actionsStack.alignment = .centerY
-        actionsStack.spacing = 6
+        actionsStack.spacing = DS.Spacing.s
         actionsStack.translatesAutoresizingMaskIntoConstraints = false
         actionsStack.alphaValue = (primaryAction?.alwaysVisible == true) ? 1 : 0
         if let primaryAction {

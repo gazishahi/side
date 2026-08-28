@@ -73,7 +73,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         arrowLabel.textColor = .tertiaryLabelColor
         subtitleRow.orientation = .horizontal
         subtitleRow.alignment = .centerY
-        subtitleRow.spacing = 6
+        subtitleRow.spacing = DS.Spacing.s
         subtitleRow.addArrangedSubview(branchChip)
         subtitleRow.addArrangedSubview(arrowLabel)
         subtitleRow.addArrangedSubview(baseChip)
@@ -83,7 +83,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         checkpointsHeader.textColor = .secondaryLabelColor
         checkpointsStack.orientation = .vertical
         checkpointsStack.alignment = .leading
-        checkpointsStack.spacing = 8
+        checkpointsStack.spacing = DS.Spacing.m
         checkpointsStack.translatesAutoresizingMaskIntoConstraints = false
 
         diffHeader.font = DS.Text.control(.semibold)
@@ -102,14 +102,14 @@ final class ReviewWorkspaceViewController: NSViewController {
 
         bottomBar.orientation = .horizontal
         bottomBar.alignment = .firstBaseline
-        bottomBar.spacing = 10
+        bottomBar.spacing = DS.Spacing.l
         bottomBar.addArrangedSubview(promoteButton)
         bottomBar.addArrangedSubview(statusLabel)
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 12
+        contentStack.spacing = DS.Spacing.xl
         contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         for view in [titleLabel, subtitleRow, checkpointsHeader, checkpointsStack, diffHeader, diffViewer, bottomBar] {
@@ -120,9 +120,9 @@ final class ReviewWorkspaceViewController: NSViewController {
             // reasoning as Think's transcript `addBlock`.
             view.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -32).isActive = true
         }
-        contentStack.setCustomSpacing(6, after: titleLabel)
-        contentStack.setCustomSpacing(20, after: subtitleRow)
-        contentStack.setCustomSpacing(20, after: checkpointsStack)
+        contentStack.setCustomSpacing(DS.Spacing.s, after: titleLabel)
+        contentStack.setCustomSpacing(DS.Spacing.section, after: subtitleRow)
+        contentStack.setCustomSpacing(DS.Spacing.section, after: checkpointsStack)
 
         let documentView = ReviewDocumentView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
@@ -230,7 +230,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private func makeCheckpointCard(_ checkpoint: Checkpoint) -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = 10
+        card.layer?.cornerRadius = DS.Radius.card
         card.layer?.borderWidth = 1
         card.layer?.borderColor = ReviewPalette.cardBorder.cgColor
         card.layer?.backgroundColor = ReviewPalette.cardBackground.cgColor
@@ -269,7 +269,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private static func styleChip(_ chip: NSView, _ label: NSTextField) {
         chip.wantsLayer = true
         chip.layer?.backgroundColor = ReviewPalette.chip.cgColor
-        chip.layer?.cornerRadius = 4
+        chip.layer?.cornerRadius = DS.Radius.chip
         chip.translatesAutoresizingMaskIntoConstraints = false
         label.font = DS.Text.code(11, weight: .regular)
         label.textColor = .secondaryLabelColor

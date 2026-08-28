@@ -33,7 +33,7 @@ final class ProposedEditView: NSView {
 
         // Same renderer as Review's per-file cards — line-number gutters and full-line tints,
         // so a proposal's diff reads identically to the diff the track's Review shows later.
-        diffView.textStorage?.setAttributedString(DiffBody.attributedBody(hunks: UnifiedDiff.parseHunks(diffText)))
+        DiffBody.fill(diffView, hunks: UnifiedDiff.parseHunks(diffText))
         diffScroll.documentView = diffView
         diffScroll.drawsBackground = false
         diffScroll.hasVerticalScroller = true
@@ -53,7 +53,7 @@ final class ProposedEditView: NSView {
         resolutionLabel.isHidden = true
 
         buttonRow.orientation = .horizontal
-        buttonRow.spacing = 8
+        buttonRow.spacing = DS.Spacing.m
         buttonRow.addArrangedSubview(applyButton)
         buttonRow.addArrangedSubview(rejectButton)
         buttonRow.addArrangedSubview(resolutionLabel)

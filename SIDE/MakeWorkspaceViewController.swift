@@ -122,9 +122,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let maxRecentProjects = 8
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
-    private static let editorBackground = NSColor(white: 0.098, alpha: 1)
+    private static let editorBackground = DS.Color.chrome
     private static let editorFont = DS.Text.code(14, weight: .regular)
-    private static let editorTextColor = NSColor(white: 0.85, alpha: 1)
+    private static let editorTextColor = DS.Color.text
 
     override func loadView() { view = NSView() }
 
@@ -201,7 +201,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tabBar.addSubview(divider)
         tabBarStack.orientation = .horizontal
         tabBarStack.alignment = .bottom
-        tabBarStack.spacing = 2
+        tabBarStack.spacing = DS.Spacing.xxs
         tabBarStack.translatesAutoresizingMaskIntoConstraints = false
         // The strip scrolls once chips outgrow the window — the old required trailing
         // constraint literally forced the *window* to widen with every opened tab.
@@ -329,13 +329,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         newProjectButton.controlSize = .large
         let buttonsRow = NSStackView(views: [newProjectButton, open])
         buttonsRow.orientation = .horizontal
-        buttonsRow.spacing = 10
+        buttonsRow.spacing = DS.Spacing.l
         recentProjectsStack.orientation = .vertical
         recentProjectsStack.alignment = .centerX
-        recentProjectsStack.spacing = 4
+        recentProjectsStack.spacing = DS.Spacing.xs
         emptyState.orientation = .vertical
         emptyState.alignment = .centerX
-        emptyState.spacing = 13
+        emptyState.spacing = DS.Spacing.xl
         [headline, detail, buttonsRow, recentProjectsStack].forEach(emptyState.addArrangedSubview)
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyState)
@@ -540,7 +540,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.contentView = padded
-            glass.cornerRadius = 10
+            glass.cornerRadius = DS.Radius.card
             glass.style = .regular
             fileExplorerPanel.contentView = glass
         } else {
@@ -549,7 +549,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             effect.state = .active
             effect.blendingMode = .withinWindow
             effect.wantsLayer = true
-            effect.layer?.cornerRadius = 10
+            effect.layer?.cornerRadius = DS.Radius.card
             effect.layer?.masksToBounds = true
             effect.addSubview(padded)
             NSLayoutConstraint.activate([
@@ -878,10 +878,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             ])
         }
         text.stringValue = node.name
-        text.textColor = node.isDirectory ? NSColor(white: 0.75, alpha: 1) : NSColor(white: 0.85, alpha: 1)
+        text.textColor = node.isDirectory ? DS.Color.textSecondary : DS.Color.text
         let symbolName = node.isDirectory ? "folder.fill" : "doc.text"
         icon.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
-        icon.contentTintColor = node.isDirectory ? NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1) : NSColor(white: 0.55, alpha: 1)
+        icon.contentTintColor = node.isDirectory ? NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1) : DS.Color.textMuted
         return cell
     }
 
@@ -974,7 +974,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         label.font = DS.Text.caption(.semibold)
         label.textColor = .tertiaryLabelColor
         recentProjectsStack.addArrangedSubview(label)
-        recentProjectsStack.setCustomSpacing(8, after: label)
+        recentProjectsStack.setCustomSpacing(DS.Spacing.m, after: label)
 
         // NSGridView (not per-row NSStackViews) so the name column and path column each
         // line up across rows instead of every row sizing independently to its own content.
@@ -2150,7 +2150,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
             text.stringValue = colIndex < rows[dataRow].count ? rows[dataRow][colIndex] : ""
-            text.textColor = NSColor(white: 0.85, alpha: 1)
+            text.textColor = DS.Color.text
             return cell
         }
 
@@ -2170,12 +2170,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
             if let detail = item.detail, !detail.isEmpty {
-                let attributed = NSMutableAttributedString(string: item.label, attributes: [.foregroundColor: NSColor(white: 0.9, alpha: 1)])
-                attributed.append(NSAttributedString(string: "  \(detail)", attributes: [.foregroundColor: NSColor(white: 0.55, alpha: 1)]))
+                let attributed = NSMutableAttributedString(string: item.label, attributes: [.foregroundColor: DS.Color.textStrong])
+                attributed.append(NSAttributedString(string: "  \(detail)", attributes: [.foregroundColor: DS.Color.textMuted]))
                 text.attributedStringValue = attributed
             } else {
                 text.stringValue = item.label
-                text.textColor = NSColor(white: 0.9, alpha: 1)
+                text.textColor = DS.Color.textStrong
             }
             return cell
         }
@@ -2353,7 +2353,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var bracketHighlightRanges: [NSRange] = []
     private static let bracketPairs: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
     private static let bracketPairsReversed: [Character: Character] = [")": "(", "]": "[", "}": "{"]
-    private static let bracketHighlightColor = NSColor(white: 1.0, alpha: 0.15)
+    private static let bracketHighlightColor = DS.Color.scrimMedium
 
     func textViewDidChangeSelection(_ notification: Notification) {
         updateBracketHighlight()
@@ -3044,7 +3044,7 @@ final class EditorTextView: NSTextView {
         onDefinitionRequested?(index)
     }
 
-    private static let currentLineHighlightColor = NSColor(white: 1, alpha: 0.045)
+    private static let currentLineHighlightColor = DS.Color.scrimFaint
 
     /// Real NSTextView override point for exactly this: a full-width current-line band,
     /// matching Xcode/Cursor. Skipped whenever there's an active selection, same as both.
@@ -3221,13 +3221,13 @@ final class TabChipView: NSView {
             stroke.lineWidth = 1
             stroke.stroke()
         } else if isHovered {
-            NSColor(white: 1, alpha: 0.05).setFill()
+            DS.Color.scrimSoft.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: Self.flare - 2, dy: 4), xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
         }
 
         let dimmed = isDead ? 0.35 : 1.0
         let attributes: [NSAttributedString.Key: Any] = [
-            .foregroundColor: (isActive ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.55, alpha: 1)).withAlphaComponent(dimmed),
+            .foregroundColor: (isActive ? DS.Color.textStrong : DS.Color.textMuted).withAlphaComponent(dimmed),
             .font: DS.Text.control(isActive ? .semibold : .regular)
         ]
         let text = title as NSString
@@ -3333,8 +3333,8 @@ final class TabChipView: NSView {
 final class TabCloseButton: CircularIconButton {
     init() {
         super.init(diameter: 16)
-        setSymbol("xmark", pointSize: 8, weight: .semibold, color: NSColor(white: 0.62, alpha: 1), accessibilityLabel: "Close Tab")
-        hoverBackgroundColor = NSColor(white: 1, alpha: 0.16)
+        setSymbol("xmark", pointSize: 8, weight: .semibold, color: DS.Color.textMuted, accessibilityLabel: "Close Tab")
+        hoverBackgroundColor = DS.Color.scrimStrong
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

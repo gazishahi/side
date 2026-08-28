@@ -66,7 +66,7 @@ final class RunWorkspaceViewController: NSViewController {
         tabBar.layer?.backgroundColor = DS.Color.tabStrip.cgColor
         tabBarStack.orientation = .horizontal
         tabBarStack.alignment = .bottom
-        tabBarStack.spacing = 2
+        tabBarStack.spacing = DS.Spacing.xxs
         tabBarStack.translatesAutoresizingMaskIntoConstraints = false
         tabBar.addSubview(tabBarStack)
 

@@ -70,7 +70,7 @@ final class CommandProposalView: NSView {
         resolutionLabel.isHidden = true
 
         buttonRow.orientation = .horizontal
-        buttonRow.spacing = 8
+        buttonRow.spacing = DS.Spacing.m
         buttonRow.addArrangedSubview(applyButton)
         buttonRow.addArrangedSubview(rejectButton)
         buttonRow.addArrangedSubview(resolutionLabel)

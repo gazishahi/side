@@ -15,7 +15,7 @@ final class LineNumberGutterView: NSView {
     private static let removedColor = NSColor(red: 0.86, green: 0.42, blue: 0.42, alpha: 1)
     private static let errorColor = NSColor(red: 0.92, green: 0.35, blue: 0.35, alpha: 1)
     private static let warningColor = NSColor(red: 0.93, green: 0.75, blue: 0.3, alpha: 1)
-    private static let hintColor = NSColor(white: 0.55, alpha: 1)
+    private static let hintColor = DS.Color.textMuted
 
     private static func color(for severity: LSPDiagnosticSeverity) -> NSColor {
         switch severity {
@@ -42,7 +42,7 @@ final class LineNumberGutterView: NSView {
     @objc func invalidate() { needsDisplay = true }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0.098, alpha: 1).setFill()
+        DS.Color.chrome.setFill()
         bounds.fill()
         guard let textView, let layoutManager = textView.layoutManager, let textContainer = textView.textContainer, let scrollView else { return }
 
@@ -60,7 +60,7 @@ final class LineNumberGutterView: NSView {
 
         var lineNumber = text.substring(to: characterRange.location).components(separatedBy: "\n").count
         var index = characterRange.location
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(white: 0.42, alpha: 1)]
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: DS.Color.textFaint]
 
         var safetyCounter = 0
         let maxIterations = 5000

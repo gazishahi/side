@@ -34,7 +34,7 @@ final class HistoryViewController: NSViewController {
         retentionLabel.font = DS.Text.control()
         let retentionRow = NSStackView(views: [retentionLabel, retentionPopup])
         retentionRow.orientation = .horizontal
-        retentionRow.spacing = 8
+        retentionRow.spacing = DS.Spacing.m
 
         let retentionNote = NSTextField(wrappingLabelWithString: "Expired conversations are removed the next time you open that project. Checkpoints are kept either way — they're the record of what an agent actually changed, and they point at real commits.")
         retentionNote.font = DS.Text.caption()
@@ -49,10 +49,10 @@ final class HistoryViewController: NSViewController {
         let stack = NSStackView(views: [title, explainer, retentionRow, retentionNote, deleteButton])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
-        stack.setCustomSpacing(16, after: title)
-        stack.setCustomSpacing(18, after: retentionNote)
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        stack.spacing = DS.Spacing.l
+        stack.setCustomSpacing(DS.Spacing.section, after: title)
+        stack.setCustomSpacing(DS.Spacing.section, after: retentionNote)
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.section, left: DS.Spacing.section, bottom: DS.Spacing.section, right: DS.Spacing.section)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
 

@@ -5,7 +5,7 @@ enum SyntaxHighlighter {
 
     private static let keywordColor = NSColor(red: 0.78, green: 0.48, blue: 0.96, alpha: 1)
     private static let stringColor = NSColor(red: 0.94, green: 0.60, blue: 0.44, alpha: 1)
-    private static let commentColor = NSColor(white: 0.45, alpha: 1)
+    private static let commentColor = DS.Color.comment
     private static let numberColor = NSColor(red: 0.68, green: 0.80, blue: 0.98, alpha: 1)
     private static let headingColor = NSColor(red: 0.55, green: 0.85, blue: 0.65, alpha: 1)
     private static let jsxTagColor = NSColor(red: 0.42, green: 0.82, blue: 0.66, alpha: 1)

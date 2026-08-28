@@ -28,7 +28,7 @@ final class AppearanceViewController: NSViewController {
 
         let scaleRow = NSStackView(views: [scaleLabel, scalePopup])
         scaleRow.orientation = .horizontal
-        scaleRow.spacing = 8
+        scaleRow.spacing = DS.Spacing.m
 
         let note = NSTextField(wrappingLabelWithString: "Applies to Side's own interface — stage headers, transcripts, diffs, lists, and this window. The editor's and terminal's own text size is set separately, in Make and Run.")
         note.textColor = .tertiaryLabelColor
@@ -38,16 +38,16 @@ final class AppearanceViewController: NSViewController {
         let samples = NSStackView(views: [sampleLabel, sampleCaption, sampleCode])
         samples.orientation = .vertical
         samples.alignment = .leading
-        samples.spacing = 6
+        samples.spacing = DS.Spacing.s
         sampleCaption.textColor = .secondaryLabelColor
 
         let stack = NSStackView(views: [titleLabel, scaleRow, note, samples])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
-        stack.setCustomSpacing(16, after: titleLabel)
-        stack.setCustomSpacing(18, after: note)
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        stack.spacing = DS.Spacing.l
+        stack.setCustomSpacing(DS.Spacing.section, after: titleLabel)
+        stack.setCustomSpacing(DS.Spacing.section, after: note)
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.section, left: DS.Spacing.section, bottom: DS.Spacing.section, right: DS.Spacing.section)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
 

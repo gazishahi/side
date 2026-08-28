@@ -32,6 +32,30 @@ enum DS {
         /// The lineage rail connecting a stacked track to its parent in Tracks.
         static let rail = NSColor(white: 0.32, alpha: 1)
 
+        // MARK: Text and editor surfaces
+        //
+        // The charter named these as tokens; in practice Make, the ruler, and the highlighter
+        // each carried their own `NSColor(white:)` literals — which is how the editor's body
+        // text and the file tree's ended up a shade apart. One definition each, here.
+
+        /// Editor body text and any label that should read as primary content on a dark surface.
+        static let text = NSColor(white: 0.85, alpha: 1)
+        /// Emphasized text — the active tab's title, a highlighted completion row.
+        static let textStrong = NSColor(white: 0.92, alpha: 1)
+        /// Secondary content: directory names in the file tree.
+        static let textSecondary = NSColor(white: 0.75, alpha: 1)
+        /// Icons and de-emphasized labels.
+        static let textMuted = NSColor(white: 0.55, alpha: 1)
+        /// Line numbers and diff gutters — quieter than muted, because they repeat on every row.
+        static let textFaint = NSColor(white: 0.42, alpha: 1)
+        /// Syntax comments.
+        static let comment = NSColor(white: 0.45, alpha: 1)
+        /// White-on-dark scrims for hover, current-line, and bracket-match fills, by weight.
+        static let scrimFaint = NSColor(white: 1, alpha: 0.045)
+        static let scrimSoft = NSColor(white: 1, alpha: 0.05)
+        static let scrimMedium = NSColor(white: 1, alpha: 0.15)
+        static let scrimStrong = NSColor(white: 1, alpha: 0.16)
+
         static func status(for status: TrackStatus) -> NSColor {
             switch status {
             case .active: return .systemGreen
@@ -42,6 +66,28 @@ enum DS {
             case .archived: return .tertiaryLabelColor
             }
         }
+    }
+
+    /// The spacing scale the charter named and the code never had — insets, stack spacing, and
+    /// gaps were 57 separate literals, which is why no two stages' padding quite matched.
+    /// A 4pt base, since every existing value was already a multiple or half-step of it.
+    enum Spacing {
+        /// Hairline gaps: between a label and its own badge.
+        static let xxs: CGFloat = 2
+        /// Within a compound control — icon to its text.
+        static let xs: CGFloat = 4
+        /// Between tightly related rows (a title over its subtitle).
+        static let s: CGFloat = 6
+        /// The default gap between sibling controls in a row.
+        static let m: CGFloat = 8
+        /// Between distinct rows in a stack.
+        static let l: CGFloat = 10
+        /// Card padding and stage-content insets.
+        static let xl: CGFloat = 12
+        /// Stage edge margins.
+        static let xxl: CGFloat = 14
+        /// Between sections that should read as separate.
+        static let section: CGFloat = 20
     }
 
     enum Radius {

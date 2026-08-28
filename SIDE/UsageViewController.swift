@@ -20,8 +20,8 @@ final class UsageViewController: NSViewController {
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 10
-        contentStack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        contentStack.spacing = DS.Spacing.l
+        contentStack.edgeInsets = NSEdgeInsets(top: DS.Spacing.section, left: DS.Spacing.section, bottom: DS.Spacing.section, right: DS.Spacing.section)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
         let documentView = FlippedView()
@@ -78,14 +78,14 @@ final class UsageViewController: NSViewController {
             contentStack.addArrangedSubview(empty)
             // A budget is worth setting *before* spending anything, so this section shows up on
             // a fresh install rather than only once there's history to look at.
-            contentStack.setCustomSpacing(20, after: empty)
+            contentStack.setCustomSpacing(DS.Spacing.section, after: empty)
             contentStack.addArrangedSubview(makeSectionTitle("Monthly budget"))
             contentStack.addArrangedSubview(makeBudgetControls())
             return
         }
 
         contentStack.addArrangedSubview(makeSummaryCard(grand: grand, estimate: store.estimatedCost()))
-        contentStack.setCustomSpacing(20, after: contentStack.arrangedSubviews[0])
+        contentStack.setCustomSpacing(DS.Spacing.section, after: contentStack.arrangedSubviews[0])
 
         contentStack.addArrangedSubview(makeSectionTitle("By model"))
         contentStack.addArrangedSubview(makeHeaderRow(first: "Model"))
@@ -104,7 +104,7 @@ final class UsageViewController: NSViewController {
 
         let byProject = store.totalsByProject()
         if !byProject.isEmpty {
-            contentStack.setCustomSpacing(20, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
+            contentStack.setCustomSpacing(DS.Spacing.section, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
             contentStack.addArrangedSubview(makeSectionTitle("By project"))
             contentStack.addArrangedSubview(makeHeaderRow(first: "Project"))
             for entry in byProject {
@@ -123,14 +123,14 @@ final class UsageViewController: NSViewController {
             }
         }
 
-        contentStack.setCustomSpacing(20, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
+        contentStack.setCustomSpacing(DS.Spacing.section, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
         contentStack.addArrangedSubview(makeSectionTitle("Monthly budget"))
         contentStack.addArrangedSubview(makeBudgetControls())
 
         let reset = NSButton(title: "Reset Usage History…", target: self, action: #selector(resetUsage))
         reset.bezelStyle = .rounded
         reset.controlSize = .small
-        contentStack.setCustomSpacing(20, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
+        contentStack.setCustomSpacing(DS.Spacing.section, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
         contentStack.addArrangedSubview(reset)
     }
 
@@ -157,7 +157,7 @@ final class UsageViewController: NSViewController {
         figures.orientation = .horizontal
         figures.alignment = .top
         figures.distribution = .fillEqually
-        figures.spacing = 16
+        figures.spacing = DS.Spacing.section
         figures.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(figures)
 
@@ -191,7 +191,7 @@ final class UsageViewController: NSViewController {
         let stack = NSStackView(views: [valueLabel, captionLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 2
+        stack.spacing = DS.Spacing.xxs
         return stack
     }
 
@@ -224,7 +224,7 @@ final class UsageViewController: NSViewController {
         let nameStack = NSStackView(views: [titleLabel, subtitleLabel])
         nameStack.orientation = .vertical
         nameStack.alignment = .leading
-        nameStack.spacing = 1
+        nameStack.spacing = DS.Spacing.xxs
         nameStack.translatesAutoresizingMaskIntoConstraints = false
         nameStack.widthAnchor.constraint(equalToConstant: Self.columnWidths.name).isActive = true
 
@@ -252,7 +252,7 @@ final class UsageViewController: NSViewController {
         let row = NSStackView(views: [first, requests, tokens, cost])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 12
+        row.spacing = DS.Spacing.xl
         return row
     }
 
@@ -294,7 +294,7 @@ final class UsageViewController: NSViewController {
         let row = NSStackView(views: [label, dollar, budgetField, perMonth])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 6
+        row.spacing = DS.Spacing.s
 
         let statusLabel = NSTextField(wrappingLabelWithString: budgetStatusText())
         statusLabel.font = DS.Text.caption()
@@ -305,7 +305,7 @@ final class UsageViewController: NSViewController {
         let stack = NSStackView(views: [row, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 6
+        stack.spacing = DS.Spacing.s
         return stack
     }
 

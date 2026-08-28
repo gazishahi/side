@@ -63,14 +63,14 @@ final class LSPInstallPopoverViewController: NSViewController {
 
         let buttonRow = NSStackView(views: [installButton, spinner])
         buttonRow.orientation = .horizontal
-        buttonRow.spacing = 8
+        buttonRow.spacing = DS.Spacing.m
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = NSStackView(views: [messageLabel, buttonRow, logScroll])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        stack.spacing = DS.Spacing.l
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.xxl, left: DS.Spacing.xxl, bottom: DS.Spacing.xxl, right: DS.Spacing.xxl)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         NSLayoutConstraint.activate([
