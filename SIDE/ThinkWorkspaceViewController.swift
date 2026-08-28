@@ -1098,6 +1098,93 @@ private final class BubbleRowView: NSView {
 /// `MentionCompletionPopup` for why that approach was abandoned.
 
 
+
+/// A segmented control whose selection *slides*: a Liquid Glass thumb springs between segments
+/// instead of the stock control's instant swap. NSSegmentedControl has no animated selection and
+/// no glass style, and this is the popover's whole feel — three of these in a row.
+private final class SlidingSegmentedControl: NSView {
+    var onChange: ((Int) -> Void)?
+    private(set) var selectedIndex = 0
+    var isEnabledControl = true {
+        didSet { alphaValue = isEnabledControl ? 1 : 0.4 }
+    }
+
+    private let thumb = DS.makeGlass(cornerRadius: 12)
+    private let track = NSView()
+    private var buttons: [NSButton] = []
+
+    init(titles: [String]) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+
+        track.wantsLayer = true
+        track.layer?.backgroundColor = DS.Color.scrimFaint.cgColor
+        track.layer?.cornerRadius = 14
+        addSubview(track)
+        addSubview(thumb)
+        for (index, title) in titles.enumerated() {
+            let button = NSButton(title: title, target: self, action: #selector(segmentTapped(_:)))
+            button.isBordered = false
+            button.font = DS.Text.control(.medium)
+            button.tag = index
+            addSubview(button)
+            buttons.append(button)
+        }
+        heightAnchor.constraint(equalToConstant: 28).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // Manual layout: equal-width segments, thumb under the selected one. Simpler and more
+    // animatable than constraint juggling for a fixed-height three-way control.
+    override func layout() {
+        super.layout()
+        track.frame = bounds
+        let width = bounds.width / CGFloat(max(buttons.count, 1))
+        for (index, button) in buttons.enumerated() {
+            button.frame = NSRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
+        }
+        thumb.frame = thumbFrame(for: selectedIndex)
+        refreshTitles()
+    }
+
+    private func thumbFrame(for index: Int) -> NSRect {
+        let width = bounds.width / CGFloat(max(buttons.count, 1))
+        return NSRect(x: CGFloat(index) * width + 2, y: 2, width: width - 4, height: bounds.height - 4)
+    }
+
+    func select(_ index: Int, animated: Bool) {
+        guard buttons.indices.contains(index) else { return }
+        selectedIndex = index
+        guard animated else {
+            thumb.frame = thumbFrame(for: index)
+            refreshTitles()
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.32
+            // A slight overshoot on the way in — the same spring language as the pill press.
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 1.2, 0.35, 1)
+            context.allowsImplicitAnimation = true
+            thumb.animator().frame = thumbFrame(for: index)
+        }
+        refreshTitles()
+    }
+
+    private func refreshTitles() {
+        for (index, button) in buttons.enumerated() {
+            button.contentTintColor = index == selectedIndex ? .labelColor : .secondaryLabelColor
+        }
+    }
+
+    @objc private func segmentTapped(_ sender: NSButton) {
+        guard isEnabledControl, sender.tag != selectedIndex else { return }
+        select(sender.tag, animated: true)
+        onChange?(sender.tag)
+    }
+}
+
 /// The session pill's popover: model, thinking effort, tool scope, autonomy, and the context /
 /// spend figures — as real macOS controls rather than stacked menus. Three-way choices are
 /// segmented controls; the model list is a popup grouped by provider.
@@ -1121,9 +1208,9 @@ private final class SessionSettingsViewController: NSViewController {
     var onAutonomyChosen: ((AgentAutonomy) -> Void)?
 
     private let modelPopup = NSPopUpButton()
-    private let effortControl = NSSegmentedControl()
-    private let scopeControl = NSSegmentedControl()
-    private let autonomyControl = NSSegmentedControl()
+    private let effortControl = SlidingSegmentedControl(titles: AgentEffort.allCases.map { $0 == .standard ? "Standard" : $0.shortLabel.capitalized })
+    private let scopeControl = SlidingSegmentedControl(titles: AgentToolScope.allCases.map(\.displayName))
+    private let autonomyControl = SlidingSegmentedControl(titles: AgentAutonomy.allCases.map { $0.shortLabel.capitalized })
     private let autonomyCaption = NSTextField(wrappingLabelWithString: "")
     private let usageLabel = NSTextField(labelWithString: "")
     private let spendLabel = NSTextField(labelWithString: "")
@@ -1144,16 +1231,20 @@ private final class SessionSettingsViewController: NSViewController {
         modelPopup.target = self
         modelPopup.action = #selector(modelChanged)
 
-        for (control, titles, action) in [
-            (effortControl, AgentEffort.allCases.map { $0 == .standard ? "Standard" : $0.shortLabel.capitalized }, #selector(effortChanged)),
-            (scopeControl, AgentToolScope.allCases.map(\.displayName), #selector(scopeChanged)),
-            (autonomyControl, AgentAutonomy.allCases.map { $0.shortLabel.capitalized }, #selector(autonomyChanged)),
-        ] {
-            control.segmentCount = titles.count
-            for (index, title) in titles.enumerated() { control.setLabel(title, forSegment: index) }
-            control.segmentStyle = .capsule
-            control.target = self
-            control.action = action
+        effortControl.onChange = { [weak self] index in
+            guard AgentEffort.allCases.indices.contains(index) else { return }
+            self?.onEffortChosen?(AgentEffort.allCases[index])
+        }
+        scopeControl.onChange = { [weak self] index in
+            guard AgentToolScope.allCases.indices.contains(index) else { return }
+            self?.onScopeChosen?(AgentToolScope.allCases[index])
+        }
+        autonomyControl.onChange = { [weak self] index in
+            guard AgentAutonomy.allCases.indices.contains(index) else { return }
+            self?.onAutonomyChosen?(AgentAutonomy.allCases[index])
+        }
+        for control in [effortControl, scopeControl, autonomyControl] {
+            control.widthAnchor.constraint(equalToConstant: 312).isActive = true
         }
 
         autonomyCaption.font = DS.Text.micro()
@@ -1200,6 +1291,9 @@ private final class SessionSettingsViewController: NSViewController {
         let registry = ProviderRegistryStore.shared
 
         modelPopup.removeAllItems()
+        // Without this, NSMenu re-enables every item itself and the provider headers become
+        // selectable rows, which is how a provider ended up choosable as a model.
+        modelPopup.menu?.autoenablesItems = false
         // First row is "follow the app default" — a distinct state from "happens to match it."
         let defaultProvider = registry.provider(for: registry.activeProviderId)
         let defaultName = defaultProvider?.models.first { $0.id == defaultProvider?.defaultModelId }?.displayName ?? "default"
@@ -1229,12 +1323,13 @@ private final class SessionSettingsViewController: NSViewController {
             modelPopup.selectItem(at: 0)
         }
 
-        effortControl.selectedSegment = AgentEffort.allCases.firstIndex(of: snapshot.effort) ?? 0
-        scopeControl.selectedSegment = AgentToolScope.allCases.firstIndex(of: snapshot.mode.scope) ?? 0
-        autonomyControl.selectedSegment = AgentAutonomy.allCases.firstIndex(of: snapshot.mode.autonomy) ?? 0
-        // Nothing to auto-approve in a read-only scope — disabled rather than hidden, so the
+        let animated = view.window != nil
+        effortControl.select(AgentEffort.allCases.firstIndex(of: snapshot.effort) ?? 0, animated: animated)
+        scopeControl.select(AgentToolScope.allCases.firstIndex(of: snapshot.mode.scope) ?? 0, animated: animated)
+        autonomyControl.select(AgentAutonomy.allCases.firstIndex(of: snapshot.mode.autonomy) ?? 0, animated: animated)
+        // Nothing to auto-approve in a read-only scope — dimmed rather than hidden, so the
         // axis doesn't appear to vanish when someone switches to Ask.
-        autonomyControl.isEnabled = snapshot.mode.autonomyIsMeaningful
+        autonomyControl.isEnabledControl = snapshot.mode.autonomyIsMeaningful
         autonomyCaption.stringValue = snapshot.mode.autonomyIsMeaningful
             ? snapshot.mode.autonomy.displayName
             : "Autonomy applies in Build — read-only scopes have nothing to auto-approve."
@@ -1252,20 +1347,8 @@ private final class SessionSettingsViewController: NSViewController {
         if pair[0].isEmpty { onModelChosen?(nil, nil) } else { onModelChosen?(pair[0], pair[1]) }
     }
 
-    @objc private func effortChanged() {
-        guard AgentEffort.allCases.indices.contains(effortControl.selectedSegment) else { return }
-        onEffortChosen?(AgentEffort.allCases[effortControl.selectedSegment])
-    }
 
-    @objc private func scopeChanged() {
-        guard AgentToolScope.allCases.indices.contains(scopeControl.selectedSegment) else { return }
-        onScopeChosen?(AgentToolScope.allCases[scopeControl.selectedSegment])
-    }
 
-    @objc private func autonomyChanged() {
-        guard AgentAutonomy.allCases.indices.contains(autonomyControl.selectedSegment) else { return }
-        onAutonomyChosen?(AgentAutonomy.allCases[autonomyControl.selectedSegment])
-    }
 }
 
 /// One control of the composer's bottom row: a small icon-plus-word capsule that pops a menu.
@@ -1316,33 +1399,64 @@ private final class ChipButton: NSButton {
         contentTintColor = tint
     }
 
+    /// The Liquid Glass press, in two halves. Press: the pill eases down to 93% and *stays*
+    /// there while the mouse is held — the "pushed back" state. Release: it springs out with a
+    /// small overshoot. Both halves apply to the button and its glass together, so the whole
+    /// pill moves as one object.
+    ///
+    /// `mouseDown` blocks in NSButton's tracking loop until release, which is exactly the shape
+    /// this needs: dip before, release after, action (menu/popover) in between — Core Animation
+    /// runs on the render server, so the release bounce plays even while a popped menu blocks
+    /// the run loop.
+    override func mouseDown(with event: NSEvent) {
+        pressDown(self)
+        if let glassBackdrop { pressDown(glassBackdrop) }
+        super.mouseDown(with: event)
+        pressRelease(self)
+        if let glassBackdrop { pressRelease(glassBackdrop) }
+    }
+
     @objc private func pressed() {
-        // The Liquid Glass press: a quick dip and overshoot, applied to the button and its
-        // glass together so the whole pill moves as one object — replacing the hover
-        // rounded-rect, which fought the pill's own shape.
-        springPress(self)
-        if let glassBackdrop { springPress(glassBackdrop) }
         if let onPress { return onPress() }
         guard let menu = menuProvider?() else { return }
         // NSButton is *flipped*, so "above" is negative y.
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -menu.size.height - DS.Spacing.s), in: self)
     }
 
-    private func springPress(_ view: NSView) {
+    private func centeredLayer(_ view: NSView) -> CALayer? {
         view.wantsLayer = true
-        guard let layer = view.layer else { return }
+        guard let layer = view.layer else { return nil }
         layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         layer.position = CGPoint(x: view.frame.midX, y: view.frame.midY)
+        return layer
+    }
+
+    private func pressDown(_ view: NSView) {
+        guard let layer = centeredLayer(view) else { return }
+        layer.removeAnimation(forKey: "springRelease")
+        let dip = CABasicAnimation(keyPath: "transform.scale")
+        dip.toValue = 0.93
+        dip.duration = 0.16
+        dip.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        // Held, not removed: the pill stays pushed back for as long as the mouse is down.
+        dip.fillMode = .forwards
+        dip.isRemovedOnCompletion = false
+        layer.add(dip, forKey: "springDown")
+    }
+
+    private func pressRelease(_ view: NSView) {
+        guard let layer = centeredLayer(view) else { return }
+        layer.removeAnimation(forKey: "springDown")
         let spring = CAKeyframeAnimation(keyPath: "transform.scale")
-        spring.values = [1, 0.93, 1.03, 1]
-        spring.keyTimes = [0, 0.3, 0.72, 1]
-        spring.duration = 0.34
+        spring.values = [0.93, 1.04, 0.99, 1]
+        spring.keyTimes = [0, 0.45, 0.8, 1]
+        spring.duration = 0.36
         spring.timingFunctions = [
             CAMediaTimingFunction(name: .easeOut),
             CAMediaTimingFunction(name: .easeInEaseOut),
             CAMediaTimingFunction(name: .easeOut),
         ]
-        layer.add(spring, forKey: "springPress")
+        layer.add(spring, forKey: "springRelease")
     }
 
     override func updateTrackingAreas() {
@@ -1419,14 +1533,18 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// Whether the popup currently holds slash commands (accepting runs one) rather than
     /// mention paths (accepting inserts one).
     private var popupShowsCommands = false
+    /// True from mic-tap until text arrives (or the field is cleared) — keeps the placeholder
+    /// from sitting underneath dictation's glowing cursor.
+    private var isDictating = false
     private let scroll = NSScrollView()
     private let placeholderLabel = NSTextField(labelWithString: "")
     private let actionButton = CircularIconButton(diameter: 28)
     private let micButton = NSButton()
     private var textHeightConstraint: NSLayoutConstraint!
-    private static let minTextHeight: CGFloat = 20
-    private static let maxTextHeight: CGFloat = 120
-    /// Half the single-row height: 20pt of text + 12pt insets each side = 44.
+    /// Includes the text container's own 8pt vertical padding each side.
+    private static let minTextHeight: CGFloat = 36
+    private static let maxTextHeight: CGFloat = 136
+    /// Half the single-row height: 36pt text area + 4pt scroll insets each side = 44.
     static let capsuleRadius: CGFloat = 22
 
     var text: String { textView.string }
@@ -1468,7 +1586,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
                 self.insertMention(row)
             }
         }
-        textView.textContainerInset = NSSize(width: 0, height: 2)
+        textView.textContainerInset = NSSize(width: 12, height: 8)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.autoresizingMask = [.width]
         scroll.documentView = textView
@@ -1506,13 +1624,16 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             glass.leadingAnchor.constraint(equalTo: leadingAnchor),
             glass.trailingAnchor.constraint(equalTo: trailingAnchor),
             textHeightConstraint,
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xxl + 2),
-            scroll.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -DS.Spacing.s),
-            scroll.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.xl),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.xl),
-            placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 2),
+            // The scroll hugs the capsule and the padding lives *inside* the text container:
+            // dictation draws a glow around the insertion cursor, and with the old tight scroll
+            // frame that glow clipped on every edge. Same visual text position, more headroom.
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.s),
+            scroll.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -2),
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.xs),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Spacing.xs),
+            placeholderLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 14),
             placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
-            placeholderLabel.topAnchor.constraint(equalTo: scroll.topAnchor),
+            placeholderLabel.topAnchor.constraint(equalTo: scroll.topAnchor, constant: DS.Spacing.m),
             // Mic and send are centered on the *single-line band* — the bottom capsule-height of
             // the field — not inset from the bottom edge, which is what left them sitting low.
             // As the field grows they stay pinned to that band, like Messages.
@@ -1528,6 +1649,11 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// it later without the button moving.
     @objc private func micTapped() {
         window?.makeFirstResponder(textView)
+        // The placeholder has to go *now*: dictation draws its glowing insertion cursor at the
+        // text origin, and the placeholder sat under it until the first words arrived. (The
+        // startup delay itself is macOS spinning up the dictation service — not ours to fix.)
+        isDictating = true
+        placeholderLabel.isHidden = true
         NSApp.sendAction(Selector(("startDictation:")), to: nil, from: nil)
     }
 
@@ -1535,6 +1661,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     func clear() {
         // Sending has to take the candidate list down with it, or it hangs over an empty field.
+        isDictating = false
         mentionPopup.hide()
         textView.string = ""
         textDidChange(Notification(name: NSText.didChangeNotification))
@@ -1557,12 +1684,13 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     @objc private func actionTapped() { onAction?() }
 
     func textDidChange(_ notification: Notification) {
-        placeholderLabel.isHidden = !textView.string.isEmpty
+        if !textView.string.isEmpty { isDictating = false }
+        placeholderLabel.isHidden = isDictating || !textView.string.isEmpty
         updateMentionPopup()
         highlightMentions()
         guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
-        let used = layoutManager.usedRect(for: textContainer).height
+        let used = layoutManager.usedRect(for: textContainer).height + textView.textContainerInset.height * 2
         let target = min(max(used, Self.minTextHeight), Self.maxTextHeight)
         if textHeightConstraint.constant != target {
             textHeightConstraint.constant = target

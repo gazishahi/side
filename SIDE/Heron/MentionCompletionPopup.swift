@@ -144,8 +144,23 @@ final class MentionCompletionPopup: NSObject {
     }
 }
 
+/// Selection drawn as a rounded, inset pill: the stock rectangular highlight ran corner-to-
+/// corner and poked square edges out of the rounded panel.
+private final class PaletteRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard isSelected else { return }
+        let rect = bounds.insetBy(dx: DS.Spacing.s, dy: 1.5)
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
+    }
+}
+
 extension MentionCompletionPopup: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { candidates.count }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        PaletteRowView()
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("MentionRow")
@@ -157,8 +172,8 @@ extension MentionCompletionPopup: NSTableViewDataSource, NSTableViewDelegate {
             cell.addSubview(label)
             cell.textField = label
             NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Spacing.m),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -DS.Spacing.m),
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Spacing.xxl),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -DS.Spacing.xxl),
                 label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             ])
             cell.identifier = identifier
