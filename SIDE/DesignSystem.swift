@@ -295,9 +295,9 @@ class CircularIconButton: NSControl {
     override func draw(_ dirtyRect: NSRect) {
         if let fill = gradientFillColor {
             let gradient = NSGradient(colorsAndLocations:
-                (fill.blended(withFraction: 0.22, of: .white) ?? fill, 1),
+                (fill.blended(withFraction: 0.42, of: .white) ?? fill, 1),
                 (fill, 0.45),
-                (fill.blended(withFraction: 0.14, of: .black) ?? fill, 0)
+                (fill.blended(withFraction: 0.28, of: .black) ?? fill, 0)
             )
             gradient?.draw(in: NSBezierPath(ovalIn: bounds), angle: 90)
         }
