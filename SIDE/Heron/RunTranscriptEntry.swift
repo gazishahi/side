@@ -7,6 +7,8 @@ import Foundation
 /// baked into the data.
 struct RunTranscriptEntry: Identifiable {
     let id = UUID()
+    /// When this entry appeared — feeds the "Worked Ns" header on grouped tool activity.
+    let createdAt = Date()
     var kind: Kind
 
     enum Kind {

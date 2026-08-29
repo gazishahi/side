@@ -70,6 +70,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// delta or a proposal resolution can update one block in place instead of rebuilding the
     /// whole transcript on every token.
     private var entryViews: [NSView] = []
+    /// The open "Worked…" group collecting consecutive tool lines; closed by any non-tool
+    /// entry or by the run finishing.
+    private weak var currentWorkGroup: WorkGroupView?
     /// Streamed-text updates waiting for the next flush tick, latest text per entry. Tokens
     /// arrive far faster than a resize animation can play; applying each one restarted the
     /// animation every few milliseconds, which *is* the jitter — nothing ever finished moving.
@@ -310,6 +313,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 updateEntryView(at: index)
             }
         case .phaseChanged:
+            if runner?.phase.isBusy != true {
+                currentWorkGroup?.finish()
+                currentWorkGroup = nil
+            }
             finalizeStreamedBubbles()
             updateSendButton()
             refreshSessionPill()
@@ -701,11 +708,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             $0.removeFromSuperview()
         }
         entryViews.removeAll()
+        currentWorkGroup = nil
         for (index, entry) in (runner?.entries ?? []).enumerated() {
-            let view = makeEntryView(entry)
-            entryViews.append(view)
-            addBlock(view, topSpacing: index == 0 ? 0 : Self.spacing(before: entry.kind))
+            appendRendered(entry, isFirst: index == 0)
         }
+        currentWorkGroup?.finish()
+        currentWorkGroup = nil
         emptyStateLabel.isHidden = !(runner?.entries.isEmpty ?? true)
         updateSendButton()
         scrollToBottom()
@@ -720,13 +728,44 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             return
         }
         let entry = entries[index]
-        let view = makeEntryView(entry)
-        entryViews.append(view)
-        addBlock(view, topSpacing: index == 0 ? 0 : Self.spacing(before: entry.kind))
+        let view = appendRendered(entry, isFirst: index == 0)
         emptyStateLabel.isHidden = true
         // Only live appends animate — `renderFull` (reattach, track switch) lays the whole
-        // history out instantly rather than replaying every arrival.
-        animateIn(view)
+        // history out instantly rather than replaying every arrival. A line that joined an
+        // existing group animates the group's header count, not itself.
+        if view.superview === transcriptStack { animateIn(view) }
+    }
+
+    /// One entry → one view, placed either directly in the transcript or — for tool lines —
+    /// inside the current "Worked…" group, ChatGPT-style: the underlying activity is collapsed
+    /// behind a header that counts steps and time, expandable whenever.
+    @discardableResult
+    private func appendRendered(_ entry: RunTranscriptEntry, isFirst: Bool) -> NSView {
+        let view = makeEntryView(entry)
+        entryViews.append(view)
+        let isToolLine: Bool
+        switch entry.kind {
+        case .toolCall, .toolResult: isToolLine = true
+        default: isToolLine = false
+        }
+        if isToolLine {
+            let group: WorkGroupView
+            if let open = currentWorkGroup, open === transcriptStack.arrangedSubviews.last {
+                group = open
+            } else {
+                group = WorkGroupView(startedAt: entry.createdAt)
+                addBlock(group, topSpacing: isFirst ? 0 : Self.spacing(before: entry.kind))
+                currentWorkGroup = group
+            }
+            var isStep = false
+            if case .toolCall = entry.kind { isStep = true }
+            group.addLine(view, isStep: isStep, at: entry.createdAt)
+        } else {
+            currentWorkGroup?.finish()
+            currentWorkGroup = nil
+            addBlock(view, topSpacing: isFirst ? 0 : Self.spacing(before: entry.kind))
+        }
+        return view
     }
 
     /// The standard arrival (see `DS.Motion`) over the block's settled Auto Layout position.
@@ -1235,6 +1274,124 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         let measuredWidth = max(10, min(ceil(bounding.width) + 2, availableWidth))
         bodyWidthConstraint.constant = monotonicWidth ? max(bodyWidthConstraint.constant, measuredWidth) : measuredWidth
         bodyHeightConstraint.constant = max(10, ceil(bounding.height) + 1)
+    }
+}
+
+/// Consecutive tool activity collapsed behind a "Worked 7s · 3 steps" header — the ChatGPT
+/// treatment: the work is there for whoever wants it, and one quiet line for everyone else.
+/// Lines are added as they happen; the header ticks while the run is live and settles on the
+/// final duration when it finishes.
+private final class WorkGroupView: NSView {
+    private let header = NSButton()
+    private let content = NSStackView()
+    private let startedAt: Date
+    private var lastLineAt: Date
+    private var stepCount = 0
+    private var finished = false
+    private var expanded = false
+    private var timer: Timer?
+
+    init(startedAt: Date) {
+        self.startedAt = startedAt
+        self.lastLineAt = startedAt
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        header.isBordered = false
+        header.font = DS.Text.caption(.medium)
+        header.contentTintColor = .secondaryLabelColor
+        header.imagePosition = .imageLeading
+        header.alignment = .left
+        header.target = self
+        header.action = #selector(toggle)
+        header.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(header)
+
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = DS.Spacing.xs
+        content.isHidden = true
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+
+        let contentBottom = content.bottomAnchor.constraint(equalTo: bottomAnchor)
+        contentBottom.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: topAnchor),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor),
+            header.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            content.topAnchor.constraint(equalTo: header.bottomAnchor, constant: DS.Spacing.xs),
+            // Indented under the header, like a disclosure's children.
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            contentBottom,
+            header.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+        ])
+        refreshHeader()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // The ticking follows window membership instead of deinit (Swift 6 forbids touching the
+    // main-actor Timer there): leaving the window — a stage switch, or the transcript being
+    // rebuilt — stops the tick; coming back while still unfinished resumes it. This also means
+    // a group discarded mid-run can't leave an orphaned timer firing forever.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        timer?.invalidate()
+        timer = nil
+        if newWindow != nil, !finished {
+            timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                DispatchQueue.main.async { self?.refreshHeader() }
+            }
+        }
+    }
+
+    func addLine(_ view: NSView, isStep: Bool, at date: Date) {
+        content.addArrangedSubview(view)
+        lastLineAt = date
+        if isStep { stepCount += 1 }
+        refreshHeader()
+    }
+
+    func finish() {
+        guard !finished else { return }
+        finished = true
+        timer?.invalidate()
+        timer = nil
+        refreshHeader()
+    }
+
+    private static func format(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval.rounded()))
+        return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
+    }
+
+    private func refreshHeader() {
+        let steps = "\(stepCount) step\(stepCount == 1 ? "" : "s")"
+        let title: String
+        if finished {
+            let duration = lastLineAt.timeIntervalSince(startedAt)
+            title = duration >= 1 ? "Worked \(Self.format(duration)) · \(steps)" : "Worked · \(steps)"
+        } else {
+            title = "Working \(Self.format(Date().timeIntervalSince(startedAt))) · \(steps)"
+        }
+        header.title = " \(title)"
+        header.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        header.setAccessibilityLabel(title)
+    }
+
+    @objc private func toggle() {
+        expanded.toggle()
+        refreshHeader()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.allowsImplicitAnimation = true
+            content.isHidden = !expanded
+            enclosingScrollView?.documentView?.layoutSubtreeIfNeeded()
+        }
     }
 }
 
