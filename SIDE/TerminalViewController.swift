@@ -126,6 +126,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private var shellIntegration: ShellIntegration = .probing
     /// One-shot guard for `tidyAfterSetup()`.
     private var didTidyAfterSetup = false
+    /// True when integration was installed via the ZDOTDIR wrapper (zsh) — nothing was typed
+    /// into the session, so there's nothing to tidy and no visible setup at all.
+    private var integrationInstalledViaRc = false
     /// True once the shell is past its integration setup (tidied, or integration gave up) —
     /// output before this is startup plumbing, not something to badge as unseen.
     var startupSettled: Bool { didTidyAfterSetup || shellIntegration == .unavailable }
@@ -190,8 +193,73 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         didStart = true
         isAlive = true
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        terminalView.startProcess(executable: shell, args: ["-l"], currentDirectory: workingDirectory)
+        // zsh gets its integration through a ZDOTDIR wrapper (the VS Code technique): the shell
+        // sources our rc — which sources the user's own — so the hooks install before the first
+        // prompt and *nothing is ever typed into the session*. The old typed-setup path stays
+        // for bash, where no equivalent exists without clobbering the user's rc files.
+        var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        if shell.contains("zsh"), let wrapper = Self.zshIntegrationDirectory() {
+            if let original = ProcessInfo.processInfo.environment["ZDOTDIR"] {
+                environment.append("SIDE_ORIG_ZDOTDIR=\(original)")
+            }
+            environment.append("ZDOTDIR=\(wrapper.path)")
+            integrationInstalledViaRc = true
+        }
+        terminalView.startProcess(executable: shell, args: ["-l"], environment: environment, currentDirectory: workingDirectory)
         installShellIntegration(shell: shell)
+    }
+
+    /// Writes (once) and returns the wrapper ZDOTDIR whose startup files source the user's own
+    /// and then register the OSC 133 hooks. Each wrapper file mirrors zsh's real sourcing order
+    /// (.zshenv → .zprofile → .zshrc → .zlogin) so a login shell behaves exactly as it would in
+    /// Terminal.app, plus the hooks.
+    private static func zshIntegrationDirectory() -> URL? {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let dir = support.appendingPathComponent("Side/zsh-integration", isDirectory: true)
+        let hooks = #"""
+        __side_done(){ printf '\e]133;D;%s\a' $?; }
+        __side_start(){ printf '\e]133;C\a'; }
+        typeset -ga precmd_functions preexec_functions
+        precmd_functions=(__side_done ${precmd_functions:#__side_done})
+        preexec_functions=(${preexec_functions:#__side_start} __side_start)
+        printf '\e]133;D;0\a'
+        """#
+        func wrapper(_ name: String, extra: String = "") -> String {
+            """
+            SIDE_USER_ZDOTDIR=${SIDE_ORIG_ZDOTDIR:-$HOME}
+            if [[ -f "$SIDE_USER_ZDOTDIR/\(name)" ]]; then
+                SIDE_WRAPPER_ZDOTDIR=$ZDOTDIR
+                ZDOTDIR=$SIDE_USER_ZDOTDIR
+                . "$SIDE_USER_ZDOTDIR/\(name)"
+                SIDE_ORIG_ZDOTDIR=${ZDOTDIR:-$HOME}
+                ZDOTDIR=$SIDE_WRAPPER_ZDOTDIR
+            fi
+            \(extra)
+            """
+        }
+        // .zshrc is the last interactive-startup file we need control in: hooks register after
+        // the user's config so a themed prompt can't displace them, then ZDOTDIR is restored so
+        // nested `zsh` invocations start clean.
+        let restore = "ZDOTDIR=${SIDE_ORIG_ZDOTDIR:-$HOME}; [[ \"$ZDOTDIR\" == \"$HOME\" ]] && unset ZDOTDIR\n"
+        let files = [
+            ".zshenv": wrapper(".zshenv"),
+            ".zprofile": wrapper(".zprofile"),
+            ".zshrc": wrapper(".zshrc", extra: hooks + "\n" + restore),
+            ".zlogin": wrapper(".zlogin"),
+        ]
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            for (name, contents) in files {
+                let url = dir.appendingPathComponent(name)
+                // Rewrite only when changed, so the files don't churn mtimes on every tab.
+                if (try? String(contentsOf: url, encoding: .utf8)) != contents {
+                    try contents.write(to: url, atomically: true, encoding: .utf8)
+                }
+            }
+            return dir
+        } catch {
+            return nil
+        }
     }
 
     /// Wipes the echoed setup line once the shell has confirmed it took effect.
@@ -204,6 +272,8 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private func tidyAfterSetup() {
         guard !didTidyAfterSetup else { return }
         didTidyAfterSetup = true
+        // Ctrl-L exists to clear the *typed* setup line; the ZDOTDIR path types nothing.
+        guard !integrationInstalledViaRc else { return }
         terminalView.send(source: terminalView, data: ArraySlice([0x0C]))
     }
 
@@ -222,6 +292,16 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// powerlevel10k prompt. Unsupported shells simply never confirm and fall back to the
     /// sentinel path.
     private func installShellIntegration(shell: String) {
+        // zsh installed through the ZDOTDIR wrapper: the .zshrc already registered the hooks
+        // and emitted the first D mark — nothing to type, just wait for the probe to confirm.
+        if integrationInstalledViaRc {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, self.shellIntegration == .probing else { return }
+                self.shellIntegration = .unavailable
+                self.drainQueuedAgentCommandsIfIdle()
+            }
+            return
+        }
         let setup: String
         if shell.contains("zsh") {
             // `precmd_functions` is *prepended*, not appended: hooks run in array order, and a
