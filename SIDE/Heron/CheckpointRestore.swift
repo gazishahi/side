@@ -107,13 +107,33 @@ enum CheckpointRestore {
         return .reverted(commitSHA: sha, checkpointCount: commits.count)
     }
 
-    /// Puts the worktree back the way it was after a failed revert: clear git's revert state,
-    /// then reset the index and tree to HEAD. Deliberately does *not* touch untracked files —
-    /// a failed undo has no business deleting anything the user created.
+    /// Puts the worktree back the way it was after a failed revert, touching **only** what the
+    /// revert itself wrote.
+    ///
+    /// This used to run `git reset --hard HEAD`, which was the exact mistake this file's opening
+    /// comment warns about: a hard reset also discards the user's own uncommitted edits, so a
+    /// conflicted undo destroyed work that had nothing to do with the checkpoint. Found by an
+    /// audit; the original test missed it because the worktree happened to be clean at the
+    /// moment of the conflict.
+    ///
+    /// `revert --quit` clears the sequencer state but leaves the half-applied changes in the
+    /// tree, so they have to be undone explicitly — per path, from the pre-revert HEAD snapshot,
+    /// which is precisely the set of files the revert touched and nothing else.
     private static func abandon(
         worktreePath: String, runGit: (([String], String) -> (success: Bool, output: String))
     ) {
+        // Everything the revert wrote: conflicted paths plus anything it staged cleanly before
+        // hitting the conflict.
+        let conflicted = runGit(["diff", "--name-only", "--diff-filter=U"], worktreePath)
+            .output.split(separator: "\n").map(String.init)
+        let staged = runGit(["diff", "--name-only", "--cached"], worktreePath)
+            .output.split(separator: "\n").map(String.init)
         _ = runGit(["revert", "--quit"], worktreePath)
-        _ = runGit(["reset", "--hard", "HEAD"], worktreePath)
+        let touched = Set(conflicted + staged).filter { !$0.isEmpty }
+        guard !touched.isEmpty else { return }
+        // `reset` unstages them, `checkout` restores their content — both scoped to these paths,
+        // so a modified file the user never mentioned is never even read.
+        _ = runGit(["reset", "-q", "HEAD", "--"] + touched.sorted(), worktreePath)
+        _ = runGit(["checkout", "HEAD", "--"] + touched.sorted(), worktreePath)
     }
 }

@@ -161,6 +161,31 @@ final class CheckpointRestoreTests: XCTestCase {
         XCTAssertTrue(GitPaths.runGit(["status", "--porcelain"], cwd: path).output.isEmpty)
     }
 
+    func testAConflictPreservesUncommittedWorkInOtherFiles() throws {
+        // The case the original conflict test missed: it left the worktree clean at the moment
+        // of the conflict, so `abandon()`'s `git reset --hard HEAD` looked harmless. With real
+        // uncommitted work present, that reset destroyed it — the exact failure this whole file
+        // exists to prevent. Found by an audit, not by the suite.
+        let path = try makeRepo()
+        _ = commit("line\n", to: "a.txt", in: path, message: "base")
+        _ = commit("tracked\n", to: "mine.txt", in: path, message: "add mine")
+        let agentSHA = commit("agent line\n", to: "a.txt", in: path, message: "agent edit")
+        _ = commit("human line\n", to: "a.txt", in: path, message: "human edit")
+
+        // Uncommitted work of both kinds, in files the checkpoint never touched.
+        try "my unsaved edit\n".write(toFile: path + "/mine.txt", atomically: true, encoding: .utf8)
+        try "brand new\n".write(toFile: path + "/untracked.txt", atomically: true, encoding: .utf8)
+
+        let outcome = CheckpointRestore.perform(commits: [agentSHA], message: "Undo", worktreePath: path)
+        guard case .conflicted = outcome else { return XCTFail("expected conflict, got \(outcome)") }
+
+        XCTAssertEqual(try String(contentsOfFile: path + "/mine.txt", encoding: .utf8), "my unsaved edit\n",
+                       "a failed undo destroyed the user's uncommitted edit")
+        XCTAssertEqual(try String(contentsOfFile: path + "/untracked.txt", encoding: .utf8), "brand new\n")
+        // And the conflicted file itself is still back at HEAD, with no markers left behind.
+        XCTAssertEqual(try String(contentsOfFile: path + "/a.txt", encoding: .utf8), "human line\n")
+    }
+
     func testUndoingAnUndoIsJustAnotherRevert() throws {
         // Falls out of the design, and is worth pinning: reverts are ordinary commits, so the
         // undo of an undo needs no special case anywhere.
