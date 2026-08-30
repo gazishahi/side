@@ -5,3 +5,6 @@ DerivedData/
 .build/
 .swiftpm/
 buildServer.json
+
+# Coverage output from a stray test run
+default.profraw
