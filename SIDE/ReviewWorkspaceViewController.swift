@@ -44,6 +44,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// always present is a banner nobody reads.
     private let overlapBanner = NSView()
     private let overlapLabel = NSTextField(wrappingLabelWithString: "")
+    /// The shared paths themselves. They used to live only in a tooltip, which left the banner
+    /// as a wide strip of empty colour saying "3 files" — the count without the answer to the
+    /// question it provokes.
+    private let overlapPathsLabel = NSTextField(wrappingLabelWithString: "")
     private let checkpointsHeader = NSTextField(labelWithString: "Checkpoints")
     private let checkpointsStack = NSStackView()
     private let diffHeader = NSTextField(labelWithString: "")
@@ -123,23 +127,43 @@ final class ReviewWorkspaceViewController: NSViewController {
         overlapBanner.layer?.borderColor = NSColor.systemOrange.withAlphaComponent(0.35).cgColor
         overlapBanner.isHidden = true
         overlapBanner.translatesAutoresizingMaskIntoConstraints = false
-        overlapLabel.font = DS.Text.caption()
+        overlapLabel.font = DS.Text.body(.medium)
         overlapLabel.textColor = .labelColor
         overlapLabel.translatesAutoresizingMaskIntoConstraints = false
+        overlapPathsLabel.font = DS.Text.caption()
+        overlapPathsLabel.textColor = .secondaryLabelColor
+        overlapPathsLabel.translatesAutoresizingMaskIntoConstraints = false
+
         let overlapIcon = NSImageView()
         overlapIcon.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
         overlapIcon.contentTintColor = .systemOrange
         overlapIcon.translatesAutoresizingMaskIntoConstraints = false
-        overlapBanner.addSubview(overlapIcon)
-        overlapBanner.addSubview(overlapLabel)
+        // A fixed size, and not by accident: NSImageView hugs its content only weakly, so
+        // without this it stretched to fill the banner — leaving the glyph floating in the
+        // middle of a wide empty strip with the text shoved against the right edge.
         NSLayoutConstraint.activate([
-            overlapIcon.leadingAnchor.constraint(equalTo: overlapBanner.leadingAnchor, constant: 10),
-            overlapIcon.topAnchor.constraint(equalTo: overlapBanner.topAnchor, constant: 9),
-            overlapLabel.leadingAnchor.constraint(equalTo: overlapIcon.trailingAnchor, constant: DS.Spacing.s),
-            overlapLabel.trailingAnchor.constraint(equalTo: overlapBanner.trailingAnchor, constant: -10),
-            overlapLabel.topAnchor.constraint(equalTo: overlapBanner.topAnchor, constant: 8),
-            overlapLabel.bottomAnchor.constraint(equalTo: overlapBanner.bottomAnchor, constant: -8),
+            overlapIcon.widthAnchor.constraint(equalToConstant: 16),
+            overlapIcon.heightAnchor.constraint(equalToConstant: 16),
+        ])
+
+        let overlapText = NSStackView(views: [overlapLabel, overlapPathsLabel])
+        overlapText.orientation = .vertical
+        overlapText.alignment = .leading
+        overlapText.spacing = 2
+        overlapText.translatesAutoresizingMaskIntoConstraints = false
+
+        overlapBanner.addSubview(overlapIcon)
+        overlapBanner.addSubview(overlapText)
+        NSLayoutConstraint.activate([
+            overlapIcon.leadingAnchor.constraint(equalTo: overlapBanner.leadingAnchor, constant: 12),
+            // Aligned to the first line's centre, not the top edge — the glyph should sit with
+            // the headline whether or not a second line is present.
+            overlapIcon.centerYAnchor.constraint(equalTo: overlapLabel.centerYAnchor),
+            overlapText.leadingAnchor.constraint(equalTo: overlapIcon.trailingAnchor, constant: DS.Spacing.l),
+            overlapText.trailingAnchor.constraint(lessThanOrEqualTo: overlapBanner.trailingAnchor, constant: -12),
+            overlapText.topAnchor.constraint(equalTo: overlapBanner.topAnchor, constant: 10),
+            overlapText.bottomAnchor.constraint(equalTo: overlapBanner.bottomAnchor, constant: -10),
         ])
 
         for view in [titleLabel, subtitleRow, overlapBanner, checkpointsHeader, checkpointsStack, diffHeader, diffViewer, bottomBar] {
@@ -287,19 +311,15 @@ final class ReviewWorkspaceViewController: NSViewController {
             let siblings = TrackOverlap.siblings(
                 of: branchName, changedPathsByBranch: changedPathsByBranch, intentsByBranch: intentsByBranch
             )
-            let summary = TrackOverlap.summary(for: siblings)
             DispatchQueue.main.async {
                 guard let self, self.currentTrack?.branchName == branchName else { return }
                 self.diffViewer.render(diffText: diffText)
                 self.promoteButton.isEnabled = !diffText.isEmpty
-                self.overlapBanner.isHidden = summary == nil
-                if let summary {
-                    self.overlapLabel.stringValue = summary
-                    // The shared paths spelled out on hover — the banner stays one line, but
-                    // "which files, exactly" is the first question it provokes.
-                    self.overlapBanner.toolTip = siblings
-                        .map { "\($0.intent.isEmpty ? $0.branchName : $0.intent): \($0.sharedPaths.joined(separator: ", "))" }
-                        .joined(separator: "\n")
+                self.overlapBanner.isHidden = siblings.isEmpty
+                if let headline = TrackOverlap.headline(for: siblings) {
+                    self.overlapLabel.stringValue = headline
+                    self.overlapPathsLabel.stringValue = TrackOverlap.sharedPathsSummary(for: siblings)
+                    self.overlapBanner.setAccessibilityLabel("\(headline). \(self.overlapPathsLabel.stringValue)")
                 }
             }
         }

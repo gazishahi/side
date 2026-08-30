@@ -48,18 +48,29 @@ enum TrackOverlap {
             .sorted { ($0.sharedPaths.count, $1.branchName) > ($1.sharedPaths.count, $0.branchName) }
     }
 
-    /// The banner's one line. Names the other track and what's shared, because "3 files" alone
-    /// tells you a conflict is coming without telling you whether you care.
-    static func summary(for siblings: [Sibling]) -> String? {
+    /// The banner's first line: *who* else is in these files. The paths themselves go on the
+    /// second line (`sharedPathsSummary`) rather than into a tooltip — "3 files" without naming
+    /// them tells you a conflict is coming without telling you whether you care, and the banner
+    /// has the width to say it.
+    static func headline(for siblings: [Sibling]) -> String? {
         guard let first = siblings.first else { return nil }
         let label = first.intent.isEmpty ? first.branchName : first.intent
-        let files = first.sharedPaths.count == 1
-            ? first.sharedPaths[0]
-            : "\(first.sharedPaths.count) files"
         if siblings.count == 1 {
-            return "Also being changed by \u{201C}\(label)\u{201D} — \(files)"
+            return "Also being changed by \u{201C}\(label)\u{201D}"
         }
-        return "Also being changed by \u{201C}\(label)\u{201D} and \(siblings.count - 1) other track\(siblings.count == 2 ? "" : "s") — \(files)"
+        return "Also being changed by \u{201C}\(label)\u{201D} and \(siblings.count - 1) other track\(siblings.count == 2 ? "" : "s")"
+    }
+
+    /// The shared paths, as one line. Capped so a wide overlap can't turn the banner into a
+    /// wall of text — past a handful, the count is the useful part anyway.
+    static func sharedPathsSummary(for siblings: [Sibling], limit: Int = 4) -> String {
+        var seen: [String] = []
+        for sibling in siblings {
+            for path in sibling.sharedPaths where !seen.contains(path) { seen.append(path) }
+        }
+        guard seen.count > limit else { return seen.joined(separator: "  ·  ") }
+        let shown = seen.prefix(limit).joined(separator: "  ·  ")
+        return "\(shown)  ·  +\(seen.count - limit) more"
     }
 
     /// Every path a branch changed against its base, via `git diff --name-only`.
