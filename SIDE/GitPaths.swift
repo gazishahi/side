@@ -92,15 +92,28 @@ enum GitPaths {
     /// checkpoint can stage only what actually changed *during* the batch instead of everything
     /// sitting in the tree (which would misattribute a concurrent manual edit to the agent).
     static func dirtyPaths(cwd: String) -> Set<String> {
-        let result = runGit(["status", "--porcelain"], cwd: cwd)
+        // `-z` for two independent reasons, both of which silently broke checkpoints: git
+        // *quotes* any path with non-ASCII or unusual bytes by default (`"caf\303\251.txt"`),
+        // and those quotes were passed straight into `git add`, which then matched nothing —
+        // so a single accented filename anywhere in the tree made every checkpoint commit
+        // fail. `-z` also uses NUL separators, so a filename containing a newline can't split
+        // one entry into two.
+        let result = runGit(["status", "--porcelain", "-z"], cwd: cwd)
         guard result.success, !result.output.isEmpty else { return [] }
-        return Set(result.output.split(separator: "\n").compactMap { line -> String? in
-            guard line.count > 3 else { return nil }
-            let pathPart = line.dropFirst(3)
-            if let arrowRange = pathPart.range(of: " -> ") {
-                return String(pathPart[arrowRange.upperBound...])
-            }
-            return String(pathPart)
-        })
+        // With -z a rename is two NUL-separated fields (`R  new\0old`) rather than
+        // `old -> new`, so the arrow form no longer appears at all.
+        var paths: Set<String> = []
+        var entries = result.output.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
+        while !entries.isEmpty {
+            let entry = entries.removeFirst()
+            guard entry.count > 3 else { continue }
+            let status = entry.prefix(2)
+            paths.insert(String(entry.dropFirst(3)))
+            // A rename/copy consumes the following field (the source path); it isn't dirty in
+            // its own right, and leaving it in the stream would stage a path that no longer
+            // exists.
+            if status.hasPrefix("R") || status.hasPrefix("C") { _ = entries.isEmpty ? nil : entries.removeFirst() }
+        }
+        return paths
     }
 }

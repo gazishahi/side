@@ -383,8 +383,15 @@ final class AgentRunner {
         // still awaiting a decision — so the jump is deferred until every card in the batch is
         // resolved.
         if let lastAppliedURL = batch.lastAppliedURL { bridge.onRevealFileRequested(lastAppliedURL) }
-        createCheckpointIfNeeded(batch)
-        continueAfterTools(callOrder: batch.callOrder, resultsById: batch.resultsById, modelId: batch.modelId, roundTrip: batch.roundTrip)
+        // Checkpointing runs nine serial git subprocesses, three of which retry for up to five
+        // seconds each with `Thread.sleep` — up to fifteen seconds of frozen UI on this
+        // @MainActor class, and index-lock contention (the very thing the retry exists for) is
+        // most likely exactly when a command the agent just ran is still touching git. So the
+        // git work happens off-main and the loop resumes when it lands.
+        createCheckpointIfNeeded(batch) { [weak self] in
+            guard let self else { return }
+            self.continueAfterTools(callOrder: batch.callOrder, resultsById: batch.resultsById, modelId: batch.modelId, roundTrip: batch.roundTrip)
+        }
     }
 
     /// A durable record of what this batch actually did, backed by a real git commit on the
@@ -393,10 +400,32 @@ final class AgentRunner {
     /// executed (an all-rejected batch has nothing to checkpoint), and only ever after every
     /// proposal in the batch was already resolved — never before, never as a substitute for the
     /// approval clicks themselves.
-    private func createCheckpointIfNeeded(_ batch: PendingToolBatch) {
+    private func createCheckpointIfNeeded(_ batch: PendingToolBatch, completion: @escaping () -> Void) {
         guard !batch.changedFilePaths.isEmpty || !batch.commandsRun.isEmpty,
-              let session = sessionStore.session(forTrackKey: trackKey) else { return }
+              let session = sessionStore.session(forTrackKey: trackKey) else { return completion() }
         let root = rootProvider().path
+        let baseline = batch.baselineDirtyPaths
+        let knownChanged = batch.changedFilePaths
+        let message = batch.declaredIntent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commitMessage = message.isEmpty ? "Agent checkpoint" : String(message.prefix(72))
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Self.stageAndCommit(
+                root: root, baseline: baseline, knownChanged: knownChanged, message: commitMessage
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return completion() }
+                self.recordCheckpoint(result, batch: batch, sessionId: session.id)
+                completion()
+            }
+        }
+    }
+
+    /// The git half — safe to run off the main thread, and deliberately free of any `self`
+    /// reference so it cannot touch main-actor state from a background queue.
+    private nonisolated static func stageAndCommit(
+        root: String, baseline: Set<String>, knownChanged: Set<String>, message: String
+    ) -> CheckpointCommitOutcome? {
 
         // Stage only what this batch actually touched: paths a command left newly dirty (not
         // already dirty before the batch started — that's a concurrent manual edit sitting in
@@ -405,21 +434,30 @@ final class AgentRunner {
         // not `git add -A` — that would sweep any unrelated in-progress change in this worktree
         // into the agent's commit and misattribute it.
         let currentDirtyPaths = GitPaths.dirtyPaths(cwd: root)
-        let newlyDirtyPaths = currentDirtyPaths.subtracting(batch.baselineDirtyPaths)
-        let pathsToStage = newlyDirtyPaths.union(batch.changedFilePaths)
-        guard !pathsToStage.isEmpty else {
-            // Everything the batch did left the tree exactly as it already was (e.g. a command
-            // that ran but touched nothing) — nothing to checkpoint.
+        let pathsToStage = currentDirtyPaths.subtracting(baseline).union(knownChanged)
+        // Everything the batch did left the tree exactly as it already was (e.g. a command that
+        // ran but touched nothing) — nothing to checkpoint at all.
+        guard !pathsToStage.isEmpty else { return nil }
+        return commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root)
+    }
+
+    private func recordCheckpoint(_ outcome: CheckpointCommitOutcome?, batch: PendingToolBatch, sessionId: UUID) {
+        guard let outcome else { return }
+        // A failed commit is not a checkpoint. Recording one anyway is what produced a card
+        // claiming success for work that was never committed and could never be undone.
+        if case .failed(let step, let message) = outcome {
+            appendEntry(.failure("Couldn't create a checkpoint — git \(step) failed\(message.isEmpty ? "" : ": \(message)").\nThe agent's changes are still in your working copy, uncommitted."))
             return
         }
-        let message = batch.declaredIntent.trimmingCharacters(in: .whitespacesAndNewlines)
-        let commitMessage = message.isEmpty ? "Agent checkpoint" : String(message.prefix(72))
-        let commit = Self.commitPathsInIsolatedIndex(pathsToStage.sorted(), message: commitMessage, cwd: root)
-        let commitSHA = commit?.sha
-        let changedFiles = commit?.committedPaths ?? []
+        var commitSHA: String?
+        var changedFiles: [String] = []
+        if case .committed(let sha, let paths) = outcome {
+            commitSHA = sha
+            changedFiles = paths
+        }
 
         let checkpoint = Checkpoint(
-            trackKey: trackKey, agentSessionId: session.id, declaredIntent: batch.declaredIntent,
+            trackKey: trackKey, agentSessionId: sessionId, declaredIntent: batch.declaredIntent,
             changedFilePaths: changedFiles, commandsRun: batch.commandsRun,
             // Provider and model both come from the batch — captured together when the request
             // was made. Reading the provider from the live registry here (as this used to) could
@@ -986,7 +1024,7 @@ final class AgentRunner {
     /// A time-based deadline rather than a fixed attempt count is the more principled fix: keep
     /// retrying for up to `maxWait`, however many attempts that takes, instead of guessing a
     /// count and being wrong about it a second time.
-    private static func runGitWithRetry(_ args: [String], cwd: String, maxWait: TimeInterval = 5, extraEnvironment: [String: String] = [:]) -> Bool {
+    private nonisolated static func runGitWithRetry(_ args: [String], cwd: String, maxWait: TimeInterval = 5, extraEnvironment: [String: String] = [:]) -> Bool {
         let deadline = Date().addingTimeInterval(maxWait)
         while true {
             if GitPaths.runGit(args, cwd: cwd, extraEnvironment: extraEnvironment).success { return true }
@@ -1005,7 +1043,20 @@ final class AgentRunner {
     /// commit that tree with HEAD as parent, then move the branch. The user's index is touched
     /// only at the very end, and only to refresh those same paths so they don't linger as
     /// phantom modifications.
-    private static func commitPathsInIsolatedIndex(_ paths: [String], message: String, cwd: String) -> (sha: String, committedPaths: [String])? {
+    /// Why this returns a three-valued result instead of an Optional: `nil` used to mean both
+    /// "nothing to commit" and "six different git failures", so a checkpoint whose commit
+    /// actually failed was reported to the user as a green "✓ Checkpoint … (no file changes)"
+    /// and recorded with no SHA — a checkpoint that claimed success, changed nothing, and
+    /// couldn't be undone, with the agent's work left uncommitted underneath it. Found by an
+    /// audit. Failure now has to be stated.
+    enum CheckpointCommitOutcome {
+        case committed(sha: String, paths: [String])
+        /// The staged tree matched HEAD — the batch genuinely changed nothing on disk.
+        case nothingToCommit
+        case failed(step: String, message: String)
+    }
+
+    private nonisolated static func commitPathsInIsolatedIndex(_ paths: [String], message: String, cwd: String) -> CheckpointCommitOutcome {
         let indexPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("side-checkpoint-index-\(UUID().uuidString)").path
         let environment = ["GIT_INDEX_FILE": indexPath]
@@ -1016,27 +1067,49 @@ final class AgentRunner {
         // Seed from HEAD so the commit's baseline is the last commit, never the user's staged
         // state. A repo with no commits yet starts from an empty index instead.
         if hasParent {
-            guard runGitWithRetry(["read-tree", "HEAD"], cwd: cwd, extraEnvironment: environment) else { return nil }
+            guard runGitWithRetry(["read-tree", "HEAD"], cwd: cwd, extraEnvironment: environment) else {
+                return .failed(step: "read-tree", message: "couldn't read the current commit into a staging area")
+            }
         }
-        guard runGitWithRetry(["add", "--"] + paths, cwd: cwd, extraEnvironment: environment) else { return nil }
+        guard runGitWithRetry(["add", "--"] + paths, cwd: cwd, extraEnvironment: environment) else {
+            return .failed(step: "add", message: "couldn't stage \(paths.count) path\(paths.count == 1 ? "" : "s")")
+        }
 
         let staged = GitPaths.runGit(["diff", "--cached", "--name-only"] + (hasParent ? ["HEAD"] : []), cwd: cwd, extraEnvironment: environment)
         let committedPaths = staged.success && !staged.output.isEmpty
             ? staged.output.split(separator: "\n").map(String.init) : []
-        guard !committedPaths.isEmpty else { return nil }
+        guard staged.success else {
+            return .failed(step: "diff --cached", message: staged.output)
+        }
+        guard !committedPaths.isEmpty else { return .nothingToCommit }
 
         let tree = GitPaths.runGit(["write-tree"], cwd: cwd, extraEnvironment: environment)
-        guard tree.success, !tree.output.isEmpty else { return nil }
+        guard tree.success, !tree.output.isEmpty else {
+            return .failed(step: "write-tree", message: tree.output)
+        }
         var commitArgs = ["commit-tree", tree.output, "-m", message]
         if hasParent { commitArgs += ["-p", headSHA.output] }
         let commit = GitPaths.runGit(commitArgs, cwd: cwd, extraEnvironment: environment)
-        guard commit.success, !commit.output.isEmpty else { return nil }
-        guard GitPaths.runGit(["update-ref", "HEAD", commit.output], cwd: cwd).success else { return nil }
+        guard commit.success, !commit.output.isEmpty else {
+            return .failed(step: "commit-tree", message: commit.output)
+        }
+        // `update-ref` with the expected old value: HEAD was read at the top of this function
+        // and is the new commit's parent, so if anything committed in between — the user typing
+        // `git commit` in the Run terminal, which shares this worktree — moving HEAD
+        // unconditionally would orphan their commit. Git refuses the swap instead.
+        var updateArgs = ["update-ref", "HEAD", commit.output]
+        if hasParent { updateArgs.append(headSHA.output) }
+        let update = GitPaths.runGit(updateArgs, cwd: cwd)
+        guard update.success else {
+            return .failed(step: "update-ref", message: update.output.isEmpty
+                ? "the branch moved while the checkpoint was being written"
+                : update.output)
+        }
 
         // Refresh just these paths in the real index so they read as committed rather than as
         // modified-vs-index. Explicit pathspecs, so unrelated staged entries stay staged.
         _ = runGitWithRetry(["add", "--"] + paths, cwd: cwd)
-        return (commit.output, committedPaths)
+        return .committed(sha: commit.output, paths: committedPaths)
     }
 
     /// A well-formed stream that carried no content at all — legal on the wire, useless to the
