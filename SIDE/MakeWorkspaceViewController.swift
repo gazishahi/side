@@ -1170,11 +1170,39 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let manager = LSPManager(projectRoot: root)
         manager.onDiagnostics = { [weak self] fileURL, diagnostics in
             self?.applyDiagnostics(diagnostics, to: fileURL)
+            // Also published for Heron's read_diagnostics tool: an agent that can read the
+            // errors its own edit just caused closes the loop inside one turn, instead of
+            // waiting for the user to notice and paste them back.
+            self?.publishDiagnosticsForAgent(diagnostics, fileURL: fileURL, root: root)
         }
         manager.onAvailabilityChanged = { [weak self] in self?.updateLSPIndicator() }
         lspManager = manager
         focusedRoot = root
         searchField.placeholderString = "Indexing \(root.lastPathComponent)…"
+    }
+
+    private func publishDiagnosticsForAgent(_ diagnostics: [LSPDiagnostic], fileURL: URL, root: URL) {
+        let rootPath = root.standardizedFileURL.path
+        let filePath = fileURL.standardizedFileURL.path
+        guard filePath.hasPrefix(rootPath + "/") else { return }
+        let relative = String(filePath.dropFirst(rootPath.count + 1))
+        // Hints and information are noise for an agent deciding whether its edit was sound.
+        let entries = diagnostics.compactMap { diagnostic -> DiagnosticsSnapshot.Entry? in
+            let severity: String
+            switch diagnostic.severity {
+            case .error: severity = "error"
+            case .warning: severity = "warning"
+            default: return nil
+            }
+            return DiagnosticsSnapshot.Entry(
+                relativePath: relative,
+                line: diagnostic.range.start.line + 1,  // LSP is 0-based; humans and the agent aren't
+                severity: severity,
+                message: diagnostic.message,
+                source: diagnostic.source
+            )
+        }
+        DiagnosticsSnapshot.shared.publish(entries, forFile: relative, projectRoot: root)
     }
 
     /// Re-scans the focused root's files and reopens whatever's remembered for

@@ -97,6 +97,20 @@ final class AgentSessionStore {
         checkpoints.filter { $0.trackKey == trackKey }
     }
 
+    /// Attaches a verification result to the most recent checkpoint on a track.
+    ///
+    /// Most recent, rather than "the checkpoint that produced the change": a task runs in a
+    /// later round trip than the edit it verifies, and by then the batch that made the change
+    /// is closed. The newest checkpoint is the one the task was run *against*, which is what
+    /// the user means by "did that work?".
+    @discardableResult
+    func attachVerification(_ verification: CheckpointVerification, toLatestCheckpointFor trackKey: String) -> Bool {
+        guard let index = checkpoints.lastIndex(where: { $0.trackKey == trackKey }) else { return false }
+        checkpoints[index].verification = verification
+        saveCheckpoints()
+        return true
+    }
+
     func appendCheckpoint(_ checkpoint: Checkpoint) {
         checkpoints.append(checkpoint)
         saveCheckpoints()

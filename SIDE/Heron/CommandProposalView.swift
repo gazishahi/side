@@ -26,7 +26,10 @@ final class CommandProposalView: NSView {
         layer?.borderWidth = 1
         layer?.backgroundColor = DS.Color.bg1.cgColor
 
-        headerLabel.stringValue = "Run in terminal"
+        // A named task says what it *is*, not just what it runs — "Run the test task" is a
+        // decision the user can make at a glance; a command line is something they have to
+        // parse first. The command itself stays visible below either way.
+        headerLabel.stringValue = command.taskName.map { "Run the \($0) task" } ?? "Run in terminal"
         headerLabel.font = DS.Text.control(.semibold)
 
         commandLabel.stringValue = command.command

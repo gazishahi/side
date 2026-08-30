@@ -509,7 +509,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                 Self.stripANSI(String(afterStart[afterStart.startIndex..<doneRange.lowerBound]))
             ).trimmingCharacters(in: .whitespacesAndNewlines)
             if output.isEmpty { output = "(no output)" }
-            if exitCode != 0 { output += "\n[exit code: \(exitCode)]" }
+            // Always, not only on failure: the agent needs to distinguish "succeeded" from
+            // "we could not tell", and a verification record that guesses from output text
+            // would produce false verdicts about whether the project works.
+            output += "\n[exit code: \(exitCode)]"
             pendingAgentCommand = pending
             finishPendingAgentCommand(output)
             return
@@ -567,7 +570,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             }
             let exitCode = Int(afterSentinel[digitsStart..<cursor]) ?? 0
             var output = Self.commandOutput(from: pending.buffer[pending.buffer.startIndex..<sentinelRange.lowerBound], sentinel: pending.sentinel, command: pending.command)
-            if exitCode != 0 { output += "\n[exit code: \(exitCode)]" }
+            // Always, not only on failure: the agent needs to distinguish "succeeded" from
+            // "we could not tell", and a verification record that guesses from output text
+            // would produce false verdicts about whether the project works.
+            output += "\n[exit code: \(exitCode)]"
             pendingAgentCommand = pending
             finishPendingAgentCommand(output)
             return

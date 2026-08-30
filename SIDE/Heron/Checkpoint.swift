@@ -22,6 +22,51 @@ struct AgentProvenance: Codable {
     }
 }
 
+/// What a task run proved about a checkpoint's changes.
+///
+/// The gap this closes: an agent's central failure mode is claiming a fix works without
+/// evidence, and until now nothing in Side ever established that approved work compiled, let
+/// alone passed. A checkpoint is now one of verified / failed / unverified, and Review says
+/// which — which is what lets promotion refuse work that is known broken rather than merely
+/// unreviewed.
+struct CheckpointVerification: Codable, Equatable {
+    let taskName: String
+    let command: String
+    /// nil when the command never produced an exit status (interrupted, or the shell died).
+    let exitCode: Int?
+    /// A bounded excerpt — enough to see what failed, not enough to bloat the record.
+    let outputExcerpt: String
+    let ranAt: Date
+
+    static let maxExcerptCharacters = 4_000
+
+    var passed: Bool { exitCode == 0 }
+
+    init(taskName: String, command: String, exitCode: Int?, output: String, ranAt: Date = Date()) {
+        self.taskName = taskName
+        self.command = command
+        self.exitCode = exitCode
+        // The tail, not the head: a failing build puts its errors at the end.
+        self.outputExcerpt = output.count > Self.maxExcerptCharacters
+            ? String(output.suffix(Self.maxExcerptCharacters))
+            : output
+        self.ranAt = ranAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case taskName, command, exitCode, outputExcerpt, ranAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        taskName = try container.decodeIfPresent(String.self, forKey: .taskName) ?? ""
+        command = try container.decodeIfPresent(String.self, forKey: .command) ?? ""
+        exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
+        outputExcerpt = try container.decodeIfPresent(String.self, forKey: .outputExcerpt) ?? ""
+        ranAt = try container.decodeIfPresent(Date.self, forKey: .ranAt) ?? Date()
+    }
+}
+
 /// A durable record of one approved batch of changes — the constitution's "an agent run does not
 /// equal a branch; it produces a durable checkpoint." Backed by a real git commit on the track's
 /// own branch (in its own worktree), created automatically the moment every proposal in a batch
@@ -39,6 +84,9 @@ struct Checkpoint: Codable, Identifiable {
     /// but touched nothing, or ran and then reverted its own edits.
     let gitCommitSHA: String?
     let createdAt: Date
+    /// `var` — verification usually arrives *after* the checkpoint, when the agent runs the
+    /// project's test task in a later round trip.
+    var verification: CheckpointVerification?
 
     init(trackKey: String, agentSessionId: UUID, declaredIntent: String, changedFilePaths: [String], commandsRun: [String], provenance: AgentProvenance, gitCommitSHA: String?) {
         self.id = UUID()
@@ -56,7 +104,7 @@ struct Checkpoint: Codable, Identifiable {
     // agent actually changed, so the trade is deliberate: only the fields that make it
     // meaningful (identity, track, commit contents) are required.
     private enum CodingKeys: String, CodingKey {
-        case id, trackKey, agentSessionId, declaredIntent, changedFilePaths, commandsRun, provenance, gitCommitSHA, createdAt
+        case id, trackKey, agentSessionId, declaredIntent, changedFilePaths, commandsRun, provenance, gitCommitSHA, createdAt, verification
     }
 
     init(from decoder: Decoder) throws {
@@ -71,5 +119,6 @@ struct Checkpoint: Codable, Identifiable {
             ?? AgentProvenance(providerId: "", modelId: "", instructionSourceSummary: "")
         gitCommitSHA = try container.decodeIfPresent(String.self, forKey: .gitCommitSHA)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        verification = try container.decodeIfPresent(CheckpointVerification.self, forKey: .verification)
     }
 }

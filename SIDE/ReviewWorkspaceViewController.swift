@@ -337,6 +337,17 @@ final class ReviewWorkspaceViewController: NSViewController {
         intentLabel.font = DS.Text.body(.medium)
         intentLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Verification reads before the metadata: "did this work?" outranks "when did it
+        // happen?" for anyone deciding whether to promote.
+        let verificationLabel = NSTextField(labelWithString: Self.verificationText(for: checkpoint))
+        verificationLabel.font = DS.Text.caption(.medium)
+        verificationLabel.textColor = Self.verificationColor(for: checkpoint)
+        verificationLabel.translatesAutoresizingMaskIntoConstraints = false
+        if let verification = checkpoint.verification, !verification.passed {
+            // The failing output is what the user actually needs; the card stays one line.
+            verificationLabel.toolTip = verification.outputExcerpt
+        }
+
         var metaParts: [String] = [Self.relativeTime(checkpoint.createdAt)]
         if let sha = checkpoint.gitCommitSHA { metaParts.append(String(sha.prefix(7))) }
         if !checkpoint.changedFilePaths.isEmpty {
@@ -351,11 +362,14 @@ final class ReviewWorkspaceViewController: NSViewController {
         metaLabel.translatesAutoresizingMaskIntoConstraints = false
 
         card.addSubview(intentLabel)
+        card.addSubview(verificationLabel)
         card.addSubview(metaLabel)
         var constraints: [NSLayoutConstraint] = [
             intentLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
             intentLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            metaLabel.topAnchor.constraint(equalTo: intentLabel.bottomAnchor, constant: 5),
+            verificationLabel.topAnchor.constraint(equalTo: intentLabel.bottomAnchor, constant: 5),
+            verificationLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            metaLabel.topAnchor.constraint(equalTo: verificationLabel.bottomAnchor, constant: 3),
             metaLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
             metaLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
         ]
@@ -380,6 +394,24 @@ final class ReviewWorkspaceViewController: NSViewController {
         NSLayoutConstraint.activate(constraints)
         card.translatesAutoresizingMaskIntoConstraints = false
         return card
+    }
+
+    private static func verificationText(for checkpoint: Checkpoint) -> String {
+        guard let verification = checkpoint.verification else {
+            return "Unverified — no task has been run against this change"
+        }
+        if verification.passed {
+            return "\u{2713} Verified — \(verification.taskName) passed"
+        }
+        if let code = verification.exitCode {
+            return "\u{2715} \(verification.taskName) failed (exit \(code))"
+        }
+        return "\u{26A0}\u{FE0E} \(verification.taskName) ran, but its result couldn't be read"
+    }
+
+    private static func verificationColor(for checkpoint: Checkpoint) -> NSColor {
+        guard let verification = checkpoint.verification else { return .tertiaryLabelColor }
+        return verification.passed ? .systemGreen : .systemRed
     }
 
     // MARK: - Undo
@@ -457,11 +489,31 @@ final class ReviewWorkspaceViewController: NSViewController {
             statusLabel.textColor = .systemOrange
             return
         }
+        // Verification is the point of recording it: promoting known-broken work should take a
+        // deliberate second decision, not the same click as promoting verified work. A *failed*
+        // verification is stated as such and the default button becomes Cancel; merely
+        // unverified is mentioned without obstructing, since plenty of work legitimately has no
+        // test to run.
+        let checkpoints = sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []
+        let latestVerified = checkpoints.sorted { $0.createdAt > $1.createdAt }.first { $0.verification != nil }
+        let failedVerification = latestVerified?.verification.flatMap { $0.passed ? nil : $0 }
+
         let alert = NSAlert()
-        alert.messageText = "Promote to \(baseRef)?"
-        alert.informativeText = "This merges \(track.branchName) into \(baseRef) in \(target.isParent ? "that track's" : "your main") working copy. \(track.intent.isEmpty ? "" : "\u{201C}\(track.intent)\u{201D}")"
+        alert.messageText = failedVerification == nil ? "Promote to \(baseRef)?" : "Promote work that failed \(failedVerification!.taskName)?"
+        var detail = "This merges \(track.branchName) into \(baseRef) in \(target.isParent ? "that track's" : "your main") working copy. \(track.intent.isEmpty ? "" : "\u{201C}\(track.intent)\u{201D}")"
+        if let failedVerification {
+            alert.alertStyle = .warning
+            detail += "\n\n\(failedVerification.taskName) last ran against this track and did not pass"
+                + (failedVerification.exitCode.map { " (exit \($0))" } ?? "")
+                + ". Promoting merges it anyway."
+        } else if latestVerified == nil, !checkpoints.isEmpty {
+            detail += "\n\nNothing has been verified on this track — no task has been run against these changes."
+        }
+        alert.informativeText = detail
         alert.addButton(withTitle: "Promote")
         alert.addButton(withTitle: "Cancel")
+        // Cancel is the safe default when the evidence says the work is broken.
+        if failedVerification != nil { alert.buttons.last?.keyEquivalent = "\r"; alert.buttons.first?.keyEquivalent = "" }
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             self.promote(track: track, baseRef: baseRef, mergeRoot: target.root, trackStore: trackStore)

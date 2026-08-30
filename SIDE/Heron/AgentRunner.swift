@@ -391,9 +391,41 @@ final class AgentRunner {
 
         batch.resultsById[toolUseId] = Self.toolResult(toolUseId: toolUseId, content: resultText, isError: isError)
         batch.unresolvedToolUseIds.remove(toolUseId)
-        if case .executed = resolution { batch.commandsRun.append(presentation.command.command) }
+        if case .executed(let output) = resolution {
+            batch.commandsRun.append(presentation.command.command)
+            // A named task's result is evidence about the code, not just another command that
+            // ran — so it lands on the checkpoint, where Review and Promote can see it.
+            if let taskName = presentation.command.taskName {
+                let verification = CheckpointVerification(
+                    taskName: taskName, command: presentation.command.command,
+                    exitCode: Self.exitCode(fromCommandOutput: output), output: output
+                )
+                if sessionStore.attachVerification(verification, toLatestCheckpointFor: trackKey) {
+                    appendEntry(.meta(verification.passed
+                        ? "\u{2713} Verified — \(taskName) passed"
+                        : "\u{26A0}\u{FE0E} \(taskName) failed — this checkpoint is recorded as unverified"))
+                }
+            }
+        }
         pendingBatch = batch
         finishBatchIfReady()
+    }
+
+    /// The exit status a task reported, when the shell integration told us one.
+    ///
+    /// `TerminalViewController` appends an exit-status line to a command's captured output when
+    /// OSC 133 marks are available. Without marks there's no honest way to know, and guessing
+    /// from output text ("error" appearing somewhere) would produce false verdicts about
+    /// whether the project works — so an unknown status is reported as unknown, and
+    /// `CheckpointVerification.passed` is false unless the code is explicitly zero.
+    private static func exitCode(fromCommandOutput output: String) -> Int? {
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true).reversed().prefix(4) {
+            guard let range = line.range(of: "[exit code: ") else { continue }
+            let rest = line[range.upperBound...]
+            guard let close = rest.firstIndex(of: "]") else { continue }
+            return Int(rest[rest.startIndex..<close])
+        }
+        return nil
     }
 
     /// Shared tail for both proposal kinds: once nothing in the batch is left unresolved, reveal
@@ -1199,6 +1231,12 @@ final class AgentRunner {
     hidden process — the user can always see exactly what ran. Prefer reading the actual code \
     over guessing, keep answers concise, and cite file paths and line numbers when referring to \
     code.
+
+    Check your work rather than asserting it: after an edit is applied, read_diagnostics tells \
+    you whether it introduced errors, and run_task runs what this project itself uses to build \
+    or test (list_tasks shows which). Prefer run_task over run_shell_command for those — its \
+    result is recorded against the checkpoint, so the user can see the change was verified. \
+    Never claim something works when you have not checked; say what you did and did not verify.
     """
 
     private static func parseArguments(_ json: String) -> JSONValue {

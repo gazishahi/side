@@ -25,6 +25,13 @@ struct ToolExecutor {
             switch spec.name {
             case "edit_file", "write_file": return scope.allowsWrites
             case "run_shell_command": return scope.allowsCommands
+            // `run_task` is available wherever commands are, *and* in Plan — a plan is worth
+            // more when the model can check whether the project currently builds. It is safe
+            // there precisely because it cannot compose a command: it picks a name the project
+            // itself declared, and the approval card still applies.
+            case "run_task", "list_tasks": return scope.allowsCommands || scope == .plan
+            // Reading diagnostics is a pure read — available in every scope, including Ask.
+            case "read_diagnostics": return true
             default: return true
             }
         }
@@ -105,6 +112,35 @@ struct ToolExecutor {
                     "required": .array([.string("command")]),
                 ])
             ),
+            ToolSpec(
+                name: "read_diagnostics",
+                description: "Read the compiler and linter errors and warnings currently reported for this project. Use this after proposing an edit to check whether it introduced a problem, and before claiming a change works. Only covers files that have been opened in the editor, so it is not a substitute for running the build or test task.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "errors_only": .object(["type": .string("boolean"), "description": .string("Omit warnings and report only errors. Defaults to false.")]),
+                    ]),
+                ])
+            ),
+            ToolSpec(
+                name: "list_tasks",
+                description: "List this project's named tasks (build, test, lint, and so on) with what each one runs. Use this before run_task so you name a task that exists.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([:]),
+                ])
+            ),
+            ToolSpec(
+                name: "run_task",
+                description: "Propose running one of this project's named tasks (see list_tasks) in the track's terminal. Prefer this over run_shell_command for building, testing, and linting: it runs exactly what the project says that task is, and its result is recorded against the checkpoint so the user can see the work was verified. The user approves it like any other command.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "name": .object(["type": .string("string"), "description": .string("The task name, e.g. \"test\".")]),
+                    ]),
+                    "required": .array([.string("name")]),
+                ])
+            ),
         ]
     }
 
@@ -156,6 +192,35 @@ struct ToolExecutor {
                 return .completed(output: "Missing required argument: command", isError: true)
             }
             return .commandProposal(ProposedCommand(toolUseId: toolUseId, command: command))
+        case "read_diagnostics":
+            let errorsOnly: Bool
+            errorsOnly = input.boolValue(for: "errors_only") ?? false
+            return .completed(output: DiagnosticsSnapshot.shared.report(projectRoot: projectRoot, errorsOnly: errorsOnly), isError: false)
+        case "list_tasks":
+            let tasks = ProjectTasks.tasks(projectRoot: projectRoot)
+            guard !tasks.isEmpty else {
+                return .completed(output: "This project has no detected tasks. Use run_shell_command, or ask the user to add \(ProjectTasks.declarationPath).", isError: false)
+            }
+            let listing = tasks.map { task in
+                "\(task.name): \(task.command)\(task.detail.isEmpty ? "" : "  — \(task.detail)")\(task.isVerification ? "  [verifies the project]" : "")"
+            }.joined(separator: "\n")
+            return .completed(output: listing, isError: false)
+        case "run_task":
+            guard let name = input.stringValue(for: "name"), !name.isEmpty else {
+                return .completed(output: "Missing required argument: name", isError: true)
+            }
+            guard let task = ProjectTasks.task(named: name, projectRoot: projectRoot) else {
+                let available = ProjectTasks.tasks(projectRoot: projectRoot).map(\.name)
+                return .completed(
+                    output: available.isEmpty
+                        ? "This project has no named tasks. Use run_shell_command instead."
+                        : "No task named \"\(name)\". Available: \(available.joined(separator: ", ")).",
+                    isError: true
+                )
+            }
+            // A named task is still a command proposal — same card, same approval, same
+            // terminal. The name rides along so the result can be recorded as verification.
+            return .commandProposal(ProposedCommand(toolUseId: toolUseId, command: task.command, taskName: task.name))
         default:
             return .completed(output: "Unknown tool: \(name)", isError: true)
         }
