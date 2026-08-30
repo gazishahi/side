@@ -117,7 +117,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// queue, the second call overwrote this slot and the first command's completion was never
     /// called at all — a dropped `tool_result`, i.e. precisely the dangling-`tool_use` shape that
     /// wedges a conversation.
-    private var pendingAgentCommand: (sentinel: String, buffer: String, command: String, usesMarks: Bool, completion: (String) -> Void)?
+    private var pendingAgentCommand: (sentinel: String, buffer: String, scannedCharacters: Int, command: String, usesMarks: Bool, completion: (String) -> Void)?
     /// Commands waiting for the terminal to free up, in the order they were requested.
     private var queuedAgentCommands: [(command: String, completion: (String) -> Void)] = []
     /// Whether the shell confirmed it emits OSC 133 marks. Commands that arrive while this is
@@ -126,6 +126,18 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private var shellIntegration: ShellIntegration = .probing
     /// One-shot guard for `tidyAfterSetup()`.
     private var didTidyAfterSetup = false
+    /// Ceiling on the in-flight command buffer. Without one, 30 seconds of a verbose build (the
+    /// timeout, not a size limit) accumulated hundreds of megabytes on the main thread. The
+    /// number matches ToolExecutor's own output cap, since anything past it is truncated before
+    /// the model ever sees it; the *tail* is kept because that's where the sentinel and the
+    /// error the user cares about live.
+    private static let maxCommandBufferCharacters = 60_000
+
+    private static func boundedAppend(_ existing: String, _ addition: String) -> String {
+        let combined = existing + addition
+        guard combined.count > maxCommandBufferCharacters else { return combined }
+        return String(combined.suffix(maxCommandBufferCharacters))
+    }
     /// True when integration was installed via the ZDOTDIR wrapper (zsh) — nothing was typed
     /// into the session, so there's nothing to tidy and no visible setup at all.
     private var integrationInstalledViaRc = false
@@ -363,7 +375,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         pendingAgentCommandGeneration += 1
         let generation = pendingAgentCommandGeneration
         let usesMarks = shellIntegration == .confirmed
-        pendingAgentCommand = (sentinel, "", command, usesMarks, completion)
+        pendingAgentCommand = (sentinel, "", 0, command, usesMarks, completion)
         // With shell integration the command is sent exactly as-is: the shell's own marks report
         // completion, so nothing has to be appended to the user's command line at all.
         // Without it, fall back to a sentinel echo on its own line — on its own line because a
@@ -474,7 +486,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         }
         guard var pending = pendingAgentCommand else { return }
         if pending.usesMarks {
-            pending.buffer += chunk
+            pending.buffer = Self.boundedAppend(pending.buffer, chunk)
             // Output is exactly what falls between the shell's own "output starts here" and
             // "command finished" marks, so the prompt is excluded by construction rather than by
             // filtering — the whole point of doing this properly.
@@ -507,7 +519,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // stream mid-token, which can split the sentinel across escape sequences and make a
         // whole-buffer substring search miss it even though the rendered terminal shows the
         // sentinel as one clean, contiguous line.
-        pending.buffer += Self.stripANSI(String(decoding: slice, as: UTF8.self))
+        pending.buffer = Self.boundedAppend(pending.buffer, Self.stripANSI(String(decoding: slice, as: UTF8.self)))
 
         // Scan for `<sentinel>:<digits>` rather than reasoning about line structure.
         //
@@ -521,7 +533,17 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // scan then consumed the real `:0` as part of the echo's text and skipped past it, and
         // the command never resolved. Matching digits directly is immune to that: `:$?` has no
         // digits after the colon, `:0` does.
-        var searchStart = pending.buffer.startIndex
+        // Resume near where the previous chunk stopped rather than rescanning the whole buffer
+        // every time — that restart made a command emitting a few MB quadratic on the main
+        // thread. The overlap covers a sentinel split across two chunks.
+        let overlap = pending.sentinel.count + 24
+        var searchStart = pending.buffer.count > pending.scannedCharacters + overlap
+            ? pending.buffer.index(pending.buffer.startIndex, offsetBy: pending.scannedCharacters - min(pending.scannedCharacters, overlap))
+            : pending.buffer.startIndex
+        defer {
+            pending.scannedCharacters = pending.buffer.count
+            if pendingAgentCommand != nil { pendingAgentCommand = pending }
+        }
         while let sentinelRange = pending.buffer.range(of: pending.sentinel, range: searchStart..<pending.buffer.endIndex) {
             let afterSentinel = pending.buffer[sentinelRange.upperBound...]
             guard afterSentinel.first == ":" else {

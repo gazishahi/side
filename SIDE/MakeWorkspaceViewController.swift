@@ -1257,7 +1257,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                         completion?()
                         return
                     }
-                    var tab = OpenTab(url: url, kind: .image, textStorage: NSTextStorage(), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: nil)
+                    var tab = OpenTab(url: url, kind: .image, textStorage: NSTextStorage(), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: nil)
                     tab.cachedImage = image
                     self.openTabs.append(tab)
                     self.activeTabIndex = self.openTabs.count - 1
@@ -1308,7 +1308,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     completion?()
                     return
                 }
-                var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, textStorage: NSTextStorage(string: source), undoManager: UndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
+                var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, textStorage: NSTextStorage(string: source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
                 tab.csvRows = rows
                 self.openTabs.append(tab)
                 self.activeTabIndex = self.openTabs.count - 1
@@ -1782,6 +1782,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func publishTabAccessibility() {
         tabBar.accessibilityGroupLabel = "Editor tabs"
         tabBar.accessibleTabs = tabChips
+    }
+
+    /// UndoManager's default `levelsOfUndo` is 0, meaning *unlimited* — and every typing burst
+    /// registers a group retaining the text it replaced, with nothing clearing the stack on
+    /// save. Across a long session in many tabs that grows without bound. 200 levels is far
+    /// more than anyone walks back by hand.
+    private static func makeUndoManager() -> UndoManager {
+        let manager = UndoManager()
+        manager.levelsOfUndo = 200
+        return manager
     }
 
     private func rebuildTabBar() {
@@ -2791,7 +2801,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Self.untitledCounter += 1
         let name = "Untitled-\(Self.untitledCounter)"
         let url = URL(string: "side-untitled:///\(name)")!
-        openTabs.append(OpenTab(url: url, kind: .text, textStorage: NSTextStorage(string: ""), undoManager: UndoManager(), dirty: false, isUntitled: true, knownModificationDate: nil))
+        openTabs.append(OpenTab(url: url, kind: .text, textStorage: NSTextStorage(string: ""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: true, knownModificationDate: nil))
         activeTabIndex = openTabs.count - 1
         loadActiveTabIntoEditor()
         view.window?.makeFirstResponder(editor)
@@ -3014,7 +3024,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    /// Cached: this spawns a subprocess, and `formatterCommand` is consulted on every save —
+    /// so an uncached `which` meant a process launch on the main thread per Cmd-S. A tool that
+    /// appears or disappears mid-session is rare enough that a relaunch is a fine remedy.
+    private static var whichCache: [String: String?] = [:]
+
     private static func which(_ tool: String) -> String? {
+        if let cached = whichCache[tool] { return cached }
+        let resolved = uncachedWhich(tool)
+        whichCache[tool] = resolved
+        return resolved
+    }
+
+    private static func uncachedWhich(_ tool: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["which", tool]

@@ -873,14 +873,26 @@ final class AgentRunner {
             for call in parsed {
                 outcomes.append((call.id, call.name, executor.execute(name: call.name, input: call.input, toolUseId: call.id, scope: scope)))
             }
+            // Each proposal's diff costs two temp-file writes plus a `git diff --no-index`
+            // subprocess. Computing them after hopping back to main froze the UI for ~0.5s on a
+            // ten-file batch — right at the moment the approval cards appear. They're computed
+            // here instead, on the queue that just ran the tools.
+            var diffsByToolUseId: [String: String] = [:]
+            for outcome in outcomes {
+                guard case .proposal(let edit) = outcome.result, !edit.isNewFile else { continue }
+                diffsByToolUseId[edit.toolUseId] = GitDiffComputer.unifiedDiffText(
+                    original: edit.baseContent, proposed: edit.proposedContent, projectRoot: root
+                )
+            }
             DispatchQueue.main.async {
-                self.handleToolOutcomes(outcomes, root: root, declaredIntent: declaredIntent, modelId: modelId, roundTrip: roundTrip)
+                self.handleToolOutcomes(outcomes, root: root, declaredIntent: declaredIntent, modelId: modelId, roundTrip: roundTrip, precomputedDiffs: diffsByToolUseId)
             }
         }
     }
 
     private func handleToolOutcomes(
-        _ outcomes: [(id: String, name: String, result: ToolExecutor.Result)], root: URL, declaredIntent: String, modelId: String, roundTrip: Int
+        _ outcomes: [(id: String, name: String, result: ToolExecutor.Result)], root: URL, declaredIntent: String, modelId: String, roundTrip: Int,
+        precomputedDiffs: [String: String] = [:]
     ) {
         // Results are keyed by tool_use id and reassembled in call order at the end, so a
         // proposal resolved out of order still lands in the right slot.
@@ -895,7 +907,8 @@ final class AgentRunner {
                 appendEntry(.toolResult(text: isError ? "⚠︎ \(outcome.name): \(String(output.prefix(140)))" : "✓ \(outcome.name) — \(Self.describeResultSize(output))", isError: isError))
                 resultsById[outcome.id] = Self.toolResult(toolUseId: outcome.id, content: output, isError: isError)
             case .proposal(let edit):
-                var diffText = GitDiffComputer.unifiedDiffText(original: edit.baseContent, proposed: edit.proposedContent, projectRoot: root)
+                var diffText = precomputedDiffs[edit.toolUseId]
+                    ?? GitDiffComputer.unifiedDiffText(original: edit.baseContent, proposed: edit.proposedContent, projectRoot: root)
                 // A brand-new file has no meaningful `git diff` (nothing to diff against), so
                 // synthesize one here, eagerly, while `proposedContent` is still around — rather
                 // than leaving `diffText` empty and making the view reach into `proposedContent`

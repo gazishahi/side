@@ -181,16 +181,34 @@ final class LSPManager: @unchecked Sendable {
             }
             return
         }
-        guard let executable = LanguageServerRegistry.resolveExecutable(named: entry.binaryName, installFormula: entry.installFormula) else {
-            print("[LSP] \(entry.binaryName) not found on PATH — diagnostics disabled for \(entry.languageId)")
-            if unavailableBinaries.insert(entry.binaryName).inserted { onAvailabilityChanged?() }
-            completion(nil)
-            return
-        }
+        // These three each run `$SHELL -lic "…"`, which sources the user's full profile — with
+        // nvm or rbenv that is routinely hundreds of milliseconds to seconds *each*, and they
+        // ran back to back on the main thread the first time a file of a given language was
+        // opened. Results are cached statically, so this is a first-open cost, but it was the
+        // first thing the user felt. Resolved off-main; the spawn hops back.
         startingServers.insert(entry.binaryName)
-        let client = LSPClient(executableURL: executable, arguments: entry.arguments, environment: LanguageServerRegistry.environmentForSpawning(), currentDirectory: projectRoot)
+        let projectRoot = self.projectRoot
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let executable = LanguageServerRegistry.resolveExecutable(named: entry.binaryName, installFormula: entry.installFormula)
+            let environment = LanguageServerRegistry.environmentForSpawning()
+            let tsserverPath = LanguageServerRegistry.tsserverPathOverride(for: entry, projectRoot: projectRoot)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard let executable else {
+                    print("[LSP] \(entry.binaryName) not found on PATH — diagnostics disabled for \(entry.languageId)")
+                    self.startingServers.remove(entry.binaryName)
+                    if self.unavailableBinaries.insert(entry.binaryName).inserted { self.onAvailabilityChanged?() }
+                    completion(nil)
+                    return
+                }
+                self.finishSpawn(entry: entry, executable: executable, environment: environment, tsserverPath: tsserverPath, completion: completion)
+            }
+        }
+    }
+
+    private func finishSpawn(entry: LanguageServerRegistry.Entry, executable: URL, environment: [String: String], tsserverPath: String?, completion: @escaping @Sendable (LSPClient?) -> Void) {
+        let client = LSPClient(executableURL: executable, arguments: entry.arguments, environment: environment, currentDirectory: projectRoot)
         let rootURI = projectRoot.absoluteString
-        let tsserverPath = LanguageServerRegistry.tsserverPathOverride(for: entry, projectRoot: projectRoot)
         Task { @MainActor [weak self] in
             do {
                 if let tsserverPath {

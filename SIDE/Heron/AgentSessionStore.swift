@@ -56,6 +56,7 @@ final class AgentSessionStore {
         session.modelId = modelId
         session.lastActiveAt = Date()
         loadedSessions[trackKey] = session
+        touchResidency(trackKey)
         // The hot path: one appended line, not a full re-serialization of the conversation.
         // Falls back to a full write when there's no file yet (first turn) or the append fails.
         if !SessionLog.append(turn, to: sessionFileURL(forTrackKey: trackKey)) {
@@ -81,6 +82,7 @@ final class AgentSessionStore {
         session.turns = turns
         session.lastActiveAt = Date()
         loadedSessions[trackKey] = session
+        touchResidency(trackKey)
         saveSession(session)
         if let indexPosition = index.firstIndex(where: { $0.trackKey == trackKey }) {
             index[indexPosition].lastActiveAt = session.lastActiveAt
@@ -104,6 +106,7 @@ final class AgentSessionStore {
     /// anymore, same cleanup contract as Make's file memory and Run's terminal sessions.
     func removeSession(forTrackKey trackKey: String) {
         loadedSessions.removeValue(forKey: trackKey)
+        residency.removeAll { $0 == trackKey }
         index.removeAll { $0.trackKey == trackKey }
         checkpoints.removeAll { $0.trackKey == trackKey }
         try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: trackKey))
@@ -114,8 +117,29 @@ final class AgentSessionStore {
 
     // MARK: - Lazy session loading
 
+    /// Most-recently-used track keys, oldest first. The lazy-load fix stopped *eagerly*
+    /// loading every track's history, but nothing evicted, so memory scaled with tracks
+    /// ever visited rather than tracks in use — browsing eight tracks kept eight full
+    /// conversations resident for the life of the project.
+    private var residency: [String] = []
+    private static let maxResidentSessions = 3
+
+    private func touchResidency(_ trackKey: String) {
+        residency.removeAll { $0 == trackKey }
+        residency.append(trackKey)
+        while residency.count > Self.maxResidentSessions {
+            let evicted = residency.removeFirst()
+            // Safe to drop: every mutation writes through to disk before returning, so the
+            // cache is never the only copy of anything.
+            loadedSessions.removeValue(forKey: evicted)
+        }
+    }
+
     private func loadedSession(forTrackKey trackKey: String) -> AgentSession? {
-        if let cached = loadedSessions[trackKey] { return cached }
+        if let cached = loadedSessions[trackKey] {
+            touchResidency(trackKey)
+            return cached
+        }
         guard index.contains(where: { $0.trackKey == trackKey }) else { return nil }
         var session: AgentSession
         if let logged = SessionLog.read(from: sessionFileURL(forTrackKey: trackKey)) {
@@ -135,6 +159,7 @@ final class AgentSessionStore {
             saveSession(session)
         }
         loadedSessions[trackKey] = session
+        touchResidency(trackKey)
         return session
     }
 
@@ -246,6 +271,7 @@ final class AgentSessionStore {
     /// instrument behind Preferences' "Delete All Conversations."
     func deleteAllSessions() {
         loadedSessions.removeAll()
+        residency.removeAll()
         for entry in index {
             try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: entry.trackKey))
             try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: entry.trackKey))
