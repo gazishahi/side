@@ -763,6 +763,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     // MARK: - Transcript rendering
 
     private func renderFull() {
+        // Pending flushes index into the entry list being replaced. Carrying them across a
+        // track switch or a reset made the next flush call setBody(streaming:) against a
+        // different conversation's entries — stripping markdown, code blocks, and file links
+        // off an unrelated finished message.
+        pendingStreamIndices = []
+        activeStreamIndices = []
         transcriptStack.arrangedSubviews.forEach {
             transcriptStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -987,9 +993,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private func scheduleStreamFlush() {
         guard !streamFlushScheduled else { return }
         streamFlushScheduled = true
+        // Captured so a flush scheduled before a track switch can't apply to the runner that
+        // replaced it.
+        let scheduledFor = runner
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) { [weak self] in
             guard let self else { return }
             self.streamFlushScheduled = false
+            guard self.runner === scheduledFor else { return }
             let indices = self.pendingStreamIndices
             self.pendingStreamIndices = []
             for index in indices.sorted() { self.updateEntryView(at: index) }

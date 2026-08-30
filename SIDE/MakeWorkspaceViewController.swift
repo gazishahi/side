@@ -1965,11 +1965,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .fetched(let headContent):
             runDiff(headContent: headContent, content: content, projectRoot: focusedRoot, tabIndex: index, generation: generation)
         case .notFetched:
+            // Re-found by *id*, not by the index captured at request time: closing a tab to the
+            // left or dragging one while `git show` is in flight makes that index point at a
+            // different file, and this cache is written once — so the wrong tab would show
+            // fabricated diff marks permanently, and "Revert Change" would write another file's
+            // lines into the buffer.
+            let tabID = tab.id
             GitDiffComputer.fetchHeadContent(projectRoot: focusedRoot, relativePath: relative) { [weak self] headContent in
-                guard let self, self.openTabs.indices.contains(index) else { return }
-                self.openTabs[index].headCache = .fetched(headContent)
-                guard self.gitDiffGeneration == generation, self.activeTabIndex == index else { return }
-                self.runDiff(headContent: headContent, content: content, projectRoot: focusedRoot, tabIndex: index, generation: generation)
+                guard let self, let current = self.indexForTab(id: tabID) else { return }
+                self.openTabs[current].headCache = .fetched(headContent)
+                guard self.gitDiffGeneration == generation, self.activeTabIndex == current else { return }
+                self.runDiff(headContent: headContent, content: content, projectRoot: focusedRoot, tabIndex: current, generation: generation)
             }
         }
     }
@@ -2895,7 +2901,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         do {
             try content.write(to: url, atomically: true, encoding: .utf8)
             openTabs[index].knownModificationDate = modificationDate(of: url)
-            runFormatterIfNeeded(tabID: tabID, url: url, completion: completion)
+            runFormatterIfNeeded(tabID: tabID, url: url, contentAtSaveTime: content, completion: completion)
         } catch {
             guard let window = view.window else { completion(false); return }
             let alert = NSAlert()
@@ -2907,7 +2913,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
-    private func runFormatterIfNeeded(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
+    private func runFormatterIfNeeded(tabID: UUID, url: URL, contentAtSaveTime: String, completion: @escaping (Bool) -> Void) {
         guard let focusedRoot, let formatter = Self.formatterCommand(for: url, projectRoot: focusedRoot) else {
             finishSave(tabID: tabID)
             completion(true)
@@ -2925,10 +2931,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             DispatchQueue.main.async {
                 guard let self, let index = self.indexForTab(id: tabID) else { completion(true); return }
                 let tab = self.openTabs[index]
-                if let formattedContent, formattedContent != tab.textStorage.string {
+                // Only adopt the formatter's output if the buffer still holds what was sent to
+                // it. The editor stays editable while the formatter runs on a background queue,
+                // so anything typed during a ~1s prettier run was silently overwritten — with
+                // no undo entry, since this replaces textStorage directly. Keeping the user's
+                // keystrokes and skipping the reformat is the recoverable choice; the next save
+                // formats again.
+                let bufferUnchanged = tab.textStorage.string == contentAtSaveTime
+                if let formattedContent, bufferUnchanged, formattedContent != tab.textStorage.string {
                     let fullRange = NSRange(location: 0, length: tab.textStorage.length)
                     tab.textStorage.replaceCharacters(in: fullRange, with: formattedContent)
                     SyntaxHighlighter.apply(to: tab.textStorage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
+                    // The replacement invalidates every undo registration describing the old
+                    // text, so replaying them would apply edits at meaningless offsets.
+                    tab.undoManager.removeAllActions()
                     if self.activeTabIndex == index { self.gutter.invalidate() }
                 }
                 // Re-read even when content didn't change: some formatters touch the file
@@ -2937,6 +2953,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 // a false "changed on disk" prompt on the next save.
                 self.openTabs[index].knownModificationDate = self.modificationDate(of: url)
                 self.finishSave(tabID: tabID)
+                if !bufferUnchanged {
+                    // Typed during the formatter run: disk holds the content that was written,
+                    // the buffer has moved past it, so the tab is genuinely still dirty and
+                    // marking it clean would misreport unsaved work as saved.
+                    self.openTabs[index].dirty = true
+                    if self.activeTabIndex == index { self.dirty = true }
+                    self.rebuildTabBar()
+                }
                 completion(true)
             }
         }

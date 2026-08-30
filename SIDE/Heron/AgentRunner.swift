@@ -112,6 +112,8 @@ final class AgentRunner {
     /// A provider-level error (bad key, rate limit, overloaded) already surfaced as an entry this
     /// turn — the turn must not then report success.
     private var didReceiveProviderError = false
+    /// Set by `stop()`, cleared when the user sends again — see `continueAfterTools`.
+    private var isStopRequested = false
 
     /// Bounds one send: the model can chain tools, but a loop that never stops asking for them
     /// shouldn't be able to run forever (or bill forever) without the user re-engaging.
@@ -231,6 +233,11 @@ final class AgentRunner {
 
     func stop() {
         stopStallWatchdog()
+        // Cancelling the network task only stops what's *streaming*. Tools run on their own
+        // queue and their results are submitted in a fresh request when they land, so pressing
+        // Stop during .runningTools still sent a new (billed) request and continued the loop.
+        // This flag is what the continuation consults.
+        isStopRequested = true
         streamTask?.cancel()
         // Stop has to reach the shell too. A command runs in the track's visible terminal and
         // keeps running after its result is reported (or times out), so cancelling only the
@@ -654,6 +661,7 @@ final class AgentRunner {
             return
         }
         setPhase(.streaming)
+        isStopRequested = false
         activeModelId = model.id
         activeProviderId = selection.providerId
         armStallWatchdog()
@@ -939,6 +947,15 @@ final class AgentRunner {
 
     private func continueAfterTools(callOrder: [String], resultsById: [String: AgentContentBlock], modelId: String, roundTrip: Int) {
         let blocks = callOrder.compactMap { resultsById[$0] }
+        // Results are still persisted before stopping: the model asked for these tools and they
+        // ran, so dropping the results would leave a tool_use with no tool_result — the exact
+        // shape the API rejects, which would wedge the conversation permanently.
+        if isStopRequested, blocks.count == callOrder.count {
+            sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: activeProviderId, modelId: modelId)
+            appendEntry(.meta("Stopped. The tools that were already running finished; nothing new was sent."))
+            finishRun(completed: false)
+            return
+        }
         guard blocks.count == callOrder.count else {
             // Defensive: a missing result would make the next request invalid, so stop cleanly
             // rather than sending a malformed turn.
