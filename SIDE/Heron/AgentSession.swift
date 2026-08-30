@@ -53,6 +53,18 @@ struct AgentSession: Codable, Identifiable {
         self.lastActiveAt = Date()
     }
 
+    /// Memberwise — used by `SessionLog`, which reconstructs a session from a header line plus
+    /// separately-decoded turns rather than decoding one whole object.
+    init(id: UUID, trackKey: String, providerId: String, modelId: String, turns: [AgentTurn], createdAt: Date, lastActiveAt: Date) {
+        self.id = id
+        self.trackKey = trackKey
+        self.providerId = providerId
+        self.modelId = modelId
+        self.turns = turns
+        self.createdAt = createdAt
+        self.lastActiveAt = lastActiveAt
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, trackKey, providerId, modelId, turns, createdAt, lastActiveAt
     }

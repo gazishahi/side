@@ -56,7 +56,11 @@ final class AgentSessionStore {
         session.modelId = modelId
         session.lastActiveAt = Date()
         loadedSessions[trackKey] = session
-        saveSession(session)
+        // The hot path: one appended line, not a full re-serialization of the conversation.
+        // Falls back to a full write when there's no file yet (first turn) or the append fails.
+        if !SessionLog.append(turn, to: sessionFileURL(forTrackKey: trackKey)) {
+            saveSession(session)
+        }
         if let indexPosition = index.firstIndex(where: { $0.trackKey == trackKey }) {
             index[indexPosition].providerId = providerId
             index[indexPosition].modelId = modelId
@@ -103,6 +107,7 @@ final class AgentSessionStore {
         index.removeAll { $0.trackKey == trackKey }
         checkpoints.removeAll { $0.trackKey == trackKey }
         try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: trackKey))
+        try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
         saveIndex()
         saveCheckpoints()
     }
@@ -111,9 +116,18 @@ final class AgentSessionStore {
 
     private func loadedSession(forTrackKey trackKey: String) -> AgentSession? {
         if let cached = loadedSessions[trackKey] { return cached }
-        guard index.contains(where: { $0.trackKey == trackKey }),
-              var session = JSONStore.read(AgentSession.self, from: sessionFileURL(forTrackKey: trackKey))?.payload
-        else { return nil }
+        guard index.contains(where: { $0.trackKey == trackKey }) else { return nil }
+        var session: AgentSession
+        if let logged = SessionLog.read(from: sessionFileURL(forTrackKey: trackKey)) {
+            session = logged
+        } else if let legacy = JSONStore.read(AgentSession.self, from: legacySessionFileURL(forTrackKey: trackKey))?.payload {
+            // One-time migration to the append-only log, then the old file goes away.
+            session = legacy
+            SessionLog.write(session, to: sessionFileURL(forTrackKey: trackKey))
+            try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
+        } else {
+            return nil
+        }
         // Repair before anything can read it — a session with a dangling tool_use is not just
         // cosmetically odd, it's unusable (see `Self.repairingDanglingToolUses`).
         if let repaired = Self.repairingDanglingToolUses(session) {
@@ -176,8 +190,28 @@ final class AgentSessionStore {
     /// safe, unique filename, same sanitization convention `GitPaths`/`TrackStore` already use
     /// for worktree directory names.
     private func sessionFileURL(forTrackKey trackKey: String) -> URL {
+        sessionsDirectory.appendingPathComponent("\(Self.slug(for: trackKey)).jsonl")
+    }
+
+    /// The pre-JSONL filename, still read once so an existing conversation migrates instead of
+    /// vanishing.
+    private func legacySessionFileURL(forTrackKey trackKey: String) -> URL {
         let slug = trackKey.isEmpty ? "_none_" : trackKey.replacingOccurrences(of: "/", with: "-")
         return sessionsDirectory.appendingPathComponent("\(slug).json")
+    }
+
+    /// A filesystem-safe name that can't collide. The old form just mapped `/`→`-`, so the
+    /// branches `feat/x` and `feat-x` — both reachable, since either can be adopted as a track —
+    /// shared one conversation file and silently merged two conversations. The suffix is derived
+    /// from the full key, so distinct keys stay distinct however they're spelled.
+    private static func slug(for trackKey: String) -> String {
+        guard !trackKey.isEmpty else { return "_none_" }
+        let safe = String(trackKey.map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "-" }.prefix(60))
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in Array(trackKey.utf8) {
+            hash = (hash ^ UInt64(byte)) &* 0x100000001b3
+        }
+        return "\(safe)-\(String(hash, radix: 36))"
     }
 
     // MARK: - Persistence
@@ -202,6 +236,7 @@ final class AgentSessionStore {
         for entry in expired {
             loadedSessions.removeValue(forKey: entry.trackKey)
             try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: entry.trackKey))
+            try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: entry.trackKey))
         }
         index.removeAll { $0.lastActiveAt < cutoff }
         saveIndex()
@@ -213,6 +248,7 @@ final class AgentSessionStore {
         loadedSessions.removeAll()
         for entry in index {
             try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: entry.trackKey))
+            try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: entry.trackKey))
         }
         index.removeAll()
         saveIndex()
@@ -254,7 +290,7 @@ final class AgentSessionStore {
     }
 
     private func saveSession(_ session: AgentSession) {
-        JSONStore.write(session, to: sessionFileURL(forTrackKey: session.trackKey))
+        SessionLog.write(session, to: sessionFileURL(forTrackKey: session.trackKey))
     }
 }
 
