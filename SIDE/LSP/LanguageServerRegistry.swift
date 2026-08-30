@@ -65,8 +65,10 @@ enum LanguageServerRegistry {
         process.standardError = Pipe()
         do {
             try process.run()
-            process.waitUntilExit()
+            // Read before waiting — waiting first deadlocks once the pipe buffer fills
+            // (see GitPaths.runGit).
             let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             guard process.terminationStatus == 0,
                   let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !output.isEmpty else {
@@ -111,8 +113,10 @@ enum LanguageServerRegistry {
         process.standardError = Pipe()
         do {
             try process.run()
-            process.waitUntilExit()
+            // Read before waiting — waiting first deadlocks once the pipe buffer fills
+            // (see GitPaths.runGit).
             let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             guard process.terminationStatus == 0,
                   let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !output.isEmpty else {
@@ -182,8 +186,10 @@ enum LanguageServerRegistry {
         process.standardError = Pipe()
         do {
             try process.run()
-            process.waitUntilExit()
+            // Read before waiting — waiting first deadlocks once the pipe buffer fills
+            // (see GitPaths.runGit).
             let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             guard process.terminationStatus == 0,
                   let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !output.isEmpty else { return nil }

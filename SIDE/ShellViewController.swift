@@ -608,8 +608,10 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         process.standardOutput = pipe
         process.standardError = Pipe()
         do { try process.run() } catch { return nil }
-        process.waitUntilExit()
+        // Read before waiting — waiting first deadlocks once git fills the pipe buffer
+        // (see GitPaths.runGit).
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

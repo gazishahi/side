@@ -155,6 +155,9 @@ struct ToolExecutor {
         guard let url = ProjectFileAccess.resolveInsideProject(path: path, root: projectRoot) else {
             return .completed(output: "Refused: \(path) is outside the open project.", isError: true)
         }
+        guard ProjectFileAccess.isWritable(url, root: projectRoot) else {
+            return .completed(output: "Refused: \(path) is part of the repository's or Side's own internals, which tools must not write.", isError: true)
+        }
         guard let base = currentContent(of: url) else {
             return .completed(output: "Couldn't read \(path) — it may not exist. Use write_file to create it.", isError: true)
         }
@@ -179,6 +182,9 @@ struct ToolExecutor {
         guard let content = input.stringValue(for: "content") else { return .completed(output: "Missing required argument: content", isError: true) }
         guard let url = ProjectFileAccess.resolveInsideProject(path: path, root: projectRoot) else {
             return .completed(output: "Refused: \(path) is outside the open project.", isError: true)
+        }
+        guard ProjectFileAccess.isWritable(url, root: projectRoot) else {
+            return .completed(output: "Refused: \(path) is part of the repository's or Side's own internals, which tools must not write.", isError: true)
         }
         let existing = currentContent(of: url)
         if let existing, existing == content {

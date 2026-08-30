@@ -77,14 +77,33 @@ enum CommandAutoRunPolicy {
         "which": [], "type": [], "env": [], "printenv": [], "uname": [], "df": [], "du": [],
         "grep": [], "rg": [], "egrep": [], "fgrep": [],
         // Readers that become writers with one flag.
-        "sed": ["-i", "--in-place"],
         "sort": ["-o", "--output"],
-        "awk": [],
         "find": ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fprintf", "-fls"],
         "tree": ["-o"],
         "diff": [],
-        "node": ["-e", "--eval", "-p"],
+        // Deliberately absent, and they must stay absent: `awk`, `sed`, and `node` are
+        // general-purpose interpreters whose *program text* is an ordinary argument, so no
+        // flag list can make them read-only. `awk 'BEGIN{system("…")}'`, sed's `e` command,
+        // and `node script.js` all execute arbitrary code while looking like a flagless read.
+        // An audit found all three auto-running; the allowlist's premise is that we can
+        // affirmatively recognize every part of a command as read-only, and for an
+        // interpreter we simply cannot.
     ]
+
+    /// Arguments that could reach outside the project. The executable allowlist says *what*
+    /// runs; without this, nothing said *on what* — `cat ~/.aws/credentials`, `grep -r AKIA /`,
+    /// and `find / -name id_rsa` were all auto-runnable, quietly undoing the containment
+    /// `ProjectFileAccess` enforces so carefully one layer up. Conservative on purpose: a
+    /// relative path inside the working directory is the only shape allowed, because the
+    /// session's cwd can have been changed by the user or an earlier command, so even a
+    /// relative path can't be resolved with confidence here.
+    private static func argumentEscapesProject(_ argument: String) -> Bool {
+        // Flags are not paths.
+        guard !argument.hasPrefix("-") else { return false }
+        if argument.hasPrefix("/") || argument.hasPrefix("~") { return true }
+        let separated = "/" + argument + "/"
+        return separated.contains("/../") || separated.contains("/./..")
+    }
 
     /// Read-only `git` subcommands. Everything else — push, reset, clean, checkout, commit,
     /// merge, rebase, branch, worktree — needs a human.
@@ -115,6 +134,9 @@ enum CommandAutoRunPolicy {
         let arguments = Array(tokens.dropFirst())
 
         if executable == "git" {
+            // `git -C <path>` relocates the whole command, so git gets the same argument rule.
+            if arguments.contains(where: argumentEscapesProject) { return false }
+            if arguments.contains("-C") { return false }
             guard let subcommand = arguments.first(where: { !$0.hasPrefix("-") }) else { return false }
             if subcommand == "config" {
                 return arguments.contains { readingGitConfigFlags.contains($0) }
@@ -123,6 +145,7 @@ enum CommandAutoRunPolicy {
         }
 
         guard let forbiddenFlags = readOnlyCommands[executable] else { return false }
+        if arguments.contains(where: argumentEscapesProject) { return false }
         return !arguments.contains { argument in
             forbiddenFlags.contains { argument == $0 || argument.hasPrefix($0 + "=") }
         }

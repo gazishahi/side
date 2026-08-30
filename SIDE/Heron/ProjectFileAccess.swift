@@ -58,4 +58,22 @@ enum ProjectFileAccess {
         guard resolved.path == resolvedRoot.path || resolved.path.hasPrefix(resolvedRoot.path + "/") else { return nil }
         return resolved
     }
+
+    /// Paths that are inside the project but must never be *written* by a tool.
+    ///
+    /// Containment alone isn't enough for writes: `.git/config` and `.git/hooks/` turn an edit
+    /// into code execution. A `core.fsmonitor` or `core.hooksPath` entry runs on git's next
+    /// invocation — and Side itself runs `git status` unattended while checkpointing — so a
+    /// write there escapes the approval boundary entirely, without ever going near
+    /// `CommandAutoRunPolicy`. At `.full` autonomy it wouldn't even need a click.
+    ///
+    /// `.side/` is Side's own per-project state (track records, conversations); an agent
+    /// rewriting it could forge checkpoints or plant standing instructions for future sessions.
+    static func isWritable(_ url: URL, root: URL) -> Bool {
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath().path
+        guard url.path.hasPrefix(resolvedRoot + "/") else { return url.path != resolvedRoot }
+        let relative = String(url.path.dropFirst(resolvedRoot.count + 1))
+        let firstComponent = relative.split(separator: "/").first.map(String.init) ?? relative
+        return firstComponent != ".git" && firstComponent != ".side"
+    }
 }

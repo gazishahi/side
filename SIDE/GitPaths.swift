@@ -77,8 +77,12 @@ enum GitPaths {
         process.standardOutput = pipe
         process.standardError = pipe
         do { try process.run() } catch { return (false, error.localizedDescription) }
-        process.waitUntilExit()
+        // Read *before* waiting. `waitUntilExit()` first is a deadlock: once git fills the
+        // ~64KB pipe buffer it blocks writing, while we block waiting for it to exit, and
+        // neither side ever moves. Reproduced against a 175KB blob — `git show` of any large
+        // file, or a diff over ~64KB, hung the app until Force Quit.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus == 0, output)
     }

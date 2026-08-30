@@ -75,8 +75,10 @@ enum XcodeBuildServerSetup {
         process.standardOutput = pipe
         process.standardError = Pipe()
         do { try process.run() } catch { return nil }
-        process.waitUntilExit()
+        // Read before waiting — waiting first deadlocks once the pipe buffer fills
+        // (see GitPaths.runGit).
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let info = (json["project"] as? [String: Any]) ?? (json["workspace"] as? [String: Any])
         guard let schemes = info?["schemes"] as? [String], !schemes.isEmpty else { return nil }

@@ -1102,8 +1102,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         } catch {
             return (false, error.localizedDescription)
         }
-        process.waitUntilExit()
+        // Read before waiting — waiting first deadlocks once the pipe buffer fills
+        // (see GitPaths.runGit).
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus == 0, output)
     }
@@ -2984,8 +2986,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         process.standardOutput = pipe
         process.standardError = Pipe()
         do { try process.run() } catch { return nil }
-        process.waitUntilExit()
+        // Read before waiting — waiting first deadlocks once the pipe buffer fills
+        // (see GitPaths.runGit).
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (path?.isEmpty == false) ? path : nil
     }

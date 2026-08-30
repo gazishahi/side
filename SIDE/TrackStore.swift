@@ -524,8 +524,10 @@ final class TrackStore {
         process.standardOutput = pipe
         process.standardError = Pipe()
         do { try process.run() } catch { return nil }
-        process.waitUntilExit()
+        // Read before waiting — waiting first deadlocks once git fills the pipe buffer
+        // (see GitPaths.runGit).
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         guard let output = String(data: data, encoding: .utf8),
               let kilobytes = output.split(separator: "\t").first.flatMap({ Int($0) }) else { return nil }
         return kilobytes * 1024
@@ -859,8 +861,10 @@ final class TrackStore {
         } catch {
             return (false, error.localizedDescription)
         }
-        process.waitUntilExit()
+        // Read before waiting — waiting first deadlocks once git fills the pipe buffer
+        // (see GitPaths.runGit).
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus == 0, output)
     }
