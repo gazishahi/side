@@ -40,6 +40,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let baseChip = NSView()
     private let baseChipLabel = NSTextField(labelWithString: "")
     private let arrowLabel = NSTextField(labelWithString: "\u{2192}")
+    /// Sibling-overlap warning; hidden entirely when nothing overlaps, because a banner that's
+    /// always present is a banner nobody reads.
+    private let overlapBanner = NSView()
+    private let overlapLabel = NSTextField(wrappingLabelWithString: "")
     private let checkpointsHeader = NSTextField(labelWithString: "Checkpoints")
     private let checkpointsStack = NSStackView()
     private let diffHeader = NSTextField(labelWithString: "")
@@ -112,7 +116,33 @@ final class ReviewWorkspaceViewController: NSViewController {
         contentStack.spacing = DS.Spacing.xl
         contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
-        for view in [titleLabel, subtitleRow, checkpointsHeader, checkpointsStack, diffHeader, diffViewer, bottomBar] {
+        overlapBanner.wantsLayer = true
+        overlapBanner.layer?.cornerRadius = DS.Radius.card
+        overlapBanner.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.12).cgColor
+        overlapBanner.layer?.borderWidth = 1
+        overlapBanner.layer?.borderColor = NSColor.systemOrange.withAlphaComponent(0.35).cgColor
+        overlapBanner.isHidden = true
+        overlapBanner.translatesAutoresizingMaskIntoConstraints = false
+        overlapLabel.font = DS.Text.caption()
+        overlapLabel.textColor = .labelColor
+        overlapLabel.translatesAutoresizingMaskIntoConstraints = false
+        let overlapIcon = NSImageView()
+        overlapIcon.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+        overlapIcon.contentTintColor = .systemOrange
+        overlapIcon.translatesAutoresizingMaskIntoConstraints = false
+        overlapBanner.addSubview(overlapIcon)
+        overlapBanner.addSubview(overlapLabel)
+        NSLayoutConstraint.activate([
+            overlapIcon.leadingAnchor.constraint(equalTo: overlapBanner.leadingAnchor, constant: 10),
+            overlapIcon.topAnchor.constraint(equalTo: overlapBanner.topAnchor, constant: 9),
+            overlapLabel.leadingAnchor.constraint(equalTo: overlapIcon.trailingAnchor, constant: DS.Spacing.s),
+            overlapLabel.trailingAnchor.constraint(equalTo: overlapBanner.trailingAnchor, constant: -10),
+            overlapLabel.topAnchor.constraint(equalTo: overlapBanner.topAnchor, constant: 8),
+            overlapLabel.bottomAnchor.constraint(equalTo: overlapBanner.bottomAnchor, constant: -8),
+        ])
+
+        for view in [titleLabel, subtitleRow, overlapBanner, checkpointsHeader, checkpointsStack, diffHeader, diffViewer, bottomBar] {
             contentStack.addArrangedSubview(view)
             // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
             // width by default — without this, a wrapping label or the diff card would collapse
@@ -210,6 +240,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             }
         }
 
+        overlapBanner.isHidden = true
         diffHeader.stringValue = "Changes vs \(baseRef)"
         diffViewer.renderLoading()
         promoteButton.isEnabled = false
@@ -217,12 +248,41 @@ final class ReviewWorkspaceViewController: NSViewController {
         guard let canonicalRoot else { return }
         let cwd = canonicalRoot.path
         let branchName = track.branchName
+        // Every other track's base, resolved on the main thread — `trackStore` isn't safe to
+        // read from the background, and this is a handful of dictionary lookups.
+        let siblingTracks = trackStore.tracks.filter {
+            $0.branchName != branchName && $0.status != .archived && $0.status != .completed
+        }
+        let baseRefsByBranch = Dictionary(
+            uniqueKeysWithValues: siblingTracks.map { ($0.branchName, Self.baseRef(for: $0, trackStore: trackStore)) }
+        )
+        let intentsByBranch = Dictionary(uniqueKeysWithValues: siblingTracks.map { ($0.branchName, $0.intent) })
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let diffText = GitDiffComputer.refDiff(fromRef: baseRef, toRef: branchName, cwd: cwd)
+            // One `git diff --name-only` per track — cheap, and it costs the model nothing:
+            // this is awareness for the human, not context for the agent.
+            var changedPathsByBranch = [branchName: TrackOverlap.changedPaths(branch: branchName, baseRef: baseRef, cwd: cwd)]
+            for (branch, base) in baseRefsByBranch {
+                changedPathsByBranch[branch] = TrackOverlap.changedPaths(branch: branch, baseRef: base, cwd: cwd)
+            }
+            let siblings = TrackOverlap.siblings(
+                of: branchName, changedPathsByBranch: changedPathsByBranch, intentsByBranch: intentsByBranch
+            )
+            let summary = TrackOverlap.summary(for: siblings)
             DispatchQueue.main.async {
                 guard let self, self.currentTrack?.branchName == branchName else { return }
                 self.diffViewer.render(diffText: diffText)
                 self.promoteButton.isEnabled = !diffText.isEmpty
+                self.overlapBanner.isHidden = summary == nil
+                if let summary {
+                    self.overlapLabel.stringValue = summary
+                    // The shared paths spelled out on hover — the banner stays one line, but
+                    // "which files, exactly" is the first question it provokes.
+                    self.overlapBanner.toolTip = siblings
+                        .map { "\($0.intent.isEmpty ? $0.branchName : $0.intent): \($0.sharedPaths.joined(separator: ", "))" }
+                        .joined(separator: "\n")
+                }
             }
         }
     }
