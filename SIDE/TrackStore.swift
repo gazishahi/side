@@ -18,6 +18,7 @@ struct TrackSwitchOutcome {
 /// `.git/side` string-append — inside a linked worktree, `.git` is a *file*, not a directory, so
 /// the naive path would fragment per-track state depending on which worktree happened to open
 /// the project.
+@MainActor
 final class TrackStore {
     private(set) var tracks: [Track] = []
     let projectRoot: URL
@@ -167,7 +168,9 @@ final class TrackStore {
             guard let self else { return }
             let isRepo = self.checkIsGitRepo(cwd: cwd)
             let current = isRepo ? self.currentBranchName(cwd: cwd) : nil
-            let base = isRepo ? self.defaultBranchName() : ""
+            // Deliberately the git-reading form: this block *is* the refresh, so consulting
+            // the cached value would answer with the thing being refreshed.
+            let base = isRepo ? self.resolveDefaultBranchFromGit() : ""
             DispatchQueue.main.async {
                 // A create/switch/promote started (and possibly finished) while this was in
                 // flight — its own reading is already stale, so applying it now would clobber
@@ -230,7 +233,7 @@ final class TrackStore {
 
     /// `git init`-s a plain folder that isn't a repo yet, then reconciles immediately so the
     /// ledger reflects it without requiring a second visit to this stage.
-    func initializeGitRepo(completion: @escaping (Result<Void, Error>) -> Void) {
+    func initializeGitRepo(completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
         epoch += 1
         let cwd = projectRoot.path
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -249,7 +252,7 @@ final class TrackStore {
     /// commit instead, which is the closest real equivalent to "turn this into a track." Gets
     /// its own worktree immediately, same as any other new track — the main tree is left exactly
     /// where it was (still detached), not carried along into the new branch.
-    func createTrackFromDetachedHead(intent: String, completion: @escaping (Result<(Track, TrackSwitchOutcome), Error>) -> Void) {
+    func createTrackFromDetachedHead(intent: String, completion: @escaping @Sendable (Result<(Track, TrackSwitchOutcome), Error>) -> Void) {
         let trimmed = intent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { completion(.failure(TrackError.emptyIntent)); return }
         let branchName = uniqueBranchName(from: trimmed)
@@ -280,7 +283,7 @@ final class TrackStore {
     /// gets folded in, with the user naming the intent rather than Side guessing one from the
     /// branch name. Transfers over whatever worktree `switchToExistingBranch` already set up for
     /// this branch, if any — promoting shouldn't require materializing a second time.
-    func promoteCurrentBranch(intent: String, completion: @escaping (Result<Track, Error>) -> Void) {
+    func promoteCurrentBranch(intent: String, completion: @escaping @Sendable (Result<Track, Error>) -> Void) {
         let trimmed = intent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { completion(.failure(TrackError.emptyIntent)); return }
         guard let branchName = untrackedBranch else { completion(.failure(TrackError.nothingToPromote)); return }
@@ -304,7 +307,7 @@ final class TrackStore {
     /// by side (see "Stacked tracks" in the constitution). Either way this gets its own linked
     /// worktree — the shared main tree is never touched, so there's nothing to guard against
     /// losing there.
-    func createTrack(intent: String, baseTrack: Track? = nil, completion: @escaping (Result<(Track, TrackSwitchOutcome), Error>) -> Void) {
+    func createTrack(intent: String, baseTrack: Track? = nil, completion: @escaping @Sendable (Result<(Track, TrackSwitchOutcome), Error>) -> Void) {
         let trimmed = intent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { completion(.failure(TrackError.emptyIntent)); return }
         let branchName = uniqueBranchName(from: trimmed)
@@ -323,7 +326,7 @@ final class TrackStore {
                 // to fork from — there's only one branch anyway in that case, so just branch from
                 // wherever HEAD is.
                 let hasCommits = self.runGit(["rev-parse", "--verify", "-q", "HEAD"], cwd: cwd).success
-                baseRef = hasCommits ? self.defaultBranchName() : "HEAD"
+                baseRef = hasCommits ? self.resolveDefaultBranchFromGit() : "HEAD"
             }
             let result = self.addWorktree(branchName: branchName, baseRef: baseRef, newBranch: true)
             DispatchQueue.main.async {
@@ -348,12 +351,16 @@ final class TrackStore {
     /// already owned by a track — candidates for "Switch to Existing Branch…". Fetched fresh each
     /// time rather than cached, since branches can appear (a teammate pushes, a `git fetch` runs
     /// in Run's terminal) without Side ever being told.
-    func availableBranchesToAdopt(completion: @escaping ([String]) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { completion([]); return }
-            let cwd = self.projectRoot.path
-            let local = self.runGit(["branch", "--list", "--format=%(refname:short)"], cwd: cwd)
-            let remote = self.runGit(["branch", "-r", "--list", "--format=%(refname:short)"], cwd: cwd)
+    func availableBranchesToAdopt(completion: @escaping @Sendable ([String]) -> Void) {
+        // Snapshotted here, on the main actor, and captured by value. Reading `self.tracks`
+        // inside the background block — as this used to — was a genuine unsynchronized read of
+        // state the main actor mutates.
+        let trackedNames = Set(tracks.map(\.branchName))
+        let cwd = projectRoot.path
+        let runGit = self.runGit
+        DispatchQueue.global(qos: .userInitiated).async {
+            let local = runGit(["branch", "--list", "--format=%(refname:short)"], cwd)
+            let remote = runGit(["branch", "-r", "--list", "--format=%(refname:short)"], cwd)
             var names = Set<String>()
             if local.success {
                 names.formUnion(local.output.split(separator: "\n").map(String.init))
@@ -365,7 +372,6 @@ final class TrackStore {
                     names.insert(String(name[name.index(after: slash)...]))
                 }
             }
-            let trackedNames = Set(self.tracks.map(\.branchName))
             let candidates = names.subtracting(trackedNames).sorted()
             DispatchQueue.main.async { completion(candidates) }
         }
@@ -377,7 +383,7 @@ final class TrackStore {
     /// the shared main tree (which stays on the default branch, per "the main checkout is
     /// reserved for the base branch"). Lands as `untrackedBranch`, ready to either work on as-is
     /// or fold into a track via `promoteCurrentBranch`.
-    func switchToExistingBranch(_ branchName: String, completion: @escaping (Result<TrackSwitchOutcome, Error>) -> Void) {
+    func switchToExistingBranch(_ branchName: String, completion: @escaping @Sendable (Result<TrackSwitchOutcome, Error>) -> Void) {
         epoch += 1
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -406,16 +412,19 @@ final class TrackStore {
     /// to wait on. Only falls back to an actual git operation for a track that predates
     /// per-track worktrees (`workingDirectoryPath == nil`) or whose worktree directory vanished
     /// out from under Side (deleted by hand, moved), in which case it's lazily (re)materialized.
-    func switchTo(_ track: Track, completion: @escaping (Result<TrackSwitchOutcome, Error>) -> Void) {
+    func switchTo(_ track: Track, completion: @escaping @Sendable (Result<TrackSwitchOutcome, Error>) -> Void) {
         epoch += 1
         if let path = track.workingDirectoryPath, FileManager.default.fileExists(atPath: path) {
             markActive(track)
             completion(.success(TrackSwitchOutcome()))
             return
         }
+        // Snapshotted on the main actor before the hop, for the same reason as everywhere else
+        // in this file: the background side must not reach back into main-actor state.
+        let defaultBranch = defaultBranchName()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            let result = self.materializeWorktree(for: track)
+            let result = self.materializeWorktree(for: track, defaultBranch: defaultBranch)
             DispatchQueue.main.async {
                 switch result {
                 case .failure(let error):
@@ -517,10 +526,30 @@ final class TrackStore {
     /// intent/branch/status/last-active fields it started with. Ahead/behind works against any
     /// ref regardless of what's checked out; uncommitted count needs a real working tree — the
     /// track's own worktree if it has one, else the shared main tree if it's the active track.
-    func gitSummary(for track: Track) -> GitSummary {
+    /// Reads main-actor state, so it must be called from the main actor — it exists to *gather*
+    /// the inputs for the nonisolated worker below.
+    func gitSummaryInputs(for track: Track) -> GitSummaryInputs {
+        GitSummaryInputs(track: track, projectRootPath: projectRoot.path, baseBranch: defaultBranchName())
+    }
+
+    /// The values `gitSummary` needs, snapshotted on the main actor so the git work that follows
+    /// can run anywhere without reaching back into the store.
+    ///
+    /// This is the shape of the fix, in miniature: the old version read `defaultBranchName()`
+    /// (and through it `tracks`) from a background queue while the main actor was free to mutate
+    /// it — an unsynchronized read the compiler could not see, because the type declared no
+    /// isolation at all.
+    struct GitSummaryInputs: Sendable {
+        let track: Track
+        let projectRootPath: String
+        let baseBranch: String
+    }
+
+    nonisolated func gitSummary(_ inputs: GitSummaryInputs) -> GitSummary {
+        let track = inputs.track
         var summary = GitSummary()
-        let cwd = projectRoot.path
-        let base = defaultBranchName()
+        let cwd = inputs.projectRootPath
+        let base = inputs.baseBranch
         if base != track.branchName {
             let counts = runGit(["rev-list", "--left-right", "--count", "\(base)...\(track.branchName)"], cwd: cwd)
             let parts = counts.output.split(whereSeparator: { $0 == " " || $0 == "\t" })
@@ -529,7 +558,7 @@ final class TrackStore {
                 summary.aheadCount = ahead
             }
         }
-        let workingTreeCwd = track.workingDirectoryPath ?? (track.status == .active ? projectRoot.path : nil)
+        let workingTreeCwd = track.workingDirectoryPath ?? (track.status == .active ? inputs.projectRootPath : nil)
         if let workingTreeCwd {
             let status = runGit(["status", "--porcelain"], cwd: workingTreeCwd)
             if status.success {
@@ -547,7 +576,7 @@ final class TrackStore {
     /// individually. Runs on the same background thread the rest of `gitSummary` already does
     /// (see `TracksWorkspaceViewController.refreshGitSummariesIfNeeded`), so a worktree with a
     /// large `node_modules` doesn't block the main thread.
-    private static func directorySizeBytes(at path: String) -> Int? {
+    nonisolated private static func directorySizeBytes(at path: String) -> Int? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
         process.arguments = ["-sk", path]
@@ -567,7 +596,7 @@ final class TrackStore {
     /// Renaming only ever touches the human-readable intent — the branch name a track was created
     /// with doesn't change, so this never re-slugs or touches git. Typos and second thoughts are
     /// common; there's no reason renaming should require creating a new track.
-    func renameTrack(_ track: Track, to newIntent: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    func renameTrack(_ track: Track, to newIntent: String, completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
         let trimmed = newIntent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { completion(.failure(TrackError.emptyIntent)); return }
         guard let index = tracks.firstIndex(where: { $0.id == track.id }) else { completion(.success(())); return }
@@ -583,7 +612,7 @@ final class TrackStore {
     /// makes no sense) rather than silently switching you elsewhere first. Removes the track's
     /// worktree before deleting its branch — `branch -D` alone fails on a branch still checked
     /// out in a worktree.
-    func deleteTrack(_ track: Track, alsoDeleteBranch: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+    func deleteTrack(_ track: Track, alsoDeleteBranch: Bool, completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
         guard track.status != .active else { completion(.failure(TrackError.cannotDeleteActive)); return }
         // Archived children don't count — they're already treated as gone from the working set,
         // so they can't be silently stranded by anything this does.
@@ -637,7 +666,7 @@ final class TrackStore {
     /// track (same reasoning as `deleteTrack`) and never passes `--force` — a dirty worktree
     /// makes `git worktree remove` refuse on its own, which is exactly right here: silently
     /// discarding uncommitted work would contradict "just free disk space, keep everything else."
-    func removeWorkingCopy(for track: Track, completion: @escaping (Result<Void, Error>) -> Void) {
+    func removeWorkingCopy(for track: Track, completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
         guard track.status != .active else { completion(.failure(TrackError.cannotDeleteActive)); return }
         guard let path = track.workingDirectoryPath else { completion(.success(())); return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -664,7 +693,7 @@ final class TrackStore {
     /// parent moves forward. Always runs in the child's own worktree, never the parent's — unlike
     /// Promote, there's no "which working copy" ambiguity here since a pull only ever touches the
     /// track pulling. A root track (`parentTrackId == nil`) has no parent branch to pull from.
-    func pullFromParent(_ track: Track, completion: @escaping (Result<String, Error>) -> Void) {
+    func pullFromParent(_ track: Track, completion: @escaping @Sendable (Result<String, Error>) -> Void) {
         guard let parentId = track.parentTrackId, let parent = tracks.first(where: { $0.id == parentId }) else {
             completion(.failure(TrackError.noParentTrack))
             return
@@ -681,7 +710,9 @@ final class TrackStore {
         }
     }
 
-    private func performPull(parentBranch: String, cwd: String) -> Result<String, Error> {
+    /// `nonisolated`: pure git I/O over immutable inputs. See `runGit` for why this
+    /// distinction is now stated rather than assumed.
+    nonisolated private func performPull(parentBranch: String, cwd: String) -> Result<String, Error> {
         let dirty = runGit(["status", "--porcelain"], cwd: cwd)
         guard dirty.output.isEmpty else {
             return .failure(TrackError.gitWorktreeFailed("This track's working copy has uncommitted changes — commit or stash them first."))
@@ -723,7 +754,9 @@ final class TrackStore {
         return "\(slug)-\(suffix)"
     }
 
-    private func checkIsGitRepo(cwd: String) -> Bool {
+    /// `nonisolated`: pure git I/O over immutable inputs. See `runGit` for why this
+    /// distinction is now stated rather than assumed.
+    nonisolated private func checkIsGitRepo(cwd: String) -> Bool {
         let result = runGit(["rev-parse", "--is-inside-work-tree"], cwd: cwd)
         return result.success && result.output.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
     }
@@ -757,9 +790,19 @@ final class TrackStore {
     /// currently checked out. Tries the remote's default branch first (what GitHub/GitLab call
     /// the repo's primary branch), then falls back to a local `main` or `master`, then finally to
     /// whatever's currently checked out for a repo with neither (e.g. a brand-new local-only repo).
+    /// The cached answer where there is one — main-actor, because the cache is mutable state
+    /// the launch probe writes.
     func defaultBranchName() -> String {
         // The probe already answered this; re-asking costs three subprocesses.
         if let cachedDefaultBranch, !cachedDefaultBranch.isEmpty { return cachedDefaultBranch }
+        return resolveDefaultBranchFromGit()
+    }
+
+    /// The same question, asked of git directly. `nonisolated` because it consults no stored
+    /// state — which is exactly what a background refresh wants: re-reading the cache it is
+    /// trying to refresh would be circular, and reading it *across* the isolation boundary is
+    /// the race this whole pass exists to remove.
+    nonisolated func resolveDefaultBranchFromGit() -> String {
         let cwd = projectRoot.path
         let remoteHead = runGit(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd: cwd)
         if remoteHead.success, let name = remoteHead.output.split(separator: "/").last {
@@ -778,7 +821,9 @@ final class TrackStore {
     /// repo is inconsistent (it can print a bare "HEAD" the same way real detached HEAD does),
     /// while `symbolic-ref` correctly succeeds for any real branch — commits or not — and only
     /// fails when HEAD is genuinely detached.
-    private func currentBranchName(cwd: String) -> String? {
+    /// `nonisolated`: pure git I/O over immutable inputs. See `runGit` for why this
+    /// distinction is now stated rather than assumed.
+    nonisolated private func currentBranchName(cwd: String) -> String? {
         let result = runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: cwd)
         return result.success ? result.output : nil
     }
@@ -790,7 +835,8 @@ final class TrackStore {
     /// format (`worktree <path>` / `branch refs/heads/<name>` pairs, blank-line separated).
     /// Consulted before adding a worktree so an existing one is adopted rather than re-added
     /// (which git refuses: a branch can only be checked out in one place at a time).
-    private func existingWorktreesByBranch(cwd: String) -> [String: String] {
+    /// `nonisolated`: pure git I/O over immutable inputs.
+    nonisolated private func existingWorktreesByBranch(cwd: String) -> [String: String] {
         let result = runGit(["worktree", "list", "--porcelain"], cwd: cwd)
         guard result.success else { return [:] }
         var map: [String: String] = [:]
@@ -817,7 +863,9 @@ final class TrackStore {
     /// ref like `"origin/foo"` — `git worktree add -b <branch> <path> origin/foo` auto-sets up
     /// tracking the same way plain `git checkout -b` does, so no separate `--track` flag is
     /// needed for that case.
-    private func addWorktree(branchName: String, baseRef: String?, newBranch: Bool) -> Result<URL, TrackError> {
+    /// `nonisolated`: pure git I/O over immutable inputs. See `runGit` for why this
+    /// distinction is now stated rather than assumed.
+    nonisolated private func addWorktree(branchName: String, baseRef: String?, newBranch: Bool) -> Result<URL, TrackError> {
         let cwd = projectRoot.path
         guard let path = GitPaths.worktreePath(forBranchSlug: branchName.replacingOccurrences(of: "/", with: "-"), projectRoot: projectRoot) else {
             return .failure(.gitWorktreeFailed("Couldn't resolve a worktree location for this repository."))
@@ -846,7 +894,9 @@ final class TrackStore {
     /// (if dirty) → check the main tree out to the default branch → add the worktree → pop the
     /// stash back *inside the new worktree*, not the main tree. If the branch isn't in the main
     /// tree at all (already checked out elsewhere, or nowhere), this is just a plain `addWorktree`.
-    private func materializeWorktree(for track: Track) -> Result<(URL, TrackSwitchOutcome), TrackError> {
+    /// `nonisolated`: pure git I/O over immutable inputs. See `runGit` for why this
+    /// distinction is now stated rather than assumed.
+    nonisolated private func materializeWorktree(for track: Track, defaultBranch: String) -> Result<(URL, TrackSwitchOutcome), TrackError> {
         let cwd = projectRoot.path
         guard currentBranchName(cwd: cwd) == track.branchName else {
             switch addWorktree(branchName: track.branchName, baseRef: nil, newBranch: false) {
@@ -865,7 +915,7 @@ final class TrackStore {
             guard stashResult.success else { return .failure(.gitWorktreeFailed(stashResult.output)) }
             outcome.stashedFileCount = dirtyCount
         }
-        let checkoutResult = runGit(["checkout", defaultBranchName()], cwd: cwd)
+        let checkoutResult = runGit(["checkout", defaultBranch], cwd: cwd)
         guard checkoutResult.success else {
             if dirtyCount > 0 { _ = runGit(["stash", "pop"], cwd: cwd) }
             return .failure(.gitWorktreeFailed(checkoutResult.output))
@@ -881,7 +931,15 @@ final class TrackStore {
         return .success((path, outcome))
     }
 
-    private func runGit(_ args: [String], cwd: String) -> (success: Bool, output: String) {
+    /// `nonisolated` deliberately: this shells out and touches no instance state, so it is the
+    /// *business* half of this type and has no business being pinned to the main actor.
+    ///
+    /// That distinction was invisible before `TrackStore` became `@MainActor`. With no isolation
+    /// declared, the compiler had nothing to check, and git calls from background queues looked
+    /// exactly like git calls from main. Annotating the type turned nine of them into named
+    /// diagnostics — which is the whole argument for adopting strict concurrency rather than
+    /// merely enabling it.
+    nonisolated private func runGit(_ args: [String], cwd: String) -> (success: Bool, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git"] + args

@@ -81,6 +81,9 @@ final class GitLaunchProbeTests: XCTestCase {
         XCTAssertEqual(probe.defaultBranch, "main")
     }
 
+    // TrackStore is @MainActor — it is the view-model half of the split, so a test that
+    // constructs one says where it runs.
+    @MainActor
     func testTheProbeAgreesWithTheHelpersItReplaced() {
         // The whole optimization rests on this: one spawn must produce what six did.
         makeRepo()

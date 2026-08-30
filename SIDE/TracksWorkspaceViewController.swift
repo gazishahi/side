@@ -245,10 +245,16 @@ final class TracksWorkspaceViewController: NSViewController {
     private func refreshGitSummariesIfNeeded() {
         guard !isRefreshingGitSummaries, let store = trackStore, store.repoState != .notAGitRepo else { return }
         isRefreshingGitSummaries = true
-        let tracks = store.tracks
+        // Every main-actor value the git work needs is snapshotted *here*, on the main actor,
+        // and carried into the background as plain data. The old shape captured `store` itself
+        // and called into it from the background queue, reading `tracks` and the default branch
+        // while main was free to mutate them — a real race the compiler couldn't see, because
+        // TrackStore declared no isolation for it to check.
+        let inputs = store.tracks.map { store.gitSummaryInputs(for: $0) }
+        let summarize = store.gitSummary
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var results: [UUID: TrackStore.GitSummary] = [:]
-            for track in tracks { results[track.id] = store.gitSummary(for: track) }
+            for input in inputs { results[input.track.id] = summarize(input) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isRefreshingGitSummaries = false
