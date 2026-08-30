@@ -59,6 +59,21 @@ enum ProjectFileAccess {
         return resolved
     }
 
+    /// Paths inside the project that tools must not *read*.
+    ///
+    /// `.git/side/` holds Side's own state: every track's record and every track's full
+    /// conversation, including the user's own messages, which are never redacted (only tool
+    /// results pass through the redactor). `.git` is already hidden from listings, but
+    /// `read_file` takes an explicit path — so without this, an agent in one track could read
+    /// everything the user has ever typed in every other track of the project, and prompt
+    /// injection from a repo file made that reachable without the user's involvement.
+    static func isReadable(_ url: URL, root: URL) -> Bool {
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath().path
+        guard url.path.hasPrefix(resolvedRoot + "/") else { return true }
+        let relative = String(url.path.dropFirst(resolvedRoot.count + 1))
+        return !relative.hasPrefix(".git/side/") && !relative.hasPrefix(".side/")
+    }
+
     /// Paths that are inside the project but must never be *written* by a tool.
     ///
     /// Containment alone isn't enough for writes: `.git/config` and `.git/hooks/` turn an edit

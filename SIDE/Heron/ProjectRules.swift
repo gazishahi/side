@@ -17,7 +17,61 @@ enum ProjectRules {
     /// Searched in order, first match wins. `SIDE.md` is the native name; the others are read
     /// because a project that already tells *some* coding agent how to behave is telling this
     /// one the same thing, and making the user maintain a third copy would be silly.
+    ///
+    /// **This is a prompt-injection channel, and it's treated as one.** These files arrive with
+    /// any cloned repository, and their contents are folded into the *system prompt* — the
+    /// highest-trust position there is. Opening someone else's project and sending one message
+    /// must not silently hand an unknown author standing instructions, so `load` refuses a file
+    /// the user hasn't acknowledged (see `isAcknowledged`), and the transcript says when rules
+    /// are in force. The framing in `systemPromptSection` is a second, weaker layer: it can
+    /// state that approval cannot be waived, but it cannot stop injected text from influencing
+    /// *which* command the agent proposes — only the user's eyes on the file can do that.
     static let candidateNames = ["SIDE.md", ".side/rules.md", "AGENTS.md", "CLAUDE.md"]
+
+    /// Rules files the user has explicitly accepted, keyed by absolute path and content hash —
+    /// so editing the file (or a `git pull` changing it) requires acknowledging it again.
+    /// Deliberately per-content, not per-path: "I trust this file" is a statement about what it
+    /// said when it was read, not a permanent grant to whatever it says later.
+    private static let acknowledgedKey = "SideAcknowledgedProjectRules"
+
+    private static func fingerprint(url: URL, contents: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in Array(contents.utf8) { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        return "\(url.standardizedFileURL.path)#\(String(hash, radix: 36))"
+    }
+
+    static func isAcknowledged(url: URL, contents: String) -> Bool {
+        let known = UserDefaults.standard.stringArray(forKey: acknowledgedKey) ?? []
+        return known.contains(fingerprint(url: url, contents: contents))
+    }
+
+    static func acknowledge(url: URL, contents: String) {
+        var known = UserDefaults.standard.stringArray(forKey: acknowledgedKey) ?? []
+        let entry = fingerprint(url: url, contents: contents)
+        guard !known.contains(entry) else { return }
+        known.append(entry)
+        // Bounded: this is a convenience list, not a security record worth growing forever.
+        if known.count > 200 { known.removeFirst(known.count - 200) }
+        UserDefaults.standard.set(known, forKey: acknowledgedKey)
+    }
+
+    /// A rules file that exists but hasn't been acknowledged yet, if any — what the UI offers
+    /// the user to review before it can take effect.
+    static func pendingAcknowledgement(projectRoot: URL) -> (url: URL, contents: String)? {
+        guard let found = firstExisting(projectRoot: projectRoot) else { return nil }
+        return isAcknowledged(url: found.url, contents: found.contents) ? nil : found
+    }
+
+    private static func firstExisting(projectRoot: URL) -> (url: URL, contents: String)? {
+        for name in candidateNames {
+            let url = projectRoot.appendingPathComponent(name)
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            return (url, trimmed)
+        }
+        return nil
+    }
 
     /// Ceiling on what gets folded in. A rules file is a paragraph or a page; something far
     /// bigger is either a mistake or someone pasting their whole architecture doc, and either
@@ -32,14 +86,9 @@ enum ProjectRules {
     /// message, not the next launch — and at a few KB the read is far cheaper than the request
     /// it's part of.
     static func load(projectRoot: URL) -> String? {
-        for name in candidateNames {
-            let url = projectRoot.appendingPathComponent(name)
-            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            return truncated(trimmed, fileName: name)
-        }
-        return nil
+        guard let found = firstExisting(projectRoot: projectRoot),
+              isAcknowledged(url: found.url, contents: found.contents) else { return nil }
+        return truncated(found.contents, fileName: found.url.lastPathComponent)
     }
 
     private static func truncated(_ text: String, fileName: String) -> String {

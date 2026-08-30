@@ -857,10 +857,13 @@ final class AgentRunner {
             return result
         })
         let parsed = calls.map { (id: $0.id, name: $0.name, input: Self.parseArguments($0.partialJSON)) }
+        // Read here, on the main actor, and passed in — the scope that governs a batch is the
+        // one in force when its calls arrive, and the executor runs on a background queue.
+        let scope = modeProvider().scope
         DispatchQueue.global(qos: .userInitiated).async {
             var outcomes: [(id: String, name: String, result: ToolExecutor.Result)] = []
             for call in parsed {
-                outcomes.append((call.id, call.name, executor.execute(name: call.name, input: call.input, toolUseId: call.id)))
+                outcomes.append((call.id, call.name, executor.execute(name: call.name, input: call.input, toolUseId: call.id, scope: scope)))
             }
             DispatchQueue.main.async {
                 self.handleToolOutcomes(outcomes, root: root, declaredIntent: declaredIntent, modelId: modelId, roundTrip: roundTrip)

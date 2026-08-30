@@ -344,6 +344,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         let text = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = composer.attachmentPayloads()
         guard !text.isEmpty || !attachments.isEmpty else { return }
+        // Standing instructions from a file that arrived with the repo get the user's eyes
+        // before they get the system prompt — see ProjectRules.
+        guard confirmProjectRulesIfNeeded() else { return }
         composer.clear()
         runner.send(text, attachments: attachments)
     }
@@ -404,6 +407,39 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         popover.show(relativeTo: plusButton.bounds, of: plusButton, preferredEdge: .maxY)
     }
 
+    /// Asks once per (file, contents) before a repo's rules file is allowed to shape requests.
+    ///
+    /// Returns false only when the user chooses to look at the file first — the send is then
+    /// abandoned with the message still in the composer, so nothing is lost. Declining just
+    /// leaves the rules inactive; the conversation proceeds without them.
+    private func confirmProjectRulesIfNeeded() -> Bool {
+        guard let projectPath else { return true }
+        let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath
+        guard let pending = ProjectRules.pendingAcknowledgement(projectRoot: URL(fileURLWithPath: root)) else { return true }
+
+        let name = pending.url.lastPathComponent
+        let alert = NSAlert()
+        alert.messageText = "Use \(name) as standing instructions?"
+        alert.informativeText = "This project contains \(name), which tells agents how to work in it. "
+            + "Side would include it in every request for this project.\n\n"
+            + "Files like this arrive with a cloned repository, so read it first if the project isn't yours — "
+            + "it shapes what the agent does, though it can never waive your approval of edits and commands."
+        alert.addButton(withTitle: "Use These Rules")
+        alert.addButton(withTitle: "Show Me the File")
+        alert.addButton(withTitle: "Not Now")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            ProjectRules.acknowledge(url: pending.url, contents: pending.contents)
+            appendLocalNotice("\(name) is now included in every request for this project.")
+            return true
+        case .alertSecondButtonReturn:
+            onRevealFileRequested?(pending.url)
+            return false
+        default:
+            return true
+        }
+    }
+
     /// Opens the project's rules file in Make, creating it from the template when there is
     /// none — the file only helps if writing the first one is a single click.
     private func openProjectRules() {
@@ -418,6 +454,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
         let url = rootURL.appendingPathComponent(ProjectRules.candidateNames[0])
         guard (try? ProjectRules.template.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
+        // Written by the user, here, on purpose — asking them to acknowledge their own file
+        // would be theatre.
+        ProjectRules.acknowledge(url: url, contents: ProjectRules.template.trimmingCharacters(in: .whitespacesAndNewlines))
         appendLocalNotice("Created \(ProjectRules.candidateNames[0]) — what you write there is included in every Think request for this project.")
         onRevealFileRequested?(url)
     }

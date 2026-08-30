@@ -121,7 +121,22 @@ struct ToolExecutor {
 
     /// Runs off the main thread (file I/O), so `liveBufferProvider` must be snapshotted by the
     /// caller before dispatching — never read the editor's storage from here.
-    func execute(name: String, input: JSONValue, toolUseId: String) -> Result {
+    /// Runs a tool the model asked for, refusing anything outside `scope`.
+    ///
+    /// The scope check has to live *here*, not only in `specs(for:)`. Filtering the spec list
+    /// decides what the model is *shown*; the name that comes back arrives verbatim off the
+    /// provider stream and was dispatched unchecked, so a local or BYOK endpoint that emitted
+    /// `write_file` in an Ask-mode conversation produced a real edit proposal — and at `.full`
+    /// autonomy it applied itself. Replaying history after a Build→Ask switch was a second
+    /// route to the same place. A boundary the caller can talk past is an instruction, not a
+    /// boundary, so this is where it's enforced.
+    func execute(name: String, input: JSONValue, toolUseId: String, scope: AgentToolScope) -> Result {
+        guard Self.specs(for: scope).contains(where: { $0.name == name }) else {
+            return .completed(
+                output: "Refused: \(name) isn't available in \(scope.displayName) mode. Tell the user what you'd need to do and let them switch modes.",
+                isError: true
+            )
+        }
         switch name {
         case "read_file":
             let (output, isError) = readFile(input)
@@ -152,7 +167,8 @@ struct ToolExecutor {
         guard let path = input.stringValue(for: "path") else { return .completed(output: "Missing required argument: path", isError: true) }
         guard let oldString = input.stringValue(for: "old_string") else { return .completed(output: "Missing required argument: old_string", isError: true) }
         guard let newString = input.stringValue(for: "new_string") else { return .completed(output: "Missing required argument: new_string", isError: true) }
-        guard let url = ProjectFileAccess.resolveInsideProject(path: path, root: projectRoot) else {
+        guard let url = ProjectFileAccess.resolveInsideProject(path: path, root: projectRoot),
+              ProjectFileAccess.isReadable(url, root: projectRoot) else {
             return .completed(output: "Refused: \(path) is outside the open project.", isError: true)
         }
         guard ProjectFileAccess.isWritable(url, root: projectRoot) else {
