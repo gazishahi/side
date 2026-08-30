@@ -254,16 +254,82 @@ final class ReviewWorkspaceViewController: NSViewController {
 
         card.addSubview(intentLabel)
         card.addSubview(metaLabel)
-        NSLayoutConstraint.activate([
+        var constraints: [NSLayoutConstraint] = [
             intentLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
             intentLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -12),
             metaLabel.topAnchor.constraint(equalTo: intentLabel.bottomAnchor, constant: 5),
             metaLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
             metaLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
-        ])
+        ]
+        // Only a checkpoint that produced a commit can be undone — a command-only one changed
+        // no files, so there is nothing to reverse.
+        if checkpoint.gitCommitSHA != nil {
+            let undoButton = NSButton(title: "Undo…", target: self, action: #selector(undoCheckpointTapped(_:)))
+            undoButton.bezelStyle = .rounded
+            undoButton.controlSize = .small
+            undoButton.font = DS.Text.caption()
+            undoButton.identifier = NSUserInterfaceItemIdentifier(checkpoint.id.uuidString)
+            undoButton.translatesAutoresizingMaskIntoConstraints = false
+            card.addSubview(undoButton)
+            constraints += [
+                undoButton.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+                undoButton.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+                intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: undoButton.leadingAnchor, constant: -12),
+            ]
+        } else {
+            constraints.append(intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -12))
+        }
+        NSLayoutConstraint.activate(constraints)
         card.translatesAutoresizingMaskIntoConstraints = false
         return card
+    }
+
+    // MARK: - Undo
+
+    /// Reverses a checkpoint's changes — as a *new commit*, never by rewriting history. See
+    /// `CheckpointRestore` for why that's the only defensible choice here.
+    @objc private func undoCheckpointTapped(_ sender: NSButton) {
+        guard let id = sender.identifier.flatMap({ UUID(uuidString: $0.rawValue) }),
+              let track = currentTrack,
+              let checkpoints = sessionStore?.checkpoints(forTrackKey: track.branchName),
+              let target = checkpoints.first(where: { $0.id == id }),
+              let worktreePath = track.workingDirectoryPath ?? canonicalRoot?.path else { return }
+
+        let laterCount = checkpoints.filter { $0.createdAt > target.createdAt && $0.gitCommitSHA != nil }.count
+        let alert = NSAlert()
+        alert.messageText = "Undo this checkpoint?"
+        let intent = target.declaredIntent.isEmpty ? "this checkpoint" : "\u{201C}\(target.declaredIntent)\u{201D}"
+        // Says plainly what it does *and* what it doesn't: nothing is deleted, and the choice
+        // between the two scopes is the only real decision.
+        alert.informativeText = laterCount == 0
+            ? "The changes from \(intent) are reversed by a new commit. Nothing is deleted — the checkpoint stays in your history, and the undo can itself be undone."
+            : "The changes from \(intent) are reversed by a new commit. \(laterCount) later checkpoint\(laterCount == 1 ? " was" : "s were") made on top of it — you can undo just this one, or everything back to it.\n\nNothing is deleted either way, and an undo can itself be undone."
+        alert.addButton(withTitle: laterCount == 0 ? "Undo" : "Undo Just This One")
+        if laterCount > 0 { alert.addButton(withTitle: "Undo Everything After") }
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        guard response != .alertThirdButtonReturn, !(laterCount == 0 && response == .alertSecondButtonReturn) else { return }
+        let scope: CheckpointRestore.Scope = (laterCount > 0 && response == .alertSecondButtonReturn) ? .throughLatest : .single
+
+        let commits = CheckpointRestore.commitsToRevert(checkpoints: checkpoints, target: target, scope: scope)
+        let message = CheckpointRestore.revertMessage(target: target, scope: scope, count: commits.count)
+        let outcome = CheckpointRestore.perform(commits: commits, message: message, worktreePath: worktreePath)
+
+        switch outcome {
+        case .reverted(_, let count):
+            statusLabel.stringValue = "Undid \(count) checkpoint\(count == 1 ? "" : "s") — reversed by a new commit, nothing deleted."
+            statusLabel.textColor = .secondaryLabelColor
+            refresh()
+        case .conflicted(let paths):
+            statusLabel.stringValue = "⚠︎ Couldn't undo cleanly — \(paths.joined(separator: ", ")) changed since. Nothing was modified."
+            statusLabel.textColor = .systemOrange
+        case .failed(let message):
+            statusLabel.stringValue = "⚠︎ Undo failed: \(message)"
+            statusLabel.textColor = .systemOrange
+        case .nothingToDo:
+            statusLabel.stringValue = "Nothing to undo — that checkpoint changed no files."
+            statusLabel.textColor = .secondaryLabelColor
+        }
     }
 
     private static func styleChip(_ chip: NSView, _ label: NSTextField) {
