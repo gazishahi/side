@@ -24,14 +24,22 @@ struct ProposedEditApplier {
             guard existing == edit.baseContent else { return .staleBase }
         }
 
-        if applyIntoOpenTab(edit.url, edit.proposedContent) { return .applied }
-
+        // Disk first, always — including when the file is open in Make.
+        //
+        // This used to hand the content to the open tab and stop there, leaving the tab merely
+        // *dirty* with no autosave behind it. Disk still held the old content, so the checkpoint
+        // that follows staged and committed the old bytes: a checkpoint, and a "✓ Checkpoint"
+        // line, for a commit that did not contain the change. Closing the tab with "Don't Save"
+        // then discarded the edit entirely while Review went on claiming it had happened.
+        // Approving an edit is a decision, so it lands like a save.
         do {
             try FileManager.default.createDirectory(at: edit.url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try edit.proposedContent.write(to: edit.url, atomically: true, encoding: .utf8)
-            return .applied
         } catch {
             return .writeFailed(error.localizedDescription)
         }
+        // Then sync the open buffer, if any, so the editor shows what's now on disk.
+        _ = applyIntoOpenTab(edit.url, edit.proposedContent)
+        return .applied
     }
 }

@@ -906,20 +906,32 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return URL(fileURLWithPath: path)
     }
 
-    /// Applies an approved agent edit into the open tab for `url`, if there is one, and returns
-    /// whether it did. Deliberately routes through the same textStorage replacement + rehighlight
-    /// + dirty-marking path `revertToSaved`/format-on-save already use, so from this point on the
-    /// change is indistinguishable from a manual edit: normal undo, normal save, normal diff
-    /// gutter. Returns false when the file isn't open, leaving the caller to write to disk.
+    /// Syncs the open tab for `url` to content the applier has *already written to disk*, and
+    /// returns whether there was one.
+    ///
+    /// The tab is marked **clean**, not dirty: the bytes on disk and the bytes in the buffer are
+    /// now identical, so claiming unsaved changes would be false — and it was actively harmful,
+    /// because closing the tab then offered "Don't Save" on a change the user had already
+    /// approved and that a checkpoint had already committed.
     func applyApprovedEdit(url: URL, newContent: String) -> Bool {
         guard let index = openTabs.firstIndex(where: { $0.url == url && $0.kind == .text }) else { return false }
         let tab = openTabs[index]
         let fullRange = NSRange(location: 0, length: tab.textStorage.length)
         tab.textStorage.replaceCharacters(in: fullRange, with: newContent)
         SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
-        openTabs[index].dirty = true
+        openTabs[index].dirty = false
+        // The applier just wrote this file, so the stamp used for external-change detection has
+        // to move with it — otherwise the next save or focus-in reports "changed on disk" about
+        // Side's own write.
+        openTabs[index].knownModificationDate = modificationDate(of: url)
+        // The undo stack's registrations describe the *old* text, so replaying them after a
+        // whole-buffer replacement would apply unrelated edits at meaningless offsets. Clearing
+        // is the honest option: ⌘Z can't undo the agent's edit (Review's Undo does that), but it
+        // also can't corrupt the file.
+        tab.undoManager.removeAllActions()
+        // HEAD content is unchanged by an edit, but the marks derived from it are stale.
         if activeTabIndex == index {
-            dirty = true
+            dirty = false
             gutter.invalidate()
             refreshGitDiffMarks()
         }
