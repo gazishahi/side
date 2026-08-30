@@ -641,10 +641,13 @@ final class AgentRunner {
         }
         let mode = modeProvider()
         let tools = ToolExecutor.specs(for: mode.scope)
+        // Read per request, off the track's own root: editing the rules file takes effect on
+        // the next message rather than the next launch.
+        let systemPrompt = Self.systemPrompt(for: mode.scope, projectRules: ProjectRules.load(projectRoot: rootProvider()))
         streamTask = Task {
             var transportError: Error?
             do {
-                try await provider.streamTurn(messages: messages, system: Self.systemPrompt(for: mode.scope), tools: tools) { event in
+                try await provider.streamTurn(messages: messages, system: systemPrompt, tools: tools) { event in
                     DispatchQueue.main.async { self.handle(event) }
                 }
             } catch {
@@ -1054,9 +1057,13 @@ final class AgentRunner {
     /// The base prompt plus whatever the current scope needs to say about itself. Appended, not
     /// substituted: a read-only scope's tools are already filtered, so this only explains the
     /// shape the agent finds itself in.
-    private static func systemPrompt(for scope: AgentToolScope) -> String {
-        guard let addendum = scope.systemPromptAddendum else { return systemPrompt }
-        return systemPrompt + "\n\n" + addendum
+    private static func systemPrompt(for scope: AgentToolScope, projectRules: String? = nil) -> String {
+        var parts = [systemPrompt]
+        if let addendum = scope.systemPromptAddendum { parts.append(addendum) }
+        // Project rules come last so they read as the most specific instruction in the prompt,
+        // and after the scope addendum so they can't appear to soften it.
+        if let projectRules { parts.append(ProjectRules.systemPromptSection(rules: projectRules)) }
+        return parts.joined(separator: "\n\n")
     }
 
     private static let systemPrompt = """

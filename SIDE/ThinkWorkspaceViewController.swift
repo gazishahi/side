@@ -395,12 +395,31 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         let actions = PlusActionsViewController()
         actions.onAttach = { [weak self] in self?.insertMentionTrigger() }
         actions.onAttachImage = { [weak self] in self?.pickImageAttachment() }
+        actions.onOpenRules = { [weak self] in self?.openProjectRules() }
         actions.onCompact = { [weak self] in self?.compactConversation() }
         actions.onNewConversation = { [weak self] in self?.startNewConversation() }
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = actions
         popover.show(relativeTo: plusButton.bounds, of: plusButton, preferredEdge: .maxY)
+    }
+
+    /// Opens the project's rules file in Make, creating it from the template when there is
+    /// none — the file only helps if writing the first one is a single click.
+    private func openProjectRules() {
+        guard let projectPath else { return }
+        let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath
+        let rootURL = URL(fileURLWithPath: root)
+        if let existing = ProjectRules.candidateNames
+            .map({ rootURL.appendingPathComponent($0) })
+            .first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            onRevealFileRequested?(existing)
+            return
+        }
+        let url = rootURL.appendingPathComponent(ProjectRules.candidateNames[0])
+        guard (try? ProjectRules.template.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
+        appendLocalNotice("Created \(ProjectRules.candidateNames[0]) — what you write there is included in every Think request for this project.")
+        onRevealFileRequested?(url)
     }
 
     /// The + popover's "Attach Image…" — an open panel filtered to what the models accept.
@@ -681,12 +700,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         ("manual", "approve every edit and command"),
         ("guarded", "auto-run safe commands"),
         ("full", "auto-apply edits too"),
+        ("rules", "open this project's standing instructions for the agent"),
     ]
 
     private func performSlashCommand(_ name: String) {
         switch name {
         case "compact": compactConversation()
         case "new": startNewConversation()
+        case "rules": openProjectRules()
         case "ask", "plan", "build":
             guard let scope = AgentToolScope(rawValue: name) else { return }
             trackStore?.setMode(AgentMode(scope: scope, autonomy: currentMode().autonomy), forTrackKey: attachedTrackKey ?? "")
@@ -1768,6 +1789,7 @@ private final class PopoverActionRow: NSView {
 private final class PlusActionsViewController: NSViewController {
     var onAttach: (() -> Void)?
     var onAttachImage: (() -> Void)?
+    var onOpenRules: (() -> Void)?
     var onCompact: (() -> Void)?
     var onNewConversation: (() -> Void)?
 
@@ -1777,6 +1799,7 @@ private final class PlusActionsViewController: NSViewController {
         super.viewDidLoad()
         let rows = [
             PopoverActionRow(symbol: "photo", title: "Attach Image…") { [weak self] in self?.dismissThen(self?.onAttachImage) },
+            PopoverActionRow(symbol: "text.book.closed", title: "Project Rules…") { [weak self] in self?.dismissThen(self?.onOpenRules) },
             PopoverActionRow(symbol: "at", title: "Add File Reference") { [weak self] in self?.dismissThen(self?.onAttach) },
             PopoverActionRow(symbol: "arrow.down.right.and.arrow.up.left", title: "Compact Conversation…") { [weak self] in self?.dismissThen(self?.onCompact) },
             PopoverActionRow(symbol: "square.and.pencil", title: "New Conversation…") { [weak self] in self?.dismissThen(self?.onNewConversation) },
