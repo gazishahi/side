@@ -40,9 +40,34 @@ final class ProjectContext {
         // common git dir is the same directory whether `projectRoot` is the main checkout or one
         // of its linked worktrees, which is what lets opening either resolve to the same ledger.
         // Falls back to the old scheme for a plain folder that isn't a git repo yet at all.
-        let stateDirectory = GitPaths.stateDirectory(for: projectRoot) ?? projectRoot.appendingPathComponent(".git/side")
-        self.trackStore = TrackStore(projectRoot: projectRoot, stateDirectory: stateDirectory)
+        //
+        // Resolved through `GitLaunchProbe`, which answers this *and* the repo/branch questions
+        // TrackStore used to ask for itself — six subprocesses collapsed into one, or zero when
+        // a cached answer from a previous launch is available. A bare process spawn costs ~72ms
+        // on a machine running endpoint security, so this was the bulk of Side's blocked first
+        // frame; see GitLaunchProbe for the measurements.
+        let cached = GitLaunchProbe.cached(projectRoot: projectRoot)
+        let probe = cached ?? GitLaunchProbe.probe(projectRoot: projectRoot)
+        if cached == nil { GitLaunchProbe.cache(probe, projectRoot: projectRoot) }
+        let stateDirectory = probe.commonGitDir.map { URL(fileURLWithPath: $0).appendingPathComponent("side") }
+            ?? projectRoot.appendingPathComponent(".git/side")
+        self.trackStore = TrackStore(projectRoot: projectRoot, stateDirectory: stateDirectory, probe: probe)
         self.sessionStore = AgentSessionStore(stateDirectory: stateDirectory)
+        // A cache is a guess about a moving target: the user can switch branches, `git init` a
+        // plain folder, or move a worktree between launches. So it is used to render *now* and
+        // verified immediately after, off the main thread, with any disagreement corrected.
+        // Being wrong costs one frame of a stale branch name, never a wrong decision — every
+        // operation that acts on git state re-reads it at the time it acts.
+        if cached != nil { verifyProbeInBackground(projectRoot: projectRoot, assumed: probe) }
+    }
+
+    private func verifyProbeInBackground(projectRoot: URL, assumed: GitLaunchProbe) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let actual = GitLaunchProbe.probe(projectRoot: projectRoot)
+            guard actual != assumed else { return }
+            GitLaunchProbe.cache(actual, projectRoot: projectRoot)
+            DispatchQueue.main.async { self?.trackStore.applyProbe(actual) }
+        }
     }
 
     /// Where a track's own agent tools/Run session should actually operate — its linked

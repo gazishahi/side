@@ -1,4 +1,5 @@
 import AppKit
+import os.signpost
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -8,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     static private(set) var shared: AppDelegate?
 
     private var windows: [NSWindow] = []
+    /// Purely for tests and instrumentation to observe that the deferred restore ran.
+    private(set) var didFinishRestoring = false
     private var preferencesWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -19,16 +22,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self, selector: #selector(persistenceFailed(_:)),
             name: PersistenceFailureReporter.failureNotification, object: nil
         )
+        LaunchSignposts.begin("firstFrame")
         let window = makeWindow()
         windows.append(window)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
         // UI tests launch with `-SideUITesting YES` (which lands in UserDefaults' argument
         // domain). Restoring the developer's real last project would make a test run poke at
         // their working tree — and make the tests depend on whatever was open last.
-        if !UserDefaults.standard.bool(forKey: "SideUITesting") {
+        guard !UserDefaults.standard.bool(forKey: "SideUITesting") else {
+            LaunchSignposts.end("firstFrame")
+            return
+        }
+
+        // Restoring is deferred one run-loop turn, and that single line is the whole point.
+        //
+        // AppKit commits a frame at the end of a run-loop iteration. The window was ordered
+        // front above, but calling restore *here* means this method never returns, the loop
+        // never turns, and the user stares at an empty window frame for however long the
+        // restore takes. Side was showing a window in half a bounce and then holding it blank
+        // — the launch looked fast and felt slow, which is the worst combination.
+        //
+        // Handing the work to the next turn inverts that: the first frame — the real, correct,
+        // no-project state Side already ships — is committed, and the project arrives into a
+        // live window. That is the "prep a single frame" shape: minimize what must be true
+        // before one frame can be committed, rather than minimizing total work.
+        //
+        // What makes this honest rather than a trick is that the deferred work is now *fast*
+        // (see GitLaunchProbe: six subprocesses became one, or zero when cached). Deferring
+        // slow main-thread work only trades a blank window for a hitching one.
+        DispatchQueue.main.async { [weak self] in
+            LaunchSignposts.end("firstFrame")
+            LaunchSignposts.begin("restoreSession")
             (window.contentViewController as? ShellViewController)?.restoreLastSessionIfAvailable()
+            LaunchSignposts.end("restoreSession")
+            self?.didFinishRestoring = true
         }
     }
 

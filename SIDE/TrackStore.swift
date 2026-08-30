@@ -80,14 +80,45 @@ final class TrackStore {
     /// the right per-track key to Make in the same call stack as opening the project — a project
     /// open already blocks briefly on file indexing, so one more quick local `git` call here
     /// doesn't introduce a new perceptible delay.
-    init(projectRoot: URL, stateDirectory: URL) {
+    /// `probe` carries the git facts this used to discover itself, through four separate
+    /// subprocesses, on the main thread during launch. Resolving them once per project (see
+    /// `GitLaunchProbe`) and handing them in turns those four spawns into zero — which matters
+    /// far more than it sounds, because a bare process spawn costs ~72ms on a machine with
+    /// endpoint security, so those four were most of half a second of frozen window.
+    ///
+    /// Passing nil preserves the old self-resolving behavior, for callers with no probe in hand.
+    init(projectRoot: URL, stateDirectory: URL, probe: GitLaunchProbe? = nil) {
         self.projectRoot = projectRoot
         self.storeURL = stateDirectory.appendingPathComponent("tracks.json")
         load()
         let cwd = projectRoot.path
-        if refreshRepoState(cwd: cwd) {
+        if let probe {
+            repoState = probe.isRepository ? .ready : .notAGitRepo
+            cachedDefaultBranch = probe.defaultBranch
+            if probe.isRepository {
+                applyReconciliation(currentBranch: probe.currentBranch, defaultBranch: probe.defaultBranch)
+            }
+        } else if refreshRepoState(cwd: cwd) {
             applyReconciliation(currentBranch: currentBranchName(cwd: cwd), defaultBranch: defaultBranchName())
         }
+    }
+
+    /// Set from the launch probe. `defaultBranchName()` prefers it over re-spawning git, and it
+    /// is refreshed whenever a real probe lands.
+    private var cachedDefaultBranch: String?
+
+    /// Replaces this store's git-derived state with a freshly probed one — the correction half
+    /// of rendering optimistically from cache. Notifies observers only when something actually
+    /// changed, so the common case (the cache was right) causes no relayout at all.
+    func applyProbe(_ probe: GitLaunchProbe) {
+        let newState: RepoState = probe.isRepository ? .ready : .notAGitRepo
+        let changed = newState != repoState || cachedDefaultBranch != probe.defaultBranch
+        repoState = newState
+        cachedDefaultBranch = probe.defaultBranch
+        if probe.isRepository {
+            applyReconciliation(currentBranch: probe.currentBranch, defaultBranch: probe.defaultBranch)
+        }
+        if changed { notifyChange() }
     }
 
     enum TrackError: Error, LocalizedError, Equatable {
@@ -727,6 +758,8 @@ final class TrackStore {
     /// the repo's primary branch), then falls back to a local `main` or `master`, then finally to
     /// whatever's currently checked out for a repo with neither (e.g. a brand-new local-only repo).
     func defaultBranchName() -> String {
+        // The probe already answered this; re-asking costs three subprocesses.
+        if let cachedDefaultBranch, !cachedDefaultBranch.isEmpty { return cachedDefaultBranch }
         let cwd = projectRoot.path
         let remoteHead = runGit(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd: cwd)
         if remoteHead.success, let name = remoteHead.output.split(separator: "/").last {
