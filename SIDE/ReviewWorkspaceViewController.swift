@@ -202,15 +202,33 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     // MARK: - Rendering
 
-    private func showEmptyState(_ empty: Bool) {
+    /// `message` overrides the default copy — the empty state has to say *which* thing is
+    /// missing (no project, no repo, no track), since the remedy differs for each.
+    private func showEmptyState(_ empty: Bool, message: String? = nil) {
+        if let message { emptyStateLabel.stringValue = message }
+        else if empty { emptyStateLabel.stringValue = Self.defaultEmptyStateText }
         emptyStateLabel.isHidden = !empty
         scrollView.isHidden = empty
     }
 
+    private static let defaultEmptyStateText = "Switch to a track to review its work."
+
     @objc private func textScaleChanged() { refresh() }
 
     private func refresh() {
-        guard isViewLoaded, let track = currentTrack, let trackStore else {
+        guard isViewLoaded else { return }
+        // Review never consulted repoState, so a plain folder got "Switch to a track to review
+        // its work" — advice the user cannot follow, since tracks require a repo. Tracks says
+        // this plainly; Review used to never mention git at all.
+        if trackStore == nil {
+            showEmptyState(true, message: "No project is open. Review shows an open project's checkpoints and the changes a track has made.")
+            return
+        }
+        if trackStore?.repoState == .notAGitRepo {
+            showEmptyState(true, message: "This project isn't a git repository yet. Review works from commits and branches — initialize git in Tracks to get started.")
+            return
+        }
+        guard let track = currentTrack, let trackStore else {
             showEmptyState(true)
             return
         }

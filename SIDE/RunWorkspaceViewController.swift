@@ -118,7 +118,16 @@ final class RunWorkspaceViewController: NSViewController {
     /// Always goes through `showActiveSession()` (not just `.activate()`) because the active
     /// track can have changed since Run was last shown, in which case `container` is still
     /// displaying a different track's terminal view.
+    /// Set true by the shell once a project is open. Defaults to false so that Run — reachable
+    /// via ⌃4 at any time — can't spawn a shell in the user's home directory before then.
+    var hasProject = false
+
     func activateActiveSession() {
+        guard hasProject else {
+            clearContainer()
+            showNoProjectState()
+            return
+        }
         guard let index = activeSessionIndex, sessions.indices.contains(index) else {
             createSession()
             return
@@ -162,6 +171,20 @@ final class RunWorkspaceViewController: NSViewController {
         guard isViewLoaded, key == (currentTrackKey ?? "") else { return }
         rebuildTabBar()
         clearContainer()
+    }
+
+    private func showNoProjectState() {
+        let label = NSTextField(labelWithString: "No project is open. Run gives each track its own terminals inside a project.")
+        label.font = DS.Text.body()
+        label.textColor = .tertiaryLabelColor
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+        ])
     }
 
     private func clearContainer() {

@@ -347,6 +347,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // Standing instructions from a file that arrived with the repo get the user's eyes
         // before they get the system prompt — see ProjectRules.
         guard confirmProjectRulesIfNeeded() else { return }
+        // Checked before clearing: a message that can't be sent must stay in the composer
+        // rather than vanishing behind a muted notice.
+        guard runner.isReadyToSend else {
+            appendLocalNotice(runner.notReadyReason)
+            return
+        }
         composer.clear()
         runner.send(text, attachments: attachments)
     }

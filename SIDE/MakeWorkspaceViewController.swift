@@ -804,12 +804,30 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
-            try? FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
+            // Its siblings (new folder, rename) both surface failures; delete swallowed them
+            // and then closed the tab anyway, so a refused trash looked exactly like a
+            // successful one — with the file still on disk and its tab gone.
+            do {
+                try FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
+            } catch {
+                self.showFileOperationError("Couldn't move \u{201C}\(node.url.lastPathComponent)\u{201D} to the Trash", error)
+                return
+            }
             if let idx = self.openTabs.firstIndex(where: { $0.url == node.url }) {
                 self.closeTab(at: idx)
             }
             self.refreshFileTreeAndReindex()
         }
+    }
+
+    private func showFileOperationError(_ message: String, _ error: Error) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window, completionHandler: nil)
     }
 
     private func promptForName(title: String, placeholder: String, initialValue: String = "", completion: @escaping (String?) -> Void) {

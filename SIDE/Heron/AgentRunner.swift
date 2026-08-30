@@ -200,6 +200,23 @@ final class AgentRunner {
 
     // MARK: - Sending
 
+    /// Whether a message could actually be sent right now — i.e. a provider is configured with
+    /// a usable key. Exposed so the composer can check *before* clearing itself: the send used
+    /// to fail after the text was already gone, so a missing key silently ate what you typed.
+    var isReadyToSend: Bool {
+        let selection = resolvedSelection()
+        if case .ready = ProviderRegistryStore.shared.resolveAdapter(
+            providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
+        ) { return true }
+        return false
+    }
+
+    /// The reason `isReadyToSend` is false, for the UI to show.
+    var notReadyReason: String {
+        let name = ProviderRegistryStore.shared.provider(for: resolvedSelection().providerId)?.displayName ?? "the active provider"
+        return "No API key for \(name) yet. Add one in Settings (⌘,) — it's stored in your Keychain."
+    }
+
     func send(_ text: String, attachments: [AgentImageAttachment] = []) {
         guard !phase.isBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

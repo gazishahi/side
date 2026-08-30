@@ -267,10 +267,28 @@ final class TracksWorkspaceViewController: NSViewController {
         // A plain folder with no `.git` yet (or one where it disappeared) can't do anything
         // Tracks-related — every git call would just fail. Show that plainly instead of letting
         // raw git stderr leak into the banner as if it were a branch name.
-        let isRepo = trackStore?.repoState != .notAGitRepo
+        // `trackStore == nil` means no project is open at all — and the old expression
+        // (`repoState != .notAGitRepo`) was *true* in that case, since nil compares unequal to
+        // anything. So Tracks showed "No tracks yet — create one to get started." beside an
+        // enabled New Track button whose handler immediately `guard let store` returned: a
+        // button that looked ready and silently did nothing.
+        let hasProject = trackStore != nil
+        let isRepo = hasProject && trackStore?.repoState != .notAGitRepo
         newTrackButton.isEnabled = isRepo
         switchExistingBranchButton.isEnabled = isRepo
         showArchivedButton.isEnabled = isRepo
+        guard hasProject else {
+            let banner = makeInfoBannerCard(
+                symbolName: "folder.badge.questionmark",
+                text: "No project is open. Tracks are parallel lines of work inside a project — open one to get started.",
+                buttonTitle: nil,
+                action: nil
+            )
+            contentStack.addArrangedSubview(banner)
+            banner.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            updateArchivedCountLabel()
+            return
+        }
         guard isRepo else {
             let banner = makeNotAGitRepoBanner()
             contentStack.addArrangedSubview(banner)
@@ -533,7 +551,7 @@ final class TracksWorkspaceViewController: NSViewController {
     /// color fill; it just looks like one more inset group, because functionally that's what it is.
     /// Shared by all three "something needs your attention before the ledger makes sense" banners
     /// (untracked branch, detached HEAD, no git repo yet) so they read as one consistent affordance.
-    private func makeInfoBannerCard(symbolName: String, text: String, buttonTitle: String, action: Selector) -> NSView {
+    private func makeInfoBannerCard(symbolName: String, text: String, buttonTitle: String?, action: Selector?) -> NSView {
         let card = NSView()
         card.wantsLayer = true
         card.layer?.cornerRadius = DS.Radius.card
@@ -557,11 +575,16 @@ final class TracksWorkspaceViewController: NSViewController {
         label.lineBreakMode = .byTruncatingTail
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let button = NSButton(title: buttonTitle, target: self, action: action)
-        button.bezelStyle = .rounded
-        button.controlSize = .small
+        // Some banners are purely informational — there is no action to offer.
+        var views: [NSView] = [glyph, label]
+        if let buttonTitle, let action {
+            let button = NSButton(title: buttonTitle, target: self, action: action)
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            views.append(button)
+        }
 
-        let stack = NSStackView(views: [glyph, label, button])
+        let stack = NSStackView(views: views)
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = DS.Spacing.l

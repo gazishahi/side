@@ -378,6 +378,13 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     /// A track's own linked worktree if it has one, else the shared project root — the same
     /// resolution `ProjectContext.workingDirectory(forTrackKey:)` does for Heron, just needed
     /// here too since Make/Run are pushed-to rather than pull-based.
+    /// The cwd for a *new* Run session.
+    ///
+    /// The home-directory fallback is deliberate but was silently reachable with no project
+    /// open at all — ⌃4 spawned a shell in the user's home directory with nothing saying so,
+    /// which is a surprising place to find yourself typing `rm`. Run now refuses to open a
+    /// session without a project (see `activateActiveSession`), so this fallback only covers
+    /// the genuinely-odd case of a project whose directory vanished mid-session.
     private func workingDirectoryURL(for trackKey: String?) -> URL {
         projectContext?.workingDirectory(forTrackKey: trackKey ?? "") ?? projectURL ?? URL(fileURLWithPath: NSHomeDirectory())
     }
@@ -416,6 +423,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             makeVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
             runVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
         }
+        runVC.hasProject = true
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
         thinkVC.onOpenReviewRequested = { [weak self] in self?.show(.review) }
         thinkVC.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: context.projectRoot.path, trackKey: currentTrackKey)
