@@ -172,16 +172,47 @@ restore, and the no-project state is real and shipping — but three things rema
   not yet handle "no data yet" gracefully. Full frame-first rendering requires
   that every stage does.
 
-The remaining work, in the order the measurement argues for:
+## Postscript: profiling dissolved the planned fix
 
-1. **Two-phase async init** for `ProjectContext`/`TrackStore`/`AgentSessionStore`,
-   which is what would let the restore overlap frame construction instead of
-   following it. This is the piece that makes the architecture actually his.
-2. **`makeWindow`'s 107 ms** — now the single largest interval. `show(.make)`
-   builds Make's whole view tree before the first frame; much of it is not
-   visible in the empty state and could be deferred.
-3. **The pre-existing `TrackStore` data race** must be fixed before either,
-   since both add concurrency on top of it.
+The next step was going to be two-phase async init for
+`ProjectContext`/`TrackStore`/`AgentSessionStore`. Signposting the restore
+instead of assuming showed that plan was aimed at the wrong thing:
+
+```
+retarget              0.9 ms
+probeResolve          0.0 ms
+trackStoreInit        0.4 ms      ← the stores everyone assumed were expensive
+sessionStoreInit      0.5 ms
+acquireContext       27.2 ms      ← the actual cost
+projectOpened        19.8 ms
+restoreSession       21.0 ms
+```
+
+`acquireContext` was `ProjectContextRegistry.key(for:)` calling
+`GitPaths.projectIdentity` **purely to build a dictionary key** — and that
+spawned a whole `git rev-parse --git-common-dir` for a value `GitLaunchProbe`
+had already resolved and cached at launch. One more instance of the same lesson:
+on this machine the unit of performance is process count.
+
+With the cache consulted first, `acquireContext` is **1.1 ms** and
+`restoreSession` is **21 ms** — down from ~520 ms of *frame-blocking* work when
+this started.
+
+**That retires two-phase async init as a performance change.** At 21 ms of
+post-frame main-thread work there is nothing left worth moving off the main
+thread, and it would be dishonest to do a multi-file refactor and describe the
+result as a speed win. The architectural argument survives — Alloy will be
+designed against whatever shape this app has, and a synchronous-launch app
+teaches it synchronous habits — but that is a design decision to make on its own
+merits, not a performance one.
+
+## What is left, in the order the measurement argues for
+
+1. **`makeWindow`'s ~105 ms** — now much the largest interval, and the only one
+   the user actually waits on. `show(.make)` builds Make's entire view tree
+   before the first frame; most of it is invisible in the empty state.
+2. **Two-phase async init**, if and only if the reason is architecture rather
+   than speed.
 
 ## The general lesson
 
