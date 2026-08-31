@@ -246,7 +246,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // Beside the changes pill rather than on a row of its own: they're both one-line
             // status capsules on the same band above the composer, and stacking them pushed the
             // transcript up by a whole row for a state that lasts a few seconds.
-            editingChip.leadingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.xl),
+            // `xl` plus both glass overhangs. Each capsule's glass backdrop extends `s` past its
+            // button on every side, so a bare 12pt button-to-button gap put the two glass edges
+            // exactly touching — the chips read as one smeared capsule.
+            editingChip.leadingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.xl + DS.Spacing.s * 2),
             editingChip.trailingAnchor.constraint(lessThanOrEqualTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
             editingChip.centerYAnchor.constraint(equalTo: changesPill.centerYAnchor),
             editingChipGlass.topAnchor.constraint(equalTo: editingChip.topAnchor, constant: -2),
