@@ -2175,54 +2175,115 @@ private final class PopoverActionRow: NSView {
 /// Rows lead with the conversation's own first message rather than a date, because that is what
 /// someone recognizes it by — "the one where I asked about the migration", not "the one from
 /// Tuesday". The date and size follow as secondary detail.
-private final class ConversationHistoryViewController: NSViewController {
+private final class ConversationHistoryViewController: NSViewController, NSSearchFieldDelegate {
     var conversations: [ArchivedConversation] = []
     var onSelect: ((UUID) -> Void)?
+
+    private let searchField = NSSearchField()
+    private let rows = NSStackView()
+    private let emptyLabel = NSTextField(labelWithString: "")
+    /// Enough to scroll through; the search field is what makes a long history usable, so the
+    /// cap exists only to keep the popover from becoming taller than the screen.
+    private static let maxRows = 200
+    private static let visibleRowLimit = 8
 
     override func loadView() { view = NSView() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.m, left: DS.Spacing.m, bottom: DS.Spacing.m, right: DS.Spacing.m)
-        stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let header = NSTextField(labelWithString: "PAST CONVERSATIONS")
-        header.font = DS.Text.micro()
-        header.textColor = .tertiaryLabelColor
-        stack.addArrangedSubview(header)
+        searchField.placeholderString = "Search conversations"
+        searchField.delegate = self
+        searchField.font = DS.Text.control()
+        searchField.translatesAutoresizingMaskIntoConstraints = false
 
-        // Capped: a picker is for finding something, and past a couple of dozen rows a flat list
-        // stops being that. Search belongs here before the cap gets raised.
-        for conversation in conversations.prefix(20) {
+        rows.orientation = .vertical
+        rows.alignment = .leading
+        rows.spacing = 2
+        rows.translatesAutoresizingMaskIntoConstraints = false
+
+        emptyLabel.font = DS.Text.caption()
+        emptyLabel.textColor = .tertiaryLabelColor
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // Scrolled, because a history that has to fit in a popover is a history you stop
+        // keeping. The row limit above sets the popover's height, not the list's length.
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = rows
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSStackView(views: [searchField, scroll, emptyLabel])
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = DS.Spacing.s
+        container.edgeInsets = NSEdgeInsets(top: DS.Spacing.m, left: DS.Spacing.m, bottom: DS.Spacing.m, right: DS.Spacing.m)
+        container.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(container)
+
+        NSLayoutConstraint.activate([
+            container.topAnchor.constraint(equalTo: view.topAnchor),
+            container.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            container.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            view.widthAnchor.constraint(equalToConstant: 420),
+            searchField.widthAnchor.constraint(equalTo: container.widthAnchor, constant: -DS.Spacing.m * 2),
+            scroll.widthAnchor.constraint(equalTo: container.widthAnchor, constant: -DS.Spacing.m * 2),
+            rows.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+        ])
+        rebuildRows(matching: "")
+        // Typing should work the moment the popover opens.
+        DispatchQueue.main.async { [weak self] in
+            self?.view.window?.makeFirstResponder(self?.searchField)
+        }
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        rebuildRows(matching: searchField.stringValue)
+    }
+
+    /// Matches on the conversation's own title, case- and diacritic-insensitively — the same
+    /// leniency the rest of the app's search uses, since nobody types "café" to find "cafe".
+    private func matches(_ conversation: ArchivedConversation, _ query: String) -> Bool {
+        guard !query.isEmpty else { return true }
+        return conversation.title.range(
+            of: query, options: [.caseInsensitive, .diacriticInsensitive]
+        ) != nil
+    }
+
+    private func rebuildRows(matching query: String) {
+        rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let filtered = conversations.filter { matches($0, query) }.prefix(Self.maxRows)
+
+        emptyLabel.isHidden = !filtered.isEmpty
+        if filtered.isEmpty {
+            emptyLabel.stringValue = query.isEmpty
+                ? "No past conversations on this track yet."
+                : "Nothing matches \u{201C}\(query)\u{201D}."
+        }
+
+        var rowHeights: CGFloat = 0
+        for conversation in filtered {
             let row = ConversationHistoryRow(conversation: conversation) { [weak self] in
                 self?.view.window?.performClose(nil)
                 self?.onSelect?(conversation.id)
             }
-            stack.addArrangedSubview(row)
+            rows.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+            rowHeights += 1
         }
-        if conversations.count > 20 {
-            let more = NSTextField(labelWithString: "+\(conversations.count - 20) older")
-            more.font = DS.Text.caption()
-            more.textColor = .tertiaryLabelColor
-            stack.addArrangedSubview(more)
-        }
-
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
-        ])
-        for case let row as ConversationHistoryRow in stack.arrangedSubviews {
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -DS.Spacing.m * 2).isActive = true
-        }
+        // The popover's height follows the *visible* rows, up to the limit; beyond that the
+        // list scrolls rather than the popover growing past the screen.
+        let shown = min(rowHeights, CGFloat(Self.visibleRowLimit))
+        scrollHeight?.isActive = false
+        let height = max(1, shown) * 42
+        scrollHeight = rows.enclosingScrollView?.heightAnchor.constraint(equalToConstant: height)
+        scrollHeight?.isActive = true
     }
+
+    private var scrollHeight: NSLayoutConstraint?
 }
 
 /// One history row: title above, date and turn count below, menu-style highlight on hover.
