@@ -54,7 +54,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let diffViewer = DiffViewer()
     // Real label set per-track in refresh() — "to main" isn't right for a stacked track, whose
     // actual base is its parent's branch.
-    private let promoteButton = NSButton(title: "Promote", target: nil, action: nil)
+    private let promoteButton = ChipButton(symbolName: nil, accessibilityLabel: "Promote this track's changes to its base branch", height: ReviewWorkspaceViewController.promoteHeight)
     private let statusLabel = NSTextField(labelWithString: "")
     /// The glass capsule Promote sits on, plus the status line beneath it. Floats over the
     /// scrolling content in the stage's top-right corner rather than living in a bar of its own.
@@ -101,20 +101,23 @@ final class ReviewWorkspaceViewController: NSViewController {
         diffHeader.textColor = .secondaryLabelColor
 
 
-        // Borderless: the glass capsule behind it *is* the button's chrome, and a bezel inside a
-        // glass pill reads as two nested buttons — the same reason the composer is itself the
-        // capsule rather than holding one.
-        promoteButton.isBordered = false
-        promoteButton.target = self
-        promoteButton.action = #selector(promoteTapped)
-        promoteButton.translatesAutoresizingMaskIntoConstraints = false
+        // A ChipButton, the same control the composer's row is built from: borderless, because
+        // the glass capsule behind it *is* its chrome and a bezel inside a glass pill reads as two
+        // nested buttons — and it inherits the press, which is the point. `glassBackdrop` below is
+        // what makes the button and its capsule dip and spring as one object rather than the glyph
+        // sliding around inside a static pill.
+        promoteButton.onPress = { [weak self] in self?.promoteTapped() }
         statusLabel.font = DS.Text.caption()
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.alignment = .right
         statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.maximumNumberOfLines = 2
 
-        let promoteGlass = DS.makeGlass(cornerRadius: DS.Radius.card)
+        // Pill-shaped: radius is exactly half the height, so the capsule's ends are true
+        // semicircles. A card radius on a 30pt-tall control is a rounded rectangle, which is the
+        // one shape Liquid Glass never is.
+        let promoteGlass = DS.makeGlass(cornerRadius: Self.promoteHeight / 2)
+        promoteButton.glassBackdrop = promoteGlass
         promoteHost.translatesAutoresizingMaskIntoConstraints = false
         promoteHost.addSubview(promoteGlass)
         promoteHost.addSubview(promoteButton)
@@ -123,10 +126,10 @@ final class ReviewWorkspaceViewController: NSViewController {
             promoteGlass.leadingAnchor.constraint(equalTo: promoteHost.leadingAnchor),
             promoteGlass.trailingAnchor.constraint(equalTo: promoteHost.trailingAnchor),
             promoteGlass.bottomAnchor.constraint(equalTo: promoteHost.bottomAnchor),
-            promoteButton.topAnchor.constraint(equalTo: promoteHost.topAnchor, constant: 7),
-            promoteButton.bottomAnchor.constraint(equalTo: promoteHost.bottomAnchor, constant: -7),
+            promoteButton.centerYAnchor.constraint(equalTo: promoteHost.centerYAnchor),
             promoteButton.leadingAnchor.constraint(equalTo: promoteHost.leadingAnchor, constant: DS.Spacing.xl),
             promoteButton.trailingAnchor.constraint(equalTo: promoteHost.trailingAnchor, constant: -DS.Spacing.xl),
+            promoteHost.heightAnchor.constraint(equalToConstant: Self.promoteHeight),
         ])
 
         promoteOverlay.orientation = .vertical
@@ -288,6 +291,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     /// Horizontal room the floating Promote capsule needs; the title truncates short of it.
     private static let promoteGutter: CGFloat = 240
+    private static let promoteHeight: CGFloat = 30
 
     /// A borderless NSButton draws its title in the default label colour and ignores
     /// `contentTintColor`, so the accent has to come from an attributed title — same reason the
@@ -307,9 +311,16 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     private func applyPromoteTitle() {
         let color: NSColor = promoteButton.isEnabled ? .controlAccentColor : .tertiaryLabelColor
-        promoteButton.attributedTitle = NSAttributedString(
-            string: promoteTitleText,
-            attributes: [.font: DS.Text.control(.semibold), .foregroundColor: color]
+        // Both, and both are needed: a borderless NSButton tints its title with
+        // `contentTintColor` on top of whatever an attributed title asks for, so setting only the
+        // attributed colour left the button permanently grey in ChipButton's default tint.
+        promoteButton.contentTintColor = color
+        promoteButton.setAttributedLabel(
+            NSAttributedString(
+                string: promoteTitleText,
+                attributes: [.font: DS.Text.control(.semibold), .foregroundColor: color]
+            ),
+            identity: "\(promoteTitleText)|\(promoteButton.isEnabled)"
         )
     }
 
