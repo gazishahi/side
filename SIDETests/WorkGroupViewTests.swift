@@ -85,12 +85,38 @@ final class WorkGroupViewTests: XCTestCase {
     }
 
     func testTheElapsedTimeIsAlwaysStated() {
-        let group = WorkGroupView(startedAt: Date().addingTimeInterval(-95))
+        let started = Date().addingTimeInterval(-200)
+        let group = WorkGroupView(startedAt: started)
+        group.addLine(NSTextField(labelWithString: "→ run_task"), isStep: true, at: started.addingTimeInterval(95))
         group.finish()
         let label = group.accessibilityLabel() ?? ""
         // It used to be hidden below one second, which is most of them.
         XCTAssertTrue(label.contains("1m 35s"), label)
         XCTAssertTrue(label.contains("Worked for"), label)
+    }
+
+    func testTheDurationIsMeasuredToTheGroupsOwnLastLine() {
+        // The 676-minute bug: renderFull finished every group at the timestamp of the
+        // *conversation's* final entry, so a two-step group from last night reported the age of
+        // the whole conversation. A group measures its own span or nothing.
+        let started = Date().addingTimeInterval(-40_000)
+        let group = WorkGroupView(startedAt: started)
+        group.addLine(NSTextField(labelWithString: "→ read_file"), isStep: true, at: started.addingTimeInterval(3))
+        group.addLine(NSTextField(labelWithString: "✓ read_file"), isStep: false, at: started.addingTimeInterval(9))
+        group.finish()
+        let reported = group.accessibilityLabel() ?? ""
+        XCTAssertTrue(reported.contains("9s"), reported)
+        XCTAssertFalse(reported.contains("m "), reported)
+    }
+
+    func testALaterLineNeverMovesTheDurationBackwards() {
+        let started = Date()
+        let group = WorkGroupView(startedAt: started)
+        group.addLine(NSTextField(labelWithString: "b"), isStep: true, at: started.addingTimeInterval(12))
+        // Out-of-order arrival must not shrink the measured span.
+        group.addLine(NSTextField(labelWithString: "a"), isStep: true, at: started.addingTimeInterval(4))
+        group.finish()
+        XCTAssertTrue((group.accessibilityLabel() ?? "").contains("12s"), group.accessibilityLabel() ?? "")
     }
 
     func testAReloadedGroupReportsTheTimeItActuallyTook() {
@@ -103,16 +129,16 @@ final class WorkGroupViewTests: XCTestCase {
         let group = WorkGroupView(startedAt: started)
         let label = NSTextField(labelWithString: "→ read_file")
         group.addLine(label, isStep: true, at: started.addingTimeInterval(7))
-        group.finish(at: started.addingTimeInterval(7))
+        group.finish()
         let reported = group.accessibilityLabel() ?? ""
         XCTAssertTrue(reported.contains("7s"), reported)
         // And emphatically not an hour, which is what finishing at "now" would have produced.
         XCTAssertFalse(reported.contains("m "), reported)
     }
 
-    func testFinishingBeforeTheStartCannotProduceANegativeDuration() {
+    func testAGroupWithNoLinesReportsNoElapsedTime() {
         let group = WorkGroupView(startedAt: Date())
-        group.finish(at: Date().addingTimeInterval(-500))
+        group.finish()
         XCTAssertTrue((group.accessibilityLabel() ?? "").contains("0s"), group.accessibilityLabel() ?? "")
     }
 }

@@ -36,6 +36,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Changed-files pill, bottom-left above the composer — the session pill's opposite number.
     private let changesPill = ChipButton(symbolName: "pencil.line", accessibilityLabel: "Files changed in this conversation")
     private let changesPillGlass = DS.makeGlass(cornerRadius: 14)
+    /// The pending queued message, shown above the composer while a turn is running.
+    private let queuedChip = ChipButton(symbolName: "clock", accessibilityLabel: "Queued message — click to edit")
+    private let queuedChipGlass = DS.makeGlass(cornerRadius: 14)
     /// A soft wash rising from the pill's bottom edge in the current scope's color.
     private let pillModeTint = GradientEdgeView(cornerRadius: 14)
     private var sessionPopover: NSPopover?
@@ -127,6 +130,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         composer.onSlashCommand = { [weak self] name in self?.performSlashCommand(name) }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
         composer.onCycleMode = { [weak self] in self?.cycleScope() }
+        composer.onEscape = { [weak self] in self?.escapePressed() ?? false }
         view.addSubview(composer)
         // Added after the scroll view on purpose: everything down here floats over the
         // transcript, and subview order is what keeps scrolled bubbles from painting across it.
@@ -142,6 +146,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         changesPillGlass.isHidden = true
         view.addSubview(changesPillGlass)
         view.addSubview(changesPill)
+        queuedChip.glassBackdrop = queuedChipGlass
+        queuedChip.onPress = { [weak self] in self?.editQueuedMessage() }
+        queuedChip.isHidden = true
+        queuedChipGlass.isHidden = true
+        view.addSubview(queuedChipGlass)
+        view.addSubview(queuedChip)
 
         emptyStateLabel.font = DS.Text.body()
         emptyStateLabel.textColor = .tertiaryLabelColor
@@ -196,6 +206,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             changesPillGlass.bottomAnchor.constraint(equalTo: changesPill.bottomAnchor, constant: 2),
             changesPillGlass.leadingAnchor.constraint(equalTo: changesPill.leadingAnchor, constant: -DS.Spacing.s),
             changesPillGlass.trailingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.s),
+            // Above the pills, so it reads as "next" rather than as part of the session chrome.
+            queuedChip.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs),
+            queuedChip.trailingAnchor.constraint(lessThanOrEqualTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
+            queuedChip.bottomAnchor.constraint(equalTo: changesPill.topAnchor, constant: -DS.Spacing.s),
+            queuedChipGlass.topAnchor.constraint(equalTo: queuedChip.topAnchor, constant: -2),
+            queuedChipGlass.bottomAnchor.constraint(equalTo: queuedChip.bottomAnchor, constant: 2),
+            queuedChipGlass.leadingAnchor.constraint(equalTo: queuedChip.leadingAnchor, constant: -DS.Spacing.s),
+            queuedChipGlass.trailingAnchor.constraint(equalTo: queuedChip.trailingAnchor, constant: DS.Spacing.s),
         ])
 
         // The header's token/cost figures come from a store the runner writes to directly, so
@@ -367,6 +385,19 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         runner.send(text, attachments: attachments)
     }
 
+    /// Escape cancels, in the order the user most likely means: a queued message first (it
+    /// hasn't been sent, so cancelling it costs nothing), then a running turn.
+    private func escapePressed() -> Bool {
+        if queuedMessage != nil {
+            queuedMessage = nil
+            refreshQueuedMessageChip()
+            return true
+        }
+        guard let runner, runner.phase == .streaming || runner.phase == .runningTools else { return false }
+        runner.stop()
+        return true
+    }
+
     private func updateSendButton() {
         let phase = runner?.phase ?? .idle
         let busy = phase == .streaming || phase == .runningTools
@@ -388,17 +419,51 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private var queuedMessage: (text: String, attachments: [AgentImageAttachment])?
 
     private func enqueue(_ text: String, attachments: [AgentImageAttachment]) {
-        let isReplacement = queuedMessage != nil
         queuedMessage = (text, attachments)
-        appendLocalNotice(isReplacement
-            ? "Replaced the queued message — it will be sent when the current turn finishes."
-            : "Queued — this will be sent when the current turn finishes.")
+        refreshQueuedMessageChip()
     }
 
     private func flushQueuedMessage() {
         guard let queued = queuedMessage, let runner, runner.isReadyToSend else { return }
         queuedMessage = nil
+        refreshQueuedMessageChip()
         runner.send(queued.text, attachments: queued.attachments)
+    }
+
+    /// Shows the queued message where the user can see and undo it.
+    ///
+    /// The first version only printed a transcript notice, which is the wrong shape twice over:
+    /// a queued message is *pending state*, not a historical event, and a notice can't be
+    /// edited or cancelled. Clicking the chip puts the text back in the composer — the only
+    /// honest way to offer editing, since the queue holds one message and editing it is
+    /// indistinguishable from re-queuing it.
+    private func refreshQueuedMessageChip() {
+        guard let queued = queuedMessage else {
+            queuedChip.isHidden = true
+            queuedChipGlass.isHidden = true
+            return
+        }
+        let oneLine = queued.text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        let preview = oneLine.count > 60 ? String(oneLine.prefix(60)) + "…" : oneLine
+        let attachmentNote = queued.attachments.isEmpty
+            ? ""
+            : " (+\(queued.attachments.count) image\(queued.attachments.count == 1 ? "" : "s"))"
+        queuedChip.setLabel("Queued: \(preview)\(attachmentNote)", tint: .secondaryLabelColor)
+        queuedChip.toolTip = "Click to edit — puts this back in the composer"
+        queuedChip.isHidden = false
+        queuedChipGlass.isHidden = false
+        DS.Motion.appear(queuedChip)
+    }
+
+    /// Returns the queued message to the composer for editing, which also cancels the send.
+    private func editQueuedMessage() {
+        guard let queued = queuedMessage else { return }
+        queuedMessage = nil
+        refreshQueuedMessageChip()
+        composer.focus()
+        composer.insertText(queued.text)
     }
 
     @objc private func textScaleChanged() {
@@ -805,6 +870,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private func renderFull() {
         // A message queued against the conversation being replaced has nowhere to go.
         queuedMessage = nil
+        refreshQueuedMessageChip()
         // Pending flushes index into the entry list being replaced. Carrying them across a
         // track switch or a reset made the next flush call setBody(streaming:) against a
         // different conversation's entries — stripping markdown, code blocks, and file links
@@ -821,7 +887,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             appendRendered(entry, isFirst: index == 0)
         }
         // Finished at the last entry's own timestamp, not now — this is the rehydration path.
-        currentWorkGroup?.finish(at: (runner?.entries.last?.createdAt) ?? Date())
+        currentWorkGroup?.finish()
         currentWorkGroup = nil
         emptyStateLabel.isHidden = !(runner?.entries.isEmpty ?? true)
         updateSendButton()
@@ -1518,6 +1584,11 @@ final class WorkGroupView: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let content = NSStackView()
     private let startedAt: Date
+    /// The last line this group received. The duration is measured to *here*, not to whenever
+    /// `finish()` happens to be called: a rehydrated transcript finished every group at the
+    /// timestamp of the conversation's final entry, so a two-step group from last night
+    /// reported "Worked for 676m".
+    private var lastLineAt: Date
     private var finishedAt: Date?
     private var stepCount = 0
     private var expanded = false
@@ -1527,6 +1598,7 @@ final class WorkGroupView: NSView {
 
     init(startedAt: Date) {
         self.startedAt = startedAt
+        self.lastLineAt = startedAt
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
@@ -1641,15 +1713,16 @@ final class WorkGroupView: NSView {
 
     func addLine(_ view: NSView, isStep: Bool, at date: Date) {
         content.addArrangedSubview(view)
+        lastLineAt = max(lastLineAt, date)
         if isStep { stepCount += 1 }
         refreshHeader()
     }
 
-    /// `at` matters when rehydrating: finishing "now" against a `startedAt` from last week
-    /// would report a duration of days. Live callers use the default.
-    func finish(at date: Date = Date()) {
+    /// Finishes at the group's own last line, which is what the header claims to measure: the
+    /// span of the tool work, not the age of the conversation.
+    func finish() {
         guard !finished else { return }
-        finishedAt = max(date, startedAt)
+        finishedAt = lastLineAt
         timer?.invalidate()
         timer = nil
         refreshHeader()
@@ -1665,6 +1738,7 @@ final class WorkGroupView: NSView {
         let steps = "\(stepCount) step\(stepCount == 1 ? "" : "s")"
         // Always stated: an earlier version hid the elapsed time whenever the work took under a
         // second, which is most of them, so in practice it never appeared.
+        // Live, it ticks from the start; finished, it is the span between first and last line.
         let elapsed = Self.format((finishedAt ?? Date()).timeIntervalSince(startedAt))
         titleLabel.stringValue = finished
             ? "Worked for \(elapsed) · \(steps)"
@@ -2574,6 +2648,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     var onAction: (() -> Void)?
     /// Shift+Tab — cycle the agent's tool scope without leaving the keyboard.
     var onCycleMode: (() -> Void)?
+    /// Escape with no candidate list showing. Returns whether it was acted on.
+    var onEscape: (() -> Bool)?
 
     private let textView = ComposerTextView()
 
@@ -2911,6 +2987,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             case #selector(NSResponder.cancelOperation(_:)):
                 mentionPopup.hide()
                 return true
+
             default:
                 break
             }
@@ -2918,6 +2995,12 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
             onCycleMode?()
             return true
+        }
+        // Escape stops the run — with the candidate list already handled above, so Escape's
+        // first job is still dismissing it. Reaching for the mouse should never be the only way
+        // to interrupt an agent.
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            return onEscape?() ?? false
         }
         guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
         if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { return false }
