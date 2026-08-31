@@ -28,6 +28,20 @@ enum ProjectRules {
     /// *which* command the agent proposes — only the user's eyes on the file can do that.
     static let candidateNames = ["SIDE.md", ".side/rules.md", "AGENTS.md", "CLAUDE.md"]
 
+    /// The file Side *creates* when a project has none.
+    ///
+    /// `AGENTS.md`, not `SIDE.md`: a cross-tool convention has emerged for this, and inventing a
+    /// Side-specific filename would mean a project that adopts Side has to maintain a second
+    /// copy of instructions it has already written — the exact duplication `candidateNames`
+    /// exists to avoid. A tool should read the ecosystem's file, not ask the ecosystem to
+    /// accommodate the tool.
+    ///
+    /// `SIDE.md` stays *first* in the search order rather than being removed, because
+    /// specific-overrides-general is the right layering: a project that genuinely needs
+    /// Side-only instructions alongside its shared ones can have both. It is simply no longer
+    /// what gets created by default.
+    static let preferredFileName = "AGENTS.md"
+
     /// Rules files the user has explicitly accepted, keyed by absolute path and content hash —
     /// so editing the file (or a `git pull` changing it) requires acknowledging it again.
     /// Deliberately per-content, not per-path: "I trust this file" is a statement about what it
@@ -122,11 +136,11 @@ enum ProjectRules {
     /// thing worth saying — specific, checkable facts an agent can't infer from the code — since
     /// an empty file with a heading teaches nobody what belongs in it.
     static let template = """
-        # Project rules
+        # Agent instructions
 
-        Standing instructions for agents working in this project. Side folds this file into
-        every Think request, so keep it short and specific — facts an agent can't infer by
-        reading the code.
+        Standing instructions for coding agents working in this project. Side folds this file
+        into every Think request, and other tools that read AGENTS.md will pick it up too — so
+        keep it short and specific: facts an agent can't infer by reading the code.
 
         ## Conventions
 

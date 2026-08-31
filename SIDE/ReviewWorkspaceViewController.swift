@@ -237,6 +237,21 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     private static let defaultEmptyStateText = "Switch to a track to review its work."
 
+    /// How many checkpoints show before the rest are folded away. Small on purpose: Review's
+    /// subject is the *current* diff, and the checkpoint list is provenance for it.
+    private static let visibleCheckpointLimit = 4
+    private var showingAllCheckpoints = false
+
+    @objc private func showAllCheckpointsTapped() {
+        showingAllCheckpoints = true
+        refresh()
+    }
+
+    @objc private func showFewerCheckpointsTapped() {
+        showingAllCheckpoints = false
+        refresh()
+    }
+
     @objc private func textScaleChanged() { refresh() }
 
     private func refresh() {
@@ -266,7 +281,12 @@ final class ReviewWorkspaceViewController: NSViewController {
         promoteButton.title = "Promote to \(baseRef)"
 
         checkpointsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let checkpoints = (sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []).sorted { $0.createdAt > $1.createdAt }
+        let allCheckpoints = (sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []).sorted { $0.createdAt > $1.createdAt }
+        // Newest few, with the rest behind a disclosure. An unbounded list is the wrong default
+        // for something that grows once per approved batch forever: after a week of real use the
+        // page is mostly history nobody is reading, and the diff — the thing Review is actually
+        // for — is pushed below the fold.
+        let checkpoints = showingAllCheckpoints ? allCheckpoints : Array(allCheckpoints.prefix(Self.visibleCheckpointLimit))
         if checkpoints.isEmpty {
             checkpointsStack.addArrangedSubview(Self.makeMetaLabel("No checkpoints yet — one is created automatically the first time an approved edit or command lands on this track."))
         } else {
@@ -283,6 +303,26 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
 
         overlapBanner.isHidden = true
+        // The "show the rest" affordance, and the count, so the page says how much it is hiding
+        // rather than silently truncating.
+        if allCheckpoints.count > checkpoints.count {
+            let remaining = allCheckpoints.count - checkpoints.count
+            let button = NSButton(
+                title: "Show \(remaining) older checkpoint\(remaining == 1 ? "" : "s")",
+                target: self, action: #selector(showAllCheckpointsTapped)
+            )
+            button.bezelStyle = .inline
+            button.controlSize = .small
+            button.font = DS.Text.caption()
+            checkpointsStack.addArrangedSubview(button)
+        } else if showingAllCheckpoints, allCheckpoints.count > Self.visibleCheckpointLimit {
+            let button = NSButton(title: "Show fewer", target: self, action: #selector(showFewerCheckpointsTapped))
+            button.bezelStyle = .inline
+            button.controlSize = .small
+            button.font = DS.Text.caption()
+            checkpointsStack.addArrangedSubview(button)
+        }
+
         diffHeader.stringValue = "Changes vs \(baseRef)"
         diffViewer.renderLoading()
         promoteButton.isEnabled = false

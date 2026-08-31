@@ -179,17 +179,25 @@ final class DiffFileCardView: NSView {
     private let headerButton = HeaderClickView()
     private var isCollapsed = false
     private var bodyHeightConstraint: NSLayoutConstraint?
-    private let bodyHeight: CGFloat
+    /// Set from the text's *measured* height once it has been laid out, not from a guess.
+    private var bodyHeight: CGFloat = 0
+    private static let maximumBodyHeight: CGFloat = 420
 
     private static let addedText = DiffBody.addedText
     private static let removedText = DiffBody.removedText
 
-    init(file: UnifiedDiff.File) {
-        // Sized to content up to a cap, so one file's giant diff scrolls inside its own card
-        // instead of making the page unusable.
-        let lineCount = file.hunks.reduce(0) { $0 + $1.lines.count + 1 }
-        bodyHeight = min(CGFloat(lineCount) * 17 + 12, 420)
+    /// The height the text actually needs, from the layout manager that will draw it.
+    private static func measuredHeight(of textView: NSTextView) -> CGFloat {
+        guard let layoutManager = textView.layoutManager, let container = textView.textContainer else {
+            return maximumBodyHeight
+        }
+        layoutManager.ensureLayout(for: container)
+        let used = layoutManager.usedRect(for: container).height
+        // A little breathing room below the last line, and never zero for an empty diff.
+        return max(24, ceil(used) + textView.textContainerInset.height * 2 + 4)
+    }
 
+    init(file: UnifiedDiff.File) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -254,6 +262,15 @@ final class DiffFileCardView: NSView {
 
         let bodyText = DiffBody.makeBodyTextView()
         DiffBody.fill(bodyText, hunks: file.hunks)
+        // Measured from the laid-out glyphs rather than assumed from a line count.
+        //
+        // The previous version multiplied the line count by a hard-coded 17pt. That number is
+        // not the font's actual line height, and it also counted a synthetic extra line per
+        // hunk, so every card reserved more room than its text occupied — visible as a large
+        // band of empty space under the last line of a diff. Sized to content up to a cap, so
+        // one enormous file still scrolls inside its own card instead of making the page
+        // unusable.
+        bodyHeight = min(Self.measuredHeight(of: bodyText), Self.maximumBodyHeight)
         bodyScroll.documentView = bodyText
         bodyScroll.drawsBackground = false
         bodyScroll.hasVerticalScroller = true

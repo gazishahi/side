@@ -573,12 +573,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             onRevealFileRequested?(existing)
             return
         }
-        let url = rootURL.appendingPathComponent(ProjectRules.candidateNames[0])
+        let url = rootURL.appendingPathComponent(ProjectRules.preferredFileName)
         guard (try? ProjectRules.template.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
         // Written by the user, here, on purpose — asking them to acknowledge their own file
         // would be theatre.
         ProjectRules.acknowledge(url: url, contents: ProjectRules.template.trimmingCharacters(in: .whitespacesAndNewlines))
-        appendLocalNotice("Created \(ProjectRules.candidateNames[0]) — what you write there is included in every Think request for this project.")
+        appendLocalNotice("Created \(ProjectRules.preferredFileName) — what you write there is included in every Think request for this project.")
         onRevealFileRequested?(url)
     }
 
