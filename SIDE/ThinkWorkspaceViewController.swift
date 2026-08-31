@@ -153,8 +153,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         view.addSubview(pillModeTint)
         view.addSubview(sessionPill)
         changesPill.glassBackdrop = changesPillGlass
-        changesPill.onPress = { [weak self] in self?.onOpenReviewRequested?() }
-        changesPill.toolTip = "Open Review"
+        changesPill.onPress = { [weak self] in self?.showChangedFiles() }
+        changesPill.toolTip = "What this conversation changed"
         changesPill.isHidden = true
         changesPillGlass.isHidden = true
         view.addSubview(changesPillGlass)
@@ -851,7 +851,29 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         refreshChangesPill()
     }
 
-    /// "3 files +42 −7" — cumulative applied edits this conversation; click opens Review.
+    /// The panel behind the changes pill: every file this conversation edited, with its own
+    /// line counts, each row opening in Make.
+    ///
+    /// The pill was already the collapsed form of this — it reported "3 files +42 −7" and then
+    /// sent you to Review, which is the right *eventual* destination but the wrong answer to
+    /// "which files?". Answering that in place is what every other harness does, and the parts
+    /// were all here already: the runner records per-file counts, and Review knows how to
+    /// promote and undo.
+    private func showChangedFiles() {
+        guard let runner, !runner.appliedEditCounts.isEmpty else { return }
+        let panel = ChangedFilesViewController()
+        panel.files = runner.appliedEditCounts.map {
+            ChangedFilesViewController.Row(path: $0.path, added: $0.added, removed: $0.removed)
+        }
+        panel.onOpenFile = { [weak self] path in self?.openMentionedFile(path) }
+        panel.onOpenReview = { [weak self] in self?.onOpenReviewRequested?() }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = panel
+        popover.show(relativeTo: changesPill.bounds, of: changesPill, preferredEdge: .maxY)
+    }
+
+    /// "3 files +42 −7" — cumulative applied edits this conversation.
     private func refreshChangesPill() {
         let counts = runner?.appliedEditCounts ?? []
         let isEmpty = counts.isEmpty
@@ -2168,6 +2190,174 @@ private final class PopoverActionRow: NSView {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.07) { self?.action() }
         }
     }
+}
+
+/// What this conversation changed: one row per file, with its own line counts.
+///
+/// Sorted by size of change rather than alphabetically — the file with forty edited lines is the
+/// one worth looking at first, and a path list sorted by name buries it next to a one-line
+/// import fix.
+private final class ChangedFilesViewController: NSViewController {
+    struct Row {
+        let path: String
+        let added: Int
+        let removed: Int
+    }
+
+    var files: [Row] = []
+    var onOpenFile: ((String) -> Void)?
+    var onOpenReview: (() -> Void)?
+
+    override func loadView() { view = NSView() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        let totalAdded = files.reduce(0) { $0 + $1.added }
+        let totalRemoved = files.reduce(0) { $0 + $1.removed }
+        let header = NSTextField(labelWithString: "\(files.count) file\(files.count == 1 ? "" : "s") changed")
+        header.font = DS.Text.control(.semibold)
+        header.textColor = .labelColor
+
+        let counts = NSTextField(labelWithString: "+\(totalAdded)  −\(totalRemoved)")
+        counts.font = DS.Text.caption(.medium)
+        counts.textColor = .secondaryLabelColor
+
+        let headerRow = NSStackView(views: [header, NSView(), counts])
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.distribution = .fill
+
+        let rows = NSStackView()
+        rows.orientation = .vertical
+        rows.alignment = .leading
+        rows.spacing = 1
+        for file in files.sorted(by: { ($0.added + $0.removed) > ($1.added + $1.removed) }) {
+            let row = ChangedFileRow(file: file) { [weak self] in
+                self?.view.window?.performClose(nil)
+                self?.onOpenFile?(file.path)
+            }
+            rows.addArrangedSubview(row)
+        }
+
+        // Review is where promoting and undoing live, so the panel points at it rather than
+        // reimplementing either — this answers "which files", Review answers "now what".
+        let reviewButton = NSButton(title: "Open Review", target: self, action: #selector(reviewTapped))
+        reviewButton.bezelStyle = .rounded
+        reviewButton.controlSize = .small
+        reviewButton.font = DS.Text.caption()
+
+        let stack = NSStackView(views: [headerRow, rows, reviewButton])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Spacing.m
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.l, left: DS.Spacing.l, bottom: DS.Spacing.l, right: DS.Spacing.l)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            view.widthAnchor.constraint(equalToConstant: 420),
+            headerRow.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -DS.Spacing.l * 2),
+            rows.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -DS.Spacing.l * 2),
+        ])
+        for case let row as ChangedFileRow in rows.arrangedSubviews {
+            row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+        }
+    }
+
+    @objc private func reviewTapped() {
+        view.window?.performClose(nil)
+        onOpenReview?()
+    }
+}
+
+/// One changed file: directory dimmed, filename emphasized, counts right-aligned.
+private final class ChangedFileRow: NSView {
+    private let highlight = NSView()
+    private let pathLabel = NSTextField(labelWithString: "")
+    private let countsLabel = NSTextField(labelWithString: "")
+    private let action: () -> Void
+    private var trackingArea: NSTrackingArea?
+
+    init(file: ChangedFilesViewController.Row, action: @escaping () -> Void) {
+        self.action = action
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        highlight.wantsLayer = true
+        highlight.layer?.cornerRadius = 6
+        highlight.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        highlight.alphaValue = 0
+        highlight.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(highlight)
+
+        // The filename is what identifies the row; the directory is context. Dimming the
+        // directory makes a list of deep paths scannable instead of a wall of slashes.
+        let separator = (file.path as NSString).lastPathComponent
+        let directory = String(file.path.dropLast(separator.count))
+        let styled = NSMutableAttributedString(
+            string: directory,
+            attributes: [.font: DS.Text.control(), .foregroundColor: NSColor.tertiaryLabelColor]
+        )
+        styled.append(NSAttributedString(
+            string: separator,
+            attributes: [.font: DS.Text.control(.medium), .foregroundColor: NSColor.labelColor]
+        ))
+        pathLabel.attributedStringValue = styled
+        pathLabel.lineBreakMode = .byTruncatingHead
+        pathLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pathLabel)
+
+        let counts = NSMutableAttributedString(
+            string: "+\(file.added)",
+            attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.systemGreen]
+        )
+        counts.append(NSAttributedString(
+            string: "  −\(file.removed)",
+            attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.systemRed]
+        ))
+        countsLabel.attributedStringValue = counts
+        countsLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(countsLabel)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 24),
+            highlight.topAnchor.constraint(equalTo: topAnchor),
+            highlight.bottomAnchor.constraint(equalTo: bottomAnchor),
+            highlight.leadingAnchor.constraint(equalTo: leadingAnchor),
+            highlight.trailingAnchor.constraint(equalTo: trailingAnchor),
+            pathLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.s),
+            pathLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            countsLabel.leadingAnchor.constraint(greaterThanOrEqualTo: pathLabel.trailingAnchor, constant: DS.Spacing.m),
+            countsLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.s),
+            countsLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        toolTip = file.path
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { highlight.alphaValue = 0.18 }
+    override func mouseExited(with event: NSEvent) { highlight.alphaValue = 0 }
+
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        action()
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
 
 /// The conversation history picker: one row per past conversation, newest first.
