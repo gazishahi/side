@@ -119,6 +119,13 @@ final class AgentRunner {
     private var lastUserMessage = ""
     /// Shorter than this and a message is almost certainly a nudge rather than a description.
     private static let minimumDescriptiveIntentLength = 20
+    /// A checkpoint created this turn whose description should be upgraded to the agent's own
+    /// summary when the turn finishes.
+    private var checkpointAwaitingDescription: UUID?
+    /// Its transcript line, so the visible marker is corrected too rather than disagreeing with
+    /// what Review shows.
+    private var checkpointMarkerEntryIndex: Int?
+    private var checkpointMarkerSHA: String?
 
 
     /// Bounds one send: the model can chain tools, but a loop that never stops asking for them
@@ -547,10 +554,15 @@ final class AgentRunner {
             gitCommitSHA: commitSHA
         )
         sessionStore.appendCheckpoint(checkpoint)
+        // Remembered so the agent's own account of the change can replace the request that
+        // prompted it, once that account exists — see `describeCheckpointFromAgentSummary`.
+        checkpointAwaitingDescription = checkpoint.id
+        checkpointMarkerEntryIndex = nil
 
         let intentText = checkpoint.declaredIntent.isEmpty ? "no description" : checkpoint.declaredIntent
         let marker = commitSHA.map { "✓ Checkpoint (\(String($0.prefix(7)))): \(intentText)" } ?? "✓ Checkpoint: \(intentText) (no file changes)"
-        appendEntry(.meta(marker))
+        checkpointMarkerEntryIndex = appendEntry(.meta(marker))
+        checkpointMarkerSHA = commitSHA
     }
 
 
@@ -1100,7 +1112,33 @@ final class AgentRunner {
     /// `completed` distinguishes a turn that actually finished (the model stopped on its own,
     /// nothing pending) from one that was aborted (transport error, cancellation, an internal
     /// bookkeeping failure) — only the former is worth flagging to Tracks as "done, take a look."
+    /// Upgrades this turn's checkpoint description to the agent's own summary of the change.
+    ///
+    /// The last assistant text of a turn is where the model says what it did — "renamed `total`
+    /// to `sum` inside `sumRange`" — which is a better description of a change than the request
+    /// that prompted it. The request is what the checkpoint is *created* with, so there is never
+    /// a window where it has no description; this replaces it once something better exists.
+    private func describeCheckpointFromAgentSummary() {
+        guard let id = checkpointAwaitingDescription else { return }
+        let summary = pendingAssistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        checkpointAwaitingDescription = nil
+        guard !summary.isEmpty else { return }
+        let oneLine = summary.replacingOccurrences(of: "\n", with: " ")
+        let trimmed = oneLine.count > 72 ? String(oneLine.prefix(72)) + "…" : oneLine
+        guard sessionStore.updateCheckpointDescription(trimmed, id: id) else { return }
+        // The transcript marker is corrected too — a line in the chat that disagrees with the
+        // card in Review is worse than either being imperfect.
+        if let index = checkpointMarkerEntryIndex {
+            let marker = checkpointMarkerSHA.map { "✓ Checkpoint (\(String($0.prefix(7)))): \(trimmed)" }
+                ?? "✓ Checkpoint: \(trimmed) (no file changes)"
+            updateEntry(at: index, .meta(marker))
+        }
+        checkpointMarkerEntryIndex = nil
+        checkpointMarkerSHA = nil
+    }
+
     private func finishRun(completed: Bool) {
+        describeCheckpointFromAgentSummary()
         streamTask = nil
         streamingEntryIndex = nil
         if completed {

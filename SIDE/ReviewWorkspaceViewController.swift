@@ -56,7 +56,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     // actual base is its parent's branch.
     private let promoteButton = NSButton(title: "Promote", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
-    private let bottomBar = NSStackView()
+    /// The glass capsule Promote sits on, plus the status line beneath it. Floats over the
+    /// scrolling content in the stage's top-right corner rather than living in a bar of its own.
+    private let promoteOverlay = NSStackView()
+    private let promoteHost = NSView()
 
     override func loadView() { view = NSView() }
 
@@ -98,22 +101,40 @@ final class ReviewWorkspaceViewController: NSViewController {
         diffHeader.textColor = .secondaryLabelColor
 
 
-        promoteButton.bezelStyle = .rounded
-        promoteButton.controlSize = .large
-        promoteButton.contentTintColor = .controlAccentColor
+        // Borderless: the glass capsule behind it *is* the button's chrome, and a bezel inside a
+        // glass pill reads as two nested buttons — the same reason the composer is itself the
+        // capsule rather than holding one.
+        promoteButton.isBordered = false
         promoteButton.target = self
         promoteButton.action = #selector(promoteTapped)
+        promoteButton.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.font = DS.Text.caption()
         statusLabel.textColor = .secondaryLabelColor
+        statusLabel.alignment = .right
         statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.maximumNumberOfLines = 2
 
-        bottomBar.orientation = .horizontal
-        bottomBar.alignment = .firstBaseline
-        bottomBar.spacing = DS.Spacing.l
-        bottomBar.addArrangedSubview(promoteButton)
-        bottomBar.addArrangedSubview(statusLabel)
-        bottomBar.translatesAutoresizingMaskIntoConstraints = false
+        let promoteGlass = DS.makeGlass(cornerRadius: DS.Radius.card)
+        promoteHost.translatesAutoresizingMaskIntoConstraints = false
+        promoteHost.addSubview(promoteGlass)
+        promoteHost.addSubview(promoteButton)
+        NSLayoutConstraint.activate([
+            promoteGlass.topAnchor.constraint(equalTo: promoteHost.topAnchor),
+            promoteGlass.leadingAnchor.constraint(equalTo: promoteHost.leadingAnchor),
+            promoteGlass.trailingAnchor.constraint(equalTo: promoteHost.trailingAnchor),
+            promoteGlass.bottomAnchor.constraint(equalTo: promoteHost.bottomAnchor),
+            promoteButton.topAnchor.constraint(equalTo: promoteHost.topAnchor, constant: 7),
+            promoteButton.bottomAnchor.constraint(equalTo: promoteHost.bottomAnchor, constant: -7),
+            promoteButton.leadingAnchor.constraint(equalTo: promoteHost.leadingAnchor, constant: DS.Spacing.xl),
+            promoteButton.trailingAnchor.constraint(equalTo: promoteHost.trailingAnchor, constant: -DS.Spacing.xl),
+        ])
+
+        promoteOverlay.orientation = .vertical
+        promoteOverlay.alignment = .trailing
+        promoteOverlay.spacing = DS.Spacing.s
+        promoteOverlay.addArrangedSubview(promoteHost)
+        promoteOverlay.addArrangedSubview(statusLabel)
+        promoteOverlay.translatesAutoresizingMaskIntoConstraints = false
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
@@ -166,14 +187,24 @@ final class ReviewWorkspaceViewController: NSViewController {
             overlapText.bottomAnchor.constraint(equalTo: overlapBanner.bottomAnchor, constant: -10),
         ])
 
-        for view in [titleLabel, subtitleRow, overlapBanner, checkpointsHeader, checkpointsStack, diffHeader, diffViewer, bottomBar] {
+        for view in [titleLabel, subtitleRow, overlapBanner, checkpointsHeader, checkpointsStack, diffHeader, diffViewer] {
             contentStack.addArrangedSubview(view)
             // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
             // width by default — without this, a wrapping label or the diff card would collapse
             // to whatever width its content happens to need instead of spanning the stage, same
             // reasoning as Think's transcript `addBlock`.
-            view.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -32).isActive = true
+            //
+            // The title is the exception: the floating Promote capsule occupies the top-right, so
+            // a full-width title would slide underneath it. `<=` lets the label take the width it
+            // needs and truncate short of the button instead.
+            if view === titleLabel {
+                view.widthAnchor.constraint(lessThanOrEqualTo: contentStack.widthAnchor, constant: -32 - Self.promoteGutter).isActive = true
+            } else {
+                view.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -32).isActive = true
+            }
         }
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
         contentStack.setCustomSpacing(DS.Spacing.s, after: titleLabel)
         contentStack.setCustomSpacing(DS.Spacing.section, after: subtitleRow)
         contentStack.setCustomSpacing(DS.Spacing.section, after: checkpointsStack)
@@ -186,13 +217,29 @@ final class ReviewWorkspaceViewController: NSViewController {
         scrollView.hasVerticalScroller = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
+        // Promote floats in the stage's top-right corner, opposite the track name and branch
+        // chips, rather than sitting at the end of the scrolling content or in a bar of its own.
+        //
+        // At the end of the content it was reachable only by scrolling past every checkpoint and
+        // every file's diff — so the more a track had actually changed, the harder its one
+        // decisive action became to find, and on a tall display it sat a screen and a half down.
+        // The action a page exists to offer should not recede as the page fills up. A pinned
+        // bottom bar fixed the reachability but spent a full strip of chrome plus a divider on one
+        // button; a glass capsule in the header costs no layout and pairs the action with the
+        // identity of the thing being acted on.
         view.addSubview(scrollView)
+        view.addSubview(promoteOverlay)
         view.addSubview(emptyStateLabel)
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            promoteOverlay.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            promoteOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+            // Wide enough to matter, never wide enough to crowd the title: "Promote to
+            // origin/some-long-default" is a real label.
+            promoteOverlay.widthAnchor.constraint(lessThanOrEqualToConstant: 320),
             documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             contentStack.topAnchor.constraint(equalTo: documentView.topAnchor),
             contentStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
@@ -233,9 +280,38 @@ final class ReviewWorkspaceViewController: NSViewController {
         else if empty { emptyStateLabel.stringValue = Self.defaultEmptyStateText }
         emptyStateLabel.isHidden = !empty
         scrollView.isHidden = empty
+        // Nothing to promote when there's nothing to review.
+        promoteOverlay.isHidden = empty
     }
 
     private static let defaultEmptyStateText = "Switch to a track to review its work."
+
+    /// Horizontal room the floating Promote capsule needs; the title truncates short of it.
+    private static let promoteGutter: CGFloat = 240
+
+    /// A borderless NSButton draws its title in the default label colour and ignores
+    /// `contentTintColor`, so the accent has to come from an attributed title — same reason the
+    /// changes pill sets one. Re-applied on enablement changes because an attributed title also
+    /// opts out of AppKit's automatic dimming.
+    private var promoteTitleText = "Promote"
+
+    private func setPromoteTitle(_ text: String) {
+        promoteTitleText = text
+        applyPromoteTitle()
+    }
+
+    private func setPromoteEnabled(_ enabled: Bool) {
+        promoteButton.isEnabled = enabled
+        applyPromoteTitle()
+    }
+
+    private func applyPromoteTitle() {
+        let color: NSColor = promoteButton.isEnabled ? .controlAccentColor : .tertiaryLabelColor
+        promoteButton.attributedTitle = NSAttributedString(
+            string: promoteTitleText,
+            attributes: [.font: DS.Text.control(.semibold), .foregroundColor: color]
+        )
+    }
 
     /// How many checkpoints show before the rest are folded away. Small on purpose: Review's
     /// subject is the *current* diff, and the checkpoint list is provenance for it.
@@ -278,7 +354,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         titleLabel.stringValue = track.intent.isEmpty ? track.branchName : track.intent
         branchChipLabel.stringValue = track.branchName
         baseChipLabel.stringValue = baseRef
-        promoteButton.title = "Promote to \(baseRef)"
+        setPromoteTitle("Promote to \(baseRef)")
 
         checkpointsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let allCheckpoints = (sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []).sorted { $0.createdAt > $1.createdAt }
@@ -325,7 +401,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
         diffHeader.stringValue = "Changes vs \(baseRef)"
         diffViewer.renderLoading()
-        promoteButton.isEnabled = false
+        setPromoteEnabled(false)
 
         guard let canonicalRoot else { return }
         let cwd = canonicalRoot.path
@@ -354,7 +430,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             DispatchQueue.main.async {
                 guard let self, self.currentTrack?.branchName == branchName else { return }
                 self.diffViewer.render(diffText: diffText)
-                self.promoteButton.isEnabled = !diffText.isEmpty
+                self.setPromoteEnabled(!diffText.isEmpty)
                 self.overlapBanner.isHidden = siblings.isEmpty
                 if let headline = TrackOverlap.headline(for: siblings) {
                     self.overlapLabel.stringValue = headline
@@ -589,7 +665,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// track's. Never leaves that working copy mid-merge: any conflict aborts immediately rather
     /// than leaving other windows/stages looking at a half-merged base.
     private func promote(track: Track, baseRef: String, mergeRoot: URL, trackStore: TrackStore) {
-        promoteButton.isEnabled = false
+        setPromoteEnabled(false)
         statusLabel.stringValue = "Promoting…"
         let cwd = mergeRoot.path
         let branchName = track.branchName
@@ -599,7 +675,7 @@ final class ReviewWorkspaceViewController: NSViewController {
                 guard let self else { return }
                 self.statusLabel.stringValue = outcome.message
                 self.statusLabel.textColor = outcome.succeeded ? .systemGreen : .systemOrange
-                self.promoteButton.isEnabled = true
+                self.setPromoteEnabled(true)
                 if outcome.succeeded {
                     trackStore.setStatus(.completed, for: track)
                     self.refresh()

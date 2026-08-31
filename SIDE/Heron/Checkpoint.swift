@@ -76,7 +76,10 @@ struct Checkpoint: Codable, Identifiable {
     let id: UUID
     let trackKey: String
     let agentSessionId: UUID
-    let declaredIntent: String
+    /// `var` — written twice: the user's request when the checkpoint is created, then the
+    /// agent's own account of the change when the turn that made it finishes. See
+    /// `AgentSessionStore.updateCheckpointDescription`.
+    var declaredIntent: String
     let changedFilePaths: [String]
     let commandsRun: [String]
     let provenance: AgentProvenance

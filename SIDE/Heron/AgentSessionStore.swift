@@ -162,6 +162,23 @@ final class AgentSessionStore {
         saveIndex()
     }
 
+    /// Replaces a checkpoint's description once the agent has said what it did.
+    ///
+    /// The description has to be written twice because the two facts arrive at different times:
+    /// the checkpoint is created the moment its batch resolves, but the agent's account of the
+    /// change comes in the *next* turn. Recording the user's request first and upgrading it to
+    /// the agent's summary is strictly better than either alone — there is never a moment where
+    /// a checkpoint has no description, and the final one describes what happened rather than
+    /// what was asked for.
+    @discardableResult
+    func updateCheckpointDescription(_ description: String, id: UUID) -> Bool {
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let position = checkpoints.firstIndex(where: { $0.id == id }) else { return false }
+        checkpoints[position].declaredIntent = trimmed
+        saveCheckpoints()
+        return true
+    }
+
     func appendCheckpoint(_ checkpoint: Checkpoint) {
         checkpoints.append(checkpoint)
         saveCheckpoints()
