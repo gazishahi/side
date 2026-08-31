@@ -401,7 +401,9 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         }
         projectURL = url
         runVC.defaultWorkingDirectory = url.path
+        LaunchSignposts.begin("acquireContext")
         let context = ProjectContextRegistry.shared.acquire(projectRoot: url)
+        LaunchSignposts.end("acquireContext")
         projectContext = context
         context.registerBridgeHost(self)
         let store = context.trackStore
@@ -426,9 +428,13 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         runVC.hasProject = true
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
         thinkVC.onOpenReviewRequested = { [weak self] in self?.show(.review) }
+        LaunchSignposts.begin("thinkConfigure")
         thinkVC.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: context.projectRoot.path, trackKey: currentTrackKey)
+        LaunchSignposts.end("thinkConfigure")
+        LaunchSignposts.begin("reviewConfigure")
         reviewVC.configure(trackStore: store, sessionStore: context.sessionStore, canonicalRoot: url)
         reviewVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
+        LaunchSignposts.end("reviewConfigure")
         // Registered rather than assigned: `store` may already be shared with another window
         // (same project, two windows), and a plain single-assignment `onChange` would let this
         // window's registration silently replace that other window's.

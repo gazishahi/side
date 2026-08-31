@@ -1463,7 +1463,9 @@ private final class LinkedTextLine: NSView, NSTextViewDelegate {
     }
 }
 
-private final class WorkGroupView: NSView {
+/// `internal` rather than `private` so its collapse geometry and hit region can be tested.
+/// Three separate layout bugs shipped here because the only check was a screenshot.
+final class WorkGroupView: NSView {
     /// Collapsing is done by hiding an **arranged subview of a stack view**, which is the one
     /// mechanism in AppKit that actually removes a view from layout.
     ///
@@ -1474,6 +1476,7 @@ private final class WorkGroupView: NSView {
     /// its own bounds and drew on top of the next message. A stack view answers both: hidden
     /// arranged subviews collapse to nothing, and visible ones get their natural height.
     private let outer = NSStackView()
+    private let headerRow = NSStackView()
     private let chevron = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let content = NSStackView()
@@ -1505,7 +1508,7 @@ private final class WorkGroupView: NSView {
         titleLabel.font = DS.Text.caption(.medium)
         titleLabel.textColor = .secondaryLabelColor
 
-        let headerRow = NSStackView(views: [chevron, titleLabel])
+        headerRow.setViews([chevron, titleLabel], in: .leading)
         headerRow.orientation = .horizontal
         headerRow.alignment = .centerY
         headerRow.spacing = DS.Spacing.s
@@ -1523,6 +1526,7 @@ private final class WorkGroupView: NSView {
         outer.addArrangedSubview(content)
         outer.translatesAutoresizingMaskIntoConstraints = false
         addSubview(outer)
+
         NSLayoutConstraint.activate([
             outer.topAnchor.constraint(equalTo: topAnchor),
             outer.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -1559,18 +1563,43 @@ private final class WorkGroupView: NSView {
         }
     }
 
-    /// The header row is the hit target, not the 10pt glyph.
+
+    /// Clicks on the header toggle; clicks inside the expanded content fall through to that
+    /// line's own links.
+    ///
+    /// The comparison is `>=`, not `<=`, and that sign is the whole bug history of this method:
+    /// this view is **unflipped**, so its stack lays the header out at the *top*, which in
+    /// AppKit's default geometry is *high* y. The first version tested `point.y <= maxY`, which
+    /// matched everywhere when collapsed and nowhere useful when expanded — the group opened
+    /// and then could never be closed.
     override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        guard bounds.contains(point) else { return }
-        // Only the header: clicking a tool line inside the expanded content must reach that
-        // line's own links rather than collapsing the group underneath the cursor.
-        guard point.y <= titleLabel.frame.maxY + DS.Spacing.xs else { return super.mouseDown(with: event) }
+        guard isInHeader(convert(event.locationInWindow, from: nil)) else {
+            return super.mouseDown(with: event)
+        }
         toggle()
     }
 
+    /// Claims header-region points for this view *before* its subviews see them.
+    ///
+    /// Without this, `mouseDown` was never called at all: `NSTextField` hit-tests to itself and
+    /// swallows the click, so the title label absorbed every press on the header. The very first
+    /// version worked only by accident — the header *was* an NSButton, so the button's own
+    /// action fired. Replacing it with a chevron plus a label silently removed the click target.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if bounds.contains(local), isInHeader(local) { return self }
+        return super.hitTest(point)
+    }
+
+    /// This view is **unflipped**, so its stack lays the header out at the *top*, which in
+    /// AppKit's default geometry is *high* y — hence `>=`. An earlier `<=` matched everywhere
+    /// when collapsed and nowhere useful when expanded, so the group opened and never closed.
+    func isInHeader(_ local: NSPoint) -> Bool {
+        local.y >= headerRow.frame.minY - DS.Spacing.xs
+    }
+
     override func resetCursorRects() {
-        addCursorRect(NSRect(x: 0, y: 0, width: bounds.width, height: titleLabel.frame.height + 4), cursor: .pointingHand)
+        addCursorRect(headerRow.frame.insetBy(dx: 0, dy: -2), cursor: .pointingHand)
     }
 
     func addLine(_ view: NSView, isStep: Bool, at date: Date) {
@@ -1604,7 +1633,7 @@ private final class WorkGroupView: NSView {
         setAccessibilityLabel(titleLabel.stringValue)
     }
 
-    @objc private func toggle() {
+    @objc func toggle() {
         expanded.toggle()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
