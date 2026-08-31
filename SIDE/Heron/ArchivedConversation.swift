@@ -22,18 +22,30 @@ struct ArchivedConversation: Codable, Identifiable, Equatable {
     let turnCount: Int
     let createdAt: Date
     let archivedAt: Date
+    /// Set when this conversation was created by editing a message rather than by starting a new
+    /// one: the number of turns the live conversation kept before the edited message.
+    ///
+    /// The archive holds the conversation **complete** — every turn, including the shared prefix —
+    /// rather than only the discarded tail. It costs a duplicated prefix on disk and buys the
+    /// thing that matters: a branch opens as an ordinary whole conversation, with no special case
+    /// in the reader, the picker, or the transcript. A tail-only archive would be a fragment that
+    /// every one of those would have to know how to reassemble.
+    let branchPointTurnIndex: Int?
 
-    init(id: UUID, trackKey: String, title: String, turnCount: Int, createdAt: Date, archivedAt: Date = Date()) {
+    var isBranch: Bool { branchPointTurnIndex != nil }
+
+    init(id: UUID, trackKey: String, title: String, turnCount: Int, createdAt: Date, archivedAt: Date = Date(), branchPointTurnIndex: Int? = nil) {
         self.id = id
         self.trackKey = trackKey
         self.title = title
         self.turnCount = turnCount
         self.createdAt = createdAt
         self.archivedAt = archivedAt
+        self.branchPointTurnIndex = branchPointTurnIndex
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, trackKey, title, turnCount, createdAt, archivedAt
+        case id, trackKey, title, turnCount, createdAt, archivedAt, branchPointTurnIndex
     }
 
     // Tolerant, like every other persisted struct here.
@@ -45,6 +57,7 @@ struct ArchivedConversation: Codable, Identifiable, Equatable {
         turnCount = try container.decodeIfPresent(Int.self, forKey: .turnCount) ?? 0
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         archivedAt = try container.decodeIfPresent(Date.self, forKey: .archivedAt) ?? createdAt
+        branchPointTurnIndex = try container.decodeIfPresent(Int.self, forKey: .branchPointTurnIndex)
     }
 
     /// The title a session should be filed under: its first user message, trimmed to something

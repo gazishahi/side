@@ -438,6 +438,76 @@ final class AgentSessionStore {
         return true
     }
 
+    /// Forks the conversation at a user turn: the whole thing is filed away as a branch, and the
+    /// live conversation is rewound to just before that turn so an edited message can take its
+    /// place.
+    ///
+    /// Nothing is deleted. That is the entire difference between this and how Cursor or ChatGPT
+    /// handle an edited message — there, the discarded turns become a hidden alternate the rest of
+    /// the app can't see. Here the branch is an ordinary conversation in the history picker, which
+    /// matters because a discarded turn may have applied an edit that is still on disk and still
+    /// in Review as a checkpoint. A record the user can't reach would leave those checkpoints
+    /// belonging to a conversation that, as far as the app was concerned, never happened.
+    ///
+    /// Returns the turns that were rewound past, so the caller can tell the user (and the model)
+    /// what those turns already did. `nil` when the turn isn't a user turn or isn't in this
+    /// conversation — both are programming errors rather than states worth reporting.
+    struct ConversationBranch {
+        let record: ArchivedConversation
+        /// Turns the live conversation no longer has, oldest first — including the edited one.
+        let removedTurns: [AgentTurn]
+        let session: AgentSession
+    }
+
+    func branchConversation(atTurnId turnId: UUID, forTrackKey trackKey: String) -> ConversationBranch? {
+        guard var session = loadedSession(forTrackKey: trackKey),
+              let position = session.turns.firstIndex(where: { $0.id == turnId }),
+              session.turns[position].role == .user else { return nil }
+
+        // A fresh id: the live conversation keeps its own, so the branch cannot reuse it without
+        // the two colliding in `archives` and in the archive filenames.
+        let branchId = UUID()
+        let complete = AgentSession(
+            id: branchId, trackKey: trackKey, providerId: session.providerId, modelId: session.modelId,
+            turns: session.turns, createdAt: session.createdAt, lastActiveAt: session.lastActiveAt,
+            lastReportedInputTokens: session.lastReportedInputTokens
+        )
+        // Titled by the message being edited away, not by the conversation's first message — a
+        // branch and its parent share that prefix, so the ordinary title would file both under
+        // the same name and the picker would offer two identical rows.
+        let record = ArchivedConversation(
+            id: branchId, trackKey: trackKey,
+            title: Self.branchTitle(for: session.turns[position]),
+            turnCount: session.turns.count, createdAt: session.createdAt,
+            branchPointTurnIndex: position
+        )
+        // Written before the live copy is truncated, same order and same reason as archiving:
+        // a failure here leaves the conversation exactly as it was.
+        guard SessionLog.write(complete, to: archiveFileURL(id: branchId)) else { return nil }
+
+        let removed = Array(session.turns[position...])
+        session.turns = Array(session.turns[..<position])
+        session.lastActiveAt = Date()
+        loadedSessions[trackKey] = session
+        guard SessionLog.write(session, to: sessionFileURL(forTrackKey: trackKey)) else { return nil }
+        archives.append(record)
+        saveArchives()
+        upsertIndexEntry(for: session, trackKey: trackKey)
+        return ConversationBranch(record: record, removedTurns: removed, session: session)
+    }
+
+    /// The first line of the turn's text, which is what someone will recognize the branch by.
+    private static func branchTitle(for turn: AgentTurn) -> String {
+        for block in turn.content {
+            guard case .text(let text) = block else { continue }
+            let oneLine = text.replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !oneLine.isEmpty else { continue }
+            return oneLine.count > 70 ? String(oneLine.prefix(70)) + "…" : oneLine
+        }
+        return "Edited message"
+    }
+
     /// Swaps an archived conversation back into the live slot, filing away whatever was there.
     ///
     /// The current conversation is archived first rather than discarded — reopening an old one

@@ -16,11 +16,18 @@ struct RunTranscriptEntry: Identifiable {
     /// group that really took seven seconds reported one — the number was truthful only inside
     /// the session that produced it. Rehydration now passes the persisted turn's own timestamp.
     let createdAt: Date
+    /// The persisted `AgentTurn` this entry was rendered from, when there is one.
+    ///
+    /// Needed because `id` identifies the *entry*, not the conversation turn, and editing a
+    /// message has to name a turn in the session. Only set for turns a human authored — the one
+    /// thing that can be edited — so an assistant block has no handle by which to be rewritten.
+    let sourceTurnId: UUID?
     var kind: Kind
 
-    init(kind: Kind, createdAt: Date = Date()) {
+    init(kind: Kind, createdAt: Date = Date(), sourceTurnId: UUID? = nil) {
         self.kind = kind
         self.createdAt = createdAt
+        self.sourceTurnId = sourceTurnId
     }
 
     enum Kind {

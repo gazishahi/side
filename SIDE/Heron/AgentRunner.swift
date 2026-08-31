@@ -131,6 +131,8 @@ final class AgentRunner {
     /// cleared so a checkpoint can be renamed from it — a description of what was done is a far
     /// better handle in Review than a restatement of what was asked for.
     private var lastAssistantSummary = ""
+    /// Attached to the next request only — see `branchedAwayNote`.
+    private var branchedAwayNote: String?
     /// Set by `stop()`, cleared when the user sends again — see `continueAfterTools`.
     private var isStopRequested = false
     /// The most recent thing the user actually asked for, used to describe a checkpoint when the
@@ -269,20 +271,108 @@ final class AgentRunner {
         // usually refers to "this screenshot."
         var content: [AgentContentBlock] = attachments.map { .image(mediaType: $0.mediaType, base64: $0.base64) }
         if !trimmed.isEmpty { content.append(.text(trimmed)) }
+        // Held so the entries below can name the turn they render — that handle is what makes the
+        // message editable later.
+        let turn = AgentTurn(role: .user, content: content)
         sessionStore.appendTurn(
-            AgentTurn(role: .user, content: content),
-            trackKey: trackKey, providerId: selection.providerId, modelId: model.id
+            turn, trackKey: trackKey, providerId: selection.providerId, modelId: model.id
         )
         for attachment in attachments {
-            if let data = Data(base64Encoded: attachment.base64) { appendEntry(.userImage(data)) }
+            if let data = Data(base64Encoded: attachment.base64) { appendEntry(.userImage(data), sourceTurnId: turn.id) }
         }
         if !trimmed.isEmpty {
-            appendEntry(.userText(trimmed))
+            appendEntry(.userText(trimmed), sourceTurnId: turn.id)
             // One line, trimmed to a length that reads as a description rather than a paragraph.
             let oneLine = trimmed.replacingOccurrences(of: "\n", with: " ")
             lastUserMessage = oneLine.count > 72 ? String(oneLine.prefix(72)) + "…" : oneLine
         }
         runTurn(roundTrip: 0)
+    }
+
+    // MARK: - Editing a sent message
+
+    /// The text and images of a user turn, so the composer can be loaded with it for editing.
+    /// `nil` for anything that isn't an editable user turn — an assistant message has no handle
+    /// by which to be rewritten, deliberately: agent output must stay attributable.
+    func editableMessage(turnId: UUID) -> (text: String, attachments: [AgentImageAttachment])? {
+        guard let session = sessionStore.session(forTrackKey: trackKey),
+              let turn = session.turns.first(where: { $0.id == turnId }), turn.role == .user else { return nil }
+        var text = ""
+        var attachments: [AgentImageAttachment] = []
+        for block in turn.content {
+            switch block {
+            case .text(let value): if text.isEmpty { text = value }
+            case .image(let mediaType, let base64): attachments.append(AgentImageAttachment(mediaType: mediaType, base64: base64))
+            default: break
+            }
+        }
+        guard !text.isEmpty || !attachments.isEmpty else { return nil }
+        return (text, attachments)
+    }
+
+    /// Replaces a sent message with a new one and re-runs from there.
+    ///
+    /// The conversation is *forked*, not truncated: everything from the edited message onward is
+    /// filed away as a branch in the history picker, and the transcript says so at the fork point.
+    /// See `AgentSessionStore.branchConversation` for why nothing is deleted.
+    ///
+    /// What this deliberately does not do is touch the files. Some of the turns being rewound past
+    /// may have applied edits that are on disk now and in Review as checkpoints, and editing a
+    /// message is not consent to revert code — "agents propose; people promote" cuts both ways.
+    /// The user is told what is still applied and where to undo it; the model is told too, on the
+    /// next request only, so it doesn't rediscover its own earlier change as a mystery.
+    func editAndResend(turnId: UUID, text: String, attachments: [AgentImageAttachment] = []) {
+        guard !phase.isBusy else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        guard let branch = sessionStore.branchConversation(atTurnId: turnId, forTrackKey: trackKey) else { return }
+
+        let stillApplied = checkpointsCreatedBy(branch.removedTurns)
+        branchedAwayNote = Self.branchedAwayNote(checkpoints: stillApplied)
+
+        // Rebuilt from the truncated session rather than patched in place: the removed turns span
+        // an arbitrary number of entries (text, tool lines, proposal cards, checkpoint markers),
+        // and index surgery across that is how a transcript ends up disagreeing with its session.
+        entries = []
+        hydrateFromSession()
+        appendEntry(.meta(Self.branchMarker(branch: branch, stillApplied: stillApplied)))
+        notify(.reset)
+        send(trimmed, attachments: attachments)
+    }
+
+    /// Checkpoints this track recorded while the rewound turns were live.
+    ///
+    /// Matched by time rather than by turn: a checkpoint records the session it belongs to and
+    /// when it was written, not which turn asked for it, and every turn here shares one session.
+    /// The first removed turn's timestamp is the boundary.
+    private func checkpointsCreatedBy(_ removedTurns: [AgentTurn]) -> [Checkpoint] {
+        guard let boundary = removedTurns.first?.createdAt else { return [] }
+        return sessionStore.checkpoints(forTrackKey: trackKey)
+            .filter { $0.createdAt >= boundary && $0.gitCommitSHA != nil }
+    }
+
+    private static func branchMarker(branch: AgentSessionStore.ConversationBranch, stillApplied: [Checkpoint]) -> String {
+        let moved = branch.removedTurns.count
+        var line = "⑂ Branched — \(moved) turn\(moved == 1 ? "" : "s") moved to “\(branch.record.title)”"
+        if !stillApplied.isEmpty {
+            line += ". \(stillApplied.count) checkpoint\(stillApplied.count == 1 ? "" : "s") from those turns "
+            line += stillApplied.count == 1 ? "is still applied — undo it in Review." : "are still applied — undo them in Review."
+        }
+        return line
+    }
+
+    /// Told to the model once, on the request immediately after a branch. Without it the agent
+    /// re-reads a file, finds a change it has no memory of making, and either duplicates it or
+    /// reports the file as unexpectedly modified.
+    private static func branchedAwayNote(checkpoints: [Checkpoint]) -> String? {
+        guard !checkpoints.isEmpty else { return nil }
+        let paths = Set(checkpoints.flatMap(\.changedFilePaths)).sorted()
+        guard !paths.isEmpty else { return nil }
+        let listed = paths.prefix(12).joined(separator: ", ")
+        let more = paths.count > 12 ? " (and \(paths.count - 12) more)" : ""
+        return "[Note: this conversation was edited, and earlier turns are no longer in your context. "
+            + "Changes from those turns are already applied to these files: \(listed)\(more). "
+            + "Read them before editing so you don't repeat work that is already on disk.]"
     }
 
     func stop() {
@@ -811,12 +901,21 @@ final class AgentRunner {
         if let lastUserIndex = messages.lastIndex(where: { $0.role == .user }),
            case .text(let userText)? = messages[lastUserIndex].content.first(where: { if case .text = $0 { return true } else { return false } }) {
             let resolution = FileMentionResolver.resolve(text: userText, projectRoot: rootProvider())
+            var extraNotes: [String] = []
             if let note = FileMentionResolver.contextNote(mentions: resolution.mentions, unresolved: resolution.unresolved) {
+                extraNotes.append(note)
+            }
+            // Same channel, same reasoning: attached per request rather than persisted, so it
+            // never shows up in a rebuilt bubble and never freezes a fact that has since changed.
+            if let branchedAwayNote { extraNotes.append(branchedAwayNote) }
+            if !extraNotes.isEmpty {
                 var content = messages[lastUserIndex].content
-                content.append(.text(note))
+                for note in extraNotes { content.append(.text(note)) }
                 messages[lastUserIndex] = AgentMessage(role: .user, content: content)
             }
         }
+        // One turn only. By the next one the agent has read the files and the note is noise.
+        branchedAwayNote = nil
         let mode = modeProvider()
         let tools = ToolExecutor.specs(for: mode.scope)
         // Read per request, off the track's own root: editing the rules file takes effect on
@@ -1286,9 +1385,9 @@ final class AgentRunner {
     /// `at` is passed only when rehydrating, where the real time is the persisted turn's, not
     /// now — see `RunTranscriptEntry.createdAt`.
     @discardableResult
-    private func appendEntry(_ kind: RunTranscriptEntry.Kind, resetStreaming: Bool = true, at date: Date = Date()) -> Int {
+    private func appendEntry(_ kind: RunTranscriptEntry.Kind, resetStreaming: Bool = true, at date: Date = Date(), sourceTurnId: UUID? = nil) -> Int {
         if resetStreaming { streamingEntryIndex = nil }
-        entries.append(RunTranscriptEntry(kind: kind, createdAt: date))
+        entries.append(RunTranscriptEntry(kind: kind, createdAt: date, sourceTurnId: sourceTurnId))
         let index = entries.count - 1
         notify(.appended(index))
         return index
@@ -1321,7 +1420,10 @@ final class AgentRunner {
             for block in turn.content {
                 switch block {
                 case .text(let text):
-                    appendEntry(turn.role == .user ? .userText(text) : .assistantText(text), at: turn.createdAt)
+                    appendEntry(
+                        turn.role == .user ? .userText(text) : .assistantText(text),
+                        at: turn.createdAt, sourceTurnId: turn.role == .user ? turn.id : nil
+                    )
                     if turn.role == .user {
                         let oneLine = text.replacingOccurrences(of: "\n", with: " ")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1334,7 +1436,9 @@ final class AgentRunner {
                 case .toolResult(_, let content, let isError):
                     appendEntry(.toolResult(text: isError ? "⚠︎ \(content.prefix(140))" : "✓ \(Self.describeResultSize(content))", isError: isError), at: turn.createdAt)
                 case .image(_, let base64):
-                    if let data = Data(base64Encoded: base64) { appendEntry(.userImage(data), at: turn.createdAt) }
+                    if let data = Data(base64Encoded: base64) {
+                        appendEntry(.userImage(data), at: turn.createdAt, sourceTurnId: turn.role == .user ? turn.id : nil)
+                    }
                 }
             }
         }

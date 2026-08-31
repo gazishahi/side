@@ -41,6 +41,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// The pending queued message, shown above the composer while a turn is running.
     private let queuedChip = ChipButton(symbolName: "clock", accessibilityLabel: "Queued message — click to edit")
     private let queuedChipGlass = DS.makeGlass(cornerRadius: 14)
+    private let editingChip = ChipButton(symbolName: "pencil", accessibilityLabel: "Editing a sent message — click to cancel")
+    private let editingChipGlass = DS.makeGlass(cornerRadius: 14)
     /// A soft wash rising from the pill's bottom edge in the current scope's color.
     private let pillModeTint = GradientEdgeView(cornerRadius: 14)
     private var sessionPopover: NSPopover?
@@ -167,6 +169,15 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         queuedChipGlass.isHidden = true
         view.addSubview(queuedChipGlass)
         view.addSubview(queuedChip)
+        editingChip.glassBackdrop = editingChipGlass
+        editingChip.onPress = { [weak self] in
+            self?.composer.clear()
+            self?.endEditingMessage()
+        }
+        editingChip.isHidden = true
+        editingChipGlass.isHidden = true
+        view.addSubview(editingChipGlass)
+        view.addSubview(editingChip)
 
         emptyStateLabel.font = DS.Text.body()
         emptyStateLabel.textColor = .tertiaryLabelColor
@@ -229,6 +240,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             queuedChipGlass.bottomAnchor.constraint(equalTo: queuedChip.bottomAnchor, constant: 2),
             queuedChipGlass.leadingAnchor.constraint(equalTo: queuedChip.leadingAnchor, constant: -DS.Spacing.s),
             queuedChipGlass.trailingAnchor.constraint(equalTo: queuedChip.trailingAnchor, constant: DS.Spacing.s),
+            editingChip.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs),
+            editingChip.trailingAnchor.constraint(lessThanOrEqualTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
+            editingChip.bottomAnchor.constraint(equalTo: changesPill.topAnchor, constant: -DS.Spacing.s),
+            editingChipGlass.topAnchor.constraint(equalTo: editingChip.topAnchor, constant: -2),
+            editingChipGlass.bottomAnchor.constraint(equalTo: editingChip.bottomAnchor, constant: 2),
+            editingChipGlass.leadingAnchor.constraint(equalTo: editingChip.leadingAnchor, constant: -DS.Spacing.s),
+            editingChipGlass.trailingAnchor.constraint(equalTo: editingChip.trailingAnchor, constant: DS.Spacing.s),
         ])
 
         // The header's token/cost figures come from a store the runner writes to directly, so
@@ -346,6 +364,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 updateEntryView(at: index)
             }
         case .phaseChanged:
+            refreshEditAffordances()
             if runner?.phase.isBusy != true {
                 currentWorkGroup?.finish()
                 currentWorkGroup = nil
@@ -397,12 +416,77 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             return
         }
         composer.clear()
+        if let turnId = editingTurnId {
+            endEditingMessage()
+            runner.editAndResend(turnId: turnId, text: text, attachments: attachments)
+            return
+        }
         runner.send(text, attachments: attachments)
+    }
+
+    // MARK: - Editing a sent message
+
+    /// The turn whose text is currently loaded in the composer, if any.
+    private var editingTurnId: UUID?
+    private weak var editingRow: BubbleRowView?
+
+    private func refreshEditAffordances() {
+        let allowed = runner?.phase.isBusy != true
+        for view in entryViews {
+            (view as? BubbleRowView)?.editEnabled = allowed
+        }
+    }
+
+    private func beginEditingMessage(turnId: UUID, row: BubbleRowView) {
+        guard let runner, !runner.phase.isBusy else { return }
+        guard let draft = runner.editableMessage(turnId: turnId) else { return }
+        // A second edit replaces the first rather than stacking — same reasoning as the one-slot
+        // message queue: "I've changed my mind about which one" is what a second click means.
+        endEditingMessage()
+        editingTurnId = turnId
+        editingRow = row
+        row.setEditing(true)
+        composer.setText(draft.text)
+        composer.setAttachments(draft.attachments)
+        refreshEditingBanner()
+        composer.focus()
+    }
+
+    private func endEditingMessage() {
+        editingRow?.setEditing(false)
+        editingRow = nil
+        editingTurnId = nil
+        refreshEditingBanner()
+    }
+
+    /// Reuses the queued-message chip's slot: both say "the composer is holding something other
+    /// than a fresh message," and two competing banners in one place would be worse than one that
+    /// can only ever show one state at a time (the composer cannot be both, since editing is
+    /// refused while a turn is running and queuing only happens while one is).
+    private func refreshEditingBanner() {
+        guard editingTurnId != nil else {
+            refreshQueuedMessageChip()
+            return
+        }
+        editingChip.setLabel("Editing — sending moves the rest to a branch", tint: .secondaryLabelColor)
+        editingChip.toolTip = "Escape to cancel. The replaced turns are kept as a separate conversation."
+        editingChip.isHidden = false
+        editingChipGlass.isHidden = false
+        queuedChip.isHidden = true
+        queuedChipGlass.isHidden = true
+        DS.Motion.appear(editingChip)
     }
 
     /// Escape cancels, in the order the user most likely means: a queued message first (it
     /// hasn't been sent, so cancelling it costs nothing), then a running turn.
     private func escapePressed() -> Bool {
+        // Editing first: it's the state the user is most likely looking at, and cancelling it
+        // costs nothing — the message it was going to replace is still there.
+        if editingTurnId != nil {
+            composer.clear()
+            endEditingMessage()
+            return true
+        }
         if queuedMessage != nil {
             queuedMessage = nil
             refreshQueuedMessageChip()
@@ -453,6 +537,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// honest way to offer editing, since the queue holds one message and editing it is
     /// indistinguishable from re-queuing it.
     private func refreshQueuedMessageChip() {
+        editingChip.isHidden = true
+        editingChipGlass.isHidden = true
         guard let queued = queuedMessage else {
             queuedChip.isHidden = true
             queuedChipGlass.isHidden = true
@@ -1094,7 +1180,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // against the trailing edge; no "You" header — the side and color carry that.
             let bubble = TextBlockView(style: .sent, body: text, maxBubbleWidth: 460, pathResolver: { [weak self] path in self?.mentionedFileExists(path) ?? false })
             bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
-            return BubbleRowView(bubble: bubble, alignRight: true)
+            let row = BubbleRowView(bubble: bubble, alignRight: true)
+            // Only a message that came from a persisted turn can be edited — a locally-rendered
+            // notice has nothing in the session to fork at.
+            if let turnId = entry.sourceTurnId {
+                row.onEdit = { [weak self, weak row] in
+                    guard let self, let row else { return }
+                    self.beginEditingMessage(turnId: turnId, row: row)
+                }
+            }
+            return row
         case .assistantText(let text):
             let bubble = TextBlockView(style: .received, body: text, maxBubbleWidth: 620, pathResolver: { [weak self] path in self?.mentionedFileExists(path) ?? false })
             // The agent quotes paths back constantly; making those live too means "@" and a
@@ -1910,7 +2005,15 @@ private final class ImageBubbleRowView: NSView {
 private final class BubbleRowView: NSView {
     let bubble: TextBlockView
     private let copyButton = NSButton(title: "", target: nil, action: nil)
+    private let editButton = NSButton(title: "", target: nil, action: nil)
+    private let actions = NSStackView()
     private var trackingArea: NSTrackingArea?
+    /// Set only for a message the user can rewrite — their own. Showing it on an assistant bubble
+    /// would offer to edit what the agent said, which "no accidental surveillance" and
+    /// attributability both rule out.
+    var onEdit: (() -> Void)? {
+        didSet { editButton.isHidden = onEdit == nil }
+    }
 
     init(bubble: TextBlockView, alignRight: Bool) {
         self.bubble = bubble
@@ -1922,34 +2025,73 @@ private final class BubbleRowView: NSView {
         copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")?.withSymbolConfiguration(config)
         copyButton.isBordered = false
         copyButton.contentTintColor = .tertiaryLabelColor
-        copyButton.alphaValue = 0
         copyButton.target = self
         copyButton.action = #selector(copyTapped)
         copyButton.toolTip = "Copy message"
         copyButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(copyButton)
+
+        editButton.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: "Edit")?.withSymbolConfiguration(config)
+        editButton.isBordered = false
+        editButton.contentTintColor = .tertiaryLabelColor
+        editButton.target = self
+        editButton.action = #selector(editTapped)
+        editButton.toolTip = "Edit and re-send from here"
+        editButton.isHidden = true
+        editButton.translatesAutoresizingMaskIntoConstraints = false
+
+        // One fading group, so hover reveals the row rather than each glyph separately.
+        actions.orientation = .horizontal
+        actions.spacing = 0
+        actions.alphaValue = 0
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        // Edit sits nearer the bubble on both sides: it's the consequential one, and the
+        // consequential control belongs closest to the thing it acts on.
+        for button in alignRight ? [copyButton, editButton] : [editButton, copyButton] {
+            actions.addArrangedSubview(button)
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: 22),
+                button.heightAnchor.constraint(equalToConstant: 22),
+            ])
+        }
+        addSubview(actions)
 
         var constraints = [
             bubble.topAnchor.constraint(equalTo: topAnchor),
             bubble.bottomAnchor.constraint(equalTo: bottomAnchor),
-            copyButton.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
-            copyButton.widthAnchor.constraint(equalToConstant: 22),
-            copyButton.heightAnchor.constraint(equalToConstant: 22),
+            actions.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
         ]
         if alignRight {
             constraints += [
                 bubble.trailingAnchor.constraint(equalTo: trailingAnchor),
                 bubble.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 60),
-                copyButton.trailingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: -6),
+                actions.trailingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: -6),
             ]
         } else {
             constraints += [
                 bubble.leadingAnchor.constraint(equalTo: leadingAnchor),
                 bubble.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -60),
-                copyButton.leadingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: 6),
+                actions.leadingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: 6),
             ]
         }
         NSLayoutConstraint.activate(constraints)
+    }
+
+    /// Dims the bubble while its text is loaded in the composer being rewritten, so it's obvious
+    /// which message the composer is about to replace.
+    func setEditing(_ editing: Bool) {
+        animator().alphaValue = editing ? 0.45 : 1
+    }
+
+    /// Off while a turn is running: forking a conversation mid-stream would rewind turns the
+    /// model is still answering. Disabled rather than hidden, so the affordance doesn't appear
+    /// and vanish as the agent starts and stops.
+    var editEnabled: Bool = true {
+        didSet {
+            editButton.isEnabled = editEnabled
+            editButton.toolTip = editEnabled
+                ? "Edit and re-send from here"
+                : "Wait for the current turn to finish"
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -1962,8 +2104,10 @@ private final class BubbleRowView: NSView {
         trackingArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) { copyButton.animator().alphaValue = 1 }
-    override func mouseExited(with event: NSEvent) { copyButton.animator().alphaValue = 0 }
+    override func mouseEntered(with event: NSEvent) { actions.animator().alphaValue = 1 }
+    override func mouseExited(with event: NSEvent) { actions.animator().alphaValue = 0 }
+
+    @objc private func editTapped() { onEdit?() }
 
     @objc private func copyTapped() {
         let pasteboard = NSPasteboard.general
@@ -2536,7 +2680,11 @@ private final class ConversationHistoryRow: NSView {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         let when = formatter.localizedString(for: conversation.archivedAt, relativeTo: Date())
-        detailLabel.stringValue = "\(when) · \(conversation.turnCount) turn\(conversation.turnCount == 1 ? "" : "s")"
+        // A branch is labelled as one: it shares a prefix with the conversation still open, so
+        // without this the picker offers two rows that differ only in a title nobody remembers
+        // choosing.
+        let kind = conversation.isBranch ? "branch · " : ""
+        detailLabel.stringValue = "\(kind)\(when) · \(conversation.turnCount) turn\(conversation.turnCount == 1 ? "" : "s")"
         detailLabel.font = DS.Text.caption()
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -3182,6 +3330,31 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     func attachmentPayloads() -> [AgentImageAttachment] {
         attachments.map { AgentImageAttachment(mediaType: $0.mediaType, base64: $0.data.base64EncodedString()) }
+    }
+
+    /// Loads text into the field as if it had been typed — used to put a sent message back for
+    /// editing.
+    func setText(_ text: String) {
+        historyOffset = 0
+        draftBeforeRecall = nil
+        mentionPopup.hide()
+        textView.string = text
+        textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+        textDidChange(Notification(name: NSText.didChangeNotification))
+    }
+
+    /// Restores a sent message's images. Routed back through `addImageAttachment` rather than
+    /// pushed straight into `attachments`, so the strip, its chips, and the encoding all come from
+    /// the one tested path — an image already within the upload cap survives the round trip
+    /// unchanged.
+    func setAttachments(_ payloads: [AgentImageAttachment]) {
+        attachments.removeAll()
+        attachmentStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for payload in payloads {
+            guard let data = Data(base64Encoded: payload.base64), let image = NSImage(data: data) else { continue }
+            addImageAttachment(image)
+        }
+        updateStripSpace(animated: false)
     }
 
     private func removeAttachment(id: UUID) {
