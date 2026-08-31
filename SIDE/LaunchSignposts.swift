@@ -28,11 +28,22 @@ enum LaunchSignposts {
         lock.unlock()
         guard let (id, started) = entry else { return }
         os_signpost(.end, log: log, name: name, signpostID: id)
-        // Also printed in debug builds: Instruments is the right tool, but a number in the
-        // console is what actually gets looked at during day-to-day work.
-        #if DEBUG
-        let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
-        print(String(format: "[launch] %@: %.1f ms", "\(name)", elapsed))
-        #endif
+        // Printed when asked for, in *any* build configuration — not `#if DEBUG`.
+        //
+        // Debug-only reporting is how you end up quoting Debug numbers, which are not the
+        // numbers users experience: this app builds Debug with `-Onone` for its own sources.
+        // A launch claim has to be measurable in the configuration that ships, so the report
+        // is gated on a launch argument rather than on the build.
+        //
+        //     Side.app/Contents/MacOS/Side -SideLaunchReport YES
+        if reportingEnabled {
+            let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+            print(String(format: "[launch] %@: %.1f ms", "\(name)", elapsed))
+            fflush(stdout)
+        }
     }
+
+    /// Read once — `UserDefaults` lookups on every signpost would themselves show up in the
+    /// measurement.
+    private static let reportingEnabled = UserDefaults.standard.bool(forKey: "SideLaunchReport")
 }

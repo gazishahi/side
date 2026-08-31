@@ -23,11 +23,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             name: PersistenceFailureReporter.failureNotification, object: nil
         )
         LaunchSignposts.begin("firstFrame")
+        LaunchSignposts.begin("makeWindow")
         let window = makeWindow()
+        LaunchSignposts.end("makeWindow")
         windows.append(window)
         window.center()
+        LaunchSignposts.begin("orderFront")
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        LaunchSignposts.end("orderFront")
 
         // UI tests launch with `-SideUITesting YES` (which lands in UserDefaults' argument
         // domain). Restoring the developer's real last project would make a test run poke at

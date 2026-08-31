@@ -6,8 +6,10 @@
 > tasks to prep a single frame SwiftUI or AppKit frame render. That's the big
 > architectural thing. Easier said than done but that's what you need to do."
 
-Short answer: **yes, achievable, and now largely done** — but the measurement
-changed which half of the advice mattered most.
+Short answer: **achievable, and the user-visible half is done — but we did not
+actually follow the architecture he described.** The measurement both moved the
+bottleneck and made the gap between "the window paints immediately" and "the app
+is structured the way he means" precise. See the scorecard below.
 
 ## What was actually wrong
 
@@ -93,15 +95,62 @@ for a hitching one; deferring work that now costs 0–166ms is a genuine fix.
 **4. `LaunchSignposts`** — `os_signpost` intervals around `firstFrame` and
 `restoreSession`, so future claims are measured rather than asserted. The
 2026-08-30 audit flagged their absence as the reason no launch claim could be
-made. Debug builds also print the numbers to the console.
+made. Reporting is gated on `-SideLaunchReport YES` rather than the build configuration, so the shipping build is measurable — `#if DEBUG` reporting is how you end up quoting Debug numbers.
 
-## Results
+## Results (Release, measured)
 
-| | Before | After |
+Debug numbers were replaced with Release ones — the earlier figures came from an
+unoptimized build and were not claimable. Reporting is now gated on a launch
+argument rather than `#if DEBUG`, so the shipping configuration can be measured:
+
+```
+Side.app/Contents/MacOS/Side -SideLaunchReport YES
+```
+
+Three warm samples plus one with the probe cache cleared:
+
+| Interval | Warm | Cold probe |
 |---|---|---|
-| Blocking the first frame | ~520ms | **0ms** (deferred a run-loop turn) |
-| Cold open, project resolution | 520ms, 6 spawns | **166ms, 2 spawns** |
-| Cached reopen | 520ms, 6 spawns | **~0ms, 0 spawns** |
+| `makeWindow` (window + ShellViewController + `show(.make)`) | 107–115 ms | 106 ms |
+| `orderFront` (`makeKeyAndOrderFront` + `activate`) | 64–78 ms | 59 ms |
+| `firstFrame` (to the frame actually committed) | **216–228 ms** | 201 ms |
+| `restoreSession` (open the project) | **51 ms** | 92 ms |
+
+Before this work the same launch was roughly 220 ms of frame construction *plus*
+520 ms of blocking git — about 740 ms, with the window on screen and **blank** for
+the last 520 ms of it. The blank-window time is now zero, and the project lands
+~51 ms after the frame.
+
+The measurement also relocated the bottleneck. Project state is no longer the
+expensive part; the expensive part is now **building the frame itself** — 107 ms
+in `makeWindow` (which constructs `ShellViewController` and runs `show(.make)`,
+building Make's view tree) plus ~70 ms ordering the window front, plus roughly
+another 50 ms of AppKit's own first layout and Core Animation commit inside the
+run-loop turn.
+
+## Did we actually follow the advice? Partly — and the honest answer matters
+
+The advice was: *"At the earliest point in the lifecycle do non-main-actor-necessary
+tasks in tasks to prep a single frame render."* Scored precisely:
+
+| Claim | Status |
+|---|---|
+| "prep a single frame" | **Yes.** The first frame no longer waits on project state, and the state it renders is a real, shipping empty state rather than a skeleton. |
+| "at the earliest point in the lifecycle" | **No.** The work was *deferred to after* the frame, not *started earlier and overlapped with* AppKit's own startup. His shape pays `max(frame, restore)`; ours pays `frame + restore`. |
+| "in tasks" | **No.** `DispatchQueue.main.async` is a main-thread hop, not structured concurrency and not off-main. The restore still runs on the main thread — just after the frame instead of before it. |
+
+So the *user-visible* win is real and the *architecture* is not his. The 51–92 ms
+of `restoreSession` is time that would simply disappear under his design, because
+it would overlap the 220 ms of frame construction that is happening anyway.
+
+And the reason it can't move yet is the second half of his advice, not the first.
+`restoreSession` is main-thread because `ProjectContext`, `TrackStore`, and
+`AgentSessionStore` are all constructed synchronously; moving them off-main needs
+the two-phase async init described below. **The two pieces of advice are one
+piece of work**, and what shipped is the easy half of each: the frame ordering
+without the concurrency, and the isolation on one type without the actors.
+
+See `SIDE_CONCURRENCY_ADOPTION.md` for the same accounting on the concurrency half.
 
 ## What is deliberately *not* done
 
@@ -123,8 +172,16 @@ restore, and the no-project state is real and shipping — but three things rema
   not yet handle "no data yet" gracefully. Full frame-first rendering requires
   that every stage does.
 
-Also worth repeating: **these numbers are from a Debug build.** Measure Release
-before making any public claim.
+The remaining work, in the order the measurement argues for:
+
+1. **Two-phase async init** for `ProjectContext`/`TrackStore`/`AgentSessionStore`,
+   which is what would let the restore overlap frame construction instead of
+   following it. This is the piece that makes the architecture actually his.
+2. **`makeWindow`'s 107 ms** — now the single largest interval. `show(.make)`
+   builds Make's whole view tree before the first frame; much of it is not
+   visible in the empty state and could be deferred.
+3. **The pre-existing `TrackStore` data race** must be fixed before either,
+   since both add concurrency on top of it.
 
 ## The general lesson
 
