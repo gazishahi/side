@@ -114,6 +114,12 @@ final class AgentRunner {
     private var didReceiveProviderError = false
     /// Set by `stop()`, cleared when the user sends again — see `continueAfterTools`.
     private var isStopRequested = false
+    /// The most recent thing the user actually asked for, used to describe a checkpoint when the
+    /// model didn't narrate one.
+    private var lastUserMessage = ""
+    /// Shorter than this and a message is almost certainly a nudge rather than a description.
+    private static let minimumDescriptiveIntentLength = 20
+
 
     /// Bounds one send: the model can chain tools, but a loop that never stops asking for them
     /// shouldn't be able to run forever (or bill forever) without the user re-engaging.
@@ -244,7 +250,12 @@ final class AgentRunner {
         for attachment in attachments {
             if let data = Data(base64Encoded: attachment.base64) { appendEntry(.userImage(data)) }
         }
-        if !trimmed.isEmpty { appendEntry(.userText(trimmed)) }
+        if !trimmed.isEmpty {
+            appendEntry(.userText(trimmed))
+            // One line, trimmed to a length that reads as a description rather than a paragraph.
+            let oneLine = trimmed.replacingOccurrences(of: "\n", with: " ")
+            lastUserMessage = oneLine.count > 72 ? String(oneLine.prefix(72)) + "…" : oneLine
+        }
         runTurn(roundTrip: 0)
     }
 
@@ -462,8 +473,8 @@ final class AgentRunner {
         let root = rootProvider().path
         let baseline = batch.baselineDirtyPaths
         let knownChanged = batch.changedFilePaths
-        let message = batch.declaredIntent.trimmingCharacters(in: .whitespacesAndNewlines)
-        let commitMessage = message.isEmpty ? "Agent checkpoint" : String(message.prefix(72))
+        let described = Self.describedIntent(batch.declaredIntent, changedPaths: batch.changedFilePaths)
+        let commitMessage = described.isEmpty ? "Agent checkpoint" : String(described.prefix(72))
 
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Self.stageAndCommit(
@@ -497,6 +508,19 @@ final class AgentRunner {
         return commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root)
     }
 
+    /// The description a checkpoint is filed under. "no description" is the one thing a durable
+    /// record of a change must not be: in Review months later it is the only handle on which
+    /// checkpoint this was.
+    private nonisolated static func describedIntent(_ declared: String, changedPaths: Set<String>) -> String {
+        let trimmed = declared.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty else { return trimmed }
+        let names = changedPaths.map { ($0 as NSString).lastPathComponent }.sorted()
+        guard let first = names.first else { return "" }
+        return names.count == 1
+            ? "Edited \(first)"
+            : "Edited \(first) and \(names.count - 1) other file\(names.count == 2 ? "" : "s")"
+    }
+
     private func recordCheckpoint(_ outcome: CheckpointCommitOutcome?, batch: PendingToolBatch, sessionId: UUID) {
         guard let outcome else { return }
         // A failed commit is not a checkpoint. Recording one anyway is what produced a card
@@ -513,7 +537,8 @@ final class AgentRunner {
         }
 
         let checkpoint = Checkpoint(
-            trackKey: trackKey, agentSessionId: sessionId, declaredIntent: batch.declaredIntent,
+            trackKey: trackKey, agentSessionId: sessionId,
+            declaredIntent: Self.describedIntent(batch.declaredIntent, changedPaths: batch.changedFilePaths),
             changedFilePaths: changedFiles, commandsRun: batch.commandsRun,
             // Provider and model both come from the batch — captured together when the request
             // was made. Reading the provider from the live registry here (as this used to) could
@@ -864,7 +889,21 @@ final class AgentRunner {
         if !pendingAssistantText.isEmpty { content.append(.text(pendingAssistantText)) }
         // Captured before `pendingAssistantText` is cleared below — this is what a checkpoint
         // produced by this round's tool calls (if any) will use as its declared intent.
-        let declaredIntent = pendingAssistantText
+        // Falls back to what the *user* asked for when the model went straight to the tool call
+        // without narrating. `pendingAssistantText` alone produced checkpoints labelled "no
+        // description" — which is the one thing a durable record of a change must not be, since
+        // in Review months later the description is all there is to recognize it by. The user's
+        // own request is the truest statement of intent available, and often better prose than
+        // the model's preamble would have been.
+        let narrated = pendingAssistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // ...but only when the user actually said something descriptive. Half of what someone
+        // types to an agent mid-task is a nudge — "try now", "yes", "go ahead" — and a live test
+        // produced a checkpoint titled "Try now", which is accurate and useless. Below the
+        // threshold the description falls through to what the change *touched* instead, which
+        // is never eloquent but is always informative.
+        let declaredIntent = narrated.isEmpty
+            ? (lastUserMessage.count >= Self.minimumDescriptiveIntentLength ? lastUserMessage : "")
+            : narrated
         let toolCalls = pendingToolCalls
         // A tool_use block is only valid in history alongside its tool_result, so cancelled
         // turns drop the calls rather than persisting a dangling request the API would reject.
@@ -1113,6 +1152,13 @@ final class AgentRunner {
                 switch block {
                 case .text(let text):
                     appendEntry(turn.role == .user ? .userText(text) : .assistantText(text), at: turn.createdAt)
+                    if turn.role == .user {
+                        let oneLine = text.replacingOccurrences(of: "\n", with: " ")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !oneLine.isEmpty, !oneLine.hasPrefix("[Earlier conversation, compacted") {
+                            lastUserMessage = oneLine.count > 72 ? String(oneLine.prefix(72)) + "…" : oneLine
+                        }
+                    }
                 case .toolUse(_, let name, let input):
                     appendEntry(.toolCall(name: name, summary: Self.summarize(input: input)), at: turn.createdAt)
                 case .toolResult(_, let content, let isError):

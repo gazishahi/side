@@ -34,7 +34,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private let sessionPill = ChipButton(symbolName: nil, accessibilityLabel: "Model, mode, and context for this track")
     private let sessionPillGlass = DS.makeGlass(cornerRadius: 14)
     /// Changed-files pill, bottom-left above the composer — the session pill's opposite number.
-    private let changesPill = ChipButton(symbolName: "pencil.line", accessibilityLabel: "Files changed in this conversation")
+    // No symbol: the coloured +/− counts already say what this is, and a glyph beside them
+    // is one more thing competing for the glance.
+    private let changesPill = ChipButton(symbolName: nil, accessibilityLabel: "Files changed in this conversation")
     private let changesPillGlass = DS.makeGlass(cornerRadius: 14)
     /// The pending queued message, shown above the composer while a turn is running.
     private let queuedChip = ChipButton(symbolName: "clock", accessibilityLabel: "Queued message — click to edit")
@@ -880,9 +882,24 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         if !isEmpty {
             let added = counts.reduce(0) { $0 + $1.added }
             let removed = counts.reduce(0) { $0 + $1.removed }
-            let label = "\(counts.count) file\(counts.count == 1 ? "" : "s") +\(added) −\(removed)"
-            if changesPill.title != " \(label) " {
-                changesPill.setLabel(label, tint: .secondaryLabelColor)
+            let identity = "\(counts.count)|\(added)|\(removed)"
+            if changesPill.labelIdentity != identity {
+                // Green and red, matching the panel behind the pill and every diff in the app —
+                // the counts are the part worth reading at a glance, and a uniformly grey label
+                // makes them the part that reads last.
+                let label = NSMutableAttributedString(
+                    string: "\(counts.count) file\(counts.count == 1 ? "" : "s")  ",
+                    attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.secondaryLabelColor]
+                )
+                label.append(NSAttributedString(
+                    string: "+\(added)",
+                    attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.systemGreen]
+                ))
+                label.append(NSAttributedString(
+                    string: " −\(removed)",
+                    attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.systemRed]
+                ))
+                changesPill.setAttributedLabel(label, identity: identity)
             }
         }
         guard changesPill.isHidden != isEmpty else { return }
@@ -2818,6 +2835,24 @@ private final class ChipButton: NSButton {
     func setLabel(_ text: String, tint: NSColor = .secondaryLabelColor) {
         title = text.isEmpty ? "" : " \(text) "
         contentTintColor = tint
+    }
+
+    /// For a chip whose label is not one colour — the changed-files pill puts its added and
+    /// removed counts in green and red, the same way the panel behind it and every diff in the
+    /// app already do. `attributedTitle` rather than `contentTintColor`, which can only tint the
+    /// whole thing.
+    ///
+    /// `labelIdentity` is what callers compare against to avoid redundant updates: an
+    /// `NSAttributedString` doesn't compare usefully for that, and the pill is refreshed on
+    /// every phase change and usage notification.
+    private(set) var labelIdentity = ""
+
+    func setAttributedLabel(_ attributed: NSAttributedString, identity: String) {
+        labelIdentity = identity
+        let padded = NSMutableAttributedString(string: " ")
+        padded.append(attributed)
+        padded.append(NSAttributedString(string: " "))
+        attributedTitle = padded
     }
 
     /// The Liquid Glass press, in two halves. Press: the pill eases down to 93% and *stays*

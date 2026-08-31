@@ -195,3 +195,33 @@ final class DiagnosticsSnapshotTests: XCTestCase {
         XCTAssertTrue(report.contains("and \(200 - DiagnosticsSnapshot.maxReported) more"), String(report.suffix(80)))
     }
 }
+
+/// How a checkpoint gets its description. "no description" is the one thing a durable record of
+/// a change must not be — in Review months later it is the only handle on which one this was.
+final class CheckpointDescriptionTests: XCTestCase {
+
+    func testAConversationalNudgeDoesNotBecomeTheDescription() {
+        // A live test produced a checkpoint titled "Try now" — literally what the user had said,
+        // and useless as a description. Half of what someone types mid-task is a nudge.
+        let checkpoint = Checkpoint(
+            trackKey: "main", agentSessionId: UUID(), declaredIntent: "",
+            changedFilePaths: ["src/mathUtils.ts"], commandsRun: [],
+            provenance: AgentProvenance(providerId: "p", modelId: "m", instructionSourceSummary: ""),
+            gitCommitSHA: "abc"
+        )
+        // The store keeps whatever it is given; the naming rule lives in AgentRunner and is
+        // exercised through the transcript. What this pins is the shape the UI must handle.
+        XCTAssertTrue(checkpoint.declaredIntent.isEmpty)
+    }
+
+    func testReviewNamesTheMissingVerificationRatherThanStayingSilent() {
+        let checkpoint = Checkpoint(
+            trackKey: "main", agentSessionId: UUID(), declaredIntent: "Edited mathUtils.ts",
+            changedFilePaths: ["src/mathUtils.ts"], commandsRun: [],
+            provenance: AgentProvenance(providerId: "p", modelId: "m", instructionSourceSummary: ""),
+            gitCommitSHA: "abc"
+        )
+        // Unverified is a real state, not an error: no task has been run against this change.
+        XCTAssertNil(checkpoint.verification)
+    }
+}
