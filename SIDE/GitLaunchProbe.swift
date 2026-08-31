@@ -117,6 +117,8 @@ struct GitLaunchProbe: Codable, Equatable {
     // MARK: - Cache
 
     private static let defaultsKey = "SideGitLaunchProbeCache"
+    /// Cached project paths, least-recently-written first — the eviction order.
+    private static let defaultsOrderKey = "SideGitLaunchProbeCacheOrder"
     /// Bounded — this is a launch accelerator, not a record worth keeping forever.
     private static let maxCachedProjects = 24
 
@@ -129,10 +131,28 @@ struct GitLaunchProbe: Codable, Equatable {
     static func cache(_ probe: GitLaunchProbe, projectRoot: URL) {
         var raw = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: Data]) ?? [:]
         guard let data = try? JSONEncoder().encode(probe) else { return }
-        raw[projectRoot.standardizedFileURL.path] = data
-        if raw.count > maxCachedProjects {
-            for key in raw.keys.sorted().prefix(raw.count - maxCachedProjects) { raw.removeValue(forKey: key) }
+        let path = projectRoot.standardizedFileURL.path
+        raw[path] = data
+
+        // Evicted by recency, not by `keys.sorted()`.
+        //
+        // Alphabetical eviction dropped whichever project's path happened to sort lowest — which
+        // can be the entry being written this very instant, so caching a project could silently
+        // fail to cache it. It surfaced as a flaky test rather than a user report, because it
+        // needs a full cache to bite, but the failure it produces in the app is a launch that
+        // re-probes git every time for one unlucky project and nobody can see why.
+        var order = (UserDefaults.standard.array(forKey: defaultsOrderKey) as? [String]) ?? []
+        order.removeAll { $0 == path }
+        order.append(path)
+        // Anything in the dictionary the order list never saw (written by an older build) is
+        // oldest by definition, so it goes at the front rather than being kept forever.
+        let unordered = raw.keys.filter { !order.contains($0) }
+        order = unordered.sorted() + order
+        while order.count > maxCachedProjects, let oldest = order.first {
+            order.removeFirst()
+            raw.removeValue(forKey: oldest)
         }
         UserDefaults.standard.set(raw, forKey: defaultsKey)
+        UserDefaults.standard.set(order, forKey: defaultsOrderKey)
     }
 }

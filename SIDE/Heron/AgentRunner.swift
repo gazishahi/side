@@ -566,6 +566,18 @@ final class AgentRunner {
         // still awaiting a decision — so the jump is deferred until every card in the batch is
         // resolved.
         if let lastAppliedURL = batch.lastAppliedURL { bridge.onRevealFileRequested(lastAppliedURL) }
+        // The human's decisions are persisted *here*, before the checkpoint's git work — not
+        // after it, on the far side of `continueAfterTools`.
+        //
+        // That ordering lost every decision in a batch if Side closed during the commit. The git
+        // work runs off-main for up to fifteen seconds (see `createCheckpointIfNeeded`), and
+        // `pendingBatch` is already nil by then, so `teardown` found nothing to write: the session
+        // kept a tool_use with no tool_result, and the load-time repair filled it in with "Side
+        // closed before the user decided, so this never ran and nothing changed" — a sentence
+        // flatly contradicted by the checkpoint sitting in Review, and reported as a bug from
+        // exactly that symptom. What the user decided is true the moment they click it; no part of
+        // committing makes it more true, and nothing else in the turn depends on waiting.
+        let alreadyPersisted = persistToolResults(callOrder: batch.callOrder, resultsById: batch.resultsById, modelId: batch.modelId)
         // Checkpointing runs nine serial git subprocesses, three of which retry for up to five
         // seconds each with `Thread.sleep` — up to fifteen seconds of frozen UI on this
         // @MainActor class, and index-lock contention (the very thing the retry exists for) is
@@ -573,8 +585,23 @@ final class AgentRunner {
         // git work happens off-main and the loop resumes when it lands.
         createCheckpointIfNeeded(batch) { [weak self] in
             guard let self else { return }
-            self.continueAfterTools(callOrder: batch.callOrder, resultsById: batch.resultsById, modelId: batch.modelId, roundTrip: batch.roundTrip)
+            self.continueAfterTools(
+                callOrder: batch.callOrder, resultsById: batch.resultsById, modelId: batch.modelId,
+                roundTrip: batch.roundTrip, alreadyPersisted: alreadyPersisted
+            )
         }
+    }
+
+    /// Writes one turn holding every tool result for a batch, in the order the model asked for
+    /// them. Returns false — writing nothing — when a result is missing: a tool_use with no
+    /// tool_result is a protocol violation the API rejects outright, and a *partial* results turn
+    /// would wedge the conversation permanently rather than merely leave it incomplete.
+    @discardableResult
+    private func persistToolResults(callOrder: [String], resultsById: [String: AgentContentBlock], modelId: String) -> Bool {
+        let blocks = callOrder.compactMap { resultsById[$0] }
+        guard blocks.count == callOrder.count else { return false }
+        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: activeProviderId, modelId: modelId)
+        return true
     }
 
     /// A durable record of what this batch actually did, backed by a real git commit on the
@@ -1314,13 +1341,16 @@ final class AgentRunner {
         }
     }
 
-    private func continueAfterTools(callOrder: [String], resultsById: [String: AgentContentBlock], modelId: String, roundTrip: Int) {
+    private func continueAfterTools(
+        callOrder: [String], resultsById: [String: AgentContentBlock], modelId: String, roundTrip: Int,
+        alreadyPersisted: Bool = false
+    ) {
         let blocks = callOrder.compactMap { resultsById[$0] }
         // Results are still persisted before stopping: the model asked for these tools and they
         // ran, so dropping the results would leave a tool_use with no tool_result — the exact
         // shape the API rejects, which would wedge the conversation permanently.
         if isStopRequested, blocks.count == callOrder.count {
-            sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: activeProviderId, modelId: modelId)
+            if !alreadyPersisted { persistToolResults(callOrder: callOrder, resultsById: resultsById, modelId: modelId) }
             appendEntry(.meta("Stopped. The tools that were already running finished; nothing new was sent."))
             finishRun(completed: false)
             return
@@ -1332,7 +1362,7 @@ final class AgentRunner {
             finishRun(completed: false)
             return
         }
-        sessionStore.appendTurn(AgentTurn(role: .user, content: blocks), trackKey: trackKey, providerId: activeProviderId, modelId: modelId)
+        if !alreadyPersisted { persistToolResults(callOrder: callOrder, resultsById: resultsById, modelId: modelId) }
         runTurn(roundTrip: roundTrip + 1)
     }
 

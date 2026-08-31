@@ -105,4 +105,29 @@ final class GitLaunchProbeTests: XCTestCase {
     func testAnUncachedProjectReportsNothingRatherThanGuessing() {
         XCTAssertNil(GitLaunchProbe.cached(projectRoot: root))
     }
+
+    func testAFullCacheNeverEvictsTheEntryBeingWritten() {
+        makeRepo()
+        let probe = GitLaunchProbe.probe(projectRoot: root)
+        // Fill well past the cap with paths that sort *after* this test's own, which is what made
+        // alphabetical eviction drop the fresh entry instead of the stale ones.
+        for index in 0..<40 {
+            GitLaunchProbe.cache(probe, projectRoot: URL(fileURLWithPath: "/tmp/zzz-filler-\(index)"))
+        }
+        GitLaunchProbe.cache(probe, projectRoot: root)
+        XCTAssertEqual(GitLaunchProbe.cached(projectRoot: root), probe)
+    }
+
+    func testTheCacheStaysBounded() {
+        makeRepo()
+        let probe = GitLaunchProbe.probe(projectRoot: root)
+        var survivors = 0
+        let paths = (0..<40).map { URL(fileURLWithPath: "/tmp/bounded-\(UUID().uuidString)-\($0)") }
+        for path in paths { GitLaunchProbe.cache(probe, projectRoot: path) }
+        for path in paths where GitLaunchProbe.cached(projectRoot: path) != nil { survivors += 1 }
+        // Unbounded growth in UserDefaults is the failure the cap exists to prevent; the newest
+        // writes are the ones that must survive it.
+        XCTAssertLessThanOrEqual(survivors, 24)
+        XCTAssertNotNil(GitLaunchProbe.cached(projectRoot: paths[paths.count - 1]))
+    }
 }

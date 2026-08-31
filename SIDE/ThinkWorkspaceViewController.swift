@@ -228,6 +228,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // Mirror of the session pill, on the composer's leading corner.
             changesPill.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs),
             changesPill.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
+            // Holds the band's height whether or not the pill is showing, so the editing chip
+            // beside it lands on the same line in a conversation that hasn't changed any files.
+            changesPill.heightAnchor.constraint(equalToConstant: 24),
             changesPillGlass.topAnchor.constraint(equalTo: changesPill.topAnchor, constant: -2),
             changesPillGlass.bottomAnchor.constraint(equalTo: changesPill.bottomAnchor, constant: 2),
             changesPillGlass.leadingAnchor.constraint(equalTo: changesPill.leadingAnchor, constant: -DS.Spacing.s),
@@ -240,9 +243,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             queuedChipGlass.bottomAnchor.constraint(equalTo: queuedChip.bottomAnchor, constant: 2),
             queuedChipGlass.leadingAnchor.constraint(equalTo: queuedChip.leadingAnchor, constant: -DS.Spacing.s),
             queuedChipGlass.trailingAnchor.constraint(equalTo: queuedChip.trailingAnchor, constant: DS.Spacing.s),
-            editingChip.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs),
+            // Beside the changes pill rather than on a row of its own: they're both one-line
+            // status capsules on the same band above the composer, and stacking them pushed the
+            // transcript up by a whole row for a state that lasts a few seconds.
+            editingChip.leadingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.xl),
             editingChip.trailingAnchor.constraint(lessThanOrEqualTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
-            editingChip.bottomAnchor.constraint(equalTo: changesPill.topAnchor, constant: -DS.Spacing.s),
+            editingChip.centerYAnchor.constraint(equalTo: changesPill.centerYAnchor),
             editingChipGlass.topAnchor.constraint(equalTo: editingChip.topAnchor, constant: -2),
             editingChipGlass.bottomAnchor.constraint(equalTo: editingChip.bottomAnchor, constant: 2),
             editingChipGlass.leadingAnchor.constraint(equalTo: editingChip.leadingAnchor, constant: -DS.Spacing.s),
@@ -1161,8 +1167,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case .commandProposal(let presentation):
             guard let card = entryViews[index] as? CommandProposalView, let resolution = presentation.resolution else { return }
             Self.showCommandResolution(card, resolution)
+        case .meta(let text):
+            // Checkpoint markers are rewritten once the agent describes what it did, so a meta
+            // line is not write-once. Without this the data updated and the label didn't: Review
+            // showed the agent's summary while the transcript still showed the request that
+            // prompted it, and the two disagreed until the next full rebuild.
+            (entryViews[index] as? NSTextField)?.stringValue = text
         default:
-            break // Only streamed assistant text and proposal resolutions mutate in place.
+            break // Everything else is written once and never revised.
         }
         scrollToBottom()
     }
