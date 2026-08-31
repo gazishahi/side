@@ -71,14 +71,24 @@ struct ProposalPresentation {
     /// `ProposedEdit.stripContent()`) once it's no longer needed, so this entry doesn't hold a
     /// duplicate old-and-new copy of the file for the rest of the session.
     var edit: ProposedEdit
-    let diffText: String
+    /// `var` because a streaming preview's body is replaced as the model writes, and then once
+    /// more by the real unified diff when the call completes.
+    var diffText: String
     var resolution: Resolution?
+    /// True while the model is still writing this tool call's arguments. The card renders, but
+    /// offers no decision: what's on screen is a preview of text arriving, not a validated
+    /// proposal, and Apply would be asking the user to approve half a sentence.
+    var isStreaming: Bool = false
 
     enum Resolution {
         case applied
         case rejected
         case staleBase
         case writeFailed(String)
+        /// The call finished but the executor refused it — `old_string` matched nothing, the
+        /// content was identical, the path wasn't writable. The preview card stays as the record
+        /// of what was attempted rather than vanishing and leaving the transcript unexplained.
+        case notProposed(String)
 
         init(_ outcome: ProposedEditOutcome) {
             switch outcome {
@@ -95,6 +105,7 @@ struct ProposalPresentation {
             case .rejected: return ("Rejected", .neutral)
             case .staleBase: return ("File changed — not applied", .warning)
             case .writeFailed(let message): return ("Failed: \(message)", .failure)
+            case .notProposed(let message): return (message, .warning)
             }
         }
     }

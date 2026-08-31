@@ -1058,9 +1058,20 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             if wasAtBottom { transcriptScroll.reflectScrolledClipView(clip) }
             return  // scrollToBottom below would snap; the animated follow above replaces it.
         case .proposal(let presentation):
-            guard let card = entryViews[index] as? ProposedEditView, let resolution = presentation.resolution else { return }
-            let label = resolution.label
-            card.showResolution(label.text, color: Self.color(for: label.color))
+            guard let card = entryViews[index] as? ProposedEditView else { return }
+            // Three ways a proposal card changes after it appears: another fragment of a
+            // streaming preview arrived, the preview became a real validated proposal, or a
+            // decision was made about one.
+            card.update(edit: presentation.edit, diffText: presentation.diffText, isStreaming: presentation.isStreaming)
+            if let resolution = presentation.resolution {
+                let label = resolution.label
+                card.showResolution(label.text, color: Self.color(for: label.color))
+            } else if !presentation.isStreaming {
+                let proposalId = entry.id
+                card.onApply = { [weak self] in self?.runner?.resolve(proposalId: proposalId, decision: .apply) }
+                card.onReject = { [weak self] in self?.runner?.resolve(proposalId: proposalId, decision: .reject) }
+                card.enableDecision()
+            }
         case .commandProposal(let presentation):
             guard let card = entryViews[index] as? CommandProposalView, let resolution = presentation.resolution else { return }
             Self.showCommandResolution(card, resolution)
@@ -1099,8 +1110,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             let bubble = TextBlockView(style: .error, body: text, maxBubbleWidth: 620)
             return BubbleRowView(bubble: bubble, alignRight: false)
         case .proposal(let presentation):
-            let card = ProposedEditView(edit: presentation.edit, diffText: presentation.diffText)
-            if let resolution = presentation.resolution {
+            let card = ProposedEditView(edit: presentation.edit, diffText: presentation.diffText, isStreaming: presentation.isStreaming)
+            if presentation.isStreaming {
+                // Nothing to wire up: the buttons are hidden until the arguments land.
+            } else if let resolution = presentation.resolution {
                 let label = resolution.label
                 card.showResolution(label.text, color: Self.color(for: label.color))
             } else {

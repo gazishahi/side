@@ -95,6 +95,21 @@ final class AgentRunner {
     private var streamTask: Task<Void, Never>?
     private var pendingAssistantText = ""
     private var pendingToolCalls: [(id: String, name: String, partialJSON: String)] = []
+    /// Live preview cards for edit tool calls whose arguments are still streaming, keyed by
+    /// tool_use id. The entry each one points at is a real `.proposal` entry with `isStreaming`
+    /// set, so when the call completes the executor's validated proposal takes the *same* slot —
+    /// the card fills in rather than a second card appearing below a stale preview.
+    private var editPreviews: [String: EditPreviewState] = [:]
+
+    private struct EditPreviewState {
+        let entryIndex: Int
+        let url: URL
+        let isNewFile: Bool
+        /// Throttle: the extractor rescans the whole accumulated fragment, and the transcript
+        /// relays out on every update. Twelve or so refreshes a second reads as continuous.
+        var lastRenderedAt: Date
+        var lastBody: String
+    }
     /// Index into `entries` of the assistant block currently receiving streamed deltas, so
     /// tokens append into one growing entry instead of one entry per delta.
     private var streamingEntryIndex: Int?
@@ -112,6 +127,10 @@ final class AgentRunner {
     /// A provider-level error (bad key, rate limit, overloaded) already surfaced as an entry this
     /// turn — the turn must not then report success.
     private var didReceiveProviderError = false
+    /// The most recent thing the *agent* said, kept past the point `pendingAssistantText` is
+    /// cleared so a checkpoint can be renamed from it — a description of what was done is a far
+    /// better handle in Review than a restatement of what was asked for.
+    private var lastAssistantSummary = ""
     /// Set by `stop()`, cleared when the user sends again — see `continueAfterTools`.
     private var isStopRequested = false
     /// The most recent thing the user actually asked for, used to describe a checkpoint when the
@@ -779,6 +798,7 @@ final class AgentRunner {
         armStallWatchdog()
         pendingAssistantText = ""
         pendingToolCalls = []
+        editPreviews = [:]
         streamingEntryIndex = nil
         didReceiveMessageEnd = false
         lastStopReason = nil
@@ -862,9 +882,16 @@ final class AgentRunner {
         case .toolUseInputDelta(let id, let partialJSON):
             if let index = pendingToolCalls.firstIndex(where: { $0.id == id }) {
                 pendingToolCalls[index].partialJSON += partialJSON
+                refreshEditPreview(for: pendingToolCalls[index], force: false)
             }
         case .toolUseEnd(let id):
             guard let call = pendingToolCalls.first(where: { $0.id == id }) else { return }
+            // The final fragment usually completes the body, and the throttle above may have
+            // skipped it — so render once more unconditionally before the executor takes over.
+            refreshEditPreview(for: call, force: true)
+            // A preview card already names the file and shows the text arriving into it; the
+            // tool line directly above it would be a second, worse rendering of the same call.
+            guard editPreviews[id] == nil else { return }
             appendEntry(.toolCall(name: call.name, summary: Self.summarize(argumentsJSON: call.partialJSON)))
         case .error(let error):
             appendEntry(.failure(error.message))
@@ -891,6 +918,79 @@ final class AgentRunner {
         }
     }
 
+    // MARK: - Streaming edit previews
+
+    /// Renders (or updates) the live card for an edit tool call whose arguments are still
+    /// arriving. See `StreamingEditPreview` for why this shows text rather than a diff.
+    ///
+    /// The card is a genuine `.proposal` entry from the first frame, flagged `isStreaming`, so
+    /// when the executor's validated proposal lands it occupies this same slot and the card simply
+    /// fills in — rather than the preview being deleted and a second card appearing, which would
+    /// make a multi-file batch flicker through twice as many arrivals as there were edits.
+    private func refreshEditPreview(for call: (id: String, name: String, partialJSON: String), force: Bool) {
+        guard modeProvider().scope.allowsWrites else { return }
+        guard let draft = StreamingEditPreview.draft(toolName: call.name, partialJSON: call.partialJSON) else { return }
+
+        if var state = editPreviews[call.id] {
+            guard state.lastBody != draft.body else { return }
+            guard force || Date().timeIntervalSince(state.lastRenderedAt) >= Self.editPreviewInterval else { return }
+            state.lastBody = draft.body
+            state.lastRenderedAt = Date()
+            editPreviews[call.id] = state
+            guard entries.indices.contains(state.entryIndex),
+                  case .proposal(var presentation) = entries[state.entryIndex].kind, presentation.isStreaming else { return }
+            presentation.edit.proposedContent = draft.body
+            presentation.diffText = StreamingEditPreview.previewDiffText(body: draft.body, isNewFile: state.isNewFile)
+            updateEntry(at: state.entryIndex, .proposal(presentation))
+            return
+        }
+
+        // First frame: the path has finished arriving, so the one fact that decides whether the
+        // user cares about this edit is now knowable. A path the project won't accept gets no
+        // preview at all — the executor's refusal is the honest rendering of that.
+        let root = rootProvider()
+        guard let url = ProjectFileAccess.resolveInsideProject(path: draft.path, root: root),
+              ProjectFileAccess.isWritable(url, root: root) else { return }
+        let isNewFile = !FileManager.default.fileExists(atPath: url.path)
+        let edit = ProposedEdit(
+            toolUseId: call.id, url: url, relativePath: Self.relativePath(of: url, root: root),
+            baseContent: "", proposedContent: draft.body, isNewFile: isNewFile
+        )
+        let presentation = ProposalPresentation(
+            edit: edit,
+            diffText: StreamingEditPreview.previewDiffText(body: draft.body, isNewFile: isNewFile),
+            resolution: nil,
+            isStreaming: true
+        )
+        let index = appendEntry(.proposal(presentation))
+        editPreviews[call.id] = EditPreviewState(
+            entryIndex: index, url: url, isNewFile: isNewFile,
+            lastRenderedAt: Date(), lastBody: draft.body
+        )
+    }
+
+    private func abandonStreamingPreviews(_ reason: String) {
+        for (_, state) in editPreviews {
+            guard entries.indices.contains(state.entryIndex),
+                  case .proposal(var presentation) = entries[state.entryIndex].kind, presentation.isStreaming else { continue }
+            presentation.isStreaming = false
+            presentation.resolution = .notProposed(reason)
+            presentation.edit.stripContent()
+            updateEntry(at: state.entryIndex, .proposal(presentation))
+        }
+        editPreviews = [:]
+    }
+
+    /// Twelve refreshes a second: fast enough to read as continuous text arriving, slow enough
+    /// that a 3,000-line `write_file` doesn't relayout the transcript once per token.
+    private static let editPreviewInterval: TimeInterval = 0.08
+
+    private static func relativePath(of url: URL, root: URL) -> String {
+        let prefix = root.standardizedFileURL.path + "/"
+        let path = url.standardizedFileURL.path
+        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : url.lastPathComponent
+    }
+
     private func finishModelTurn(transportError: Error?, modelId: String, roundTrip: Int) {
         stopStallWatchdog()
         streamingEntryIndex = nil
@@ -908,6 +1008,8 @@ final class AgentRunner {
         // own request is the truest statement of intent available, and often better prose than
         // the model's preamble would have been.
         let narrated = pendingAssistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Held for `describeCheckpointFromAgentSummary`, which runs after the clear below.
+        if !narrated.isEmpty { lastAssistantSummary = narrated }
         // ...but only when the user actually said something descriptive. Half of what someone
         // types to an agent mid-task is a nudge — "try now", "yes", "go ahead" — and a live test
         // produced a checkpoint titled "Try now", which is accurate and useless. Below the
@@ -930,6 +1032,10 @@ final class AgentRunner {
         }
         pendingAssistantText = ""
         pendingToolCalls = []
+        // A preview whose call will never run — the turn was stopped, or the transport died
+        // mid-write — must stop looking like something about to happen. Left alone it would sit
+        // in the transcript forever as a card with no diff and no buttons.
+        if !willRunTools { abandonStreamingPreviews("Interrupted before this edit was proposed.") }
 
         if let transportError {
             // handleStall() already fully handled this: it appended the "no response" failure
@@ -1033,7 +1139,19 @@ final class AgentRunner {
         for outcome in outcomes {
             switch outcome.result {
             case .completed(let output, let isError):
-                appendEntry(.toolResult(text: isError ? "⚠︎ \(outcome.name): \(String(output.prefix(140)))" : "✓ \(outcome.name) — \(Self.describeResultSize(output))", isError: isError))
+                // An edit tool that came back `.completed` was refused rather than proposed. If a
+                // preview card is on screen for it, it says so there — a card that just stops
+                // updating and offers no buttons is the transcript refusing to explain itself.
+                if isError, let state = editPreviews.removeValue(forKey: outcome.id),
+                   entries.indices.contains(state.entryIndex),
+                   case .proposal(var presentation) = entries[state.entryIndex].kind, presentation.isStreaming {
+                    presentation.isStreaming = false
+                    presentation.resolution = .notProposed(String(output.prefix(160)))
+                    presentation.edit.stripContent()
+                    updateEntry(at: state.entryIndex, .proposal(presentation))
+                } else {
+                    appendEntry(.toolResult(text: isError ? "⚠︎ \(outcome.name): \(String(output.prefix(140)))" : "✓ \(outcome.name) — \(Self.describeResultSize(output))", isError: isError))
+                }
                 resultsById[outcome.id] = Self.toolResult(toolUseId: outcome.id, content: output, isError: isError)
             case .proposal(let edit):
                 var diffText = precomputedDiffs[edit.toolUseId]
@@ -1047,7 +1165,17 @@ final class AgentRunner {
                     let lines = edit.proposedContent.components(separatedBy: "\n")
                     diffText = "@@ -0,0 +\(lines.isEmpty ? 0 : 1),\(lines.count) @@\n" + lines.map { "+" + $0 }.joined(separator: "\n")
                 }
-                let editIndex = appendEntry(.proposal(ProposalPresentation(edit: edit, diffText: diffText, resolution: nil)))
+                // The preview card for this call, if one is on screen, becomes the real card —
+                // same slot, same view, the placeholder body replaced by the validated diff.
+                let presentation = ProposalPresentation(edit: edit, diffText: diffText, resolution: nil)
+                let editIndex: Int
+                if let state = editPreviews.removeValue(forKey: edit.toolUseId), entries.indices.contains(state.entryIndex),
+                   case .proposal(let existing) = entries[state.entryIndex].kind, existing.isStreaming {
+                    updateEntry(at: state.entryIndex, .proposal(presentation))
+                    editIndex = state.entryIndex
+                } else {
+                    editIndex = appendEntry(.proposal(presentation))
+                }
                 unresolvedToolUseIds.insert(edit.toolUseId)
                 // `.full` autonomy applies edits without a click. Deliberately still routed
                 // through the same `resolveEditProposal` the button calls, so an auto-applied
@@ -1120,7 +1248,11 @@ final class AgentRunner {
     /// a window where it has no description; this replaces it once something better exists.
     private func describeCheckpointFromAgentSummary() {
         guard let id = checkpointAwaitingDescription else { return }
-        let summary = pendingAssistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // `lastAssistantSummary`, not `pendingAssistantText` — the latter is cleared inside
+        // `finishModelTurn` before any path that reaches here, so reading it found an empty
+        // string every time and the upgrade silently never happened. A live test caught it:
+        // checkpoints kept the user's request even after the agent had described the change.
+        let summary = lastAssistantSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         checkpointAwaitingDescription = nil
         guard !summary.isEmpty else { return }
         let oneLine = summary.replacingOccurrences(of: "\n", with: " ")
