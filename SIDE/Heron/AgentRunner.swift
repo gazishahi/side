@@ -1045,10 +1045,12 @@ final class AgentRunner {
 
     // MARK: - Transcript
 
+    /// `at` is passed only when rehydrating, where the real time is the persisted turn's, not
+    /// now — see `RunTranscriptEntry.createdAt`.
     @discardableResult
-    private func appendEntry(_ kind: RunTranscriptEntry.Kind, resetStreaming: Bool = true) -> Int {
+    private func appendEntry(_ kind: RunTranscriptEntry.Kind, resetStreaming: Bool = true, at date: Date = Date()) -> Int {
         if resetStreaming { streamingEntryIndex = nil }
-        entries.append(RunTranscriptEntry(kind: kind))
+        entries.append(RunTranscriptEntry(kind: kind, createdAt: date))
         let index = entries.count - 1
         notify(.appended(index))
         return index
@@ -1075,16 +1077,18 @@ final class AgentRunner {
         // states, not chrome that every conversation carries forever.
         guard let session = sessionStore.session(forTrackKey: trackKey) else { return }
         for turn in session.turns {
+            // The turn's own persisted timestamp, so a reloaded transcript reports the elapsed
+            // times that actually happened rather than the instant of the reload.
             for block in turn.content {
                 switch block {
                 case .text(let text):
-                    appendEntry(turn.role == .user ? .userText(text) : .assistantText(text))
+                    appendEntry(turn.role == .user ? .userText(text) : .assistantText(text), at: turn.createdAt)
                 case .toolUse(_, let name, let input):
-                    appendEntry(.toolCall(name: name, summary: Self.summarize(input: input)))
+                    appendEntry(.toolCall(name: name, summary: Self.summarize(input: input)), at: turn.createdAt)
                 case .toolResult(_, let content, let isError):
-                    appendEntry(.toolResult(text: isError ? "⚠︎ \(content.prefix(140))" : "✓ \(Self.describeResultSize(content))", isError: isError))
+                    appendEntry(.toolResult(text: isError ? "⚠︎ \(content.prefix(140))" : "✓ \(Self.describeResultSize(content))", isError: isError), at: turn.createdAt)
                 case .image(_, let base64):
-                    if let data = Data(base64Encoded: base64) { appendEntry(.userImage(data)) }
+                    if let data = Data(base64Encoded: base64) { appendEntry(.userImage(data), at: turn.createdAt) }
                 }
             }
         }

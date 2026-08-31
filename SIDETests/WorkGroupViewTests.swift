@@ -92,4 +92,27 @@ final class WorkGroupViewTests: XCTestCase {
         XCTAssertTrue(label.contains("1m 35s"), label)
         XCTAssertTrue(label.contains("Worked for"), label)
     }
+
+    func testAReloadedGroupReportsTheTimeItActuallyTook() {
+        // The bug: RunTranscriptEntry.createdAt defaulted to Date() at construction, and
+        // rehydration constructs fresh entries — so a group that really took seven seconds
+        // reported one, because both its start and end were stamped at the moment of the
+        // reload. Rehydration now passes the persisted turn's timestamp, and finish(at:) takes
+        // the last entry's rather than "now".
+        let started = Date().addingTimeInterval(-3600)      // an hour ago
+        let group = WorkGroupView(startedAt: started)
+        let label = NSTextField(labelWithString: "→ read_file")
+        group.addLine(label, isStep: true, at: started.addingTimeInterval(7))
+        group.finish(at: started.addingTimeInterval(7))
+        let reported = group.accessibilityLabel() ?? ""
+        XCTAssertTrue(reported.contains("7s"), reported)
+        // And emphatically not an hour, which is what finishing at "now" would have produced.
+        XCTAssertFalse(reported.contains("m "), reported)
+    }
+
+    func testFinishingBeforeTheStartCannotProduceANegativeDuration() {
+        let group = WorkGroupView(startedAt: Date())
+        group.finish(at: Date().addingTimeInterval(-500))
+        XCTAssertTrue((group.accessibilityLabel() ?? "").contains("0s"), group.accessibilityLabel() ?? "")
+    }
 }

@@ -7,9 +7,21 @@ import Foundation
 /// baked into the data.
 struct RunTranscriptEntry: Identifiable {
     let id = UUID()
-    /// When this entry appeared — feeds the "Worked Ns" header on grouped tool activity.
-    let createdAt = Date()
+    /// When this entry actually happened — feeds the "Worked for Ns" header on grouped tool
+    /// activity.
+    ///
+    /// Explicitly settable, and that is the whole point: it used to default to `Date()` at
+    /// construction, and `hydrateFromSession` constructs fresh entries when a conversation is
+    /// reloaded. So every historical entry was stamped with the moment of the *reload*, and a
+    /// group that really took seven seconds reported one — the number was truthful only inside
+    /// the session that produced it. Rehydration now passes the persisted turn's own timestamp.
+    let createdAt: Date
     var kind: Kind
+
+    init(kind: Kind, createdAt: Date = Date()) {
+        self.kind = kind
+        self.createdAt = createdAt
+    }
 
     enum Kind {
         case meta(String)

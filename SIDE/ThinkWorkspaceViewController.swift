@@ -784,7 +784,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         for (index, entry) in (runner?.entries ?? []).enumerated() {
             appendRendered(entry, isFirst: index == 0)
         }
-        currentWorkGroup?.finish()
+        // Finished at the last entry's own timestamp, not now — this is the rehydration path.
+        currentWorkGroup?.finish(at: (runner?.entries.last?.createdAt) ?? Date())
         currentWorkGroup = nil
         emptyStateLabel.isHidden = !(runner?.entries.isEmpty ?? true)
         updateSendButton()
@@ -1608,9 +1609,11 @@ final class WorkGroupView: NSView {
         refreshHeader()
     }
 
-    func finish() {
+    /// `at` matters when rehydrating: finishing "now" against a `startedAt` from last week
+    /// would report a duration of days. Live callers use the default.
+    func finish(at date: Date = Date()) {
         guard !finished else { return }
-        finishedAt = Date()
+        finishedAt = max(date, startedAt)
         timer?.invalidate()
         timer = nil
         refreshHeader()
