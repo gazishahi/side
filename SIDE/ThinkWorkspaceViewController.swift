@@ -909,10 +909,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
             return BubbleRowView(bubble: bubble, alignRight: false)
         case .toolCall(let name, let summary):
-            // System text: these are status lines in a chat, not terminal output.
-            return makeLabel("→ \(name)\(summary)", font: DS.Text.caption(), color: .secondaryLabelColor)
+            // System text, not terminal output — and its paths are live.
+            return makeToolLine("→ \(name)\(summary)", color: .secondaryLabelColor)
         case .toolResult(let text, let isError):
-            return makeLabel(text, font: DS.Text.caption(), color: isError ? .systemOrange : .secondaryLabelColor)
+            return makeToolLine(text, color: isError ? .systemOrange : .secondaryLabelColor)
         case .failure(let text):
             let bubble = TextBlockView(style: .error, body: text, maxBubbleWidth: 620)
             return BubbleRowView(bubble: bubble, alignRight: false)
@@ -971,6 +971,22 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// once a project exists.
     private func appendLocalNotice(_ text: String) {
         addBlock(makeLabel(text, font: DS.Text.control(), color: .tertiaryLabelColor), topSpacing: transcriptStack.arrangedSubviews.isEmpty ? 0 : 8)
+    }
+
+    /// A tool-activity line whose file paths are clickable.
+    ///
+    /// These lines are where the agent says what it *did* — "→ read_file path: src/x.ts" — so
+    /// the path in them is the most obviously clickable thing in the transcript, and it wasn't.
+    /// Bubbles already linkify paths; this brings the same treatment to the lines inside a
+    /// Worked group.
+    private func makeToolLine(_ text: String, color: NSColor) -> NSView {
+        let view = LinkedTextLine()
+        view.configure(
+            text: text, font: DS.Text.caption(), color: color,
+            existingPath: { [weak self] path in self?.mentionedFileExists(path) ?? false }
+        )
+        view.onPathClicked = { [weak self] path in self?.openMentionedFile(path) }
+        return view
     }
 
     private func makeLabel(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
@@ -1367,52 +1383,148 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
 /// treatment: the work is there for whoever wants it, and one quiet line for everyone else.
 /// Lines are added as they happen; the header ticks while the run is live and settles on the
 /// final duration when it finishes.
+/// One line of text whose file paths are clickable, sized to its content.
+///
+/// An `NSTextView` rather than an `NSTextField` for the same reason the bubbles use one: it
+/// supports real `.link` attributes, so AppKit supplies the hit-testing and the cursor instead
+/// of this having to hand-roll glyph geometry.
+private final class LinkedTextLine: NSView, NSTextViewDelegate {
+    var onPathClicked: ((String) -> Void)?
+    private let textView = NSTextView()
+    private var widthConstraint: NSLayoutConstraint!
+    private var heightConstraint: NSLayoutConstraint!
+
+    /// Same shape rule the bubbles use: something/with/a/slash ending in an extension.
+    private static let pathPattern = try? NSRegularExpression(
+        pattern: #"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,8}"#
+    )
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.delegate = self
+        textView.linkTextAttributes = [.cursor: NSCursor.pointingHand]
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(textView)
+        widthConstraint = textView.widthAnchor.constraint(equalToConstant: 10)
+        heightConstraint = textView.heightAnchor.constraint(equalToConstant: 10)
+        NSLayoutConstraint.activate([
+            textView.topAnchor.constraint(equalTo: topAnchor),
+            textView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            textView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            textView.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            widthConstraint, heightConstraint,
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(text: String, font: NSFont, color: NSColor, existingPath: (String) -> Bool) {
+        let rendered = NSMutableAttributedString(
+            string: text, attributes: [.font: font, .foregroundColor: color]
+        )
+        if let regex = Self.pathPattern {
+            let ns = text as NSString
+            for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+                let path = ns.substring(with: match.range)
+                // Existence-checked, so prose that merely looks path-shaped stays prose — the
+                // same rule the bubbles apply.
+                guard existingPath(path) else { continue }
+                let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+                guard let url = URL(string: "side-mention://\(encoded)") else { continue }
+                rendered.addAttributes([
+                    .link: url,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .foregroundColor: NSColor.controlAccentColor,
+                ], range: match.range)
+            }
+        }
+        textView.textStorage?.setAttributedString(rendered)
+        let cap: CGFloat = 620
+        let bounding = rendered.boundingRect(
+            with: NSSize(width: cap, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        widthConstraint.constant = max(10, min(ceil(bounding.width) + 2, cap))
+        heightConstraint.constant = max(10, ceil(bounding.height) + 1)
+    }
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL, url.scheme == "side-mention" else { return false }
+        let path = String(url.absoluteString.dropFirst("side-mention://".count)).removingPercentEncoding ?? ""
+        guard !path.isEmpty else { return false }
+        onPathClicked?(path)
+        return true
+    }
+}
+
 private final class WorkGroupView: NSView {
-    private let header = NSButton()
+    /// A chevron that *rotates*, and a label that never moves.
+    ///
+    /// The first version swapped `chevron.right` for `chevron.down` on an NSButton with
+    /// `imagePosition: .imageLeading`. Those two symbols have different widths, so the title
+    /// shifted sideways every time the group was toggled — and a swap is not an animation, so
+    /// the chevron itself just popped. A fixed-size image view whose layer rotates fixes both.
+    private let chevron = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
     private let content = NSStackView()
+    /// Zero while collapsed. Hiding `content` was not enough: it is positioned by explicit
+    /// constraints rather than as an arranged subview, so a hidden stack still contributed its
+    /// intrinsic height and left a tall empty band between messages — the "massive gap".
+    private var contentHeight: NSLayoutConstraint!
     private let startedAt: Date
-    private var lastLineAt: Date
+    private var finishedAt: Date?
     private var stepCount = 0
-    private var finished = false
     private var expanded = false
     private var timer: Timer?
+    private var finished: Bool { finishedAt != nil }
 
     init(startedAt: Date) {
         self.startedAt = startedAt
-        self.lastLineAt = startedAt
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        header.isBordered = false
-        header.font = DS.Text.caption(.medium)
-        header.contentTintColor = .secondaryLabelColor
-        header.imagePosition = .imageLeading
-        header.alignment = .left
-        header.target = self
-        header.action = #selector(toggle)
-        header.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(header)
+        chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        chevron.contentTintColor = .tertiaryLabelColor
+        chevron.wantsLayer = true
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.font = DS.Text.caption(.medium)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = DS.Spacing.xs
-        content.isHidden = true
+        content.alphaValue = 0
         content.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(content)
 
-        let contentBottom = content.bottomAnchor.constraint(equalTo: bottomAnchor)
-        contentBottom.priority = .defaultHigh
+        addSubview(chevron)
+        addSubview(titleLabel)
+        addSubview(content)
+        contentHeight = content.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: topAnchor),
-            header.leadingAnchor.constraint(equalTo: leadingAnchor),
-            header.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            content.topAnchor.constraint(equalTo: header.bottomAnchor, constant: DS.Spacing.xs),
+            chevron.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            chevron.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 10),
+            chevron.heightAnchor.constraint(equalToConstant: 10),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: DS.Spacing.s),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            content.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: DS.Spacing.xs),
             // Indented under the header, like a disclosure's children.
-            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
             content.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            contentBottom,
-            header.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor),
+            contentHeight,
         ])
+        content.setClippingResistancePriority(.defaultLow, for: .vertical)
         refreshHeader()
     }
 
@@ -1433,16 +1545,29 @@ private final class WorkGroupView: NSView {
         }
     }
 
+    /// The whole header is the hit target, not just the chevron — a 10pt glyph is a poor
+    /// click target, and the row reads as one control.
+    override func mouseDown(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        toggle()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(NSRect(x: 0, y: 0, width: bounds.width, height: titleLabel.frame.height + 4), cursor: .pointingHand)
+    }
+
     func addLine(_ view: NSView, isStep: Bool, at date: Date) {
         content.addArrangedSubview(view)
-        lastLineAt = date
         if isStep { stepCount += 1 }
         refreshHeader()
+        // Growing while expanded has to move the height constraint too, or new lines are
+        // clipped by the value set at the last toggle.
+        if expanded { syncContentHeight(animated: false) }
     }
 
     func finish() {
         guard !finished else { return }
-        finished = true
+        finishedAt = Date()
         timer?.invalidate()
         timer = nil
         refreshHeader()
@@ -1450,34 +1575,43 @@ private final class WorkGroupView: NSView {
 
     private static func format(_ interval: TimeInterval) -> String {
         let seconds = max(0, Int(interval.rounded()))
-        return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
+        if seconds < 60 { return "\(seconds)s" }
+        return "\(seconds / 60)m \(seconds % 60)s"
     }
 
     private func refreshHeader() {
         let steps = "\(stepCount) step\(stepCount == 1 ? "" : "s")"
-        let title: String
-        if finished {
-            let duration = lastLineAt.timeIntervalSince(startedAt)
-            title = duration >= 1 ? "Worked \(Self.format(duration)) · \(steps)" : "Worked · \(steps)"
-        } else {
-            title = "Working \(Self.format(Date().timeIntervalSince(startedAt))) · \(steps)"
-        }
-        header.title = " \(title)"
-        header.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
-        header.setAccessibilityLabel(title)
+        // Always stated, never omitted: the elapsed time is the thing the header exists to
+        // report, and an earlier version hid it whenever the work took under a second — which
+        // is most of them, so in practice it never appeared at all.
+        let elapsed = Self.format((finishedAt ?? Date()).timeIntervalSince(startedAt))
+        titleLabel.stringValue = finished
+            ? "Worked for \(elapsed) · \(steps)"
+            : "Working \(elapsed) · \(steps)"
+        setAccessibilityLabel(titleLabel.stringValue)
     }
 
     @objc private func toggle() {
         expanded.toggle()
-        refreshHeader()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
+            context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
-            content.isHidden = !expanded
+            // Rotation, not an image swap — see `chevron`.
+            chevron.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            chevron.layer?.position = CGPoint(x: chevron.frame.midX, y: chevron.frame.midY)
+            chevron.layer?.transform = CATransform3DMakeRotation(expanded ? .pi / 2 : 0, 0, 0, 1)
+            content.animator().alphaValue = expanded ? 1 : 0
+            syncContentHeight(animated: true)
             enclosingScrollView?.documentView?.layoutSubtreeIfNeeded()
         }
+    }
+
+    private func syncContentHeight(animated: Bool) {
+        let target = expanded ? content.fittingSize.height : 0
+        guard abs(contentHeight.constant - target) > 0.5 else { return }
+        contentHeight.constant = target
+        if !animated { superview?.layoutSubtreeIfNeeded() }
     }
 }
 
