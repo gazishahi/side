@@ -118,6 +118,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     var onTearOutRequested: ((URL, NSPoint) -> Void)?
     private let lastProjectKey = "side.last-project-path"
     private let lastFilesByProjectKey = "side.last-files-by-project"
+    private let openTabsByProjectKey = "side.open-tabs-by-project"
+    /// Suppresses per-open persistence while the remembered set is being reopened.
+    private var isRestoringTabs = false
     private let recentProjectsKey = "side.recent-projects"
     private let maxRecentProjects = 8
     private var pendingSearchWorkItem: DispatchWorkItem?
@@ -924,6 +927,32 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return URL(fileURLWithPath: path)
     }
 
+    /// Remembers the whole open tab *set*, in order, plus which one was active.
+    ///
+    /// The single-path memory above is kept as the fallback for a project last opened by an
+    /// older build. Reopening a project used to restore exactly one file no matter how many had
+    /// been open, because one path is all that was ever stored — not a regression, a feature
+    /// that was never written.
+    ///
+    /// Untitled tabs are deliberately excluded: they have no path to restore from, and their
+    /// content lives only in the buffer.
+    private func rememberOpenTabs(forProject project: URL) {
+        var map = UserDefaults.standard.dictionary(forKey: openTabsByProjectKey) as? [String: [String]] ?? [:]
+        let paths = openTabs.filter { !$0.isUntitled }.map(\.url.path)
+        if paths.isEmpty {
+            map.removeValue(forKey: compositeMemoryKey(for: project))
+        } else {
+            map[compositeMemoryKey(for: project)] = paths
+        }
+        UserDefaults.standard.set(map, forKey: openTabsByProjectKey)
+    }
+
+    private func rememberedOpenTabs(forProject project: URL) -> [URL] {
+        guard let map = UserDefaults.standard.dictionary(forKey: openTabsByProjectKey) as? [String: [String]],
+              let paths = map[compositeMemoryKey(for: project)] else { return [] }
+        return paths.map { URL(fileURLWithPath: $0) }
+    }
+
     /// Syncs the open tab for `url` to content the applier has *already written to disk*, and
     /// returns whether there was one.
     ///
@@ -1224,8 +1253,27 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 guard let self, self.focusedRoot == root else { return }
                 self.allFiles = indexed
                 self.searchField.placeholderString = "Find a file in \(root.lastPathComponent)"
-                if let saved = self.lastFile(forProject: memoryRoot), let file = indexed.first(where: { $0.url.path == saved.path }) {
-                    self.open(file.url)
+                // Every remembered tab, in order, filtered against what the index actually
+                // found — a branch switch or a deletion can legitimately remove a file, and a
+                // missing one should be dropped silently rather than reported.
+                let indexedPaths = Set(indexed.map(\.url.path))
+                let remembered = self.rememberedOpenTabs(forProject: memoryRoot)
+                    .filter { indexedPaths.contains($0.path) }
+                if !remembered.isEmpty {
+                    // Opened in the remembered order, so the tab strip comes back arranged the
+                    // way the user left it. Selection is applied afterwards by *switching* to
+                    // the tab rather than opening it last — opening it last would restore the
+                    // right selection at the cost of silently reordering their tabs.
+                    self.isRestoringTabs = true
+                    for url in remembered { self.open(url) }
+                    self.isRestoringTabs = false
+                    if let active = self.lastFile(forProject: memoryRoot),
+                       let position = self.openTabs.firstIndex(where: { $0.url.path == active.path }) {
+                        self.switchToTab(position)
+                    }
+                    // Written once, at the end: the per-open saves are suppressed above so a
+                    // crash mid-restore can't persist a half-restored tab set over the real one.
+                    self.rememberOpenTabs(forProject: memoryRoot)
                 } else {
                     // No remembered file for this project/track — a fully blank canvas isn't a
                     // good first impression. Surface the file tree instead so there's immediately
@@ -1847,6 +1895,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func rebuildTabBar() {
+        // The tab bar is rebuilt on every open, close, and reorder, which is exactly the set of
+        // moments the remembered tab list should change — except during a restore, where the
+        // intermediate states are not worth persisting over the complete set.
+        if let projectURL, !isRestoringTabs { rememberOpenTabs(forProject: projectURL) }
         noFileLabel.isHidden = !openTabs.isEmpty || projectURL == nil
         let previousCount = lastKnownTabCount
         lastKnownTabCount = openTabs.count

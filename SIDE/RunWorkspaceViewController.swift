@@ -129,7 +129,7 @@ final class RunWorkspaceViewController: NSViewController {
             return
         }
         guard let index = activeSessionIndex, sessions.indices.contains(index) else {
-            createSession()
+            restoreRememberedSessionsOrCreateOne()
             return
         }
         showActiveSession()
@@ -282,11 +282,52 @@ final class RunWorkspaceViewController: NSViewController {
 
     // MARK: - Session lifecycle
 
-    private func createSession(replacing index: Int? = nil) {
+    /// Re-creates the tab *shape* a track was left in — how many terminals, and each one's
+    /// working directory — or one fresh terminal if there is nothing remembered.
+    ///
+    /// Deliberately "shape", not "state". A terminal is a live PTY with a shell and whatever it
+    /// was running; those die with the process and cannot be restored, so promising to restore
+    /// a session would be a lie. What *is* restorable is the arrangement, which is what was
+    /// actually lost: reopening a project dropped every Run tab because nothing recorded that
+    /// they had existed at all.
+    private func restoreRememberedSessionsOrCreateOne() {
+        let remembered = Self.rememberedSessionDirectories(forTrackKey: currentTrackKey ?? "")
+        guard !remembered.isEmpty else { return createSession() }
+        for directory in remembered { createSession(inDirectory: directory) }
+        activeSessionIndex = 0
+        rebuildTabBar()
+        showActiveSession()
+    }
+
+    private static let rememberedSessionsKey = "side.run-sessions-by-track"
+
+    private static func rememberedSessionDirectories(forTrackKey trackKey: String) -> [String] {
+        let map = UserDefaults.standard.dictionary(forKey: rememberedSessionsKey) as? [String: [String]] ?? [:]
+        return map[trackKey] ?? []
+    }
+
+    /// Recorded on every change to the tab set. Only directories are stored — no scrollback, no
+    /// command history: a terminal's contents are not ours to persist behind the user's back.
+    private func rememberSessions() {
+        guard hasProject else { return }
+        var map = UserDefaults.standard.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
+        let key = currentTrackKey ?? ""
+        let directories = sessions.compactMap { $0.viewController.workingDirectory }
+        if directories.isEmpty {
+            map.removeValue(forKey: key)
+        } else {
+            map[key] = directories
+        }
+        UserDefaults.standard.set(map, forKey: Self.rememberedSessionsKey)
+    }
+
+    private func createSession(replacing index: Int? = nil, inDirectory directory: String? = nil) {
         let vc = TerminalViewController()
-        vc.workingDirectory = currentWorkingDirectory
+        // A restored tab reopens where it was, not wherever the track currently points.
+        let workingDirectory = directory ?? currentWorkingDirectory
+        vc.workingDirectory = workingDirectory
         wire(vc)
-        let label = currentWorkingDirectory.map { ($0 as NSString).lastPathComponent } ?? "Terminal"
+        let label = workingDirectory.map { ($0 as NSString).lastPathComponent } ?? "Terminal"
         let session = RunSession(label: label, viewController: vc)
         if let index, sessions.indices.contains(index) {
             sessions[index] = session
@@ -387,6 +428,8 @@ final class RunWorkspaceViewController: NSViewController {
     private var lastKnownSessionCount = 0
 
     private func rebuildTabBar() {
+        // Rebuilt on every open, close, and reorder — exactly when the remembered shape changes.
+        rememberSessions()
         let previousCount = lastKnownSessionCount
         lastKnownSessionCount = sessions.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }

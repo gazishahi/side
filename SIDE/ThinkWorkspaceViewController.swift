@@ -336,8 +336,18 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             appendLocalNotice("Open a project first — Think conversations belong to a project.")
             return
         }
+        // While the agent is working the button means Stop — but pressing Return with text in
+        // the composer means "send this next", which is what every other harness does and what
+        // typing during a long turn obviously intends. Without this the keystroke was simply
+        // swallowed and the thought was lost.
         if runner.phase == .streaming || runner.phase == .runningTools {
-            runner.stop()
+            let pending = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if pending.isEmpty {
+                runner.stop()
+            } else {
+                enqueue(pending, attachments: composer.attachmentPayloads())
+                composer.clear()
+            }
             return
         }
         guard runner.phase != .awaitingApproval else { return }
@@ -359,12 +369,36 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private func updateSendButton() {
         let phase = runner?.phase ?? .idle
-        composer.setBusy(phase == .streaming || phase == .runningTools)
+        let busy = phase == .streaming || phase == .runningTools
+        composer.setBusy(busy)
         let awaitingApproval = phase == .awaitingApproval
         composer.isEnabled = !awaitingApproval
         composer.placeholder = awaitingApproval
             ? "Apply or reject the proposed change above to continue…"
-            : "Ask about this project…"
+            : (busy ? "Working — your next message will be sent when it finishes…" : "Ask about this project…")
+        // A turn just ended: send whatever was typed while it was running.
+        if !busy, !awaitingApproval { flushQueuedMessage() }
+    }
+
+    /// One queued message, not a queue.
+    ///
+    /// Deliberately: a backlog of messages fired blind at an agent whose earlier answers the
+    /// user hasn't read is worse than losing the surplus. Typing a second message replaces the
+    /// first, which is what "I've thought about it more" almost always means.
+    private var queuedMessage: (text: String, attachments: [AgentImageAttachment])?
+
+    private func enqueue(_ text: String, attachments: [AgentImageAttachment]) {
+        let isReplacement = queuedMessage != nil
+        queuedMessage = (text, attachments)
+        appendLocalNotice(isReplacement
+            ? "Replaced the queued message — it will be sent when the current turn finishes."
+            : "Queued — this will be sent when the current turn finishes.")
+    }
+
+    private func flushQueuedMessage() {
+        guard let queued = queuedMessage, let runner, runner.isReadyToSend else { return }
+        queuedMessage = nil
+        runner.send(queued.text, attachments: queued.attachments)
     }
 
     @objc private func textScaleChanged() {
@@ -769,6 +803,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     // MARK: - Transcript rendering
 
     private func renderFull() {
+        // A message queued against the conversation being replaced has nowhere to go.
+        queuedMessage = nil
         // Pending flushes index into the entry list being replaced. Carrying them across a
         // track switch or a reset made the next flush call setBody(streaming:) against a
         // different conversation's entries — stripping markdown, code blocks, and file links
