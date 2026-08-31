@@ -57,7 +57,11 @@ enum ProposedEditOutcome {
     /// rather than assuming the edit landed.
     var toolResultText: String {
         switch self {
-        case .applied: return "Applied. The user approved this edit and it is now in the editor (unsaved)."
+        // "(unsaved)" was true when applying only touched the open buffer. It stopped being
+        // true once the applier started writing to disk first — and a live test caught the
+        // agent faithfully relaying the stale claim to the user, telling them to save a file
+        // that was already saved.
+        case .applied: return "Applied. The user approved this edit and it is written to disk."
         case .rejected: return "Rejected by the user. The file is unchanged. Ask what they'd prefer instead of retrying the same edit."
         case .staleBase: return "Not applied: the file changed after this edit was proposed. Re-read the file and propose again."
         case .writeFailed(let message): return "Not applied — writing failed: \(message)"

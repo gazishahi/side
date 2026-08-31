@@ -1106,11 +1106,16 @@ final class AgentRunner {
     /// A time-based deadline rather than a fixed attempt count is the more principled fix: keep
     /// retrying for up to `maxWait`, however many attempts that takes, instead of guessing a
     /// count and being wrong about it a second time.
-    private nonisolated static func runGitWithRetry(_ args: [String], cwd: String, maxWait: TimeInterval = 5, extraEnvironment: [String: String] = [:]) -> Bool {
+    /// Returns git's own output on failure, not just `false`. Discarding it produced
+    /// "couldn't stage 2 paths" — a message that says something went wrong and refuses to say
+    /// what, which is precisely the shape this codebase calls out elsewhere as unacceptable.
+    @discardableResult
+    private nonisolated static func runGitWithRetry(_ args: [String], cwd: String, maxWait: TimeInterval = 5, extraEnvironment: [String: String] = [:]) -> (success: Bool, output: String) {
         let deadline = Date().addingTimeInterval(maxWait)
         while true {
-            if GitPaths.runGit(args, cwd: cwd, extraEnvironment: extraEnvironment).success { return true }
-            guard Date() < deadline else { return false }
+            let result = GitPaths.runGit(args, cwd: cwd, extraEnvironment: extraEnvironment)
+            if result.success { return (true, result.output) }
+            guard Date() < deadline else { return (false, result.output) }
             Thread.sleep(forTimeInterval: 0.2)
         }
     }
@@ -1149,12 +1154,16 @@ final class AgentRunner {
         // Seed from HEAD so the commit's baseline is the last commit, never the user's staged
         // state. A repo with no commits yet starts from an empty index instead.
         if hasParent {
-            guard runGitWithRetry(["read-tree", "HEAD"], cwd: cwd, extraEnvironment: environment) else {
-                return .failed(step: "read-tree", message: "couldn't read the current commit into a staging area")
+            let readTree = runGitWithRetry(["read-tree", "HEAD"], cwd: cwd, extraEnvironment: environment)
+            guard readTree.success else {
+                return .failed(step: "read-tree", message: readTree.output)
             }
         }
-        guard runGitWithRetry(["add", "--"] + paths, cwd: cwd, extraEnvironment: environment) else {
-            return .failed(step: "add", message: "couldn't stage \(paths.count) path\(paths.count == 1 ? "" : "s")")
+        let add = runGitWithRetry(["add", "--"] + paths, cwd: cwd, extraEnvironment: environment)
+        guard add.success else {
+            // Naming the paths matters: the failure is almost always about *which* path was
+            // asked for, so a count tells the user nothing they can act on.
+            return .failed(step: "add", message: "\(add.output) (paths: \(paths.joined(separator: ", ")))")
         }
 
         let staged = GitPaths.runGit(["diff", "--cached", "--name-only"] + (hasParent ? ["HEAD"] : []), cwd: cwd, extraEnvironment: environment)

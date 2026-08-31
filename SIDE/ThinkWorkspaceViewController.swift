@@ -1035,7 +1035,17 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.transcriptContainer.layoutSubtreeIfNeeded()
-            let maxY = max(0, self.transcriptContainer.bounds.height - self.transcriptScroll.contentView.bounds.height)
+            // `+ contentInsets.bottom` is load-bearing, and its absence was a shipping bug: the
+            // composer floats *over* the transcript, so the real bottom is the content height
+            // plus the inset reserving room for it. Without the inset this scrolled to a bottom
+            // short by exactly the composer's height, parking the last block underneath it —
+            // and when that block was an edit proposal, its Apply and Reject buttons were
+            // covered by the composer and could not be clicked at all. The single most
+            // important interaction in the app was unreachable, and no test caught it because
+            // every test asserts on the model, not on what the composer happens to overlap.
+            let maxY = max(0, self.transcriptContainer.bounds.height
+                - self.transcriptScroll.contentView.bounds.height
+                + self.transcriptScroll.contentInsets.bottom)
             self.transcriptScroll.contentView.scroll(to: NSPoint(x: 0, y: maxY))
             self.transcriptScroll.reflectScrolledClipView(self.transcriptScroll.contentView)
         }

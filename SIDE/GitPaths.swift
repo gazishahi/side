@@ -87,6 +87,33 @@ enum GitPaths {
         return (process.terminationStatus == 0, output)
     }
 
+    /// Like `runGit`, but returns git's output **verbatim**.
+    ///
+    /// `runGit` trims whitespace, which is right for `rev-parse` and wrong — silently and
+    /// destructively — for `status --porcelain`, whose first two columns *are* the status and
+    /// whose first column is a space for a worktree-modified file. Trimming ate that space, so
+    /// ` M src/mathUtils.ts` became `M src/mathUtils.ts` and the 3-character prefix drop then
+    /// produced `rc/mathUtils.ts`: a path git had never heard of.
+    ///
+    /// Only the *first* entry was affected, which is why this hid for so long — checkpointing
+    /// worked whenever the first dirty file happened to be staged or untracked, and failed
+    /// whenever it was merely modified. Before checkpoint failures were reported honestly, that
+    /// failure printed as "✓ Checkpoint (no file changes)".
+    static func runGitRaw(_ args: [String], cwd: String) -> (success: Bool, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git"] + args
+        process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        // stderr goes nowhere: merging it would corrupt a format parsed by position.
+        process.standardError = Pipe()
+        do { try process.run() } catch { return (false, "") }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus == 0, String(data: data, encoding: .utf8) ?? "")
+    }
+
     /// Every path git considers dirty (staged, unstaged, or untracked) relative to `cwd`'s repo
     /// root — used to snapshot a worktree's state before/after a batch of agent actions, so a
     /// checkpoint can stage only what actually changed *during* the batch instead of everything
@@ -98,7 +125,8 @@ enum GitPaths {
         // so a single accented filename anywhere in the tree made every checkpoint commit
         // fail. `-z` also uses NUL separators, so a filename containing a newline can't split
         // one entry into two.
-        let result = runGit(["status", "--porcelain", "-z"], cwd: cwd)
+        // `runGitRaw`, not `runGit`: this format's leading column is significant. See above.
+        let result = runGitRaw(["status", "--porcelain", "-z"], cwd: cwd)
         guard result.success, !result.output.isEmpty else { return [] }
         // With -z a rename is two NUL-separated fields (`R  new\0old`) rather than
         // `old -> new`, so the arrow form no longer appears at all.
