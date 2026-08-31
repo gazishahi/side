@@ -72,6 +72,18 @@ struct CheckpointVerification: Codable, Equatable {
 /// own branch (in its own worktree), created automatically the moment every proposal in a batch
 /// is resolved, provided at least one was actually applied or executed — never before approval,
 /// never as a substitute for the approval click itself, just bookkeeping that follows it.
+/// One file's line delta within a checkpoint.
+///
+/// Stored rather than recomputed because the alternative is a `git diff --numstat` subprocess on
+/// the launch path, and process spawns are the one thing Side's launch budget cannot afford (see
+/// `SIDE_LAUNCH_PERFORMANCE.md`). The numbers are already in hand when an edit is applied; keeping
+/// them costs two integers per file.
+struct CheckpointFileChange: Codable, Equatable {
+    let path: String
+    let added: Int
+    let removed: Int
+}
+
 struct Checkpoint: Codable, Identifiable {
     let id: UUID
     let trackKey: String
@@ -81,6 +93,10 @@ struct Checkpoint: Codable, Identifiable {
     /// `AgentSessionStore.updateCheckpointDescription`.
     var declaredIntent: String
     let changedFilePaths: [String]
+    /// Per-file line deltas, when known. Empty for a checkpoint written before this was recorded —
+    /// `changedFilePaths` is still authoritative for *which* files, so a reader shows the file
+    /// list and simply has no numbers to show, rather than inventing zeros that look measured.
+    let fileChanges: [CheckpointFileChange]
     let commandsRun: [String]
     let provenance: AgentProvenance
     /// `nil` only for a checkpoint with zero file changes — e.g. every command in the batch ran
@@ -91,12 +107,13 @@ struct Checkpoint: Codable, Identifiable {
     /// project's test task in a later round trip.
     var verification: CheckpointVerification?
 
-    init(trackKey: String, agentSessionId: UUID, declaredIntent: String, changedFilePaths: [String], commandsRun: [String], provenance: AgentProvenance, gitCommitSHA: String?) {
+    init(trackKey: String, agentSessionId: UUID, declaredIntent: String, changedFilePaths: [String], commandsRun: [String], provenance: AgentProvenance, gitCommitSHA: String?, fileChanges: [CheckpointFileChange] = []) {
         self.id = UUID()
         self.trackKey = trackKey
         self.agentSessionId = agentSessionId
         self.declaredIntent = declaredIntent
         self.changedFilePaths = changedFilePaths
+        self.fileChanges = fileChanges
         self.commandsRun = commandsRun
         self.provenance = provenance
         self.gitCommitSHA = gitCommitSHA
@@ -107,7 +124,7 @@ struct Checkpoint: Codable, Identifiable {
     // agent actually changed, so the trade is deliberate: only the fields that make it
     // meaningful (identity, track, commit contents) are required.
     private enum CodingKeys: String, CodingKey {
-        case id, trackKey, agentSessionId, declaredIntent, changedFilePaths, commandsRun, provenance, gitCommitSHA, createdAt, verification
+        case id, trackKey, agentSessionId, declaredIntent, changedFilePaths, fileChanges, commandsRun, provenance, gitCommitSHA, createdAt, verification
     }
 
     init(from decoder: Decoder) throws {
@@ -117,6 +134,7 @@ struct Checkpoint: Codable, Identifiable {
         agentSessionId = try container.decodeIfPresent(UUID.self, forKey: .agentSessionId) ?? UUID()
         declaredIntent = try container.decodeIfPresent(String.self, forKey: .declaredIntent) ?? ""
         changedFilePaths = try container.decodeIfPresent([String].self, forKey: .changedFilePaths) ?? []
+        fileChanges = try container.decodeIfPresent([CheckpointFileChange].self, forKey: .fileChanges) ?? []
         commandsRun = try container.decodeIfPresent([String].self, forKey: .commandsRun) ?? []
         provenance = try container.decodeIfPresent(AgentProvenance.self, forKey: .provenance)
             ?? AgentProvenance(providerId: "", modelId: "", instructionSourceSummary: "")

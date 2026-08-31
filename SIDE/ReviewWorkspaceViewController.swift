@@ -71,6 +71,12 @@ final class ReviewWorkspaceViewController: NSViewController {
             self, selector: #selector(textScaleChanged),
             name: DS.Text.scaleDidChangeNotification, object: nil
         )
+        // Review used to refresh only on entry, so a checkpoint created while the user was
+        // already looking at this stage appeared only after leaving and coming back.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(checkpointsChanged),
+            name: AgentSessionStore.checkpointsDidChangeNotification, object: nil
+        )
 
         emptyStateLabel.font = DS.Text.heading()
         emptyStateLabel.textColor = .tertiaryLabelColor
@@ -340,6 +346,12 @@ final class ReviewWorkspaceViewController: NSViewController {
     }
 
     @objc private func textScaleChanged() { refresh() }
+
+    /// A checkpoint was created, renamed, or verified while this stage was on screen.
+    @objc private func checkpointsChanged() {
+        guard isViewLoaded, view.window != nil else { return }
+        refresh()
+    }
 
     private func refresh() {
         guard isViewLoaded else { return }

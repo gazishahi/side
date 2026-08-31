@@ -22,6 +22,9 @@ private struct PendingToolBatch {
     /// `declaredIntent` if anything in this batch actually gets applied or executed.
     let declaredIntent: String
     var changedFilePaths: Set<String> = []
+    /// This round's line deltas per path, so the checkpoint can record them. Separate from the
+    /// runner's conversation-cumulative `appliedEditCounts`: a checkpoint describes one batch.
+    var fileChanges: [String: (added: Int, removed: Int)] = [:]
     var commandsRun: [String] = []
     /// Every path git considered dirty in the track's worktree *before* this batch executed
     /// anything — a checkpoint only stages paths that became newly dirty since this snapshot
@@ -439,12 +442,42 @@ final class AgentRunner {
     /// the durable record is the checkpoints in Review, this is just "what happened here."
     private(set) var appliedEditCounts: [(path: String, added: Int, removed: Int)] = []
 
-    private func recordAppliedEdit(path: String, diffText: String) {
+    /// Restores the changed-files pill from this conversation's checkpoints.
+    ///
+    /// It used to be rebuilt from nothing on relaunch, so the pill vanished while Review went on
+    /// showing the very same diffs — Think read ephemeral state and Review read the durable
+    /// record, and they disagreed the moment the process restarted. Reported as exactly that.
+    ///
+    /// Checkpoints are the durable record, so they are the right source. A checkpoint written
+    /// before line counts were stored contributes its *paths* with no numbers rather than zeros:
+    /// the file list stays correct, and nothing claims to have measured what it didn't.
+    private func rebuildAppliedEditCounts(sessionId: UUID) {
+        appliedEditCounts = []
+        let mine = sessionStore.checkpoints(forTrackKey: trackKey)
+            .filter { $0.agentSessionId == sessionId }
+            .sorted { $0.createdAt < $1.createdAt }
+        for checkpoint in mine {
+            if checkpoint.fileChanges.isEmpty {
+                for path in checkpoint.changedFilePaths { recordAppliedEdit(path: path, added: 0, removed: 0) }
+            } else {
+                for change in checkpoint.fileChanges {
+                    recordAppliedEdit(path: change.path, added: change.added, removed: change.removed)
+                }
+            }
+        }
+    }
+
+    /// Pure text arithmetic — `nonisolated` so it can be counted off-main and tested directly.
+    nonisolated static func lineDelta(in diffText: String) -> (added: Int, removed: Int) {
         var added = 0, removed = 0
         for line in diffText.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("+"), !line.hasPrefix("+++") { added += 1 }
             else if line.hasPrefix("-"), !line.hasPrefix("---") { removed += 1 }
         }
+        return (added, removed)
+    }
+
+    private func recordAppliedEdit(path: String, added: Int, removed: Int) {
         if let index = appliedEditCounts.firstIndex(where: { $0.path == path }) {
             appliedEditCounts[index].added += added
             appliedEditCounts[index].removed += removed
@@ -479,7 +512,12 @@ final class AgentRunner {
         if case .applied = outcome {
             batch.lastAppliedURL = presentation.edit.url
             batch.changedFilePaths.insert(presentation.edit.relativePath)
-            recordAppliedEdit(path: presentation.edit.relativePath, diffText: presentation.diffText)
+            let delta = Self.lineDelta(in: presentation.diffText)
+            var running = batch.fileChanges[presentation.edit.relativePath] ?? (0, 0)
+            running.added += delta.added
+            running.removed += delta.removed
+            batch.fileChanges[presentation.edit.relativePath] = running
+            recordAppliedEdit(path: presentation.edit.relativePath, added: delta.added, removed: delta.removed)
         }
         pendingBatch = batch
         finishBatchIfReady()
@@ -687,7 +725,10 @@ final class AgentRunner {
             // was made. Reading the provider from the live registry here (as this used to) could
             // pair a new provider with the old model if the user switched during the approval.
             provenance: AgentProvenance(providerId: batch.providerId, modelId: batch.modelId, instructionSourceSummary: "Think conversation"),
-            gitCommitSHA: commitSHA
+            gitCommitSHA: commitSHA,
+            fileChanges: batch.fileChanges
+                .map { CheckpointFileChange(path: $0.key, added: $0.value.added, removed: $0.value.removed) }
+                .sorted { $0.path < $1.path }
         )
         sessionStore.appendCheckpoint(checkpoint)
         // Remembered so the agent's own account of the change can replace the request that
@@ -1444,6 +1485,7 @@ final class AgentRunner {
         // states, not chrome that every conversation carries forever.
         guard let session = sessionStore.session(forTrackKey: trackKey) else { return }
         lastReportedInputTokens = session.lastReportedInputTokens
+        rebuildAppliedEditCounts(sessionId: session.id)
         for turn in session.turns {
             // The turn's own persisted timestamp, so a reloaded transcript reports the elapsed
             // times that actually happened rather than the instant of the reload.

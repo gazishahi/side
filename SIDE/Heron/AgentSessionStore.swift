@@ -146,6 +146,7 @@ final class AgentSessionStore {
         guard let index = checkpoints.lastIndex(where: { $0.trackKey == trackKey }) else { return false }
         checkpoints[index].verification = verification
         saveCheckpoints()
+        notifyCheckpointsChanged()
         return true
     }
 
@@ -176,12 +177,27 @@ final class AgentSessionStore {
         guard !trimmed.isEmpty, let position = checkpoints.firstIndex(where: { $0.id == id }) else { return false }
         checkpoints[position].declaredIntent = trimmed
         saveCheckpoints()
+        notifyCheckpointsChanged()
         return true
     }
+
+    /// Posted whenever the checkpoint ledger changes — appended, renamed, or verified.
+    ///
+    /// Review used to refresh only when the stage was entered, so a checkpoint created while the
+    /// user was already looking at Review didn't appear until they left and came back. Reported as
+    /// exactly that. A notification rather than an observer list because the store has no notion of
+    /// which views exist, and more than one surface wants this (Review today; the Tracks ledger's
+    /// checkpoint counts next).
+    static let checkpointsDidChangeNotification = Notification.Name("SideCheckpointsDidChange")
 
     func appendCheckpoint(_ checkpoint: Checkpoint) {
         checkpoints.append(checkpoint)
         saveCheckpoints()
+        notifyCheckpointsChanged()
+    }
+
+    private func notifyCheckpointsChanged() {
+        NotificationCenter.default.post(name: Self.checkpointsDidChangeNotification, object: nil)
     }
 
     /// Called when a track is deleted — its conversation and checkpoints have nowhere to belong
@@ -200,6 +216,7 @@ final class AgentSessionStore {
         try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
         saveIndex()
         saveCheckpoints()
+        notifyCheckpointsChanged()
     }
 
     // MARK: - Lazy session loading
