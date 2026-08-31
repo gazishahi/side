@@ -8,6 +8,36 @@ private struct SessionIndexEntry: Codable {
     var providerId: String
     var modelId: String
     var lastActiveAt: Date
+    /// Lives here rather than in the log's header for the same reason provider/model do: the
+    /// header is written once, at creation, which is precisely what lets an append write only
+    /// the new turn — while this changes on every request. The index is small and already
+    /// rewritten per turn.
+    var lastReportedInputTokens: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, trackKey, providerId, modelId, lastActiveAt, lastReportedInputTokens
+    }
+
+    init(id: UUID, trackKey: String, providerId: String, modelId: String, lastActiveAt: Date, lastReportedInputTokens: Int? = nil) {
+        self.id = id
+        self.trackKey = trackKey
+        self.providerId = providerId
+        self.modelId = modelId
+        self.lastActiveAt = lastActiveAt
+        self.lastReportedInputTokens = lastReportedInputTokens
+    }
+
+    // Tolerant, like every other persisted struct here: an index written before this field
+    // existed must still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        trackKey = try container.decode(String.self, forKey: .trackKey)
+        providerId = try container.decodeIfPresent(String.self, forKey: .providerId) ?? ""
+        modelId = try container.decodeIfPresent(String.self, forKey: .modelId) ?? ""
+        lastActiveAt = try container.decodeIfPresent(Date.self, forKey: .lastActiveAt) ?? Date()
+        lastReportedInputTokens = try container.decodeIfPresent(Int.self, forKey: .lastReportedInputTokens)
+    }
 }
 
 /// Persists Think conversations *and* checkpoints per project. Checkpoints are cheap (no file
@@ -111,6 +141,19 @@ final class AgentSessionStore {
         return true
     }
 
+    /// Records the provider's measured input-token count for a track's most recent request.
+    ///
+    /// Kept out of `appendTurn` on purpose: the count arrives with the response, which is a
+    /// different moment from the turns being written, and conflating them would mean either
+    /// writing the index twice per turn or losing the count on the turn that produced it.
+    func recordReportedInputTokens(_ tokens: Int?, forTrackKey trackKey: String) {
+        guard let position = index.firstIndex(where: { $0.trackKey == trackKey }) else { return }
+        guard index[position].lastReportedInputTokens != tokens else { return }
+        index[position].lastReportedInputTokens = tokens
+        loadedSessions[trackKey]?.lastReportedInputTokens = tokens
+        saveIndex()
+    }
+
     func appendCheckpoint(_ checkpoint: Checkpoint) {
         checkpoints.append(checkpoint)
         saveCheckpoints()
@@ -165,6 +208,11 @@ final class AgentSessionStore {
             try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
         } else {
             return nil
+        }
+        // The index is authoritative for the mutable metadata it carries (see
+        // `SessionIndexEntry`), so it wins over whatever the log header was created with.
+        if let entry = index.first(where: { $0.trackKey == trackKey }) {
+            session.lastReportedInputTokens = entry.lastReportedInputTokens
         }
         // Repair before anything can read it — a session with a dangling tool_use is not just
         // cosmetically odd, it's unusable (see `Self.repairingDanglingToolUses`).

@@ -108,6 +108,46 @@ final class ContextBudgetTests: XCTestCase {
         XCTAssertEqual(usage.fraction, 0)
     }
 
+
+    func testTheMeasuredCountSurvivesAReload() throws {
+        // The bug: this count is the provider's *measured* figure and lived only in memory, so
+        // after a relaunch the gauge fell back to the character-count estimate and the same
+        // conversation reported 5% and then 3% with nothing having changed.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tok-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AgentSessionStore(stateDirectory: directory)
+        store.appendTurn(AgentTurn(role: .user, content: [.text("hi")]), trackKey: "main", providerId: "p", modelId: "m")
+        store.recordReportedInputTokens(48_000, forTrackKey: "main")
+
+        let reloaded = AgentSessionStore(stateDirectory: directory)
+        XCTAssertEqual(reloaded.session(forTrackKey: "main")?.lastReportedInputTokens, 48_000)
+
+        // And it must actually move the gauge, not merely be stored.
+        let turns = reloaded.session(forTrackKey: "main")?.turns ?? []
+        let usage = ContextBudget.usage(
+            turns: turns, windowTokens: 200_000,
+            lastReportedInputTokens: reloaded.session(forTrackKey: "main")?.lastReportedInputTokens
+        )
+        XCTAssertEqual(usage.usedTokens, 48_000)
+    }
+
+    func testClearingItIsAlsoPersisted() throws {
+        // Compaction replaces the conversation the count measured, so a stale figure would
+        // overstate a freshly-compacted session forever.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tok-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = AgentSessionStore(stateDirectory: directory)
+        store.appendTurn(AgentTurn(role: .user, content: [.text("hi")]), trackKey: "main", providerId: "p", modelId: "m")
+        store.recordReportedInputTokens(48_000, forTrackKey: "main")
+        store.recordReportedInputTokens(nil, forTrackKey: "main")
+
+        XCTAssertNil(AgentSessionStore(stateDirectory: directory).session(forTrackKey: "main")?.lastReportedInputTokens)
+    }
+
     // MARK: - The summary contract
 
     func testCompactionInstructionAsksForWhatAContinuationNeeds() {

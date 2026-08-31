@@ -543,6 +543,7 @@ final class AgentRunner {
         sessionStore.replaceTurns([], trackKey: trackKey, providerId: selection.providerId, modelId: selection.modelId ?? "")
         entries = []
         lastReportedInputTokens = nil
+        sessionStore.recordReportedInputTokens(nil, forTrackKey: trackKey)
         pendingBatch = nil
         setPhase(.idle)
         notify(.reset)
@@ -816,6 +817,9 @@ final class AgentRunner {
                 // Kept for the context gauge: a measured count beats an estimate, and the next
                 // request is this conversation plus a little.
                 lastReportedInputTokens = usage.inputTokens + (usage.cachedInputTokens ?? 0)
+                // Persisted, so the gauge doesn't silently fall back to the lower estimate
+                // after a relaunch and report a different percentage for the same conversation.
+                sessionStore.recordReportedInputTokens(lastReportedInputTokens, forTrackKey: trackKey)
                 UsageStore.shared.record(
                     projectPath: projectPath, trackKey: trackKey,
                     providerId: activeProviderId,
@@ -1076,6 +1080,7 @@ final class AgentRunner {
         // No permanent explainer line — per the design charter, explaining belongs in empty
         // states, not chrome that every conversation carries forever.
         guard let session = sessionStore.session(forTrackKey: trackKey) else { return }
+        lastReportedInputTokens = session.lastReportedInputTokens
         for turn in session.turns {
             // The turn's own persisted timestamp, so a reloaded transcript reports the elapsed
             // times that actually happened rather than the instant of the reload.

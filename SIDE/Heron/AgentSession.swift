@@ -40,6 +40,14 @@ struct AgentSession: Codable, Identifiable {
     var providerId: String
     var modelId: String
     var turns: [AgentTurn]
+    /// The provider's own reported input-token count for the most recent request.
+    ///
+    /// Persisted because it is *measured* — the alternative is the character-count estimate,
+    /// which is arithmetic. Keeping it only in memory meant the context gauge silently dropped
+    /// to the lower estimate after every relaunch, so the same conversation read 5% and then 3%
+    /// with nothing having changed. Same failure as the elapsed-time header: a measured value
+    /// that isn't saved, falling back to something wrong instead of saying it doesn't know.
+    var lastReportedInputTokens: Int?
     let createdAt: Date
     var lastActiveAt: Date
 
@@ -49,13 +57,14 @@ struct AgentSession: Codable, Identifiable {
         self.providerId = providerId
         self.modelId = modelId
         self.turns = []
+        self.lastReportedInputTokens = nil
         self.createdAt = Date()
         self.lastActiveAt = Date()
     }
 
     /// Memberwise — used by `SessionLog`, which reconstructs a session from a header line plus
     /// separately-decoded turns rather than decoding one whole object.
-    init(id: UUID, trackKey: String, providerId: String, modelId: String, turns: [AgentTurn], createdAt: Date, lastActiveAt: Date) {
+    init(id: UUID, trackKey: String, providerId: String, modelId: String, turns: [AgentTurn], createdAt: Date, lastActiveAt: Date, lastReportedInputTokens: Int? = nil) {
         self.id = id
         self.trackKey = trackKey
         self.providerId = providerId
@@ -63,10 +72,11 @@ struct AgentSession: Codable, Identifiable {
         self.turns = turns
         self.createdAt = createdAt
         self.lastActiveAt = lastActiveAt
+        self.lastReportedInputTokens = lastReportedInputTokens
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, trackKey, providerId, modelId, turns, createdAt, lastActiveAt
+        case id, trackKey, providerId, modelId, turns, createdAt, lastActiveAt, lastReportedInputTokens
     }
 
     init(from decoder: Decoder) throws {
@@ -80,5 +90,6 @@ struct AgentSession: Codable, Identifiable {
         modelId = try container.decodeIfPresent(String.self, forKey: .modelId) ?? ""
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastActiveAt = try container.decodeIfPresent(Date.self, forKey: .lastActiveAt) ?? createdAt
+        lastReportedInputTokens = try container.decodeIfPresent(Int.self, forKey: .lastReportedInputTokens)
     }
 }
