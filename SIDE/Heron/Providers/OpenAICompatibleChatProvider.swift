@@ -171,6 +171,15 @@ final class OpenAICompatibleChatProvider: ChatModelProvider {
         if let content = delta["content"] as? String, !content.isEmpty {
             onEvent(.textDelta(content))
         }
+        // No standard field here — this adapter covers OpenAI, Ollama, LM Studio, and anything
+        // else speaking the same shape, and they disagree. Both spellings in the wild are
+        // accepted; a server that sends neither simply shows no reasoning, exactly as before.
+        for key in ["reasoning_content", "reasoning"] {
+            if let reasoning = delta[key] as? String, !reasoning.isEmpty {
+                onEvent(.thinkingDelta(reasoning))
+                break
+            }
+        }
         if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
             for call in toolCalls {
                 guard let index = call["index"] as? Int else { continue }

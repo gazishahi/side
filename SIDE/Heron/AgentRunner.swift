@@ -116,6 +116,11 @@ final class AgentRunner {
     /// Index into `entries` of the assistant block currently receiving streamed deltas, so
     /// tokens append into one growing entry instead of one entry per delta.
     private var streamingEntryIndex: Int?
+    /// The reasoning block currently receiving deltas, and its accumulated text. Reset per round
+    /// trip, not per user turn: a reply that chains four tool calls thinks four separate times,
+    /// and merging those into one paragraph would read as a single incoherent monologue.
+    private var pendingThinkingText = ""
+    private var thinkingEntryIndex: Int?
     /// Cancelled and re-armed on every stream event — fires only if `.streaming` goes quiet for
     /// `stallTimeout`, since a hung SSE connection is otherwise indistinguishable from a working
     /// agent (`SSEHTTPClient`'s own request timeout is the transport-level backstop under this).
@@ -958,6 +963,8 @@ final class AgentRunner {
         pendingToolCalls = []
         editPreviews = [:]
         streamingEntryIndex = nil
+        pendingThinkingText = ""
+        thinkingEntryIndex = nil
         didReceiveMessageEnd = false
         lastStopReason = nil
         didReceiveProviderError = false
@@ -1043,6 +1050,13 @@ final class AgentRunner {
                 updateEntry(at: index, .assistantText(pendingAssistantText))
             } else {
                 streamingEntryIndex = appendEntry(.assistantText(pendingAssistantText), resetStreaming: false)
+            }
+        case .thinkingDelta(let delta):
+            pendingThinkingText += delta
+            if let index = thinkingEntryIndex, entries.indices.contains(index) {
+                updateEntry(at: index, .thinking(pendingThinkingText))
+            } else {
+                thinkingEntryIndex = appendEntry(.thinking(pendingThinkingText), resetStreaming: false)
             }
         case .toolUseStart(let id, let name):
             pendingToolCalls.append((id: id, name: name, partialJSON: ""))

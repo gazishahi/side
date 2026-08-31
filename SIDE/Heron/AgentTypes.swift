@@ -115,6 +115,15 @@ struct AgentProviderError: Error, Sendable {
 
 enum AgentStreamEvent: Sendable {
     case textDelta(String)
+    /// A fragment of the model's reasoning.
+    ///
+    /// **Display only.** These are deliberately not added to the persisted turn or sent back on
+    /// the next request, which keeps the wire format byte-identical to what already works. The
+    /// cost is that the model doesn't see its own earlier reasoning across round trips — already
+    /// true today, since this was dropped entirely. Passing thinking back is a separate change
+    /// with its own hazard (Anthropic requires the block's `signature` to survive intact), and
+    /// worth doing on purpose rather than as a side effect of making it visible.
+    case thinkingDelta(String)
     case toolUseStart(id: String, name: String)
     case toolUseInputDelta(id: String, partialJSON: String)
     case toolUseEnd(id: String)

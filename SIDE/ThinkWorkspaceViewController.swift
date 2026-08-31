@@ -1094,7 +1094,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         entryViews.append(view)
         let isToolLine: Bool
         switch entry.kind {
-        case .toolCall, .toolResult: isToolLine = true
+        // Reasoning belongs in the group for the same reason tool lines do: it is the underlying
+        // work, and the group is what keeps it out of the way until asked for.
+        case .toolCall, .toolResult, .thinking: isToolLine = true
         default: isToolLine = false
         }
         if isToolLine {
@@ -1107,8 +1109,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 currentWorkGroup = group
             }
             var isStep = false
+            var isThinking = false
             if case .toolCall = entry.kind { isStep = true }
-            group.addLine(view, isStep: isStep, at: entry.createdAt)
+            // Reasoning is not a step. Counting it would inflate "3 steps" into "4 steps" for a
+            // turn that called three tools, and the step count is how someone judges how much the
+            // agent actually did.
+            if case .thinking = entry.kind { isThinking = true }
+            group.addLine(view, isStep: isStep, isThinking: isThinking, at: entry.createdAt)
         } else {
             currentWorkGroup?.finish()
             currentWorkGroup = nil
@@ -1170,6 +1177,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case .commandProposal(let presentation):
             guard let card = entryViews[index] as? CommandProposalView, let resolution = presentation.resolution else { return }
             Self.showCommandResolution(card, resolution)
+        case .thinking(let text):
+            guard let label = entryViews[index] as? NSTextField else { return }
+            label.stringValue = Self.condensedThinking(text)
         case .meta(let text):
             // Checkpoint markers are rewritten once the agent describes what it did, so a meta
             // line is not write-once. Without this the data updated and the label didn't: Review
@@ -1211,6 +1221,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // plain mention behave the same wherever they appear.
             bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
             return BubbleRowView(bubble: bubble, alignRight: false)
+        case .thinking(let text):
+            // Italic and dimmer than a tool line: it reads as the model's aside rather than as
+            // something it did. Wrapping, because reasoning is prose and truncating it mid-clause
+            // would leave a line that says less than nothing.
+            let label = makeLabel(Self.condensedThinking(text), font: DS.Text.caption(), color: .tertiaryLabelColor)
+            label.font = NSFontManager.shared.convert(DS.Text.caption(), toHaveTrait: .italicFontMask)
+            return label
         case .toolCall(let name, let summary):
             // System text, not terminal output — and its paths are live.
             return makeToolLine("→ \(name)\(summary)", color: .secondaryLabelColor)
@@ -1258,7 +1275,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private static func spacing(before kind: RunTranscriptEntry.Kind) -> CGFloat {
         switch kind {
         case .meta, .userText, .userImage, .assistantText, .proposal, .commandProposal: return 8
-        case .toolCall, .toolResult, .failure: return 4
+        case .toolCall, .toolResult, .failure, .thinking: return 4
         }
     }
 
@@ -1292,6 +1309,24 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         )
         view.onPathClicked = { [weak self] path in self?.openMentionedFile(path) }
         return view
+    }
+
+    /// Reasoning, trimmed to something a collapsed group can hold.
+    ///
+    /// Claude 4 and later already return *summarized* thinking, so this is a bound rather than a
+    /// summarizer — but a bound is still needed: a local model asked to reason hard will happily
+    /// produce twenty thousand characters, and an unbounded label inside a scroll view inside a
+    /// group is how a transcript starts dropping frames on every token.
+    private static let maxThinkingCharacters = 2_000
+
+    static func condensedThinking(_ text: String) -> String {
+        let collapsed = text
+            .replacingOccurrences(of: "\n\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard collapsed.count > maxThinkingCharacters else { return collapsed }
+        // The tail, not the head: reasoning ends where it concluded, and the conclusion is the
+        // part worth reading.
+        return "…" + String(collapsed.suffix(maxThinkingCharacters))
     }
 
     private func makeLabel(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
@@ -1793,6 +1828,7 @@ final class WorkGroupView: NSView {
     private var lastLineAt: Date
     private var finishedAt: Date?
     private var stepCount = 0
+    private var hasThinking = false
     private var expanded = false
     private var timer: Timer?
     private var didAnchorChevron = false
@@ -1913,10 +1949,11 @@ final class WorkGroupView: NSView {
         addCursorRect(headerRow.frame.insetBy(dx: 0, dy: -2), cursor: .pointingHand)
     }
 
-    func addLine(_ view: NSView, isStep: Bool, at date: Date) {
+    func addLine(_ view: NSView, isStep: Bool, isThinking: Bool = false, at date: Date) {
         content.addArrangedSubview(view)
         lastLineAt = max(lastLineAt, date)
         if isStep { stepCount += 1 }
+        if isThinking { hasThinking = true }
         refreshHeader()
     }
 
@@ -1937,14 +1974,21 @@ final class WorkGroupView: NSView {
     }
 
     private func refreshHeader() {
-        let steps = "\(stepCount) step\(stepCount == 1 ? "" : "s")"
         // Always stated: an earlier version hid the elapsed time whenever the work took under a
         // second, which is most of them, so in practice it never appeared.
         // Live, it ticks from the start; finished, it is the span between first and last line.
         let elapsed = Self.format((finishedAt ?? Date()).timeIntervalSince(startedAt))
-        titleLabel.stringValue = finished
-            ? "Worked for \(elapsed) · \(steps)"
-            : "Working \(elapsed) · \(steps)"
+        // A turn that reasoned and then answered without calling anything has a group with
+        // content but no steps. "Worked for 3s · 0 steps" invites the question "doing what?" and
+        // then refuses to answer it; thinking is what it was doing, so the header says so.
+        if stepCount == 0, hasThinking {
+            titleLabel.stringValue = finished ? "Thought for \(elapsed)" : "Thinking \(elapsed)"
+        } else {
+            let steps = "\(stepCount) step\(stepCount == 1 ? "" : "s")"
+            titleLabel.stringValue = finished
+                ? "Worked for \(elapsed) · \(steps)"
+                : "Working \(elapsed) · \(steps)"
+        }
         setAccessibilityLabel(titleLabel.stringValue)
     }
 

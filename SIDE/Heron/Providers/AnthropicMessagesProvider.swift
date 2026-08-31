@@ -121,7 +121,10 @@ final class AnthropicMessagesProvider: ChatModelProvider {
     /// Per-turn accumulation across SSE frames. Only ever touched from the SSE callback,
     /// which SSEHTTPClient invokes serially from the awaiting task — no synchronization
     /// needed.
-    private final class TurnState {
+    // Internal, not private, so the SSE parser can be driven directly from tests. It is the
+    // component most able to break silently — a renamed field in a provider's event shape shows
+    // up as an agent that simply says nothing.
+    final class TurnState {
         var toolUseIdsByIndex: [Int: String] = [:]
         var stopReason: StopReason = .endTurn
         var inputTokens: Int?
@@ -129,7 +132,7 @@ final class AnthropicMessagesProvider: ChatModelProvider {
         var outputTokens: Int?
     }
 
-    private static func handle(sse: SSEEvent, state: TurnState, onEvent: (AgentStreamEvent) -> Void) {
+    static func handle(sse: SSEEvent, state: TurnState, onEvent: (AgentStreamEvent) -> Void) {
         guard let data = sse.data.data(using: .utf8),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
         switch sse.event ?? (object["type"] as? String) ?? "" {
@@ -154,6 +157,12 @@ final class AnthropicMessagesProvider: ChatModelProvider {
             switch delta["type"] as? String {
             case "text_delta":
                 if let text = delta["text"] as? String { onEvent(.textDelta(text)) }
+            case "thinking_delta":
+                // Claude 4 and later return *summarized* thinking, so this is already the short
+                // form rather than the full chain — which is exactly what belongs in a collapsed
+                // activity group. `signature_delta` is deliberately ignored: it exists to let a
+                // thinking block be passed back intact, and nothing here passes them back.
+                if let thinking = delta["thinking"] as? String { onEvent(.thinkingDelta(thinking)) }
             case "input_json_delta":
                 if let index = object["index"] as? Int, let id = state.toolUseIdsByIndex[index],
                    let partial = delta["partial_json"] as? String {

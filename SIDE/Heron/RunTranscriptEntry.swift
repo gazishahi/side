@@ -38,6 +38,11 @@ struct RunTranscriptEntry: Identifiable {
         /// Mutated in place while the model streams — each delta fires `.updated`, not a fresh
         /// `.appended`, so the transcript grows one paragraph, not one block per token.
         case assistantText(String)
+        /// The model's own reasoning, streamed in place like `assistantText`. Rendered inside the
+        /// activity group rather than as a bubble: it is *how* the answer was reached, not the
+        /// answer, and a group that says "Worked for 34s" with nothing inside it was the gap this
+        /// fills. Never persisted — see `AgentStreamEvent.thinkingDelta`.
+        case thinking(String)
         case toolCall(name: String, summary: String)
         case toolResult(text: String, isError: Bool)
         case failure(String)
