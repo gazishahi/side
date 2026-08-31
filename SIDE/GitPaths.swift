@@ -31,7 +31,14 @@ enum GitPaths {
     /// repo still get different identities (genuinely different `.git` directories on disk),
     /// which is correct: they really are two independent working copies, not "the same project."
     static func projectIdentity(for projectRoot: URL) -> String? {
-        commonGitDir(for: projectRoot)?.resolvingSymlinksInPath().path
+        // The cached launch probe already answered this, so asking git again costs a whole
+        // process — ~27ms on a machine where a bare spawn is ~72ms, and it was the single
+        // largest remaining item in the launch profile. `ProjectContextRegistry` calls this on
+        // every project open purely to build its dictionary key.
+        if let cached = GitLaunchProbe.cached(projectRoot: projectRoot)?.commonGitDir {
+            return URL(fileURLWithPath: cached).resolvingSymlinksInPath().path
+        }
+        return commonGitDir(for: projectRoot)?.resolvingSymlinksInPath().path
     }
 
     /// Where a track's linked worktree lives on disk — deliberately outside the repo entirely.
