@@ -1464,24 +1464,25 @@ private final class LinkedTextLine: NSView, NSTextViewDelegate {
 }
 
 private final class WorkGroupView: NSView {
-    /// A chevron that *rotates*, and a label that never moves.
+    /// Collapsing is done by hiding an **arranged subview of a stack view**, which is the one
+    /// mechanism in AppKit that actually removes a view from layout.
     ///
-    /// The first version swapped `chevron.right` for `chevron.down` on an NSButton with
-    /// `imagePosition: .imageLeading`. Those two symbols have different widths, so the title
-    /// shifted sideways every time the group was toggled — and a swap is not an animation, so
-    /// the chevron itself just popped. A fixed-size image view whose layer rotates fixes both.
+    /// Two wrong answers came first. `content.isHidden` alone did nothing, because the content
+    /// was positioned by explicit constraints and a hidden view still contributes its intrinsic
+    /// height — that was the tall empty band between messages. Pinning its height to
+    /// `fittingSize` instead under-measured wrapping text, so the expanded content overflowed
+    /// its own bounds and drew on top of the next message. A stack view answers both: hidden
+    /// arranged subviews collapse to nothing, and visible ones get their natural height.
+    private let outer = NSStackView()
     private let chevron = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let content = NSStackView()
-    /// Zero while collapsed. Hiding `content` was not enough: it is positioned by explicit
-    /// constraints rather than as an arranged subview, so a hidden stack still contributed its
-    /// intrinsic height and left a tall empty band between messages — the "massive gap".
-    private var contentHeight: NSLayoutConstraint!
     private let startedAt: Date
     private var finishedAt: Date?
     private var stepCount = 0
     private var expanded = false
     private var timer: Timer?
+    private var didAnchorChevron = false
     private var finished: Bool { finishedAt != nil }
 
     init(startedAt: Date) {
@@ -1494,46 +1495,59 @@ private final class WorkGroupView: NSView {
         chevron.contentTintColor = .tertiaryLabelColor
         chevron.wantsLayer = true
         chevron.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            // Fixed size so the title never shifts: the first version swapped
+            // chevron.right for chevron.down on a button, and those symbols differ in width.
+            chevron.widthAnchor.constraint(equalToConstant: 10),
+            chevron.heightAnchor.constraint(equalToConstant: 10),
+        ])
 
         titleLabel.font = DS.Text.caption(.medium)
         titleLabel.textColor = .secondaryLabelColor
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let headerRow = NSStackView(views: [chevron, titleLabel])
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = DS.Spacing.s
 
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = DS.Spacing.xs
-        content.alphaValue = 0
-        content.translatesAutoresizingMaskIntoConstraints = false
+        content.isHidden = true
+        content.edgeInsets = NSEdgeInsets(top: DS.Spacing.xs, left: 20, bottom: 0, right: 0)
 
-        addSubview(chevron)
-        addSubview(titleLabel)
-        addSubview(content)
-        contentHeight = content.heightAnchor.constraint(equalToConstant: 0)
+        outer.orientation = .vertical
+        outer.alignment = .leading
+        outer.spacing = 0
+        outer.addArrangedSubview(headerRow)
+        outer.addArrangedSubview(content)
+        outer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(outer)
         NSLayoutConstraint.activate([
-            chevron.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            chevron.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            chevron.widthAnchor.constraint(equalToConstant: 10),
-            chevron.heightAnchor.constraint(equalToConstant: 10),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: DS.Spacing.s),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            content.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: DS.Spacing.xs),
-            // Indented under the header, like a disclosure's children.
-            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            content.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            content.bottomAnchor.constraint(equalTo: bottomAnchor),
-            contentHeight,
+            outer.topAnchor.constraint(equalTo: topAnchor),
+            outer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            outer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            outer.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        content.setClippingResistancePriority(.defaultLow, for: .vertical)
         refreshHeader()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// The chevron's anchor point is set here, once, and never inside the animation. Changing
+    /// `anchorPoint` *moves* a layer, so doing it on the first toggle made the glyph visibly
+    /// jump before the rotation started.
+    override func layout() {
+        super.layout()
+        guard !didAnchorChevron, chevron.frame.width > 0, let layer = chevron.layer else { return }
+        didAnchorChevron = true
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(x: chevron.frame.midX, y: chevron.frame.midY)
+    }
+
     // The ticking follows window membership instead of deinit (Swift 6 forbids touching the
-    // main-actor Timer there): leaving the window — a stage switch, or the transcript being
-    // rebuilt — stops the tick; coming back while still unfinished resumes it. This also means
-    // a group discarded mid-run can't leave an orphaned timer firing forever.
+    // main-actor Timer there): leaving the window stops the tick; coming back while still
+    // unfinished resumes it, so a group discarded mid-run can't orphan a timer.
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
         timer?.invalidate()
@@ -1545,10 +1559,13 @@ private final class WorkGroupView: NSView {
         }
     }
 
-    /// The whole header is the hit target, not just the chevron — a 10pt glyph is a poor
-    /// click target, and the row reads as one control.
+    /// The header row is the hit target, not the 10pt glyph.
     override func mouseDown(with event: NSEvent) {
-        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point) else { return }
+        // Only the header: clicking a tool line inside the expanded content must reach that
+        // line's own links rather than collapsing the group underneath the cursor.
+        guard point.y <= titleLabel.frame.maxY + DS.Spacing.xs else { return super.mouseDown(with: event) }
         toggle()
     }
 
@@ -1560,9 +1577,6 @@ private final class WorkGroupView: NSView {
         content.addArrangedSubview(view)
         if isStep { stepCount += 1 }
         refreshHeader()
-        // Growing while expanded has to move the height constraint too, or new lines are
-        // clipped by the value set at the last toggle.
-        if expanded { syncContentHeight(animated: false) }
     }
 
     func finish() {
@@ -1581,9 +1595,8 @@ private final class WorkGroupView: NSView {
 
     private func refreshHeader() {
         let steps = "\(stepCount) step\(stepCount == 1 ? "" : "s")"
-        // Always stated, never omitted: the elapsed time is the thing the header exists to
-        // report, and an earlier version hid it whenever the work took under a second — which
-        // is most of them, so in practice it never appeared at all.
+        // Always stated: an earlier version hid the elapsed time whenever the work took under a
+        // second, which is most of them, so in practice it never appeared.
         let elapsed = Self.format((finishedAt ?? Date()).timeIntervalSince(startedAt))
         titleLabel.stringValue = finished
             ? "Worked for \(elapsed) · \(steps)"
@@ -1597,21 +1610,13 @@ private final class WorkGroupView: NSView {
             context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
-            // Rotation, not an image swap — see `chevron`.
-            chevron.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            chevron.layer?.position = CGPoint(x: chevron.frame.midX, y: chevron.frame.midY)
-            chevron.layer?.transform = CATransform3DMakeRotation(expanded ? .pi / 2 : 0, 0, 0, 1)
-            content.animator().alphaValue = expanded ? 1 : 0
-            syncContentHeight(animated: true)
+            // Clockwise: on macOS a layer's positive rotation is counter-clockwise, so pointing
+            // a right-facing chevron *down* is a negative angle. The first version used +90 and
+            // pointed it up.
+            chevron.layer?.transform = CATransform3DMakeRotation(expanded ? -.pi / 2 : 0, 0, 0, 1)
+            content.isHidden = !expanded
             enclosingScrollView?.documentView?.layoutSubtreeIfNeeded()
         }
-    }
-
-    private func syncContentHeight(animated: Bool) {
-        let target = expanded ? content.fittingSize.height : 0
-        guard abs(contentHeight.constant - target) > 0.5 else { return }
-        contentHeight.constant = target
-        if !animated { superview?.layoutSubtreeIfNeeded() }
     }
 }
 

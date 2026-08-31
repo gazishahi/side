@@ -1149,7 +1149,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// and session restore already go through, just invoked from outside this file.
     func loadProject(at url: URL) {
         projectURL = url
+        LaunchSignposts.begin("retarget")
         retarget(to: url)
+        LaunchSignposts.end("retarget")
         // A fresh project open starts at the shared per-project bucket; if this project has an
         // active track, ShellViewController sets the real key synchronously inside its
         // `onProjectOpened` callback below, before `reindexAndRestoreLastFile` reads it.
@@ -1157,8 +1159,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         emptyState.isHidden = true
         UserDefaults.standard.set(url.path, forKey: lastProjectKey)
         rememberRecentProject(url)
+        LaunchSignposts.begin("projectOpened")
         onProjectOpened?(url)
+        LaunchSignposts.end("projectOpened")
+        LaunchSignposts.begin("reindexAndRestore")
         reindexAndRestoreLastFile()
+        LaunchSignposts.end("reindexAndRestore")
     }
 
     /// Tears down and recreates `lspManager` pointed at `root`, and points every other

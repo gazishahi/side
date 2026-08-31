@@ -46,13 +46,19 @@ final class ProjectContext {
         // a cached answer from a previous launch is available. A bare process spawn costs ~72ms
         // on a machine running endpoint security, so this was the bulk of Side's blocked first
         // frame; see GitLaunchProbe for the measurements.
+        LaunchSignposts.begin("probeResolve")
         let cached = GitLaunchProbe.cached(projectRoot: projectRoot)
         let probe = cached ?? GitLaunchProbe.probe(projectRoot: projectRoot)
+        LaunchSignposts.end("probeResolve")
         if cached == nil { GitLaunchProbe.cache(probe, projectRoot: projectRoot) }
         let stateDirectory = probe.commonGitDir.map { URL(fileURLWithPath: $0).appendingPathComponent("side") }
             ?? projectRoot.appendingPathComponent(".git/side")
+        LaunchSignposts.begin("trackStoreInit")
         self.trackStore = TrackStore(projectRoot: projectRoot, stateDirectory: stateDirectory, probe: probe)
+        LaunchSignposts.end("trackStoreInit")
+        LaunchSignposts.begin("sessionStoreInit")
         self.sessionStore = AgentSessionStore(stateDirectory: stateDirectory)
+        LaunchSignposts.end("sessionStoreInit")
         // A cache is a guess about a moving target: the user can switch branches, `git init` a
         // plain folder, or move a worktree between launches. So it is used to render *now* and
         // verified immediately after, off the main thread, with any disagreement corrected.
