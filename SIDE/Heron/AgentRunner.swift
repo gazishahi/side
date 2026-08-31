@@ -536,9 +536,15 @@ final class AgentRunner {
     /// away. That's the right tool when the next thing you want to talk about has nothing to do
     /// with the last thing — a summary would just drag irrelevant context into every future turn.
     /// Checkpoints, usage history, and files are untouched; only the turns go.
+    /// Starts a fresh conversation, **keeping** the current one.
+    ///
+    /// It used to delete it. That made every conversation disposable, which is a strange trade
+    /// for the place a change's reasoning is recorded — the transcript is often the only thing
+    /// that remembers *why*. It is archived instead and reachable from the history picker.
     func startNewConversation() {
         guard !phase.isBusy else { return }
         appliedEditCounts = []
+        sessionStore.archiveActiveConversation(forTrackKey: trackKey)
         let selection = resolvedSelection()
         sessionStore.replaceTurns([], trackKey: trackKey, providerId: selection.providerId, modelId: selection.modelId ?? "")
         entries = []
@@ -547,6 +553,25 @@ final class AgentRunner {
         pendingBatch = nil
         setPhase(.idle)
         notify(.reset)
+    }
+
+    var archivedConversations: [ArchivedConversation] {
+        sessionStore.archivedConversations(forTrackKey: trackKey)
+    }
+
+    /// Reopens a past conversation. The current one is archived rather than dropped, so this can
+    /// never be the move that loses work.
+    @discardableResult
+    func openArchivedConversation(id: UUID) -> Bool {
+        guard !phase.isBusy else { return false }
+        guard sessionStore.openArchivedConversation(id: id, forTrackKey: trackKey) != nil else { return false }
+        appliedEditCounts = []
+        entries = []
+        pendingBatch = nil
+        hydrateFromSession()
+        setPhase(.idle)
+        notify(.reset)
+        return true
     }
 
     // MARK: - Context budget

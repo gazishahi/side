@@ -131,6 +131,19 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         composer.onAction = { [weak self] in self?.composerActionTapped() }
         composer.onCycleMode = { [weak self] in self?.cycleScope() }
         composer.onEscape = { [weak self] in self?.escapePressed() ?? false }
+        // Newest first, deduplicated: pressing Up three times to get past the same message
+        // repeated is friction, not history.
+        composer.messageHistory = { [weak self] in
+            guard let entries = self?.runner?.entries else { return [] }
+            var seen: Set<String> = []
+            var result: [String] = []
+            for entry in entries.reversed() {
+                guard case .userText(let text) = entry.kind else { continue }
+                guard seen.insert(text).inserted else { continue }
+                result.append(text)
+            }
+            return result
+        }
         view.addSubview(composer)
         // Added after the scroll view on purpose: everything down here floats over the
         // transcript, and subview order is what keeps scrolled bubbles from painting across it.
@@ -504,6 +517,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         actions.onAttach = { [weak self] in self?.insertMentionTrigger() }
         actions.onAttachImage = { [weak self] in self?.pickImageAttachment() }
         actions.onOpenRules = { [weak self] in self?.openProjectRules() }
+        actions.onShowHistory = { [weak self] in self?.showConversationHistory() }
         actions.onCompact = { [weak self] in self?.compactConversation() }
         actions.onNewConversation = { [weak self] in self?.startNewConversation() }
         let popover = NSPopover()
@@ -564,6 +578,30 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         ProjectRules.acknowledge(url: url, contents: ProjectRules.template.trimmingCharacters(in: .whitespacesAndNewlines))
         appendLocalNotice("Created \(ProjectRules.candidateNames[0]) — what you write there is included in every Think request for this project.")
         onRevealFileRequested?(url)
+    }
+
+    /// The history picker: every past conversation on this track, newest first.
+    private func showConversationHistory() {
+        guard let runner else { return }
+        let conversations = runner.archivedConversations
+        guard !conversations.isEmpty else {
+            appendLocalNotice("No past conversations on this track yet — starting a new one files the current one here.")
+            return
+        }
+        let picker = ConversationHistoryViewController()
+        picker.conversations = conversations
+        picker.onSelect = { [weak self] id in
+            guard let self, let runner = self.runner else { return }
+            guard runner.openArchivedConversation(id: id) else {
+                self.appendLocalNotice("Couldn't reopen that conversation.")
+                return
+            }
+            self.refreshSessionPill()
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = picker
+        popover.show(relativeTo: plusButton.bounds, of: plusButton, preferredEdge: .maxY)
     }
 
     /// The + popover's "Attach Image…" — an open panel filtered to what the models accept.
@@ -756,8 +794,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         guard let runner, !runner.entries.isEmpty else { return }
         let alert = NSAlert()
         alert.messageText = "Start a new conversation?"
-        alert.informativeText = "This conversation is discarded — not summarized. Use Compact instead if the agent should carry what it learned forward. Checkpoints, usage history, and your files are untouched."
-        alert.addButton(withTitle: "Discard")
+        alert.informativeText = "This conversation is filed under History — you can reopen it any time. The agent starts fresh and won't carry anything forward; use Compact instead if it should. Checkpoints, usage history, and your files are untouched."
+        alert.addButton(withTitle: "Start New")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -845,6 +883,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         ("guarded", "auto-run safe commands"),
         ("full", "auto-apply edits too"),
         ("rules", "open this project's standing instructions for the agent"),
+        ("history", "reopen a past conversation on this track"),
     ]
 
     private func performSlashCommand(_ name: String) {
@@ -852,6 +891,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case "compact": compactConversation()
         case "new": startNewConversation()
         case "rules": openProjectRules()
+        case "history": showConversationHistory()
         case "ask", "plan", "build":
             guard let scope = AgentToolScope(rawValue: name) else { return }
             trackStore?.setMode(AgentMode(scope: scope, autonomy: currentMode().autonomy), forTrackKey: attachedTrackKey ?? "")
@@ -2130,12 +2170,145 @@ private final class PopoverActionRow: NSView {
     }
 }
 
+/// The conversation history picker: one row per past conversation, newest first.
+///
+/// Rows lead with the conversation's own first message rather than a date, because that is what
+/// someone recognizes it by — "the one where I asked about the migration", not "the one from
+/// Tuesday". The date and size follow as secondary detail.
+private final class ConversationHistoryViewController: NSViewController {
+    var conversations: [ArchivedConversation] = []
+    var onSelect: ((UUID) -> Void)?
+
+    override func loadView() { view = NSView() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.m, left: DS.Spacing.m, bottom: DS.Spacing.m, right: DS.Spacing.m)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let header = NSTextField(labelWithString: "PAST CONVERSATIONS")
+        header.font = DS.Text.micro()
+        header.textColor = .tertiaryLabelColor
+        stack.addArrangedSubview(header)
+
+        // Capped: a picker is for finding something, and past a couple of dozen rows a flat list
+        // stops being that. Search belongs here before the cap gets raised.
+        for conversation in conversations.prefix(20) {
+            let row = ConversationHistoryRow(conversation: conversation) { [weak self] in
+                self?.view.window?.performClose(nil)
+                self?.onSelect?(conversation.id)
+            }
+            stack.addArrangedSubview(row)
+        }
+        if conversations.count > 20 {
+            let more = NSTextField(labelWithString: "+\(conversations.count - 20) older")
+            more.font = DS.Text.caption()
+            more.textColor = .tertiaryLabelColor
+            stack.addArrangedSubview(more)
+        }
+
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
+        ])
+        for case let row as ConversationHistoryRow in stack.arrangedSubviews {
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -DS.Spacing.m * 2).isActive = true
+        }
+    }
+}
+
+/// One history row: title above, date and turn count below, menu-style highlight on hover.
+private final class ConversationHistoryRow: NSView {
+    private let highlight = NSView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+    private let action: () -> Void
+    private var trackingArea: NSTrackingArea?
+
+    init(conversation: ArchivedConversation, action: @escaping () -> Void) {
+        self.action = action
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        highlight.wantsLayer = true
+        highlight.layer?.cornerRadius = 8
+        highlight.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        highlight.alphaValue = 0
+        highlight.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(highlight)
+
+        titleLabel.stringValue = conversation.title.isEmpty ? "Untitled conversation" : conversation.title
+        titleLabel.font = DS.Text.control()
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        let when = formatter.localizedString(for: conversation.archivedAt, relativeTo: Date())
+        detailLabel.stringValue = "\(when) · \(conversation.turnCount) turn\(conversation.turnCount == 1 ? "" : "s")"
+        detailLabel.font = DS.Text.caption()
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(detailLabel)
+
+        NSLayoutConstraint.activate([
+            highlight.topAnchor.constraint(equalTo: topAnchor),
+            highlight.bottomAnchor.constraint(equalTo: bottomAnchor),
+            highlight.leadingAnchor.constraint(equalTo: leadingAnchor),
+            highlight.trailingAnchor.constraint(equalTo: trailingAnchor),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -DS.Spacing.l),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            detailLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l),
+            detailLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func setHighlighted(_ on: Bool) {
+        highlight.alphaValue = on ? 1 : 0
+        titleLabel.textColor = on ? .white : .labelColor
+        detailLabel.textColor = on ? NSColor.white.withAlphaComponent(0.8) : .secondaryLabelColor
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { setHighlighted(true) }
+    override func mouseExited(with event: NSEvent) { setHighlighted(false) }
+
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        action()
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
 /// The + button's popover — the same presentation as the session pill, because it feels right:
 /// anchored, arrowed, springy. Rows read like menu items but live in the popover material.
 private final class PlusActionsViewController: NSViewController {
     var onAttach: (() -> Void)?
     var onAttachImage: (() -> Void)?
     var onOpenRules: (() -> Void)?
+    var onShowHistory: (() -> Void)?
     var onCompact: (() -> Void)?
     var onNewConversation: (() -> Void)?
 
@@ -2146,6 +2319,7 @@ private final class PlusActionsViewController: NSViewController {
         let rows = [
             PopoverActionRow(symbol: "photo", title: "Attach Image…") { [weak self] in self?.dismissThen(self?.onAttachImage) },
             PopoverActionRow(symbol: "text.book.closed", title: "Project Rules…") { [weak self] in self?.dismissThen(self?.onOpenRules) },
+            PopoverActionRow(symbol: "clock.arrow.circlepath", title: "History…") { [weak self] in self?.dismissThen(self?.onShowHistory) },
             PopoverActionRow(symbol: "at", title: "Add File Reference") { [weak self] in self?.dismissThen(self?.onAttach) },
             PopoverActionRow(symbol: "arrow.down.right.and.arrow.up.left", title: "Compact Conversation…") { [weak self] in self?.dismissThen(self?.onCompact) },
             PopoverActionRow(symbol: "square.and.pencil", title: "New Conversation…") { [weak self] in self?.dismissThen(self?.onNewConversation) },
@@ -2508,6 +2682,19 @@ private final class ComposerTextView: NSTextView {
         return super.performDragOperation(sender)
     }
 
+    /// Whether the caret sits on the first visual line — the condition under which Up means
+    /// "recall" rather than "move the caret".
+    var caretIsOnFirstLine: Bool {
+        guard let layoutManager, let container = textContainer else { return true }
+        let caret = selectedRange().location
+        var effective = NSRange()
+        let glyphIndex = layoutManager.glyphIndexForCharacter(at: min(caret, max(0, (string as NSString).length - 1)))
+        let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &effective)
+        let firstRect = layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil)
+        _ = container
+        return abs(lineRect.minY - firstRect.minY) < 0.5
+    }
+
     /// Drawn by the text view itself at the glyph origin the layout manager uses, so it can
     /// never disagree with the insertion point — the overlay-label approach kept drifting by a
     /// couple of points (the label cell pads its title rect; the container inset doesn't).
@@ -2650,6 +2837,14 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     var onCycleMode: (() -> Void)?
     /// Escape with no candidate list showing. Returns whether it was acted on.
     var onEscape: (() -> Bool)?
+    /// The user's own past messages, newest first — supplied by the owner, which has the
+    /// conversation. Consulted lazily so it always reflects the current track.
+    var messageHistory: (() -> [String])?
+    /// How far back the composer is currently showing, 0 meaning "the user's own draft".
+    private var historyOffset = 0
+    /// What was typed before recall started, so walking back down returns it rather than
+    /// leaving the composer holding someone else's sentence.
+    private var draftBeforeRecall: String?
 
     private let textView = ComposerTextView()
 
@@ -2920,7 +3115,24 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Walks the recall window. Returns whether it consumed the key.
+    private func recallHistory(offset: Int) -> Bool {
+        guard let history = messageHistory?(), !history.isEmpty else { return false }
+        let target = historyOffset + offset
+        guard target >= 0, target <= history.count else { return false }
+        if historyOffset == 0, target > 0 { draftBeforeRecall = textView.string }
+        historyOffset = target
+        let text = target == 0 ? (draftBeforeRecall ?? "") : history[target - 1]
+        textView.string = text
+        textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+        textDidChange(Notification(name: NSText.didChangeNotification))
+        return true
+    }
+
     func clear() {
+        // A sent message ends the recall window — the next Up starts from the newest again.
+        historyOffset = 0
+        draftBeforeRecall = nil
         // Sending has to take the candidate list down with it, or it hangs over an empty field.
         isDictating = false
         mentionPopup.hide()
@@ -3001,6 +3213,15 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         // to interrupt an agent.
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             return onEscape?() ?? false
+        }
+        // Shell-style recall, with the one guard that keeps it from breaking editing: Up only
+        // recalls while the caret is on the first line, so inside a multi-line message it still
+        // moves the caret. Down walks back toward the draft.
+        if commandSelector == #selector(NSResponder.moveUp(_:)), self.textView.caretIsOnFirstLine {
+            return recallHistory(offset: 1)
+        }
+        if commandSelector == #selector(NSResponder.moveDown(_:)), historyOffset > 0 {
+            return recallHistory(offset: -1)
         }
         guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
         if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { return false }

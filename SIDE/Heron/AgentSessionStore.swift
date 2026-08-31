@@ -56,8 +56,14 @@ final class AgentSessionStore {
     /// process has actually touched, never with the project's total track count.
     private var loadedSessions: [String: AgentSession] = [:]
 
+    private var archives: [ArchivedConversation] = []
+
     private let sessionsDirectory: URL
+    /// Archived conversations, alongside the live ones rather than mixed in with them, so a
+    /// directory listing still answers "what is current".
+    private let archivesDirectory: URL
     private let indexURL: URL
+    private let archivesURL: URL
     private let checkpointsURL: URL
     /// Where `think.json` (the old single-file format) used to live — read once for migration,
     /// then removed once its contents are safely split across the new files.
@@ -66,7 +72,9 @@ final class AgentSessionStore {
     init(stateDirectory: URL) {
         let thinkDirectory = stateDirectory.appendingPathComponent("think")
         self.sessionsDirectory = thinkDirectory.appendingPathComponent("sessions")
+        self.archivesDirectory = thinkDirectory.appendingPathComponent("archive")
         self.indexURL = thinkDirectory.appendingPathComponent("index.json")
+        self.archivesURL = thinkDirectory.appendingPathComponent("archives.json")
         self.checkpointsURL = thinkDirectory.appendingPathComponent("checkpoints.json")
         self.legacyURL = stateDirectory.appendingPathComponent("think.json")
         load()
@@ -162,6 +170,11 @@ final class AgentSessionStore {
     /// Called when a track is deleted — its conversation and checkpoints have nowhere to belong
     /// anymore, same cleanup contract as Make's file memory and Run's terminal sessions.
     func removeSession(forTrackKey trackKey: String) {
+        for record in archives where record.trackKey == trackKey {
+            try? FileManager.default.removeItem(at: archiveFileURL(id: record.id))
+        }
+        archives.removeAll { $0.trackKey == trackKey }
+        saveArchives()
         loadedSessions.removeValue(forKey: trackKey)
         residency.removeAll { $0 == trackKey }
         index.removeAll { $0.trackKey == trackKey }
@@ -306,6 +319,7 @@ final class AgentSessionStore {
     private func load() {
         if let loaded = JSONStore.read([SessionIndexEntry].self, from: indexURL) {
             index = loaded.payload
+            archives = JSONStore.read([ArchivedConversation].self, from: archivesURL)?.payload ?? []
             checkpoints = JSONStore.read([Checkpoint].self, from: checkpointsURL)?.payload ?? []
             pruneExpiredSessions()
             return
@@ -332,6 +346,11 @@ final class AgentSessionStore {
     /// Drops every conversation in this project, keeping tracks and checkpoints. The blunt
     /// instrument behind Preferences' "Delete All Conversations."
     func deleteAllSessions() {
+        for record in archives {
+            try? FileManager.default.removeItem(at: archiveFileURL(id: record.id))
+        }
+        archives.removeAll()
+        saveArchives()
         loadedSessions.removeAll()
         residency.removeAll()
         for entry in index {
@@ -371,6 +390,89 @@ final class AgentSessionStore {
 
     private func saveIndex() {
         JSONStore.write(index, to: indexURL)
+    }
+
+    // MARK: - Conversation history
+
+    /// Past conversations for a track, newest first.
+    func archivedConversations(forTrackKey trackKey: String) -> [ArchivedConversation] {
+        archives.filter { $0.trackKey == trackKey }.sorted { $0.archivedAt > $1.archivedAt }
+    }
+
+    /// Files the track's current conversation away and clears the live slot.
+    ///
+    /// Returns false when there is nothing worth keeping — an empty conversation is not history,
+    /// and archiving it would fill the picker with blank rows.
+    @discardableResult
+    func archiveActiveConversation(forTrackKey trackKey: String) -> Bool {
+        guard let session = loadedSession(forTrackKey: trackKey), !session.turns.isEmpty else { return false }
+        let record = ArchivedConversation(
+            id: session.id, trackKey: trackKey,
+            title: ArchivedConversation.title(for: session),
+            turnCount: session.turns.count,
+            createdAt: session.createdAt
+        )
+        // Written before the live copy is cleared: if this fails the conversation is still where
+        // it was, which is the safe direction for a failure whose alternative is losing it.
+        guard SessionLog.write(session, to: archiveFileURL(id: session.id)) else { return false }
+        archives.append(record)
+        saveArchives()
+        clearActiveConversation(forTrackKey: trackKey)
+        return true
+    }
+
+    /// Swaps an archived conversation back into the live slot, filing away whatever was there.
+    ///
+    /// The current conversation is archived first rather than discarded — reopening an old one
+    /// must not be a way to lose the new one.
+    @discardableResult
+    func openArchivedConversation(id: UUID, forTrackKey trackKey: String) -> AgentSession? {
+        guard let record = archives.first(where: { $0.id == id && $0.trackKey == trackKey }),
+              let session = SessionLog.read(from: archiveFileURL(id: id)) else { return nil }
+        archiveActiveConversation(forTrackKey: trackKey)
+        guard SessionLog.write(session, to: sessionFileURL(forTrackKey: trackKey)) else { return nil }
+        try? FileManager.default.removeItem(at: archiveFileURL(id: id))
+        archives.removeAll { $0.id == record.id }
+        saveArchives()
+        loadedSessions[trackKey] = session
+        touchResidency(trackKey)
+        upsertIndexEntry(for: session, trackKey: trackKey)
+        return session
+    }
+
+    /// Removes the live conversation without keeping it — what `startNewConversation` used to do
+    /// unconditionally, now reserved for a user who explicitly discards.
+    func clearActiveConversation(forTrackKey trackKey: String) {
+        loadedSessions.removeValue(forKey: trackKey)
+        residency.removeAll { $0 == trackKey }
+        index.removeAll { $0.trackKey == trackKey }
+        try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: trackKey))
+        try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
+        saveIndex()
+    }
+
+    private func archiveFileURL(id: UUID) -> URL {
+        archivesDirectory.appendingPathComponent("\(id.uuidString).jsonl")
+    }
+
+    private func saveArchives() {
+        JSONStore.write(archives, to: archivesURL)
+    }
+
+    private func upsertIndexEntry(for session: AgentSession, trackKey: String) {
+        if let position = index.firstIndex(where: { $0.trackKey == trackKey }) {
+            index[position].providerId = session.providerId
+            index[position].modelId = session.modelId
+            index[position].lastActiveAt = session.lastActiveAt
+            index[position].lastReportedInputTokens = session.lastReportedInputTokens
+        } else {
+            index.append(SessionIndexEntry(
+                id: session.id, trackKey: trackKey, providerId: session.providerId,
+                modelId: session.modelId, lastActiveAt: session.lastActiveAt,
+                lastReportedInputTokens: session.lastReportedInputTokens
+            ))
+        }
+        saveIndex()
     }
 
     private func saveCheckpoints() {
