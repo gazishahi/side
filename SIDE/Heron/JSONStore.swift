@@ -58,7 +58,37 @@ enum JSONStore {
             return (try decoder.decode(Payload.self, from: data), 1)
         } catch {
             PersistenceFailureReporter.shared.report(url: url, operation: .read, error: error)
+            quarantine(url)
             return nil
+        }
+    }
+
+    /// Moves a file that exists but cannot be decoded out of the way before anyone can write over it.
+    ///
+    /// Reporting the corruption was never the whole job. Every loader substitutes an empty
+    /// collection for a failed read, and the first ordinary save afterwards — a reconcile can
+    /// trigger one seconds after launch — wrote that empty collection over the corrupt file. One
+    /// alert, then the evidence was gone for good, along with any chance of recovering the tracks
+    /// or conversations it held. Found by the 2026-09-01 audit, escalated from the 2026-08-30
+    /// "no backups on corruption": it was not merely unbacked-up, it was actively destroyed.
+    ///
+    /// The quarantined copy sits beside the original with a timestamp, so a user (or a future
+    /// repair tool) can still read it. A failure to move it is reported and the read still fails —
+    /// but in that case the original stays, which is still better than the old behaviour.
+    static func quarantinePath(for url: URL, at date: Date = Date()) -> URL {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate, .withTime, .withDashSeparatorInDate, .withColonSeparatorInTime]
+        let stamp = formatter.string(from: date).replacingOccurrences(of: ":", with: "-")
+        return url.appendingPathExtension("corrupt-\(stamp)")
+    }
+
+    private static func quarantine(_ url: URL) {
+        let destination = quarantinePath(for: url)
+        do {
+            try FileManager.default.moveItem(at: url, to: destination)
+            NSLog("[Side] quarantined unreadable %@ to %@", url.lastPathComponent, destination.lastPathComponent)
+        } catch {
+            PersistenceFailureReporter.shared.report(url: destination, operation: .write, error: error)
         }
     }
 

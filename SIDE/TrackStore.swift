@@ -138,6 +138,9 @@ final class TrackStore {
         /// `pullFromParent` on a root track — there's no parent branch to pull.
         case noParentTrack
         case nothingToPull
+        /// The track's worktree holds uncommitted work and the caller hasn't consented to losing
+        /// it. Carries the count so the consent prompt can name what is about to be destroyed.
+        case worktreeHasUncommittedChanges(Int)
 
         var errorDescription: String? {
             switch self {
@@ -151,6 +154,8 @@ final class TrackStore {
             case .cannotDeleteTrackWithLiveChildren: return "This track still has stacked tracks forked from it — park, complete, or archive them first."
             case .noParentTrack: return "This track doesn't fork from another track — there's nothing to pull."
             case .nothingToPull: return "Already up to date with its parent branch."
+            case .worktreeHasUncommittedChanges(let count):
+                return "This track's working copy has \(count) uncommitted change\(count == 1 ? "" : "s") that would be lost."
             }
         }
     }
@@ -219,13 +224,13 @@ final class TrackStore {
                 // The main tree is just sitting on its own business (the default branch, or
                 // whatever else) — doesn't affect a track that already has an independent
                 // worktree, but the untracked-branch banner is still worth keeping accurate.
-                untrackedBranch = currentBranch == defaultBranch ? nil : currentBranch
+                setUntrackedBranchFromReconcile(currentBranch == defaultBranch ? nil : currentBranch)
                 notifyChange()
                 return
             }
             let hadStaleActive = activeTrack != nil
             demoteActiveTrack()
-            untrackedBranch = currentBranch == defaultBranch ? nil : currentBranch
+            setUntrackedBranchFromReconcile(currentBranch == defaultBranch ? nil : currentBranch)
             if hadStaleActive { save() }
             notifyChange()
         }
@@ -278,6 +283,19 @@ final class TrackStore {
         }
     }
 
+    /// Reconciliation's way of updating `untrackedBranch`: a *different* branch invalidates the
+    /// adopted worktree path, because that worktree is checked out on the old one.
+    ///
+    /// Without this: "Switch to Existing Branch…" adopts A and stores A's worktree path; the user
+    /// runs `git checkout B` in the main tree; reconcile sets the banner to B but keeps A's path;
+    /// "Turn Into a Track" for B then creates a track whose working directory is A's worktree, and
+    /// every edit, checkpoint, terminal, and promote for "track B" operates on branch A, forever.
+    /// Found by the 2026-09-01 audit.
+    private func setUntrackedBranchFromReconcile(_ branch: String?) {
+        if branch != untrackedBranch { untrackedBranchWorkingDirectoryPath = nil }
+        untrackedBranch = branch
+    }
+
     /// Wraps whatever branch is *already* checked out into a new track — no checkout, since we're
     /// already there. This is how work started before Tracks existed (or outside Side entirely)
     /// gets folded in, with the user naming the intent rather than Side guessing one from the
@@ -290,7 +308,12 @@ final class TrackStore {
         epoch += 1
         demoteActiveTrack()
         var track = Track(intent: trimmed, branchName: branchName)
-        track.workingDirectoryPath = untrackedBranchWorkingDirectoryPath
+        // Belt to the clearing above's braces: only hand over a worktree that is actually on this
+        // branch. One `symbolic-ref` — a click-triggered action can afford a spawn.
+        if let path = untrackedBranchWorkingDirectoryPath {
+            let onBranch = runGit(["symbolic-ref", "--short", "HEAD"], cwd: path)
+            track.workingDirectoryPath = (onBranch.success && onBranch.output == branchName) ? path : nil
+        }
         tracks.append(track)
         untrackedBranch = nil
         untrackedBranchWorkingDirectoryPath = nil
@@ -612,36 +635,64 @@ final class TrackStore {
     /// makes no sense) rather than silently switching you elsewhere first. Removes the track's
     /// worktree before deleting its branch — `branch -D` alone fails on a branch still checked
     /// out in a worktree.
-    func deleteTrack(_ track: Track, alsoDeleteBranch: Bool, completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
+    ///
+    /// `--force` on the worktree removal destroys every uncommitted and untracked file in it, so
+    /// it is only ever passed after a dirtiness probe: a dirty worktree is refused with
+    /// `.worktreeHasUncommittedChanges(count)` unless the caller has `discardUncommittedChanges`
+    /// consent from the user. Before this, "Delete" with "Also delete branch" *unchecked* — the
+    /// option a user picks precisely because they believe the work survives — silently
+    /// obliterated the agent's un-checkpointed edits. Found by both git passes of the 2026-09-01
+    /// audit. `removeWorkingCopy` already had this rule; delete is the path that didn't.
+    func deleteTrack(
+        _ track: Track, alsoDeleteBranch: Bool, discardUncommittedChanges: Bool = false,
+        completion: @escaping @Sendable (Result<Void, Error>) -> Void
+    ) {
         guard track.status != .active else { completion(.failure(TrackError.cannotDeleteActive)); return }
         // Archived children don't count — they're already treated as gone from the working set,
         // so they can't be silently stranded by anything this does.
         let hasLiveChildren = tracks.contains { $0.parentTrackId == track.id && $0.status != .archived }
         guard !hasLiveChildren else { completion(.failure(TrackError.cannotDeleteTrackWithLiveChildren)); return }
-        guard alsoDeleteBranch else {
-            if let path = track.workingDirectoryPath {
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    _ = self?.runGit(["worktree", "remove", "--force", path], cwd: self?.projectRoot.path ?? "")
-                    DispatchQueue.main.async {
-                        guard let self else { return }
-                        self.tracks.removeAll { $0.id == track.id }
-                        self.save()
-                        self.notifyChange()
-                        completion(.success(()))
-                    }
+
+        guard let path = track.workingDirectoryPath else {
+            // No worktree: nothing on disk can be lost, so nothing to probe.
+            if !alsoDeleteBranch {
+                tracks.removeAll { $0.id == track.id }
+                save()
+                notifyChange()
+                completion(.success(()))
+                return
+            }
+            deleteBranchAndRecord(track, worktreePath: nil, completion: completion)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let dirtyCount = GitPaths.dirtyPaths(cwd: path).count
+            if dirtyCount > 0, !discardUncommittedChanges {
+                DispatchQueue.main.async { completion(.failure(TrackError.worktreeHasUncommittedChanges(dirtyCount))) }
+                return
+            }
+            if !alsoDeleteBranch {
+                _ = self.runGit(["worktree", "remove", "--force", path], cwd: self.projectRoot.path)
+                DispatchQueue.main.async {
+                    self.tracks.removeAll { $0.id == track.id }
+                    self.save()
+                    self.notifyChange()
+                    completion(.success(()))
                 }
                 return
             }
-            tracks.removeAll { $0.id == track.id }
-            save()
-            notifyChange()
-            completion(.success(()))
-            return
+            DispatchQueue.main.async { self.deleteBranchAndRecord(track, worktreePath: path, completion: completion) }
         }
+    }
+
+    /// The branch-deleting half of `deleteTrack`, reached only after any dirtiness check passed.
+    private func deleteBranchAndRecord(_ track: Track, worktreePath: String?, completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let cwd = self.projectRoot.path
-            if let path = track.workingDirectoryPath {
+            if let path = worktreePath {
                 _ = self.runGit(["worktree", "remove", "--force", path], cwd: cwd)
             }
             let result = self.runGit(["branch", "-D", track.branchName], cwd: cwd)

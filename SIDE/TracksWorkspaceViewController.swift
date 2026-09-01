@@ -1073,25 +1073,49 @@ final class TracksWorkspaceViewController: NSViewController {
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             let alsoDeleteBranch = deleteBranchCheckbox.state == .on
-            self.trackStore?.deleteTrack(track, alsoDeleteBranch: alsoDeleteBranch) { [weak self] result in
+            self.performDelete(track, alsoDeleteBranch: alsoDeleteBranch, discardUncommittedChanges: false, window: window)
+        }
+    }
+
+    private func performDelete(_ track: Track, alsoDeleteBranch: Bool, discardUncommittedChanges: Bool, window: NSWindow) {
+            self.trackStore?.deleteTrack(track, alsoDeleteBranch: alsoDeleteBranch, discardUncommittedChanges: discardUncommittedChanges) { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .success:
                     self.onTrackDeleted?(track)
-                case .failure(let error as TrackStore.TrackError) where error == .cannotDeleteTrackWithLiveChildren || error == .cannotDeleteActive:
-                    // Refused before touching anything — unlike `.gitBranchDeleteFailed` below,
-                    // the track record is still fully intact, so cleaning up its sessions/runner
-                    // here would discard live state for a track that never actually went away.
-                    self.showError(error, title: "Couldn't delete track", window: window)
+                case .failure(let error as TrackStore.TrackError):
+                    if case .worktreeHasUncommittedChanges(let count) = error {
+                        // Refused before touching anything. The first dialog said "removes the
+                        // track from the list", which is what the user consented to — losing
+                        // uncommitted work is a different decision and gets its own question,
+                        // with the number in it.
+                        let confirm = NSAlert()
+                        confirm.alertStyle = .critical
+                        confirm.messageText = "Discard \(count) uncommitted change\(count == 1 ? "" : "s")?"
+                        confirm.informativeText = "This track's working copy has work that was never checkpointed. Deleting the track will destroy it. This can't be undone."
+                        confirm.addButton(withTitle: "Discard and Delete")
+                        confirm.addButton(withTitle: "Cancel")
+                        confirm.beginSheetModal(for: window) { [weak self] response in
+                            guard let self, response == .alertFirstButtonReturn else { return }
+                            self.performDelete(track, alsoDeleteBranch: alsoDeleteBranch, discardUncommittedChanges: true, window: window)
+                        }
+                        return
+                    }
+                    if error == .cannotDeleteTrackWithLiveChildren || error == .cannotDeleteActive {
+                        // Refused before touching anything — the track record is still fully
+                        // intact, so cleaning up its sessions/runner here would discard live state
+                        // for a track that never actually went away.
+                        self.showError(error, title: "Couldn't delete track", window: window)
+                        return
+                    }
+                    // Only `.gitBranchDeleteFailed` reaches here, which fires after `tracks.removeAll`.
+                    self.onTrackDeleted?(track)
+                    self.showError(error, title: "Track deleted", window: window)
                 case .failure(let error):
-                    // The track record really was removed already (this is only reachable via
-                    // `TrackError.gitBranchDeleteFailed`, which fires after `tracks.removeAll`) —
-                    // only the branch cleanup failed, so the ledger-side cleanup below still applies.
                     self.onTrackDeleted?(track)
                     self.showError(error, title: "Track deleted", window: window)
                 }
             }
-        }
     }
 }
 

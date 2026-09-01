@@ -707,15 +707,30 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
     }
 
-    private static func performMerge(branchName: String, baseRef: String, intent: String, cwd: String) -> (succeeded: Bool, message: String) {
+    // Internal rather than private so the refusal paths can be exercised against a real repo.
+    static func performMerge(branchName: String, baseRef: String, intent: String, cwd: String) -> (succeeded: Bool, message: String) {
         let dirty = GitPaths.dirtyPaths(cwd: cwd)
         guard dirty.isEmpty else {
             return (false, "⚠︎ Your main working copy has uncommitted changes — commit or stash them first.")
         }
+        // A detached HEAD is a hard refusal, not a skipped checkout. `symbolic-ref` fails when
+        // HEAD points at a commit rather than a branch; the old code took that failure as "no
+        // branch to compare against" and merged anyway — onto the detached commit — then printed
+        // "✓ Promoted to main" and marked the track completed while main had not moved and the
+        // merge commit was reachable only through the reflog. False success on the one action
+        // "main is canonical" exists to protect. Found by the 2026-09-01 audit.
         let currentBranch = GitPaths.runGit(["symbolic-ref", "--short", "HEAD"], cwd: cwd)
-        if currentBranch.success, currentBranch.output != baseRef {
+        guard currentBranch.success else {
+            return (false, "⚠︎ The checkout at \(cwd) is detached — not on any branch. Check out \(baseRef) there first, then promote.")
+        }
+        if currentBranch.output != baseRef {
             let checkout = GitPaths.runGit(["checkout", baseRef], cwd: cwd)
             guard checkout.success else { return (false, "⚠︎ Couldn't check out \(baseRef): \(checkout.output.prefix(200))") }
+            // Trust the branch we are on, not the command that was supposed to put us there.
+            let landed = GitPaths.runGit(["symbolic-ref", "--short", "HEAD"], cwd: cwd)
+            guard landed.success, landed.output == baseRef else {
+                return (false, "⚠︎ Expected to be on \(baseRef) after checkout but HEAD is \(landed.output.isEmpty ? "detached" : landed.output). Nothing was merged.")
+            }
         }
         let ahead = GitPaths.runGit(["rev-list", "--count", "\(baseRef)..\(branchName)"], cwd: cwd)
         if ahead.success, Int(ahead.output) == 0 {
