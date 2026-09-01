@@ -162,6 +162,21 @@ final class CommandRiskClassifierTests: XCTestCase {
         }
     }
 
+    func testLaunchersNeverAutoRun() {
+        // `env` runs whatever follows it. It tokenizes as a flagless read-only command — no shell
+        // operator, no forbidden flag, every argument inside the project — and then execs its
+        // argument. The 2026-09-01 audit verified this as unattended code execution on any
+        // Guarded or Full track. `printenv` dumps every secret in the environment into a tool
+        // result, which is not "read-only" in any sense that matters.
+        let commands = [
+            "env python -c 'print(1)'", "env node x.js", "env sh -c id", "env FOO=bar rm x",
+            "env", "printenv", "printenv PATH",
+        ]
+        for command in commands {
+            XCTAssertFalse(CommandAutoRunPolicy.isAutoRunnable(command), "would auto-run: \(command)")
+        }
+    }
+
     func testOrdinaryInProjectReadsStillAutoRun() {
         // The fix must not make Guarded mode useless — relative reads inside the project are
         // exactly what auto-run exists for.

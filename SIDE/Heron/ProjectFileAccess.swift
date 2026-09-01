@@ -70,8 +70,24 @@ enum ProjectFileAccess {
     static func isReadable(_ url: URL, root: URL) -> Bool {
         let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath().path
         guard url.path.hasPrefix(resolvedRoot + "/") else { return true }
+        let components = pathComponents(of: url, below: resolvedRoot)
+        // Case-folded: see `isWritable`.
+        if components.count >= 2, components[0] == ".git", components[1] == "side" { return false }
+        return components.first != ".side"
+    }
+
+    /// Path components below `root`, each lowercased.
+    ///
+    /// Lowercased because the default macOS filesystem is case-insensitive: `.GIT/hooks/x` and
+    /// `.git/hooks/x` are the same file on APFS, and an exact-string guard let the first one
+    /// through. The 2026-09-01 audit verified that as a write into the real hooks directory —
+    /// code execution on the next unattended `git status`, no click required under Full autonomy.
+    /// Folding on a case-sensitive volume refuses a few paths it could have allowed (`.Git/` as a
+    /// user's own directory), which is the right side to err on for a guard whose failure mode is
+    /// arbitrary code execution.
+    private static func pathComponents(of url: URL, below resolvedRoot: String) -> [String] {
         let relative = String(url.path.dropFirst(resolvedRoot.count + 1))
-        return !relative.hasPrefix(".git/side/") && !relative.hasPrefix(".side/")
+        return relative.split(separator: "/").map { $0.lowercased() }
     }
 
     /// Paths that are inside the project but must never be *written* by a tool.
@@ -87,8 +103,7 @@ enum ProjectFileAccess {
     static func isWritable(_ url: URL, root: URL) -> Bool {
         let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath().path
         guard url.path.hasPrefix(resolvedRoot + "/") else { return url.path != resolvedRoot }
-        let relative = String(url.path.dropFirst(resolvedRoot.count + 1))
-        let firstComponent = relative.split(separator: "/").first.map(String.init) ?? relative
-        return firstComponent != ".git" && firstComponent != ".side"
+        let first = pathComponents(of: url, below: resolvedRoot).first
+        return first != ".git" && first != ".side"
     }
 }

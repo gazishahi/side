@@ -74,7 +74,14 @@ enum CommandAutoRunPolicy {
     private static let readOnlyCommands: [String: [String]] = [
         "ls": [], "pwd": [], "echo": [], "date": [], "whoami": [], "hostname": [],
         "cat": [], "head": [], "tail": [], "wc": [], "file": [], "stat": [], "basename": [], "dirname": [],
-        "which": [], "type": [], "env": [], "printenv": [], "uname": [], "df": [], "du": [],
+        // `env` and `printenv` are deliberately absent. `env` is a *launcher*: `env sh -c id`
+        // or `env node evil.js` tokenizes as a clean read-only command with no forbidden flag,
+        // and then execs its argument. It is the same class as awk/sed/node — a program that
+        // takes another program as an ordinary argument — which the allowlist premise cannot
+        // vouch for. `printenv` goes with it: it dumps every secret in the process environment
+        // into a tool result. Found by the 2026-09-01 audit as a verified unattended-execution
+        // path on any Guarded or Full track.
+        "which": [], "type": [], "uname": [], "df": [], "du": [],
         "grep": [], "rg": [], "egrep": [], "fgrep": [],
         // Readers that become writers with one flag.
         "sort": ["-o", "--output"],
