@@ -9,7 +9,10 @@ actor LSPClient {
 
     private let transport: JSONRPCTransport
     private var nextRequestID = 1
-    private var pendingRequests: [Int: CheckedContinuation<Data, Error>] = [:]
+    /// Callbacks rather than continuations, so a request's *send* can complete independently of
+    /// its reply — `LSPOutboundQueue` awaits the write to preserve ordering, and must not wait on
+    /// the server's answer or one slow completion would stall every keystroke behind it.
+    private var pendingRequests: [Int: @Sendable (Result<Data, Error>) -> Void] = [:]
     private(set) var isRunning = false
 
     private var onDiagnostics: (@Sendable (PublishDiagnosticsParams) -> Void)?
@@ -45,7 +48,7 @@ actor LSPClient {
         try await transport.start()
         isRunning = true
         _ = try await request(method: "initialize", params: InitializeParams(processId: Int(ProcessInfo.processInfo.processIdentifier), rootUri: rootURI, initializationOptions: initializationOptions))
-        try notify(method: "initialized", params: [String: String]())
+        try await notify(method: "initialized", params: [String: String]())
     }
 
     func stop() async {
@@ -56,19 +59,37 @@ actor LSPClient {
         failAllPending(with: ClientError.notRunning)
     }
 
-    func didOpen(uri: String, languageId: String, text: String, version: Int) throws {
-        try notify(method: "textDocument/didOpen", params: DidOpenTextDocumentParams(
+    func didOpen(uri: String, languageId: String, text: String, version: Int) async throws {
+        try await notify(method: "textDocument/didOpen", params: DidOpenTextDocumentParams(
             textDocument: TextDocumentItem(uri: uri, languageId: languageId, version: version, text: text)))
     }
 
-    func didChange(uri: String, text: String, version: Int) throws {
-        try notify(method: "textDocument/didChange", params: DidChangeTextDocumentParams(
+    func didChange(uri: String, text: String, version: Int) async throws {
+        try await notify(method: "textDocument/didChange", params: DidChangeTextDocumentParams(
             textDocument: VersionedTextDocumentIdentifier(uri: uri, version: version),
             contentChanges: [TextDocumentContentChangeEvent(text: text)]))
     }
 
-    func didClose(uri: String) throws {
-        try notify(method: "textDocument/didClose", params: DidCloseTextDocumentParams(textDocument: TextDocumentIdentifier(uri: uri)))
+    func didClose(uri: String) async throws {
+        try await notify(method: "textDocument/didClose", params: DidCloseTextDocumentParams(textDocument: TextDocumentIdentifier(uri: uri)))
+    }
+
+    /// Sends one queued op. Returns once the bytes are written — for a request, before the reply.
+    func apply(_ op: LSPOutboundOp) async {
+        switch op {
+        case .didOpen(let uri, let languageId, let text, let version):
+            try? await didOpen(uri: uri, languageId: languageId, text: text, version: version)
+        case .didChange(let uri, let text, let version):
+            try? await didChange(uri: uri, text: text, version: version)
+        case .didClose(let uri):
+            try? await didClose(uri: uri)
+        case .completion(let uri, let position, let reply):
+            await sendRequest(method: "textDocument/completion",
+                              params: CompletionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position)) { reply(try? $0.get()) }
+        case .definition(let uri, let position, let reply):
+            await sendRequest(method: "textDocument/definition",
+                              params: DefinitionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position)) { reply(try? $0.get()) }
+        }
     }
 
     /// Returns the raw JSON-RPC response body; the shape of `result` (Location vs
@@ -83,33 +104,42 @@ actor LSPClient {
 
     // MARK: - JSON-RPC plumbing
 
-    private func request<Params: Encodable>(method: String, params: Params) async throws -> Data {
-        guard isRunning else { throw ClientError.notRunning }
+    /// Writes a request and registers its reply handler; returns once the write is done.
+    private func sendRequest<Params: Encodable>(method: String, params: Params, reply: @escaping @Sendable (Result<Data, Error>) -> Void) async {
+        guard isRunning else { return reply(.failure(ClientError.notRunning)) }
         let id = nextRequestID
         nextRequestID += 1
-        let data = try JSONEncoder().encode(RequestEnvelope(id: id, method: method, params: params))
-        return try await withCheckedThrowingContinuation { continuation in
-            pendingRequests[id] = continuation
-            Task { await transport.send(data) }
+        let data: Data
+        do { data = try JSONEncoder().encode(RequestEnvelope(id: id, method: method, params: params)) }
+        catch { return reply(.failure(error)) }
+        pendingRequests[id] = reply
+        await transport.send(data)
+    }
+
+    private func request<Params: Encodable>(method: String, params: Params) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            Task { await sendRequest(method: method, params: params) { continuation.resume(with: $0) } }
         }
     }
 
-    private func notify<Params: Encodable>(method: String, params: Params) throws {
+    /// Awaited to the write, deliberately — sending from a detached `Task` is what let two
+    /// notifications reach the server in the wrong order.
+    private func notify<Params: Encodable>(method: String, params: Params) async throws {
         guard isRunning else { return }
         let data = try JSONEncoder().encode(NotificationEnvelope(method: method, params: params))
-        Task { await transport.send(data) }
+        await transport.send(data)
     }
 
     private func handleMessage(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if let idNumber = object["id"] as? Int {
-            guard let continuation = pendingRequests.removeValue(forKey: idNumber) else { return }
+            guard let reply = pendingRequests.removeValue(forKey: idNumber) else { return }
             if let error = object["error"] as? [String: Any] {
                 let message = error["message"] as? String ?? "unknown LSP error"
                 let code = error["code"] as? Int ?? -1
-                continuation.resume(throwing: ClientError.serverError(code: code, message: message))
+                reply(.failure(ClientError.serverError(code: code, message: message)))
             } else {
-                continuation.resume(returning: data)
+                reply(.success(data))
             }
             return
         }
@@ -134,9 +164,7 @@ actor LSPClient {
     }
 
     private func failAllPending(with error: Error) {
-        for (_, continuation) in pendingRequests {
-            continuation.resume(throwing: error)
-        }
+        for (_, reply) in pendingRequests { reply(.failure(error)) }
         pendingRequests.removeAll()
     }
 }

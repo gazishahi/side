@@ -52,10 +52,21 @@ enum LanguageServerRegistry {
         return globalTsserver.path
     }
 
+    /// One lock for the three process-global caches below.
+    ///
+    /// They used to be bare `nonisolated(unsafe) static var`s with a comment claiming callers
+    /// serialized access. They did not: `LSPManager` resolves on a *concurrent* global queue
+    /// while `XcodeBuildServerSetup` resolves on main and `retryAfterInstall` invalidates on
+    /// main — opening a `.swift` and a `.ts` back to back mutated one `Dictionary` from two
+    /// threads. The 2026-09-01 audit confirmed it live. The shell spawns stay *outside* the lock
+    /// (they take hundreds of milliseconds); only the dictionary reads and writes are guarded,
+    /// so two threads may both miss and both resolve — harmless, they write the same answer.
+    private static let cacheLock = NSLock()
+
     private nonisolated(unsafe) static var globalNpmRootCache: String??
 
     private static func resolveGlobalNpmRoot() -> String? {
-        if let cached = globalNpmRootCache { return cached }
+        if let cached = cacheLock.withLock({ globalNpmRootCache }) { return cached }
         let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shellPath)
@@ -72,13 +83,13 @@ enum LanguageServerRegistry {
             guard process.terminationStatus == 0,
                   let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !output.isEmpty else {
-                globalNpmRootCache = .some(nil)
+                cacheLock.withLock { globalNpmRootCache = .some(nil) }
                 return nil
             }
-            globalNpmRootCache = .some(output)
+            cacheLock.withLock { globalNpmRootCache = .some(output) }
             return output
         } catch {
-            globalNpmRootCache = .some(nil)
+            cacheLock.withLock { globalNpmRootCache = .some(nil) }
             return nil
         }
     }
@@ -103,7 +114,7 @@ enum LanguageServerRegistry {
     }
 
     private static func resolveLoginShellPATH() -> String? {
-        if let cached = loginShellPATHCache { return cached }
+        if let cached = cacheLock.withLock({ loginShellPATHCache }) { return cached }
         let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shellPath)
@@ -120,13 +131,13 @@ enum LanguageServerRegistry {
             guard process.terminationStatus == 0,
                   let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !output.isEmpty else {
-                loginShellPATHCache = .some(nil)
+                cacheLock.withLock { loginShellPATHCache = .some(nil) }
                 return nil
             }
-            loginShellPATHCache = .some(output)
+            cacheLock.withLock { loginShellPATHCache = .some(output) }
             return output
         } catch {
-            loginShellPATHCache = .some(nil)
+            cacheLock.withLock { loginShellPATHCache = .some(nil) }
             return nil
         }
     }
@@ -136,8 +147,7 @@ enum LanguageServerRegistry {
         case notFound
     }
 
-    /// Callers (LSPManager) are expected to serialize access to this registry, so a plain
-    /// static cache is fine — see the note on resolveExecutable(named:).
+    /// Guarded by `cacheLock` — see its note.
     private nonisolated(unsafe) static var resolutionCache: [String: Resolution] = [:]
 
     /// GUI apps on macOS don't inherit the user's login-shell PATH (no .zshrc/.zprofile
@@ -151,26 +161,26 @@ enum LanguageServerRegistry {
     /// setup. Harmless to pass for non-keg-only formulas too: it just never gets reached since
     /// the plain `which` already succeeds first.
     ///
-    /// Not thread-safe on its own — callers (LSPManager) are expected to serialize access.
+    /// Safe to call from any thread.
     static func resolveExecutable(named binaryName: String, installFormula: String? = nil) -> URL? {
-        if let cached = resolutionCache[binaryName] {
+        if let cached = cacheLock.withLock({ resolutionCache[binaryName] }) {
             switch cached {
             case .found(let url): return url
             case .notFound: return nil
             }
         }
         if let url = runShell("which \(binaryName)").flatMap(URL.init(fileURLWithPath:)) {
-            resolutionCache[binaryName] = .found(url)
+            cacheLock.withLock { resolutionCache[binaryName] = .found(url) }
             return url
         }
         if let formula = installFormula, let prefix = runShell("brew --prefix \(formula)") {
             let candidate = URL(fileURLWithPath: prefix).appendingPathComponent("bin/\(binaryName)")
             if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                resolutionCache[binaryName] = .found(candidate)
+                cacheLock.withLock { resolutionCache[binaryName] = .found(candidate) }
                 return candidate
             }
         }
-        resolutionCache[binaryName] = .notFound
+        cacheLock.withLock { resolutionCache[binaryName] = .notFound }
         return nil
     }
 
@@ -202,6 +212,6 @@ enum LanguageServerRegistry {
     /// Called after an install completes so the next spawn attempt re-checks PATH instead of
     /// trusting a stale `.notFound` cached from before the binary existed.
     static func invalidateResolution(for binaryName: String) {
-        resolutionCache[binaryName] = nil
+        cacheLock.withLock { resolutionCache[binaryName] = nil }
     }
 }

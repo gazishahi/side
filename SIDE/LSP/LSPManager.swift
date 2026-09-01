@@ -12,6 +12,15 @@ final class LSPManager: @unchecked Sendable {
     private var clients: [String: LSPClient] = [:]
     private var startingServers: Set<String> = []
     private var documentVersions: [URL: Int] = [:]
+    /// The text of every open document, so a respawned server can be given `didOpen` for each.
+    /// A server that crashed and came back used to receive a bare `didChange` for a URI it had
+    /// never opened; strict servers (pyright) drop everything after that, silently, for the rest
+    /// of the session. The text is already sent on every keystroke, so holding it costs nothing new.
+    private var openDocuments: [URL: (languageId: String, text: String)] = [:]
+    /// One ordered outbound queue per server binary — see `LSPOutboundQueue`.
+    private var queues: [String: LSPOutboundQueue] = [:]
+    /// Binaries whose server died since it was last spawned; the next spawn replays `didOpen`.
+    private var crashedBinaries: Set<String> = []
     private var buildServerSetup: BuildServerSetupState = .notStarted
     /// Binaries that failed to resolve on PATH at least once this session — drives the Make
     /// stage's missing-LSP indicator. Cleared for a binary once `retryAfterInstall` succeeds.
@@ -48,59 +57,93 @@ final class LSPManager: @unchecked Sendable {
     func opened(url: URL, content: String) {
         guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
         documentVersions[url] = 1
-        withClient(for: entry) { client in
-            guard let client else { return }
-            Task { try? await client.didOpen(uri: url.absoluteString, languageId: entry.languageId, text: content, version: 1) }
-        }
+        openDocuments[url] = (entry.languageId, content)
+        onQueue(for: entry) { $0.enqueue(.didOpen(uri: url.absoluteString, languageId: entry.languageId, text: content, version: 1)) }
+        ensureClient(for: entry)
     }
 
     func changed(url: URL, content: String) {
         guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
         let version = (documentVersions[url] ?? 1) + 1
         documentVersions[url] = version
-        withClient(for: entry) { client in
-            guard let client else { return }
-            Task { try? await client.didChange(uri: url.absoluteString, text: content, version: version) }
-        }
+        if openDocuments[url] != nil { openDocuments[url]?.text = content }
+        onQueue(for: entry) { $0.enqueue(.didChange(uri: url.absoluteString, text: content, version: version)) }
+        ensureClient(for: entry)
     }
 
     func closed(url: URL) {
         documentVersions[url] = nil
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension),
-              let client = clients[entry.binaryName] else { return }
-        Task { try? await client.didClose(uri: url.absoluteString) }
+        openDocuments[url] = nil
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+        onQueue(for: entry) { $0.enqueue(.didClose(uri: url.absoluteString)) }
     }
 
     func definition(url: URL, position: LSPPosition, completion: @escaping @Sendable ([LSPLocation]) -> Void) {
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension),
-              let client = clients[entry.binaryName] else { completion([]); return }
-        Task {
-            let locations: [LSPLocation]
-            if let data = try? await client.definition(uri: url.absoluteString, position: position) {
-                locations = Self.decodeLocations(from: data)
-            } else {
-                locations = []
-            }
-            DispatchQueue.main.async { completion(locations) }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion([]); return }
+        onQueue(for: entry) {
+            $0.enqueue(.definition(uri: url.absoluteString, position: position) { data in
+                let locations = data.map { Self.decodeLocations(from: $0) } ?? []
+                DispatchQueue.main.async { completion(locations) }
+            })
         }
+        ensureClient(for: entry)
     }
 
     /// Flushes an immediate (non-debounced) didChange with the current buffer before asking
     /// for completions — otherwise, if this fires faster than the ~0.3s diagnostics debounce,
     /// the server would answer against stale content that doesn't include what was just typed.
+    /// Both go through the same queue, so the request cannot overtake the flush.
     func completion(url: URL, content: String, position: LSPPosition, completion: @escaping @Sendable ([LSPCompletionItem]) -> Void) {
         changed(url: url, content: content)
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension),
-              let client = clients[entry.binaryName] else { completion([]); return }
-        Task {
-            let items: [LSPCompletionItem]
-            if let data = try? await client.completion(uri: url.absoluteString, position: position) {
-                items = Self.decodeCompletionItems(from: data)
-            } else {
-                items = []
-            }
-            DispatchQueue.main.async { completion(items) }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion([]); return }
+        onQueue(for: entry) {
+            $0.enqueue(.completion(uri: url.absoluteString, position: position) { data in
+                let items = data.map { Self.decodeCompletionItems(from: $0) } ?? []
+                DispatchQueue.main.async { completion(items) }
+            })
         }
+    }
+
+    /// The manager is main-confined by convention (see the class note); the queue is main-confined
+    /// by type. `assumeIsolated` is where the convention is asserted rather than assumed — it
+    /// traps if any caller ever breaks it, which is better than a silent race.
+    private func onQueue(for entry: LanguageServerRegistry.Entry, _ body: @MainActor (LSPOutboundQueue) -> Void) {
+        MainActor.assumeIsolated { body(queue(for: entry)) }
+    }
+
+    @MainActor
+    private func queue(for entry: LanguageServerRegistry.Entry) -> LSPOutboundQueue {
+        if let existing = queues[entry.binaryName] { return existing }
+        let binaryName = entry.binaryName
+        let queue = LSPOutboundQueue { [weak self] op in
+            // Resolved per op, on main: the client for this binary right now. A missing client
+            // means the server died between enqueue and send — fail the op rather than block.
+            let client = await MainActor.run { self?.clients[binaryName] }
+            guard let client else { op.fail(); return }
+            await client.apply(op)
+        }
+        queues[binaryName] = queue
+        return queue
+    }
+
+    /// Spawns the server if it isn't running or starting, and resumes its queue once it is.
+    private func ensureClient(for entry: LanguageServerRegistry.Entry) {
+        guard clients[entry.binaryName] == nil, !startingServers.contains(entry.binaryName) else { return }
+        withClient(for: entry) { _ in }
+    }
+
+    /// What to send a server that has just come back after dying, given what the editor still has
+    /// open and what had queued up while it was down.
+    ///
+    /// `didOpen` for every open document first, each carrying its *current* text at version 1 —
+    /// that supersedes any buffered `didOpen`/`didChange`/`didClose` for the same documents, which
+    /// are dropped. Requests (completion, definition) are kept, after the opens, so a completion
+    /// asked for during the outage still gets an answer from the new server rather than a silent
+    /// `nil`.
+    static func respawnOps(openDocuments: [(uri: String, languageId: String, text: String)], pending: [LSPOutboundOp]) -> [LSPOutboundOp] {
+        var ops: [LSPOutboundOp] = openDocuments.map { .didOpen(uri: $0.uri, languageId: $0.languageId, text: $0.text, version: 1) }
+        ops += pending.filter { !$0.isDocumentSync }
+        return ops
     }
 
     private static func decodeCompletionItems(from data: Data) -> [LSPCompletionItem] {
@@ -134,6 +177,8 @@ final class LSPManager: @unchecked Sendable {
         for (_, client) in clients {
             Task { await client.stop() }
         }
+        MainActor.assumeIsolated { for (_, queue) in queues { queue.close() } }
+        queues.removeAll()
         clients.removeAll()
         startingServers.removeAll()
     }
@@ -206,6 +251,25 @@ final class LSPManager: @unchecked Sendable {
         }
     }
 
+    /// Resumes a binary's queue now that its server is running — after a crash, with the open
+    /// documents re-announced in front of whatever had queued up.
+    @MainActor
+    private func bringQueueUp(for entry: LanguageServerRegistry.Entry) {
+        let queue = queue(for: entry)
+        if crashedBinaries.remove(entry.binaryName) != nil {
+            let mine = openDocuments
+                .filter { LanguageServerRegistry.entry(forExtension: $0.key.pathExtension)?.binaryName == entry.binaryName }
+                .sorted { $0.key.path < $1.key.path }
+            for (url, _) in mine { documentVersions[url] = 1 }
+            let replay = Self.respawnOps(
+                openDocuments: mine.map { ($0.key.absoluteString, $0.value.languageId, $0.value.text) },
+                pending: queue.takePending()
+            )
+            for op in replay { queue.enqueue(op) }
+        }
+        queue.resume()
+    }
+
     private func finishSpawn(entry: LanguageServerRegistry.Entry, executable: URL, environment: [String: String], tsserverPath: String?, completion: @escaping @Sendable (LSPClient?) -> Void) {
         let client = LSPClient(executableURL: executable, arguments: entry.arguments, environment: environment, currentDirectory: projectRoot)
         let rootURI = projectRoot.absoluteString
@@ -230,11 +294,16 @@ final class LSPManager: @unchecked Sendable {
                     DispatchQueue.main.async {
                         guard let self, self.clients[entry.binaryName] === client else { return }
                         self.clients[entry.binaryName] = nil
+                        // Freeze the queue and remember the death: the next spawn replays
+                        // didOpen for every open document before anything else reaches it.
+                        MainActor.assumeIsolated { self.queues[entry.binaryName]?.pause() }
+                        self.crashedBinaries.insert(entry.binaryName)
                     }
                 }
                 guard let self else { return }
                 self.clients[entry.binaryName] = client
                 self.startingServers.remove(entry.binaryName)
+                self.bringQueueUp(for: entry)
                 completion(client)
             } catch {
                 print("[LSP] failed to start \(entry.binaryName): \(error)")
