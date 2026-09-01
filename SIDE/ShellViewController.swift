@@ -646,8 +646,8 @@ extension ShellViewController: WorkspaceBridgeHost {
         show(.make)
         makeVC.revealAfterApply(url)
     }
-    func runShellCommand(_ command: String, trackKey: String, completion: @escaping (String) -> Void) {
-        runVC.runAgentCommand(command, cwd: workingDirectoryURL(for: trackKey), trackKey: trackKey, completion: completion)
+    func runShellCommand(_ command: String, trackKey: String, timeout: TimeInterval, completion: @escaping (String) -> Void) {
+        runVC.runAgentCommand(command, cwd: workingDirectoryURL(for: trackKey), trackKey: trackKey, timeout: timeout, completion: completion)
     }
     func interruptShellCommand(trackKey: String) {
         runVC.interruptAgentCommand(trackKey: trackKey)

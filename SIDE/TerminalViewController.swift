@@ -117,9 +117,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// queue, the second call overwrote this slot and the first command's completion was never
     /// called at all — a dropped `tool_result`, i.e. precisely the dangling-`tool_use` shape that
     /// wedges a conversation.
-    private var pendingAgentCommand: (sentinel: String, buffer: String, scannedCharacters: Int, command: String, usesMarks: Bool, completion: (String) -> Void)?
+    private var pendingAgentCommand: (sentinel: String, buffer: String, scannedCharacters: Int, command: String, usesMarks: Bool, outputStarted: Bool, completion: (String) -> Void)?
     /// Commands waiting for the terminal to free up, in the order they were requested.
-    private var queuedAgentCommands: [(command: String, completion: (String) -> Void)] = []
+    private var queuedAgentCommands: [(command: String, timeout: TimeInterval, completion: (String) -> Void)] = []
     /// Whether the shell confirmed it emits OSC 133 marks. Commands that arrive while this is
     /// still `.probing` wait rather than committing to the wrong capture strategy.
     private enum ShellIntegration { case probing, confirmed, unavailable }
@@ -146,7 +146,13 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     var startupSettled: Bool { didTidyAfterSetup || shellIntegration == .unavailable }
     /// Guards against a stale timeout resolving a *later* command that happens to occupy the slot.
     private var pendingAgentCommandGeneration = 0
-    private static let agentCommandTimeout: TimeInterval = 30
+    static let agentCommandTimeout: TimeInterval = 30
+    /// For a *task* — the project's own build or test command — which the user asked to run by
+    /// name and can watch in the terminal. Thirty seconds is shorter than most real test suites,
+    /// so the default timeout meant verification never landed for exactly the projects Phase 10
+    /// was built for (2026-09-01 audit, H14a). The command is still visible and still
+    /// interruptible with Stop; this only decides how long the conversation waits for the result.
+    static let agentTaskTimeout: TimeInterval = 600
 
     /// (isAlive, exitCode) — exitCode is nil if the process never actually started or died
     /// from an I/O error rather than a normal exit.
@@ -345,7 +351,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// that sentinel shows up in the raw output stream, or after `agentCommandTimeout` with a
     /// "still running" hint — a long-running or interactive command keeps running in the real,
     /// visible terminal; this just stops blocking the conversation on it.
-    func runAgentCommand(_ command: String, completion: @escaping (String) -> Void) {
+    func runAgentCommand(_ command: String, timeout: TimeInterval = TerminalViewController.agentCommandTimeout, completion: @escaping (String) -> Void) {
         ensureStarted()
         // Only the sentinel fallback needs these refusals: it appends a line the shell must be
         // ready to parse, so anything leaving the shell mid-parse eats it. With shell-integration
@@ -357,25 +363,38 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // Also queued while the integration probe is outstanding — starting now would pick a
         // capture strategy before knowing which one actually works.
         guard pendingAgentCommand == nil, shellIntegration != .probing else {
-            queuedAgentCommands.append((command, completion))
+            queuedAgentCommands.append((command, timeout, completion))
             return
         }
-        startAgentCommand(command, completion: completion)
+        startAgentCommand(command, timeout: timeout, completion: completion)
     }
 
     private func drainQueuedAgentCommandsIfIdle() {
         guard pendingAgentCommand == nil, shellIntegration != .probing,
               !queuedAgentCommands.isEmpty else { return }
         let next = queuedAgentCommands.removeFirst()
-        startAgentCommand(next.command, completion: next.completion)
+        startAgentCommand(next.command, timeout: next.timeout, completion: next.completion)
     }
 
-    private func startAgentCommand(_ command: String, completion: @escaping (String) -> Void) {
+    /// Answers every queued command with `reason` and empties the queue.
+    ///
+    /// Clearing the queue without calling its completions is how a tool_use ends up with no
+    /// tool_result: the batch never empties, the runner sits in awaitingApproval until the window
+    /// closes, and nothing is persisted. Both paths that empty the queue — Stop, and the shell
+    /// exiting — used to do exactly that. (2026-09-01 audit, H13.)
+    private func cancelQueuedAgentCommands(reason: String) -> Int {
+        let cancelled = queuedAgentCommands
+        queuedAgentCommands.removeAll()
+        for queued in cancelled { queued.completion(reason) }
+        return cancelled.count
+    }
+
+    private func startAgentCommand(_ command: String, timeout: TimeInterval, completion: @escaping (String) -> Void) {
         let sentinel = "__SIDE_AGENT_DONE_\(UUID().uuidString)__"
         pendingAgentCommandGeneration += 1
         let generation = pendingAgentCommandGeneration
         let usesMarks = shellIntegration == .confirmed
-        pendingAgentCommand = (sentinel, "", 0, command, usesMarks, completion)
+        pendingAgentCommand = (sentinel, "", 0, command, usesMarks, false, completion)
         // With shell integration the command is sent exactly as-is: the shell's own marks report
         // completion, so nothing has to be appended to the user's command line at all.
         // Without it, fall back to a sentinel echo on its own line — on its own line because a
@@ -383,7 +402,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // command ran and nothing ever reported it finished.
         let wrapped = usesMarks ? "\(command)\r" : "\(command)\recho \"\(sentinel):$?\"\r"
         terminalView.send(source: terminalView, data: ArraySlice(Array(wrapped.utf8)))
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.agentCommandTimeout) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
             guard let self, self.pendingAgentCommandGeneration == generation,
                   self.pendingAgentCommand?.sentinel == sentinel else { return }
             // Deliberately *not* interrupted: a slow build or test run is legitimate, and it
@@ -391,7 +410,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             // exactly that instead of the old "Still running — check Run for output," which
             // implied output was available and said nothing about the command's fate.
             self.finishPendingAgentCommand(
-                "No result after \(Int(Self.agentCommandTimeout))s. The command was NOT interrupted — it is still running in this track's terminal, where its output is visible. Do not assume it succeeded or failed; ask the user what it did, or run something that inspects the result."
+                "No result after \(Int(timeout))s. The command was NOT interrupted — it is still running in this track's terminal, where its output is visible. Do not assume it succeeded or failed; ask the user what it did, or run something that inspects the result."
             )
         }
     }
@@ -403,7 +422,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         pending.completion(output)
         guard !queuedAgentCommands.isEmpty else { return }
         let next = queuedAgentCommands.removeFirst()
-        startAgentCommand(next.command, completion: next.completion)
+        startAgentCommand(next.command, timeout: next.timeout, completion: next.completion)
     }
 
     /// Why this command can't be wrapped with a completion sentinel, or `nil` if it can.
@@ -455,8 +474,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// command had no way to be stopped except the user typing into the terminal themselves.
     func interruptAgentCommand() {
         guard pendingAgentCommand != nil else { return }
-        let queuedCount = queuedAgentCommands.count
-        queuedAgentCommands.removeAll()
+        let queuedCount = cancelQueuedAgentCommands(reason: "Cancelled before it ran — the user stopped the agent while an earlier command was still running. Nothing changed.")
         // 0x03 = ETX, what Ctrl-C sends; the pty turns it into SIGINT for the foreground group.
         terminalView.send(source: terminalView, data: ArraySlice([0x03]))
         var message = "Interrupted by the user (Ctrl-C) before it reported a result. Whether it partially completed is unknown — check before assuming."
@@ -486,35 +504,15 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         }
         guard var pending = pendingAgentCommand else { return }
         if pending.usesMarks {
-            pending.buffer = Self.boundedAppend(pending.buffer, chunk)
-            // Output is exactly what falls between the shell's own "output starts here" and
-            // "command finished" marks, so the prompt is excluded by construction rather than by
-            // filtering — the whole point of doing this properly.
-            guard let outputStart = pending.buffer.range(of: Self.markPrefix + "C" + Self.markTerminator) else {
+            let step = Self.advanceMarkedCapture(buffer: pending.buffer, outputStarted: pending.outputStarted, chunk: chunk)
+            pending.buffer = step.buffer
+            pending.outputStarted = step.outputStarted
+            guard let finished = step.finished else {
                 pendingAgentCommand = pending
                 return
             }
-            let afterStart = pending.buffer[outputStart.upperBound...]
-            guard let doneRange = afterStart.range(of: Self.markPrefix + "D;") else {
-                pendingAgentCommand = pending
-                return
-            }
-            let afterDone = afterStart[doneRange.upperBound...]
-            guard let terminator = afterDone.range(of: Self.markTerminator) else {
-                pendingAgentCommand = pending
-                return
-            }
-            let exitCode = Int(afterDone[afterDone.startIndex..<terminator.lowerBound]) ?? 0
-            var output = Self.strippingPromptEOLMark(
-                Self.stripANSI(String(afterStart[afterStart.startIndex..<doneRange.lowerBound]))
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
-            if output.isEmpty { output = "(no output)" }
-            // Always, not only on failure: the agent needs to distinguish "succeeded" from
-            // "we could not tell", and a verification record that guesses from output text
-            // would produce false verdicts about whether the project works.
-            output += "\n[exit code: \(exitCode)]"
             pendingAgentCommand = pending
-            finishPendingAgentCommand(output)
+            finishPendingAgentCommand(finished)
             return
         }
         // Stripped per-chunk, before accumulating — a shell that re-colors the line live as it
@@ -543,9 +541,15 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         var searchStart = pending.buffer.count > pending.scannedCharacters + overlap
             ? pending.buffer.index(pending.buffer.startIndex, offsetBy: pending.scannedCharacters - min(pending.scannedCharacters, overlap))
             : pending.buffer.startIndex
+        // Generation-aware: resolving this command inside the loop below starts the *next* queued
+        // one, which takes the slot. Writing `pending` back unconditionally then overwrote that
+        // fresh command with this finished one — its sentinel was never matched, its timeout
+        // never fired, its completion never ran, and the conversation hung on a missing
+        // tool_result. (2026-09-01 audit, H12.)
+        let generationAtEntry = pendingAgentCommandGeneration
         defer {
             pending.scannedCharacters = pending.buffer.count
-            if pendingAgentCommand != nil { pendingAgentCommand = pending }
+            if pendingAgentCommand != nil, pendingAgentCommandGeneration == generationAtEntry { pendingAgentCommand = pending }
         }
         while let sentinelRange = pending.buffer.range(of: pending.sentinel, range: searchStart..<pending.buffer.endIndex) {
             let afterSentinel = pending.buffer[sentinelRange.upperBound...]
@@ -579,6 +583,55 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             return
         }
         pendingAgentCommand = pending
+    }
+
+    /// One chunk's worth of progress on an OSC 133 capture — pure, so it can be tested against a
+    /// stream longer than the buffer.
+    ///
+    /// The bug this shape fixes: the buffer keeps only its last 60 000 characters, and the old
+    /// code searched that buffer for the `C` ("output starts") mark on every chunk. A command that
+    /// printed more than 60 KB between `C` and `D` pushed `C` off the front, so completion was
+    /// never detected and the command reported the timeout's "still running" message after it had
+    /// finished — on `swift test`, `npm test`, `xcodebuild test`: the verbose case the cap exists
+    /// for, and the exact commands verification depends on. (2026-09-01 audit, H11.) `C` is now
+    /// latched the first time it is seen and the buffer is cut to the output after it, so from
+    /// then on only `D` matters, and the tail-keeping buffer keeps exactly the part that has `D`.
+    struct MarkedCaptureStep {
+        var buffer: String
+        var outputStarted: Bool
+        /// Non-nil once the `D` mark and its exit code have both arrived.
+        var finished: String?
+    }
+
+    static func advanceMarkedCapture(buffer: String, outputStarted: Bool, chunk: String) -> MarkedCaptureStep {
+        var buffer = boundedAppend(buffer, chunk)
+        var outputStarted = outputStarted
+        if !outputStarted {
+            guard let start = buffer.range(of: markPrefix + "C" + markTerminator) else {
+                return MarkedCaptureStep(buffer: buffer, outputStarted: false, finished: nil)
+            }
+            outputStarted = true
+            buffer = String(buffer[start.upperBound...])
+        }
+        // Output is exactly what falls between the shell's own "output starts here" and "command
+        // finished" marks, so the prompt is excluded by construction rather than by filtering.
+        guard let doneRange = buffer.range(of: markPrefix + "D;") else {
+            return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: nil)
+        }
+        let afterDone = buffer[doneRange.upperBound...]
+        guard let terminator = afterDone.range(of: markTerminator) else {
+            return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: nil)
+        }
+        let exitCode = Int(afterDone[afterDone.startIndex..<terminator.lowerBound]) ?? 0
+        var output = strippingPromptEOLMark(
+            stripANSI(String(buffer[buffer.startIndex..<doneRange.lowerBound]))
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        if output.isEmpty { output = "(no output)" }
+        // Always, not only on failure: the agent needs to distinguish "succeeded" from "we could
+        // not tell", and a verification record that guesses from output text would produce false
+        // verdicts about whether the project works.
+        output += "\n[exit code: \(exitCode)]"
+        return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: output)
     }
 
     /// What the model should see: the command's own output, with the wrapper's echoed sentinel
@@ -733,8 +786,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // the call sat until the timeout and then claimed it was "still running" — of a shell
         // that no longer existed.
         if pendingAgentCommand != nil {
-            let queuedCount = queuedAgentCommands.count
-            queuedAgentCommands.removeAll()
+            let queuedCount = cancelQueuedAgentCommands(reason: "Did not run — the shell exited before this command's turn. Nothing changed.")
             var message = "The shell exited before reporting a result, so this command's outcome is unknown (a command that ends the shell — `exit`, `logout` — can't report back)."
             if queuedCount > 0 {
                 message += " \(queuedCount) queued command\(queuedCount == 1 ? "" : "s") did not run."

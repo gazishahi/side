@@ -22,6 +22,12 @@ private struct PendingToolBatch {
     /// `declaredIntent` if anything in this batch actually gets applied or executed.
     let declaredIntent: String
     var changedFilePaths: Set<String> = []
+    /// A task's verdict from this batch, held until the batch's *own* checkpoint exists so it can
+    /// land on the change it verified. Attaching to "the latest checkpoint" at the moment the
+    /// task finished stamped the verdict on the *previous* batch's checkpoint in the common
+    /// edit-then-test shape, and the checkpoint holding the change was born unverified.
+    /// (2026-09-01 audit, H14b.) Last task wins if a batch runs several.
+    var verification: CheckpointVerification? = nil
     /// This round's line deltas per path, so the checkpoint can record them. Separate from the
     /// runner's conversation-cumulative `appliedEditCounts`: a checkpoint describes one batch.
     var fileChanges: [String: (added: Int, removed: Int)] = [:]
@@ -548,7 +554,10 @@ final class AgentRunner {
         guard entries.indices.contains(entryIndex), case .commandProposal(let presentation) = entries[entryIndex].kind else { return }
         let toolUseId = presentation.command.toolUseId
         let commandText = presentation.command.command
-        bridgeProvider().runShellCommand(commandText) { [weak self] output in
+        // A named task gets task-length patience; an ad-hoc command keeps the short default.
+        let timeout: TimeInterval = presentation.command.taskName == nil
+            ? TerminalViewController.agentCommandTimeout : TerminalViewController.agentTaskTimeout
+        bridgeProvider().runShellCommand(commandText, timeout) { [weak self] output in
             self?.completeCommandResolution(entryIndex: entryIndex, toolUseId: toolUseId, resolution: .executed(output: output), resultText: output, isError: false)
         }
     }
@@ -566,19 +575,23 @@ final class AgentRunner {
             // A named task's result is evidence about the code, not just another command that
             // ran — so it lands on the checkpoint, where Review and Promote can see it.
             if let taskName = presentation.command.taskName {
-                let verification = CheckpointVerification(
+                // Redacted before it is persisted: `outputExcerpt` lands in checkpoints.json, a
+                // second on-disk path around the redactor that the tool result already goes through.
+                batch.verification = CheckpointVerification(
                     taskName: taskName, command: presentation.command.command,
-                    exitCode: Self.exitCode(fromCommandOutput: output), output: output
+                    exitCode: Self.exitCode(fromCommandOutput: output), output: SecretRedactor.redacted(output)
                 )
-                if sessionStore.attachVerification(verification, toLatestCheckpointFor: trackKey) {
-                    appendEntry(.meta(verification.passed
-                        ? "\u{2713} Verified — \(taskName) passed"
-                        : "\u{26A0}\u{FE0E} \(taskName) failed — this checkpoint is recorded as unverified"))
-                }
             }
         }
         pendingBatch = batch
         finishBatchIfReady()
+    }
+
+    private func announceVerificationIfNeeded(_ batch: PendingToolBatch) {
+        guard let verification = batch.verification else { return }
+        appendEntry(.meta(verification.passed
+            ? "\u{2713} Verified — \(verification.taskName) passed"
+            : "\u{26A0}\u{FE0E} \(verification.taskName) failed — this checkpoint is recorded as unverified"))
     }
 
     /// The exit status a task reported, when the shell integration told us one.
@@ -708,7 +721,15 @@ final class AgentRunner {
     }
 
     private func recordCheckpoint(_ outcome: CheckpointCommitOutcome?, batch: PendingToolBatch, sessionId: UUID) {
-        guard let outcome else { return }
+        defer { announceVerificationIfNeeded(batch) }
+        guard let outcome else {
+            // Nothing was committed by this batch (a task ran, nothing changed): the verdict is
+            // about the code as it stands, which is the newest existing checkpoint.
+            if let verification = batch.verification {
+                _ = sessionStore.attachVerification(verification, toLatestCheckpointFor: trackKey)
+            }
+            return
+        }
         // A failed commit is not a checkpoint. Recording one anyway is what produced a card
         // claiming success for work that was never committed and could never be undone.
         if case .failed(let step, let message) = outcome {
@@ -722,7 +743,7 @@ final class AgentRunner {
             changedFiles = paths
         }
 
-        let checkpoint = Checkpoint(
+        var checkpoint = Checkpoint(
             trackKey: trackKey, agentSessionId: sessionId,
             declaredIntent: Self.describedIntent(batch.declaredIntent, changedPaths: batch.changedFilePaths),
             changedFilePaths: changedFiles, commandsRun: batch.commandsRun,
@@ -735,6 +756,8 @@ final class AgentRunner {
                 .map { CheckpointFileChange(path: $0.key, added: $0.value.added, removed: $0.value.removed) }
                 .sorted { $0.path < $1.path }
         )
+        // On the change it verified, not on whichever checkpoint happened to be newest.
+        checkpoint.verification = batch.verification
         sessionStore.appendCheckpoint(checkpoint)
         // Remembered so the agent's own account of the change can replace the request that
         // prompted it, once that account exists — see `describeCheckpointFromAgentSummary`.

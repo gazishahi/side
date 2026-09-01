@@ -113,9 +113,9 @@ final class ProjectContext {
             liveBufferProvider: { [weak editHost] url in editHost?.liveBufferContent(for: url) },
             applyEditIntoOpenTab: { [weak editHost] url, content in editHost?.applyApprovedEdit(url: url, newContent: content) ?? false },
             onRevealFileRequested: { [weak editHost] url in editHost?.revealAfterApply(url) },
-            runShellCommand: { [weak shellHost] command, completion in
+            runShellCommand: { [weak shellHost] command, timeout, completion in
                 guard let shellHost else { completion("No window is open for this project — nowhere to run this command."); return }
-                shellHost.runShellCommand(command, trackKey: trackKey, completion: completion)
+                shellHost.runShellCommand(command, trackKey: trackKey, timeout: timeout, completion: completion)
             },
             interruptShellCommand: { [weak shellHost] in
                 shellHost?.interruptShellCommand(trackKey: trackKey)

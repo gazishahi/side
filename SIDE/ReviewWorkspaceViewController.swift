@@ -535,6 +535,18 @@ final class ReviewWorkspaceViewController: NSViewController {
         return card
     }
 
+    /// "Verified, but not the newest changes." A pass on checkpoint N said nothing about N+1…N+3,
+    /// yet the dialog treated the most recent pass as current. `ranAt` was stored and never
+    /// compared. (2026-09-01 audit, H14c.) `nil` when the newest checkpoint is itself verified, or
+    /// when nothing is verified at all — those cases have their own wording.
+    static func verificationStalenessCaveat(checkpoints: [Checkpoint]) -> String? {
+        let newestFirst = checkpoints.sorted { $0.createdAt > $1.createdAt }
+        guard let newest = newestFirst.first, newest.verification == nil,
+              let verifiedIndex = newestFirst.firstIndex(where: { $0.verification?.passed == true }) else { return nil }
+        let behind = verifiedIndex
+        return "The last passing verification was \(behind) checkpoint\(behind == 1 ? "" : "s") ago — the newest changes have not been verified."
+    }
+
     private static func verificationText(for checkpoint: Checkpoint) -> String {
         guard let verification = checkpoint.verification else {
             return "Unverified — no task has been run against this change"
@@ -636,6 +648,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         let checkpoints = sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []
         let latestVerified = checkpoints.sorted { $0.createdAt > $1.createdAt }.first { $0.verification != nil }
         let failedVerification = latestVerified?.verification.flatMap { $0.passed ? nil : $0 }
+        let staleness = Self.verificationStalenessCaveat(checkpoints: checkpoints)
 
         let alert = NSAlert()
         alert.messageText = failedVerification == nil ? "Promote to \(baseRef)?" : "Promote work that failed \(failedVerification!.taskName)?"
@@ -647,6 +660,8 @@ final class ReviewWorkspaceViewController: NSViewController {
                 + ". Promoting merges it anyway."
         } else if latestVerified == nil, !checkpoints.isEmpty {
             detail += "\n\nNothing has been verified on this track — no task has been run against these changes."
+        } else if let staleness {
+            detail += "\n\n" + staleness
         }
         alert.informativeText = detail
         alert.addButton(withTitle: "Promote")

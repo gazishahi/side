@@ -246,7 +246,7 @@ final class RunWorkspaceViewController: NSViewController {
         list[index].viewController.interruptAgentCommand()
     }
 
-    func runAgentCommand(_ command: String, cwd: URL, trackKey: String, completion: @escaping (String) -> Void) {
+    func runAgentCommand(_ command: String, cwd: URL, trackKey: String, timeout: TimeInterval = TerminalViewController.agentCommandTimeout, completion: @escaping (String) -> Void) {
         var list = sessionsByTrackKey[trackKey] ?? []
         let targetIndex: Int
         if let existing = activeSessionIndexByTrackKey[trackKey], list.indices.contains(existing) {
@@ -277,7 +277,7 @@ final class RunWorkspaceViewController: NSViewController {
                 showActiveSession()
             }
         }
-        list[targetIndex].viewController.runAgentCommand(command, completion: completion)
+        list[targetIndex].viewController.runAgentCommand(command, timeout: timeout, completion: completion)
     }
 
     // MARK: - Session lifecycle
