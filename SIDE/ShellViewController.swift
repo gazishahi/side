@@ -310,6 +310,19 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         }
     }
 
+    /// What VoiceOver should say for a stage segment, in place of reading the status glyph as
+    /// "black circle". The visible label keeps the glyph; the spoken one names the state.
+    /// (2026-09-01 audit, H16.)
+    static func stageAccessibilityLabel(_ stage: Stage, needsYou: Bool, working: Bool) -> String {
+        switch stage {
+        case .run: return working ? "Run, a terminal has new output" : "Run"
+        case .tracks:
+            if needsYou { return "Tracks, a track needs your attention" }
+            return working ? "Tracks, an agent is working" : "Tracks"
+        default: return stage.rawValue
+        }
+    }
+
     private func updateStageLabels() {
         let runIndex = Stage.allCases.firstIndex(of: .run) ?? 1
         stageControl.setLabel(runVC.hasBackgroundActivity ? "Run \u{25CF}" : "Run", forSegment: runIndex)
@@ -328,6 +341,22 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             label = "Tracks"
         }
         stageControl.setLabel(label, forSegment: tracksIndex)
+        applyStageAccessibilityLabels(needsYou: !needsYouTrackIDs().isEmpty, working: hasWorkingTrack(), runBusy: runVC.hasBackgroundActivity)
+    }
+
+    /// NSSegmentedControl offers no per-segment accessibility label — its only exposed child is
+    /// the cell — so the glyph in a title is what VoiceOver reads. Two channels that *are*
+    /// per-segment and per-control: a tooltip on each segment (spoken by VoiceOver on hover, and
+    /// useful to sighted users too), and the control's help text carrying every active state.
+    /// Applied whenever the titles change so neither drifts from what the glyphs mean.
+    private func applyStageAccessibilityLabels(needsYou: Bool, working: Bool, runBusy: Bool) {
+        var states: [String] = []
+        for (index, stage) in Stage.allCases.enumerated() {
+            let spoken = Self.stageAccessibilityLabel(stage, needsYou: needsYou, working: stage == .run ? runBusy : working)
+            stageControl.setToolTip(spoken, forSegment: index)
+            if spoken != stage.rawValue { states.append(spoken) }
+        }
+        stageControl.setAccessibilityHelp(states.isEmpty ? "Stages" : states.joined(separator: ". "))
     }
 
     // MARK: - Agent activity (dock badge, notifications)
@@ -359,6 +388,20 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
         guard !newlyNeedsYou.isEmpty else { return }
         let tracks = (trackStore?.tracks ?? []).filter { newlyNeedsYou.contains($0.id) }
+        // The live-region equivalent: a VoiceOver user working in Make got no audible signal when
+        // a track flipped to needs-you — the state rode entirely in a glyph on a segment they
+        // weren't focused on. Announced once per transition, alongside the badge and the
+        // notification, so every "reach the user" channel fires from the same predicate.
+        if let window = view.window {
+            let names = tracks.map { $0.intent.isEmpty ? $0.branchName : $0.intent }
+            let announcement = names.count == 1
+                ? "\(names[0]) needs your attention"
+                : "\(names.count) tracks need your attention"
+            NSAccessibility.post(
+                element: window, notification: .announcementRequested,
+                userInfo: [.announcement: announcement, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+            )
+        }
         for track in tracks {
             // Suppressed only when this window is both key (frontmost/focused) *and* already
             // showing the relevant thing — the Tracks stage surfaces every needs-you track in

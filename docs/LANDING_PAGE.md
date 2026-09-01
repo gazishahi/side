@@ -7,7 +7,7 @@ Scope: single page, one goal — collect waitlist emails. No pricing, no docs, n
 ## Meta
 
 - **Title:** Side — a focused, agent-assisted dev environment for Mac
-- **Description:** Side is a native Mac IDE built around contexts, not panels. Join the waitlist.
+- **Description:** Side is a native Mac IDE built around tracks, not panels. Join the waitlist.
 - **Favicon / OG image:** wordmark on dark background, keep it minimal — no screenshot yet unless it's genuinely presentable.
 
 ---
@@ -28,7 +28,7 @@ Just the wordmark, left-aligned, and a single CTA button that scrolls to the for
 > A Mac IDE built around your work, not your windows.
 
 **Subheadline:**
-> Side replaces the permanent sidebars and cluttered panels of a traditional IDE with **contexts** — a focused surface for each piece of work, with agent-assisted coding built in from the start.
+> Side replaces the permanent sidebars and cluttered panels of a traditional IDE with **tracks** — a focused unit of work with an intent, a state, and a path back to `main`, with agent-assisted coding built in from the start.
 
 **CTA:**
 > [ Get early access ]  — email input + button, inline, single field
@@ -49,7 +49,7 @@ No permanent file tree, no chat rail bolted to the side. Side shows you what mat
 Agent-made changes arrive as inspectable checkpoints — a diff, a rationale, evidence. Nothing lands without you promoting it.
 
 **Git is the substrate, not a plugin.**
-Contexts are reviewable paths back to `main`. Side interoperates with ordinary commits, branches, and pull requests — it doesn't reinvent them.
+Tracks are reviewable paths back to `main`. Side interoperates with ordinary commits, branches, and pull requests — it doesn't reinvent them.
 
 *(Three columns, icon or single-color glyph above each, one sentence + one supporting line. Resist the urge to add a fourth — three reads as intentional, four starts to feel like a feature list.)*
 

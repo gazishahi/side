@@ -141,4 +141,39 @@ final class WorkGroupViewTests: XCTestCase {
         group.finish()
         XCTAssertTrue((group.accessibilityLabel() ?? "").contains("0s"), group.accessibilityLabel() ?? "")
     }
+
+    // MARK: - Accessibility (2026-09-01 audit, H15)
+
+    private func header(of group: WorkGroupView) -> WorkGroupHeaderView? {
+        func find(_ view: NSView) -> WorkGroupHeaderView? {
+            if let header = view as? WorkGroupHeaderView { return header }
+            for child in view.subviews { if let found = find(child) { return found } }
+            return nil
+        }
+        return find(group)
+    }
+
+    func testTheHeaderIsADisclosureVoiceOverCanOperate() throws {
+        let group = makeGroup()
+        let header = try XCTUnwrap(header(of: group))
+        XCTAssertTrue(header.isAccessibilityElement())
+        XCTAssertEqual(header.accessibilityRole(), .disclosureTriangle)
+        XCTAssertFalse(header.isAccessibilityExpanded())
+        XCTAssertEqual(header.accessibilityActionDescription(.press), "Expand")
+        // Pressing is the same as clicking — and it is reported back as a state change.
+        XCTAssertTrue(header.accessibilityPerformPress())
+        XCTAssertTrue(group.isExpanded)
+        XCTAssertTrue(header.isAccessibilityExpanded())
+        XCTAssertEqual(header.accessibilityValue() as? String, "expanded")
+        XCTAssertEqual(header.accessibilityActionDescription(.press), "Collapse")
+    }
+
+    func testTheHeaderSpeaksTheGroupTitleNotItsParts() throws {
+        let group = makeGroup()
+        let header = try XCTUnwrap(header(of: group))
+        let label = try XCTUnwrap(header.accessibilityLabel())
+        XCTAssertTrue(label.contains("Worked") || label.contains("Working"), label)
+        // The chevron image and the title text field are parts of the one element, not siblings.
+        XCTAssertTrue(header.views.allSatisfy { !$0.isAccessibilityElement() })
+    }
 }

@@ -1,6 +1,6 @@
 # Phase 10 — Closing the loop: tasks, verification, and diagnostics
 
-*Scoped 2026-08-30. Not started.*
+*Scoped 2026-08-30. **Status: built** — shipped 2026-08-30 in `9ba8090`; the capture/attachment/staleness gaps that kept the loop from closing in practice (2026-09-01 audit, H11 and H14) were fixed 2026-09-01.*
 
 ## The problem
 

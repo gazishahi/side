@@ -1805,6 +1805,32 @@ private final class LinkedTextLine: NSView, NSTextViewDelegate {
 
 /// `internal` rather than `private` so its collapse geometry and hit region can be tested.
 /// Three separate layout bugs shipped here because the only check was a screenshot.
+/// The clickable header of a `WorkGroupView`, exposed to accessibility as the disclosure it is.
+///
+/// The group toggles via `mouseDown` and a `hitTest` override — invisible to VoiceOver, which
+/// meant the agent's reasoning (rendered inside the group since `a324fb0`) and every tool line
+/// were mouse-gated. Mirrors `HeaderClickView` in the diff cards: one element, a disclosure
+/// role, an expanded state, and a press action that calls the same `toggle()` a click does.
+/// (2026-09-01 audit, H15.)
+final class WorkGroupHeaderView: NSStackView {
+    var onPress: (() -> Void)?
+    var isExpandedForAccessibility: () -> Bool = { false }
+    var titleForAccessibility: () -> String = { "" }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .disclosureTriangle }
+    override func accessibilityLabel() -> String? { titleForAccessibility() }
+    override func accessibilityValue() -> Any? { isExpandedForAccessibility() ? "expanded" : "collapsed" }
+    override func isAccessibilityExpanded() -> Bool { isExpandedForAccessibility() }
+    override func accessibilityActionDescription(_ action: NSAccessibility.Action) -> String? {
+        action == .press ? (isExpandedForAccessibility() ? "Collapse" : "Expand") : nil
+    }
+    override func accessibilityPerformPress() -> Bool {
+        onPress?()
+        return true
+    }
+}
+
 final class WorkGroupView: NSView {
     /// Collapsing is done by hiding an **arranged subview of a stack view**, which is the one
     /// mechanism in AppKit that actually removes a view from layout.
@@ -1816,7 +1842,7 @@ final class WorkGroupView: NSView {
     /// its own bounds and drew on top of the next message. A stack view answers both: hidden
     /// arranged subviews collapse to nothing, and visible ones get their natural height.
     private let outer = NSStackView()
-    private let headerRow = NSStackView()
+    private let headerRow = WorkGroupHeaderView()
     private let chevron = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let content = NSStackView()
@@ -1856,6 +1882,12 @@ final class WorkGroupView: NSView {
         titleLabel.textColor = .secondaryLabelColor
 
         headerRow.setViews([chevron, titleLabel], in: .leading)
+        // One spoken element, not three: the chevron and the title are parts of the disclosure.
+        chevron.setAccessibilityElement(false)
+        titleLabel.setAccessibilityElement(false)
+        headerRow.onPress = { [weak self] in self?.toggle() }
+        headerRow.isExpandedForAccessibility = { [weak self] in self?.expanded ?? false }
+        headerRow.titleForAccessibility = { [weak self] in self?.titleLabel.stringValue ?? "" }
         headerRow.orientation = .horizontal
         headerRow.alignment = .centerY
         headerRow.spacing = DS.Spacing.s
@@ -1989,11 +2021,18 @@ final class WorkGroupView: NSView {
                 ? "Worked for \(elapsed) · \(steps)"
                 : "Working \(elapsed) · \(steps)"
         }
+        // On the header element — the disclosure VoiceOver lands on — and on the group too, which
+        // stays a plain container (not an element) so its lines remain reachable underneath.
+        headerRow.setAccessibilityLabel(titleLabel.stringValue)
         setAccessibilityLabel(titleLabel.stringValue)
     }
 
+    /// Read by tests and by the header's accessibility state.
+    var isExpanded: Bool { expanded }
+
     @objc func toggle() {
         expanded.toggle()
+        NSAccessibility.post(element: headerRow, notification: .valueChanged)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)

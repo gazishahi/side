@@ -176,4 +176,24 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertFalse(value.hasSuffix("\n"), "AX value was: \(value.debugDescription)")
         XCTAssertEqual(value.components(separatedBy: "\n").count, 1, value.debugDescription)
     }
+
+    // MARK: - Stage switcher (2026-09-01 audit, H16)
+
+    func testStageLabelsSpeakStateInsteadOfGlyphs() {
+        // The visible titles carry ● and ◑; VoiceOver was reading "black circle".
+        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.tracks, needsYou: true, working: true), "Tracks, a track needs your attention")
+        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.tracks, needsYou: false, working: true), "Tracks, an agent is working")
+        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.tracks, needsYou: false, working: false), "Tracks")
+        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.run, needsYou: false, working: true), "Run, a terminal has new output")
+        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.make, needsYou: true, working: true), "Make")
+    }
+
+    func testSegmentTooltipsCarryTheSpokenState() {
+        // The channel the fix actually uses: NSSegmentedControl exposes no per-segment label, so
+        // the state rides in each segment's tooltip, which VoiceOver speaks on hover.
+        let control = NSSegmentedControl(labels: ["Make", "Run \u{25CF}"], trackingMode: .selectOne, target: nil, action: nil)
+        control.setToolTip("Run, a terminal has new output", forSegment: 1)
+        XCTAssertEqual(control.toolTip(forSegment: 1), "Run, a terminal has new output")
+        XCTAssertNil(control.toolTip(forSegment: 0))
+    }
 }
