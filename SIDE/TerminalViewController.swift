@@ -744,14 +744,18 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         process.arguments = ["-eo", "pid,ppid"]
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
             return []
         }
-        process.waitUntilExit()
+        // Read *before* waiting: `ps -eo pid,ppid` on a busy Mac can exceed the 64 KB pipe
+        // buffer, at which point ps blocks writing while this blocked waiting — the shell and its
+        // descendants never got SIGTERM, which is the orphaned-process leak this enumeration
+        // exists to prevent. Same class as the eleven sites fixed on 2026-08-30. (Audit H18.)
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         guard let output = String(data: data, encoding: .utf8) else { return [] }
 
         var childrenByParent: [pid_t: [pid_t]] = [:]

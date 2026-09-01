@@ -3037,8 +3037,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let process = Process()
             process.executableURL = URL(fileURLWithPath: formatter.executable)
             process.arguments = formatter.args
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
+            // The null device, not a `Pipe()` nobody reads: a formatter that wrote more than 64 KB
+            // to either stream blocked on the full pipe while this blocked on waitUntilExit —
+            // `isSaving` stayed true forever and every later ⌘S was silently ignored. (Audit H17.)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
             try? process.run()
             process.waitUntilExit()
             let formattedContent = try? String(contentsOf: url, encoding: .utf8)
@@ -3146,7 +3149,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         process.arguments = ["which", tool]
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
         // Read before waiting — waiting first deadlocks once the pipe buffer fills
         // (see GitPaths.runGit).

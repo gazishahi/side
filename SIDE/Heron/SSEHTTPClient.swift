@@ -35,8 +35,25 @@ enum SSEHTTPClient {
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 60
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: RedirectRefuser(), delegateQueue: nil)
     }()
+
+    /// Refuses every HTTP redirect.
+    ///
+    /// URLSession's default is to follow a 30x by re-issuing the original request — custom
+    /// headers included — to wherever `Location` points. Both adapters put the user's API key in
+    /// a header, so a bring-your-own-key base URL that redirects, a misconfigured endpoint, or an
+    /// intercepting proxy could replay that key to a host the user never authorized. An SSE stream
+    /// never legitimately redirects; the 3xx is delivered to the caller as an ordinary non-200 and
+    /// surfaces as an HTTP error naming the status. (2026-09-01 audit, H2.)
+    private final class RedirectRefuser: NSObject, URLSessionTaskDelegate, Sendable {
+        func urlSession(
+            _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void
+        ) {
+            completionHandler(nil)
+        }
+    }
 
     /// Streams `request`, invoking `onEvent` once per SSE frame, in order, from the caller's
     /// own task — no queue hopping happens here. Returns when the server closes the stream;

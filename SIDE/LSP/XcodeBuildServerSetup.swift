@@ -51,8 +51,8 @@ enum XcodeBuildServerSetup {
             process.executableURL = serverBinary
             process.arguments = ["config"] + projectFlag + ["-scheme", scheme]
             process.currentDirectoryURL = projectRoot
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
             do {
                 try process.run()
                 process.waitUntilExit()
@@ -73,7 +73,7 @@ enum XcodeBuildServerSetup {
         process.currentDirectoryURL = cwd
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
         // Read before waiting — waiting first deadlocks once the pipe buffer fills
         // (see GitPaths.runGit).

@@ -73,7 +73,7 @@ enum LanguageServerRegistry {
         process.arguments = ["-lic", "npm root -g"]
         let stdout = Pipe()
         process.standardOutput = stdout
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             // Read before waiting — waiting first deadlocks once the pipe buffer fills
@@ -121,7 +121,7 @@ enum LanguageServerRegistry {
         process.arguments = ["-lic", "echo $PATH"]
         let stdout = Pipe()
         process.standardOutput = stdout
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             // Read before waiting — waiting first deadlocks once the pipe buffer fills
@@ -193,7 +193,7 @@ enum LanguageServerRegistry {
         process.arguments = ["-lic", command]
         let stdout = Pipe()
         process.standardOutput = stdout
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             // Read before waiting — waiting first deadlocks once the pipe buffer fills

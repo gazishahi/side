@@ -114,7 +114,7 @@ enum GitPaths {
         let pipe = Pipe()
         process.standardOutput = pipe
         // stderr goes nowhere: merging it would corrupt a format parsed by position.
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return (false, "") }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()

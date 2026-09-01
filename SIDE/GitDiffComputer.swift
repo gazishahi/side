@@ -140,7 +140,7 @@ enum GitDiffComputer {
         process.arguments = ["git", "-C", cwd] + args
         let outPipe = Pipe()
         process.standardOutput = outPipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return "" }
         // Read before waiting — waiting first deadlocks once git fills the pipe buffer
         // (see GitPaths.runGit).

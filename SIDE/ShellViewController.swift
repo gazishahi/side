@@ -620,7 +620,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         process.arguments = ["git", "-C", directory] + args
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
         // Read before waiting — waiting first deadlocks once git fills the pipe buffer
         // (see GitPaths.runGit).
