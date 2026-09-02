@@ -203,8 +203,8 @@ final class DiffFileCardView: NSView {
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.card
         layer?.borderWidth = 1
-        layer?.borderColor = DS.Color.hairline.cgColor
-        layer?.backgroundColor = DS.Color.bg1.cgColor
+        bindLayerBorder(DS.Color.hairline)
+        bindLayerBackground(DS.Color.bg1)
         layer?.masksToBounds = true
 
         chevron.image = NSImage(
@@ -368,11 +368,11 @@ final class DiffFileCardView: NSView {
 /// full line width. Used by Review's per-file cards and Think's proposal cards, so a diff reads
 /// identically wherever it appears.
 enum DiffBody {
-    static let addedText = NSColor(red: 0.45, green: 0.82, blue: 0.55, alpha: 1)
-    static let removedText = NSColor(red: 0.92, green: 0.50, blue: 0.48, alpha: 1)
-    static let addedFill = NSColor(red: 0.30, green: 0.85, blue: 0.40, alpha: 0.09)
-    static let removedFill = NSColor(red: 0.95, green: 0.35, blue: 0.30, alpha: 0.09)
-    static let hunkColor = NSColor(red: 0.55, green: 0.72, blue: 0.95, alpha: 1)
+    static let addedText = DS.Color.dynamic(dark: NSColor(red: 0.45, green: 0.82, blue: 0.55, alpha: 1), light: NSColor(red: 0.13, green: 0.52, blue: 0.25, alpha: 1))
+    static let removedText = DS.Color.dynamic(dark: NSColor(red: 0.92, green: 0.50, blue: 0.48, alpha: 1), light: NSColor(red: 0.72, green: 0.2, blue: 0.18, alpha: 1))
+    static let addedFill = DS.Color.dynamic(dark: NSColor(red: 0.30, green: 0.85, blue: 0.40, alpha: 0.09), light: NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 0.12))
+    static let removedFill = DS.Color.dynamic(dark: NSColor(red: 0.95, green: 0.35, blue: 0.30, alpha: 0.09), light: NSColor(red: 0.85, green: 0.25, blue: 0.2, alpha: 0.1))
+    static let hunkColor = DS.Color.dynamic(dark: NSColor(red: 0.55, green: 0.72, blue: 0.95, alpha: 1), light: NSColor(red: 0.2, green: 0.42, blue: 0.75, alpha: 1))
 
     /// `[old# pad][new# pad] text` per line — one attributed string, not a view per line,
     /// which would melt on a thousand-line diff.

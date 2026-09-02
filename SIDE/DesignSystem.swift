@@ -7,30 +7,51 @@ import AppKit
 /// then used.
 enum DS {
     enum Color {
+        /// Every token resolves per appearance. Side shipped dark-only, with the values hardcoded;
+        /// light mode was "not supported" in the sense of actively broken — nothing adapted. The
+        /// dark values are the ones that always were; the light ones are chosen to keep the same
+        /// relationships (chrome deepest, cards a step up, hairline the only border) with the
+        /// contrast direction reversed.
+        static func dynamic(dark: CGFloat, light: CGFloat) -> NSColor {
+            dynamic(dark: NSColor(white: dark, alpha: 1), light: NSColor(white: light, alpha: 1))
+        }
+
+        static func dynamic(dark: NSColor, light: NSColor) -> NSColor {
+            NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            }
+        }
+
+        /// The terminal's own surface — deliberately a step past `chrome` in both directions
+        /// (near-black in dark, near-white in light), the convention that lets a glance tell Make
+        /// from Run.
+        static let terminalBackground = dynamic(dark: 0.02, light: 0.985)
+        static let terminalForeground = dynamic(dark: 0.85, light: 0.12)
+
         /// Window chrome and the editor's own base — the deepest tone in the app. One value on
         /// purpose: stage backgrounds matching the editor is what makes switching stages feel
         /// like turning your head, not changing rooms.
-        static let chrome = NSColor(white: 0.098, alpha: 1)
+        static let chrome = dynamic(dark: 0.098, light: 0.965)
         /// The tab strip sits *behind* the content surface, so it alone gets to be darker than
         /// `chrome` — that contrast is what lets the active tab read as attached to the editor.
-        static let tabStrip = NSColor(white: 0.07, alpha: 1)
+        static let tabStrip = dynamic(dark: 0.07, light: 0.93)
         /// Cards and panels.
-        static let bg1 = NSColor(white: 0.145, alpha: 1)
+        static let bg1 = dynamic(dark: 0.145, light: 1.0)
         /// Selected/active fills one step above a card.
-        static let bg2 = NSColor(white: 0.17, alpha: 1)
+        static let bg2 = dynamic(dark: 0.17, light: 0.96)
         /// Chips and inline-code spans.
-        static let bg3 = NSColor(white: 0.21, alpha: 1)
+        static let bg3 = dynamic(dark: 0.21, light: 0.925)
         /// Received bubbles and stronger hover fills.
-        static let bg4 = NSColor(white: 0.24, alpha: 1)
+        static let bg4 = dynamic(dark: 0.24, light: 0.9)
         /// The only border color in the app.
-        static let hairline = NSColor(white: 0.24, alpha: 1)
+        static let hairline = dynamic(dark: 0.24, light: 0.85)
         /// The tab strip's bottom hairline *and* the active tab's outline — one token, one
         /// opaque value, because those two lines must read as a single continuous edge where
         /// the tab's flares meet the strip.
-        static let tabEdge = NSColor(white: 0.30, alpha: 1)
-        static let rowHover = NSColor(white: 0.195, alpha: 1)
+        static let tabEdge = dynamic(dark: 0.3, light: 0.8)
+        static let rowHover = dynamic(dark: 0.195, light: 0.94)
         /// The lineage rail connecting a stacked track to its parent in Tracks.
-        static let rail = NSColor(white: 0.32, alpha: 1)
+        static let rail = dynamic(dark: 0.32, light: 0.7)
 
         // MARK: Text and editor surfaces
         //
@@ -39,22 +60,22 @@ enum DS {
         // text and the file tree's ended up a shade apart. One definition each, here.
 
         /// Editor body text and any label that should read as primary content on a dark surface.
-        static let text = NSColor(white: 0.85, alpha: 1)
+        static let text = dynamic(dark: 0.85, light: 0.15)
         /// Emphasized text — the active tab's title, a highlighted completion row.
-        static let textStrong = NSColor(white: 0.92, alpha: 1)
+        static let textStrong = dynamic(dark: 0.92, light: 0.05)
         /// Secondary content: directory names in the file tree.
-        static let textSecondary = NSColor(white: 0.75, alpha: 1)
+        static let textSecondary = dynamic(dark: 0.75, light: 0.32)
         /// Icons and de-emphasized labels.
-        static let textMuted = NSColor(white: 0.55, alpha: 1)
+        static let textMuted = dynamic(dark: 0.55, light: 0.48)
         /// Line numbers and diff gutters — quieter than muted, because they repeat on every row.
-        static let textFaint = NSColor(white: 0.42, alpha: 1)
+        static let textFaint = dynamic(dark: 0.42, light: 0.6)
         /// Syntax comments.
-        static let comment = NSColor(white: 0.45, alpha: 1)
+        static let comment = dynamic(dark: 0.45, light: 0.5)
         /// White-on-dark scrims for hover, current-line, and bracket-match fills, by weight.
-        static let scrimFaint = NSColor(white: 1, alpha: 0.045)
-        static let scrimSoft = NSColor(white: 1, alpha: 0.05)
-        static let scrimMedium = NSColor(white: 1, alpha: 0.15)
-        static let scrimStrong = NSColor(white: 1, alpha: 0.16)
+        static let scrimFaint = dynamic(dark: NSColor(white: 1, alpha: 0.045), light: NSColor(white: 0, alpha: 0.05))
+        static let scrimSoft = dynamic(dark: NSColor(white: 1, alpha: 0.05), light: NSColor(white: 0, alpha: 0.06))
+        static let scrimMedium = dynamic(dark: NSColor(white: 1, alpha: 0.15), light: NSColor(white: 0, alpha: 0.1))
+        static let scrimStrong = dynamic(dark: NSColor(white: 1, alpha: 0.16), light: NSColor(white: 0, alpha: 0.12))
 
         static func status(for status: TrackStatus) -> NSColor {
             switch status {
@@ -195,7 +216,8 @@ enum DS {
             return glass
         }
         let effect = NSVisualEffectView()
-        effect.material = .hudWindow
+        // `.hudWindow` is a dark-only material; in light it renders as a dark slab on a light page.
+        effect.material = Appearance.isDark ? .hudWindow : .popover
         effect.blendingMode = .withinWindow
         effect.state = .active
         effect.wantsLayer = true
@@ -359,4 +381,127 @@ final class TabStripView: NSView {
     override func accessibilityChildren() -> [Any]? { accessibleTabs }
     /// AppKit asks for these separately from `accessibilityChildren` for a tab group.
     override func accessibilityTabs() -> [Any]? { accessibleTabs }
+}
+
+
+// MARK: - Appearance
+
+extension DS {
+    /// Light, dark, or follow the system — and the plumbing that makes a switch actually repaint.
+    ///
+    /// Dynamic `NSColor`s handle everything AppKit draws itself. `CALayer` colours do not: a layer
+    /// holds a `CGColor`, resolved once at the moment `.cgColor` was read, so every card, tab bar,
+    /// and chip that set `layer?.backgroundColor` at init would stay its old colour after the
+    /// appearance changed. `bindLayerBackground`/`bindLayerBorder` record the *token* on the view
+    /// and re-resolve it here when the effective appearance changes.
+    enum Appearance {
+        enum Preference: String, CaseIterable {
+            case system, light, dark
+            var displayName: String {
+                switch self {
+                case .system: return "Match System"
+                case .light: return "Light"
+                case .dark: return "Dark"
+                }
+            }
+        }
+
+        static let didChangeNotification = Notification.Name("SideAppearanceDidChange")
+        private static let preferenceKey = "SideAppearancePreference"
+        nonisolated(unsafe) private static var observation: NSKeyValueObservation?
+        nonisolated(unsafe) private static var lastKnownIsDark: Bool?
+
+        static var preference: Preference {
+            get { UserDefaults.standard.string(forKey: preferenceKey).flatMap(Preference.init) ?? .system }
+            set {
+                UserDefaults.standard.set(newValue.rawValue, forKey: preferenceKey)
+                apply()
+            }
+        }
+
+        static var isDark: Bool {
+            NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
+
+        /// Applies the stored preference to the application and starts watching for changes —
+        /// both a preference change and the system flipping at sunset land in the same place.
+        @MainActor
+        static func bootstrap() {
+            apply()
+            guard observation == nil else { return }
+            lastKnownIsDark = isDark
+            observation = NSApp.observe(\.effectiveAppearance, options: [.new]) { _, _ in
+                DispatchQueue.main.async { appearanceMayHaveChanged() }
+            }
+        }
+
+        private static func apply() {
+            switch preference {
+            case .system: NSApp.appearance = nil
+            case .light: NSApp.appearance = NSAppearance(named: .aqua)
+            case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+            }
+        }
+
+        @MainActor
+        private static func appearanceMayHaveChanged() {
+            let dark = isDark
+            guard dark != lastKnownIsDark else { return }
+            lastKnownIsDark = dark
+            LayerBindings.reapplyAll()
+            NotificationCenter.default.post(name: didChangeNotification, object: nil)
+        }
+    }
+
+    /// Weak registry of views whose layer colours came from a token.
+    @MainActor
+    enum LayerBindings {
+        private static let views = NSHashTable<NSView>.weakObjects()
+
+        static func register(_ view: NSView) { views.add(view) }
+
+        static func reapplyAll() {
+            for view in views.allObjects { view.reapplyBoundLayerColors() }
+        }
+
+        /// Test seam.
+        static var count: Int { views.count }
+    }
+}
+
+// Addresses only — never read or written — so the compiler's shared-mutable-state rule doesn't apply.
+nonisolated(unsafe) private var boundBackgroundKey: UInt8 = 0
+nonisolated(unsafe) private var boundBorderKey: UInt8 = 0
+
+extension NSView {
+    /// `layer?.backgroundColor = token.cgColor`, except it survives an appearance change.
+    func bindLayerBackground(_ color: NSColor) {
+        wantsLayer = true
+        objc_setAssociatedObject(self, &boundBackgroundKey, color, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        DS.LayerBindings.register(self)
+        layer?.backgroundColor = resolvedCGColor(color)
+    }
+
+    func bindLayerBorder(_ color: NSColor) {
+        wantsLayer = true
+        objc_setAssociatedObject(self, &boundBorderKey, color, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        DS.LayerBindings.register(self)
+        layer?.borderColor = resolvedCGColor(color)
+    }
+
+    fileprivate func reapplyBoundLayerColors() {
+        if let color = objc_getAssociatedObject(self, &boundBackgroundKey) as? NSColor { layer?.backgroundColor = resolvedCGColor(color) }
+        if let color = objc_getAssociatedObject(self, &boundBorderKey) as? NSColor { layer?.borderColor = resolvedCGColor(color) }
+    }
+
+    /// Resolved against *this view's* effective appearance, which is what a view inside a window
+    /// that has its own appearance override needs, and falls back to the app's before the view
+    /// has a window.
+    private func resolvedCGColor(_ color: NSColor) -> CGColor {
+        var resolved = color.cgColor
+        (window?.effectiveAppearance ?? NSApp.effectiveAppearance).performAsCurrentDrawingAppearance {
+            resolved = color.cgColor
+        }
+        return resolved
+    }
 }

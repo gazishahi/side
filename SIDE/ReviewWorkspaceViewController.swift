@@ -66,7 +66,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.wantsLayer = true
-        view.layer?.backgroundColor = DS.Color.chrome.cgColor
+        view.bindLayerBackground(DS.Color.chrome)
         NotificationCenter.default.addObserver(
             self, selector: #selector(textScaleChanged),
             name: DS.Text.scaleDidChangeNotification, object: nil
@@ -152,9 +152,9 @@ final class ReviewWorkspaceViewController: NSViewController {
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         overlapBanner.wantsLayer = true
         overlapBanner.layer?.cornerRadius = DS.Radius.card
-        overlapBanner.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.12).cgColor
+        overlapBanner.bindLayerBackground(NSColor.systemOrange.withAlphaComponent(0.12))
         overlapBanner.layer?.borderWidth = 1
-        overlapBanner.layer?.borderColor = NSColor.systemOrange.withAlphaComponent(0.35).cgColor
+        overlapBanner.bindLayerBorder(NSColor.systemOrange.withAlphaComponent(0.35))
         overlapBanner.isHidden = true
         overlapBanner.translatesAutoresizingMaskIntoConstraints = false
         overlapLabel.font = DS.Text.body(.medium)
@@ -469,9 +469,8 @@ final class ReviewWorkspaceViewController: NSViewController {
         card.wantsLayer = true
         card.layer?.cornerRadius = DS.Radius.card
         card.layer?.borderWidth = 1
-        card.layer?.borderColor = ReviewPalette.cardBorder.cgColor
-        card.layer?.backgroundColor = ReviewPalette.cardBackground.cgColor
-
+        card.bindLayerBorder(ReviewPalette.cardBorder)
+        card.bindLayerBackground(ReviewPalette.cardBackground)
         let intentLabel = NSTextField(wrappingLabelWithString: checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)
         intentLabel.font = DS.Text.body(.medium)
         intentLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -615,7 +614,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     private static func styleChip(_ chip: NSView, _ label: NSTextField) {
         chip.wantsLayer = true
-        chip.layer?.backgroundColor = ReviewPalette.chip.cgColor
+        chip.bindLayerBackground(ReviewPalette.chip)
         chip.layer?.cornerRadius = DS.Radius.chip
         chip.translatesAutoresizingMaskIntoConstraints = false
         label.font = DS.Text.code(11, weight: .regular)

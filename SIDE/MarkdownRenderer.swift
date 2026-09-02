@@ -45,7 +45,7 @@ enum MarkdownRenderer {
             guard !codeBlockLines.isEmpty else { return }
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: codeFont(), .foregroundColor: textColor,
-                .backgroundColor: NSColor(white: 1, alpha: 0.06)
+                .backgroundColor: DS.Color.scrimSoft
             ]
             result.append(NSAttributedString(string: codeBlockLines.joined(separator: "\n"), attributes: attrs))
             result.append(NSAttributedString(string: "\n\n"))
@@ -151,7 +151,7 @@ enum MarkdownRenderer {
             if chars[i] == "`", let end = findMarker(chars, from: i + 1, marker: Array("`")) {
                 let codeFont = NSFont.monospacedSystemFont(ofSize: baseFont.pointSize - 1, weight: .regular)
                 result.append(NSAttributedString(string: String(chars[(i + 1)..<end]), attributes: [
-                    .font: codeFont, .foregroundColor: textColor, .backgroundColor: NSColor(white: 1, alpha: 0.08)
+                    .font: codeFont, .foregroundColor: textColor, .backgroundColor: DS.Color.scrimSoft
                 ]))
                 i = end + 1
                 continue

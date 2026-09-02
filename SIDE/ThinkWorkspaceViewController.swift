@@ -2307,7 +2307,7 @@ private final class SlidingSegmentedControl: NSView {
         wantsLayer = true
 
         track.wantsLayer = true
-        track.layer?.backgroundColor = DS.Color.scrimFaint.cgColor
+        track.bindLayerBackground(DS.Color.scrimFaint)
         track.layer?.cornerRadius = 14
         addSubview(track)
         let glass = DS.makeGlass(cornerRadius: 12)
@@ -2430,7 +2430,7 @@ private final class PopoverActionRow: NSView {
         // Concentric with the popover's own corner: inner radius ≈ outer radius − inset. The
         // control token (6) was tuned for chips and read as a mismatched rectangle in here.
         highlight.layer?.cornerRadius = 8
-        highlight.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        highlight.bindLayerBackground(NSColor.controlAccentColor)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
@@ -2591,7 +2591,7 @@ private final class ChangedFileRow: NSView {
 
         highlight.wantsLayer = true
         highlight.layer?.cornerRadius = 6
-        highlight.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        highlight.bindLayerBackground(NSColor.controlAccentColor)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
@@ -2792,7 +2792,7 @@ private final class ConversationHistoryRow: NSView {
 
         highlight.wantsLayer = true
         highlight.layer?.cornerRadius = 8
-        highlight.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        highlight.bindLayerBackground(NSColor.controlAccentColor)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
@@ -3204,7 +3204,7 @@ private final class AttachmentChipView: NSView {
         imageView.layer?.cornerRadius = DS.Radius.control
         imageView.layer?.masksToBounds = true
         imageView.layer?.borderWidth = 1
-        imageView.layer?.borderColor = NSColor.separatorColor.cgColor
+        imageView.bindLayerBorder(NSColor.separatorColor)
         imageView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(imageView)
 

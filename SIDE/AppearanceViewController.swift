@@ -7,6 +7,7 @@ import AppKit
 /// who needs bigger text nothing at all. This is that recourse.
 final class AppearanceViewController: NSViewController {
     private let scalePopup = NSPopUpButton()
+    private let themePopup = NSPopUpButton()
     private let sampleLabel = NSTextField(labelWithString: "The quick brown fox jumps over the lazy dog.")
     private let sampleCaption = NSTextField(labelWithString: "Secondary text, captions, and status lines look like this.")
     private let sampleCode = NSTextField(labelWithString: "let sample = \"code and diffs\"")
@@ -14,6 +15,12 @@ final class AppearanceViewController: NSViewController {
     private var scaleLabel = NSTextField(labelWithString: "Text size:")
 
     override func loadView() { view = NSView() }
+
+    @objc private func themeChanged() {
+        guard let raw = themePopup.selectedItem?.representedObject as? String,
+              let preference = DS.Appearance.Preference(rawValue: raw) else { return }
+        DS.Appearance.preference = preference
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -25,6 +32,17 @@ final class AppearanceViewController: NSViewController {
         scalePopup.selectItem(at: DS.Text.Scale.allCases.firstIndex(of: .current) ?? 0)
         scalePopup.target = self
         scalePopup.action = #selector(scaleChanged)
+
+        for preference in DS.Appearance.Preference.allCases {
+            themePopup.addItem(withTitle: preference.displayName)
+            themePopup.lastItem?.representedObject = preference.rawValue
+        }
+        themePopup.selectItem(at: DS.Appearance.Preference.allCases.firstIndex(of: DS.Appearance.preference) ?? 0)
+        themePopup.target = self
+        themePopup.action = #selector(themeChanged)
+        let themeRow = NSStackView(views: [NSTextField(labelWithString: "Appearance:"), themePopup])
+        themeRow.orientation = .horizontal
+        themeRow.spacing = DS.Spacing.m
 
         let scaleRow = NSStackView(views: [scaleLabel, scalePopup])
         scaleRow.orientation = .horizontal
@@ -41,7 +59,7 @@ final class AppearanceViewController: NSViewController {
         samples.spacing = DS.Spacing.s
         sampleCaption.textColor = .secondaryLabelColor
 
-        let stack = NSStackView(views: [titleLabel, scaleRow, note, samples])
+        let stack = NSStackView(views: [titleLabel, themeRow, scaleRow, note, samples])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = DS.Spacing.l

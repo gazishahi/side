@@ -193,7 +193,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // tab (filled with the editor's own color, flush to the strip's bottom edge) read as
         // attached to the content below rather than floating in a bar.
         tabBar.wantsLayer = true
-        tabBar.layer?.backgroundColor = DS.Color.tabStrip.cgColor
+        tabBar.bindLayerBackground(DS.Color.tabStrip)
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
         let divider = NSBox()
@@ -899,7 +899,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         text.textColor = node.isDirectory ? DS.Color.textSecondary : DS.Color.text
         let symbolName = node.isDirectory ? "folder.fill" : "doc.text"
         icon.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
-        icon.contentTintColor = node.isDirectory ? NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1) : DS.Color.textMuted
+        icon.contentTintColor = node.isDirectory ? DS.Color.dynamic(dark: NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1), light: NSColor(red: 0.15, green: 0.45, blue: 0.85, alpha: 1)) : DS.Color.textMuted
         return cell
     }
 

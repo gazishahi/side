@@ -186,8 +186,8 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // darker than the editor's own (near-black rather than matching exactly) — a common
         // convention (Terminal.app, iTerm2 defaults) that also helps a glance tell Make and
         // Run apart.
-        terminalView.terminal.foregroundColor = Color(red: 55704, green: 55704, blue: 55704)
-        terminalView.terminal.backgroundColor = Color(red: 1310, green: 1310, blue: 1310)
+        applyTerminalTheme()
+        NotificationCenter.default.addObserver(self, selector: #selector(appearanceChanged), name: DS.Appearance.didChangeNotification, object: nil)
         terminalView.processDelegate = self
         // Side genuinely handles OSC 133 (the semantic-prompt marks it asks the shell to emit),
         // but detection scans the raw PTY stream in handleAgentCommandData — SwiftTerm's parser
@@ -763,6 +763,61 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                 kill(descendantPID, SIGTERM)
             }
         }
+    }
+
+    // MARK: - Theme
+
+    @objc private func appearanceChanged() { applyTerminalTheme() }
+
+    /// Foreground, background, and the sixteen ANSI colours, from the design tokens for the
+    /// current appearance. SwiftTerm's own defaults are a dim gray on pure black and know nothing
+    /// about light mode; this is what makes Run follow the rest of the app.
+    private func applyTerminalTheme() {
+        let dark = DS.Appearance.isDark
+        terminalView.terminal.foregroundColor = Self.terminalColor(DS.Color.terminalForeground)
+        terminalView.terminal.backgroundColor = Self.terminalColor(DS.Color.terminalBackground)
+        terminalView.terminal.installPalette(colors: Self.ansiPalette(dark: dark))
+        terminalView.nativeForegroundColor = Self.resolved(DS.Color.terminalForeground)
+        terminalView.nativeBackgroundColor = Self.resolved(DS.Color.terminalBackground)
+        terminalView.needsDisplay = true
+    }
+
+    private static func resolved(_ color: NSColor) -> NSColor {
+        var out = color
+        NSApp.effectiveAppearance.performAsCurrentDrawingAppearance {
+            out = color.usingColorSpace(.sRGB) ?? color
+        }
+        return out
+    }
+
+    /// NSColor → SwiftTerm's 16-bit-per-channel `Color`, resolved for the current appearance.
+    static func terminalColor(_ color: NSColor) -> Color {
+        let rgb = resolved(color)
+        return Color(red: UInt16(max(0, min(1, rgb.redComponent)) * 65535),
+                     green: UInt16(max(0, min(1, rgb.greenComponent)) * 65535),
+                     blue: UInt16(max(0, min(1, rgb.blueComponent)) * 65535))
+    }
+
+    /// The standard sixteen, tuned per appearance: the dark set is the familiar bright-on-black
+    /// palette; the light set darkens every hue so yellow and cyan stay legible on near-white.
+    static func ansiPalette(dark: Bool) -> [Color] {
+        func c(_ r: Double, _ g: Double, _ b: Double) -> Color {
+            Color(red: UInt16(r * 65535), green: UInt16(g * 65535), blue: UInt16(b * 65535))
+        }
+        if dark {
+            return [
+                c(0.20, 0.20, 0.22), c(0.92, 0.40, 0.40), c(0.45, 0.80, 0.50), c(0.92, 0.80, 0.40),
+                c(0.45, 0.65, 0.98), c(0.80, 0.55, 0.95), c(0.40, 0.85, 0.85), c(0.85, 0.85, 0.85),
+                c(0.45, 0.45, 0.48), c(1.00, 0.50, 0.50), c(0.60, 0.90, 0.60), c(1.00, 0.90, 0.55),
+                c(0.60, 0.75, 1.00), c(0.90, 0.65, 1.00), c(0.55, 0.95, 0.95), c(1.00, 1.00, 1.00),
+            ]
+        }
+        return [
+            c(0.15, 0.15, 0.17), c(0.75, 0.15, 0.15), c(0.12, 0.50, 0.22), c(0.62, 0.45, 0.02),
+            c(0.12, 0.35, 0.80), c(0.55, 0.20, 0.75), c(0.05, 0.50, 0.55), c(0.55, 0.55, 0.58),
+            c(0.40, 0.40, 0.42), c(0.85, 0.20, 0.20), c(0.10, 0.60, 0.25), c(0.70, 0.50, 0.00),
+            c(0.10, 0.40, 0.95), c(0.65, 0.25, 0.90), c(0.00, 0.58, 0.65), c(0.10, 0.10, 0.10),
+        ]
     }
 
     private static func descendantPIDs(of rootPID: pid_t) -> [pid_t] {

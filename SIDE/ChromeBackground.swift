@@ -12,7 +12,7 @@ enum ChromeBackground {
     static func install(in view: NSView) {
         let fill = NSView()
         fill.wantsLayer = true
-        fill.layer?.backgroundColor = color.cgColor
+        fill.bindLayerBackground(color)
         fill.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(fill, positioned: .below, relativeTo: nil)
         NSLayoutConstraint.activate([

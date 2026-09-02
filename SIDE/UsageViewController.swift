@@ -137,7 +137,7 @@ final class UsageViewController: NSViewController {
     private func makeSummaryCard(grand: UsageTotals, estimate: (total: Double, hasUnpricedModels: Bool)) -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.backgroundColor = DS.Color.bg2.cgColor
+        card.bindLayerBackground(DS.Color.bg2)
         card.layer?.cornerRadius = DS.Radius.card
         card.translatesAutoresizingMaskIntoConstraints = false
 

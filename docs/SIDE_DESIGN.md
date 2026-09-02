@@ -32,7 +32,7 @@ One source of truth in code: `DesignSystem.swift` (`Palette`, `Type`, `Spacing`,
 `ReviewPalette`, the ad-hoc grays in Heron's proposal cards, ChromeBackground)
 migrate into it and die.
 
-**Palette (dark, the only theme for now):**
+**Palette (dark values; every token is dynamic and carries a light counterpart in `DS.Color` since 2026-09-01 — Appearance is a preference, Match System / Light / Dark):**
 | Token | Value | Use |
 |---|---|---|
 | `bg0` | white 0.10 | stage background, the deepest layer |

@@ -163,13 +163,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.title = "Side"
         window.toolbarStyle = .unifiedCompact
         window.minSize = NSSize(width: 980, height: 620)
-        // Side is built as a single, deliberately dark experience — not "whatever the system
-        // appearance happens to be". Without forcing this, the *native* title bar/toolbar
-        // chrome (drawn by AppKit itself, outside any of our own view backgrounds) stays
-        // light on a Mac in Light Mode, and our own NSVisualEffectView chrome materials
-        // resolve their vibrancy against that light backdrop too — which is exactly why the
-        // chrome still read as too bright/gray despite our own views using dark colors.
-        window.appearance = NSAppearance(named: .darkAqua)
+        // Appearance is a preference (Match System / Light / Dark) applied at the application
+        // level, not forced dark per window as it was while dark was the only palette. Every
+        // token is dynamic, so the window follows whatever NSApp.appearance resolves to.
+        DS.Appearance.bootstrap()
         window.backgroundColor = DS.Color.chrome
         // Even with dark appearance forced, the native title/toolbar strip still renders
         // using the system's own dark-mode material — a medium charcoal, visibly lighter

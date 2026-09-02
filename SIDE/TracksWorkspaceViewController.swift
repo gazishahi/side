@@ -422,8 +422,8 @@ final class TracksWorkspaceViewController: NSViewController {
         card.wantsLayer = true
         card.layer?.cornerRadius = DS.Radius.card
         card.layer?.borderWidth = 1
-        card.layer?.borderColor = TracksPalette.cardBorder.cgColor
-        card.layer?.backgroundColor = TracksPalette.cardBackground.cgColor
+        card.bindLayerBorder(TracksPalette.cardBorder)
+        card.bindLayerBackground(TracksPalette.cardBackground)
         card.layer?.masksToBounds = true
 
         let rowsStack = NSStackView()
@@ -562,9 +562,8 @@ final class TracksWorkspaceViewController: NSViewController {
         card.wantsLayer = true
         card.layer?.cornerRadius = DS.Radius.card
         card.layer?.borderWidth = 1
-        card.layer?.borderColor = TracksPalette.cardBorder.cgColor
-        card.layer?.backgroundColor = TracksPalette.cardBackground.cgColor
-
+        card.bindLayerBorder(TracksPalette.cardBorder)
+        card.bindLayerBackground(TracksPalette.cardBackground)
         // A real SF Symbol instead of a hand-drawn circle-plus-letter: renders properly centered
         // for free, and reads as native rather than a homemade approximation of one.
         let glyph = NSImageView(image: NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) ?? NSImage())
@@ -1227,7 +1226,7 @@ private final class TrackRowView: NSView {
 
         let chip = NSView()
         chip.wantsLayer = true
-        chip.layer?.backgroundColor = TracksPalette.chip.cgColor
+        chip.bindLayerBackground(TracksPalette.chip)
         chip.layer?.cornerRadius = DS.Radius.chip
         chip.translatesAutoresizingMaskIntoConstraints = false
         branchLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1244,7 +1243,7 @@ private final class TrackRowView: NSView {
         let statusColor = TracksPalette.statusColor(for: status)
         let statusPill = NSView()
         statusPill.wantsLayer = true
-        statusPill.layer?.backgroundColor = statusColor.withAlphaComponent(0.16).cgColor
+        statusPill.bindLayerBackground(statusColor.withAlphaComponent(0.16))
         statusPill.layer?.cornerRadius = DS.Radius.chip
         statusPill.translatesAutoresizingMaskIntoConstraints = false
         let statusLabel = NSTextField(labelWithString: TracksPalette.statusText(for: status))
@@ -1356,7 +1355,7 @@ private final class TrackRowView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = TracksPalette.rowHover.cgColor
+        bindLayerBackground(TracksPalette.rowHover)
         actionsStack.animator().alphaValue = 1
     }
 

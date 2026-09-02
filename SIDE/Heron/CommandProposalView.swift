@@ -24,8 +24,7 @@ final class CommandProposalView: NSView {
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.card
         layer?.borderWidth = 1
-        layer?.backgroundColor = DS.Color.bg1.cgColor
-
+        bindLayerBackground(DS.Color.bg1)
         // A named task says what it *is*, not just what it runs — "Run the test task" is a
         // decision the user can make at a glance; a command line is something they have to
         // parse first. The command itself stays visible below either way.
@@ -48,11 +47,11 @@ final class CommandProposalView: NSView {
         // visible warning here too — a red border alone is easy to miss scrolling past a
         // transcript; a human still has to read *why* before clicking Run.
         if case .destructive(let reason) = command.riskLevel {
-            layer?.borderColor = Self.destructiveBorderColor.cgColor
+            bindLayerBorder(Self.destructiveBorderColor)
             warningLabel.stringValue = "⚠︎ \(reason)"
             warningLabel.isHidden = false
         } else {
-            layer?.borderColor = Self.normalBorderColor.cgColor
+            bindLayerBorder(Self.normalBorderColor)
             warningLabel.isHidden = true
             // A hidden NSView still participates in Auto Layout (unlike a collapsed stack view
             // arranged subview) — without pinning its height to zero, its intrinsic

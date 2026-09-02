@@ -27,9 +27,8 @@ final class ProposedEditView: NSView {
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.card
         layer?.borderWidth = 1
-        layer?.borderColor = DS.Color.hairline.cgColor
-        layer?.backgroundColor = DS.Color.bg1.cgColor
-
+        bindLayerBorder(DS.Color.hairline)
+        bindLayerBackground(DS.Color.bg1)
         headerLabel.stringValue = Self.headerText(for: edit, isStreaming: isStreaming)
         headerLabel.font = DS.Text.control(.semibold)
         headerLabel.lineBreakMode = .byTruncatingMiddle

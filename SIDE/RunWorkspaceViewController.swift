@@ -63,7 +63,7 @@ final class RunWorkspaceViewController: NSViewController {
         tabBar.wantsLayer = true
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
-        tabBar.layer?.backgroundColor = DS.Color.tabStrip.cgColor
+        tabBar.bindLayerBackground(DS.Color.tabStrip)
         tabBarStack.orientation = .horizontal
         tabBarStack.alignment = .bottom
         tabBarStack.spacing = DS.Spacing.xxs
@@ -99,7 +99,7 @@ final class RunWorkspaceViewController: NSViewController {
         container.wantsLayer = true
         container.layer?.cornerRadius = DS.Radius.card
         container.layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
-        container.layer?.backgroundColor = NSColor.black.cgColor
+        container.bindLayerBackground(DS.Color.terminalBackground)
         container.clipsToBounds = true
         view.addSubview(container)
 

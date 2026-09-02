@@ -10,11 +10,11 @@ final class LineNumberGutterView: NSView {
     var lineDiagnostics: [Int: LSPDiagnosticSeverity] = [:] { didSet { needsDisplay = true } }
     var onDiagnosticClicked: ((Int, LSPDiagnosticSeverity, NSEvent) -> Void)?
 
-    private static let addedColor = NSColor(red: 0.42, green: 0.78, blue: 0.48, alpha: 1)
-    private static let modifiedColor = NSColor(red: 0.85, green: 0.68, blue: 0.35, alpha: 1)
-    private static let removedColor = NSColor(red: 0.86, green: 0.42, blue: 0.42, alpha: 1)
-    private static let errorColor = NSColor(red: 0.92, green: 0.35, blue: 0.35, alpha: 1)
-    private static let warningColor = NSColor(red: 0.93, green: 0.75, blue: 0.3, alpha: 1)
+    private static let addedColor = DS.Color.dynamic(dark: NSColor(red: 0.42, green: 0.78, blue: 0.48, alpha: 1), light: NSColor(red: 0.15, green: 0.55, blue: 0.25, alpha: 1))
+    private static let modifiedColor = DS.Color.dynamic(dark: NSColor(red: 0.85, green: 0.68, blue: 0.35, alpha: 1), light: NSColor(red: 0.65, green: 0.45, blue: 0.05, alpha: 1))
+    private static let removedColor = DS.Color.dynamic(dark: NSColor(red: 0.86, green: 0.42, blue: 0.42, alpha: 1), light: NSColor(red: 0.7, green: 0.2, blue: 0.2, alpha: 1))
+    private static let errorColor = DS.Color.dynamic(dark: NSColor(red: 0.92, green: 0.35, blue: 0.35, alpha: 1), light: NSColor(red: 0.8, green: 0.15, blue: 0.15, alpha: 1))
+    private static let warningColor = DS.Color.dynamic(dark: NSColor(red: 0.93, green: 0.75, blue: 0.3, alpha: 1), light: NSColor(red: 0.7, green: 0.5, blue: 0.05, alpha: 1))
     private static let hintColor = DS.Color.textMuted
 
     private static func color(for severity: LSPDiagnosticSeverity) -> NSColor {
