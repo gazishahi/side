@@ -177,6 +177,28 @@ final class CommandRiskClassifierTests: XCTestCase {
         }
     }
 
+    func testASymlinkOutOfTheProjectIsNotAutoRunnable() throws {
+        // `cat creds` is inside the project by its text and a read of another file entirely by
+        // its target. The textual rules see the string; this sees the filesystem.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("autorun-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("creds"), withDestinationURL: URL(fileURLWithPath: "/etc/hosts"))
+        try "fine".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("alias"), withDestinationURL: root.appendingPathComponent("src"))
+
+        XCTAssertFalse(CommandAutoRunPolicy.isAutoRunnable("cat creds", projectRoot: root))
+        XCTAssertFalse(CommandAutoRunPolicy.isAutoRunnable("head -n 5 creds", projectRoot: root))
+        // Links that stay inside the project are fine, and so is a path that doesn't exist —
+        // the command itself refuses that one.
+        XCTAssertTrue(CommandAutoRunPolicy.isAutoRunnable("ls alias", projectRoot: root))
+        XCTAssertTrue(CommandAutoRunPolicy.isAutoRunnable("cat README.md", projectRoot: root))
+        XCTAssertTrue(CommandAutoRunPolicy.isAutoRunnable("cat missing.txt", projectRoot: root))
+        // Without a root the textual rules still apply on their own.
+        XCTAssertTrue(CommandAutoRunPolicy.isAutoRunnable("cat creds"))
+    }
+
     func testOrdinaryInProjectReadsStillAutoRun() {
         // The fix must not make Guarded mode useless — relative reads inside the project are
         // exactly what auto-run exists for.

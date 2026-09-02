@@ -630,26 +630,55 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// leaves the rules inactive; the conversation proceeds without them.
     private func confirmProjectRulesIfNeeded() -> Bool {
         guard let projectPath else { return true }
-        let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath
-        guard let pending = ProjectRules.pendingAcknowledgement(projectRoot: URL(fileURLWithPath: root)) else { return true }
+        let root = URL(fileURLWithPath: trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath)
+        // Two files arrive with a repository and change what the agent does: the rules file
+        // shapes what it says, the tasks file decides what `run_task` executes. Both get the same
+        // per-content consent before they take effect.
+        if let rules = ProjectRules.pendingAcknowledgement(projectRoot: root) {
+            let name = rules.url.lastPathComponent
+            let outcome = askToAcknowledge(
+                title: "Use \(name) as standing instructions?",
+                detail: "This project contains \(name), which tells agents how to work in it. "
+                    + "Side would include it in every request for this project.\n\n"
+                    + "Files like this arrive with a cloned repository, so read it first if the project isn't yours — "
+                    + "it shapes what the agent does, though it can never waive your approval of edits and commands.",
+                acceptTitle: "Use These Rules", file: rules,
+                acceptedNotice: "\(name) is now included in every request for this project."
+            )
+            guard outcome else { return false }
+        }
+        if let tasks = ProjectTasks.pendingDeclaration(projectRoot: root) {
+            let outcome = askToAcknowledge(
+                title: "Use this project's declared tasks?",
+                detail: "This project contains \(ProjectTasks.declarationPath), which names commands the agent can run "
+                    + "with run_task — its build, test, and verify steps.\n\n"
+                    + "It arrives with a cloned repository, so read it first if the project isn't yours: a task named "
+                    + "\u{201C}test\u{201D} can run anything. Until you accept it, Side uses what it detects from the "
+                    + "project's own manifests instead. Each task still shows an approval card unless the track auto-runs commands.",
+                acceptTitle: "Use These Tasks", file: tasks,
+                acceptedNotice: "\(ProjectTasks.declarationPath) is now the source of this project's tasks."
+            )
+            guard outcome else { return false }
+        }
+        return true
+    }
 
-        let name = pending.url.lastPathComponent
+    /// One consent dialog. Returns false only when the user chose to look at the file first — that
+    /// is a "not yet", and the message stays in the composer.
+    private func askToAcknowledge(title: String, detail: String, acceptTitle: String, file: (url: URL, contents: String), acceptedNotice: String) -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Use \(name) as standing instructions?"
-        alert.informativeText = "This project contains \(name), which tells agents how to work in it. "
-            + "Side would include it in every request for this project.\n\n"
-            + "Files like this arrive with a cloned repository, so read it first if the project isn't yours — "
-            + "it shapes what the agent does, though it can never waive your approval of edits and commands."
-        alert.addButton(withTitle: "Use These Rules")
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: acceptTitle)
         alert.addButton(withTitle: "Show Me the File")
         alert.addButton(withTitle: "Not Now")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            ProjectRules.acknowledge(url: pending.url, contents: pending.contents)
-            appendLocalNotice("\(name) is now included in every request for this project.")
+            ProjectRules.acknowledge(url: file.url, contents: file.contents)
+            appendLocalNotice(acceptedNotice)
             return true
         case .alertSecondButtonReturn:
-            onRevealFileRequested?(pending.url)
+            onRevealFileRequested?(file.url)
             return false
         default:
             return true

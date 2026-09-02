@@ -126,7 +126,28 @@ enum CommandAutoRunPolicy {
         "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l",
     ]
 
-    static func isAutoRunnable(_ command: String) -> Bool {
+    /// `projectRoot`, when given, lets the argument check resolve symlinks: `cat creds` is a
+    /// read inside the project by its text and a read of `~/.aws/credentials` by its target. The
+    /// textual rules are necessary but not sufficient — they see the string, not the filesystem.
+    /// (2026-09-01 audit, command-execution Med.) Callers without a root get the textual rules only.
+    static func isAutoRunnable(_ command: String, projectRoot: URL? = nil) -> Bool {
+        guard isTextuallyAutoRunnable(command) else { return false }
+        guard let projectRoot else { return true }
+        let tokens = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        let resolvedRoot = projectRoot.standardizedFileURL.resolvingSymlinksInPath().path
+        for argument in tokens.dropFirst() where !argument.hasPrefix("-") {
+            let candidate = projectRoot.appendingPathComponent(argument)
+            // Only things that exist can point somewhere; a missing path is refused by the
+            // command itself, and a dangling link resolves to nothing readable.
+            guard FileManager.default.fileExists(atPath: candidate.path) else { continue }
+            let resolved = candidate.standardizedFileURL.resolvingSymlinksInPath().path
+            guard resolved == resolvedRoot || resolved.hasPrefix(resolvedRoot + "/") else { return false }
+        }
+        return true
+    }
+
+    private static func isTextuallyAutoRunnable(_ command: String) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 

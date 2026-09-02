@@ -1395,7 +1395,7 @@ final class AgentRunner {
                 // Allowlist, not "didn't match the destructive blacklist" — see
                 // CommandAutoRunPolicy. Anything unrecognized goes to the human.
                 if modeProvider().autonomy.autoRunsAllowlistedCommands,
-                   CommandAutoRunPolicy.isAutoRunnable(command.command) { autoRunEntryIndices.append(index) }
+                   CommandAutoRunPolicy.isAutoRunnable(command.command, projectRoot: rootProvider()) { autoRunEntryIndices.append(index) }
             }
         }
 

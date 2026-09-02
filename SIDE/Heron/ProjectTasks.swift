@@ -60,10 +60,24 @@ enum ProjectTasks {
         tasks(projectRoot: projectRoot).first { $0.name == name }
     }
 
+    /// Declared tasks are honored only once the user has acknowledged the file — the same
+    /// per-content consent `AGENTS.md` gets, for the same reason: it arrives with a cloned
+    /// repository and it decides what `run_task` runs. Unacknowledged, it is simply not there
+    /// and detection applies, so nothing from the file can execute before it has been seen.
+    /// (2026-09-01 audit, prompt-injection Partial.)
     private static func declaredTasks(projectRoot: URL) -> [ProjectTask]? {
         let url = projectRoot.appendingPathComponent(declarationPath)
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? Data(contentsOf: url), let contents = String(data: data, encoding: .utf8) else { return nil }
+        guard ProjectRules.isAcknowledged(url: url, contents: contents) else { return nil }
         return try? JSONDecoder().decode([ProjectTask].self, from: data)
+    }
+
+    /// The declaration file, if it exists and hasn't been acknowledged — what the UI must show the
+    /// user before any of its commands can be run by name.
+    static func pendingDeclaration(projectRoot: URL) -> (url: URL, contents: String)? {
+        let url = projectRoot.appendingPathComponent(declarationPath)
+        guard let contents = try? String(contentsOf: url, encoding: .utf8), !contents.isEmpty else { return nil }
+        return ProjectRules.isAcknowledged(url: url, contents: contents) ? nil : (url, contents)
     }
 
     // MARK: - Detection

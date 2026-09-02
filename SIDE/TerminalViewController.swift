@@ -146,6 +146,17 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     var startupSettled: Bool { didTidyAfterSetup || shellIntegration == .unavailable }
     /// Guards against a stale timeout resolving a *later* command that happens to occupy the slot.
     private var pendingAgentCommandGeneration = 0
+    /// Per-terminal secret the shell's own OSC 133 hooks include in every `D` mark.
+    ///
+    /// Without it, the mark was twelve bytes any process could print: a repository's test
+    /// script could emit `\e]133;D;0\a` and read as "exit 0" — a forged passing verification,
+    /// which is the one record Promote trusts. The nonce reaches the shell in its environment,
+    /// the rc file copies it into an unexported shell variable and removes it from the
+    /// environment, so child processes never see it; a mark without the right nonce is treated as
+    /// ordinary output. This does not stop a process that reads the rc file or the shell's
+    /// environment — same-user code can — but it moves the attack from "print a line" to
+    /// "deliberately go looking", which is a different threat. (2026-09-01 audit, terminal Med.)
+    private let markNonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
     static let agentCommandTimeout: TimeInterval = 30
     /// For a *task* — the project's own build or test command — which the user asked to run by
     /// name and can watch in the terminal. Thirty seconds is shorter than most real test suites,
@@ -221,6 +232,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                 environment.append("SIDE_ORIG_ZDOTDIR=\(original)")
             }
             environment.append("ZDOTDIR=\(wrapper.path)")
+            environment.append("SIDE_MARK_NONCE=\(markNonce)")
             integrationInstalledViaRc = true
         }
         terminalView.startProcess(executable: shell, args: ["-l"], environment: environment, currentDirectory: workingDirectory)
@@ -235,12 +247,13 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
         let dir = support.appendingPathComponent("Side/zsh-integration", isDirectory: true)
         let hooks = #"""
-        __side_done(){ printf '\e]133;D;%s\a' $?; }
+        __SIDE_NONCE=$SIDE_MARK_NONCE; unset SIDE_MARK_NONCE
+        __side_done(){ printf '\e]133;D;%s;%s\a' $? $__SIDE_NONCE; }
         __side_start(){ printf '\e]133;C\a'; }
         typeset -ga precmd_functions preexec_functions
         precmd_functions=(__side_done ${precmd_functions:#__side_done})
         preexec_functions=(${preexec_functions:#__side_start} __side_start)
-        printf '\e]133;D;0\a'
+        printf '\e]133;D;0;%s\a' $__SIDE_NONCE
         """#
         func wrapper(_ name: String, extra: String = "") -> String {
             """
@@ -497,14 +510,14 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private func handleAgentCommandData(_ slice: ArraySlice<UInt8>) {
         let chunk = String(decoding: slice, as: UTF8.self)
         // The probe: any `D` mark proves the shell is emitting OSC 133, whoever caused it.
-        if shellIntegration == .probing, chunk.contains(Self.markPrefix + "D;") {
+        if shellIntegration == .probing, chunk.contains(";" + markNonce + Self.markTerminator) {
             shellIntegration = .confirmed
             tidyAfterSetup()
             drainQueuedAgentCommandsIfIdle()
         }
         guard var pending = pendingAgentCommand else { return }
         if pending.usesMarks {
-            let step = Self.advanceMarkedCapture(buffer: pending.buffer, outputStarted: pending.outputStarted, chunk: chunk)
+            let step = Self.advanceMarkedCapture(buffer: pending.buffer, outputStarted: pending.outputStarted, chunk: chunk, nonce: markNonce)
             pending.buffer = step.buffer
             pending.outputStarted = step.outputStarted
             guard let finished = step.finished else {
@@ -603,7 +616,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         var finished: String?
     }
 
-    static func advanceMarkedCapture(buffer: String, outputStarted: Bool, chunk: String) -> MarkedCaptureStep {
+    static func advanceMarkedCapture(buffer: String, outputStarted: Bool, chunk: String, nonce: String) -> MarkedCaptureStep {
         var buffer = boundedAppend(buffer, chunk)
         var outputStarted = outputStarted
         if !outputStarted {
@@ -615,14 +628,28 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         }
         // Output is exactly what falls between the shell's own "output starts here" and "command
         // finished" marks, so the prompt is excluded by construction rather than by filtering.
-        guard let doneRange = buffer.range(of: markPrefix + "D;") else {
+        // A `D` mark is only the shell's if it carries this terminal's nonce; anything else
+        // shaped like one is output and the search moves past it.
+        var searchFrom = buffer.startIndex
+        var doneRange: Range<String.Index>?
+        var exitCode = 0
+        while let candidate = buffer.range(of: markPrefix + "D;", range: searchFrom..<buffer.endIndex) {
+            let afterDone = buffer[candidate.upperBound...]
+            guard let terminator = afterDone.range(of: markTerminator) else {
+                // Still arriving — could be ours; wait for the rest.
+                return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: nil)
+            }
+            let payload = afterDone[afterDone.startIndex..<terminator.lowerBound].split(separator: ";", omittingEmptySubsequences: false)
+            if payload.count == 2, payload[1] == nonce, let code = Int(payload[0]) {
+                doneRange = candidate
+                exitCode = code
+                break
+            }
+            searchFrom = terminator.upperBound
+        }
+        guard let doneRange else {
             return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: nil)
         }
-        let afterDone = buffer[doneRange.upperBound...]
-        guard let terminator = afterDone.range(of: markTerminator) else {
-            return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: nil)
-        }
-        let exitCode = Int(afterDone[afterDone.startIndex..<terminator.lowerBound]) ?? 0
         var output = strippingPromptEOLMark(
             stripANSI(String(buffer[buffer.startIndex..<doneRange.lowerBound]))
         ).trimmingCharacters(in: .whitespacesAndNewlines)
