@@ -2,15 +2,20 @@ import XCTest
 @testable import Side
 
 final class ProjectRulesTests: XCTestCase {
+    private var savedDefaults: UserDefaults!
+
     private var root: URL!
 
     override func setUpWithError() throws {
         try super.setUpWithError()
+        savedDefaults = ProjectRules.defaults
+        ProjectRules.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
         root = FileManager.default.temporaryDirectory.appendingPathComponent("rules-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
     override func tearDown() {
+        ProjectRules.defaults = savedDefaults
         try? FileManager.default.removeItem(at: root)
         super.tearDown()
     }
