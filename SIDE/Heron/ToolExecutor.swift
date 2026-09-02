@@ -374,40 +374,20 @@ struct ToolExecutor {
         guard let query = input.stringValue(for: "query"), !query.isEmpty else {
             return ("Missing required argument: query", true)
         }
-        let isRegex = input.boolValue(for: "is_regex") ?? false
-        var regex: NSRegularExpression?
-        if isRegex {
-            do {
-                regex = try NSRegularExpression(pattern: query, options: [.caseInsensitive])
-            } catch {
-                return ("Invalid regular expression: \(error.localizedDescription)", true)
-            }
+        var options = ProjectTextSearch.Options()
+        options.isRegex = input.boolValue(for: "is_regex") ?? false
+        options.fileExtension = input.stringValue(for: "extension")
+        options.limit = Self.maxSearchMatches
+        let results: ProjectTextSearch.Results
+        do {
+            results = try ProjectTextSearch.search(root: projectRoot, query: query, options: options, liveBuffer: liveBufferProvider)
+        } catch {
+            return (error.localizedDescription, true)
         }
-        let ext = input.stringValue(for: "extension")?.lowercased()
-
-        var results: [String] = []
-        var truncated = false
-        for file in ProjectFileAccess.scan(root: projectRoot) {
-            if let ext, !ext.isEmpty, (file.relativePath as NSString).pathExtension.lowercased() != ext { continue }
-            guard let data = try? Data(contentsOf: file.url), data.count <= ProjectFileAccess.maxReadableFileSize,
-                  let text = liveBufferProvider(file.url) ?? ProjectFileAccess.decodeText(from: data) else { continue }
-            for (index, line) in text.components(separatedBy: "\n").enumerated() {
-                let matched: Bool
-                if let regex {
-                    matched = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
-                } else {
-                    matched = line.range(of: query, options: .caseInsensitive) != nil
-                }
-                guard matched else { continue }
-                results.append("\(file.relativePath):\(index + 1)\t\(line.trimmingCharacters(in: .whitespaces))")
-                if results.count >= Self.maxSearchMatches { truncated = true; break }
-            }
-            if truncated { break }
-        }
-        guard !results.isEmpty else { return ("No matches for \(query).", false) }
-        var body = results.joined(separator: "\n")
-        if truncated { body += "\n… more matches not shown (narrow the search to see them)" }
-        return (truncate(body, note: "results truncated"), false)
+        guard !results.matches.isEmpty else { return ("No matches for \"\(query)\".", false) }
+        var lines = results.matches.map { "\($0.relativePath):\($0.line)\t\($0.text)" }
+        if results.truncated { lines.append("… [stopped at \(Self.maxSearchMatches) matches — narrow the query or pass an extension]") }
+        return (lines.joined(separator: "\n"), false)
     }
 
     /// Tool output is fed straight back into the model's context, so an unbounded read of a

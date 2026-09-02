@@ -103,7 +103,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var lspInstallPopover: NSPopover?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
-    private enum SearchMode { case files, symbols }
+    private enum SearchMode { case files, symbols, text }
+    /// Find in Project results, one row per matching line.
+    private var textMatches: [ProjectTextSearch.Match] = []
+    private var textSearchTruncated = false
     private var searchMode: SearchMode = .files
     private var symbolMatches: [CodeSymbol] = []
     private var openTabs: [OpenTab] = []
@@ -450,7 +453,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func showQuickOpenPanel() {
         guard let window = searchField.window else { return }
-        let visibleRows = max(1, min(quickOpenMaxVisibleRows, matches.count))
+        let visibleRows = max(1, min(quickOpenMaxVisibleRows, resultCount))
         let height = CGFloat(visibleRows) * quickOpenRowHeight + 28
         let fieldFrameInWindow = searchField.convert(searchField.bounds, to: nil)
         let fieldFrameOnScreen = window.convertToScreen(fieldFrameInWindow)
@@ -2189,6 +2192,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             performSymbolSearch()
             return
         }
+        if searchMode == .text {
+            performTextSearch()
+            return
+        }
         guard projectURL != nil else { hideQuickOpenPanel(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         searchGeneration += 1
@@ -2214,6 +2221,45 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    /// Find in Project: the same search the agent's `search_files` runs, over the same live
+    /// buffers, off the main thread with the same generation guard Quick Open uses so a stale
+    /// result set can't land on top of a newer query.
+    private func performTextSearch() {
+        guard let root = focusedRoot else { hideQuickOpenPanel(); return }
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchGeneration += 1
+        let generation = searchGeneration
+        guard query.count >= 2 else {
+            // One character matches nearly every line in the project; wait for a second.
+            textMatches = []
+            textSearchTruncated = false
+            applySearchResults()
+            return
+        }
+        // Snapshot the open buffers on main; the search runs elsewhere.
+        let liveTexts: [URL: String] = Dictionary(uniqueKeysWithValues: openTabs.filter(\.dirty).map { ($0.url, $0.textStorage.string) })
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var options = ProjectTextSearch.Options()
+            options.limit = 200
+            let results = (try? ProjectTextSearch.search(root: root, query: query, options: options, liveBuffer: { liveTexts[$0] }))
+                ?? ProjectTextSearch.Results(matches: [], truncated: false)
+            DispatchQueue.main.async {
+                guard let self, self.searchGeneration == generation else { return }
+                self.textMatches = results.matches
+                self.textSearchTruncated = results.truncated
+                self.applySearchResults()
+            }
+        }
+    }
+
+    private var resultCount: Int {
+        switch searchMode {
+        case .files: return matches.count
+        case .symbols: return symbolMatches.count
+        case .text: return textMatches.count
+        }
+    }
+
     private func performSymbolSearch() {
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { hideQuickOpenPanel(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2231,7 +2277,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func applySearchResults() {
         resultsTable.reloadData()
-        let count = searchMode == .symbols ? symbolMatches.count : matches.count
+        let count = resultCount
         if count > 0 { resultsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         if count > 0 { showQuickOpenPanel() } else { hideQuickOpenPanel() }
     }
@@ -2246,19 +2292,24 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             guard let symbol else { return }
             hideQuickOpenPanel()
             scrollToLine(symbol.line)
+        case .text:
+            let match = (selected >= 0 && selected < textMatches.count) ? textMatches[selected] : textMatches.first
+            guard let match else { return }
+            hideQuickOpenPanel()
+            revealFile(match.url, line: match.line)
         }
     }
     @objc private func openSelectedResult() { confirmSearch() }
     private func dismissQuickOpen() { hideQuickOpenPanel(); view.window?.makeFirstResponder(editor) }
     private func moveSelection(_ direction: Int) {
-        let count = searchMode == .symbols ? symbolMatches.count : matches.count
+        let count = resultCount
         guard count > 0 else { return }
         let next = max(0, min(count - 1, resultsTable.selectedRow + direction))
         resultsTable.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
         resultsTable.scrollRowToVisible(next)
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
-        if tableView === resultsTable { return searchMode == .symbols ? symbolMatches.count : matches.count }
+        if tableView === resultsTable { return resultCount }
         if tableView === completionTable { return completionItems.count }
         if tableView === csvTable {
             guard let index = activeTabIndex, openTabs.indices.contains(index) else { return 0 }
@@ -2334,6 +2385,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .symbols:
             let symbol = symbolMatches[row]
             text.stringValue = "\(symbol.name)  —  \(symbol.kind) · line \(symbol.line)"
+        case .text:
+            let match = textMatches[row]
+            // Location first, dimmed; the matching line carries the answer.
+            let attributed = NSMutableAttributedString(string: "\(match.relativePath):\(match.line)  ", attributes: [.foregroundColor: DS.Color.textMuted])
+            attributed.append(NSAttributedString(string: match.text, attributes: [.foregroundColor: DS.Color.textStrong]))
+            text.attributedStringValue = attributed
         }
         return cell
     }
@@ -2783,6 +2840,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p")
         navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l")
         let goToSymbol = navigateMenu.addItem(withTitle: "Go to Symbol…", action: #selector(focusSymbolSearch), keyEquivalent: "o")
+        let findInProject = NSMenuItem(title: "Find in Project…", action: #selector(focusProjectSearch), keyEquivalent: "f")
+        findInProject.keyEquivalentModifierMask = [.command, .shift]
+        navigateMenu.addItem(findInProject)
         goToSymbol.keyEquivalentModifierMask = [.command, .shift]
         let jumpToDef = navigateMenu.addItem(withTitle: "Jump to Definition", action: #selector(jumpToDefinition), keyEquivalent: "j")
         jumpToDef.keyEquivalentModifierMask = [.command, .control]
@@ -2847,6 +2907,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     @objc private func focusQuickOpen() {
         searchMode = .files
         searchField.placeholderString = projectURL.map { "Find a file in \($0.lastPathComponent)" } ?? "Open file, symbol, or command"
+        searchField.stringValue = ""
+        view.window?.makeFirstResponder(searchField)
+        performSearch()
+    }
+    @objc private func focusProjectSearch() {
+        guard projectURL != nil else { return }
+        searchMode = .text
+        searchField.placeholderString = projectURL.map { "Search text in \($0.lastPathComponent)" } ?? "Search text"
         searchField.stringValue = ""
         view.window?.makeFirstResponder(searchField)
         performSearch()

@@ -23,13 +23,26 @@ enum ProjectFileAccess {
     nonisolated static func scan(root: URL) -> [ScannedFile] {
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return [] }
-        let rootPrefix = root.path + "/"
+        // Every spelling the enumerator might use for the root. It hands back *resolved* paths
+        // when the root sits behind a symlink — /var/… is /private/var/… on macOS — and the old
+        // `replacingOccurrences(of: root.path + "/")` then found nothing to replace and reported
+        // the absolute path as the relative one: "/privatesrc/a.swift". Caught by the first test
+        // that ran a search under a temporary directory; a project cloned into a symlinked
+        // folder would have shown the same garbage in every tool result and @-mention.
+        let rootPrefixes = Set([root.path, root.standardizedFileURL.path, root.resolvingSymlinksInPath().path]).map { $0 + "/" }
+        func relativePath(of url: URL) -> String {
+            let path = url.path
+            if let prefix = rootPrefixes.first(where: { path.hasPrefix($0) }) { return String(path.dropFirst(prefix.count)) }
+            let resolved = url.resolvingSymlinksInPath().path
+            if let prefix = rootPrefixes.first(where: { resolved.hasPrefix($0) }) { return String(resolved.dropFirst(prefix.count)) }
+            return url.lastPathComponent
+        }
         var scanned: [ScannedFile] = []
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: keys)
             if values?.isDirectory == true && ignoredDirectories.contains(url.lastPathComponent) { enumerator.skipDescendants(); continue }
             if values?.isRegularFile == true && !url.pathExtension.isEmpty {
-                scanned.append(ScannedFile(url: url, relativePath: url.path.replacingOccurrences(of: rootPrefix, with: "")))
+                scanned.append(ScannedFile(url: url, relativePath: relativePath(of: url)))
             }
             if scanned.count >= maxIndexedFiles { break }
         }
