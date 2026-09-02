@@ -1,5 +1,7 @@
 # SIDE — Product Constitution
 
+Status: reference — the stage table below is machine-checked (`DocStatusTests`): a stage marked **built** must be a `ShellViewController.Stage` case, and one marked **planned** must not be.
+
 _Working name: Shahi's IDE._
 
 ## Purpose

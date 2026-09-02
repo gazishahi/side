@@ -1,5 +1,7 @@
 # Side — Landing Page (Waitlist v1)
 
+Status: reference — marketing copy; must describe tracks, not any other name for them.
+
 Scope: single page, one goal — collect waitlist emails. No pricing, no docs, no feature tour. Ship something honest about where the product actually is (early, opinionated, in active development) rather than overselling a finished IDE.
 
 ---

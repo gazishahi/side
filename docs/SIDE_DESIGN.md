@@ -1,5 +1,7 @@
 # Side — Design Charter
 
+Status: reference — governs every UI change; the token layer it names is `DS` in `DesignSystem.swift`.
+
 Companion to `SIDE_PRODUCT_CONSTITUTION.md`. The constitution says what Side
 *is*; this says what Side *looks and feels like*. Every UI change from here
 forward — including the harness roadmap phases — is expected to conform to this

@@ -1,5 +1,7 @@
 # Strict concurrency — enabled vs. adopted
 
+Status: in progress — `TrackStore` adopted; `LanguageServerRegistry` caches locked 2026-09-01 (audit H9); the remaining warnings are tracked in this document.
+
 *Measured and begun 2026-08-30.*
 
 > "Highly recommend investing in adopting swift strict concurrency now and cleanly

@@ -1,5 +1,9 @@
 # Launch performance — what Mitchell Hashimoto's advice means for Side
 
+Status: built — one probe spawn at launch, cached; signposted.
+
+Symbols: `GitLaunchProbe`, `LaunchSignposts`.
+
 *Measured and implemented 2026-08-30.*
 
 > "At the earliest point in the lifecycle do non main actor necessary tasks in
