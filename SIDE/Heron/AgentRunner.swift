@@ -971,7 +971,7 @@ final class AgentRunner {
     /// instead of requiring a fresh send.
     private func runTurn(roundTrip: Int) {
         guard let session = sessionStore.session(forTrackKey: trackKey) else {
-            finishRun(completed: false)
+            finishRun(.stopped)
             return
         }
         guard roundTrip < Self.maxToolRoundTrips else {
@@ -995,7 +995,7 @@ final class AgentRunner {
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
         ) else {
             appendMissingKeyHint()
-            finishRun(completed: false)
+            finishRun(.failed)
             return
         }
         setPhase(.streaming)
@@ -1266,17 +1266,18 @@ final class AgentRunner {
             // handleStall() already fully handled this: it appended the "no response" failure
             // and set .blocked(.stalled) itself, before cancelling streamTask — the
             // CancellationError/URLError this produces here is just an echo of that cancellation,
-            // not a new failure. Without this guard, finishRun(completed: false) below would
+            // not a new failure. Without this guard, finishRun(.stopped) below would
             // silently overwrite .blocked(.stalled) back to .idle moments after it was set
             // (defeating the entire point of a stall being distinguishable from idle in Tracks/
             // dock badge/notifications), and the transcript would show a redundant second error.
             guard case .blocked(.stalled) = phase else {
                 if transportError is CancellationError {
                     appendEntry(.meta("Stopped."))
+                    finishRun(.stopped)
                 } else {
                     appendEntry(.failure(transportError.localizedDescription))
+                    finishRun(.failed)
                 }
-                finishRun(completed: false)
                 return
             }
             return
@@ -1287,17 +1288,17 @@ final class AgentRunner {
             if content.isEmpty {
                 if didReceiveProviderError {
                     // The provider's own error is already in the transcript; don't claim success.
-                    finishRun(completed: false)
+                    finishRun(.failed)
                 } else if !didReceiveMessageEnd {
                     appendEntry(.failure("The response ended before it completed — nothing was received. This is usually a dropped connection or a truncated reply; send again."))
-                    finishRun(completed: false)
+                    finishRun(.failed)
                 } else {
                     appendEntry(.failure(Self.emptyResponseMessage(for: lastStopReason)))
-                    finishRun(completed: false)
+                    finishRun(.failed)
                 }
                 return
             }
-            finishRun(completed: true)
+            finishRun(.completed)
             return
         }
         setPhase(.runningTools)
@@ -1454,14 +1455,14 @@ final class AgentRunner {
         if isStopRequested, blocks.count == callOrder.count {
             if !alreadyPersisted { persistToolResults(callOrder: callOrder, resultsById: resultsById, modelId: modelId) }
             appendEntry(.meta("Stopped. The tools that were already running finished; nothing new was sent."))
-            finishRun(completed: false)
+            finishRun(.stopped)
             return
         }
         guard blocks.count == callOrder.count else {
             // Defensive: a missing result would make the next request invalid, so stop cleanly
             // rather than sending a malformed turn.
             appendEntry(.meta("Couldn't assemble tool results for this turn."))
-            finishRun(completed: false)
+            finishRun(.failed)
             return
         }
         if !alreadyPersisted { persistToolResults(callOrder: callOrder, resultsById: resultsById, modelId: modelId) }
@@ -1500,15 +1501,22 @@ final class AgentRunner {
         checkpointMarkerSHA = nil
     }
 
-    private func finishRun(completed: Bool) {
+    /// How a run ended. `stopped` is the user's own doing and needs no attention; `failed` is
+    /// something they did not ask for and must be able to find.
+    private enum RunOutcome { case completed, stopped, failed }
+
+    private func finishRun(_ outcome: RunOutcome) {
         describeCheckpointFromAgentSummary()
         streamTask = nil
         streamingEntryIndex = nil
-        if completed {
+        switch outcome {
+        case .completed:
             hasUnseenCompletion = true
             setPhase(.finishedTurn)
-        } else {
+        case .stopped:
             setPhase(.idle)
+        case .failed:
+            setPhase(.blocked(.failed))
         }
     }
 

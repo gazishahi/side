@@ -388,7 +388,7 @@ final class TracksWorkspaceViewController: NSViewController {
     /// so a row still renders somewhere sane instead of silently vanishing from this section.
     private func needsYouTracks() -> [Track] {
         (trackStore?.tracks ?? [])
-            .filter { activity(for: $0) == .needsYou }
+            .filter { activity(for: $0).wantsAttention }
             .sorted { needsYouSince(for: $0) < needsYouSince(for: $1) }
     }
 
@@ -1205,7 +1205,7 @@ private final class TrackRowView: NSView {
     init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, status: TrackStatus, indent: Bool = false, connectorContinues: Bool = false) {
         let isActiveTrack = status == .active
         switch activity {
-        case .needsYou: primaryAction = .review
+        case .needsYou, .failed: primaryAction = .review
         case .doneUnread: primaryAction = .markReviewReady
         case .none, .working, .doneSeen: primaryAction = isActiveTrack ? nil : .watch
         }
@@ -1400,6 +1400,7 @@ private final class TrackRowView: NSView {
         case .none: return nil
         case .working: return ("Working", .systemBlue)
         case .needsYou: return ("Needs you", .systemOrange)
+        case .failed: return ("Failed", .systemRed)
         case .doneUnread: return ("Done", .systemGreen)
         case .doneSeen: return ("Done", .secondaryLabelColor)
         }
@@ -1408,6 +1409,7 @@ private final class TrackRowView: NSView {
     private static func tintColor(for activity: AgentActivity) -> NSColor {
         switch activity {
         case .needsYou: return .systemOrange
+        case .failed: return .systemRed
         case .doneUnread: return .systemGreen
         case .none, .working, .doneSeen: return .controlAccentColor
         }

@@ -158,6 +158,12 @@ enum AgentRunPhase: Equatable {
         /// other two because the fix isn't "send again," it's "change the budget" — see
         /// `UsageBudget`.
         case budgetReached
+        /// The turn ended without an answer: a provider error, a dropped or truncated stream, a
+        /// missing key. The failure is in the transcript; this makes it *reachable* — a failed run
+        /// used to finish as `.idle`, so a background rate-limit produced no chip, no badge, and
+        /// no notification, and the user found out by wondering why nothing had happened.
+        /// (2026-09-01 audit, product/IA.)
+        case failed
     }
 
     /// Send is only meaningful when nothing is actively running — every other phase either has
@@ -179,8 +185,15 @@ enum AgentActivity: Equatable {
     case none
     case working
     case needsYou
+    /// A run that ended in an error. Routed everywhere `needsYou` is — pinned, badged, notified —
+    /// but named separately so the ledger can say "Failed" rather than "Needs you": the
+    /// constitution's "what failed" is its own question.
+    case failed
     case doneUnread
     case doneSeen
+
+    /// Everything that should reach the user: an approval waiting, a blocked run, a failure.
+    var wantsAttention: Bool { self == .needsYou || self == .failed }
 
     init(phase: AgentRunPhase, hasUnseenCompletion: Bool) {
         switch phase {
@@ -188,6 +201,8 @@ enum AgentActivity: Equatable {
             self = .none
         case .streaming, .runningTools:
             self = .working
+        case .blocked(.failed):
+            self = .failed
         case .awaitingApproval, .blocked:
             self = .needsYou
         case .finishedTurn:

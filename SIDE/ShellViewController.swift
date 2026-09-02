@@ -363,7 +363,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
     private func needsYouTrackIDs() -> Set<UUID> {
         guard let trackStore, let runnerManager = projectContext?.runnerManager else { return [] }
-        return Set(trackStore.tracks.filter { runnerManager.existingRunner(forTrackKey: $0.branchName)?.activity == .needsYou }.map(\.id))
+        return Set(trackStore.tracks.filter { runnerManager.existingRunner(forTrackKey: $0.branchName)?.activity.wantsAttention == true }.map(\.id))
     }
 
     private func hasWorkingTrack() -> Bool {
