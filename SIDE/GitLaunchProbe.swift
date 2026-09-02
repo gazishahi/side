@@ -30,6 +30,11 @@ import Foundation
 /// frame of wrong branch name, never a wrong decision — every operation that acts on git state
 /// (promote, checkpoint, switch) re-reads it at the time it acts.
 struct GitLaunchProbe: Codable, Equatable {
+    /// Where this type persists. `.standard` in the app; tests point it at a private suite, because
+    /// parallel test processes sharing one defaults domain lose each other's writes — the flake
+    /// that showed up as an acknowledgement or a cache entry vanishing between two lines of a test.
+    nonisolated(unsafe) static var defaults: UserDefaults = .standard
+
     /// Absolute path of the common git directory — the same directory for a main checkout and
     /// all of its linked worktrees, which is what lets opening either resolve to one ledger.
     /// nil when the folder isn't a git repository.
@@ -123,13 +128,13 @@ struct GitLaunchProbe: Codable, Equatable {
     private static let maxCachedProjects = 24
 
     static func cached(projectRoot: URL) -> GitLaunchProbe? {
-        guard let raw = UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: Data],
+        guard let raw = defaults.dictionary(forKey: defaultsKey) as? [String: Data],
               let data = raw[projectRoot.standardizedFileURL.path] else { return nil }
         return try? JSONDecoder().decode(GitLaunchProbe.self, from: data)
     }
 
     static func cache(_ probe: GitLaunchProbe, projectRoot: URL) {
-        var raw = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: Data]) ?? [:]
+        var raw = (defaults.dictionary(forKey: defaultsKey) as? [String: Data]) ?? [:]
         guard let data = try? JSONEncoder().encode(probe) else { return }
         let path = projectRoot.standardizedFileURL.path
         raw[path] = data
@@ -141,7 +146,7 @@ struct GitLaunchProbe: Codable, Equatable {
         // fail to cache it. It surfaced as a flaky test rather than a user report, because it
         // needs a full cache to bite, but the failure it produces in the app is a launch that
         // re-probes git every time for one unlucky project and nobody can see why.
-        var order = (UserDefaults.standard.array(forKey: defaultsOrderKey) as? [String]) ?? []
+        var order = (defaults.array(forKey: defaultsOrderKey) as? [String]) ?? []
         order.removeAll { $0 == path }
         order.append(path)
         // Anything in the dictionary the order list never saw (written by an older build) is
@@ -152,7 +157,7 @@ struct GitLaunchProbe: Codable, Equatable {
             order.removeFirst()
             raw.removeValue(forKey: oldest)
         }
-        UserDefaults.standard.set(raw, forKey: defaultsKey)
-        UserDefaults.standard.set(order, forKey: defaultsOrderKey)
+        defaults.set(raw, forKey: defaultsKey)
+        defaults.set(order, forKey: defaultsOrderKey)
     }
 }

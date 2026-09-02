@@ -6,13 +6,18 @@ import XCTest
 final class GitLaunchProbeTests: XCTestCase {
     private var root: URL!
 
+    private var savedDefaults: UserDefaults!
+
     override func setUpWithError() throws {
         try super.setUpWithError()
+        savedDefaults = GitLaunchProbe.defaults
+        GitLaunchProbe.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
         root = FileManager.default.temporaryDirectory.appendingPathComponent("probe-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
     override func tearDown() {
+        GitLaunchProbe.defaults = savedDefaults
         try? FileManager.default.removeItem(at: root)
         super.tearDown()
     }

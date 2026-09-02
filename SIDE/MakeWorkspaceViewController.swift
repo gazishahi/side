@@ -2379,6 +2379,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.addSubview(text)
             NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
         }
+        text.lineBreakMode = .byTruncatingMiddle
         switch searchMode {
         case .files:
             text.stringValue = relativePath(matches[row])
@@ -2387,7 +2388,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             text.stringValue = "\(symbol.name)  —  \(symbol.kind) · line \(symbol.line)"
         case .text:
             let match = textMatches[row]
-            // Location first, dimmed; the matching line carries the answer.
+            // Location first, dimmed; the matching line carries the answer. One line, tail-cut:
+            // an attributed value flips the field back to wrapping, and a wrapped row spilled its
+            // second line into the neighbour below.
+            text.maximumNumberOfLines = 1
+            text.lineBreakMode = .byTruncatingTail
             let attributed = NSMutableAttributedString(string: "\(match.relativePath):\(match.line)  ", attributes: [.foregroundColor: DS.Color.textMuted])
             attributed.append(NSAttributedString(string: match.text, attributes: [.foregroundColor: DS.Color.textStrong]))
             text.attributedStringValue = attributed

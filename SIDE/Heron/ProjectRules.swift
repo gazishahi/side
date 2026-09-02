@@ -14,6 +14,11 @@ import Foundation
 /// The full Library stage is its own large initiative; this is the 90% of the value that costs
 /// almost nothing, and it doesn't foreclose the bigger design later.
 enum ProjectRules {
+    /// Where this type persists. `.standard` in the app; tests point it at a private suite, because
+    /// parallel test processes sharing one defaults domain lose each other's writes — the flake
+    /// that showed up as an acknowledgement or a cache entry vanishing between two lines of a test.
+    nonisolated(unsafe) static var defaults: UserDefaults = .standard
+
     /// Searched in order, first match wins. `SIDE.md` is the native name; the others are read
     /// because a project that already tells *some* coding agent how to behave is telling this
     /// one the same thing, and making the user maintain a third copy would be silly.
@@ -55,18 +60,18 @@ enum ProjectRules {
     }
 
     static func isAcknowledged(url: URL, contents: String) -> Bool {
-        let known = UserDefaults.standard.stringArray(forKey: acknowledgedKey) ?? []
+        let known = defaults.stringArray(forKey: acknowledgedKey) ?? []
         return known.contains(fingerprint(url: url, contents: contents))
     }
 
     static func acknowledge(url: URL, contents: String) {
-        var known = UserDefaults.standard.stringArray(forKey: acknowledgedKey) ?? []
+        var known = defaults.stringArray(forKey: acknowledgedKey) ?? []
         let entry = fingerprint(url: url, contents: contents)
         guard !known.contains(entry) else { return }
         known.append(entry)
         // Bounded: this is a convenience list, not a security record worth growing forever.
         if known.count > 200 { known.removeFirst(known.count - 200) }
-        UserDefaults.standard.set(known, forKey: acknowledgedKey)
+        defaults.set(known, forKey: acknowledgedKey)
     }
 
     /// A rules file that exists but hasn't been acknowledged yet, if any — what the UI offers
