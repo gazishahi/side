@@ -16,12 +16,33 @@ struct ProposedCommand: Identifiable {
     /// so the result can be recorded as verification on the checkpoint, and so the approval card
     /// can say "Run test" rather than showing a command line the user has to parse.
     let taskName: String?
+    /// What approving this actually does. A fetch rides the same card, approval, and autonomy
+    /// rules as a command because it has the same shape of consequence: a URL is an outbound
+    /// channel, and an agent that has read the user's files can encode them into one.
+    let kind: Kind
+
+    enum Kind: Equatable {
+        case shell
+        case fetch(URL)
+    }
 
     init(toolUseId: String, command: String, taskName: String? = nil) {
         self.id = UUID()
         self.toolUseId = toolUseId
         self.command = command
         self.taskName = taskName
+        self.kind = .shell
         self.riskLevel = CommandRiskClassifier.classify(command)
     }
+
+    init(toolUseId: String, fetching url: URL) {
+        self.id = UUID()
+        self.toolUseId = toolUseId
+        self.command = "GET \(url.absoluteString)"
+        self.taskName = nil
+        self.kind = .fetch(url)
+        self.riskLevel = .normal
+    }
+
+    var fetchURL: URL? { if case .fetch(let url) = kind { return url } else { return nil } }
 }
