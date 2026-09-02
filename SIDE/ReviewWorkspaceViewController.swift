@@ -51,6 +51,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let checkpointsHeader = NSTextField(labelWithString: "Checkpoints")
     private let checkpointsStack = NSStackView()
     private let diffHeader = NSTextField(labelWithString: "")
+    private let diffHeaderRow = NSStackView()
+    /// Unified / Split. A segmented control rather than a checkbox because the two are peers, not
+    /// an option and its absence; persisted, because a layout choice is a habit, not a mood.
+    private let diffLayoutControl = NSSegmentedControl(labels: ["Unified", "Split"], trackingMode: .selectOne, target: nil, action: nil)
     private let diffViewer = DiffViewer()
     // Real label set per-track in refresh() — "to main" isn't right for a stacked track, whose
     // actual base is its parent's branch.
@@ -105,6 +109,18 @@ final class ReviewWorkspaceViewController: NSViewController {
 
         diffHeader.font = DS.Text.control(.semibold)
         diffHeader.textColor = .secondaryLabelColor
+        diffLayoutControl.controlSize = .small
+        diffLayoutControl.font = DS.Text.caption()
+        diffLayoutControl.selectedSegment = DiffLayout.preferred == .unified ? 0 : 1
+        diffLayoutControl.target = self
+        diffLayoutControl.action = #selector(diffLayoutChanged)
+        diffLayoutControl.setAccessibilityLabel("Diff layout")
+        diffHeaderRow.orientation = .horizontal
+        diffHeaderRow.alignment = .centerY
+        diffHeaderRow.addArrangedSubview(diffHeader)
+        diffHeaderRow.addArrangedSubview(NSView())
+        diffHeaderRow.addArrangedSubview(diffLayoutControl)
+        diffHeaderRow.translatesAutoresizingMaskIntoConstraints = false
 
 
         // A ChipButton, the same control the composer's row is built from: borderless, because
@@ -196,7 +212,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             overlapText.bottomAnchor.constraint(equalTo: overlapBanner.bottomAnchor, constant: -10),
         ])
 
-        for view in [titleLabel, subtitleRow, overlapBanner, checkpointsHeader, checkpointsStack, diffHeader, diffViewer] {
+        for view in [titleLabel, subtitleRow, overlapBanner, checkpointsHeader, checkpointsStack, diffHeaderRow, diffViewer] {
             contentStack.addArrangedSubview(view)
             // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
             // width by default — without this, a wrapping label or the diff card would collapse
@@ -346,6 +362,12 @@ final class ReviewWorkspaceViewController: NSViewController {
     }
 
     @objc private func textScaleChanged() { refresh() }
+
+    @objc private func diffLayoutChanged() {
+        DiffLayout.preferred = diffLayoutControl.selectedSegment == 0 ? .unified : .sideBySide
+        diffViewer.layout = DiffLayout.preferred
+        refresh()
+    }
 
     /// A checkpoint was created, renamed, or verified while this stage was on screen.
     @objc private func checkpointsChanged() {

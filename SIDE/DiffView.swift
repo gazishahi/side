@@ -4,7 +4,7 @@ import AppKit
 /// than view-internal state so anything that produces `git diff` text (Review's branch diff,
 /// Make's hunks, Heron's edit proposals) can feed the same renderer.
 struct UnifiedDiff {
-    struct Line {
+    struct Line: Equatable {
         enum Kind { case added, removed, context }
         let kind: Kind
         let oldNumber: Int?
@@ -134,7 +134,67 @@ struct UnifiedDiff {
 /// numbers in a gutter, full-line tints for added/removed — instead of raw `git diff` text.
 /// The design charter's flagship component; Review uses it today, Make's hunk review and
 /// Heron's proposal cards are meant to adopt it.
+/// How a file's hunks are laid out. Unified is the shape every diff tool shares and the one that
+/// fits Think's 620pt proposal cards; split needs two gutters and two code columns, which only
+/// Review has the width for — so Think stays unified regardless of this setting.
+enum DiffLayout: String, CaseIterable {
+    case unified, sideBySide
+
+    private static let key = "SideDiffLayout"
+    static var preferred: DiffLayout {
+        get { UserDefaults.standard.string(forKey: key).flatMap(DiffLayout.init) ?? .unified }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
+    }
+}
+
+/// Pairs a hunk's lines into rows for a two-column view.
+///
+/// Context lines sit on both sides. A run of removals followed by a run of additions is a
+/// *change*, and its lines pair up index-wise — the third removed line opposite the third added —
+/// which is what makes a one-line edit read as one row with the old text left and the new text
+/// right, instead of two rows with a blank each. Whatever the shorter run lacks is a blank cell,
+/// so the two columns stay the same height row for row.
+enum SideBySideRows {
+    struct Row: Equatable {
+        let left: UnifiedDiff.Line?
+        let right: UnifiedDiff.Line?
+        /// Set for the hunk-header row, which spans conceptually but renders in the left column.
+        let headerText: String?
+        var isHeader: Bool { headerText != nil }
+
+        init(left: UnifiedDiff.Line?, right: UnifiedDiff.Line?) { self.left = left; self.right = right; headerText = nil }
+        init(header: String) { left = nil; right = nil; headerText = header }
+    }
+
+    static func build(_ hunk: UnifiedDiff.Hunk) -> [Row] {
+        var rows: [Row] = [Row(header: hunk.header)]
+        var removed: [UnifiedDiff.Line] = []
+        var added: [UnifiedDiff.Line] = []
+        func flush() {
+            let count = max(removed.count, added.count)
+            for index in 0..<count {
+                rows.append(Row(left: index < removed.count ? removed[index] : nil,
+                                right: index < added.count ? added[index] : nil))
+            }
+            removed.removeAll(); added.removeAll()
+        }
+        for line in hunk.lines {
+            switch line.kind {
+            case .removed: added.isEmpty ? removed.append(line) : { flush(); removed.append(line) }()
+            case .added: added.append(line)
+            case .context:
+                flush()
+                rows.append(Row(left: line, right: line))
+            }
+        }
+        flush()
+        return rows
+    }
+}
+
 final class DiffViewer: NSStackView {
+    var layout: DiffLayout = .preferred
+
     init() {
         super.init(frame: .zero)
         orientation = .vertical
@@ -164,7 +224,7 @@ final class DiffViewer: NSStackView {
             return
         }
         for file in diff.files {
-            let card = DiffFileCardView(file: file)
+            let card = DiffFileCardView(file: file, layout: layout)
             addArrangedSubview(card)
             card.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
@@ -197,7 +257,7 @@ final class DiffFileCardView: NSView {
         return max(24, ceil(used) + textView.textContainerInset.height * 2 + 4)
     }
 
-    init(file: UnifiedDiff.File) {
+    init(file: UnifiedDiff.File, layout: DiffLayout = .unified) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -260,8 +320,32 @@ final class DiffFileCardView: NSView {
         headerButton.translatesAutoresizingMaskIntoConstraints = false
         headerButton.addSubview(header)
 
-        let bodyText = DiffBody.makeBodyTextView()
-        DiffBody.fill(bodyText, hunks: file.hunks)
+        let bodyDocument: NSView
+        let measureFrom: NSTextView
+        switch layout {
+        case .unified:
+            let bodyText = DiffBody.makeBodyTextView()
+            DiffBody.fill(bodyText, hunks: file.hunks)
+            bodyDocument = bodyText
+            measureFrom = bodyText
+        case .sideBySide:
+            let rows = file.hunks.flatMap(SideBySideRows.build)
+            let left = DiffBody.makeBodyTextView()
+            let right = DiffBody.makeBodyTextView()
+            DiffBody.fillColumn(left, rows: rows, side: .left)
+            DiffBody.fillColumn(right, rows: rows, side: .right)
+            // One document holding both columns, so a single scroller moves them together and a
+            // row's two halves can never drift apart. Equal widths; a hairline between.
+            let divider = NSBox()
+            divider.boxType = .custom
+            divider.borderType = .noBorder
+            divider.fillColor = DS.Color.hairline
+            divider.translatesAutoresizingMaskIntoConstraints = false
+            divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+            let columns = SideBySideDocumentView(left: left, right: right, divider: divider)
+            bodyDocument = columns
+            measureFrom = left
+        }
         // Measured from the laid-out glyphs rather than assumed from a line count.
         //
         // The previous version multiplied the line count by a hard-coded 17pt. That number is
@@ -270,8 +354,8 @@ final class DiffFileCardView: NSView {
         // band of empty space under the last line of a diff. Sized to content up to a cap, so
         // one enormous file still scrolls inside its own card instead of making the page
         // unusable.
-        bodyHeight = min(Self.measuredHeight(of: bodyText), Self.maximumBodyHeight)
-        bodyScroll.documentView = bodyText
+        bodyHeight = min(Self.measuredHeight(of: measureFrom), Self.maximumBodyHeight)
+        bodyScroll.documentView = bodyDocument
         bodyScroll.drawsBackground = false
         bodyScroll.hasVerticalScroller = true
         bodyScroll.translatesAutoresizingMaskIntoConstraints = false
@@ -410,6 +494,58 @@ enum DiffBody {
         return result
     }
 
+    enum Side { case left, right }
+
+    /// One column of a side-by-side view: `[num]  text` per row, the same fills as unified, and a
+    /// faint wash on a blank cell so the eye reads it as "nothing here" rather than as an empty
+    /// line of code. Row count and line breaking are identical to the other column's by
+    /// construction — every row emits exactly one clipped line — which is what keeps the two
+    /// columns aligned without any cross-measurement.
+    static func attributedColumn(rows: [SideBySideRows.Row], side: Side) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let font = DS.Text.code(11, weight: .regular)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byClipping
+        func pad(_ number: Int?) -> String {
+            guard let number else { return String(repeating: " ", count: 5) }
+            return String(repeating: " ", count: max(0, 5 - "\(number)".count)) + "\(number)"
+        }
+        var isFirstHeader = true
+        for row in rows {
+            if row.isHeader {
+                // The header text lives in the left column; the right gets a matching blank row.
+                let text = side == .left ? "  \(row.headerText ?? "")" : ""
+                result.append(NSAttributedString(
+                    string: (isFirstHeader ? "" : "\n") + text + "\n",
+                    attributes: [.font: font, .foregroundColor: hunkColor, .paragraphStyle: paragraph]))
+                isFirstHeader = false
+                continue
+            }
+            let line = side == .left ? row.left : row.right
+            var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: DS.Color.textFaint, .paragraphStyle: paragraph]
+            guard let line else {
+                attrs[.backgroundColor] = DS.Color.scrimFaint
+                result.append(NSAttributedString(string: pad(nil) + "  \n", attributes: attrs))
+                continue
+            }
+            let textColor: NSColor
+            switch line.kind {
+            case .added: textColor = addedText; attrs[.backgroundColor] = addedFill
+            case .removed: textColor = removedText; attrs[.backgroundColor] = removedFill
+            case .context: textColor = .secondaryLabelColor
+            }
+            result.append(NSAttributedString(string: "\(pad(side == .left ? line.oldNumber : line.newNumber))  ", attributes: attrs))
+            attrs[.foregroundColor] = textColor
+            result.append(NSAttributedString(string: line.text + "\n", attributes: attrs))
+        }
+        return result
+    }
+
+    static func fillColumn(_ textView: DiffBodyTextView, rows: [SideBySideRows.Row], side: Side) {
+        textView.textStorage?.setAttributedString(attributedColumn(rows: rows, side: side))
+        textView.setLineKinds(rows: rows, side: side)
+    }
+
     /// A text view whose layout manager extends `.backgroundColor` fills to the full line
     /// width — assembled manually because that requires a custom NSLayoutManager.
     static func makeBodyTextView() -> DiffBodyTextView {
@@ -450,6 +586,27 @@ final class DiffBodyTextView: NSTextView {
     /// One entry per rendered line, in order, mirroring `DiffBody.attributedBody`'s output.
     private enum LineKind { case hunkHeader, added, removed, context }
     private var lineKinds: [LineKind] = []
+
+    /// One entry per row, for one column of a split view. A blank cell reads as context — there
+    /// is nothing to announce about it — and the header row as a section, same as unified.
+    func setLineKinds(rows: [SideBySideRows.Row], side: DiffBody.Side) {
+        var kinds: [LineKind] = []
+        var isFirstHeader = true
+        for row in rows {
+            if row.isHeader {
+                if !isFirstHeader { kinds.append(.context) }
+                kinds.append(.hunkHeader)
+                isFirstHeader = false
+                continue
+            }
+            switch (side == .left ? row.left : row.right)?.kind {
+            case .added?: kinds.append(.added)
+            case .removed?: kinds.append(.removed)
+            case .context?, nil: kinds.append(.context)
+            }
+        }
+        lineKinds = kinds
+    }
 
     func setLineKinds(_ hunks: [UnifiedDiff.Hunk]) {
         var kinds: [LineKind] = []
@@ -551,5 +708,49 @@ private final class FullWidthBackgroundLayoutManager: NSLayoutManager {
             super.fillBackgroundRectArray(
                 buffer.baseAddress!, count: rectCount, forCharacterRange: charRange, color: color)
         }
+    }
+}
+
+
+/// Both columns of a split diff in one scroll document: equal widths, a hairline between, heights
+/// driven by the columns' own text so the enclosing card can measure one of them.
+final class SideBySideDocumentView: NSView {
+    init(left: NSTextView, right: NSTextView, divider: NSView) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        for view in [left, divider, right] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        left.autoresizingMask = []
+        right.autoresizingMask = []
+        NSLayoutConstraint.activate([
+            left.leadingAnchor.constraint(equalTo: leadingAnchor),
+            left.topAnchor.constraint(equalTo: topAnchor),
+            left.bottomAnchor.constraint(equalTo: bottomAnchor),
+            divider.leadingAnchor.constraint(equalTo: left.trailingAnchor),
+            divider.topAnchor.constraint(equalTo: topAnchor),
+            divider.bottomAnchor.constraint(equalTo: bottomAnchor),
+            right.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
+            right.trailingAnchor.constraint(equalTo: trailingAnchor),
+            right.topAnchor.constraint(equalTo: topAnchor),
+            right.bottomAnchor.constraint(equalTo: bottomAnchor),
+            left.widthAnchor.constraint(equalTo: right.widthAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }
+
+    /// Tracks the clip view's width so both columns fill it; the height is the text's own.
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        guard let clip = superview as? NSClipView else { return }
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalTo: clip.widthAnchor),
+            topAnchor.constraint(equalTo: clip.topAnchor),
+            leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+        ])
     }
 }
