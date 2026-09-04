@@ -30,14 +30,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         LaunchSignposts.begin("orderFront")
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
         LaunchSignposts.end("orderFront")
+        LaunchSignposts.begin("activate")
+        NSApp.activate(ignoringOtherApps: true)
+        LaunchSignposts.end("activate")
 
         // UI tests launch with `-SideUITesting YES` (which lands in UserDefaults' argument
         // domain). Restoring the developer's real last project would make a test run poke at
         // their working tree — and make the tests depend on whatever was open last.
         guard !UserDefaults.standard.bool(forKey: "SideUITesting") else {
             LaunchSignposts.end("firstFrame")
+            LaunchSignposts.reportProcessStart()
             return
         }
 
@@ -59,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // slow main-thread work only trades a blank window for a hitching one.
         DispatchQueue.main.async { [weak self] in
             LaunchSignposts.end("firstFrame")
+            LaunchSignposts.reportProcessStart()
             LaunchSignposts.begin("restoreSession")
             (window.contentViewController as? ShellViewController)?.restoreLastSessionIfAvailable()
             LaunchSignposts.end("restoreSession")
@@ -175,7 +179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // or not a tab bar is showing beneath it. Making it transparent lets our own
         // near-black backgroundColor show through instead, unifying the two.
         window.titlebarAppearsTransparent = true
-        window.contentViewController = ShellViewController()
+        let shell = ShellViewController()
+        window.contentViewController = shell
+        shell.installToolbarIfNeeded(in: window)
         window.delegate = self
         // We manage window lifetime ourselves via `windows`, not an NSWindowController — the
         // default `true` has AppKit *also* drop its own ownership on close, which races our

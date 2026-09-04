@@ -78,6 +78,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        LaunchSignposts.begin("shellViewDidLoad")
         buildLayout()
         makeVC.onProjectOpened = { [weak self] url in self?.projectOpened(url) }
         makeVC.onFileOpened = { [weak self] url in self?.fileOpened(url) }
@@ -120,6 +121,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             self.projectContext?.runnerManager.discardRunner(forTrackKey: track.branchName)
         }
         show(.make)
+        LaunchSignposts.end("shellViewDidLoad")
     }
 
     var hasUnsavedChanges: Bool { makeVC.hasUnsavedChanges }
@@ -154,13 +156,27 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        guard let window = view.window, window.toolbar == nil else { return }
+        LaunchSignposts.begin("shellViewDidAppear")
+        // Normally already installed by `makeWindow` before the window was shown; this is the
+        // fallback for a window that acquired this controller some other way.
+        if let window = view.window { installToolbarIfNeeded(in: window) }
+        LaunchSignposts.end("shellViewDidAppear")
+    }
+
+    /// Builds the toolbar. Called from `AppDelegate.makeWindow` *before* the window is ordered
+    /// front, so the toolbar is laid out as part of the first frame rather than in a second pass
+    /// after the window is already on screen — measured, that second pass was ~30 ms of the gap
+    /// between `orderFront` and the first committed frame, on the critical path of the bounce.
+    func installToolbarIfNeeded(in window: NSWindow) {
+        guard window.toolbar == nil else { return }
+        LaunchSignposts.begin("toolbar")
         let toolbar = NSToolbar(identifier: "side.shell.toolbar")
         toolbar.delegate = self
         toolbar.centeredItemIdentifier = .stageSwitcher
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
+        LaunchSignposts.end("toolbar")
         window.toolbarStyle = .unifiedCompact
         window.titleVisibility = .visible
         applyWindowChrome()

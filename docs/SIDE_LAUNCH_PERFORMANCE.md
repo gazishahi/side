@@ -224,3 +224,51 @@ The instinct was "launch is slow because it loads too much state." The data said
 launch was slow because it *spawned too many processes*, and the state loading
 was free. On a machine where `exec` costs 72ms, process count is the unit of
 performance — which is worth remembering anywhere else Side shells out.
+
+## Postscript 2026-09-04: the whole span, measured — and what "half bounce" costs
+
+Every number above started at `main`. The report now also prints
+`processStart→firstFrame (wall)` from the kernel's process start time, so the part
+before any of our code runs is counted. Release, quiet machine, six warm launches:
+
+```
+ wall 291–352 ms  =  pre-main 68–128  +  firstFrame 223–246
+ firstFrame      =  makeWindow ~120 (of which NSToolbar ~42, Make view ~20, shell load ~39)
+                   + orderFront ~15
+                   + AppKit first layout/commit ~85–98
+```
+
+**Cold — the first launch after a build — is different in kind:** pre-main alone is
+700–800 ms, wall 850–1140 ms. That is code-signature validation of a *new* binary;
+an ad-hoc-signed dev build is a new identity every time it is built, so the
+developer pays it on every launch from Xcode and an end user pays it once per
+install. Nothing in the app's code changes it; a stable signing identity would.
+This is the full bounce that prompted the measurement.
+
+Three changes landed from this pass, each small:
+
+- The three floating panels (Quick Open, completion, file explorer) are created on
+  first use. Their *views* stay eager (1.7 ms); the `NSPanel`s — window-server
+  objects — no longer exist until shown.
+- Restored tabs announce themselves to the language server half a second late.
+  Opening a `.ts` tab at launch resolved its server through `$SHELL -lic`, a login
+  shell sourcing the whole profile, inside the first-frame window. Off-main, but a
+  spawn competing for the CPU at the one moment that matters.
+- The toolbar is built before the window is ordered front, so it is part of the
+  first frame rather than a second layout pass afterwards. Total time is conserved
+  (`orderFront` 55 → 15, `makeWindow` +40) but the window no longer appears and
+  then relayouts.
+
+Things that turned out **not** to be the cost, and were checked rather than assumed:
+restored Run tabs do not start their shells at launch (no PTY child exists at
+1.2 s); `NSApp.activate` is 3 ms; the recents refresh and the appear hooks are
+2–7 ms each; process spawn is now ~2.5 ms, not the 72 ms measured on 08-30 (that
+was an endpoint-security scanner state, not a constant).
+
+**What is left is structural.** `firstFrame` ≈ 225 ms is: an `NSToolbar` with three
+custom items (~42), Make's full view tree, and AppKit's first layout of all of it
+(~90). Direction 02 §3 replaces the toolbar's contents and §4.5 changes Make's
+strip; that is where the next 50–80 ms live, and it should be measured with this
+report when it lands rather than claimed. A consistent sub-300 ms warm launch is
+within reach there; a cold post-build launch under a full bounce is not, on any
+architecture, without a stable signature.

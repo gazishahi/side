@@ -22,6 +22,27 @@ enum LaunchSignposts {
         os_signpost(.begin, log: log, name: name, signpostID: id)
     }
 
+    /// Milliseconds from the process's exec to now — the part of launch that happens before any
+    /// of our code runs (dyld, framework loading, static initializers). Not measurable from inside
+    /// by timers, which is why every earlier launch number started at `main` and quietly left this
+    /// out; a half-bounce budget has to include it.
+    static func millisecondsSinceProcessStart() -> Double? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0 else { return nil }
+        let start = info.kp_proc.p_starttime
+        let started = Double(start.tv_sec) + Double(start.tv_usec) / 1_000_000
+        return (Date().timeIntervalSince1970 - started) * 1000
+    }
+
+    /// Printed once, with the first frame, so the report shows the whole span the user waits.
+    static func reportProcessStart() {
+        guard reportingEnabled, let sinceStart = millisecondsSinceProcessStart() else { return }
+        print(String(format: "[launch] processStart→firstFrame (wall): %.1f ms", sinceStart))
+        fflush(stdout)
+    }
+
     static func end(_ name: StaticString) {
         lock.lock()
         let entry = active.removeValue(forKey: "\(name)")

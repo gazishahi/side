@@ -29,7 +29,9 @@ final class DocStatusTests: XCTestCase {
     private func status(of doc: URL) throws -> (status: String, symbols: [String], head: String) {
         let text = try String(contentsOf: doc, encoding: .utf8)
         let head = text.components(separatedBy: "\n").prefix(12).joined(separator: "\n")
-        let statusMatch = head.range(of: #"Status:\s*\**\s*(built|planned|in progress|reference)"#, options: .regularExpression)
+        // Planning documents have two more states: a spec that is agreed and waiting to be built,
+        // and an RFC whose decisions are still pending. Both are honest; neither is "built".
+        let statusMatch = head.range(of: #"Status:\s*\**\s*(built|planned|in progress|reference|agreed|accepted|decisions pending)"#, options: .regularExpression)
         let status = statusMatch.map { head[$0] }.map { line -> String in
             let afterColon = line.split(separator: ":", maxSplits: 1).last.map(String.init) ?? ""
             return afterColon.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
@@ -45,7 +47,7 @@ final class DocStatusTests: XCTestCase {
     }
 
     func testEveryDocumentDeclaresAStatus() throws {
-        let allowed: Set<String> = ["built", "planned", "in progress", "reference"]
+        let allowed: Set<String> = ["built", "planned", "in progress", "reference", "agreed", "accepted", "decisions pending"]
         XCTAssertFalse(docs.isEmpty)
         for doc in docs {
             let found = try status(of: doc)

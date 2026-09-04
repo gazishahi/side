@@ -60,9 +60,33 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let emptyState = NSStackView()
     private let recentProjectsStack = NSStackView()
     private let openRecentMenu = NSMenu(title: "Open Recent")
-    private let quickOpenPanel = QuickOpenPanel()
+    /// The three floating panels are created on first use, not at init.
+    ///
+    /// An NSPanel is a window-server object — creating one is a round trip to WindowServer plus
+    /// a backing store — and all three were built inside `makeWindow`, before the first frame,
+    /// for surfaces most launches never open. The views that go *inside* them are cheap and stay
+    /// eager (`quickOpenSurface` etc.), so showing a panel the first time costs only the window.
+    /// `prepareForClose` checks the storage directly so closing a window never creates a panel
+    /// just to tear it down.
+    private var quickOpenPanelStorage: QuickOpenPanel?
+    private var quickOpenSurface: NSView?
+    private var quickOpenPanel: QuickOpenPanel {
+        if let existing = quickOpenPanelStorage { return existing }
+        let panel = QuickOpenPanel()
+        panel.contentView = quickOpenSurface
+        quickOpenPanelStorage = panel
+        return panel
+    }
     private let resultsTable = NSTableView()
-    private let fileExplorerPanel = FileExplorerPanel()
+    private var fileExplorerPanelStorage: FileExplorerPanel?
+    private var fileExplorerSurface: NSView?
+    private var fileExplorerPanel: FileExplorerPanel {
+        if let existing = fileExplorerPanelStorage { return existing }
+        let panel = FileExplorerPanel()
+        panel.contentView = fileExplorerSurface
+        fileExplorerPanelStorage = panel
+        return panel
+    }
     private let fileExplorerOutline = ExplorerOutlineView()
     private var fileTreeRoots: [FileTreeNode] = []
     private let imageScroll = NSScrollView()
@@ -71,7 +95,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let csvTable = NSTableView()
     private let markdownPreviewScroll = NSScrollView()
     private let markdownPreviewView = NSTextView()
-    private let completionPanel = CompletionPanel()
+    private var completionPanelStorage: CompletionPanel?
+    private var completionSurface: NSView?
+    private var completionPanel: CompletionPanel {
+        if let existing = completionPanelStorage { return existing }
+        let panel = CompletionPanel()
+        panel.contentView = completionSurface
+        completionPanelStorage = panel
+        return panel
+    }
     private let completionTable = NSTableView()
     private var completionItems: [LSPCompletionItem] = []
     private var completionSelectedIndex = 0
@@ -136,6 +168,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        LaunchSignposts.begin("makeViewDidLoad")
         buildView()
         buildMenu()
         configureQuickOpenKeys()
@@ -146,6 +179,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         lspStatusButton.target = self
         lspStatusButton.action = #selector(showLSPStatusPopover)
         lspStatusButton.isHidden = true
+        LaunchSignposts.end("makeViewDidLoad")
     }
 
     /// Recents are shared across windows via UserDefaults — refresh on every appearance so a
@@ -153,7 +187,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// opened elsewhere in the meantime.
     override func viewWillAppear() {
         super.viewWillAppear()
+        LaunchSignposts.begin("makeViewWillAppear")
         refreshRecentProjectsList()
+        LaunchSignposts.end("makeViewWillAppear")
     }
 
     /// The file explorer is a child *window* of the whole app window (so it can float above
@@ -177,11 +213,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Tracks already hit and fixed the same way.
     override func viewDidAppear() {
         super.viewDidAppear()
+        LaunchSignposts.begin("makeViewDidAppear")
         if let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text {
             view.window?.makeFirstResponder(editor)
         } else {
             view.window?.makeFirstResponder(searchField)
         }
+        LaunchSignposts.end("makeViewDidAppear")
     }
 
     private func buildView() {
@@ -354,9 +392,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             markdownPreviewScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
+        LaunchSignposts.begin("makePanelSurfaces")
         configureQuickOpenPanel()
         configureFileExplorerPanel()
         configureCompletionPanel()
+        LaunchSignposts.end("makePanelSurfaces")
     }
 
     private func configureQuickOpenKeys() {
@@ -389,7 +429,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.contentInsets = NSEdgeInsetsZero
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        quickOpenPanel.contentView = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 8, padding: 14)
+        quickOpenSurface = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 8, padding: 14)
     }
 
     private let completionRowHeight: CGFloat = 22
@@ -414,7 +454,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.contentInsets = NSEdgeInsetsZero
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        completionPanel.contentView = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 6, padding: 6)
+        completionSurface = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 6, padding: 6)
     }
 
     /// Wraps `content` in Liquid Glass on macOS 26+, falling back to the older vibrancy
@@ -475,7 +515,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func hideQuickOpenPanel() {
         removeQuickOpenDismissMonitors()
-        guard quickOpenPanel.isVisible || quickOpenPanel.parent != nil else { return }
+        guard let quickOpenPanel = quickOpenPanelStorage, quickOpenPanel.isVisible || quickOpenPanel.parent != nil else { return }
         searchField.window?.removeChildWindow(quickOpenPanel)
         quickOpenPanel.orderOut(nil)
     }
@@ -560,7 +600,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             padded.topAnchor.constraint(equalTo: effect.topAnchor), padded.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
             padded.trailingAnchor.constraint(equalTo: effect.trailingAnchor), padded.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
         ])
-        fileExplorerPanel.contentView = effect
+        fileExplorerSurface = effect
     }
 
     @objc private func toggleFileExplorer() {
@@ -1026,6 +1066,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func refreshRecentProjectsList() {
+        LaunchSignposts.begin("recents")
         recentProjectsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let recents = recentProjects()
         guard !recents.isEmpty else { return }
@@ -1067,6 +1108,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         grid.column(at: 0).xPlacement = .leading
         grid.column(at: 1).xPlacement = .trailing
         recentProjectsStack.addArrangedSubview(grid)
+        LaunchSignposts.end("recents")
     }
 
     private func abbreviatedParentPath(of url: URL) -> String {
@@ -1318,6 +1360,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func open(_ url: URL, completion: (() -> Void)? = nil) {
+        // Captured now: `isRestoringTabs` is true only for the synchronous span of the restore
+        // loop, and the work below finishes on a later main-queue turn.
+        let deferLanguageServer = isRestoringTabs
         // Tab identity is raw URL equality everywhere downstream — canonicalize here, at the one
         // entry point, so the same file reached through two spellings of its path (a symlinked
         // segment, a lingering `..`) can't open as two duplicate tabs.
@@ -1417,8 +1462,40 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 self.activeTabIndex = self.openTabs.count - 1
                 self.loadActiveTabIntoEditor()
                 self.finishOpenUI(url: url)
-                if tab.kind == .text { self.lspManager?.opened(url: url, content: source) }
+                if tab.kind == .text {
+                    if deferLanguageServer {
+                        self.deferLanguageServerOpen(url)
+                    } else {
+                        self.lspManager?.opened(url: url, content: source)
+                    }
+                }
                 completion?()
+            }
+        }
+    }
+
+    /// Restored tabs announce themselves to the language server half a second late.
+    ///
+    /// Opening a `.ts` tab at launch resolved typescript-language-server through `$SHELL -lic`
+    /// — a login shell sourcing the user's whole profile — during the very window the first
+    /// frame was being built. Off-main, but it is a process spawn competing for the CPU at the
+    /// one moment that decides whether launch reads as a half bounce or a full one. Nothing the
+    /// user can see needs diagnostics in the first half second; the editor does.
+    private var deferredLanguageServerOpens: [URL] = []
+    private var deferredLanguageServerFlushScheduled = false
+
+    private func deferLanguageServerOpen(_ url: URL) {
+        deferredLanguageServerOpens.append(url)
+        guard !deferredLanguageServerFlushScheduled else { return }
+        deferredLanguageServerFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.deferredLanguageServerFlushScheduled = false
+            let urls = self.deferredLanguageServerOpens
+            self.deferredLanguageServerOpens.removeAll()
+            for url in urls {
+                guard let tab = self.openTabs.first(where: { $0.url == url }), tab.kind == .text else { continue }
+                self.lspManager?.opened(url: url, content: tab.textStorage.string)
             }
         }
     }
@@ -3254,12 +3331,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     func prepareForClose() {
         removeQuickOpenDismissMonitors()
         removeFileExplorerDismissMonitors()
-        if quickOpenPanel.parent != nil { view.window?.removeChildWindow(quickOpenPanel) }
-        quickOpenPanel.orderOut(nil)
-        if fileExplorerPanel.parent != nil { view.window?.removeChildWindow(fileExplorerPanel) }
-        fileExplorerPanel.orderOut(nil)
-        if completionPanel.parent != nil { view.window?.removeChildWindow(completionPanel) }
-        completionPanel.orderOut(nil)
+        for panel in [quickOpenPanelStorage, fileExplorerPanelStorage, completionPanelStorage].compactMap({ $0 as NSWindow? }) {
+            if panel.parent != nil { view.window?.removeChildWindow(panel) }
+            panel.orderOut(nil)
+        }
         lspManager?.prepareForClose()
     }
 }
