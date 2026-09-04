@@ -710,7 +710,8 @@ final class AgentRunner {
 
     /// The git half — safe to run off the main thread, and deliberately free of any `self`
     /// reference so it cannot touch main-actor state from a background queue.
-    private nonisolated static func stageAndCommit(
+    // Internal so the staging rule — only what the batch touched — can be tested against a repo.
+    nonisolated static func stageAndCommit(
         root: String, baseline: Set<String>, knownChanged: Set<String>, message: String
     ) -> CheckpointCommitOutcome? {
 

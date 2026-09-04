@@ -28,6 +28,19 @@ struct ProjectTask: Equatable, Codable {
         self.detail = detail
         self.isVerification = isVerification
     }
+
+    private enum CodingKeys: String, CodingKey { case name, command, detail, isVerification }
+
+    /// Tolerant, like every persisted struct here: a hand-written `.side/tasks.json` with only
+    /// `name` and `command` is the common case, and synthesized decoding refused it — which
+    /// silently ignored the whole declaration and fell back to detection, with nothing to say why.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        command = try container.decode(String.self, forKey: .command)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        isVerification = try container.decodeIfPresent(Bool.self, forKey: .isVerification) ?? false
+    }
 }
 
 enum ProjectTasks {

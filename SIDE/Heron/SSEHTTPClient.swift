@@ -83,13 +83,23 @@ enum SSEHTTPClient {
 
         var currentEventName: String?
         for try await line in bytes.lines {
-            if line.hasPrefix("event:") {
-                currentEventName = String(line.dropFirst("event:".count)).trimmingCharacters(in: .whitespaces)
-            } else if line.hasPrefix("data:") {
-                let payload = String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
-                onEvent(SSEEvent(event: currentEventName, data: payload))
-            }
-            // Comment lines (":keepalive") and other fields are ignored per the SSE spec.
+            if let event = SSEFraming.event(fromLine: line, eventName: &currentEventName) { onEvent(event) }
         }
+    }
+}
+
+/// The per-line half of SSE parsing, kept pure so it can be tested without a socket.
+enum SSEFraming {
+    /// Returns an event when `line` is a `data:` line; updates `eventName` on an `event:` line.
+    /// Comment lines (":keepalive"), `id:`, `retry:`, and blank lines produce nothing, per the spec.
+    static func event(fromLine line: String, eventName: inout String?) -> SSEEvent? {
+        if line.hasPrefix("event:") {
+            eventName = String(line.dropFirst("event:".count)).trimmingCharacters(in: .whitespaces)
+            return nil
+        }
+        if line.hasPrefix("data:") {
+            return SSEEvent(event: eventName, data: String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces))
+        }
+        return nil
     }
 }

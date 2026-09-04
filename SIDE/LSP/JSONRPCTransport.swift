@@ -7,8 +7,13 @@ actor JSONRPCTransport {
     private let stdinPipe = Pipe()
     private let stdoutPipe = Pipe()
     private let stderrPipe = Pipe()
-    private var buffer = Data()
-    private var expectedContentLength: Int?
+    private var framing = JSONRPCFraming()
+    /// Raw stdout chunks, in arrival order. The readability handler used to spawn one detached
+    /// `Task` per chunk, and detached tasks have no ordering — two chunks could be consumed
+    /// transposed, splicing one message's bytes into another. Same class as the outbound race
+    /// fixed in `LSPOutboundQueue`, on the receiving side. `yield` from the handler is synchronous
+    /// and ordered; one drain loop consumes in that order.
+    private var chunkContinuation: AsyncStream<Data>.Continuation?
 
     private var onMessage: (@Sendable (Data) -> Void)?
     private var onTerminate: (@Sendable () -> Void)?
@@ -37,10 +42,15 @@ actor JSONRPCTransport {
     }
 
     func start() throws {
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        let (chunks, continuation) = AsyncStream<Data>.makeStream()
+        chunkContinuation = continuation
+        Task { [weak self] in
+            for await chunk in chunks { await self?.consume(chunk) }
+        }
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            Task { await self?.consume(data) }
+            continuation.yield(data)
         }
         // Previously discarded entirely — when a server process dies right after spawn (e.g.
         // a shebang interpreter it needs isn't resolvable), this stderr output is the only
@@ -59,6 +69,7 @@ actor JSONRPCTransport {
     }
 
     func stop() {
+        chunkContinuation?.finish()
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
         if process.isRunning {
@@ -74,36 +85,9 @@ actor JSONRPCTransport {
     }
 
     private func consume(_ data: Data) {
-        buffer.append(data)
-        while true {
-            if expectedContentLength == nil {
-                guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else { return }
-                let headerData = buffer.subdata(in: buffer.startIndex..<headerEnd.lowerBound)
-                guard let headerString = String(data: headerData, encoding: .utf8) else {
-                    buffer.removeAll()
-                    return
-                }
-                var length: Int?
-                for line in headerString.components(separatedBy: "\r\n") {
-                    if line.lowercased().hasPrefix("content-length:") {
-                        let value = line.split(separator: ":", maxSplits: 1).last.map { $0.trimmingCharacters(in: .whitespaces) }
-                        length = value.flatMap(Int.init)
-                    }
-                }
-                guard let length else {
-                    buffer.removeAll()
-                    return
-                }
-                buffer.removeSubrange(buffer.startIndex..<headerEnd.upperBound)
-                expectedContentLength = length
-            }
-            guard let length = expectedContentLength, buffer.count >= length else { return }
-            let messageEnd = buffer.index(buffer.startIndex, offsetBy: length)
-            let messageData = buffer.subdata(in: buffer.startIndex..<messageEnd)
-            buffer.removeSubrange(buffer.startIndex..<messageEnd)
-            expectedContentLength = nil
-            onMessage?(messageData)
-        }
+        let (messages, problems) = framing.feed(data)
+        for problem in problems { print("[LSP][\(logLabel)] malformed frame: \(problem)") }
+        for message in messages { onMessage?(message) }
     }
 
     private func handleTermination() {

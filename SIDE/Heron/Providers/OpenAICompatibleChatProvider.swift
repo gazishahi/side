@@ -137,7 +137,8 @@ final class OpenAICompatibleChatProvider: ChatModelProvider {
 
     /// Per-turn accumulation across SSE chunks. Only touched from the SSE callback, which
     /// `SSEHTTPClient` invokes serially from the awaiting task — no synchronization needed.
-    private final class TurnState {
+    // Internal so the parser can be driven from tests — see the note on AnthropicMessagesProvider.
+    final class TurnState {
         /// OpenAI streams tool calls as deltas keyed by array *index*, with the id/name arriving
         /// only on the first chunk for that index and `arguments` streaming incrementally after
         /// — the same index-keyed-delta shape Anthropic uses for content blocks, just for tool
@@ -152,7 +153,7 @@ final class OpenAICompatibleChatProvider: ChatModelProvider {
     /// is finished — unlike Anthropic's explicit `message_stop` event type, OpenAI signals end
     /// of stream with a literal, non-JSON sentinel payload.
     @discardableResult
-    private static func handle(sse: SSEEvent, state: TurnState, onEvent: (AgentStreamEvent) -> Void) -> Bool {
+    static func handle(sse: SSEEvent, state: TurnState, onEvent: (AgentStreamEvent) -> Void) -> Bool {
         if sse.data == "[DONE]" {
             for id in state.toolCallsByIndex.values { onEvent(.toolUseEnd(id: id)) }
             let usage = state.promptTokens.map { TokenUsage(inputTokens: $0, outputTokens: state.completionTokens ?? 0, cachedInputTokens: nil) }

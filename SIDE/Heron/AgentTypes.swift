@@ -93,7 +93,7 @@ struct ToolSpec: Codable, Sendable {
     let inputSchema: JSONValue
 }
 
-enum StopReason: Sendable {
+enum StopReason: Equatable, Sendable {
     case endTurn, toolUse, maxTokens, stopSequence
     case other(String)
 }
