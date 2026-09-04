@@ -35,8 +35,10 @@ The Tracks ledger is a bounded working set, not an infinite history list. Search
 
 Every row carries an explicit status, because this table previously read as a
 description of the app while two of its stages did not exist. **Built** means it
-is a case in `ShellViewController.Stage` and has a real canvas; **planned** means
-it does not exist in code at all.
+is a case in `ShellViewController.Stage` and has a real canvas. **Not a stage**
+means the concern is real but lives elsewhere (decided 2026-09-03, RFC R6):
+Integration is Review's publishing half, and Library is a separate window. Neither
+adds a `Stage` case, and `DocStatusTests` asserts that.
 
 | Stage | Status | Owns the canvas for |
 |---|---|---|
@@ -45,8 +47,8 @@ it does not exist in code at all.
 | Review | built | checkpoints, diffs, rationale, test evidence, and promotion decisions |
 | Run | built | terminals, tasks, tests, logs, debugging, and remote sessions |
 | Tracks | built | orienting, prioritizing, resuming, parking, and archiving work |
-| Integration | **planned** | reconciling track change streams with `main`, verifying evidence, and publishing safely |
-| Library | **planned** | prompts, skills/plugins, agent instruction files, templates, and archive/storage management |
+| Integration | **not a stage** — Review's publishing half (push, PR, remote verification land in Review's decision header) | reconciling track change streams with `main`, verifying evidence, and publishing safely |
+| Library | **not a stage** — a separate window (⇧⌘L), also reachable from Think's + and Preferences | prompts, skills/plugins, agent instruction files, templates, and archive/storage management |
 
 The app opens a track at the stage that best matches its state; keyboard shortcuts and a quiet stage control move between stages while preserving return position.
 

@@ -37,14 +37,16 @@ final class AgentRunnerManager {
     private var debounceWorkItem: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.2
 
-    init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, modeProvider: @escaping (String) -> AgentMode, modelSelectionProvider: @escaping (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?)) {
+    init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, modeProvider: @escaping (String) -> AgentMode, modelSelectionProvider: @escaping (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?), trackContextProvider: @escaping (String) -> [AgentTrackSummary] = { _ in [] }) {
         self.sessionStore = sessionStore
         self.projectPath = projectPath
         self.bridgeProvider = bridgeProvider
         self.rootProvider = rootProvider
         self.modeProvider = modeProvider
         self.modelSelectionProvider = modelSelectionProvider
+        self.trackContextProvider = trackContextProvider
     }
+    private let trackContextProvider: (String) -> [AgentTrackSummary]
 
     @discardableResult
     func addChangeObserver(_ observer: @escaping () -> Void) -> UUID {
@@ -80,7 +82,8 @@ final class AgentRunnerManager {
             bridgeProvider: { [bridgeProvider] in bridgeProvider(trackKey) },
             rootProvider: { [rootProvider] in rootProvider(trackKey) },
             modeProvider: { [modeProvider] in modeProvider(trackKey) },
-            modelSelectionProvider: { [modelSelectionProvider] in modelSelectionProvider(trackKey) }
+            modelSelectionProvider: { [modelSelectionProvider] in modelSelectionProvider(trackKey) },
+            trackContextProvider: { [trackContextProvider] in trackContextProvider(trackKey) }
         )
         runner.addObserver { [weak self] event in
             guard case .phaseChanged = event else { return }

@@ -12,6 +12,9 @@ struct ToolExecutor {
     /// the user has unsaved edits in should see what's on screen, not stale disk content —
     /// otherwise it reasons about code that no longer exists.
     var liveBufferProvider: (URL) -> String?
+    /// The project's tracks, for the two cross-track tools. Defaults to none, so an executor built
+    /// without a project context (tests, previews) simply has no tracks to report.
+    var trackContextProvider: () -> [AgentTrackSummary] = { [] }
 
     private static let maxOutputCharacters = 60_000
     private static let maxListedFiles = 400
@@ -33,6 +36,9 @@ struct ToolExecutor {
             // there precisely because it cannot compose a command: it picks a name the project
             // itself declared, and the approval card still applies.
             case "run_task", "list_tasks": return scope.allowsCommands || scope == .plan
+            // Read-only structure about sibling tracks, useful wherever a plan or a change is
+            // being made; withheld in Ask, where the conversation is about this track alone.
+            case "list_tracks", "read_track_overlap": return scope.allowsCommands || scope == .plan
             // Reading diagnostics is a pure read — available in every scope, including Ask.
             case "read_diagnostics": return true
             default: return true
@@ -114,6 +120,16 @@ struct ToolExecutor {
                     ]),
                     "required": .array([.string("command")]),
                 ])
+            ),
+            ToolSpec(
+                name: "list_tracks",
+                description: "List the other tracks in this project: each one's branch, status, intent, base branch, and how many files it has changed. Read-only. Use it to understand what else is in flight before planning a change that touches shared code.",
+                inputSchema: .object(["type": .string("object"), "properties": .object([:])])
+            ),
+            ToolSpec(
+                name: "read_track_overlap",
+                description: "Which other tracks in this project have changed the same files as this track, and which files. Read-only. A shared file is a merge conflict waiting to happen at promotion; check before editing files another track is in the middle of.",
+                inputSchema: .object(["type": .string("object"), "properties": .object([:])])
             ),
             ToolSpec(
                 name: "fetch_url",
@@ -206,6 +222,15 @@ struct ToolExecutor {
                 return .completed(output: "Missing required argument: command", isError: true)
             }
             return .commandProposal(ProposedCommand(toolUseId: toolUseId, command: command))
+        case "list_tracks":
+            let tracks = trackContextProvider()
+            return .completed(output: TrackContextTools.listing(tracks, changedPaths: Self.changedPaths), isError: false)
+        case "read_track_overlap":
+            let tracks = trackContextProvider()
+            guard let current = tracks.first(where: \.isCurrent) else {
+                return .completed(output: "This conversation isn't attached to a track, so there is nothing to compare.", isError: false)
+            }
+            return .completed(output: TrackContextTools.overlapReport(current: current, all: tracks, changedPaths: Self.changedPaths), isError: false)
         case "fetch_url":
             guard let text = input.stringValue(for: "url"), !text.isEmpty else {
                 return .completed(output: "Missing required argument: url", isError: true)
@@ -256,6 +281,11 @@ struct ToolExecutor {
     static func bounded(_ text: String) -> String {
         guard text.count > maxOutputCharacters else { return text }
         return String(text.prefix(maxOutputCharacters)) + "\n… [truncated to \(maxOutputCharacters) characters]"
+    }
+
+    /// A track's changed files against its base, via git in the shared checkout.
+    private static func changedPaths(_ track: AgentTrackSummary) -> Set<String> {
+        TrackOverlap.changedPaths(branch: track.branchName, baseRef: track.baseRef, cwd: track.gitDirectory)
     }
 
     // MARK: - Write tools (propose only — never touch disk)

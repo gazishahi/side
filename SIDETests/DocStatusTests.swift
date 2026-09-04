@@ -79,14 +79,14 @@ final class DocStatusTests: XCTestCase {
             case "built":
                 XCTAssertTrue(realStages.contains(stage), "constitution says \(stage) is built; ShellViewController.Stage has no such case")
                 checked += 1
-            case "planned":
-                XCTAssertFalse(realStages.contains(stage), "constitution says \(stage) is planned, but it exists in code — update the table")
+            case "planned", _ where status.hasPrefix("not a stage"):
+                XCTAssertFalse(realStages.contains(stage), "constitution says \(stage) is not a stage, but it exists in code — update the table")
                 checked += 1
             default:
                 break
             }
         }
-        XCTAssertEqual(checked, 7, "expected the five built and two planned stages to be checked")
+        XCTAssertEqual(checked, 7, "expected the five built stages and two non-stages to be checked")
     }
 
     func testThePhaseTenDocumentNoLongerSaysNotStarted() throws {

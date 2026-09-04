@@ -76,6 +76,8 @@ final class AgentRunner {
     /// The track's mode, resolved fresh per request — same convention as `rootProvider`, so
     /// changing mode mid-conversation takes effect on the very next turn.
     private let modeProvider: () -> AgentMode
+    /// The project's tracks, for `list_tracks` and `read_track_overlap` — see `TrackContext.swift`.
+    private let trackContextProvider: () -> [AgentTrackSummary]
     /// The track's own model choice, resolved fresh per request — same convention as
     /// `rootProvider`, so switching model mid-conversation takes effect on the very next turn
     /// instead of needing a new runner.
@@ -172,7 +174,8 @@ final class AgentRunner {
         trackKey: String, sessionStore: AgentSessionStore, projectPath: String,
         bridgeProvider: @escaping () -> WorkspaceBridge,
         rootProvider: @escaping () -> URL, modeProvider: @escaping () -> AgentMode = { .default },
-        modelSelectionProvider: @escaping () -> (providerId: String?, modelId: String?, effort: AgentEffort?) = { (nil, nil, nil) }
+        modelSelectionProvider: @escaping () -> (providerId: String?, modelId: String?, effort: AgentEffort?) = { (nil, nil, nil) },
+        trackContextProvider: @escaping () -> [AgentTrackSummary] = { [] }
     ) {
         self.trackKey = trackKey
         self.sessionStore = sessionStore
@@ -181,6 +184,7 @@ final class AgentRunner {
         self.rootProvider = rootProvider
         self.modeProvider = modeProvider
         self.modelSelectionProvider = modelSelectionProvider
+        self.trackContextProvider = trackContextProvider
         hydrateFromSession()
     }
 
@@ -1317,7 +1321,7 @@ final class AgentRunner {
         // against the same root, and the diff computed for any resulting proposal below needs
         // to agree with whatever root actually produced it.
         let root = rootProvider()
-        let executor = ToolExecutor(projectRoot: root, liveBufferProvider: { url in
+        var executor = ToolExecutor(projectRoot: root, liveBufferProvider: { url in
             var result: String?
             if Thread.isMainThread {
                 result = bridge.liveBufferProvider(url)
@@ -1326,6 +1330,10 @@ final class AgentRunner {
             }
             return result
         })
+        // Snapshotted on main, here, before the executor runs off it: track metadata is
+        // main-actor state, and the tools only need a copy.
+        let trackSnapshot = trackContextProvider()
+        executor.trackContextProvider = { trackSnapshot }
         let parsed = calls.map { (id: $0.id, name: $0.name, input: Self.parseArguments($0.partialJSON)) }
         // Read here, on the main actor, and passed in — the scope that governs a batch is the
         // one in force when its calls arrive, and the executor runs on a background queue.
@@ -1742,6 +1750,9 @@ final class AgentRunner {
     or test (list_tasks shows which). Prefer run_task over run_shell_command for those — its \
     result is recorded against the checkpoint, so the user can see the change was verified. \
     Never claim something works when you have not checked; say what you did and did not verify. \
+    Other tracks in this project may be changing the same code: list_tracks shows what is in \
+    flight and read_track_overlap names the files this track and another have both changed — \
+    check before editing something another track is in the middle of. \
     fetch_url reads a public web page as text — use it for documentation, changelogs, and API \
     references rather than guessing at an API from memory; it is approved like a command.
     """

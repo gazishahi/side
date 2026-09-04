@@ -23,7 +23,8 @@ final class ProjectContext {
             bridgeProvider: { [weak self] trackKey in self?.bridge(forTrackKey: trackKey) ?? .none },
             rootProvider: { [weak self] trackKey in self?.workingDirectory(forTrackKey: trackKey) ?? fallbackRoot },
             modeProvider: { [weak self] trackKey in self?.trackStore.mode(forTrackKey: trackKey) ?? .default },
-            modelSelectionProvider: { [weak self] trackKey in self?.trackStore.modelSelection(forTrackKey: trackKey) ?? (nil, nil, nil) }
+            modelSelectionProvider: { [weak self] trackKey in self?.trackStore.modelSelection(forTrackKey: trackKey) ?? (nil, nil, nil) },
+            trackContextProvider: { [weak self] trackKey in self?.trackSummaries(currentTrackKey: trackKey) ?? [] }
         )
     }()
 
@@ -81,6 +82,20 @@ final class ProjectContext {
     /// or one that's never been materialized). Resolved fresh on every call rather than cached,
     /// so a track lazily materializing its worktree mid-session is picked up on the next tool
     /// call without any explicit invalidation.
+    /// The project's tracks as the cross-track tools see them (RFC R4). Archived tracks are left
+    /// out — they are no longer in flight, and the point is to know what might still collide.
+    func trackSummaries(currentTrackKey: String) -> [AgentTrackSummary] {
+        let tracks = trackStore.tracks.filter { $0.status != .archived }
+        let defaultBranch = trackStore.defaultBranchName()
+        return tracks.map { track in
+            let base = track.parentTrackId.flatMap { parentId in tracks.first { $0.id == parentId }?.branchName } ?? defaultBranch
+            return AgentTrackSummary(
+                branchName: track.branchName, intent: track.intent, status: track.status.rawValue,
+                baseRef: base, isCurrent: track.branchName == currentTrackKey, gitDirectory: projectRoot.path
+            )
+        }
+    }
+
     func workingDirectory(forTrackKey trackKey: String) -> URL {
         guard let path = trackStore.tracks.first(where: { $0.branchName == trackKey })?.workingDirectoryPath else { return projectRoot }
         return URL(fileURLWithPath: path)
