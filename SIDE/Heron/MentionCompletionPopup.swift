@@ -56,7 +56,7 @@ final class MentionCompletionPopup: NSObject {
         background.blendingMode = .behindWindow
         background.state = .active
         background.wantsLayer = true
-        background.layer?.cornerRadius = DS.Radius.card
+        background.layer?.cornerRadius = DS.Radius.surface
         background.layer?.masksToBounds = true
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("path"))
@@ -182,7 +182,7 @@ extension MentionCompletionPopup: NSTableViewDataSource, NSTableViewDelegate {
         cell.textField?.stringValue = candidates[row]
         // System text, not monospace: these are UI rows, not code. Paths still read fine, and
         // command descriptions stop looking like terminal output.
-        cell.textField?.font = DS.Text.control()
+        cell.textField?.font = DS.Text.body()
         cell.textField?.textColor = .labelColor
         cell.textField?.lineBreakMode = truncatesHead ? .byTruncatingHead : .byTruncatingTail
         return cell

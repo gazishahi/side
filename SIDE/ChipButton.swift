@@ -22,6 +22,9 @@ final class ChipButton: NSButton {
     /// Hover pill for bare chips; off for buttons that sit on their own glass, where a
     /// rounded-rect hover inside a capsule reads as a seam (the exact complaint).
     var showsHover = false
+    /// Option B (Direction 02 §2.8): release normally returns straight to rest on `DS.Motion.curve`.
+    /// The one control allowed a ceremonial settle — Promote — sets this.
+    var settlesOnRelease = false
     private var tracking: NSTrackingArea?
 
     /// `height` exists for controls larger than a composer chip — Review's Promote is a stage's
@@ -112,8 +115,8 @@ final class ChipButton: NSButton {
         layer.removeAnimation(forKey: "springRelease")
         let dip = CABasicAnimation(keyPath: "transform.scale")
         dip.toValue = 0.93
-        dip.duration = 0.16
-        dip.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        dip.duration = DS.Motion.duration(0.16)
+        dip.timingFunction = DS.Motion.curve
         // Held, not removed: the pill stays pushed back for as long as the mouse is down.
         dip.fillMode = .forwards
         dip.isRemovedOnCompletion = false
@@ -124,14 +127,10 @@ final class ChipButton: NSButton {
         guard let layer = centeredLayer(view) else { return }
         layer.removeAnimation(forKey: "springDown")
         let spring = CAKeyframeAnimation(keyPath: "transform.scale")
-        spring.values = [0.93, 1.04, 0.99, 1]
-        spring.keyTimes = [0, 0.45, 0.8, 1]
-        spring.duration = 0.36
-        spring.timingFunctions = [
-            CAMediaTimingFunction(name: .easeOut),
-            CAMediaTimingFunction(name: .easeInEaseOut),
-            CAMediaTimingFunction(name: .easeOut),
-        ]
+        spring.values = settlesOnRelease ? [0.93, 1.04, 0.99, 1] : [0.93, 1]
+        spring.keyTimes = settlesOnRelease ? [0, 0.45, 0.8, 1] : [0, 1]
+        spring.duration = DS.Motion.duration(0.36)
+        spring.timingFunctions = [DS.Motion.curve, DS.Motion.curve, DS.Motion.curve]
         layer.add(spring, forKey: "springRelease")
     }
 

@@ -74,7 +74,7 @@ final class PreferencesViewController: NSViewController {
         keyStatusLabel.textColor = .secondaryLabelColor
 
         let modelLabel = NSTextField(labelWithString: "Default model:")
-        modelLabel.font = DS.Text.control()
+        modelLabel.font = DS.Text.body()
         modelPopup.target = self
         modelPopup.action = #selector(modelChanged)
         let modelRow = NSStackView(views: [modelLabel, modelPopup])

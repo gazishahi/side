@@ -171,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // level, not forced dark per window as it was while dark was the only palette. Every
         // token is dynamic, so the window follows whatever NSApp.appearance resolves to.
         DS.Appearance.bootstrap()
-        window.backgroundColor = DS.Color.chrome
+        window.backgroundColor = DS.Color.canvas
         // Even with dark appearance forced, the native title/toolbar strip still renders
         // using the system's own dark-mode material — a medium charcoal, visibly lighter
         // than the app's near-black content. This is very likely the real source of "still

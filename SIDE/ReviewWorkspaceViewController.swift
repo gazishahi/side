@@ -8,12 +8,6 @@ private final class ReviewDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// Thin forwarding layer onto `DS` (the charter's token file).
-private enum ReviewPalette {
-    static let cardBackground = DS.Color.bg1
-    static let cardBorder = DS.Color.hairline
-    static let chip = DS.Color.bg3
-}
 
 /// The Review stage: "checkpoints, diffs, rationale, test evidence, and promotion decisions"
 /// per the constitution's stage table — the surface where a track's accumulated work (its
@@ -70,7 +64,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.wantsLayer = true
-        view.bindLayerBackground(DS.Color.chrome)
+        view.bindLayerBackground(DS.Color.canvas)
         NotificationCenter.default.addObserver(
             self, selector: #selector(textScaleChanged),
             name: DS.Text.scaleDidChangeNotification, object: nil
@@ -100,14 +94,14 @@ final class ReviewWorkspaceViewController: NSViewController {
         subtitleRow.addArrangedSubview(baseChip)
         subtitleRow.translatesAutoresizingMaskIntoConstraints = false
 
-        checkpointsHeader.font = DS.Text.control(.semibold)
+        checkpointsHeader.font = DS.Text.body(.semibold)
         checkpointsHeader.textColor = .secondaryLabelColor
         checkpointsStack.orientation = .vertical
         checkpointsStack.alignment = .leading
         checkpointsStack.spacing = DS.Spacing.m
         checkpointsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        diffHeader.font = DS.Text.control(.semibold)
+        diffHeader.font = DS.Text.body(.semibold)
         diffHeader.textColor = .secondaryLabelColor
         diffLayoutControl.controlSize = .small
         diffLayoutControl.font = DS.Text.caption()
@@ -129,6 +123,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         // what makes the button and its capsule dip and spring as one object rather than the glyph
         // sliding around inside a static pill.
         promoteButton.onPress = { [weak self] in self?.promoteTapped() }
+        promoteButton.settlesOnRelease = true
         statusLabel.font = DS.Text.caption()
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.alignment = .right
@@ -167,7 +162,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         overlapBanner.wantsLayer = true
-        overlapBanner.layer?.cornerRadius = DS.Radius.card
+        overlapBanner.layer?.cornerRadius = DS.Radius.surface
         overlapBanner.bindLayerBackground(NSColor.systemOrange.withAlphaComponent(0.12))
         overlapBanner.layer?.borderWidth = 1
         overlapBanner.bindLayerBorder(NSColor.systemOrange.withAlphaComponent(0.35))
@@ -340,7 +335,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         promoteButton.setAttributedLabel(
             NSAttributedString(
                 string: promoteTitleText,
-                attributes: [.font: DS.Text.control(.semibold), .foregroundColor: color]
+                attributes: [.font: DS.Text.body(.semibold), .foregroundColor: color]
             ),
             identity: "\(promoteTitleText)|\(promoteButton.isEnabled)"
         )
@@ -489,10 +484,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     private func makeCheckpointCard(_ checkpoint: Checkpoint) -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = DS.Radius.card
+        card.layer?.cornerRadius = DS.Radius.surface
         card.layer?.borderWidth = 1
-        card.bindLayerBorder(ReviewPalette.cardBorder)
-        card.bindLayerBackground(ReviewPalette.cardBackground)
+        card.bindLayerBorder(DS.Color.hairline)
+        card.bindLayerBackground(DS.Color.raised)
         let intentLabel = NSTextField(wrappingLabelWithString: checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)
         intentLabel.font = DS.Text.body(.medium)
         intentLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -636,8 +631,8 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     private static func styleChip(_ chip: NSView, _ label: NSTextField) {
         chip.wantsLayer = true
-        chip.bindLayerBackground(ReviewPalette.chip)
-        chip.layer?.cornerRadius = DS.Radius.chip
+        chip.bindLayerBackground(DS.Color.overlay)
+        chip.layer?.cornerRadius = DS.Radius.control
         chip.translatesAutoresizingMaskIntoConstraints = false
         label.font = DS.Text.code(11, weight: .regular)
         label.textColor = .secondaryLabelColor
@@ -791,7 +786,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     private static func makeMetaLabel(_ text: String) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: text)
-        label.font = DS.Text.control()
+        label.font = DS.Text.body()
         label.textColor = .tertiaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         return label

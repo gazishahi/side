@@ -31,7 +31,7 @@ final class HistoryViewController: NSViewController {
         retentionPopup.action = #selector(retentionChanged)
 
         let retentionLabel = NSTextField(labelWithString: "Keep conversations:")
-        retentionLabel.font = DS.Text.control()
+        retentionLabel.font = DS.Text.body()
         let retentionRow = NSStackView(views: [retentionLabel, retentionPopup])
         retentionRow.orientation = .horizontal
         retentionRow.spacing = DS.Spacing.m

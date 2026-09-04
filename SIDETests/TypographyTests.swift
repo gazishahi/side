@@ -16,32 +16,30 @@ final class TypographyTests: XCTestCase {
         super.tearDown()
     }
 
-    func testDefaultScaleRendersTheSizesTheAppAlreadyUsed() {
+    func testDefaultScaleRendersTheFiveRoles() {
         DS.Text.Scale.current = .standard
-        // The point of the migration was to name the existing sizes, not to redesign type. If
-        // these drift, every screen shifts without anyone deciding to.
-        XCTAssertEqual(DS.Text.body().pointSize, 12, accuracy: 0.6)
-        XCTAssertEqual(DS.Text.control().pointSize, 12)
-        XCTAssertEqual(DS.Text.heading().pointSize, 13)
-        XCTAssertEqual(DS.Text.title().pointSize, 17)
+        // Direction 02 §2.6: five roles. If these drift, every screen shifts without anyone deciding to.
+        XCTAssertEqual(DS.Text.title().pointSize, 20)
+        XCTAssertEqual(DS.Text.heading().pointSize, 15)
+        XCTAssertEqual(DS.Text.body().pointSize, 13)
         XCTAssertEqual(DS.Text.caption().pointSize, 11)
-        XCTAssertEqual(DS.Text.figure().pointSize, 20)
+        XCTAssertEqual(DS.Text.code().pointSize, 12)
     }
 
     func testEveryRoleGrowsWithTheScale() {
         DS.Text.Scale.current = .standard
         let baseline = [
-            DS.Text.display().pointSize, DS.Text.figure().pointSize, DS.Text.title().pointSize,
-            DS.Text.subtitle().pointSize, DS.Text.heading().pointSize, DS.Text.body().pointSize,
-            DS.Text.control().pointSize, DS.Text.caption().pointSize, DS.Text.micro().pointSize,
+            DS.Text.title().pointSize, DS.Text.title().pointSize, DS.Text.title().pointSize,
+            DS.Text.body().pointSize, DS.Text.heading().pointSize, DS.Text.body().pointSize,
+            DS.Text.body().pointSize, DS.Text.caption().pointSize, DS.Text.caption().pointSize,
             DS.Text.code().pointSize,
         ]
 
         DS.Text.Scale.current = .larger
         let enlarged = [
-            DS.Text.display().pointSize, DS.Text.figure().pointSize, DS.Text.title().pointSize,
-            DS.Text.subtitle().pointSize, DS.Text.heading().pointSize, DS.Text.body().pointSize,
-            DS.Text.control().pointSize, DS.Text.caption().pointSize, DS.Text.micro().pointSize,
+            DS.Text.title().pointSize, DS.Text.title().pointSize, DS.Text.title().pointSize,
+            DS.Text.body().pointSize, DS.Text.heading().pointSize, DS.Text.body().pointSize,
+            DS.Text.body().pointSize, DS.Text.caption().pointSize, DS.Text.caption().pointSize,
             DS.Text.code().pointSize,
         ]
 
@@ -55,7 +53,6 @@ final class TypographyTests: XCTestCase {
         // A hierarchy that inverts at some scale would be worse than no scaling at all.
         XCTAssertLessThan(DS.Text.caption().pointSize, DS.Text.body().pointSize)
         XCTAssertLessThan(DS.Text.body().pointSize, DS.Text.title().pointSize)
-        XCTAssertLessThan(DS.Text.micro().pointSize, DS.Text.caption().pointSize)
     }
 
     func testWeightIsPreservedThroughScaling() {

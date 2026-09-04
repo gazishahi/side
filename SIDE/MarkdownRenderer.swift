@@ -63,8 +63,9 @@ enum MarkdownRenderer {
 
             if let (level, text) = matchHeader(line) {
                 flushParagraph()
+                // Scaled with the text setting (audit 29.3), and semibold: nothing is bold below 15.
                 let size: CGFloat = [28, 24, 20, 17, 15, 14][min(level - 1, 5)]
-                let font = NSFont.systemFont(ofSize: size, weight: .bold)
+                let font = DS.Text.custom(size, weight: size >= 15 ? .bold : .semibold)
                 let header = NSMutableAttributedString(attributedString: renderInline(text, baseFont: font, textColor: textColor))
                 header.addAttribute(anchorSlugKey, value: anchorSlug(for: text), range: NSRange(location: 0, length: header.length))
                 result.append(header)

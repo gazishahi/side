@@ -19,11 +19,11 @@ final class AppearanceTests: XCTestCase {
     }
 
     func testSurfaceTokensInvertWithTheAppearance() {
-        for token in [DS.Color.chrome, DS.Color.tabStrip, DS.Color.bg1, DS.Color.bg2, DS.Color.bg3, DS.Color.bg4, DS.Color.terminalBackground] {
+        for token in [DS.Color.canvas, DS.Color.canvas, DS.Color.raised, DS.Color.overlay, DS.Color.overlay, DS.Color.raised, DS.Color.raised] {
             XCTAssertLessThan(luminance(token, in: .darkAqua), 0.35)
             XCTAssertGreaterThan(luminance(token, in: .aqua), 0.80)
         }
-        for token in [DS.Color.text, DS.Color.textStrong, DS.Color.textSecondary, DS.Color.terminalForeground] {
+        for token in [NSColor.labelColor, NSColor.labelColor, NSColor.secondaryLabelColor, NSColor.labelColor] {
             XCTAssertGreaterThan(luminance(token, in: .darkAqua), 0.6)
             XCTAssertLessThan(luminance(token, in: .aqua), 0.4)
         }
@@ -33,18 +33,18 @@ final class AppearanceTests: XCTestCase {
         // The charter's relationships: chrome is the deepest, cards a step up, the tab strip
         // behind everything. In light that means chrome is *darker* than a card, not lighter.
         for appearance in [NSAppearance.Name.darkAqua, .aqua] {
-            let chrome = luminance(DS.Color.chrome, in: appearance)
-            let card = luminance(DS.Color.bg1, in: appearance)
+            let chrome = luminance(DS.Color.canvas, in: appearance)
+            let card = luminance(DS.Color.raised, in: appearance)
             XCTAssertNotEqual(chrome, card, "\(appearance.rawValue)")
             // Text always contrasts with the card it sits on.
-            XCTAssertGreaterThan(abs(luminance(DS.Color.text, in: appearance) - card), 0.5, "\(appearance.rawValue)")
+            XCTAssertGreaterThan(abs(luminance(NSColor.labelColor, in: appearance) - card), 0.5, "\(appearance.rawValue)")
         }
     }
 
     func testAlphaVariantsOfATokenStayDynamic() {
         // Cards use `token.withAlphaComponent(...)`; if that resolved eagerly, half the app would
         // freeze in whichever appearance it launched under.
-        let tinted = DS.Color.bg1.withAlphaComponent(0.9)
+        let tinted = DS.Color.raised.withAlphaComponent(0.9)
         XCTAssertNotEqual(luminance(tinted, in: .darkAqua), luminance(tinted, in: .aqua))
     }
 
@@ -59,14 +59,14 @@ final class AppearanceTests: XCTestCase {
         let view = NSView(frame: window.contentView!.bounds)
         window.contentView?.addSubview(view)
         window.appearance = NSAppearance(named: .darkAqua)
-        view.bindLayerBackground(DS.Color.bg1)
+        view.bindLayerBackground(DS.Color.raised)
         let dark = view.layer?.backgroundColor
         window.appearance = NSAppearance(named: .aqua)
         // What `DS.Appearance` does when the app's appearance flips.
         DS.LayerBindings.reapplyAll()
         let light = view.layer?.backgroundColor
         XCTAssertNotNil(dark); XCTAssertNotNil(light)
-        XCTAssertNotEqual(dark.map { NSColor(cgColor: $0)?.whiteComponent }, light.map { NSColor(cgColor: $0)?.whiteComponent })
+        XCTAssertNotEqual(dark.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB)?.redComponent }, light.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB)?.redComponent })
     }
 
     func testThePreferenceRoundTripsAndMapsToAnAppAppearance() {
@@ -85,10 +85,10 @@ final class AppearanceTests: XCTestCase {
         let original = DS.Appearance.preference
         defer { DS.Appearance.preference = original }
         DS.Appearance.preference = .dark
-        let darkBackground = TerminalViewController.terminalColor(DS.Color.terminalBackground)
+        let darkBackground = TerminalViewController.terminalColor(DS.Color.raised)
         DS.Appearance.preference = .light
-        let lightBackground = TerminalViewController.terminalColor(DS.Color.terminalBackground)
-        XCTAssertLessThan(darkBackground.red, 5_000)
+        let lightBackground = TerminalViewController.terminalColor(DS.Color.raised)
+        XCTAssertLessThan(darkBackground.red, 12_000)
         XCTAssertGreaterThan(lightBackground.red, 60_000)
         // Sixteen ANSI colours either way, and the light set is darker where it matters: yellow.
         XCTAssertEqual(TerminalViewController.ansiPalette(dark: true).count, 16)

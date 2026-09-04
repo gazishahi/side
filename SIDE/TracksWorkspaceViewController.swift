@@ -19,29 +19,7 @@ private final class FocusableContainerView: NSView {
 /// a colored dot repeating it would just be noise. The app's own accent shows up only on buttons.
 /// Thin forwarding layer onto `DS` (the charter's token file) — kept so Tracks' many call sites
 /// didn't all churn in the migration, but every value now has exactly one definition.
-private enum TracksPalette {
-    static let cardBackground = DS.Color.bg1
-    static let cardBorder = DS.Color.hairline
-    static let hairline = DS.Color.hairline
-    static let rowHover = DS.Color.rowHover
-    static let chip = DS.Color.bg3
-    static let rail = DS.Color.rail
 
-    static func statusColor(for status: TrackStatus) -> NSColor {
-        DS.Color.status(for: status)
-    }
-
-    static func statusText(for status: TrackStatus) -> String {
-        switch status {
-        case .active: return "Active"
-        case .waiting: return "Waiting"
-        case .reviewReady: return "Review Ready"
-        case .parked: return "Parked"
-        case .completed: return "Completed"
-        case .archived: return "Archived"
-        }
-    }
-}
 
 final class TracksWorkspaceViewController: NSViewController {
     private let scrollView = NSScrollView()
@@ -403,7 +381,7 @@ final class TracksWorkspaceViewController: NSViewController {
         groupStack.spacing = DS.Spacing.s
 
         let labelField = NSTextField(labelWithString: label)
-        labelField.font = DS.Text.control(.semibold)
+        labelField.font = DS.Text.body(.semibold)
         labelField.textColor = .secondaryLabelColor
         groupStack.addArrangedSubview(labelField)
 
@@ -420,10 +398,10 @@ final class TracksWorkspaceViewController: NSViewController {
     private func makeCard(tracks: [Track]) -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = DS.Radius.card
+        card.layer?.cornerRadius = DS.Radius.surface
         card.layer?.borderWidth = 1
-        card.bindLayerBorder(TracksPalette.cardBorder)
-        card.bindLayerBackground(TracksPalette.cardBackground)
+        card.bindLayerBorder(DS.Color.hairline)
+        card.bindLayerBackground(DS.Color.raised)
         card.layer?.masksToBounds = true
 
         let rowsStack = NSStackView()
@@ -448,7 +426,7 @@ final class TracksWorkspaceViewController: NSViewController {
                 let hairline = NSBox()
                 hairline.boxType = .custom
                 hairline.borderType = .noBorder
-                hairline.fillColor = TracksPalette.hairline
+                hairline.fillColor = DS.Color.hairline
                 hairline.translatesAutoresizingMaskIntoConstraints = false
                 hairlineRow.addSubview(hairline)
                 NSLayoutConstraint.activate([
@@ -560,10 +538,10 @@ final class TracksWorkspaceViewController: NSViewController {
     private func makeInfoBannerCard(symbolName: String, text: String, buttonTitle: String?, action: Selector?) -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = DS.Radius.card
+        card.layer?.cornerRadius = DS.Radius.surface
         card.layer?.borderWidth = 1
-        card.bindLayerBorder(TracksPalette.cardBorder)
-        card.bindLayerBackground(TracksPalette.cardBackground)
+        card.bindLayerBorder(DS.Color.hairline)
+        card.bindLayerBackground(DS.Color.raised)
         // A real SF Symbol instead of a hand-drawn circle-plus-letter: renders properly centered
         // for free, and reads as native rather than a homemade approximation of one.
         let glyph = NSImageView(image: NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) ?? NSImage())
@@ -1154,7 +1132,7 @@ private final class TrackConnectorView: NSView {
             path.move(to: NSPoint(x: x, y: midY - Self.curveRadius))
             path.line(to: NSPoint(x: x, y: bounds.maxY))
         }
-        TracksPalette.rail.setStroke()
+        DS.Color.hairlineStrong.setStroke()
         path.stroke()
     }
 }
@@ -1211,7 +1189,7 @@ private final class TrackRowView: NSView {
         }
 
         super.init(frame: .zero)
-        accessibilitySummary = "\(intentText), \(TracksPalette.statusText(for: status)), \(branchText)"
+        accessibilitySummary = "\(intentText), \(trackStatusText(for: status)), \(branchText)"
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
 
@@ -1226,8 +1204,8 @@ private final class TrackRowView: NSView {
 
         let chip = NSView()
         chip.wantsLayer = true
-        chip.bindLayerBackground(TracksPalette.chip)
-        chip.layer?.cornerRadius = DS.Radius.chip
+        chip.bindLayerBackground(DS.Color.overlay)
+        chip.layer?.cornerRadius = DS.Radius.control
         chip.translatesAutoresizingMaskIntoConstraints = false
         branchLabel.translatesAutoresizingMaskIntoConstraints = false
         chip.addSubview(branchLabel)
@@ -1240,14 +1218,14 @@ private final class TrackRowView: NSView {
 
         // Now that cards are grouped by lineage rather than by status, a row's status is no
         // longer implied by which section it's filed under — it needs to say so itself.
-        let statusColor = TracksPalette.statusColor(for: status)
+        let statusColor = DS.Color.status(for: status)
         let statusPill = NSView()
         statusPill.wantsLayer = true
         statusPill.bindLayerBackground(statusColor.withAlphaComponent(0.16))
-        statusPill.layer?.cornerRadius = DS.Radius.chip
+        statusPill.layer?.cornerRadius = DS.Radius.control
         statusPill.translatesAutoresizingMaskIntoConstraints = false
-        let statusLabel = NSTextField(labelWithString: TracksPalette.statusText(for: status))
-        statusLabel.font = DS.Text.micro(.semibold)
+        let statusLabel = NSTextField(labelWithString: trackStatusText(for: status))
+        statusLabel.font = DS.Text.caption(.semibold)
         statusLabel.textColor = statusColor
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusPill.addSubview(statusLabel)
@@ -1355,7 +1333,7 @@ private final class TrackRowView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        bindLayerBackground(TracksPalette.rowHover)
+        bindLayerBackground(DS.Color.raised)
         actionsStack.animator().alphaValue = 1
     }
 
@@ -1413,5 +1391,17 @@ private final class TrackRowView: NSView {
         case .doneUnread: return .systemGreen
         case .none, .working, .doneSeen: return .controlAccentColor
         }
+    }
+}
+
+/// The lifecycle status as a word.
+private func trackStatusText(for status: TrackStatus) -> String {
+    switch status {
+    case .active: return "Active"
+    case .waiting: return "Waiting"
+    case .reviewReady: return "Review Ready"
+    case .parked: return "Parked"
+    case .completed: return "Completed"
+    case .archived: return "Archived"
     }
 }

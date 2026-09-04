@@ -89,7 +89,7 @@ final class AppearanceViewController: NSViewController {
     /// makes you doubt it did anything.
     @objc private func applyFonts() {
         titleLabel.font = DS.Text.heading(.semibold)
-        scaleLabel.font = DS.Text.control()
+        scaleLabel.font = DS.Text.body()
         sampleLabel.font = DS.Text.body()
         sampleCaption.font = DS.Text.caption()
         sampleCode.font = DS.Text.code()

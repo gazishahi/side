@@ -25,12 +25,12 @@ final class ProposedEditView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = DS.Radius.card
+        layer?.cornerRadius = DS.Radius.surface
         layer?.borderWidth = 1
         bindLayerBorder(DS.Color.hairline)
-        bindLayerBackground(DS.Color.bg1)
+        bindLayerBackground(DS.Color.raised)
         headerLabel.stringValue = Self.headerText(for: edit, isStreaming: isStreaming)
-        headerLabel.font = DS.Text.control(.semibold)
+        headerLabel.font = DS.Text.body(.semibold)
         headerLabel.lineBreakMode = .byTruncatingMiddle
 
         // Same renderer as Review's per-file cards — line-number gutters and full-line tints,

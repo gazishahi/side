@@ -10,12 +10,12 @@ final class LineNumberGutterView: NSView {
     var lineDiagnostics: [Int: LSPDiagnosticSeverity] = [:] { didSet { needsDisplay = true } }
     var onDiagnosticClicked: ((Int, LSPDiagnosticSeverity, NSEvent) -> Void)?
 
-    private static let addedColor = DS.Color.dynamic(dark: NSColor(red: 0.42, green: 0.78, blue: 0.48, alpha: 1), light: NSColor(red: 0.15, green: 0.55, blue: 0.25, alpha: 1))
-    private static let modifiedColor = DS.Color.dynamic(dark: NSColor(red: 0.85, green: 0.68, blue: 0.35, alpha: 1), light: NSColor(red: 0.65, green: 0.45, blue: 0.05, alpha: 1))
-    private static let removedColor = DS.Color.dynamic(dark: NSColor(red: 0.86, green: 0.42, blue: 0.42, alpha: 1), light: NSColor(red: 0.7, green: 0.2, blue: 0.2, alpha: 1))
-    private static let errorColor = DS.Color.dynamic(dark: NSColor(red: 0.92, green: 0.35, blue: 0.35, alpha: 1), light: NSColor(red: 0.8, green: 0.15, blue: 0.15, alpha: 1))
-    private static let warningColor = DS.Color.dynamic(dark: NSColor(red: 0.93, green: 0.75, blue: 0.3, alpha: 1), light: NSColor(red: 0.7, green: 0.5, blue: 0.05, alpha: 1))
-    private static let hintColor = DS.Color.textMuted
+    private static let addedColor = DS.Color.statusVerified
+    private static let modifiedColor = DS.Color.statusNeedsYou
+    private static let removedColor = DS.Color.statusFailed
+    private static let errorColor = DS.Color.statusFailed
+    private static let warningColor = DS.Color.statusNeedsYou
+    private static let hintColor = NSColor.tertiaryLabelColor
 
     private static func color(for severity: LSPDiagnosticSeverity) -> NSColor {
         switch severity {
@@ -42,7 +42,7 @@ final class LineNumberGutterView: NSView {
     @objc func invalidate() { needsDisplay = true }
 
     override func draw(_ dirtyRect: NSRect) {
-        DS.Color.chrome.setFill()
+        DS.Color.canvas.setFill()
         bounds.fill()
         guard let textView, let layoutManager = textView.layoutManager, let textContainer = textView.textContainer, let scrollView else { return }
 
@@ -60,7 +60,7 @@ final class LineNumberGutterView: NSView {
 
         var lineNumber = text.substring(to: characterRange.location).components(separatedBy: "\n").count
         var index = characterRange.location
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: DS.Color.textFaint]
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.quaternaryLabelColor]
 
         var safetyCounter = 0
         let maxIterations = 5000

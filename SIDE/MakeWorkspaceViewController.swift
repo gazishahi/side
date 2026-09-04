@@ -160,9 +160,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let maxRecentProjects = 8
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
-    private static let editorBackground = DS.Color.chrome
+    private static let editorBackground = DS.Color.canvas
     private static let editorFont = DS.Text.code(14, weight: .regular)
-    private static let editorTextColor = DS.Color.text
+    private static let editorTextColor = NSColor.labelColor
 
     override func loadView() { view = NSView() }
 
@@ -229,18 +229,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         searchField.placeholderString = "Open file, symbol, or command"
         searchField.delegate = self
 
-        // The strip is the one surface allowed to be darker than the editor (DS.Color.tabStrip)
+        // The strip is the one surface allowed to be darker than the editor (DS.Color.canvas)
         // — that contrast, plus the hairline passing *behind* the chips, is what lets the active
         // tab (filled with the editor's own color, flush to the strip's bottom edge) read as
         // attached to the content below rather than floating in a bar.
         tabBar.wantsLayer = true
-        tabBar.bindLayerBackground(DS.Color.tabStrip)
+        tabBar.bindLayerBackground(DS.Color.canvas)
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
         let divider = NSBox()
         divider.boxType = .custom
         divider.borderType = .noBorder
-        divider.fillColor = DS.Color.tabEdge
+        divider.fillColor = DS.Color.hairlineStrong
         divider.translatesAutoresizingMaskIntoConstraints = false
         tabBar.addSubview(divider)
         tabBarStack.orientation = .horizontal
@@ -358,10 +358,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(markdownPreviewScroll)
 
         let headline = NSTextField(labelWithString: "Open a project")
-        headline.font = DS.Text.display(.medium)
+        headline.font = DS.Text.title(.medium)
         headline.alignment = .center
         let detail = NSTextField(wrappingLabelWithString: "Start with the code. Side will restore this workspace when you come back.")
-        detail.font = DS.Text.subtitle()
+        detail.font = DS.Text.body()
         detail.textColor = .secondaryLabelColor
         detail.alignment = .center
         detail.maximumNumberOfLines = 2
@@ -593,7 +593,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         effect.state = .active
         effect.blendingMode = .behindWindow
         effect.wantsLayer = true
-        effect.layer?.cornerRadius = DS.Radius.card
+        effect.layer?.cornerRadius = DS.Radius.surface
         effect.layer?.masksToBounds = true
         effect.addSubview(padded)
         NSLayoutConstraint.activate([
@@ -643,8 +643,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         installFileExplorerDismissMonitors()
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.32
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+            context.duration = DS.Motion.duration(0.32)
+            context.timingFunction = DS.Motion.curve
             fileExplorerPanel.animator().setFrame(targetFrame, display: true)
             fileExplorerPanel.animator().alphaValue = 1
         } completionHandler: { [weak self] in
@@ -682,8 +682,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         var endFrame = fileExplorerPanel.frame
         endFrame.origin.x += 24
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
+            context.duration = DS.Motion.duration(0.16)
+            context.timingFunction = DS.Motion.curve
             fileExplorerPanel.animator().setFrame(endFrame, display: true)
             fileExplorerPanel.animator().alphaValue = 0
         } completionHandler: { [weak self] in
@@ -929,7 +929,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.imageView = icon
             text.translatesAutoresizingMaskIntoConstraints = false
             icon.translatesAutoresizingMaskIntoConstraints = false
-            text.font = DS.Text.control()
+            text.font = DS.Text.body()
             text.lineBreakMode = .byTruncatingMiddle
             cell.addSubview(icon)
             cell.addSubview(text)
@@ -939,10 +939,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             ])
         }
         text.stringValue = node.name
-        text.textColor = node.isDirectory ? DS.Color.textSecondary : DS.Color.text
+        text.textColor = node.isDirectory ? NSColor.secondaryLabelColor : NSColor.labelColor
         let symbolName = node.isDirectory ? "folder.fill" : "doc.text"
         icon.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
-        icon.contentTintColor = node.isDirectory ? DS.Color.dynamic(dark: NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1), light: NSColor(red: 0.15, green: 0.45, blue: 0.85, alpha: 1)) : DS.Color.textMuted
+        icon.contentTintColor = node.isDirectory ? DS.Color.dynamic(dark: NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1), light: NSColor(red: 0.15, green: 0.45, blue: 0.85, alpha: 1)) : NSColor.tertiaryLabelColor
         return cell
     }
 
@@ -1938,8 +1938,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         reindexTabChips()
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.duration = DS.Motion.duration(0.16)
+            context.timingFunction = DS.Motion.curve
             context.allowsImplicitAnimation = true
             tabBarStack.layoutSubtreeIfNeeded()
         }
@@ -2012,8 +2012,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let widthConstraint = chip.widthAnchor.constraint(equalToConstant: width)
         widthConstraint.isActive = true
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.14
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.duration = DS.Motion.duration(0.14)
+            context.timingFunction = DS.Motion.curve
             context.allowsImplicitAnimation = true
             chip.animator().alphaValue = 0
             widthConstraint.constant = 0
@@ -2407,13 +2407,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             if cell.textField == nil {
                 cell.textField = text
                 text.translatesAutoresizingMaskIntoConstraints = false
-                text.font = DS.Text.control()
+                text.font = DS.Text.body()
                 text.lineBreakMode = .byTruncatingTail
                 cell.addSubview(text)
                 NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
             text.stringValue = colIndex < rows[dataRow].count ? rows[dataRow][colIndex] : ""
-            text.textColor = DS.Color.text
+            text.textColor = NSColor.labelColor
             return cell
         }
 
@@ -2433,12 +2433,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             }
             if let detail = item.detail, !detail.isEmpty {
-                let attributed = NSMutableAttributedString(string: item.label, attributes: [.foregroundColor: DS.Color.textStrong])
-                attributed.append(NSAttributedString(string: "  \(detail)", attributes: [.foregroundColor: DS.Color.textMuted]))
+                let attributed = NSMutableAttributedString(string: item.label, attributes: [.foregroundColor: NSColor.labelColor])
+                attributed.append(NSAttributedString(string: "  \(detail)", attributes: [.foregroundColor: NSColor.tertiaryLabelColor]))
                 text.attributedStringValue = attributed
             } else {
                 text.stringValue = item.label
-                text.textColor = DS.Color.textStrong
+                text.textColor = NSColor.labelColor
             }
             return cell
         }
@@ -2470,8 +2470,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             // second line into the neighbour below.
             text.maximumNumberOfLines = 1
             text.lineBreakMode = .byTruncatingTail
-            let attributed = NSMutableAttributedString(string: "\(match.relativePath):\(match.line)  ", attributes: [.foregroundColor: DS.Color.textMuted])
-            attributed.append(NSAttributedString(string: match.text, attributes: [.foregroundColor: DS.Color.textStrong]))
+            let attributed = NSMutableAttributedString(string: "\(match.relativePath):\(match.line)  ", attributes: [.foregroundColor: NSColor.tertiaryLabelColor])
+            attributed.append(NSAttributedString(string: match.text, attributes: [.foregroundColor: NSColor.labelColor]))
             text.attributedStringValue = attributed
         }
         return cell
@@ -3465,7 +3465,7 @@ final class TabChipView: NSView {
     override var isFlipped: Bool { true }
 
     override var intrinsicContentSize: NSSize {
-        let font = DS.Text.control(isActive ? .semibold : .regular)
+        let font = DS.Text.body(isActive ? .semibold : .regular)
         let textWidth = min((title as NSString).size(withAttributes: [.font: font]).width, Self.maxTextWidth)
         return NSSize(width: textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2, height: Self.height)
     }
@@ -3527,7 +3527,7 @@ final class TabChipView: NSView {
         if isActive {
             let fill = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare)
             fill.close()
-            DS.Color.chrome.setFill()
+            DS.Color.canvas.setFill()
             fill.fill()
             // The thin light edge that ties the tab to the surface it overlaps — traced along
             // the silhouette only, never the bottom. Stroked on a path whose flare tips land
@@ -3535,7 +3535,7 @@ final class TabChipView: NSView {
             // token), so the line reads as one continuous edge flowing around the tab rather
             // than two lines that visibly stop where they meet.
             let stroke = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare, bottomInset: 0.5)
-            DS.Color.tabEdge.setStroke()
+            DS.Color.hairlineStrong.setStroke()
             stroke.lineWidth = 1
             stroke.stroke()
         } else if isHovered {
@@ -3545,8 +3545,8 @@ final class TabChipView: NSView {
 
         let dimmed = isDead ? 0.35 : 1.0
         let attributes: [NSAttributedString.Key: Any] = [
-            .foregroundColor: (isActive ? DS.Color.textStrong : DS.Color.textMuted).withAlphaComponent(dimmed),
-            .font: DS.Text.control(isActive ? .semibold : .regular)
+            .foregroundColor: (isActive ? NSColor.labelColor : NSColor.tertiaryLabelColor).withAlphaComponent(dimmed),
+            .font: DS.Text.body(isActive ? .semibold : .regular)
         ]
         let text = title as NSString
         let size = text.size(withAttributes: attributes)
@@ -3631,8 +3631,8 @@ final class TabChipView: NSView {
             }
             // The set-down: glide into the slot instead of snapping.
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.duration = DS.Motion.duration(0.18)
+                context.timingFunction = DS.Motion.curve
                 context.allowsImplicitAnimation = true
                 layer?.setAffineTransform(.identity)
             } completionHandler: { [weak self] in
@@ -3661,7 +3661,7 @@ final class TabChipView: NSView {
 final class TabCloseButton: CircularIconButton {
     init() {
         super.init(diameter: 16)
-        setSymbol("xmark", pointSize: 8, weight: .semibold, color: DS.Color.textMuted, accessibilityLabel: "Close Tab")
+        setSymbol("xmark", pointSize: 8, weight: .semibold, color: NSColor.tertiaryLabelColor, accessibilityLabel: "Close Tab")
         hoverBackgroundColor = DS.Color.scrimStrong
     }
 

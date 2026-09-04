@@ -963,8 +963,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         let labelChanged = sessionPill.title != " \(title) "
         if labelChanged, view.window != nil {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.22
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.duration = DS.Motion.duration(0.22)
+                context.timingFunction = DS.Motion.curve
                 context.allowsImplicitAnimation = true
                 sessionPill.setLabel(title, tint: tint)
                 view.layoutSubtreeIfNeeded()
@@ -1174,8 +1174,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // who scrolled up to read.
             let wasAtBottom = clip.bounds.maxY >= transcriptContainer.bounds.height - 80
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.14
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.duration = DS.Motion.duration(0.14)
+                context.timingFunction = DS.Motion.curve
                 context.allowsImplicitAnimation = true
                 bubble.setBody(text, streaming: true)
                 // The whole transcript's layout, not just the bubble's subtree — the rows below
@@ -1226,7 +1226,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private func makeEntryView(_ entry: RunTranscriptEntry) -> NSView {
         switch entry.kind {
         case .meta(let text):
-            return makeLabel(text, font: DS.Text.control(), color: .tertiaryLabelColor)
+            return makeLabel(text, font: DS.Text.body(), color: .tertiaryLabelColor)
         case .userImage(let data):
             return ImageBubbleRowView(imageData: data, alignRight: true)
         case .userText(let text):
@@ -1321,7 +1321,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// project is open at all, since `configure` is always called before this stage is visible
     /// once a project exists.
     private func appendLocalNotice(_ text: String) {
-        addBlock(makeLabel(text, font: DS.Text.control(), color: .tertiaryLabelColor), topSpacing: transcriptStack.arrangedSubviews.isEmpty ? 0 : 8)
+        addBlock(makeLabel(text, font: DS.Text.body(), color: .tertiaryLabelColor), topSpacing: transcriptStack.arrangedSubviews.isEmpty ? 0 : 8)
     }
 
     /// A tool-activity line whose file paths are clickable.
@@ -1450,7 +1450,7 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         var fillColor: NSColor {
             switch self {
             case .sent: return .controlAccentColor
-            case .received: return DS.Color.bg4
+            case .received: return DS.Color.raised
             case .error: return NSColor.systemRed.withAlphaComponent(0.18)
             }
         }
@@ -2063,8 +2063,8 @@ final class WorkGroupView: NSView {
         expanded.toggle()
         NSAccessibility.post(element: headerRow, notification: .valueChanged)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.duration = DS.Motion.duration(0.2)
+            context.timingFunction = DS.Motion.curve
             context.allowsImplicitAnimation = true
             // Clockwise: on macOS a layer's positive rotation is counter-clockwise, so pointing
             // a right-facing chevron *down* is a negative angle. The first version used +90 and
@@ -2244,20 +2244,20 @@ private final class BubbleRowView: NSView {
         // beat every copy affordance owes the user.
         let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
+            context.duration = DS.Motion.duration(0.12)
             copyButton.animator().alphaValue = 0
         } completionHandler: { [weak self] in
             guard let self else { return }
             self.copyButton.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied")?.withSymbolConfiguration(config)
             self.copyButton.contentTintColor = .systemGreen
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.12
+                context.duration = DS.Motion.duration(0.12)
                 self.copyButton.animator().alphaValue = 1
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak self] in
                 guard let self else { return }
                 NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.15
+                    context.duration = DS.Motion.duration(0.15)
                     self.copyButton.animator().alphaValue = 0
                 } completionHandler: { [weak self] in
                     guard let self else { return }
@@ -2265,7 +2265,7 @@ private final class BubbleRowView: NSView {
                     self.copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")?.withSymbolConfiguration(normalConfig)
                     self.copyButton.contentTintColor = .tertiaryLabelColor
                     NSAnimationContext.runAnimationGroup { context in
-                        context.duration = 0.15
+                        context.duration = DS.Motion.duration(0.15)
                         self.copyButton.animator().alphaValue = 1
                     }
                 }
@@ -2308,7 +2308,7 @@ private final class SlidingSegmentedControl: NSView {
 
         track.wantsLayer = true
         track.bindLayerBackground(DS.Color.scrimFaint)
-        track.layer?.cornerRadius = 14
+        track.layer?.cornerRadius = DS.Radius.capsule(height: 28)
         addSubview(track)
         let glass = DS.makeGlass(cornerRadius: 12)
         glass.translatesAutoresizingMaskIntoConstraints = true
@@ -2318,7 +2318,7 @@ private final class SlidingSegmentedControl: NSView {
         for (index, title) in titles.enumerated() {
             let button = NSButton(title: title, target: self, action: #selector(segmentTapped(_:)))
             button.isBordered = false
-            button.font = DS.Text.control(.medium)
+            button.font = DS.Text.body(.medium)
             button.tag = index
             addSubview(button)
             buttons.append(button)
@@ -2362,9 +2362,9 @@ private final class SlidingSegmentedControl: NSView {
             return
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.32
+            context.duration = DS.Motion.duration(0.32)
             // A slight overshoot on the way in — the same spring language as the pill press.
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 1.2, 0.35, 1)
+            context.timingFunction = DS.Motion.curve
             context.allowsImplicitAnimation = true
             thumbContainer.animator().frame = thumbFrame(for: index)
         }
@@ -2429,7 +2429,7 @@ private final class PopoverActionRow: NSView {
         highlight.wantsLayer = true
         // Concentric with the popover's own corner: inner radius ≈ outer radius − inset. The
         // control token (6) was tuned for chips and read as a mismatched rectangle in here.
-        highlight.layer?.cornerRadius = 8
+        highlight.layer?.cornerRadius = DS.Radius.control
         highlight.bindLayerBackground(NSColor.controlAccentColor)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
@@ -2442,7 +2442,7 @@ private final class PopoverActionRow: NSView {
         addSubview(icon)
 
         label.stringValue = title
-        label.font = DS.Text.control()
+        label.font = DS.Text.body()
         label.textColor = .labelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -2517,7 +2517,7 @@ private final class ChangedFilesViewController: NSViewController {
         let totalAdded = files.reduce(0) { $0 + $1.added }
         let totalRemoved = files.reduce(0) { $0 + $1.removed }
         let header = NSTextField(labelWithString: "\(files.count) file\(files.count == 1 ? "" : "s") changed")
-        header.font = DS.Text.control(.semibold)
+        header.font = DS.Text.body(.semibold)
         header.textColor = .labelColor
 
         let counts = NSTextField(labelWithString: "+\(totalAdded)  −\(totalRemoved)")
@@ -2590,7 +2590,7 @@ private final class ChangedFileRow: NSView {
         translatesAutoresizingMaskIntoConstraints = false
 
         highlight.wantsLayer = true
-        highlight.layer?.cornerRadius = 6
+        highlight.layer?.cornerRadius = DS.Radius.control
         highlight.bindLayerBackground(NSColor.controlAccentColor)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
@@ -2602,11 +2602,11 @@ private final class ChangedFileRow: NSView {
         let directory = String(file.path.dropLast(separator.count))
         let styled = NSMutableAttributedString(
             string: directory,
-            attributes: [.font: DS.Text.control(), .foregroundColor: NSColor.tertiaryLabelColor]
+            attributes: [.font: DS.Text.body(), .foregroundColor: NSColor.tertiaryLabelColor]
         )
         styled.append(NSAttributedString(
             string: separator,
-            attributes: [.font: DS.Text.control(.medium), .foregroundColor: NSColor.labelColor]
+            attributes: [.font: DS.Text.body(.medium), .foregroundColor: NSColor.labelColor]
         ))
         pathLabel.attributedStringValue = styled
         pathLabel.lineBreakMode = .byTruncatingHead
@@ -2685,7 +2685,7 @@ private final class ConversationHistoryViewController: NSViewController, NSSearc
 
         searchField.placeholderString = "Search conversations"
         searchField.delegate = self
-        searchField.font = DS.Text.control()
+        searchField.font = DS.Text.body()
         searchField.translatesAutoresizingMaskIntoConstraints = false
 
         rows.orientation = .vertical
@@ -2791,14 +2791,14 @@ private final class ConversationHistoryRow: NSView {
         translatesAutoresizingMaskIntoConstraints = false
 
         highlight.wantsLayer = true
-        highlight.layer?.cornerRadius = 8
+        highlight.layer?.cornerRadius = DS.Radius.control
         highlight.bindLayerBackground(NSColor.controlAccentColor)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
 
         titleLabel.stringValue = conversation.title.isEmpty ? "Untitled conversation" : conversation.title
-        titleLabel.font = DS.Text.control()
+        titleLabel.font = DS.Text.body()
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -2944,7 +2944,7 @@ private final class SessionSettingsViewController: NSViewController {
 
         func caption(_ text: String) -> NSTextField {
             let label = NSTextField(labelWithString: text)
-            label.font = DS.Text.micro()
+            label.font = DS.Text.caption()
             label.textColor = .tertiaryLabelColor
             return label
         }
@@ -2968,7 +2968,7 @@ private final class SessionSettingsViewController: NSViewController {
             control.widthAnchor.constraint(equalToConstant: 312).isActive = true
         }
 
-        autonomyCaption.font = DS.Text.micro()
+        autonomyCaption.font = DS.Text.caption()
         autonomyCaption.textColor = .tertiaryLabelColor
         autonomyCaption.preferredMaxLayoutWidth = 300
 
@@ -3492,7 +3492,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         // The object leaves, then the space closes — a short fade first, so the collapse never
         // shows a band of empty strip where the chip just was.
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.12
+            context.duration = DS.Motion.duration(0.12)
             chip.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             chip.removeFromSuperview()
@@ -3512,8 +3512,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             return
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.duration = DS.Motion.duration(0.18)
+            context.timingFunction = DS.Motion.curve
             context.allowsImplicitAnimation = true
             stripHeightConstraint.constant = targetHeight
             stripTopConstraint.constant = targetTop

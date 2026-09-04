@@ -63,7 +63,7 @@ final class RunWorkspaceViewController: NSViewController {
         tabBar.wantsLayer = true
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
-        tabBar.bindLayerBackground(DS.Color.tabStrip)
+        tabBar.bindLayerBackground(DS.Color.canvas)
         tabBarStack.orientation = .horizontal
         tabBarStack.alignment = .bottom
         tabBarStack.spacing = DS.Spacing.xxs
@@ -73,7 +73,7 @@ final class RunWorkspaceViewController: NSViewController {
         let divider = NSBox()
         divider.boxType = .custom
         divider.borderType = .noBorder
-        divider.fillColor = DS.Color.tabEdge
+        divider.fillColor = DS.Color.hairlineStrong
         divider.translatesAutoresizingMaskIntoConstraints = false
         // Behind the chips, so the active tab's fill covers it and attaches to the content.
         tabBar.addSubview(divider, positioned: .below, relativeTo: tabBarStack)
@@ -97,9 +97,9 @@ final class RunWorkspaceViewController: NSViewController {
         // sliding up under the tabs, not a floating card and not a flush slab touching chrome.
         container.translatesAutoresizingMaskIntoConstraints = false
         container.wantsLayer = true
-        container.layer?.cornerRadius = DS.Radius.card
+        container.layer?.cornerRadius = DS.Radius.surface
         container.layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
-        container.bindLayerBackground(DS.Color.terminalBackground)
+        container.bindLayerBackground(DS.Color.raised)
         container.clipsToBounds = true
         view.addSubview(container)
 
@@ -486,8 +486,8 @@ final class RunWorkspaceViewController: NSViewController {
         let widthConstraint = chip.widthAnchor.constraint(equalToConstant: chip.frame.width)
         widthConstraint.isActive = true
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.14
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.duration = DS.Motion.duration(0.14)
+            context.timingFunction = DS.Motion.curve
             context.allowsImplicitAnimation = true
             chip.animator().alphaValue = 0
             widthConstraint.constant = 0
@@ -523,8 +523,8 @@ final class RunWorkspaceViewController: NSViewController {
         reindexTabChips()
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.duration = DS.Motion.duration(0.16)
+            context.timingFunction = DS.Motion.curve
             context.allowsImplicitAnimation = true
             tabBarStack.layoutSubtreeIfNeeded()
         }

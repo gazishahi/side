@@ -33,7 +33,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         view.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
         messageLabel.stringValue = "\(entry.languageId.capitalized) language server (\(entry.binaryName)) isn't installed. Diagnostics and autocomplete are disabled for this file. Installing will use Homebrew system-wide — it'll also be available in your terminal and other editors, not just Side."
-        messageLabel.font = DS.Text.control()
+        messageLabel.font = DS.Text.body()
         messageLabel.textColor = .labelColor
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
 

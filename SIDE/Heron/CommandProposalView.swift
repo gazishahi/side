@@ -22,16 +22,16 @@ final class CommandProposalView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = DS.Radius.card
+        layer?.cornerRadius = DS.Radius.surface
         layer?.borderWidth = 1
-        bindLayerBackground(DS.Color.bg1)
+        bindLayerBackground(DS.Color.raised)
         // A named task says what it *is*, not just what it runs — "Run the test task" is a
         // decision the user can make at a glance; a command line is something they have to
         // parse first. The command itself stays visible below either way.
         headerLabel.stringValue = command.fetchURL != nil
             ? "Fetch a web page"
             : (command.taskName.map { "Run the \($0) task" } ?? "Run in terminal")
-        headerLabel.font = DS.Text.control(.semibold)
+        headerLabel.font = DS.Text.body(.semibold)
 
         commandLabel.stringValue = command.command
         commandLabel.font = DS.Text.code(12, weight: .regular)

@@ -208,7 +208,7 @@ final class DiffViewer: NSStackView {
     func renderLoading() {
         arrangedSubviews.forEach { $0.removeFromSuperview() }
         let loading = NSTextField(labelWithString: "Loading diff…")
-        loading.font = DS.Text.control()
+        loading.font = DS.Text.body()
         loading.textColor = .tertiaryLabelColor
         addArrangedSubview(loading)
     }
@@ -218,7 +218,7 @@ final class DiffViewer: NSStackView {
         let diff = UnifiedDiff.parse(diffText)
         guard !diff.files.isEmpty else {
             let empty = NSTextField(labelWithString: "No changes against this base.")
-            empty.font = DS.Text.control()
+            empty.font = DS.Text.body()
             empty.textColor = .tertiaryLabelColor
             addArrangedSubview(empty)
             return
@@ -261,10 +261,10 @@ final class DiffFileCardView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = DS.Radius.card
+        layer?.cornerRadius = DS.Radius.surface
         layer?.borderWidth = 1
         bindLayerBorder(DS.Color.hairline)
-        bindLayerBackground(DS.Color.bg1)
+        bindLayerBackground(DS.Color.raised)
         layer?.masksToBounds = true
 
         chevron.image = NSImage(
@@ -299,7 +299,7 @@ final class DiffFileCardView: NSView {
         var headerViews: [NSView] = [chevron, pathLabel]
         if file.isNew || file.isDeleted {
             let badge = NSTextField(labelWithString: file.isNew ? "NEW" : "DELETED")
-            badge.font = DS.Text.micro(.bold)
+            badge.font = DS.Text.caption(.bold)
             badge.textColor = file.isNew ? Self.addedText : Self.removedText
             headerViews.append(badge)
         }
@@ -422,8 +422,8 @@ final class DiffFileCardView: NSView {
             let rotate = CABasicAnimation(keyPath: "transform.rotation.z")
             rotate.fromValue = isCollapsed ? 0 : CGFloat.pi / 2
             rotate.toValue = isCollapsed ? CGFloat.pi / 2 : 0
-            rotate.duration = 0.18
-            rotate.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            rotate.duration = DS.Motion.duration(0.18)
+            rotate.timingFunction = DS.Motion.curve
             rotate.isRemovedOnCompletion = false
             rotate.fillMode = .forwards
             layer.add(rotate, forKey: "chevronTurn")
@@ -433,8 +433,8 @@ final class DiffFileCardView: NSView {
         // grows reads as content arriving.
         if !isCollapsed { bodyScroll.alphaValue = 0 }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.duration = DS.Motion.duration(0.18)
+            context.timingFunction = DS.Motion.curve
             context.allowsImplicitAnimation = true
             bodyHeightConstraint?.constant = isCollapsed ? 0 : bodyHeight
             bodyScroll.animator().alphaValue = isCollapsed ? 0 : 1
@@ -452,18 +452,18 @@ final class DiffFileCardView: NSView {
 /// full line width. Used by Review's per-file cards and Think's proposal cards, so a diff reads
 /// identically wherever it appears.
 enum DiffBody {
-    static let addedText = DS.Color.dynamic(dark: NSColor(red: 0.45, green: 0.82, blue: 0.55, alpha: 1), light: NSColor(red: 0.13, green: 0.52, blue: 0.25, alpha: 1))
-    static let removedText = DS.Color.dynamic(dark: NSColor(red: 0.92, green: 0.50, blue: 0.48, alpha: 1), light: NSColor(red: 0.72, green: 0.2, blue: 0.18, alpha: 1))
-    static let addedFill = DS.Color.dynamic(dark: NSColor(red: 0.30, green: 0.85, blue: 0.40, alpha: 0.09), light: NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 0.12))
-    static let removedFill = DS.Color.dynamic(dark: NSColor(red: 0.95, green: 0.35, blue: 0.30, alpha: 0.09), light: NSColor(red: 0.85, green: 0.25, blue: 0.2, alpha: 0.1))
-    static let hunkColor = DS.Color.dynamic(dark: NSColor(red: 0.55, green: 0.72, blue: 0.95, alpha: 1), light: NSColor(red: 0.2, green: 0.42, blue: 0.75, alpha: 1))
+    static let addedText = DS.Color.statusVerified
+    static let removedText = DS.Color.statusFailed
+    static let addedFill = DS.Color.diffAdded
+    static let removedFill = DS.Color.diffRemoved
+    static let hunkColor = NSColor.tertiaryLabelColor
 
     /// `[old# pad][new# pad] text` per line — one attributed string, not a view per line,
     /// which would melt on a thousand-line diff.
     static func attributedBody(hunks: [UnifiedDiff.Hunk]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let font = DS.Text.code(11, weight: .regular)
-        let numberColor = DS.Color.textFaint
+        let numberColor = NSColor.quaternaryLabelColor
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byClipping
 
@@ -522,7 +522,7 @@ enum DiffBody {
                 continue
             }
             let line = side == .left ? row.left : row.right
-            var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: DS.Color.textFaint, .paragraphStyle: paragraph]
+            var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.quaternaryLabelColor, .paragraphStyle: paragraph]
             guard let line else {
                 attrs[.backgroundColor] = DS.Color.scrimFaint
                 result.append(NSAttributedString(string: pad(nil) + "  \n", attributes: attrs))

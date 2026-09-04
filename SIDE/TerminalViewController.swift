@@ -774,11 +774,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// about light mode; this is what makes Run follow the rest of the app.
     private func applyTerminalTheme() {
         let dark = DS.Appearance.isDark
-        terminalView.terminal.foregroundColor = Self.terminalColor(DS.Color.terminalForeground)
-        terminalView.terminal.backgroundColor = Self.terminalColor(DS.Color.terminalBackground)
+        terminalView.terminal.foregroundColor = Self.terminalColor(NSColor.labelColor)
+        terminalView.terminal.backgroundColor = Self.terminalColor(DS.Color.raised)
         terminalView.terminal.installPalette(colors: Self.ansiPalette(dark: dark))
-        terminalView.nativeForegroundColor = Self.resolved(DS.Color.terminalForeground)
-        terminalView.nativeBackgroundColor = Self.resolved(DS.Color.terminalBackground)
+        terminalView.nativeForegroundColor = Self.resolved(NSColor.labelColor)
+        terminalView.nativeBackgroundColor = Self.resolved(DS.Color.raised)
         terminalView.needsDisplay = true
     }
 

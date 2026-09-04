@@ -7,11 +7,8 @@ import AppKit
 /// then used.
 enum DS {
     enum Color {
-        /// Every token resolves per appearance. Side shipped dark-only, with the values hardcoded;
-        /// light mode was "not supported" in the sense of actively broken — nothing adapted. The
-        /// dark values are the ones that always were; the light ones are chosen to keep the same
-        /// relationships (chrome deepest, cards a step up, hairline the only border) with the
-        /// contrast direction reversed.
+        /// Every token resolves per appearance. Dark values are the ones Side shipped with; light
+        /// values keep the same relationships with the contrast direction reversed.
         static func dynamic(dark: CGFloat, light: CGFloat) -> NSColor {
             dynamic(dark: NSColor(white: dark, alpha: 1), light: NSColor(white: light, alpha: 1))
         }
@@ -22,69 +19,67 @@ enum DS {
             }
         }
 
-        /// The terminal's own surface — deliberately a step past `chrome` in both directions
-        /// (near-black in dark, near-white in light), the convention that lets a glance tell Make
-        /// from Run.
-        static let terminalBackground = dynamic(dark: 0.02, light: 0.985)
-        static let terminalForeground = dynamic(dark: 0.85, light: 0.12)
+        private static func hex(_ dark: UInt32, _ light: UInt32) -> NSColor {
+            func color(_ value: UInt32) -> NSColor {
+                NSColor(red: CGFloat((value >> 16) & 0xff) / 255, green: CGFloat((value >> 8) & 0xff) / 255, blue: CGFloat(value & 0xff) / 255, alpha: 1)
+            }
+            return dynamic(dark: color(dark), light: color(light))
+        }
 
-        /// Window chrome and the editor's own base — the deepest tone in the app. One value on
-        /// purpose: stage backgrounds matching the editor is what makes switching stages feel
-        /// like turning your head, not changing rooms.
-        static let chrome = dynamic(dark: 0.098, light: 0.965)
-        /// The tab strip sits *behind* the content surface, so it alone gets to be darker than
-        /// `chrome` — that contrast is what lets the active tab read as attached to the editor.
-        static let tabStrip = dynamic(dark: 0.07, light: 0.93)
-        /// Cards and panels.
-        static let bg1 = dynamic(dark: 0.145, light: 1.0)
-        /// Selected/active fills one step above a card.
-        static let bg2 = dynamic(dark: 0.17, light: 0.96)
-        /// Chips and inline-code spans.
-        static let bg3 = dynamic(dark: 0.21, light: 0.925)
-        /// Received bubbles and stronger hover fills.
-        static let bg4 = dynamic(dark: 0.24, light: 0.9)
-        /// The only border color in the app.
-        static let hairline = dynamic(dark: 0.24, light: 0.85)
-        /// The tab strip's bottom hairline *and* the active tab's outline — one token, one
-        /// opaque value, because those two lines must read as a single continuous edge where
-        /// the tab's flares meet the strip.
-        static let tabEdge = dynamic(dark: 0.3, light: 0.8)
-        static let rowHover = dynamic(dark: 0.195, light: 0.94)
-        /// The lineage rail connecting a stacked track to its parent in Tracks.
-        static let rail = dynamic(dark: 0.32, light: 0.7)
-
-        // MARK: Text and editor surfaces
+        // MARK: Surfaces — three tones, no borders (Direction 02 §2.1)
         //
-        // The charter named these as tokens; in practice Make, the ruler, and the highlighter
-        // each carried their own `NSColor(white:)` literals — which is how the editor's body
-        // text and the file tree's ended up a shade apart. One definition each, here.
+        // Hierarchy comes from tone, weight and position, not from lines. A `raised` tone *is* the
+        // card; hairlines separate rows and never enclose them. The old six-step ladder
+        // (chrome, tabStrip, bg1–bg4) drew every level with a border because the steps were too
+        // close to read on their own.
 
-        /// Editor body text and any label that should read as primary content on a dark surface.
-        static let text = dynamic(dark: 0.85, light: 0.15)
-        /// Emphasized text — the active tab's title, a highlighted completion row.
-        static let textStrong = dynamic(dark: 0.92, light: 0.05)
-        /// Secondary content: directory names in the file tree.
-        static let textSecondary = dynamic(dark: 0.75, light: 0.32)
-        /// Icons and de-emphasized labels.
-        static let textMuted = dynamic(dark: 0.55, light: 0.48)
-        /// Line numbers and diff gutters — quieter than muted, because they repeat on every row.
-        static let textFaint = dynamic(dark: 0.42, light: 0.6)
-        /// Syntax comments.
-        static let comment = dynamic(dark: 0.45, light: 0.5)
-        /// White-on-dark scrims for hover, current-line, and bracket-match fills, by weight.
+        /// Stage background.
+        static let canvas = hex(0x15171A, 0xF4F4F6)
+        /// Cards, the pinned group, the terminal, the diff body, the active tab.
+        static let raised = hex(0x1C1F23, 0xFFFFFF)
+        /// Selected segment, running chip, popover and menu bodies.
+        static let overlay = hex(0x25292E, 0xE8E8EC)
+        /// Row separators — only. Never an enclosure.
+        static let hairline = dynamic(dark: NSColor(white: 1, alpha: 0.08), light: NSColor(white: 0, alpha: 0.08))
+        /// The stacked-track connector.
+        static let hairlineStrong = dynamic(dark: NSColor(white: 1, alpha: 0.13), light: NSColor(white: 0, alpha: 0.14))
+
+        // MARK: Text
+        //
+        // System label colours only — `labelColor`, `secondaryLabelColor`, `tertiaryLabelColor`,
+        // `quaternaryLabelColor`. They are already adaptive, and a hand-mixed gray for text is how
+        // the editor's body text and the file tree's ended up a shade apart. The one exception is
+        // syntax, which is a colour scheme, not a text role.
+        static let syntaxComment = dynamic(dark: 0.45, light: 0.50)
+
+        // MARK: Status — dot + text, never a filled pill (§2.4)
+        //
+        // Meaning is carried by text and shape; colour is reinforcement, so it survives any accent
+        // colour, colour-blindness, and both appearances. Never `controlAccentColor` — an orange
+        // accent would collide with needs-you.
+        static let statusNeedsYou = hex(0xD9A441, 0xB8860B)
+        static let statusWorking = NSColor.labelColor.withAlphaComponent(0.6)
+        static let statusVerified = hex(0x5FBF7A, 0x2E8B57)
+        static let statusFailed = hex(0xE0655C, 0xC9433A)
+        static let statusIdle = NSColor.quaternaryLabelColor
+
+        /// Full-row diff tints. No gutter bars, no `+`/`−` fills.
+        static let diffAdded = dynamic(dark: NSColor(red: 95/255, green: 191/255, blue: 122/255, alpha: 0.11), light: NSColor(red: 46/255, green: 139/255, blue: 87/255, alpha: 0.10))
+        static let diffRemoved = dynamic(dark: NSColor(red: 224/255, green: 101/255, blue: 92/255, alpha: 0.11), light: NSColor(red: 201/255, green: 67/255, blue: 58/255, alpha: 0.09))
+
+        /// Scrims for hover, current-line, and bracket-match fills, by weight — fills, not text.
         static let scrimFaint = dynamic(dark: NSColor(white: 1, alpha: 0.045), light: NSColor(white: 0, alpha: 0.05))
         static let scrimSoft = dynamic(dark: NSColor(white: 1, alpha: 0.05), light: NSColor(white: 0, alpha: 0.06))
         static let scrimMedium = dynamic(dark: NSColor(white: 1, alpha: 0.15), light: NSColor(white: 0, alpha: 0.1))
         static let scrimStrong = dynamic(dark: NSColor(white: 1, alpha: 0.16), light: NSColor(white: 0, alpha: 0.12))
 
+        /// A track's lifecycle status, on the status scale: waiting is the one that needs a human.
         static func status(for status: TrackStatus) -> NSColor {
             switch status {
-            case .active: return .systemGreen
-            case .waiting: return .systemOrange
-            case .reviewReady: return .systemPurple
-            case .parked: return .systemGray
-            case .completed: return .systemTeal
-            case .archived: return .tertiaryLabelColor
+            case .active: return statusWorking
+            case .waiting: return statusNeedsYou
+            case .reviewReady: return statusVerified
+            case .parked, .completed, .archived: return statusIdle
             }
         }
     }
@@ -111,11 +106,16 @@ enum DS {
         static let section: CGFloat = 20
     }
 
+    /// Two values (Direction 02 §2.5), plus the documented exception.
     enum Radius {
-        static let chip: CGFloat = 4
+        /// Buttons, chips, segments, tabs, the status dot's container.
         static let control: CGFloat = 6
-        static let card: CGFloat = 10
+        /// Cards, the terminal, the diff body, popovers.
+        static let surface: CGFloat = 10
+        /// Think's message bubbles — the single exception, kept at 17.
         static let bubble: CGFloat = 17
+        /// A true capsule: half its height. For glass pills whose height is fixed.
+        static func capsule(height: CGFloat) -> CGFloat { height / 2 }
     }
 
     /// Text sizes as named roles rather than magic numbers, all scaled by one user-controlled
@@ -172,24 +172,27 @@ enum DS {
 
         // MARK: Roles
 
-        /// The one-per-screen empty-state line ("No file open").
-        static func display(_ weight: NSFont.Weight = .medium) -> NSFont { .systemFont(ofSize: scaled(25), weight: weight) }
-        /// Supporting line under a display headline.
-        static func subtitle(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(14), weight: weight) }
-        /// Stage headings — Review's track name, Tracks' title.
-        static func title(_ weight: NSFont.Weight = .semibold) -> NSFont { .systemFont(ofSize: scaled(17), weight: weight) }
-        /// Section headings inside a stage, and Preferences pane titles.
-        static func heading(_ weight: NSFont.Weight = .semibold) -> NSFont { .systemFont(ofSize: scaled(13), weight: weight) }
-        /// Default running text: Think bubbles, explainers, list rows.
-        static func body(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(12.5), weight: weight) }
-        /// Controls and dense rows where body would crowd — table cells, popup labels.
-        static func control(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(12), weight: weight) }
-        /// Secondary/supporting text: captions, status lines, hints.
+        // Five roles (Direction 02 §2.6). Semibold is reserved for the subject of a row; nothing
+        // below 15 is ever bold. The old nine (display, subtitle, control, micro, figure…) were
+        // sizes named after where they happened to be used, which is how the same kind of text
+        // ended up at three sizes on one screen.
+
+        /// The stage header — the track's intent. 20 · semibold.
+        static func title(_ weight: NSFont.Weight = .semibold) -> NSFont { .systemFont(ofSize: scaled(20), weight: weight) }
+        /// A checkpoint title, a group title. 15 · semibold.
+        static func heading(_ weight: NSFont.Weight = .semibold) -> NSFont { .systemFont(ofSize: scaled(15), weight: weight) }
+        /// Row content and descriptions. 13.
+        static func body(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(13), weight: weight) }
+        /// Timestamps and meta. 11. Section labels use this uppercase with +0.08 em tracking — the
+        /// only uppercase on screen.
         static func caption(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(11), weight: weight) }
-        /// The smallest thing allowed to carry meaning — badges, column headers.
-        static func micro(_ weight: NSFont.Weight = .medium) -> NSFont { .systemFont(ofSize: scaled(10.5), weight: weight) }
-        /// One big number — the Usage pane's figures.
-        static func figure(_ weight: NSFont.Weight = .semibold) -> NSFont { .systemFont(ofSize: scaled(20), weight: weight) }
+        /// A one-off size that still has to scale — markdown headers, the Usage pane's columns.
+        /// Not a role; the escape hatch that keeps `ofSize:` out of every other file.
+        static func custom(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(size), weight: weight) }
+        /// Attributes for an uppercase section label: caption, tertiary, tracked.
+        static var sectionLabelAttributes: [NSAttributedString.Key: Any] {
+            [.font: caption(), .foregroundColor: NSColor.tertiaryLabelColor, .kern: scaled(11) * 0.08]
+        }
         /// Code, diffs, terminal-adjacent text, and anything that must stay column-aligned.
         static func code(_ size: CGFloat = 12, weight: NSFont.Weight = .regular) -> NSFont {
             .monospacedSystemFont(ofSize: scaled(size), weight: weight)
@@ -227,11 +230,39 @@ enum DS {
         return effect
     }
 
+    /// One curve, few uses (Direction 02 §2.8). Every animation in the app takes its timing from
+    /// here, and every duration passes through `duration(_:)` so Reduce Motion is honoured in one
+    /// place rather than forgotten in thirty.
+    ///
+    /// Decision 2026-09-04 (option B): two named exceptions run on this curve and this duration
+    /// helper — Promote's single settle on release, and streaming bubble growth, which is feedback
+    /// on live content rather than layout the user waits on. Nothing else is exempt.
     enum Motion {
+        /// The system default spring, expressed as a timing curve for `NSAnimationContext`:
+        /// response 0.30, damping 0.86 — the same feel macOS 26 uses for its own controls.
+        static var curve: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.2, 0.85, 0.25, 1.0) }
+
+        /// `CASpringAnimation` for the same spring, when a layer animation needs one.
+        static func spring(keyPath: String) -> CASpringAnimation {
+            let animation = CASpringAnimation(keyPath: keyPath)
+            let response = 0.30, damping = 0.86
+            animation.mass = 1
+            animation.stiffness = pow(2 * .pi / response, 2)
+            animation.damping = 4 * .pi * damping / response
+            animation.duration = animation.settlingDuration
+            return animation
+        }
+
+        /// The only place Reduce Motion is consulted. Zero means "just set the final state".
+        static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+        static func duration(_ base: TimeInterval) -> TimeInterval { reduceMotion ? 0 : base }
+
         /// The standard arrival: rise, fade, slight scale — Think's bubbles set the reference
         /// feel, everything else that appears reuses it. Purely a layer animation over the
         /// view's settled Auto Layout position, so it can't fight layout.
         static func appear(_ view: NSView, distance: CGFloat = 16) {
+            guard !reduceMotion else { return }
             view.wantsLayer = true
             guard let layer = view.layer else { return }
             let fade = CABasicAnimation(keyPath: "opacity")
@@ -245,8 +276,8 @@ enum DS {
             scale.toValue = 1
             let group = CAAnimationGroup()
             group.animations = [fade, rise, scale]
-            group.duration = 0.3
-            group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            group.duration = duration(0.3)
+            group.timingFunction = curve
             layer.add(group, forKey: "dsAppear")
         }
     }
@@ -503,5 +534,127 @@ extension NSView {
             resolved = color.cgColor
         }
         return resolved
+    }
+}
+
+
+// MARK: - Status components (Direction 02 §2.4)
+
+extension DS {
+    /// The one vocabulary for "what state is this in", shared by every surface.
+    enum StatusState: Equatable {
+        case needsYou, working, verified, failed, idle
+
+        var name: String {
+            switch self {
+            case .needsYou: return "Needs you"
+            case .working: return "Working"
+            case .verified: return "Verified"
+            case .failed: return "Failed"
+            case .idle: return "Idle"
+            }
+        }
+
+        var color: NSColor {
+            switch self {
+            case .needsYou: return Color.statusNeedsYou
+            case .working: return Color.statusWorking
+            case .verified: return Color.statusVerified
+            case .failed: return Color.statusFailed
+            case .idle: return Color.statusIdle
+            }
+        }
+
+        init(_ activity: AgentActivity) {
+            switch activity {
+            case .needsYou: self = .needsYou
+            case .working: self = .working
+            case .failed: self = .failed
+            case .doneUnread: self = .verified
+            case .none, .doneSeen: self = .idle
+            }
+        }
+    }
+
+    /// A 6 pt status dot. Filled for every state but Working, which is a hollow ring that
+    /// breathes — the only animated indicator in the app. Exposed to accessibility as an image
+    /// whose label is the state's name, so the colour is never the only carrier.
+    final class StatusDot: NSView {
+        var state: StatusState { didSet { if state != oldValue { apply() } } }
+        private let diameter: CGFloat
+
+        init(state: StatusState, diameter: CGFloat = 6) {
+            self.state = state
+            self.diameter = diameter
+            super.init(frame: NSRect(x: 0, y: 0, width: diameter, height: diameter))
+            wantsLayer = true
+            translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([widthAnchor.constraint(equalToConstant: diameter), heightAnchor.constraint(equalToConstant: diameter)])
+            layer?.cornerRadius = diameter / 2
+            setAccessibilityElement(true)
+            setAccessibilityRole(.image)
+            apply()
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        private func apply() {
+            setAccessibilityLabel(state.name)
+            layer?.removeAnimation(forKey: "breathe")
+            if state == .working {
+                layer?.backgroundColor = nil
+                layer?.borderWidth = 1.5
+                bindLayerBorder(state.color)
+                guard !Motion.reduceMotion else { return }
+                let breathe = CABasicAnimation(keyPath: "opacity")
+                breathe.fromValue = 1
+                breathe.toValue = 0.35
+                breathe.duration = 1.0
+                breathe.autoreverses = true
+                breathe.repeatCount = .infinity
+                breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                layer?.add(breathe, forKey: "breathe")
+            } else {
+                layer?.borderWidth = 0
+                layer?.opacity = 1
+                bindLayerBackground(state.color)
+            }
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            apply()
+        }
+    }
+
+    /// Dot plus 12 pt secondary text: `● Needs you`.
+    final class StatusLabel: NSStackView {
+        let dot: StatusDot
+        let label = NSTextField(labelWithString: "")
+
+        init(state: StatusState, text: String? = nil) {
+            dot = StatusDot(state: state)
+            super.init(frame: .zero)
+            orientation = .horizontal
+            alignment = .centerY
+            spacing = Spacing.s
+            translatesAutoresizingMaskIntoConstraints = false
+            label.font = Text.custom(12)
+            label.textColor = .secondaryLabelColor
+            label.stringValue = text ?? state.name
+            addArrangedSubview(dot)
+            addArrangedSubview(label)
+            setAccessibilityElement(true)
+            setAccessibilityRole(.staticText)
+            setAccessibilityLabel(text ?? state.name)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        func set(state: StatusState, text: String? = nil) {
+            dot.state = state
+            label.stringValue = text ?? state.name
+            setAccessibilityLabel(text ?? state.name)
+        }
     }
 }
