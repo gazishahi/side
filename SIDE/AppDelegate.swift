@@ -38,9 +38,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // UI tests launch with `-SideUITesting YES` (which lands in UserDefaults' argument
         // domain). Restoring the developer's real last project would make a test run poke at
         // their working tree — and make the tests depend on whatever was open last.
-        guard !UserDefaults.standard.bool(forKey: "SideUITesting") else {
+        guard !Self.isUITesting else {
             LaunchSignposts.end("firstFrame")
             LaunchSignposts.reportProcessStart()
+            // A test that needs a project passes its own throwaway one — without it the stages
+            // are empty shells, and "the terminal is in the AX tree" is unfalsifiable.
+            let volatile = UserDefaults(suiteName: "side.uitesting.volatile") ?? .standard
+            volatile.removePersistentDomain(forName: "side.uitesting.volatile")
+            GitLaunchProbe.defaults = volatile
+            ProjectRules.defaults = volatile
+            if let fixture = UserDefaults.standard.string(forKey: "SideUITestingProject") {
+                DispatchQueue.main.async {
+                    (window.contentViewController as? ShellViewController)?.openProject(at: URL(fileURLWithPath: fixture), focusingTrackKey: nil)
+                }
+            }
             return
         }
 
@@ -97,6 +108,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         (NSApp.keyWindow?.contentViewController as? ShellViewController)
             ?? (windows.first?.contentViewController as? ShellViewController)
     }
+
+    /// UI tests launch with `-SideUITesting YES`. Everything that would persist the developer's
+    /// state consults this: the test's fixture project must never become the last-opened project,
+    /// a recent, or a cached probe — the first UI run did exactly that.
+    nonisolated static let isUITesting = UserDefaults.standard.bool(forKey: "SideUITesting")
 
     @objc func openProjectFromMenu() {
         if activeShell == nil { presentNewWindow() }

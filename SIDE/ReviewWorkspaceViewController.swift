@@ -163,9 +163,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         overlapBanner.wantsLayer = true
         overlapBanner.layer?.cornerRadius = DS.Radius.surface
-        overlapBanner.bindLayerBackground(NSColor.systemOrange.withAlphaComponent(0.12))
-        overlapBanner.layer?.borderWidth = 1
-        overlapBanner.bindLayerBorder(NSColor.systemOrange.withAlphaComponent(0.35))
+        overlapBanner.bindLayerBackground(DS.Color.statusNeedsYou.withAlphaComponent(0.12))
         overlapBanner.isHidden = true
         overlapBanner.translatesAutoresizingMaskIntoConstraints = false
         overlapLabel.font = DS.Text.body(.medium)
@@ -485,8 +483,6 @@ final class ReviewWorkspaceViewController: NSViewController {
         let card = NSView()
         card.wantsLayer = true
         card.layer?.cornerRadius = DS.Radius.surface
-        card.layer?.borderWidth = 1
-        card.bindLayerBorder(DS.Color.hairline)
         card.bindLayerBackground(DS.Color.raised)
         let intentLabel = NSTextField(wrappingLabelWithString: checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)
         intentLabel.font = DS.Text.body(.medium)

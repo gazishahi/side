@@ -26,8 +26,6 @@ final class ProposedEditView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.surface
-        layer?.borderWidth = 1
-        bindLayerBorder(DS.Color.hairline)
         bindLayerBackground(DS.Color.raised)
         headerLabel.stringValue = Self.headerText(for: edit, isStreaming: isStreaming)
         headerLabel.font = DS.Text.body(.semibold)

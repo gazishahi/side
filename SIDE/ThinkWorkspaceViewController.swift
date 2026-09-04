@@ -3203,8 +3203,6 @@ private final class AttachmentChipView: NSView {
         imageView.wantsLayer = true
         imageView.layer?.cornerRadius = DS.Radius.control
         imageView.layer?.masksToBounds = true
-        imageView.layer?.borderWidth = 1
-        imageView.bindLayerBorder(NSColor.separatorColor)
         imageView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(imageView)
 

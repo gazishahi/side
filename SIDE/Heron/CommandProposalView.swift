@@ -15,15 +15,11 @@ final class CommandProposalView: NSView {
     private let resolutionLabel = NSTextField(labelWithString: "")
     private let buttonRow = NSStackView()
 
-    private static let destructiveBorderColor = NSColor.systemRed.withAlphaComponent(0.6)
-    private static let normalBorderColor = DS.Color.hairline
-
     init(command: ProposedCommand) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.surface
-        layer?.borderWidth = 1
         bindLayerBackground(DS.Color.raised)
         // A named task says what it *is*, not just what it runs — "Run the test task" is a
         // decision the user can make at a glance; a command line is something they have to
@@ -40,18 +36,16 @@ final class CommandProposalView: NSView {
         commandLabel.translatesAutoresizingMaskIntoConstraints = false
 
         warningLabel.font = DS.Text.caption(.semibold)
-        warningLabel.textColor = .systemRed
+        warningLabel.textColor = DS.Color.statusFailed
         warningLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // Destructive commands never auto-run (see AgentRunner.handleToolOutcomes) and get a
-        // visible warning here too — a red border alone is easy to miss scrolling past a
-        // transcript; a human still has to read *why* before clicking Run.
+        // Destructive commands never auto-run (see AgentRunner.handleToolOutcomes) and say why
+        // here, in words: a human has to read the reason before clicking Run. (No red border —
+        // Direction 02 §2.1; a tinted enclosure was the easiest thing to scroll past anyway.)
         if case .destructive(let reason) = command.riskLevel {
-            bindLayerBorder(Self.destructiveBorderColor)
             warningLabel.stringValue = "⚠︎ \(reason)"
             warningLabel.isHidden = false
         } else {
-            bindLayerBorder(Self.normalBorderColor)
             warningLabel.isHidden = true
             // A hidden NSView still participates in Auto Layout (unlike a collapsed stack view
             // arranged subview) — without pinning its height to zero, its intrinsic

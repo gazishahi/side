@@ -262,8 +262,6 @@ final class DiffFileCardView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.surface
-        layer?.borderWidth = 1
-        bindLayerBorder(DS.Color.hairline)
         bindLayerBackground(DS.Color.raised)
         layer?.masksToBounds = true
 

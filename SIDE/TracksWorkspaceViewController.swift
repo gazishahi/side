@@ -399,8 +399,6 @@ final class TracksWorkspaceViewController: NSViewController {
         let card = NSView()
         card.wantsLayer = true
         card.layer?.cornerRadius = DS.Radius.surface
-        card.layer?.borderWidth = 1
-        card.bindLayerBorder(DS.Color.hairline)
         card.bindLayerBackground(DS.Color.raised)
         card.layer?.masksToBounds = true
 
@@ -539,8 +537,6 @@ final class TracksWorkspaceViewController: NSViewController {
         let card = NSView()
         card.wantsLayer = true
         card.layer?.cornerRadius = DS.Radius.surface
-        card.layer?.borderWidth = 1
-        card.bindLayerBorder(DS.Color.hairline)
         card.bindLayerBackground(DS.Color.raised)
         // A real SF Symbol instead of a hand-drawn circle-plus-letter: renders properly centered
         // for free, and reads as native rather than a homemade approximation of one.
@@ -1217,24 +1213,11 @@ private final class TrackRowView: NSView {
         ])
 
         // Now that cards are grouped by lineage rather than by status, a row's status is no
-        // longer implied by which section it's filed under — it needs to say so itself.
-        let statusColor = DS.Color.status(for: status)
-        let statusPill = NSView()
-        statusPill.wantsLayer = true
-        statusPill.bindLayerBackground(statusColor.withAlphaComponent(0.16))
-        statusPill.layer?.cornerRadius = DS.Radius.control
-        statusPill.translatesAutoresizingMaskIntoConstraints = false
-        let statusLabel = NSTextField(labelWithString: trackStatusText(for: status))
-        statusLabel.font = DS.Text.caption(.semibold)
-        statusLabel.textColor = statusColor
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusPill.addSubview(statusLabel)
-        NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: statusPill.leadingAnchor, constant: 5),
-            statusLabel.trailingAnchor.constraint(equalTo: statusPill.trailingAnchor, constant: -5),
-            statusLabel.topAnchor.constraint(equalTo: statusPill.topAnchor, constant: 1),
-            statusLabel.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: -1)
-        ])
+        // longer implied by which section it's filed under — it needs to say so itself. Dot and
+        // text (Direction 02 §2.4): the agent's activity when there is any, else the lifecycle.
+        let statusLabel = DS.StatusLabel(
+            state: Self.statusState(for: status, activity: activity),
+            text: Self.agentChipInfo(for: activity)?.text ?? trackStatusText(for: status))
 
         let sepLabel = NSTextField(labelWithString: "\u{00B7}")
         sepLabel.font = DS.Text.caption()
@@ -1244,17 +1227,7 @@ private final class TrackRowView: NSView {
         metaLabel.font = DS.Text.caption()
         metaLabel.textColor = .secondaryLabelColor
 
-        var metaRowViews: [NSView] = [statusPill, chip, sepLabel, metaLabel]
-        if let chipInfo = Self.agentChipInfo(for: activity) {
-            let agentSep = NSTextField(labelWithString: "\u{00B7}")
-            agentSep.font = DS.Text.caption()
-            agentSep.textColor = .tertiaryLabelColor
-            let agentLabel = NSTextField(labelWithString: chipInfo.text)
-            agentLabel.font = DS.Text.caption(.medium)
-            agentLabel.textColor = chipInfo.color
-            metaRowViews.append(contentsOf: [agentSep, agentLabel])
-        }
-        let metaRow = NSStackView(views: metaRowViews)
+        let metaRow = NSStackView(views: [statusLabel, chip, sepLabel, metaLabel])
         metaRow.orientation = .horizontal
         metaRow.alignment = .centerY
         metaRow.spacing = DS.Spacing.s
@@ -1376,20 +1349,37 @@ private final class TrackRowView: NSView {
     private static func agentChipInfo(for activity: AgentActivity) -> (text: String, color: NSColor)? {
         switch activity {
         case .none: return nil
-        case .working: return ("Working", .systemBlue)
-        case .needsYou: return ("Needs you", .systemOrange)
-        case .failed: return ("Failed", .systemRed)
-        case .doneUnread: return ("Done", .systemGreen)
-        case .doneSeen: return ("Done", .secondaryLabelColor)
+        case .working: return ("Working", DS.Color.statusWorking)
+        case .needsYou: return ("Needs you", DS.Color.statusNeedsYou)
+        case .failed: return ("Failed", DS.Color.statusFailed)
+        case .doneUnread: return ("Done", DS.Color.statusVerified)
+        case .doneSeen: return ("Done", DS.Color.statusIdle)
+        }
+    }
+
+    /// The dot's state: the agent's activity wins while there is any; otherwise the lifecycle,
+    /// where only "waiting" needs a human and only "review ready" is a green result.
+    static func statusState(for status: TrackStatus, activity: AgentActivity) -> DS.StatusState {
+        switch activity {
+        case .working: return .working
+        case .needsYou: return .needsYou
+        case .failed: return .failed
+        case .doneUnread: return .verified
+        case .none, .doneSeen: break
+        }
+        switch status {
+        case .waiting: return .needsYou
+        case .reviewReady: return .verified
+        case .active, .parked, .completed, .archived: return .idle
         }
     }
 
     private static func tintColor(for activity: AgentActivity) -> NSColor {
         switch activity {
-        case .needsYou: return .systemOrange
-        case .failed: return .systemRed
-        case .doneUnread: return .systemGreen
-        case .none, .working, .doneSeen: return .controlAccentColor
+        case .needsYou: return DS.Color.statusNeedsYou
+        case .failed: return DS.Color.statusFailed
+        case .doneUnread: return DS.Color.statusVerified
+        case .none, .working, .doneSeen: return .labelColor
         }
     }
 }

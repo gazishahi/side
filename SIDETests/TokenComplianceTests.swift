@@ -47,6 +47,13 @@ final class TokenComplianceTests: XCTestCase {
         XCTAssertEqual(try offenders(matching: #"timingFunction = CAMediaTimingFunction\("#, excludingLinesContaining: "easeInEaseOut"), [])
     }
 
+    func testNothingIsEnclosedByABorder() throws {
+        // Direction 02 §2.1: hierarchy from tone; hairlines separate rows, never enclose them.
+        // The Working ring on DS.StatusDot is the one border, and it lives in the token file.
+        XCTAssertEqual(try offenders(matching: #"borderWidth = 1"#), [])
+        XCTAssertEqual(try offenders(matching: #"bindLayerBorder\("#), [])
+    }
+
     func testThePerStagePalettesAreGone() throws {
         XCTAssertEqual(try offenders(matching: "TracksPalette|ReviewPalette"), [])
     }

@@ -309,7 +309,7 @@ final class RunWorkspaceViewController: NSViewController {
     /// Recorded on every change to the tab set. Only directories are stored — no scrollback, no
     /// command history: a terminal's contents are not ours to persist behind the user's back.
     private func rememberSessions() {
-        guard hasProject else { return }
+        guard hasProject, !AppDelegate.isUITesting else { return }
         var map = UserDefaults.standard.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
         let key = currentTrackKey ?? ""
         let directories = sessions.compactMap { $0.viewController.workingDirectory }

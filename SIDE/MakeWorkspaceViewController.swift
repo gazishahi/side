@@ -1231,8 +1231,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // `onProjectOpened` callback below, before `reindexAndRestoreLastFile` reads it.
         currentTrackKey = nil
         emptyState.isHidden = true
-        UserDefaults.standard.set(url.path, forKey: lastProjectKey)
-        rememberRecentProject(url)
+        if !AppDelegate.isUITesting {
+            UserDefaults.standard.set(url.path, forKey: lastProjectKey)
+            rememberRecentProject(url)
+        }
         LaunchSignposts.begin("projectOpened")
         onProjectOpened?(url)
         LaunchSignposts.end("projectOpened")
