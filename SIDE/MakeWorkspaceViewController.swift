@@ -31,6 +31,11 @@ private struct OpenTab {
     var dirty: Bool
     var isUntitled: Bool
     var knownModificationDate: Date?
+    /// How the file is stored — encoding, BOM, line ending — so a save writes the same shape back.
+    var format: TextFileCodec.Format = .utf8
+    /// Set when the file changed on disk while this tab had unsaved edits; cleared by Reload or
+    /// Keep. A clean tab is simply reloaded instead.
+    var hasExternalChange = false
     var lastSelectedRange = NSRange(location: 0, length: 0)
     var csvRows: [[String]] = []
     var diagnostics: [LSPDiagnostic] = []
@@ -127,6 +132,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// (indexing, the file explorer, git diff/blame, the formatter, LSP) operates against this,
     /// not `projectURL`.
     private var focusedRoot: URL?
+    private var projectWatcher: ProjectWatcher?
+    private var pendingReindex: DispatchWorkItem?
+    private var keyWindowObserver: NSObjectProtocol?
+    private let externalChangeBanner = NSView()
+    private let externalChangeLabel = NSTextField(labelWithString: "")
     private var lspManager: LSPManager?
     /// Lives in the shared window toolbar (wired by ShellViewController), not this stage's own
     /// view — the whole point is it's visible from the title bar regardless of which stage is
@@ -214,6 +224,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     override func viewDidAppear() {
         super.viewDidAppear()
         LaunchSignposts.begin("makeViewDidAppear")
+        if keyWindowObserver == nil, let window = view.window {
+            configureExternalChangeBanner()
+            keyWindowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reconcileAllTabsWithDisk() }
+            }
+        }
         if let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text {
             view.window?.makeFirstResponder(editor)
         } else {
@@ -1261,6 +1277,127 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         lspManager = manager
         focusedRoot = root
         searchField.placeholderString = "Indexing \(root.lastPathComponent)…"
+        projectWatcher = ProjectWatcher(root: root) { [weak self] urls in self?.filesChangedOnDisk(urls) }
+    }
+
+    // MARK: - External changes (audit H8)
+
+    /// Every FSEvents batch under the focused root lands here. Open tabs are checked against the
+    /// stamp they were loaded or saved with; anything else means the file list may have changed.
+    private func filesChangedOnDisk(_ urls: [URL]) {
+        let changed = Set(urls.map(\.path))
+        for index in openTabs.indices where changed.contains(openTabs[index].url.path) {
+            reconcileTabWithDisk(index)
+        }
+        scheduleReindex()
+    }
+
+    /// Clean tab: reload silently — the user asked for nothing and is now looking at the truth.
+    /// Dirty tab: never overwrite their work; mark it and say so, and let them choose. A file
+    /// that vanished is left alone: saving it is the moment to ask about recreating.
+    private func reconcileTabWithDisk(_ index: Int) {
+        guard openTabs.indices.contains(index) else { return }
+        let tab = openTabs[index]
+        guard tab.kind == .text, !tab.isUntitled, !tab.isSaving else { return }
+        guard let onDisk = modificationDate(of: tab.url) else { return }
+        if let known = tab.knownModificationDate, onDisk <= known { return }
+        if tab.dirty {
+            openTabs[index].hasExternalChange = true
+            if activeTabIndex == index { showExternalChangeBanner(for: tab.url) }
+        } else {
+            reloadTabFromDisk(index)
+        }
+    }
+
+    /// Replaces the buffer with the file's current bytes, keeping the caret where it was when
+    /// that still makes sense. Shared by external-change reload and Revert to Saved.
+    @discardableResult
+    private func reloadTabFromDisk(_ index: Int) -> Bool {
+        guard openTabs.indices.contains(index) else { return false }
+        let tab = openTabs[index]
+        guard let data = try? Data(contentsOf: tab.url), let decoded = TextFileCodec.decode(data) else { return false }
+        let isActive = activeTabIndex == index
+        let selection = isActive ? editor.selectedRange() : tab.lastSelectedRange
+        isLoadingTab = true
+        tab.textStorage.replaceCharacters(in: NSRange(location: 0, length: tab.textStorage.length), with: decoded.text)
+        SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+        DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
+        tab.undoManager.removeAllActions()
+        openTabs[index].format = decoded.format
+        openTabs[index].dirty = false
+        openTabs[index].hasExternalChange = false
+        openTabs[index].knownModificationDate = modificationDate(of: tab.url)
+        if isActive {
+            dirty = false
+            let clamped = NSRange(location: min(selection.location, tab.textStorage.length), length: 0)
+            editor.setSelectedRange(clamped)
+            externalChangeBanner.isHidden = true
+            gutter.invalidate()
+            refreshGitDiffMarks()
+        }
+        lspManager?.changed(url: tab.url, content: decoded.text)
+        rebuildTabBar()
+        return true
+    }
+
+    /// Focus-in sweep — the cheap backstop the audit asked for, in case a stream was lost.
+    private func reconcileAllTabsWithDisk() {
+        for index in openTabs.indices { reconcileTabWithDisk(index) }
+    }
+
+    private func scheduleReindex() {
+        pendingReindex?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.refreshFileTreeAndReindex() }
+        pendingReindex = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    private func configureExternalChangeBanner() {
+        externalChangeBanner.wantsLayer = true
+        externalChangeBanner.bindLayerBackground(DS.Color.overlay)
+        externalChangeBanner.translatesAutoresizingMaskIntoConstraints = false
+        externalChangeBanner.isHidden = true
+        externalChangeLabel.font = DS.Text.caption()
+        externalChangeLabel.textColor = .secondaryLabelColor
+        externalChangeLabel.lineBreakMode = .byTruncatingMiddle
+        let reload = NSButton(title: "Reload", target: self, action: #selector(reloadExternallyChangedTab))
+        let keep = NSButton(title: "Keep Mine", target: self, action: #selector(keepEditsOverExternalChange))
+        for button in [reload, keep] { button.bezelStyle = .rounded; button.controlSize = .small; button.font = DS.Text.caption() }
+        let row = NSStackView(views: [DS.StatusDot(state: .needsYou), externalChangeLabel, NSView(), reload, keep])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = DS.Spacing.s
+        row.edgeInsets = NSEdgeInsets(top: 0, left: DS.Spacing.m, bottom: 0, right: DS.Spacing.m)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        externalChangeBanner.addSubview(row)
+        view.addSubview(externalChangeBanner)
+        NSLayoutConstraint.activate([
+            externalChangeBanner.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            externalChangeBanner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            externalChangeBanner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            externalChangeBanner.heightAnchor.constraint(equalToConstant: 28),
+            row.leadingAnchor.constraint(equalTo: externalChangeBanner.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: externalChangeBanner.trailingAnchor),
+            row.topAnchor.constraint(equalTo: externalChangeBanner.topAnchor),
+            row.bottomAnchor.constraint(equalTo: externalChangeBanner.bottomAnchor),
+        ])
+    }
+
+    private func showExternalChangeBanner(for url: URL) {
+        externalChangeLabel.stringValue = "\(url.lastPathComponent) changed on disk while you have unsaved edits."
+        externalChangeBanner.isHidden = false
+        NSAccessibility.post(element: externalChangeBanner, notification: .announcementRequested, userInfo: [.announcement: externalChangeLabel.stringValue, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    @objc private func reloadExternallyChangedTab() {
+        guard let index = activeTabIndex else { return }
+        reloadTabFromDisk(index)
+    }
+
+    @objc private func keepEditsOverExternalChange() {
+        guard let index = activeTabIndex else { return }
+        openTabs[index].hasExternalChange = false
+        externalChangeBanner.isHidden = true
     }
 
     private func publishDiagnosticsForAgent(_ diagnostics: [LSPDiagnostic], fileURL: URL, root: URL) {
@@ -1357,10 +1494,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let maxOpenableImageSize = 50_000_000
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "webp"]
 
-    private static func decodeText(from data: Data) -> String? {
-        ProjectFileAccess.decodeText(from: data)
-    }
-
     private func open(_ url: URL, completion: (() -> Void)? = nil) {
         // Captured now: `isRestoringTabs` is true only for the synchronous span of the restore
         // loop, and the work below finishes on a later main-queue turn.
@@ -1435,13 +1568,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 }
                 return
             }
-            guard let source = Self.decodeText(from: data) else {
+            guard let decoded = TextFileCodec.decode(data) else {
                 DispatchQueue.main.async {
                     self?.showAlert(title: "Can't open this file", message: "\(url.lastPathComponent) doesn't appear to be a text file Side can edit.", window: window)
                     completion?()
                 }
                 return
             }
+            let source = decoded.text
             let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
             let isCSV = ext == "csv"
             let rows = isCSV ? CSVParser.parse(source) : []
@@ -1460,6 +1594,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 }
                 var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, textStorage: NSTextStorage(string: source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
                 tab.csvRows = rows
+                tab.format = decoded.format
                 self.openTabs.append(tab)
                 self.activeTabIndex = self.openTabs.count - 1
                 self.loadActiveTabIntoEditor()
@@ -1534,6 +1669,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         hideCompletionPanel()
+        if tab.hasExternalChange { showExternalChangeBanner(for: tab.url) } else { externalChangeBanner.isHidden = true }
 
         let showingMarkdownPreview = tab.kind == .text && tab.isPreviewingMarkdown
         editorScroll.isHidden = tab.kind != .text || showingMarkdownPreview
@@ -3164,9 +3300,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func writeTabToDiskForced(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
         guard let index = indexForTab(id: tabID) else { completion(false); return }
         let content = openTabs[index].textStorage.string
+        let format = openTabs[index].format
         do {
-            try content.write(to: url, atomically: true, encoding: .utf8)
+            // The file's own encoding, BOM and line ending — bytes the user didn't touch stay
+            // as they were. A character the encoding can't hold is a refusal, not a transcode.
+            guard let data = TextFileCodec.encode(content, as: format) else {
+                throw CocoaError(.fileWriteInapplicableStringEncoding, userInfo: [NSLocalizedDescriptionKey: "This file is \(format.encodingName), and the buffer now contains a character that encoding can't represent. Save As a new file to keep it as UTF-8."])
+            }
+            try data.write(to: url, options: .atomic)
             openTabs[index].knownModificationDate = modificationDate(of: url)
+            openTabs[index].hasExternalChange = false
+            if activeTabIndex == index { externalChangeBanner.isHidden = true }
             runFormatterIfNeeded(tabID: tabID, url: url, contentAtSaveTime: content, completion: completion)
         } catch {
             guard let window = view.window else { completion(false); return }
@@ -3254,16 +3398,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         alert.addButton(withTitle: "Revert")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .alertFirstButtonReturn else { return }
-            guard let source = try? String(contentsOf: tab.url, encoding: .utf8) else { return }
-            let fullRange = NSRange(location: 0, length: tab.textStorage.length)
-            tab.textStorage.replaceCharacters(in: fullRange, with: source)
-            SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
-            self.openTabs[index].dirty = false
-            self.openTabs[index].knownModificationDate = self.modificationDate(of: tab.url)
-            if self.activeTabIndex == index { self.dirty = false; self.gutter.invalidate() }
-            self.rebuildTabBar()
-            self.refreshGitDiffMarks()
+            guard let self, response == .alertFirstButtonReturn, let current = self.indexForTab(id: tab.id) else { return }
+            self.reloadTabFromDisk(current)
         }
     }
 

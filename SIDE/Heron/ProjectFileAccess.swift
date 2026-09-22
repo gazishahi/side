@@ -49,16 +49,10 @@ enum ProjectFileAccess {
         return scanned.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
     }
 
-    /// UTF-8 alone rejected any file with a Latin-1/Windows-1252 byte in it — real source files
-    /// (a stray non-ASCII character in a comment, anything authored on Windows) got a false
-    /// "not a text file" refusal instead of opening. `.isoLatin1` never fails to decode any byte
-    /// sequence at all, so it's a deliberate last resort here, not real detection — better to
-    /// open a legitimate non-UTF-8 file than to refuse it outright.
+    /// Text, or nil for anything that isn't — see `TextFileCodec`. Binary is refused rather than
+    /// decoded as Latin-1 mojibake, so the "not a text file" paths downstream are reachable.
     static func decodeText(from data: Data) -> String? {
-        if let text = String(data: data, encoding: .utf8) { return text }
-        if let text = String(data: data, encoding: .utf16) { return text }
-        if let text = String(data: data, encoding: .windowsCP1252) { return text }
-        return String(data: data, encoding: .isoLatin1)
+        TextFileCodec.decode(data)?.text
     }
 
     /// Resolves an agent-supplied path (relative to the project root, or absolute) and refuses

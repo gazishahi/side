@@ -63,6 +63,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Backs `@`-mention completion. Rebuilt when the attached track's working directory
     /// changes — a track's worktree is its own directory, so the candidate list has to follow.
     private let fileIndex = ProjectFileIndex()
+    private var fileIndexRefresh: DispatchWorkItem?
     private var usageObserverToken: UUID?
     /// Set by `ShellViewController` — Think can't reach Make directly, and shouldn't.
     var onRevealFileRequested: ((URL) -> Void)?
@@ -276,6 +277,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(textScaleChanged),
             name: DS.Text.scaleDidChangeNotification, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(projectFilesDidChange(_:)),
+            name: ProjectWatcher.didChangeNotification, object: nil
         )
 
         renderFull()
@@ -832,6 +837,18 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     /// The directory `@`-mentions resolve against: the track's own worktree when it has one,
     /// which is the same directory `AgentRunner` hands its tools.
+    /// Make's watcher covers the same worktree Think's mentions resolve against; a change there
+    /// makes this index stale. Coalesced, since a build writes hundreds of files in a second.
+    @objc private func projectFilesDidChange(_ notification: Notification) {
+        fileIndexRefresh?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.fileIndex.markStale()
+            self?.refreshFileIndex()
+        }
+        fileIndexRefresh = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
     private func refreshFileIndex() {
         guard let projectPath else { return }
         let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath

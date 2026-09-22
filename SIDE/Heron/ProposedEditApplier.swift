@@ -34,7 +34,7 @@ struct ProposedEditApplier {
         // Approving an edit is a decision, so it lands like a save.
         do {
             try FileManager.default.createDirectory(at: edit.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try edit.proposedContent.write(to: edit.url, atomically: true, encoding: .utf8)
+            try TextFileCodec.write(edit.proposedContent, to: edit.url)
         } catch {
             return .writeFailed(error.localizedDescription)
         }

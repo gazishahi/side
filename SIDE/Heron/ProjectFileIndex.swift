@@ -20,12 +20,19 @@ final class ProjectFileIndex {
 
     private(set) var relativePaths: [String] = []
     private var indexedRoot: URL?
+    private var isStale = false
+
+    /// The project changed under us (a watcher said so); the next `refresh` rescans even for the
+    /// same root. Before this the index was frozen at first attach, so a file the agent had just
+    /// created couldn't be `@`-mentioned for the life of the track (audit H8).
+    func markStale() { isStale = true }
 
     /// Rebuilds off the main thread when the root changes; a repeat call for the same root is
     /// free, so callers can invoke this on every attach without thinking about it.
     func refresh(root: URL, completion: @escaping () -> Void) {
-        guard indexedRoot != root else { return completion() }
+        guard indexedRoot != root || isStale else { return completion() }
         indexedRoot = root
+        isStale = false
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let paths = Self.scan(root: root)
             DispatchQueue.main.async {
