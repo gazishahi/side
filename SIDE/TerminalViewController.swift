@@ -107,6 +107,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     var workingDirectory: String?
 
     private(set) var isAlive = false
+    /// Usable for a command: running, or not started yet (it starts on first use). A shell that
+    /// exited is neither, and gets replaced rather than typed into.
+    var isAliveOrUnstarted: Bool { !didStart || isAlive }
     private(set) var currentDirectory: String?
     private(set) var lastSubmittedCommand: String?
     /// Non-nil while an agent-submitted command is waiting for its sentinel to show up in the

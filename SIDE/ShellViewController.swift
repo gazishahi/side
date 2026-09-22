@@ -113,7 +113,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         tracksVC.onTrackDeleted = { [weak self] track in
             guard let self else { return }
             self.makeVC.forgetLastFile(forTrackKey: track.branchName)
-            self.runVC.discardSessions(forTrackKey: track.branchName)
+            self.projectContext?.terminals.discardSessions(forTrackKey: track.branchName)
             self.projectContext?.sessionStore.removeSession(forTrackKey: track.branchName)
             if let projectPath = self.projectContext?.projectRoot.path {
                 UsageStore.shared.removeUsage(projectPath: projectPath, trackKey: track.branchName)
@@ -459,7 +459,6 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             ProjectContextRegistry.shared.release(projectRoot: previousURL)
         }
         projectURL = url
-        runVC.defaultWorkingDirectory = url.path
         LaunchSignposts.begin("acquireContext")
         let context = ProjectContextRegistry.shared.acquire(projectRoot: url)
         LaunchSignposts.end("acquireContext")
@@ -482,9 +481,9 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             runVC.currentTrackKey = currentTrackKey
         } else {
             makeVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
-            runVC.reloadForTrackSwitch(trackKey: currentTrackKey, workingDirectory: workingDirectory)
+            runVC.reloadForTrackSwitch(trackKey: currentTrackKey)
         }
-        runVC.hasProject = true
+        runVC.attach(to: context.terminals)
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
         thinkVC.onOpenReviewRequested = { [weak self] in self?.show(.review) }
         LaunchSignposts.begin("thinkConfigure")
@@ -543,7 +542,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
                     self.refreshGitInfo(for: workingDirectory)
                     self.currentTrackKey = track.branchName
                     self.makeVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
-                    self.runVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
+                    self.runVC.reloadForTrackSwitch(trackKey: track.branchName)
                     self.thinkVC.reloadForTrackSwitch(trackKey: track.branchName)
                     self.reviewVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
                     self.show(landOn)
@@ -574,7 +573,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         refreshGitInfo(for: workingDirectory)
         currentTrackKey = branchName
         makeVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
-        runVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
+        runVC.reloadForTrackSwitch(trackKey: branchName)
         thinkVC.reloadForTrackSwitch(trackKey: branchName)
         reviewVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
         show(.make)
@@ -704,11 +703,5 @@ extension ShellViewController: WorkspaceBridgeHost {
     func revealAfterApply(_ url: URL) {
         show(.make)
         makeVC.revealAfterApply(url)
-    }
-    func runShellCommand(_ command: String, trackKey: String, timeout: TimeInterval, completion: @escaping (String) -> Void) {
-        runVC.runAgentCommand(command, cwd: workingDirectoryURL(for: trackKey), trackKey: trackKey, timeout: timeout, completion: completion)
-    }
-    func interruptShellCommand(trackKey: String) {
-        runVC.interruptAgentCommand(trackKey: trackKey)
     }
 }

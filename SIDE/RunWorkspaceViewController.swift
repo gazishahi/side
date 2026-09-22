@@ -1,29 +1,21 @@
 import AppKit
 
-private struct RunSession {
-    let id = UUID()
-    var label: String
-    var viewController: TerminalViewController
-    var hasUnseenOutput = false
-}
-
 final class RunWorkspaceViewController: NSViewController {
-    /// Keyed by track branch name (`""` for "no active track" — a project not using Tracks, or
-    /// sitting on the default branch between tracks), same convention as Make's per-track file
-    /// memory. Each track's shells keep running in the background when you switch away — unlike
-    /// Make's tabs, which close outright, a live dev-server process is usually worth preserving
-    /// across a quick trip to another track rather than killed and restarted.
-    private var sessionsByTrackKey: [String: [RunSession]] = [:]
-    private var activeSessionIndexByTrackKey: [String: Int] = [:]
+    /// The project's terminals (RFC R2). Run is a view onto them: it attaches to a track's
+    /// sessions and shows one, but never owns a PTY — closing the window leaves a running
+    /// command running for as long as the project is open anywhere. Nil means no project.
+    private var terminals: TerminalSessionManager?
+    private var terminalsObserver: NSObjectProtocol?
     var currentTrackKey: String?
+    private var trackKey: String { currentTrackKey ?? "" }
 
-    private var sessions: [RunSession] {
-        get { sessionsByTrackKey[currentTrackKey ?? ""] ?? [] }
-        set { sessionsByTrackKey[currentTrackKey ?? ""] = newValue }
+    private var sessions: [TerminalSession] {
+        get { terminals?.sessions(forTrackKey: trackKey) ?? [] }
+        set { terminals?.setSessions(newValue, forTrackKey: trackKey, origin: self) }
     }
     private var activeSessionIndex: Int? {
-        get { activeSessionIndexByTrackKey[currentTrackKey ?? ""] }
-        set { activeSessionIndexByTrackKey[currentTrackKey ?? ""] = newValue }
+        get { terminals?.activeIndex(forTrackKey: trackKey) }
+        set { terminals?.setActiveIndex(newValue, forTrackKey: trackKey) }
     }
     private let tabBar = TabStripView()
     private let tabBarStack = NSStackView()
@@ -31,23 +23,48 @@ final class RunWorkspaceViewController: NSViewController {
     private let container = NSView()
     private var tabChips: [TabChipView] = []
 
-    /// Only used as the cwd for *new* sessions — existing sessions keep whatever directory
-    /// they're actually in, the same way a new terminal in a real IDE defaults to the project
-    /// root without moving already-open ones. Used for the "no active track" bucket, and as a
-    /// fallback for any track that hasn't reported a working directory of its own yet.
-    var defaultWorkingDirectory: String?
-    /// Per-track terminal cwd — a track's own worktree, once it has one. Set by
-    /// `ShellViewController` alongside every `reloadForTrackSwitch` call.
-    private var workingDirectoryByTrackKey: [String: String] = [:]
-    private var currentWorkingDirectory: String? {
-        workingDirectoryByTrackKey[currentTrackKey ?? ""] ?? defaultWorkingDirectory
-    }
     var onActivityChanged: (() -> Void)?
     var onOpenFileRequested: ((URL, Int?) -> Void)?
 
     /// Across every track, not just the current one — a track running in the background with
     /// unseen output should still light up the stage badge even while you're looking elsewhere.
-    var hasBackgroundActivity: Bool { sessionsByTrackKey.values.contains { $0.contains { $0.hasUnseenOutput } } }
+    var hasBackgroundActivity: Bool { terminals?.hasUnseenOutput ?? false }
+
+    /// Points this view at a project's terminals. Run — reachable via ⌃4 at any time — can't
+    /// spawn a shell before this, so nothing starts in the user's home directory by accident.
+    func attach(to manager: TerminalSessionManager) {
+        guard manager !== terminals else { return }
+        detachDisplayedSession()
+        terminals = manager
+        if let terminalsObserver { NotificationCenter.default.removeObserver(terminalsObserver) }
+        terminalsObserver = NotificationCenter.default.addObserver(forName: TerminalSessionManager.didChangeNotification, object: manager, queue: .main) { [weak self] note in
+            let origin = note.userInfo?[TerminalSessionManager.originKey] as? ObjectIdentifier
+            MainActor.assumeIsolated { self?.terminalsChanged(origin: origin) }
+        }
+        guard isViewLoaded else { return }
+        rebuildTabBar()
+        clearContainer()
+    }
+
+    /// Something changed that this view didn't cause: an agent opened a session, a shell exited,
+    /// output arrived in the background, another window took the terminal this one was showing.
+    private func terminalsChanged(origin: ObjectIdentifier?) {
+        onActivityChanged?()
+        guard isViewLoaded, origin != ObjectIdentifier(self) else { return }
+        rebuildTabBar()
+        if let displayed = displayedSession, !sessions.contains(where: { $0 === displayed }) {
+            // Discarded under us (the track was deleted, or the project torn down).
+            clearContainer()
+        } else if let displayed = displayedSession, displayed.viewController.parent !== self {
+            clearContainer()
+            showPlaceholder("This terminal is showing in another window. Select its tab to bring it here.")
+        } else if displayedSession == nil, let index = activeSessionIndex, sessions.indices.contains(index), view.window != nil, container.subviews.isEmpty {
+            showActiveSession()
+        }
+    }
+
+    /// The session this view has in its container, if any.
+    private var displayedSession: TerminalSession?
 
     override func loadView() { view = NSView() }
 
@@ -120,7 +137,7 @@ final class RunWorkspaceViewController: NSViewController {
     /// displaying a different track's terminal view.
     /// Set true by the shell once a project is open. Defaults to false so that Run — reachable
     /// via ⌃4 at any time — can't spawn a shell in the user's home directory before then.
-    var hasProject = false
+    var hasProject: Bool { terminals != nil }
 
     func activateActiveSession() {
         guard hasProject else {
@@ -142,8 +159,7 @@ final class RunWorkspaceViewController: NSViewController {
     /// lazily on first visit, same as it always has. Guarded on `isViewLoaded` (not just checking
     /// `view` directly, which would force a load) since this can be called — e.g. right after
     /// creating a track — before the user has ever visited Run for this project at all.
-    func reloadForTrackSwitch(trackKey: String?, workingDirectory: URL) {
-        workingDirectoryByTrackKey[trackKey ?? ""] = workingDirectory.path
+    func reloadForTrackSwitch(trackKey: String?) {
         currentTrackKey = trackKey
         guard isViewLoaded else { return }
         rebuildTabBar()
@@ -157,24 +173,12 @@ final class RunWorkspaceViewController: NSViewController {
         }
     }
 
-    /// Called when a track is deleted — its sessions have nowhere to belong anymore, so their
-    /// shells are terminated and the bucket dropped instead of leaking background processes.
-    func discardSessions(forTrackKey trackKey: String?) {
-        let key = trackKey ?? ""
-        for session in sessionsByTrackKey[key] ?? [] { session.viewController.prepareForClose() }
-        sessionsByTrackKey.removeValue(forKey: key)
-        activeSessionIndexByTrackKey.removeValue(forKey: key)
-        workingDirectoryByTrackKey.removeValue(forKey: key)
-        // If the discarded track happens to be the one currently on screen, its tab chips and
-        // terminal view are now stale (pointing at killed sessions) — without this, they'd keep
-        // showing until some unrelated action happened to trigger a rebuild.
-        guard isViewLoaded, key == (currentTrackKey ?? "") else { return }
-        rebuildTabBar()
-        clearContainer()
+    private func showNoProjectState() {
+        showPlaceholder("No project is open. Run gives each track its own terminals inside a project.")
     }
 
-    private func showNoProjectState() {
-        let label = NSTextField(labelWithString: "No project is open. Run gives each track its own terminals inside a project.")
+    private func showPlaceholder(_ text: String) {
+        let label = NSTextField(labelWithString: text)
         label.font = DS.Text.body()
         label.textColor = .tertiaryLabelColor
         label.alignment = .center
@@ -188,10 +192,20 @@ final class RunWorkspaceViewController: NSViewController {
     }
 
     private func clearContainer() {
-        for child in children {
-            child.view.removeFromSuperview()
-            child.removeFromParent()
+        detachDisplayedSession()
+        // Placeholders are plain subviews, not children — they used to survive into the next
+        // session and sit underneath its terminal.
+        container.subviews.forEach { $0.removeFromSuperview() }
+    }
+
+    /// Lets go of the shown terminal without ending it — only its view leaves this window.
+    private func detachDisplayedSession() {
+        if let displayed = displayedSession, displayed.viewController.parent === self {
+            displayed.viewController.view.removeFromSuperview()
+            displayed.viewController.removeFromParent()
         }
+        displayedSession = nil
+        terminals?.markDisplayed(nil, by: self)
     }
 
     @objc func newSession() {
@@ -224,60 +238,12 @@ final class RunWorkspaceViewController: NSViewController {
         vc.terminalView.send(source: vc.terminalView, data: ArraySlice(Array((command + "\r").utf8)))
     }
 
+    /// The window is closing. Terminals belong to the project, so they keep running — this
+    /// window only gives its view back.
     func prepareForClose() {
-        for sessions in sessionsByTrackKey.values {
-            for session in sessions { session.viewController.prepareForClose() }
-        }
-    }
-
-    /// Types `command` into `trackKey`'s own Run session — creating one if it doesn't have one
-    /// yet, using `cwd` as the new session's working directory — the real, visible terminal an
-    /// agent's `run_shell_command` types into, never a hidden `Process`. Deliberately bypasses
-    /// the `sessions`/`activeSessionIndex` computed properties (which are scoped to whichever
-    /// track is *currently displayed*): the agent may be running against a track this window
-    /// isn't even looking at, and creating its session here must not steal focus or disturb
-    /// whatever tab bar is currently on screen for a different track.
-    /// Cancellation path for an agent command — Ctrl-C into whichever session the agent is
-    /// actually using for this track, which is not necessarily the one on screen.
-    func interruptAgentCommand(trackKey: String) {
-        guard let list = sessionsByTrackKey[trackKey] else { return }
-        let index = activeSessionIndexByTrackKey[trackKey] ?? 0
-        guard list.indices.contains(index) else { return }
-        list[index].viewController.interruptAgentCommand()
-    }
-
-    func runAgentCommand(_ command: String, cwd: URL, trackKey: String, timeout: TimeInterval = TerminalViewController.agentCommandTimeout, completion: @escaping (String) -> Void) {
-        var list = sessionsByTrackKey[trackKey] ?? []
-        let targetIndex: Int
-        if let existing = activeSessionIndexByTrackKey[trackKey], list.indices.contains(existing) {
-            targetIndex = existing
-        } else if !list.isEmpty {
-            targetIndex = 0
-        } else {
-            let vc = TerminalViewController()
-            vc.workingDirectory = cwd.path
-            wire(vc)
-            // Forces loadView()/viewDidLoad() to run now rather than whenever (if ever) this
-            // session's tab is actually displayed — viewDidLoad is where SideTerminalView's
-            // onRawDataReceived gets wired, and runAgentCommand's sentinel scan depends on that
-            // callback firing for every byte the process produces. Without this, a track whose
-            // Run stage was never manually visited would create a session whose raw output goes
-            // completely unobserved, and every agent command against it would silently fall
-            // through to the 30s "still running" timeout no matter how fast it actually finished.
-            vc.loadViewIfNeeded()
-            list.append(RunSession(label: cwd.lastPathComponent, viewController: vc))
-            sessionsByTrackKey[trackKey] = list
-            targetIndex = 0
-            activeSessionIndexByTrackKey[trackKey] = targetIndex
-            // Only rebuild/redisplay if this track's tab bar happens to be the one currently
-            // on screen — otherwise this would yank the visible session out from under
-            // whatever the user is actually looking at right now.
-            if isViewLoaded, trackKey == (currentTrackKey ?? "") {
-                rebuildTabBar()
-                showActiveSession()
-            }
-        }
-        list[targetIndex].viewController.runAgentCommand(command, timeout: timeout, completion: completion)
+        detachDisplayedSession()
+        if let terminalsObserver { NotificationCenter.default.removeObserver(terminalsObserver) }
+        terminalsObserver = nil
     }
 
     // MARK: - Session lifecycle
@@ -291,50 +257,28 @@ final class RunWorkspaceViewController: NSViewController {
     /// actually lost: reopening a project dropped every Run tab because nothing recorded that
     /// they had existed at all.
     private func restoreRememberedSessionsOrCreateOne() {
-        let remembered = Self.rememberedSessionDirectories(forTrackKey: currentTrackKey ?? "")
+        let remembered = terminals?.rememberedDirectories(forTrackKey: trackKey) ?? []
         guard !remembered.isEmpty else { return createSession() }
-        for directory in remembered { createSession(inDirectory: directory) }
+        // Created, not started: a shell starts when its tab is first shown. Starting all of them
+        // here made every background tab's first prompt count as unseen output, so reopening a
+        // project with three remembered tabs lit Run's badge for nothing.
+        for directory in remembered { createSession(inDirectory: directory, show: false) }
         activeSessionIndex = 0
         rebuildTabBar()
         showActiveSession()
     }
 
-    private static let rememberedSessionsKey = "side.run-sessions-by-track"
-
-    private static func rememberedSessionDirectories(forTrackKey trackKey: String) -> [String] {
-        let map = UserDefaults.standard.dictionary(forKey: rememberedSessionsKey) as? [String: [String]] ?? [:]
-        return map[trackKey] ?? []
-    }
-
-    /// Recorded on every change to the tab set. Only directories are stored — no scrollback, no
-    /// command history: a terminal's contents are not ours to persist behind the user's back.
-    private func rememberSessions() {
-        guard hasProject, !AppDelegate.isUITesting else { return }
-        var map = UserDefaults.standard.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
-        let key = currentTrackKey ?? ""
-        let directories = sessions.compactMap { $0.viewController.workingDirectory }
-        if directories.isEmpty {
-            map.removeValue(forKey: key)
-        } else {
-            map[key] = directories
-        }
-        UserDefaults.standard.set(map, forKey: Self.rememberedSessionsKey)
-    }
-
-    private func createSession(replacing index: Int? = nil, inDirectory directory: String? = nil) {
-        let vc = TerminalViewController()
+    private func createSession(replacing index: Int? = nil, inDirectory directory: String? = nil, show: Bool = true) {
+        guard let terminals else { return }
         // A restored tab reopens where it was, not wherever the track currently points.
-        let workingDirectory = directory ?? currentWorkingDirectory
-        vc.workingDirectory = workingDirectory
-        wire(vc)
-        let label = workingDirectory.map { ($0 as NSString).lastPathComponent } ?? "Terminal"
-        let session = RunSession(label: label, viewController: vc)
+        let session = terminals.makeSession(forTrackKey: trackKey, inDirectory: directory)
         if let index, sessions.indices.contains(index) {
             sessions[index] = session
         } else {
             sessions.append(session)
         }
         activeSessionIndex = index ?? (sessions.count - 1)
+        guard show else { return }
         rebuildTabBar()
         showActiveSession()
     }
@@ -370,7 +314,13 @@ final class RunWorkspaceViewController: NSViewController {
     private func showActiveSession() {
         guard let index = activeSessionIndex, sessions.indices.contains(index) else { return }
         clearContainer()
-        let vc = sessions[index].viewController
+        let session = sessions[index]
+        let vc = session.viewController
+        // Taken from another window if it was showing there; that window shows a placeholder.
+        if vc.parent != nil { vc.view.removeFromSuperview(); vc.removeFromParent() }
+        vc.onFileLinkRequested = { [weak self] link in self?.handleFileLink(link) ?? false }
+        displayedSession = session
+        terminals?.markDisplayed(session, by: self)
         addChild(vc)
         vc.view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(vc.view)
@@ -383,44 +333,8 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func clearUnseenOutput(at index: Int) {
         guard sessions.indices.contains(index), sessions[index].hasUnseenOutput else { return }
-        sessions[index].hasUnseenOutput = false
         if tabChips.indices.contains(index) { tabChips[index].hasUnseenOutput = false }
-        onActivityChanged?()
-    }
-
-    private func wire(_ vc: TerminalViewController) {
-        vc.onExitStatusChanged = { [weak self, weak vc] _, _ in
-            guard let self, let vc else { return }
-            self.refreshChip(for: vc)
-        }
-        vc.onOutputReceived = { [weak self, weak vc] in
-            // Searches every track's bucket, not just `self.sessions` (the *currently displayed*
-            // track) — a session belonging to a backgrounded track would otherwise never be
-            // found here at all, so its unseen-output flag could never be set in the first
-            // place, silently defeating the whole point of a cross-track activity badge.
-            guard let self, let vc else { return }
-            // A shell that's still settling (integration line echoing, first prompt painting)
-            // is producing plumbing, not output anyone needs to come back for — spam-opening
-            // tabs used to light the badge purely from the previous tabs' startup noise.
-            guard vc.startupSettled else { return }
-            for (key, var sessionList) in self.sessionsByTrackKey {
-                guard let index = sessionList.firstIndex(where: { $0.viewController === vc }) else { continue }
-                let isCurrentlyVisible = key == (self.currentTrackKey ?? "") && index == self.activeSessionIndexByTrackKey[key]
-                guard !isCurrentlyVisible else { return }
-                sessionList[index].hasUnseenOutput = true
-                self.sessionsByTrackKey[key] = sessionList
-                if key == (self.currentTrackKey ?? "") { self.refreshChip(for: vc) }
-                self.onActivityChanged?()
-                return
-            }
-        }
-        vc.onFileLinkRequested = { [weak self] link in self?.handleFileLink(link) ?? false }
-    }
-
-    private func refreshChip(for vc: TerminalViewController) {
-        guard let index = sessions.firstIndex(where: { $0.viewController === vc }), tabChips.indices.contains(index) else { return }
-        tabChips[index].isDead = !sessions[index].viewController.isAlive
-        tabChips[index].hasUnseenOutput = sessions[index].hasUnseenOutput
+        terminals?.clearUnseenOutput(sessions[index])
     }
 
     // MARK: - Tab bar
@@ -428,8 +342,6 @@ final class RunWorkspaceViewController: NSViewController {
     private var lastKnownSessionCount = 0
 
     private func rebuildTabBar() {
-        // Rebuilt on every open, close, and reorder — exactly when the remembered shape changes.
-        rememberSessions()
         let previousCount = lastKnownSessionCount
         lastKnownSessionCount = sessions.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -513,8 +425,9 @@ final class RunWorkspaceViewController: NSViewController {
         guard dropIndex != draggedIndex else { return }
 
         let activeID = activeSessionIndex.flatMap { sessions.indices.contains($0) ? sessions[$0].id : nil }
-        let movedSession = sessions.remove(at: draggedIndex)
-        sessions.insert(movedSession, at: dropIndex)
+        var reordered = sessions
+        reordered.insert(reordered.remove(at: draggedIndex), at: dropIndex)
+        sessions = reordered
         tabChips.remove(at: draggedIndex)
         tabChips.insert(chip, at: dropIndex)
         tabBarStack.removeArrangedSubview(chip)

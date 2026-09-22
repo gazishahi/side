@@ -14,29 +14,26 @@ struct WorkspaceBridge: @unchecked Sendable {
     var liveBufferProvider: (URL) -> String?
     var applyEditIntoOpenTab: (URL, String) -> Bool
     var onRevealFileRequested: (URL) -> Void
-    /// Types a `run_shell_command` proposal into the track's own real Run session once approved
-    /// (or auto-run). Unlike the three fields above, this is **not** gated on "is the key window
-    /// showing this exact track" — a track's terminal session persists independent of what's
-    /// currently displayed (same as Run already does for ordinary background processes), so any
-    /// window with this project open can serve it. See `ProjectContext.bridge(forTrackKey:)`.
+    /// Types a `run_shell_command` proposal into the track's own real terminal once approved (or
+    /// auto-run). Not gated on any window: terminals belong to the project
+    /// (`TerminalSessionManager`), so a background track can run a command with nothing on screen.
     /// `TimeInterval` is how long the conversation waits for a result before saying "still
     /// running" — longer for a named task than for an ad-hoc command.
     var runShellCommand: (String, TimeInterval, @escaping (String) -> Void) -> Void
-    /// Interrupts whatever agent command is running for this track, if any. Nothing to fall back
-    /// to when no window is open — there is no terminal to interrupt.
+    /// Interrupts whatever agent command is running for this track, if any — in the session that
+    /// is running it, not whichever tab is selected.
     var interruptShellCommand: () -> Void
 
     /// No window is currently both key and showing this track — reads fall back to disk, writes
     /// go straight to disk via `ProposedEditApplier`, and there's nowhere to jump to. Every one
     /// of these fallbacks was already the pre-extraction behavior for "Make doesn't have this
     /// file open," so a detached runner degrades to exactly that, never to a crash or a silently
-    /// dropped edit. `runShellCommand` has nothing to fall back to at all — no window means no
-    /// terminal to type into.
+    /// dropped edit. Only reached once the project itself is gone, so there is no terminal left.
     static let none = WorkspaceBridge(
         liveBufferProvider: { _ in nil },
         applyEditIntoOpenTab: { _, _ in false },
         onRevealFileRequested: { _ in },
-        runShellCommand: { _, _, completion in completion("No window is open for this project — nowhere to run this command.") },
+        runShellCommand: { _, _, completion in completion("The project was closed — nowhere to run this command.") },
         interruptShellCommand: {}
     )
 }
@@ -54,6 +51,4 @@ protocol WorkspaceBridgeHost: AnyObject {
     func liveBufferContent(for url: URL) -> String?
     func applyApprovedEdit(url: URL, newContent: String) -> Bool
     func revealAfterApply(_ url: URL)
-    func runShellCommand(_ command: String, trackKey: String, timeout: TimeInterval, completion: @escaping (String) -> Void)
-    func interruptShellCommand(trackKey: String)
 }

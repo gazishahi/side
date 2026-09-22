@@ -28,6 +28,16 @@ final class ProjectContext {
         )
     }()
 
+    /// Every terminal in the project, per track (RFC R2). Here rather than in a window so a
+    /// running command outlives the window that started it, and so an agent on a track no
+    /// window is showing still has a terminal to run in.
+    lazy var terminals: TerminalSessionManager = {
+        let fallbackRoot = projectRoot
+        return TerminalSessionManager(projectRoot: fallbackRoot) { [weak self] trackKey in
+            self?.workingDirectory(forTrackKey: trackKey) ?? fallbackRoot
+        }
+    }()
+
     /// Owned by `ProjectContextRegistry` — the number of windows currently holding this context.
     fileprivate var refCount = 0
 
@@ -113,33 +123,28 @@ final class ProjectContext {
     /// currently showing this track, else the safe no-op fallbacks in `.none`. Only the key
     /// window is eligible for the editor-related fields — without that check, an agent running
     /// against a track shown in a background window could land its edit into a Make tab the user
-    /// is actively looking at in a *different*, focused window. `runShellCommand` is resolved
-    /// separately with looser criteria (see below) since a track's Run session isn't gated on
-    /// "is this exact track currently displayed" the way an open Make tab is.
+    /// is actively looking at in a *different*, focused window. Commands need no window at all:
+    /// they go to the project's own terminals.
     func bridge(forTrackKey trackKey: String) -> WorkspaceBridge {
         let editHost = bridgeHosts.values.compactMap(\.host).first { $0.isKeyWindow && ($0.bridgeTrackKey ?? "") == trackKey }
-        // Prefer the key window (most likely to be the one actively driving this conversation),
-        // but fall back to any registered window at all — a track's terminal persists
-        // independent of what's currently on screen, the same way a background dev-server
-        // process already does.
-        let allHosts = bridgeHosts.values.compactMap(\.host)
-        let shellHost = allHosts.first { $0.isKeyWindow } ?? allHosts.first
+        let terminals = self.terminals
         return WorkspaceBridge(
             liveBufferProvider: { [weak editHost] url in editHost?.liveBufferContent(for: url) },
             applyEditIntoOpenTab: { [weak editHost] url, content in editHost?.applyApprovedEdit(url: url, newContent: content) ?? false },
             onRevealFileRequested: { [weak editHost] url in editHost?.revealAfterApply(url) },
-            runShellCommand: { [weak shellHost] command, timeout, completion in
-                guard let shellHost else { completion("No window is open for this project — nowhere to run this command."); return }
-                shellHost.runShellCommand(command, trackKey: trackKey, timeout: timeout, completion: completion)
+            runShellCommand: { [weak terminals] command, timeout, completion in
+                guard let terminals else { completion("The project was closed — nowhere to run this command."); return }
+                terminals.runAgentCommand(command, trackKey: trackKey, timeout: timeout, completion: completion)
             },
-            interruptShellCommand: { [weak shellHost] in
-                shellHost?.interruptShellCommand(trackKey: trackKey)
+            interruptShellCommand: { [weak terminals] in
+                terminals?.interruptAgentCommand(trackKey: trackKey)
             }
         )
     }
 
     fileprivate func teardownAllRunners() {
         runnerManager.teardownAll()
+        terminals.teardownAll()
     }
 }
 
