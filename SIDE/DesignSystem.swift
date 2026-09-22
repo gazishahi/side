@@ -565,6 +565,23 @@ extension DS {
             }
         }
 
+        /// A track's dot: the agent's activity wins while there is any; otherwise the lifecycle,
+        /// where only "waiting" needs a human and only "review ready" is a green result.
+        init(track status: TrackStatus, activity: AgentActivity) {
+            switch activity {
+            case .working: self = .working
+            case .needsYou: self = .needsYou
+            case .failed: self = .failed
+            case .doneUnread: self = .verified
+            case .none, .doneSeen:
+                switch status {
+                case .waiting: self = .needsYou
+                case .reviewReady: self = .verified
+                case .active, .parked, .completed, .archived: self = .idle
+                }
+            }
+        }
+
         init(_ activity: AgentActivity) {
             switch activity {
             case .needsYou: self = .needsYou

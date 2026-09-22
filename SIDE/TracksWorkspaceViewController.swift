@@ -33,6 +33,10 @@ final class TracksWorkspaceViewController: NSViewController {
     private let statusLabel = NSTextField(labelWithString: "")
     private var statusLabelHideWorkItem: DispatchWorkItem?
     private let headerStack = NSStackView()
+    /// "Tracks" and its counts, in the window's top row (Direction 02 §3.2).
+    private let topHeader = NSStackView()
+    private let topTitle = NSTextField(labelWithString: "Tracks")
+    private let topCounts = NSTextField(labelWithString: "")
     private let topControlsRow = NSStackView()
 
     /// Populated asynchronously by `refreshGitSummariesIfNeeded()` — never read from git
@@ -193,7 +197,7 @@ final class TracksWorkspaceViewController: NSViewController {
         view.addSubview(scrollView)
 
         NSLayoutConstraint.activate([
-            headerStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+            headerStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
             headerStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             headerStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             scrollView.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 14),
@@ -216,6 +220,7 @@ final class TracksWorkspaceViewController: NSViewController {
     /// more than a couple of tracks would otherwise block the main thread on a chain of blocking
     /// `git` subprocess spawns every single time the ledger changes.
     private func refreshUI() {
+        refreshTopHeader()
         renderLedger()
         refreshGitSummariesIfNeeded()
     }
@@ -1216,7 +1221,7 @@ private final class TrackRowView: NSView {
         // longer implied by which section it's filed under — it needs to say so itself. Dot and
         // text (Direction 02 §2.4): the agent's activity when there is any, else the lifecycle.
         let statusLabel = DS.StatusLabel(
-            state: Self.statusState(for: status, activity: activity),
+            state: DS.StatusState(track: status, activity: activity),
             text: Self.agentChipInfo(for: activity)?.text ?? trackStatusText(for: status))
 
         let sepLabel = NSTextField(labelWithString: "\u{00B7}")
@@ -1357,23 +1362,6 @@ private final class TrackRowView: NSView {
         }
     }
 
-    /// The dot's state: the agent's activity wins while there is any; otherwise the lifecycle,
-    /// where only "waiting" needs a human and only "review ready" is a green result.
-    static func statusState(for status: TrackStatus, activity: AgentActivity) -> DS.StatusState {
-        switch activity {
-        case .working: return .working
-        case .needsYou: return .needsYou
-        case .failed: return .failed
-        case .doneUnread: return .verified
-        case .none, .doneSeen: break
-        }
-        switch status {
-        case .waiting: return .needsYou
-        case .reviewReady: return .verified
-        case .active, .parked, .completed, .archived: return .idle
-        }
-    }
-
     private static func tintColor(for activity: AgentActivity) -> NSColor {
         switch activity {
         case .needsYou: return DS.Color.statusNeedsYou
@@ -1393,5 +1381,38 @@ private func trackStatusText(for status: TrackStatus) -> String {
     case .parked: return "Parked"
     case .completed: return "Completed"
     case .archived: return "Archived"
+    }
+}
+
+extension TracksWorkspaceViewController: StageChromeProviding {
+    var topRowContent: NSView? {
+        loadViewIfNeeded()
+        if topHeader.arrangedSubviews.isEmpty {
+            topTitle.font = DS.Text.heading()
+            topCounts.font = DS.Text.caption()
+            topCounts.textColor = .tertiaryLabelColor
+            topHeader.orientation = .horizontal
+            topHeader.alignment = .firstBaseline
+            topHeader.spacing = DS.Spacing.m
+            topHeader.addArrangedSubview(topTitle)
+            topHeader.addArrangedSubview(topCounts)
+            refreshTopHeader()
+        }
+        return topHeader
+    }
+
+    func setBottomObstruction(_ height: CGFloat) {
+        loadViewIfNeeded()
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: height > 0 ? height : 0, right: 0)
+    }
+
+    /// `N active · N parked · N archived` — informational only; no limit, no nudge.
+    fileprivate func refreshTopHeader() {
+        let tracks = trackStore?.tracks ?? []
+        let active = tracks.filter { $0.status == .active || $0.status == .waiting || $0.status == .reviewReady }.count
+        let parked = tracks.filter { $0.status == .parked }.count
+        let archived = tracks.filter { $0.status == .archived || $0.status == .completed }.count
+        topCounts.stringValue = "\(active) active · \(parked) parked · \(archived) archived"
     }
 }

@@ -51,6 +51,16 @@ private struct IndexedFile {
     let relativePath: String
 }
 
+/// One row of the palette's `commands` mode: every stage and every Navigate item, by name.
+struct PaletteCommand {
+    let title: String
+    let shortcut: String?
+    let perform: () -> Void
+}
+
+/// Which list the palette is showing. `commands` is also reached by typing `>` in any mode.
+enum PaletteMode { case files, symbols, text, commands }
+
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
     private let editor = EditorTextView()
@@ -61,7 +71,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// sentence plus the action that fixes it.
     private let noFileLabel = NSTextField(labelWithString: "No file open — press ⌘P to find one.")
     private let tabBarStack = NSStackView()
-    private var tabBarHeightConstraint: NSLayoutConstraint!
     private let emptyState = NSStackView()
     private let recentProjectsStack = NSStackView()
     private let openRecentMenu = NSMenu(title: "Open Recent")
@@ -73,15 +82,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// eager (`quickOpenSurface` etc.), so showing a panel the first time costs only the window.
     /// `prepareForClose` checks the storage directly so closing a window never creates a panel
     /// just to tear it down.
-    private var quickOpenPanelStorage: QuickOpenPanel?
-    private var quickOpenSurface: NSView?
-    private var quickOpenPanel: QuickOpenPanel {
-        if let existing = quickOpenPanelStorage { return existing }
-        let panel = QuickOpenPanel()
-        panel.contentView = quickOpenSurface
-        quickOpenPanelStorage = panel
-        return panel
-    }
+    /// The palette (Direction 02 §3.6): field and results in one surface, hosted by the window's
+    /// chrome rather than a child window — so it can open from any stage, and opening it never
+    /// takes key status from the window an agent's edit is being applied to.
+    private(set) var paletteSurface: NSView!
+    /// The chrome decides where the surface goes; Make only says how big it wants to be.
+    var onPaletteShow: ((NSSize) -> Void)?
+    var onPaletteHide: (() -> Void)?
+    /// A result was chosen that lives in Make (a file, a symbol, a line) — the shell brings Make
+    /// forward if the palette was opened from another stage.
+    var onPaletteNavigated: (() -> Void)?
+    var commandsProvider: (() -> [PaletteCommand])?
+    private var paletteIsOpen = false
+    private weak var paletteReturnResponder: NSResponder?
+    private var commandMatches: [PaletteCommand] = []
     private let resultsTable = NSTableView()
     private var fileExplorerPanelStorage: FileExplorerPanel?
     private var fileExplorerSurface: NSView?
@@ -138,18 +152,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let externalChangeBanner = NSView()
     private let externalChangeLabel = NSTextField(labelWithString: "")
     private var lspManager: LSPManager?
-    /// Lives in the shared window toolbar (wired by ShellViewController), not this stage's own
-    /// view — the whole point is it's visible from the title bar regardless of which stage is
-    /// showing, though it only ever has something to show while a Make file is active.
+    /// Trails Make's tab strip in the top row (Direction 02 §4.5).
     let lspStatusButton = NSButton(image: NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Language server not installed") ?? NSImage(), target: nil, action: nil)
     private var lspInstallPopover: NSPopover?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
-    private enum SearchMode { case files, symbols, text }
+    private typealias SearchMode = PaletteMode
     /// Find in Project results, one row per matching line.
     private var textMatches: [ProjectTextSearch.Match] = []
     private var textSearchTruncated = false
     private var searchMode: SearchMode = .files
+    /// Typing `>` switches any mode to commands, the way every palette does.
+    private var effectiveMode: SearchMode { searchField.stringValue.hasPrefix(">") ? .commands : searchMode }
     private var symbolMatches: [CodeSymbol] = []
     private var openTabs: [OpenTab] = []
     private var activeTabIndex: Int?
@@ -232,8 +246,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         if let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text {
             view.window?.makeFirstResponder(editor)
-        } else {
-            view.window?.makeFirstResponder(searchField)
         }
         LaunchSignposts.end("makeViewDidAppear")
     }
@@ -275,7 +287,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tabScroll.translatesAutoresizingMaskIntoConstraints = false
         tabScroll.documentView = tabBarStack
         tabBar.addSubview(tabScroll)
-        view.addSubview(tabBar)
+        // Hosted in the window's top row (Direction 02 §3.2) — see `topRowContent`.
+        lspStatusButton.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.addSubview(lspStatusButton)
         noFileLabel.font = DS.Text.body()
         noFileLabel.textColor = .tertiaryLabelColor
         noFileLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -284,10 +298,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             noFileLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             noFileLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
-        tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
-            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabScroll.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -10), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: lspStatusButton.leadingAnchor, constant: -DS.Spacing.s), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            lspStatusButton.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), lspStatusButton.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor), lspStatusButton.widthAnchor.constraint(equalToConstant: 24),
             tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1)
         ])
@@ -401,11 +414,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(emptyState)
 
         NSLayoutConstraint.activate([
-            gutter.topAnchor.constraint(equalTo: tabBar.bottomAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: LineNumberGutterView.width),
-            editorScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), editorScroll.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            imageScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            csvScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            markdownPreviewScroll.topAnchor.constraint(equalTo: tabBar.bottomAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            gutter.topAnchor.constraint(equalTo: view.topAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: LineNumberGutterView.width),
+            editorScroll.topAnchor.constraint(equalTo: view.topAnchor), editorScroll.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            imageScroll.topAnchor.constraint(equalTo: view.topAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            csvScroll.topAnchor.constraint(equalTo: view.topAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            markdownPreviewScroll.topAnchor.constraint(equalTo: view.topAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
         LaunchSignposts.begin("makePanelSurfaces")
@@ -445,7 +458,28 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.contentInsets = NSEdgeInsetsZero
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        quickOpenSurface = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 8, padding: 14)
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.focusRingType = .none
+        let divider = NSBox()
+        divider.boxType = .custom
+        divider.borderType = .noBorder
+        divider.fillColor = DS.Color.hairline
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        let body = NSView()
+        body.translatesAutoresizingMaskIntoConstraints = false
+        for view in [searchField, divider, scroll] as [NSView] { body.addSubview(view) }
+        NSLayoutConstraint.activate([
+            searchField.topAnchor.constraint(equalTo: body.topAnchor), searchField.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 12),
+            searchField.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -12), searchField.heightAnchor.constraint(equalToConstant: 28),
+            divider.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 10), divider.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: body.trailingAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
+            scroll.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: body.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: body.bottomAnchor),
+        ])
+        paletteSurface = Self.makeFloatingPanelSurface(embedding: body, cornerRadius: DS.Radius.surface, padding: 12)
+        paletteSurface.setAccessibilityElement(true)
+        paletteSurface.setAccessibilityRole(.group)
+        paletteSurface.setAccessibilityLabel("Palette")
     }
 
     private let completionRowHeight: CGFloat = 22
@@ -507,39 +541,29 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    private static let paletteWidth: CGFloat = 560
+    private static let paletteChromeHeight: CGFloat = 12 + 28 + 10 + 1 + 6 + 12
+
     private func showQuickOpenPanel() {
-        guard let window = searchField.window else { return }
-        let visibleRows = max(1, min(quickOpenMaxVisibleRows, resultCount))
-        let height = CGFloat(visibleRows) * quickOpenRowHeight + 28
-        let fieldFrameInWindow = searchField.convert(searchField.bounds, to: nil)
-        let fieldFrameOnScreen = window.convertToScreen(fieldFrameInWindow)
-        let width = max(fieldFrameOnScreen.width, 420)
-
-        var x = fieldFrameOnScreen.minX
-        let windowFrame = window.frame
-        if x + width > windowFrame.maxX - 12 { x = windowFrame.maxX - width - 12 }
-        if x < windowFrame.minX + 12 { x = windowFrame.minX + 12 }
-
-        let panelFrame = NSRect(x: x, y: fieldFrameOnScreen.minY - height - 6, width: width, height: height)
-        quickOpenPanel.setFrame(panelFrame, display: true)
-        if quickOpenPanel.parent == nil {
-            window.addChildWindow(quickOpenPanel, ordered: .above)
-        }
-        quickOpenPanel.orderFront(nil)
+        guard paletteIsOpen else { return }
+        let rows = resultCount
+        let visibleRows = min(quickOpenMaxVisibleRows, rows)
+        let height = Self.paletteChromeHeight + CGFloat(visibleRows) * quickOpenRowHeight
+        onPaletteShow?(NSSize(width: Self.paletteWidth, height: height))
         installQuickOpenDismissMonitors()
     }
 
     private func hideQuickOpenPanel() {
         removeQuickOpenDismissMonitors()
-        guard let quickOpenPanel = quickOpenPanelStorage, quickOpenPanel.isVisible || quickOpenPanel.parent != nil else { return }
-        searchField.window?.removeChildWindow(quickOpenPanel)
-        quickOpenPanel.orderOut(nil)
+        guard paletteIsOpen else { return }
+        paletteIsOpen = false
+        onPaletteHide?()
     }
 
     private func installQuickOpenDismissMonitors() {
         guard quickOpenLocalMonitor == nil else { return }
         quickOpenLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            self?.dismissQuickOpenIfClickOutside()
+            self?.dismissQuickOpenIfClickOutside(event)
             return event
         }
         quickOpenGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -552,15 +576,36 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if let m = quickOpenGlobalMonitor { NSEvent.removeMonitor(m); quickOpenGlobalMonitor = nil }
     }
 
-    private func dismissQuickOpenIfClickOutside() {
-        let point = NSEvent.mouseLocation
-        if quickOpenPanel.frame.insetBy(dx: -2, dy: -2).contains(point) { return }
-        if let window = searchField.window {
-            let searchFieldFrame = window.convertToScreen(searchField.convert(searchField.bounds, to: nil))
-            if searchFieldFrame.insetBy(dx: -4, dy: -4).contains(point) { return }
-        }
+    private func dismissQuickOpenIfClickOutside(_ event: NSEvent) {
+        guard let surface = paletteSurface, let window = surface.window, event.window === window else { hideQuickOpenPanel(); return }
+        let point = surface.convert(event.locationInWindow, from: nil)
+        if surface.bounds.insetBy(dx: -2, dy: -2).contains(point) { return }
         hideQuickOpenPanel()
     }
+
+    /// Opens the palette in `mode` from any stage. Escape puts focus back where it was.
+    func presentPalette(_ mode: PaletteMode) {
+        if mode == .symbols && activeTabIndex == nil { return }
+        if mode == .text && projectURL == nil { return }
+        let window = view.window ?? NSApp.keyWindow
+        if !paletteIsOpen { paletteReturnResponder = window?.firstResponder }
+        paletteIsOpen = true
+        searchMode = mode == .commands ? .files : mode
+        let project = projectURL?.lastPathComponent
+        switch mode {
+        case .files: searchField.placeholderString = project.map { "Find a file in \($0)   ·   > for commands" } ?? "Type > for commands"
+        case .text: searchField.placeholderString = project.map { "Search text in \($0)" } ?? "Search text"
+        case .symbols: searchField.placeholderString = "Go to symbol"
+        case .commands: searchField.placeholderString = "Run a command"
+        }
+        searchField.stringValue = mode == .commands ? ">" : ""
+        showQuickOpenPanel()
+        searchField.window?.makeFirstResponder(searchField)
+        (searchField.currentEditor() as? NSTextView)?.moveToEndOfDocument(nil)
+        performSearch()
+    }
+
+    var isPaletteOpen: Bool { paletteIsOpen }
 
     // MARK: - File explorer
 
@@ -1638,7 +1683,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func finishOpenUI(url: URL) {
-        searchField.stringValue = ""
+        if paletteIsOpen { searchField.stringValue = "" }
         if let projectURL { rememberLastFile(url, forProject: projectURL) }
         hideQuickOpenPanel()
         view.window?.makeFirstResponder(editor)
@@ -2122,10 +2167,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         lastKnownTabCount = openTabs.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         tabChips.removeAll()
-        let showBar = openTabs.count > 1
-        tabBar.isHidden = !showBar
-        tabBarHeightConstraint.constant = showBar ? TabChipView.height : 0
-        guard showBar else { publishTabAccessibility(); return }
+        // The strip is the file's title now that there is no title bar, so one tab shows too.
+        guard !openTabs.isEmpty else { publishTabAccessibility(); return }
         for (index, tab) in openTabs.enumerated() {
             let chip = makeTabChip(index: index, tab: tab, isActive: index == activeTabIndex)
             tabBarStack.addArrangedSubview(chip)
@@ -2403,6 +2446,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func performSearch() {
+        if effectiveMode == .commands {
+            performCommandSearch()
+            return
+        }
         if searchMode == .symbols {
             performSymbolSearch()
             return
@@ -2411,7 +2458,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             performTextSearch()
             return
         }
-        guard projectURL != nil else { hideQuickOpenPanel(); return }
+        guard projectURL != nil else { matches = []; applySearchResults(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         searchGeneration += 1
         let generation = searchGeneration
@@ -2440,7 +2487,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// buffers, off the main thread with the same generation guard Quick Open uses so a stale
     /// result set can't land on top of a newer query.
     private func performTextSearch() {
-        guard let root = focusedRoot else { hideQuickOpenPanel(); return }
+        guard let root = focusedRoot else { textMatches = []; applySearchResults(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         searchGeneration += 1
         let generation = searchGeneration
@@ -2468,15 +2515,25 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private var resultCount: Int {
-        switch searchMode {
+        switch effectiveMode {
         case .files: return matches.count
         case .symbols: return symbolMatches.count
         case .text: return textMatches.count
+        case .commands: return commandMatches.count
         }
     }
 
+    private func performCommandSearch() {
+        let query = String(searchField.stringValue.dropFirst()).trimmingCharacters(in: .whitespaces)
+        let all = commandsProvider?() ?? []
+        commandMatches = query.isEmpty ? all : all.compactMap { command in
+            FuzzyMatcher.score(query: query, candidate: command.title).map { (command, $0) }
+        }.sorted { $0.1 > $1.1 }.map(\.0)
+        applySearchResults()
+    }
+
     private func performSymbolSearch() {
-        guard let index = activeTabIndex, openTabs.indices.contains(index) else { hideQuickOpenPanel(); return }
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { symbolMatches = []; applySearchResults(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let tab = openTabs[index]
         let allSymbols = SymbolIndexer.symbols(in: tab.textStorage.string, ext: tab.url.pathExtension.lowercased())
@@ -2494,28 +2551,49 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         resultsTable.reloadData()
         let count = resultCount
         if count > 0 { resultsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
-        if count > 0 { showQuickOpenPanel() } else { hideQuickOpenPanel() }
+        // The palette stays open with no results — the field is part of it now.
+        showQuickOpenPanel()
     }
     @objc private func confirmSearch() {
         let selected = resultsTable.selectedRow
-        switch searchMode {
+        switch effectiveMode {
+        case .commands:
+            let command = (selected >= 0 && selected < commandMatches.count) ? commandMatches[selected] : commandMatches.first
+            guard let command else { return }
+            // Hidden without restoring focus — the command decides where focus goes.
+            hideQuickOpenPanel()
+            command.perform()
+            return
         case .files:
-            if selected >= 0 && selected < matches.count { open(matches[selected]) }
-            else if let first = matches.first { open(first) }
+            let url = (selected >= 0 && selected < matches.count) ? matches[selected] : matches.first
+            guard let url else { return }
+            onPaletteNavigated?()
+            open(url)
         case .symbols:
             let symbol = (selected >= 0 && selected < symbolMatches.count) ? symbolMatches[selected] : symbolMatches.first
             guard let symbol else { return }
             hideQuickOpenPanel()
+            onPaletteNavigated?()
             scrollToLine(symbol.line)
         case .text:
             let match = (selected >= 0 && selected < textMatches.count) ? textMatches[selected] : textMatches.first
             guard let match else { return }
             hideQuickOpenPanel()
+            onPaletteNavigated?()
             revealFile(match.url, line: match.line)
         }
     }
     @objc private func openSelectedResult() { confirmSearch() }
-    private func dismissQuickOpen() { hideQuickOpenPanel(); view.window?.makeFirstResponder(editor) }
+    /// Escape: close and give focus back to whatever had it before the palette opened.
+    private func dismissQuickOpen() {
+        let target = paletteReturnResponder
+        hideQuickOpenPanel()
+        if let target, let window = searchField.window ?? view.window, (target as? NSView)?.window === window {
+            window.makeFirstResponder(target)
+        } else if view.window != nil {
+            view.window?.makeFirstResponder(editor)
+        }
+    }
     private func moveSelection(_ direction: Int) {
         let count = resultCount
         guard count > 0 else { return }
@@ -2595,7 +2673,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
         }
         text.lineBreakMode = .byTruncatingMiddle
-        switch searchMode {
+        switch effectiveMode {
+        case .commands:
+            let command = commandMatches[row]
+            text.maximumNumberOfLines = 1
+            let attributed = NSMutableAttributedString(string: command.title, attributes: [.foregroundColor: NSColor.labelColor])
+            if let shortcut = command.shortcut {
+                attributed.append(NSAttributedString(string: "   \(shortcut)", attributes: [.foregroundColor: NSColor.tertiaryLabelColor]))
+            }
+            text.attributedStringValue = attributed
         case .files:
             text.stringValue = relativePath(matches[row])
         case .symbols:
@@ -2616,6 +2702,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         guard control === searchField else { return false }
+        // IME: Return and Escape belong to the input method while a composition is open.
+        if textView.hasMarkedText() { return false }
         switch commandSelector {
         case #selector(NSResponder.insertNewline(_:)):
             confirmSearch()
@@ -3057,21 +3145,27 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
         let navigateMenu = NSMenu(title: "Navigate")
-        navigateMenu.addItem(withTitle: "Quick Open", action: #selector(focusQuickOpen), keyEquivalent: "p")
+        // Palette items target the shell, which is always in the responder chain — as Make
+        // actions they were disabled on every other stage.
+        navigateMenu.addItem(withTitle: "Quick Open", action: #selector(ShellViewController.showQuickOpen(_:)), keyEquivalent: "p")
+        let commandPalette = navigateMenu.addItem(withTitle: "Command Palette", action: #selector(ShellViewController.showCommandPalette(_:)), keyEquivalent: "p")
+        commandPalette.keyEquivalentModifierMask = [.command, .shift]
         navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l")
-        let goToSymbol = navigateMenu.addItem(withTitle: "Go to Symbol…", action: #selector(focusSymbolSearch), keyEquivalent: "o")
-        let findInProject = NSMenuItem(title: "Find in Project…", action: #selector(focusProjectSearch), keyEquivalent: "f")
+        let goToSymbol = navigateMenu.addItem(withTitle: "Go to Symbol…", action: #selector(ShellViewController.showGoToSymbol(_:)), keyEquivalent: "o")
+        let findInProject = NSMenuItem(title: "Find in Project…", action: #selector(ShellViewController.showFindInProject(_:)), keyEquivalent: "f")
         findInProject.keyEquivalentModifierMask = [.command, .shift]
         navigateMenu.addItem(findInProject)
         goToSymbol.keyEquivalentModifierMask = [.command, .shift]
         let jumpToDef = navigateMenu.addItem(withTitle: "Jump to Definition", action: #selector(jumpToDefinition), keyEquivalent: "j")
         jumpToDef.keyEquivalentModifierMask = [.command, .control]
         navigateMenu.addItem(NSMenuItem.separator())
-        // First-class stage navigation — ⌃1–⌃5, reaching ShellViewController via the responder
-        // chain (⌘1–⌘8 stay with tabs, matching every browser/editor convention).
+        // Stage navigation — ⌘⌥1–4 for the four working stages, ⌘⌥0 for Tracks (Direction 02
+        // §3.8). Every stage has an item whether or not it is pinned: unpinning never removes a
+        // way in. ⌘1–⌘8 stay with tabs.
         for (index, stage) in ShellViewController.Stage.allCases.enumerated() {
-            let item = navigateMenu.addItem(withTitle: "Go to \(stage.rawValue)", action: #selector(ShellViewController.jumpToStage(_:)), keyEquivalent: "\(index + 1)")
-            item.keyEquivalentModifierMask = [.control]
+            let key = stage == .tracks ? "0" : "\(StagePins.pinnable.firstIndex(of: stage).map { $0 + 1 } ?? index + 1)"
+            let item = navigateMenu.addItem(withTitle: "Go to \(stage.rawValue)", action: #selector(ShellViewController.jumpToStage(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = [.command, .option]
             item.tag = index
         }
         navigateMenu.addItem(NSMenuItem.separator())
@@ -3085,6 +3179,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         let lastTab = tabsMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "9")
         lastTab.tag = -1
+        tabsMenu.addItem(NSMenuItem.separator())
+        let nextTab = tabsMenu.addItem(withTitle: "Next Tab", action: #selector(ShellViewController.selectNextTab(_:)), keyEquivalent: "\t")
+        nextTab.keyEquivalentModifierMask = [.control]
+        let previousTab = tabsMenu.addItem(withTitle: "Previous Tab", action: #selector(ShellViewController.selectPreviousTab(_:)), keyEquivalent: "\t")
+        previousTab.keyEquivalentModifierMask = [.control, .shift]
         tabsItem.submenu = tabsMenu
         navigateMenu.addItem(tabsItem)
         navigateItem.submenu = navigateMenu
@@ -3107,6 +3206,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let trackMenu = NSMenu(title: "Track")
         let newTrack = trackMenu.addItem(withTitle: "New Track…", action: #selector(TracksWorkspaceViewController.newTrackTapped), keyEquivalent: "t")
         newTrack.keyEquivalentModifierMask = [.command, .shift]
+        let trackPopover = trackMenu.addItem(withTitle: "Switch Track…", action: #selector(ShellViewController.toggleTrackPopover(_:)), keyEquivalent: "t")
+        trackPopover.keyEquivalentModifierMask = [.command, .control]
+        let stagesItem = NSMenuItem(title: "Pinned Stages", action: nil, keyEquivalent: "")
+        let stagesMenu = NSMenu(title: "Pinned Stages")
+        for stage in StagePins.pinnable {
+            let item = stagesMenu.addItem(withTitle: stage.rawValue, action: #selector(ShellViewController.togglePinnedStage(_:)), keyEquivalent: "")
+            item.representedObject = stage.rawValue
+        }
+        stagesItem.submenu = stagesMenu
+        viewMenu.addItem(NSMenuItem.separator())
+        viewMenu.addItem(stagesItem)
         trackItem.submenu = trackMenu
 
         // Standard macOS Window menu — AppKit populates the list of open windows (with
@@ -3123,29 +3233,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(viewItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(trackItem); main.addItem(windowItem)
         NSApp.mainMenu = main
         NSApp.windowsMenu = windowMenu
-    }
-    @objc private func focusQuickOpen() {
-        searchMode = .files
-        searchField.placeholderString = projectURL.map { "Find a file in \($0.lastPathComponent)" } ?? "Open file, symbol, or command"
-        searchField.stringValue = ""
-        view.window?.makeFirstResponder(searchField)
-        performSearch()
-    }
-    @objc private func focusProjectSearch() {
-        guard projectURL != nil else { return }
-        searchMode = .text
-        searchField.placeholderString = projectURL.map { "Search text in \($0.lastPathComponent)" } ?? "Search text"
-        searchField.stringValue = ""
-        view.window?.makeFirstResponder(searchField)
-        performSearch()
-    }
-    @objc private func focusSymbolSearch() {
-        guard activeTabIndex != nil else { return }
-        searchMode = .symbols
-        searchField.placeholderString = "Go to symbol"
-        searchField.stringValue = ""
-        view.window?.makeFirstResponder(searchField)
-        performSearch()
     }
     @objc private func showGoToLine() {
         guard let window = view.window, activeTabIndex != nil else { return }
@@ -3469,7 +3556,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     func prepareForClose() {
         removeQuickOpenDismissMonitors()
         removeFileExplorerDismissMonitors()
-        for panel in [quickOpenPanelStorage, fileExplorerPanelStorage, completionPanelStorage].compactMap({ $0 as NSWindow? }) {
+        hideQuickOpenPanel()
+        for panel in [fileExplorerPanelStorage, completionPanelStorage].compactMap({ $0 as NSWindow? }) {
             if panel.parent != nil { view.window?.removeChildWindow(panel) }
             panel.orderOut(nil)
         }
@@ -3544,23 +3632,6 @@ final class CompletionPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}
-
-final class QuickOpenPanel: NSPanel {
-    convenience init() {
-        self.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
-        level = .floating
-        isFloatingPanel = true
-        hidesOnDeactivate = false
-        isReleasedWhenClosed = false
-        collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
-    }
-
-    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
@@ -3818,5 +3889,28 @@ final class QuickOpenSearchField: NSSearchField {
         case 53: onCancel?()
         default: super.keyDown(with: event)
         }
+    }
+}
+
+extension MakeWorkspaceViewController: StageChromeProviding {
+    /// The file tabs (with the language-server indicator trailing) live in the window's top row.
+    var topRowContent: NSView? { loadViewIfNeeded(); return tabBar }
+
+    func setBottomObstruction(_ height: CGFloat) {
+        loadViewIfNeeded()
+        // The editor scrolls beneath whatever covers the bottom, far enough that the last line
+        // (and the caret on it — scroll-to-visible honours content insets) clears it.
+        let inset = height > 0 ? height + DS.Spacing.l : 0
+        for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
+            scroll.automaticallyAdjustsContentInsets = false
+            scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: inset, right: 0)
+        }
+    }
+
+    /// ⌃Tab / ⌃⇧Tab.
+    func selectAdjacentTab(_ offset: Int) {
+        guard !openTabs.isEmpty else { return }
+        let current = activeTabIndex ?? 0
+        switchToTab((current + offset + openTabs.count) % openTabs.count)
     }
 }

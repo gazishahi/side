@@ -24,6 +24,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private let transcriptContainer = TranscriptContainerView()
     private let transcriptStack = NSStackView()
     private let composer = ComposerView()
+    private var composerBottom: NSLayoutConstraint!
+    /// The band at the bottom of the window something else is drawn over; the composer sits
+    /// above it. Zero when nothing is.
+    private var bottomObstruction: CGFloat = 0
+    /// The conversation's title, shown in the window's top row (Direction 02 §3.2).
+    private let conversationTitle = NSTextField(labelWithString: "")
+    /// The composer holds text while focused — the window's chrome recedes then.
+    var onComposerEngagedChanged: ((Bool) -> Void)?
     /// One glass pill above the composer's trailing end — "Claude Sonnet 5 · Build · 1%" —
     /// opening a popover with the real controls. One pill instead of five chips: the composer
     /// stays a thin iMessage capsule holding only input affordances, and everything that
@@ -136,6 +144,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         composer.onAction = { [weak self] in self?.composerActionTapped() }
         composer.onCycleMode = { [weak self] in self?.cycleScope() }
         composer.onEscape = { [weak self] in self?.escapePressed() ?? false }
+        composer.onEngagedChanged = { [weak self] engaged in self?.onComposerEngagedChanged?(engaged) }
         // Newest first, deduplicated: pressing Up three times to get past the same message
         // repeated is friction, not history.
         composer.messageHistory = { [weak self] in
@@ -186,6 +195,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyStateLabel)
 
+        composerBottom = composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.xl)
         NSLayoutConstraint.activate([
             emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -214,7 +224,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             plusButton.centerYAnchor.constraint(equalTo: plusGlass.centerYAnchor),
             composer.leadingAnchor.constraint(equalTo: plusGlass.trailingAnchor, constant: DS.Spacing.m),
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
-            composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.xl),
+            composerBottom,
             // The session pill floats just above the composer's trailing corner.
             sessionPill.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
             sessionPill.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
@@ -295,7 +305,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     override func viewDidLayout() {
         super.viewDidLayout()
         transcriptScroll.automaticallyAdjustsContentInsets = false
-        let overlap = composer.frame.height + 26 /* pill */ + DS.Spacing.xl + DS.Spacing.l
+        let overlap = composer.frame.height + 26 /* pill */ + composerGap + DS.Spacing.l
         if abs(transcriptScroll.contentInsets.bottom - overlap) > 0.5 {
             transcriptScroll.contentInsets = NSEdgeInsets(top: DS.Spacing.m, left: 0, bottom: overlap, right: 0)
             transcriptScroll.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: overlap - DS.Spacing.l, right: 0)
@@ -338,6 +348,19 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         attach(trackKey: trackKey)
     }
 
+    /// Composer to window bottom: its usual margin, or the covered band plus a 10 pt gap so the
+    /// composer and whatever is beneath it read as one stack.
+    private var composerGap: CGFloat { bottomObstruction > 0 ? bottomObstruction + 10 : DS.Spacing.xl }
+
+    private func refreshConversationTitle() {
+        let firstMessage = runner?.entries.lazy.compactMap { entry -> String? in
+            if case .userText(let text) = entry.kind { return text }
+            return nil
+        }.first
+        let title = firstMessage.map { $0.split(whereSeparator: \.isNewline).first.map(String.init) ?? $0 } ?? "New conversation"
+        conversationTitle.stringValue = title
+    }
+
     private func attach(trackKey: String?) {
         detach()
         attachedTrackKey = trackKey
@@ -366,8 +389,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         switch event {
         case .reset:
             renderFull()
+            refreshConversationTitle()
         case .appended(let index):
             appendEntryView(at: index)
+            if index == 0 || conversationTitle.stringValue == "New conversation" { refreshConversationTitle() }
             refreshSessionPill()
         case .updated(let index):
             if case .assistantText = runner?.entries[safe: index]?.kind {
@@ -2300,107 +2325,6 @@ private final class BubbleRowView: NSView {
 
 
 
-/// A segmented control whose selection *slides*: a Liquid Glass thumb springs between segments
-/// instead of the stock control's instant swap. NSSegmentedControl has no animated selection and
-/// no glass style, and this is the popover's whole feel — three of these in a row.
-private final class SlidingSegmentedControl: NSView {
-    var onChange: ((Int) -> Void)?
-    private(set) var selectedIndex = 0
-    var isEnabledControl = true {
-        didSet { alphaValue = isEnabledControl ? 1 : 0.4 }
-    }
-
-    /// The glass rides inside a plain container, and the *container* is what animates: glass
-    /// views don't reliably animate frame changes themselves, and animating a plain NSView with
-    /// the glass autoresizing inside it does.
-    private let thumbContainer = NSView()
-    private let track = NSView()
-    private var buttons: [NSButton] = []
-    private var lastLayoutBounds = NSRect.zero
-
-    init(titles: [String]) {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-
-        track.wantsLayer = true
-        track.bindLayerBackground(DS.Color.scrimFaint)
-        track.layer?.cornerRadius = DS.Radius.capsule(height: 28)
-        addSubview(track)
-        let glass = DS.makeGlass(cornerRadius: 12)
-        glass.translatesAutoresizingMaskIntoConstraints = true
-        glass.autoresizingMask = [.width, .height]
-        thumbContainer.addSubview(glass)
-        addSubview(thumbContainer)
-        for (index, title) in titles.enumerated() {
-            let button = NSButton(title: title, target: self, action: #selector(segmentTapped(_:)))
-            button.isBordered = false
-            button.font = DS.Text.body(.medium)
-            button.tag = index
-            addSubview(button)
-            buttons.append(button)
-        }
-        heightAnchor.constraint(equalToConstant: 28).isActive = true
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    // Manual layout: equal-width segments, thumb under the selected one. Simpler and more
-    // animatable than constraint juggling for a fixed-height three-way control.
-    override func layout() {
-        super.layout()
-        track.frame = bounds
-        let width = bounds.width / CGFloat(max(buttons.count, 1))
-        for (index, button) in buttons.enumerated() {
-            button.frame = NSRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
-        }
-        // Snap the thumb only when the control actually resized. Unconditional placement here
-        // is why the slide never showed: selecting a segment re-bolds a label, that schedules a
-        // layout pass, and this line teleported the thumb to its destination mid-animation.
-        if bounds != lastLayoutBounds {
-            lastLayoutBounds = bounds
-            thumbContainer.frame = thumbFrame(for: selectedIndex)
-            thumbContainer.subviews.first?.frame = thumbContainer.bounds
-        }
-    }
-
-    private func thumbFrame(for index: Int) -> NSRect {
-        let width = bounds.width / CGFloat(max(buttons.count, 1))
-        return NSRect(x: CGFloat(index) * width + 2, y: 2, width: width - 4, height: bounds.height - 4)
-    }
-
-    func select(_ index: Int, animated: Bool) {
-        guard buttons.indices.contains(index) else { return }
-        selectedIndex = index
-        refreshTitles()
-        guard animated else {
-            thumbContainer.frame = thumbFrame(for: index)
-            thumbContainer.subviews.first?.frame = thumbContainer.bounds
-            return
-        }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.32)
-            // A slight overshoot on the way in — the same spring language as the pill press.
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
-            thumbContainer.animator().frame = thumbFrame(for: index)
-        }
-    }
-
-    private func refreshTitles() {
-        for (index, button) in buttons.enumerated() {
-            button.contentTintColor = index == selectedIndex ? .labelColor : .secondaryLabelColor
-        }
-    }
-
-    @objc private func segmentTapped(_ sender: NSButton) {
-        guard isEnabledControl, sender.tag != selectedIndex else { return }
-        select(sender.tag, animated: true)
-        onChange?(sender.tag)
-    }
-}
-
-
 /// A menu-style row for an action popover: accent highlight on hover, the classic menu blink on
 /// click. NSButton can't do either without fighting its cell, and the missing feedback was the
 /// complaint — you couldn't tell which option you'd picked.
@@ -3313,6 +3237,11 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// and the handler that runs one. Set by the owner, which knows what the commands mean.
     var slashCandidates: ((String) -> [String])?
     var onSlashCommand: ((String) -> Void)?
+    /// Fires when the composer starts or stops holding text while focused.
+    var onEngagedChanged: ((Bool) -> Void)?
+    private var isEngaged = false {
+        didSet { if isEngaged != oldValue { onEngagedChanged?(isEngaged) } }
+    }
     private let mentionPopup = MentionCompletionPopup()
     /// Whether the popup currently holds slash commands (accepting runs one) rather than
     /// mention paths (accepting inserts one).
@@ -3636,7 +3565,10 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     @objc private func actionTapped() { onAction?() }
 
+    func textDidEndEditing(_ notification: Notification) { isEngaged = false }
+
     func textDidChange(_ notification: Notification) {
+        isEngaged = !textView.string.isEmpty && textView.window?.firstResponder === textView
         if !textView.string.isEmpty { isDictating = false }
         textView.showsPlaceholder = !isDictating
         textView.needsDisplay = true
@@ -3763,5 +3695,24 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             textView.didChangeText()
         }
         textView.setSelectedRange(NSRange(location: range.location + (replacement as NSString).length, length: 0))
+    }
+}
+
+extension ThinkWorkspaceViewController: StageChromeProviding {
+    var topRowContent: NSView? {
+        loadViewIfNeeded()
+        conversationTitle.font = DS.Text.caption()
+        conversationTitle.textColor = .secondaryLabelColor
+        conversationTitle.lineBreakMode = .byTruncatingTail
+        conversationTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        refreshConversationTitle()
+        return conversationTitle
+    }
+
+    func setBottomObstruction(_ height: CGFloat) {
+        loadViewIfNeeded()
+        bottomObstruction = height
+        composerBottom.constant = -composerGap
+        view.needsLayout = true
     }
 }

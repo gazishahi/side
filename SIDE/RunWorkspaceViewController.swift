@@ -19,7 +19,7 @@ final class RunWorkspaceViewController: NSViewController {
     }
     private let tabBar = TabStripView()
     private let tabBarStack = NSStackView()
-    private var tabBarHeightConstraint: NSLayoutConstraint!
+    private var containerBottom: NSLayoutConstraint!
     private let container = NSView()
     private var tabChips: [TabChipView] = []
 
@@ -108,7 +108,7 @@ final class RunWorkspaceViewController: NSViewController {
         tabScroll.documentView = tabBarStack
         tabBar.addSubview(tabScroll)
 
-        view.addSubview(tabBar)
+        // The tab strip is hosted in the window's top row (Direction 02 §3.2) — `topRowContent`.
         // The terminal sheet: edge-to-edge on the sides and bottom, but with rounded top
         // corners and a breath of space under the tab strip — the terminal reads as a surface
         // sliding up under the tabs, not a floating card and not a flush slab touching chrome.
@@ -120,13 +120,13 @@ final class RunWorkspaceViewController: NSViewController {
         container.clipsToBounds = true
         view.addSubview(container)
 
-        tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 30)
+        containerBottom = container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         NSLayoutConstraint.activate([
-            tabBar.topAnchor.constraint(equalTo: view.topAnchor), tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor), tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor), tabBarHeightConstraint,
-            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 10), tabScroll.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -10), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
             tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
-            container.topAnchor.constraint(equalTo: tabBar.bottomAnchor, constant: 10), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            // Attached to the tab row above it: the active tab and the terminal are one surface.
+            container.topAnchor.constraint(equalTo: view.topAnchor), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), containerBottom
         ])
     }
 
@@ -346,10 +346,8 @@ final class RunWorkspaceViewController: NSViewController {
         lastKnownSessionCount = sessions.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         tabChips.removeAll()
-        let showBar = sessions.count > 1
-        tabBar.isHidden = !showBar
-        tabBarHeightConstraint.constant = showBar ? TabChipView.height : 0
-        guard showBar else { return }
+        // Shown for a single session too: with no title bar, the tab is the terminal's name.
+        guard !sessions.isEmpty else { return }
         for (index, session) in sessions.enumerated() {
             let chip = TabChipView()
             chip.index = index
@@ -393,7 +391,7 @@ final class RunWorkspaceViewController: NSViewController {
     /// Mirrors Make's close animation: the chip shrinks and fades, siblings glide together,
     /// then the model removes the session.
     private func animateChipClosed(at index: Int, completion: @escaping () -> Void) {
-        guard tabChips.indices.contains(index), sessions.count > 2 else { completion(); return }
+        guard tabChips.indices.contains(index), sessions.count > 1 else { completion(); return }
         let chip = tabChips[index]
         let widthConstraint = chip.widthAnchor.constraint(equalToConstant: chip.frame.width)
         widthConstraint.isActive = true
@@ -473,5 +471,26 @@ final class RunWorkspaceViewController: NSViewController {
         let line = parts.count > 1 ? Int(parts[1]) : nil
         onOpenFileRequested?(candidateURL, line)
         return true
+    }
+}
+
+extension RunWorkspaceViewController: StageChromeProviding {
+    var topRowContent: NSView? { loadViewIfNeeded(); return tabBar }
+
+    /// A hard inset: the terminal is shortened, never scrolled under, so the prompt line is
+    /// never beneath anything drawn over the bottom of the window.
+    func setBottomObstruction(_ height: CGFloat) {
+        loadViewIfNeeded()
+        containerBottom.constant = height > 0 ? -(height + DS.Spacing.l) : 0
+    }
+
+    func selectAdjacentTab(_ offset: Int) {
+        guard !sessions.isEmpty else { return }
+        let current = activeSessionIndex ?? 0
+        let next = (current + offset + sessions.count) % sessions.count
+        activeSessionIndex = next
+        rebuildTabBar()
+        showActiveSession()
+        clearUnseenOutput(at: next)
     }
 }

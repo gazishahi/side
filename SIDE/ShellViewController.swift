@@ -23,23 +23,27 @@ private enum AgentAttentionNotifier {
     }
 }
 
-private extension NSToolbarItem.Identifier {
-    static let projectLabel = NSToolbarItem.Identifier("side.project-label")
-    static let stageSwitcher = NSToolbarItem.Identifier("side.stage-switcher")
-    static let quickOpen = NSToolbarItem.Identifier("side.quick-open")
-    static let lspStatus = NSToolbarItem.Identifier("side.lsp-status")
-}
-
-final class ShellViewController: NSViewController, NSToolbarDelegate {
+final class ShellViewController: NSViewController {
     // Think sits next to Make — those are the two stages a user bounces between most while
     // an agent works, so they get adjacent segments. Review sits right after Think (where its
     // checkpoints come from) and before Run (where its tests run) — the same order the
     // constitution's own stage table uses.
     enum Stage: String, CaseIterable { case make = "Make", think = "Think", review = "Review", run = "Run", tracks = "Tracks" }
 
-    private let stageControl = NSSegmentedControl(labels: Stage.allCases.map(\.rawValue), trackingMode: .selectOne, target: nil, action: nil)
-    private let projectLabel = NSTextField(labelWithString: "")
+    /// Direction 02 §3: no title bar, no toolbar. The navigation components are plain views;
+    /// `chrome` decides where they go.
+    private let stageControl = SlidingSegmentedControl(titles: StagePins.pinnable.map(\.rawValue), style: .overlay)
+    private let trackPill = TrackPill()
+    private let searchButton = NSButton()
+    private lazy var chrome = ChromeHost(placement: ChromePlacement.current, pill: trackPill, stageControl: stageControl, searchButton: searchButton)
     private let container = NSView()
+    /// The stages the control currently shows, in order — see `StagePins.visible`.
+    private var visibleStages: [Stage] = StagePins.pinnable
+    /// Unpinned stages that showed themselves for attention and have since been visited. They
+    /// stay out of the control until their attention clears and comes back.
+    private var dismissedAttention: Set<Stage> = []
+    private var lastAttention: Set<Stage> = []
+    private var paletteHost: NSView?
     private lazy var makeVC = MakeWorkspaceViewController()
     private lazy var thinkVC = ThinkWorkspaceViewController()
     private lazy var reviewVC = ReviewWorkspaceViewController()
@@ -93,6 +97,9 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             self.makeVC.revealFile(url, line: line)
         }
         runVC.onActivityChanged = { [weak self] in self?.updateStageLabels() }
+        // The one placement-specific hook outside the host: Think's composer and the bar are a
+        // single stack, and the bar recedes while the composer holds text (§3.4).
+        thinkVC.onComposerEngagedChanged = { [weak self] engaged in self?.chrome.setBarRecessed(engaged) }
         tracksVC.onSwitchRequested = { [weak self] track, completion in
             self?.switchToTrack(track, completion: completion)
         }
@@ -159,116 +166,302 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         LaunchSignposts.begin("shellViewDidAppear")
         // Normally already installed by `makeWindow` before the window was shown; this is the
         // fallback for a window that acquired this controller some other way.
-        if let window = view.window { installToolbarIfNeeded(in: window) }
+        if let window = view.window, window.titleVisibility != .hidden { installChrome(in: window) }
         LaunchSignposts.end("shellViewDidAppear")
     }
 
-    /// Builds the toolbar. Called from `AppDelegate.makeWindow` *before* the window is ordered
-    /// front, so the toolbar is laid out as part of the first frame rather than in a second pass
-    /// after the window is already on screen — measured, that second pass was ~30 ms of the gap
-    /// between `orderFront` and the first committed frame, on the critical path of the bounce.
-    func installToolbarIfNeeded(in window: NSWindow) {
-        guard window.toolbar == nil else { return }
-        LaunchSignposts.begin("toolbar")
-        let toolbar = NSToolbar(identifier: "side.shell.toolbar")
-        toolbar.delegate = self
-        toolbar.centeredItemIdentifier = .stageSwitcher
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-        LaunchSignposts.end("toolbar")
-        window.toolbarStyle = .unifiedCompact
-        window.titleVisibility = .visible
+    /// The seamless frame (Direction 02 §3.2): no title bar drawn, no toolbar, content to the
+    /// top edge. Called from `AppDelegate.makeWindow` before the window is ordered front. The
+    /// title is still set — Mission Control, the Window menu and VoiceOver read it.
+    func installChrome(in window: NSWindow) {
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.toolbar = nil
+        chrome.positionTrafficLights(in: window)
+        for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let window else { return }
+                    self.chrome.setFullScreen(window.styleMask.contains(.fullScreen))
+                    self.chrome.positionTrafficLights(in: window)
+                }
+            }
+        }
         applyWindowChrome()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        if let window = view.window { chrome.positionTrafficLights(in: window) }
+        chrome.adapt(toWidth: view.bounds.width)
+        if let host = paletteHost, !host.isHidden { host.frame = chrome.paletteFrame(size: host.frame.size, in: view) }
     }
 
     private func buildLayout() {
         view.wantsLayer = true
         ChromeBackground.install(in: view)
 
-        stageControl.segmentStyle = .texturedRounded
-        stageControl.selectedSegment = 0
-        stageControl.target = self
-        stageControl.action = #selector(stageChanged(_:))
+        stageControl.onChange = { [weak self] index in
+            guard let self, self.visibleStages.indices.contains(index) else { return }
+            self.show(self.visibleStages[index])
+        }
+        stageControl.setAccessibilityLabel("Stage")
+        stageControl.menu = pinsMenu()
+        searchButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Search")
+        searchButton.isBordered = false
+        searchButton.contentTintColor = .secondaryLabelColor
+        searchButton.target = self
+        searchButton.action = #selector(showQuickOpen(_:))
+        searchButton.toolTip = "Search (⌘P)"
+        searchButton.setAccessibilityLabel("Search")
+        searchButton.translatesAutoresizingMaskIntoConstraints = false
+        searchButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        trackPill.snapshotProvider = { [weak self] in self?.trackPillSnapshot() ?? .empty }
+        trackPill.onSelectRow = { [weak self] row in self?.selectTrackRow(row) }
+        trackPill.onNewTrack = { [weak self] in
+            self?.show(.tracks)
+            self?.tracksVC.newTrackTapped()
+        }
+        trackPill.onOpenTracks = { [weak self] in self?.show(.tracks) }
 
-        projectLabel.font = DS.Text.body(.medium)
-        projectLabel.textColor = .secondaryLabelColor
-        projectLabel.lineBreakMode = .byTruncatingMiddle
-
-        container.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(container)
-
-        NSLayoutConstraint.activate([
-            // safeAreaLayoutGuide, not view.topAnchor: with .fullSizeContentView the content
-            // view now extends up behind the title bar/toolbar (that's the point — it's what
-            // lets our background color show through there), but actual Make/Run content still
-            // needs to start below the toolbar controls, not underneath them.
-            container.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            container.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
+        chrome.install(in: view, content: container)
+        NotificationCenter.default.addObserver(forName: StagePins.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.stageControl.menu = self.pinsMenu()
+                self.refreshStageControl()
+            }
+        }
+        installPalette()
+        refreshStageControl()
+        trackPill.refresh()
     }
 
-    // MARK: - Toolbar
+    // MARK: - Palette
 
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.projectLabel, .flexibleSpace, .stageSwitcher, .flexibleSpace, .lspStatus, .quickOpen] }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.projectLabel, .stageSwitcher, .lspStatus, .quickOpen, .flexibleSpace] }
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        switch itemIdentifier {
-        case .projectLabel:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            projectLabel.translatesAutoresizingMaskIntoConstraints = false
-            projectLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 200).isActive = true
-            item.view = projectLabel
-            item.label = "Project"
-            // This is the item that's allowed to collapse into the overflow chevron at narrow
-            // widths — but a collapsed custom-view item renders as a dead menu entry unless it's
-            // given a real menu form. Make it do the one obviously-useful project-level thing.
-            let menuForm = NSMenuItem(title: "Reveal Project in Finder", action: #selector(revealProjectInFinder), keyEquivalent: "")
-            menuForm.target = self
-            item.menuFormRepresentation = menuForm
-            return item
-        case .stageSwitcher:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.view = stageControl
-            item.label = "Stage"
-            // Never collapses into the overflow chevron — the stage switcher *is* the app's
-            // navigation; a hidden one means a stranded user. Same for Quick Open below: a
-            // collapsed toolbar search field renders as a dead button, so both stay visible and
-            // the window's minimum size (AppDelegate) is what guarantees they fit.
-            item.visibilityPriority = .high
-            return item
-        case .lspStatus:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            let button = makeVC.lspStatusButton
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(equalToConstant: 24).isActive = true
-            item.view = button
-            item.label = "Language Server"
-            // 24pt wide and hidden most of the time — never worth collapsing into the overflow
-            // chevron, where it would only ever appear as a dead "Language Server" entry.
-            item.visibilityPriority = .high
-            return item
-        case .quickOpen:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            let field = makeVC.searchField
-            field.translatesAutoresizingMaskIntoConstraints = false
-            field.widthAnchor.constraint(equalToConstant: 320).isActive = true
-            item.view = field
-            item.label = "Quick Open"
-            item.visibilityPriority = .high
-            return item
-        default:
+    /// The palette's engine is Make's (files, symbols, text on the shared `ProjectTextSearch`);
+    /// the shell hosts its surface so it opens from any stage, and `chrome` says where.
+    private func installPalette() {
+        makeVC.loadViewIfNeeded()
+        guard let surface = makeVC.paletteSurface else { return }
+        let host = NSView()
+        host.isHidden = true
+        host.translatesAutoresizingMaskIntoConstraints = true
+        surface.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(surface)
+        NSLayoutConstraint.activate([
+            surface.topAnchor.constraint(equalTo: host.topAnchor), surface.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            surface.leadingAnchor.constraint(equalTo: host.leadingAnchor), surface.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+        ])
+        host.wantsLayer = true
+        host.shadow = NSShadow()
+        host.layer?.shadowOpacity = 0.18
+        host.layer?.shadowRadius = 18
+        host.layer?.shadowOffset = CGSize(width: 0, height: -4)
+        view.addSubview(host, positioned: .above, relativeTo: nil)
+        paletteHost = host
+        makeVC.onPaletteShow = { [weak self, weak host] size in
+            guard let self, let host else { return }
+            host.frame = self.chrome.paletteFrame(size: size, in: self.view)
+            host.isHidden = false
+        }
+        makeVC.onPaletteHide = { [weak host] in host?.isHidden = true }
+        makeVC.onPaletteNavigated = { [weak self] in self?.show(.make) }
+        makeVC.commandsProvider = { [weak self] in self?.paletteCommands() ?? [] }
+    }
+
+    /// Every stage — pinned or not — and every Navigate menu item, by name.
+    private func paletteCommands() -> [PaletteCommand] {
+        var commands = Stage.allCases.map { stage in
+            PaletteCommand(title: "Go to \(stage.rawValue)", shortcut: stage == .tracks ? "⌘⌥0" : StagePins.pinnable.firstIndex(of: stage).map { "⌘⌥\($0 + 1)" }) { [weak self] in
+                self?.show(stage)
+            }
+        }
+        let navigate = NSApp.mainMenu?.items.first { $0.title == "Navigate" }?.submenu
+        for item in navigate?.items ?? [] where !item.isSeparatorItem && item.action != nil && !item.title.hasPrefix("Go to ") {
+            commands.append(PaletteCommand(title: item.title, shortcut: nil) { [weak item] in
+                guard let item, let action = item.action else { return }
+                NSApp.sendAction(action, to: item.target, from: item)
+            })
+        }
+        commands.append(PaletteCommand(title: "New Track…", shortcut: "⇧⌘T") { [weak self] in self?.trackPill.onNewTrack?() })
+        commands.append(PaletteCommand(title: "Switch Track…", shortcut: "⌃⌘T") { [weak self] in self?.trackPill.togglePopover() })
+        return commands
+    }
+
+    @objc func showQuickOpen(_ sender: Any?) { makeVC.presentPalette(.files) }
+    @objc func showCommandPalette(_ sender: Any?) { makeVC.presentPalette(.commands) }
+    @objc func showFindInProject(_ sender: Any?) { makeVC.presentPalette(.text) }
+    @objc func showGoToSymbol(_ sender: Any?) { makeVC.presentPalette(.symbols) }
+    @objc func toggleTrackPopover(_ sender: Any?) { trackPill.togglePopover() }
+    @objc func selectNextTab(_ sender: Any?) { adjacentTab(1) }
+    @objc func selectPreviousTab(_ sender: Any?) { adjacentTab(-1) }
+
+    /// ⌃Tab cycles the tabs in the current stage's top row.
+    private func adjacentTab(_ offset: Int) {
+        switch current {
+        case .make: makeVC.selectAdjacentTab(offset)
+        case .run: runVC.selectAdjacentTab(offset)
+        default: break
+        }
+    }
+
+    // MARK: - Pinning
+
+    private func pinsMenu() -> NSMenu {
+        let menu = NSMenu(title: "Pinned Stages")
+        let pinned = StagePins.pinned
+        for stage in StagePins.pinnable {
+            let item = NSMenuItem(title: stage.rawValue, action: #selector(togglePinnedStage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = stage.rawValue
+            item.state = pinned.contains(stage) ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc func togglePinnedStage(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let stage = Stage(rawValue: raw) else { return }
+        StagePins.toggle(stage)
+    }
+
+    /// Recomputes which stages the control shows and each one's dot.
+    private func refreshStageControl() {
+        let attention = stagesNeedingAttention()
+        // A stage whose attention cleared can come back the next time it has something.
+        dismissedAttention.formIntersection(attention)
+        lastAttention = attention
+        let stages = StagePins.visible(pinned: StagePins.pinned, attention: attention, dismissed: dismissedAttention, current: current)
+        if stages != visibleStages || stageControl.segmentAccessibilityLabels.count != stages.count {
+            visibleStages = stages
+            stageControl.setSegments(stages.map(\.rawValue), symbols: stages.map(Self.stageSymbol), selected: current.flatMap { stages.firstIndex(of: $0) } ?? -1)
+        } else if let current, let index = stages.firstIndex(of: current) {
+            if index != stageControl.selectedIndex { stageControl.select(index, animated: true) }
+        } else {
+            stageControl.clearSelection()
+        }
+        for (index, stage) in stages.enumerated() {
+            let badge = stageBadge(stage)
+            stageControl.setBadge(badge?.state, spokenState: badge?.spoken, at: index)
+        }
+    }
+
+    private static func stageSymbol(_ stage: Stage) -> String? {
+        switch stage {
+        case .make: return "chevron.left.forwardslash.chevron.right"
+        case .think: return "bubble.left"
+        case .review: return "checkmark.seal"
+        case .run: return "terminal"
+        case .tracks: return "square.stack"
+        }
+    }
+
+    /// Unpinned stages with something that needs the user: Review has a review-ready or failed
+    /// checkpoint; Run has a command awaiting approval.
+    private func stagesNeedingAttention() -> Set<Stage> {
+        var result: Set<Stage> = []
+        if let badge = stageBadge(.review), badge.state == .needsYou || badge.state == .failed || badge.state == .verified { result.insert(.review) }
+        if currentRunner?.hasCommandAwaitingApproval == true { result.insert(.run) }
+        return result
+    }
+
+    private var currentRunner: AgentRunner? {
+        projectContext?.runnerManager.existingRunner(forTrackKey: currentTrackKey ?? "")
+    }
+
+    /// A stage's 5 pt dot and what it says: needs-you wins over working.
+    private func stageBadge(_ stage: Stage) -> (state: DS.StatusState, spoken: String)? {
+        switch stage {
+        case .think:
+            switch currentRunner?.activity {
+            case .needsYou: return (.needsYou, "needs you")
+            case .failed: return (.failed, "the run failed")
+            case .working: return (.working, "the agent is working")
+            default: return nil
+            }
+        case .run:
+            if currentRunner?.hasCommandAwaitingApproval == true { return (.needsYou, "a command is waiting for approval") }
+            return runVC.hasBackgroundActivity ? (.working, "a terminal has new output") : nil
+        case .review:
+            guard let track = trackStore?.tracks.first(where: { $0.branchName == currentTrackKey }) else { return nil }
+            let newest = projectContext?.sessionStore.checkpoints(forTrackKey: track.branchName).max { $0.createdAt < $1.createdAt }
+            if newest?.verification?.passed == false { return (.failed, "verification failed") }
+            if track.status == .reviewReady { return (.verified, "ready for review") }
+            return nil
+        case .make, .tracks:
             return nil
         }
     }
 
-    // MARK: - Stage switching
+    // MARK: - Track pill
 
-    @objc private func stageChanged(_ sender: NSSegmentedControl) {
-        show(Stage.allCases[sender.selectedSegment])
+    private func trackPillSnapshot() -> TrackPill.Snapshot {
+        guard let store = trackStore else { return .empty }
+        let manager = projectContext?.runnerManager
+        func state(_ track: Track) -> DS.StatusState {
+            let activity = manager?.existingRunner(forTrackKey: track.branchName)?.activity ?? .none
+            return DS.StatusState(track: track.status, activity: activity)
+        }
+        let currentTrack = store.tracks.first { $0.branchName == currentTrackKey }
+        var snapshot = TrackPill.Snapshot(
+            title: currentTrack.map { $0.intent.isEmpty ? $0.branchName : $0.intent } ?? "\(gitBranch ?? store.defaultBranchName()) · No track",
+            state: currentTrack.map(state) ?? .idle,
+            stateName: currentTrack.map { state($0).name } ?? "No track"
+        )
+        snapshot.projectName = projectURL?.lastPathComponent
+        snapshot.branch = gitBranch.map { gitDirtyCount > 0 ? "\($0) · \(gitDirtyCount) changed" : $0 }
+        if current == .make, let projectURL, let currentFileURL { snapshot.filePath = humanePath(for: currentFileURL, projectURL: projectURL) }
+        for track in store.tracks where track.status != .archived {
+            let rowState = state(track)
+            let row = TrackPill.Row(key: track.branchName, title: track.intent.isEmpty ? track.branchName : track.intent, detail: track.branchName, state: rowState, isCurrent: track.branchName == currentTrackKey)
+            if rowState == .needsYou || rowState == .failed {
+                snapshot.needsYou.append(row)
+                if !row.isCurrent { snapshot.othersNeedingYou += 1 }
+            } else if track.status == .parked || track.status == .completed {
+                snapshot.parked.append(row)
+            } else {
+                snapshot.active.append(row)
+            }
+        }
+        // RFC R1 v1: every other open window's needs-you tracks, so "what needs me" is answerable
+        // from any window.
+        snapshot.otherProjects = (AppDelegate.shared?.shellViewControllers ?? [])
+            .filter { $0 !== self && $0.projectURL != nil && $0.projectContext !== projectContext }
+            .flatMap { $0.needsYouRowsForOtherWindows() }
+        return snapshot
     }
+
+    /// This window's needs-you tracks, as rows another window's pill can list.
+    fileprivate func needsYouRowsForOtherWindows() -> [TrackPill.Row] {
+        guard let store = trackStore, let manager = projectContext?.runnerManager, let window = view.window else { return [] }
+        return store.tracks.compactMap { track in
+            guard let activity = manager.existingRunner(forTrackKey: track.branchName)?.activity, activity.wantsAttention else { return nil }
+            var row = TrackPill.Row(key: track.branchName, title: track.intent.isEmpty ? track.branchName : track.intent,
+                                    detail: projectURL?.lastPathComponent ?? "", state: activity == .failed ? .failed : .needsYou)
+            row.windowNumber = window.windowNumber
+            return row
+        }
+    }
+
+    private func selectTrackRow(_ row: TrackPill.Row) {
+        if let number = row.windowNumber {
+            guard let other = AppDelegate.shared?.shellViewControllers.first(where: { $0.view.window?.windowNumber == number }) else { return }
+            other.view.window?.makeKeyAndOrderFront(nil)
+            other.focusTrack(key: row.key)
+            return
+        }
+        focusTrack(key: row.key)
+    }
+
+    /// Switches this window to a track without changing stage.
+    func focusTrack(key: String) {
+        guard key != currentTrackKey, let track = trackStore?.tracks.first(where: { $0.branchName == key }) else { return }
+        switchToTrack(track, landOn: current ?? .make, completion: { _ in })
+    }
+
+    // MARK: - Stage switching
 
     /// Navigate-menu stage jumps (⌃1–⌃5), reached via the responder chain — the constitution
     /// promised "keyboard shortcuts … move between stages" from day one; this is finally them.
@@ -296,7 +489,9 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
     private func show(_ stage: Stage) {
         guard current != stage else { return }
         current = stage
-        stageControl.selectedSegment = Stage.allCases.firstIndex(of: stage) ?? 0
+        // Visiting an unpinned stage that showed itself for attention is what dismisses it.
+        if lastAttention.contains(stage) { dismissedAttention.insert(stage) }
+        refreshStageControl()
 
         for child in children {
             child.view.removeFromSuperview()
@@ -321,58 +516,17 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
             next.view.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
 
+        chrome.setStageContent((next as? StageChromeProviding)?.topRowContent)
+        (next as? StageChromeProviding)?.setBottomObstruction(chrome.bottomObstruction)
         if stage == .run {
             runVC.activateActiveSession()
         }
-    }
-
-    /// What VoiceOver should say for a stage segment, in place of reading the status glyph as
-    /// "black circle". The visible label keeps the glyph; the spoken one names the state.
-    /// (2026-09-01 audit, H16.)
-    static func stageAccessibilityLabel(_ stage: Stage, needsYou: Bool, working: Bool) -> String {
-        switch stage {
-        case .run: return working ? "Run, a terminal has new output" : "Run"
-        case .tracks:
-            if needsYou { return "Tracks, a track needs your attention" }
-            return working ? "Tracks, an agent is working" : "Tracks"
-        default: return stage.rawValue
-        }
+        applyWindowChrome()
     }
 
     private func updateStageLabels() {
-        let runIndex = Stage.allCases.firstIndex(of: .run) ?? 1
-        stageControl.setLabel(runVC.hasBackgroundActivity ? "Run \u{25CF}" : "Run", forSegment: runIndex)
-
-        // needsYou takes precedence over working — a track blocked on approval matters more
-        // than one that's merely busy, and this is the one predicate every other "reach the
-        // user" surface (dock badge, notification) also keys off, so a new blocking reason
-        // showing up here is structurally guaranteed to show up everywhere else too.
-        let tracksIndex = Stage.allCases.firstIndex(of: .tracks) ?? 3
-        let label: String
-        if !needsYouTrackIDs().isEmpty {
-            label = "Tracks \u{25D1}" // ◑ — distinct from Run's solid dot, reads as "half-done/waiting"
-        } else if hasWorkingTrack() {
-            label = "Tracks \u{25CF}"
-        } else {
-            label = "Tracks"
-        }
-        stageControl.setLabel(label, forSegment: tracksIndex)
-        applyStageAccessibilityLabels(needsYou: !needsYouTrackIDs().isEmpty, working: hasWorkingTrack(), runBusy: runVC.hasBackgroundActivity)
-    }
-
-    /// NSSegmentedControl offers no per-segment accessibility label — its only exposed child is
-    /// the cell — so the glyph in a title is what VoiceOver reads. Two channels that *are*
-    /// per-segment and per-control: a tooltip on each segment (spoken by VoiceOver on hover, and
-    /// useful to sighted users too), and the control's help text carrying every active state.
-    /// Applied whenever the titles change so neither drifts from what the glyphs mean.
-    private func applyStageAccessibilityLabels(needsYou: Bool, working: Bool, runBusy: Bool) {
-        var states: [String] = []
-        for (index, stage) in Stage.allCases.enumerated() {
-            let spoken = Self.stageAccessibilityLabel(stage, needsYou: needsYou, working: stage == .run ? runBusy : working)
-            stageControl.setToolTip(spoken, forSegment: index)
-            if spoken != stage.rawValue { states.append(spoken) }
-        }
-        stageControl.setAccessibilityHelp(states.isEmpty ? "Stages" : states.joined(separator: ". "))
+        refreshStageControl()
+        trackPill.refresh()
     }
 
     // MARK: - Agent activity (dock badge, notifications)
@@ -432,7 +586,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         }
     }
 
-    // MARK: - Window chrome (title, subtitle, git info)
+    // MARK: - Window chrome (title, git info)
 
     /// A track's own linked worktree if it has one, else the shared project root — the same
     /// resolution `ProjectContext.workingDirectory(forTrackKey:)` does for Heron, just needed
@@ -594,34 +748,25 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         if url != nil { show(.make) }
     }
 
-    private func applyWindowChrome() {
-        projectLabel.stringValue = projectURL?.lastPathComponent ?? ""
-        guard let window = view.window else { return }
-        window.representedURL = currentFileURL
-        let fileName = currentFileURL?.lastPathComponent
-        window.title = (isDirty ? fileName.map { "\($0) — Edited" } : fileName) ?? projectURL?.lastPathComponent ?? "Side"
-
-        var subtitleParts: [String] = []
-        if let projectURL, let currentFileURL {
-            subtitleParts.append(humanePath(for: currentFileURL, projectURL: projectURL))
-        } else if let projectName = projectURL?.lastPathComponent {
-            subtitleParts.append(projectName)
-        }
-        if let branch = gitBranch {
-            // The branch slug is precise but not what the user actually typed — showing the
-            // track's own intent alongside it reads as "what am I doing" rather than "which ref
-            // am I on." Looked up by *this window's* `currentTrackKey`, not `trackStore
-            // .activeTrack` — the latter is the single globally-active track, which isn't
-            // necessarily what this specific window is showing (two windows can each be
-            // watching a different track on the same project).
-            let track = trackStore?.tracks.first { $0.branchName == currentTrackKey }
-            let branchLabel = track.map { "\($0.intent) (\(branch))" } ?? branch
-            subtitleParts.append(gitDirtyCount > 0 ? "\(branchLabel) · \(gitDirtyCount) changed" : branchLabel)
-        }
-        window.subtitle = subtitleParts.joined(separator: " — ")
+    /// Direction 02 §3.7: Make `file — track`, other stages `track`; never a path. Drawn nowhere,
+    /// but Mission Control, the Window menu, ⌘` and VoiceOver read it.
+    static func windowTitle(stage: Stage?, fileName: String?, track: String?, project: String?) -> String {
+        let place = track ?? project ?? "Side"
+        if stage == .make, let fileName { return "\(fileName) — \(place)" }
+        return place
     }
 
-    /// A project-relative path for the subtitle, never an absolute one. The old naive
+    private func applyWindowChrome() {
+        trackPill.refresh()
+        guard let window = view.window else { return }
+        window.representedURL = currentFileURL
+        window.isDocumentEdited = isDirty
+        let track = trackStore?.tracks.first { $0.branchName == currentTrackKey }
+        window.title = Self.windowTitle(stage: current, fileName: currentFileURL?.lastPathComponent,
+                                        track: track.map { $0.intent.isEmpty ? $0.branchName : $0.intent }, project: projectURL?.lastPathComponent)
+    }
+
+    /// A project-relative path for the pill's header, never an absolute one. The old naive
     /// projectURL-prefix strip silently failed for any file living in a track's *worktree*
     /// (whose root isn't the project folder), leaking the full
     /// `…/Application Support/Side/Worktrees/…` path into the window chrome. Tries the project
@@ -656,7 +801,7 @@ final class ShellViewController: NSViewController, NSToolbarDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             // `symbolic-ref`, not `rev-parse --abbrev-ref HEAD`: the latter's output is
             // inconsistent on a zero-commit repo (can print a bare "HEAD" the same way real
-            // detached HEAD does). `nil` here just means detached, which the subtitle omits
+            // detached HEAD does). `nil` here just means detached, which the pill omits
             // rather than showing a misleading branch name for.
             let branch = Self.runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], in: project.path)
             let status = Self.runGit(["status", "--porcelain"], in: project.path)

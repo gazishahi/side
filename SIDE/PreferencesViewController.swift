@@ -281,6 +281,11 @@ final class PreferencesTabViewController: NSTabViewController {
         super.viewDidLoad()
         tabStyle = .toolbar
 
+        let general = NSTabViewItem(viewController: GeneralPreferencesViewController())
+        general.label = "General"
+        general.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "General")
+        addTabViewItem(general)
+
         let providers = NSTabViewItem(viewController: PreferencesViewController())
         providers.label = "Providers"
         providers.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: "Providers")
@@ -300,5 +305,52 @@ final class PreferencesTabViewController: NSTabViewController {
         history.label = "History"
         history.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: "History")
         addTabViewItem(history)
+    }
+}
+
+/// General → Stages: which stages the stage control shows (Direction 02 §3.1). Unpinning hides a
+/// view, never a capability — every stage stays on ⌘⌥1–4, Navigate and the palette.
+final class GeneralPreferencesViewController: NSViewController {
+    private var boxes: [NSButton] = []
+    private var observer: NSObjectProtocol?
+
+    override func loadView() {
+        let title = NSTextField(labelWithString: "Stages")
+        title.font = DS.Text.heading()
+        let detail = NSTextField(wrappingLabelWithString: "Pinned stages appear in the stage control. Unpinned ones stay reachable from the Navigate menu, ⌘⌥1–4 and the palette, and show up on their own when they need you.")
+        detail.font = DS.Text.caption()
+        detail.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [title, detail])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Spacing.m
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        for stage in StagePins.pinnable {
+            let box = NSButton(checkboxWithTitle: stage.rawValue, target: self, action: #selector(toggled(_:)))
+            box.identifier = NSUserInterfaceItemIdentifier(stage.rawValue)
+            boxes.append(box)
+            stack.addArrangedSubview(box)
+        }
+        detail.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        view = stack
+        refresh()
+        observer = NotificationCenter.default.addObserver(forName: StagePins.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+    }
+
+    private func refresh() {
+        let pinned = StagePins.pinned
+        for box in boxes {
+            let isPinned = pinned.contains { $0.rawValue == box.identifier?.rawValue }
+            box.state = isPinned ? .on : .off
+            // The last pinned stage can't be unpinned — the control would be empty.
+            box.isEnabled = !(isPinned && pinned.count == 1)
+        }
+    }
+
+    @objc private func toggled(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue, let stage = ShellViewController.Stage(rawValue: raw) else { return }
+        StagePins.toggle(stage)
     }
 }

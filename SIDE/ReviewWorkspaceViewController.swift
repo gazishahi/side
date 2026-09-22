@@ -29,6 +29,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleRow = NSStackView()
+    private let headerRow = NSStackView()
     private let branchChip = NSView()
     private let branchChipLabel = NSTextField(labelWithString: "")
     private let baseChip = NSView()
@@ -80,7 +81,9 @@ final class ReviewWorkspaceViewController: NSViewController {
         emptyStateLabel.textColor = .tertiaryLabelColor
         emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        titleLabel.font = DS.Text.title(.semibold)
+        // The track's intent heads the window's top row (Direction 02 §3.2), with the
+        // `branch → target` line beside it.
+        titleLabel.font = DS.Text.heading()
 
         Self.styleChip(branchChip, branchChipLabel)
         Self.styleChip(baseChip, baseChipLabel)
@@ -205,7 +208,13 @@ final class ReviewWorkspaceViewController: NSViewController {
             overlapText.bottomAnchor.constraint(equalTo: overlapBanner.bottomAnchor, constant: -10),
         ])
 
-        for view in [titleLabel, subtitleRow, overlapBanner, checkpointsHeader, checkpointsStack, diffHeaderRow, diffViewer] {
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = DS.Spacing.l
+        headerRow.addArrangedSubview(titleLabel)
+        headerRow.addArrangedSubview(subtitleRow)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for view in [overlapBanner, checkpointsHeader, checkpointsStack, diffHeaderRow, diffViewer] {
             contentStack.addArrangedSubview(view)
             // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
             // width by default — without this, a wrapping label or the diff card would collapse
@@ -215,16 +224,13 @@ final class ReviewWorkspaceViewController: NSViewController {
             // The title is the exception: the floating Promote capsule occupies the top-right, so
             // a full-width title would slide underneath it. `<=` lets the label take the width it
             // needs and truncate short of the button instead.
-            if view === titleLabel {
-                view.widthAnchor.constraint(lessThanOrEqualTo: contentStack.widthAnchor, constant: -32 - Self.promoteGutter).isActive = true
-            } else {
-                view.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -32).isActive = true
-            }
+            // The overlap banner is the first thing under the floating Promote capsule, so it
+            // stops short of it rather than sliding underneath.
+            let gutter: CGFloat = view === overlapBanner ? -32 - Self.promoteGutter : -32
+            view.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: gutter).isActive = true
         }
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
-        contentStack.setCustomSpacing(DS.Spacing.s, after: titleLabel)
-        contentStack.setCustomSpacing(DS.Spacing.section, after: subtitleRow)
         contentStack.setCustomSpacing(DS.Spacing.section, after: checkpointsStack)
 
         let documentView = ReviewDocumentView()
@@ -792,5 +798,15 @@ final class ReviewWorkspaceViewController: NSViewController {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+extension ReviewWorkspaceViewController: StageChromeProviding {
+    var topRowContent: NSView? { loadViewIfNeeded(); return headerRow }
+
+    func setBottomObstruction(_ height: CGFloat) {
+        loadViewIfNeeded()
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: height > 0 ? height + DS.Spacing.l : 0, right: 0)
     }
 }

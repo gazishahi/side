@@ -173,31 +173,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        // .fullSizeContentView is load-bearing, not cosmetic: without it, titlebarAppearsTransparent
-        // only clears the title-text row — the unified toolbar strip beneath it (where our stage
-        // switcher/search field live) keeps rendering its own opaque system material regardless of
-        // window.backgroundColor. With it, our content view's background extends up behind the
-        // whole title+toolbar region instead of stopping below it, which is what actually lets our
-        // color show through there.
+        // The seamless frame (Direction 02 §3.2): full-size content, no toolbar, the title bar
+        // transparent and undrawn — `installChrome` finishes the job before the window shows.
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Side"
-        window.toolbarStyle = .unifiedCompact
-        window.minSize = NSSize(width: 980, height: 620)
+        window.minSize = NSSize(width: 760, height: 560)
         // Appearance is a preference (Match System / Light / Dark) applied at the application
         // level, not forced dark per window as it was while dark was the only palette. Every
         // token is dynamic, so the window follows whatever NSApp.appearance resolves to.
         DS.Appearance.bootstrap()
         window.backgroundColor = DS.Color.canvas
-        // Even with dark appearance forced, the native title/toolbar strip still renders
-        // using the system's own dark-mode material — a medium charcoal, visibly lighter
-        // than the app's near-black content. This is very likely the real source of "still
-        // too light": that strip runs across the top of every window, Make or Run, whether
-        // or not a tab bar is showing beneath it. Making it transparent lets our own
-        // near-black backgroundColor show through instead, unifying the two.
         window.titlebarAppearsTransparent = true
         let shell = ShellViewController()
         window.contentViewController = shell
-        shell.installToolbarIfNeeded(in: window)
+        shell.installChrome(in: window)
         window.delegate = self
         // We manage window lifetime ourselves via `windows`, not an NSWindowController — the
         // default `true` has AppKit *also* drop its own ownership on close, which races our
@@ -257,6 +246,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (stage badge, Tracks' pinned section, notifications) requires the app or a specific
     /// window/stage to already be in view. Summed across every open window; two windows on the
     /// same project double-count its tracks, an acceptable imprecision for a cosmetic badge.
+    /// Every window's shell — the track pill's "Other projects" section reads across them.
+    var shellViewControllers: [ShellViewController] { windows.compactMap { $0.contentViewController as? ShellViewController } }
+
     func refreshDockBadge() {
         let total = windows.compactMap { $0.contentViewController as? ShellViewController }.reduce(0) { $0 + $1.needsYouCount }
         NSApp.dockTile.badgeLabel = total > 0 ? "\(total)" : nil

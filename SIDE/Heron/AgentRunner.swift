@@ -100,6 +100,14 @@ final class AgentRunner {
     /// Non-nil only while a tool batch is genuinely awaiting a human decision — exposed so a
     /// caller doesn't have to reach into private state to know whether `resolve` even applies.
     var isAwaitingApproval: Bool { pendingBatch != nil }
+    /// A shell command is waiting on the user — what makes an unpinned Run stage show itself.
+    var hasCommandAwaitingApproval: Bool {
+        guard let unresolved = pendingBatch?.unresolvedToolUseIds, !unresolved.isEmpty else { return false }
+        return entries.contains { entry in
+            if case .commandProposal(let presentation) = entry.kind { return presentation.resolution == nil && unresolved.contains(presentation.command.toolUseId) }
+            return false
+        }
+    }
 
     private var observers: [UUID: (AgentRunEvent) -> Void] = [:]
 

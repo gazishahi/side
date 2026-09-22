@@ -158,14 +158,17 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertEqual(value.components(separatedBy: "\n").count, 1, value.debugDescription)
     }
 
-    // MARK: - Stage switcher (2026-09-01 audit, H16)
+    // MARK: - Stage control (2026-09-01 audit, H16; Direction 02 §3.6)
 
-    func testStageLabelsSpeakStateInsteadOfGlyphs() {
-        // The visible titles carry ● and ◑; VoiceOver was reading "black circle".
-        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.tracks, needsYou: true, working: true), "Tracks, a track needs your attention")
-        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.tracks, needsYou: false, working: true), "Tracks, an agent is working")
-        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.tracks, needsYou: false, working: false), "Tracks")
-        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.run, needsYou: false, working: true), "Run, a terminal has new output")
-        XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.make, needsYou: true, working: true), "Make")
+    func testEachStageSegmentIsARadioButtonThatSpeaksItsState() {
+        // The stock segmented control exposed no per-segment element, so state rode in a ● glyph
+        // VoiceOver read as "black circle". Each segment now names itself and its state.
+        let control = SlidingSegmentedControl(titles: ["Make", "Think", "Review", "Run"], style: .overlay)
+        control.setBadge(.needsYou, spokenState: "needs you", at: 1)
+        control.setBadge(.working, spokenState: "a terminal has new output", at: 3)
+        XCTAssertEqual(control.accessibilityRole(), .radioGroup)
+        XCTAssertEqual(control.segmentAccessibilityLabels, ["Make", "Think, needs you", "Review", "Run, a terminal has new output"])
+        control.setBadge(nil, spokenState: nil, at: 1)
+        XCTAssertEqual(control.segmentAccessibilityLabels[1], "Think")
     }
 }

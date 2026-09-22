@@ -1,7 +1,9 @@
 # Side — Design Direction 02: "Tone over lines"
 
 *Rewritten 2026-09-03 after review; **reconciled against HEAD `40199d0`** the same day.
-Status: **agreed, ready to implement.** §2.8 Motion decided 2026-09-04: option B.*
+Status: **agreed, ready to implement.** §2.8 Motion decided 2026-09-04: option B.
+§3 replaced 2026-09-22 by chrome v2 (seamless frame permanent; floating nav bar
+on trial with a defined revert path — §3.0).*
 *Companion docs: `SIDE_DESIGN.md` (charter — update it to match §2 when this lands),
 `SIDE_AUDIT_REPORT_2026-09-01.md` (defects referenced by ID below),
 `SIDE_RFC_NAVIGATION_LEDGER.md` (product decisions **not** in scope here).*
@@ -13,8 +15,8 @@ code. Every rule has a value. Every section ends in acceptance criteria that are
 checkable by test, grep, or a screenshot. Where this document changes something
 `SIDE_DESIGN.md` says, this document wins.
 
-**In scope:** design tokens (appearance-adaptive), window chrome, the four working
-stages' compositions, transient surfaces, empty/first-run states, inline
+**In scope:** design tokens (appearance-adaptive), window chrome (seamless frame,
+floating nav bar trial, stage pinning), the four working stages' compositions, transient surfaces, empty/first-run states, inline
 instruct in Make, motion rules.
 **Out of scope (see the RFC):** cross-project ledger, project-owned terminal
 sessions, runner concurrency ceiling, renaming Review, cross-track agent tools.
@@ -218,86 +220,229 @@ inset **16 / 18**; pinned group padding **6 / 14**.
 
 ---
 
-## 3. Window chrome (agreed 2026-09-03)
+## 3. Window chrome — v2: unified top row + floating nav bar (agreed 2026-09-22)
 
-### 3.1 Stages stay at four in the switcher
+*Supersedes the 2026-09-03 toolbar layout. The components from that version —
+the track pill, the promoted `SlidingSegmentedControl`, the Quick Open palette,
+the AX and keyboard rules — carry over unchanged; what changes is **where they
+live**.*
+
+### 3.0 Trial status and the revert path (read first)
+
+Chrome v2 has two parts with different commitments:
+
+| Part | Commitment |
+|---|---|
+| **Seamless frame** — no titlebar, no toolbar, content to the top edge, unified top row (§3.2) | **Permanent.** Ships regardless. The owner's goal is a seamless UI that maximizes usable space; this part serves it either way. |
+| **Floating bottom nav bar** (§3.3) | **Trial.** Built to be evaluated in real use. If the owner does not approve of it after implementation, it is **reverted to the top-row placement** (§3.9), without touching the seamless frame. |
+
+Build it so the revert is a small, mechanical change, not a redesign:
+
+1. The navigation components — `TrackPill`, the stage control, the search
+   button, and the palette — are **standalone views that know nothing about
+   where they are placed.** No component may read the bar's geometry, assume
+   it is at the bottom, or position itself relative to the window's bottom edge.
+2. A single `ChromeHost` in `ShellViewController` owns placement, switched by
+   one enum:
+   ```swift
+   enum ChromePlacement { case floatingBar, topRow }
+   ```
+   Everything placement-specific — the bar's glass container, content bottom
+   insets, the Think composer merge (§3.4) — lives behind `.floatingBar`.
+3. During the trial the value is read from a **hidden** defaults key
+   (`SideChromePlacement`, default `floatingBar`), so both layouts can be
+   compared on the same build. It is not a user-facing setting.
+4. Both placements are implemented and both pass their acceptance criteria
+   before the trial starts. Reverting = set the default to `.topRow`, then
+   delete the `.floatingBar` branch and the key in a follow-up commit.
+5. The permanent parts (§3.1, §3.2, §3.5–3.8) are written so they are
+   correct under **both** placements; nothing in them depends on the bar.
+
+### 3.1 Stages and pinning
+
 `ShellViewController.Stage` cases are unchanged (`make, think, review, run,
-tracks`). The segmented control shows **Make · Think · Review · Run**. Tracks is
-reached through the track pill (§3.2), ⌘⌥0, and Navigate. Integration and
-Library are **not** stages (Integration is Review's publishing half; Library is a
-separate window, ⇧⌘L) — see the RFC; nothing to build for them here.
+tracks`). Integration and Library are not stages (RFC R6, done).
 
-### 3.2 Track pill — the window's identity (leading)
-- Content: `DS.StatusDot(track.activity)` + track intent (13 · 500,
-  `labelColor`), truncating tail. When the window has a project but no track:
-  dot = idle, text `main · No track` (or the actual default branch).
-- **Click → popover** (`overlay`, radius 10, width 360): a list of this
-  project's tracks grouped **Needs you / Active / Parked**, each row = dot ·
-  intent · caption meta, current track checked; footer actions **New Track…**
-  and **Open Tracks** (→ `Stage.tracks`). Selecting a row switches the window's
-  track without changing stage. This is the primary way to move between
-  tracks; it replaces the project label in the toolbar.
-- Type-to-filter inside the popover after 2 characters.
-- Menu-bar equivalent: Track menu lists the same rows.
-- AX: pill is a `.popUpButton` labelled "Current track: <intent>, <state>".
+The stage control shows the user's **pinned** stages from **Make · Think ·
+Review · Run**. Tracks is never in the control; it is reached through the track
+pill, ⌘⌥0, and Navigate.
 
-### 3.3 Stage control (center)
-- **Constraint (verified):** `NSSegmentedControl` exposes no per-segment
-  accessibility element — its only AX child is the cell — so the per-segment
-  AX label below is not implementable on it. **Answer:** promote Think's
-  existing `SlidingSegmentedControl` to the toolbar (`ShellViewController`).
-  It already gives per-segment buttons (real AX elements), and supports the
-  5 pt dot badge and `overlay` selected fill this section wants. Add the
-  radio-group role and per-button AX value the audit asked for (30.6) while
-  doing so.
-- Four segments, `visibilityPriority = .high`, never collapses.
-- Badge: a 5 pt `DS.StatusDot` trailing the label (`needsYou` or `working` only;
-  needs-you wins). **Remove** the `●`/`◑` glyphs from label strings (audit 30.3 —
-  VoiceOver reads them literally). Each segment's AX label is
-  `"<Stage>, <state>"` (e.g. "Run, working in background").
-- Selected segment: `overlay` fill, radius 6. Unselected: `tertiaryLabelColor`
-  text, no fill.
+**The rule: a stage is a view over shared engines. Unpinning hides a view,
+never a capability.** These invariants hold with any pin set:
 
-### 3.4 Quick Open (trailing) — reshape field → icon + palette
-- **Reshape, don't rebuild.** `files`, `symbols` and `text` (⇧⌘F, Find in
-  Project) already exist in the toolbar field. Replace the persistent field with
-  an icon toolbar button (`⌘P`) that presents a floating palette (`NSPanel`,
-  `overlay`, radius 10, width 560, centered on the window, Open-Quickly shape)
-  hosting the same three modes.
-- `text` mode **must keep using the shared `ProjectTextSearch`** engine — the
-  agent's `search_files` tool uses it too; do not fork it. Mode is shown as a caption prefix and reset to `files` on every
-  open (audit F17 sticky-mode bug).
-- `Escape` returns focus to whatever had it before the palette (not always the
-  Make editor — audit F17).
-- IME: bail to `super` in `keyDown` when `hasMarkedText()` (audit 31.3).
+- **Tracks** are always reachable (pill). A user with no tracks lives in the
+  existing no-track state.
+- **Attention** is never hidden. When an **unpinned** stage has something that
+  needs the user (Review has a review-ready or failed-verification checkpoint;
+  Run has a command awaiting approval), it appears **temporarily** in the stage
+  control with its status dot, after the pinned stages, and leaves once the
+  user has visited it or the state clears. This is the only case where the
+  control's contents change without the user asking.
+- **Promotion** is reachable from any pin set — through Review when pinned, and
+  through the checkpoint sheet in Think (§5.1) otherwise.
+- **Execution** does not depend on Run being pinned: terminals are
+  project-owned (R2, done), so agent commands and tasks run headless and their
+  output is visible inline (§5.1 terminal tail).
 
-### 3.5 Nothing else in the toolbar
-Remove: project label, filename label, branch label, LSP indicator. The file is
-the active tab and the window title; the branch is the track's (visible in the
-pill popover and Tracks); LSP status moves to the trailing end of Make's tab
-strip (caption + dot).
+Mechanism — deliberately minimal:
+- Pin/unpin the four stages. No reordering, no custom layouts, no hiding the
+  bar. At least one stage must stay pinned.
+- Pins are an app-wide preference (Settings → General → *Stages*: four
+  checkboxes), and also the stage control's context menu.
+- **First-run presets** (the §6 first-run sheet gains one step, *How do you
+  work?*): **Agent** (Think + Review), **Editor** (Make + Run), **Everything**
+  (all four, default). A preset only sets the pins; it is editable afterwards.
+- Unpinned stages stay fully reachable through ⌘⌥1–4, Navigate, and the
+  palette's command mode. Unpinning never disables a shortcut.
+- If the current stage is unpinned while showing, the window stays on it until
+  the user navigates away.
 
-### 3.6 Window title
-Make: `file — track`. Other stages: `track`. No project name, no paths
-(`humanePath` stays).
+### 3.2 The seamless frame and unified top row (permanent)
 
-### 3.7 Narrow widths
-Collapse order: pill truncates (intent → dot only), Quick Open is already an
-icon, the stage control never collapses. Lower `minSize` to **760 × 560**.
+- Window: `titleVisibility = .hidden`, `titlebarAppearsTransparent = true`,
+  `.fullSizeContentView`; no `NSToolbar`. Content extends to the top edge.
+- The top edge is **one row**, 38 pt, shared by the traffic lights and the
+  stage's own top content:
+  - **Make:** file tabs. **Run:** session tabs. Same `TabStripView`
+    component, restyled per §2 (active tab `raised`, attached to content, no
+    bottom seam).
+  - **Think:** conversation title (caption, secondary). **Review:** track
+    intent (`heading`) + `code` `branch → target`. **Tracks:** "Tracks" +
+    counts. These are the stage headers from §4, moved up into the row.
+- **Traffic-light safe area:** content in the row starts at 78 pt from the
+  leading edge (after the lights) and never draws beneath them. In full screen,
+  where the lights hide, the inset collapses to the normal 12 pt.
+- **Drag region:** every empty point in the top row drags the window (tab
+  strips report their empty trailing space as draggable;
+  `mouseDownCanMoveWindow` on the row's background views). A double-click on
+  empty row space performs the system titlebar double-click action (respect
+  `AppleActionOnDoubleClick`).
+- **Window title is still set** (`window.title`) even though it isn't drawn —
+  Mission Control, the Window menu, ⌘\`, and VoiceOver read it. Value per §3.7.
+- Row background is `canvas`; a hairline separates it from content **only**
+  when content has scrolled beneath it.
+- Tabs never go into the floating bar — two kinds of navigation in one control
+  is the overload to avoid.
+
+### 3.3 Floating nav bar (trial — `.floatingBar` only)
+
+- One glass capsule, bottom-center, 12 pt above the window's bottom edge,
+  height 40, using the existing `DS.makeGlass` (the material Think's composer
+  uses). Contents, leading → trailing:
+  **[track pill] · [stage control] · [search button]**.
+- Width hugs its contents; maximum 640 pt; the stage control never collapses.
+  Narrow windows: pill truncates to dot-only first, then the stage control
+  switches to icons with the stage name in the tooltip and AX label.
+- **Content under the bar:**
+  - Scrolling content (editor, transcript, diff, ledger) scrolls **beneath**
+    the glass; each scroll view gets a bottom content inset equal to the bar's
+    height + 24 pt so the last line can scroll clear of it.
+  - **Make:** the caret is never under the bar — scroll-to-visible accounts
+    for the inset.
+  - **Run:** the terminal gets a **hard** bottom inset (the view is shortened,
+    not scrolled under), so the prompt line is never beneath glass.
+- The bar is always visible. No auto-hide.
+- **Search palette** (§3.6) presents **anchored to the bar, expanding upward**
+  when `.floatingBar`; centered in the window when `.topRow`.
+- **Info that the earlier idea put on hover** (file, branch, repo) lives in the
+  **track pill's popover**, opened by click. Hover shows a tooltip preview
+  only. No hover-only information anywhere.
+
+### 3.4 Think: one floating stack, not two bars (trial)
+
+Think's composer is already a floating glass bar at the bottom. Under
+`.floatingBar` the two become **one stack**, 10 pt apart, sharing one glass
+backdrop region:
+
+- Composer on top; the nav bar directly beneath it, centered, same width as
+  the composer's capsule or its own hug width, whichever is smaller.
+- While the composer is **first responder with text**, the nav bar dims to
+  `tertiaryLabelColor` content (still operable, no animation beyond §2.8).
+- The session pill stays attached to the composer, as today.
+- The transcript's bottom inset covers the whole stack.
+
+Under `.topRow` Think is unchanged from today.
+
+### 3.5 Track pill (permanent component)
+
+As specified 2026-09-03, unchanged: status dot + intent; no-track state
+`<default branch> · No track`; **click → popover** grouped Needs you / Active /
+Parked, current track checked, type-to-filter after 2 characters, footer **New
+Track…** and **Open Tracks**; selecting a row switches the window's track
+without changing stage. **Additions:**
+- The popover's header shows what was previously toolbar text: project name,
+  branch, and (in Make) the active file's path — as caption/`code` lines.
+- RFC R1 v1: a second section, **Other projects**, listing needs-you tracks
+  from every other open window's project; selecting one brings that window
+  forward on that track.
+- AX: `.popUpButton`, "Current track: <intent>, <state>".
+
+### 3.6 Stage control and search (permanent components)
+
+- **Stage control:** Think's `SlidingSegmentedControl`, promoted (the
+  `NSSegmentedControl` AX constraint recorded 2026-09-03 still applies).
+  Radio-group role, per-segment AX label `"<Stage>, <state>"`, 5 pt dot badge
+  (needs-you wins over working), selected segment `overlay` / radius 6.
+  Context menu: the pin checkboxes (§3.1).
+- **Search button** (`⌘P`) → the palette: modes `files / symbols / text`, plus
+  **`commands`** (a `>` prefix, as in most palettes) listing every stage —
+  pinned or not — and every Navigate menu item. `text` stays on the shared
+  `ProjectTextSearch`. Opens in `files`; Escape restores prior focus; IME-safe
+  (`hasMarkedText()`).
+
+### 3.7 Window title and menu bar
+
+- `window.title`: Make `file — track`; other stages `track`; no paths.
+- **The menu bar stays canonical.** Every stage (pinned or not), every palette
+  mode, the track popover, and pin toggles have menu items with shortcuts. The
+  bar is the fast path, never the only one.
 
 ### 3.8 Keyboard
-Stages **⌘⌥1–4**, Tracks **⌘⌥0** (off bare ⌃N — Mission Control collision,
-audit 31.2). `⌘P` palette, `⇧⌘O` symbols, `⇧⌘F` project text, `⇧⌘T` New Track,
-`⌃⌘T` track popover (toggle). Menu items stay visible for discoverability.
+
+Unchanged: stages ⌘⌥1–4, Tracks ⌘⌥0, ⌘P palette, ⇧⌘O symbols, ⇧⌘F text,
+⇧⌘T New Track, ⌃⌘T track popover. **Add:** ⌘⇧P palette in `commands` mode;
+`⌃Tab` / `⌃⇧Tab` cycle tabs within the current stage's top row. Full Keyboard
+Access reaches the bar's three components in order.
+
+### 3.9 Fallback placement (`.topRow`) — the revert target
+
+If the floating bar is not approved, the navigation components move into the
+unified top row. Everything in §3.1, §3.2, §3.5–3.8 stays.
+
+- Top row, leading → trailing: traffic lights · **track pill** · [the stage's
+  tabs or header, flexible] · **stage control** (compact, 28 pt) · **search
+  button**.
+- Priority when narrow: stage control and search never collapse; tabs scroll
+  horizontally; then the pill truncates to its dot.
+- No bottom insets, no composer merge; Think is as it is today; the palette is
+  centered in the window.
+- Minimum window size under both placements: **760 × 560**.
 
 ### Acceptance — chrome
-- [ ] Toolbar contains exactly: track pill, four-segment stage control, Quick Open icon.
-- [ ] Pill popover lists tracks grouped by state; selecting one retargets all stages without changing the current stage; footer has New Track… and Open Tracks.
-- [ ] No-track state shows `<default branch> · No track` and the popover's primary action is New Track….
-- [ ] Segment labels contain no `●`/`◑`; each segment has an AX label with state; badge is a 5 pt dot.
-- [ ] Quick Open palette has `files / symbols / text` modes, opens in `files`, restores prior focus on Escape, and does not intercept keys during IME composition.
-- [ ] Window resizes to 760 × 560 with nothing collapsing into overflow.
-- [ ] `⌃1`–`⌃5` are no longer bound; `⌘⌥0–4` are.
+Permanent (must pass under **both** placements):
+- [ ] No `NSToolbar`; `fullSizeContentView`; content reaches the top edge; nothing draws under the traffic lights; full-screen collapses the inset.
+- [ ] Every empty point of the top row drags the window; double-click performs the system action.
+- [ ] `window.title` is set per §3.7 and changes with stage and track.
+- [ ] Make and Run tabs render in the top row using one `TabStripView`; Think/Review/Tracks show their header there.
+- [ ] Pinning: unpinning a stage removes it from the control but ⌘⌥N, Navigate, and the palette still reach it; at least one stage stays pinned.
+- [ ] An unpinned stage with needs-you state appears temporarily in the control with its dot and leaves after it is visited or clears.
+- [ ] With only Think pinned, a user can promote (checkpoint sheet) and see command output (terminal tail) without pinning Review or Run.
+- [ ] First-run sheet offers Agent / Editor / Everything and sets pins.
+- [ ] Pill popover header shows project, branch, and (Make) file path; R1 v1 *Other projects* section works across two windows.
+- [ ] Stage control segments have AX labels with state; no `●`/`◑` glyphs; badge is a 5 pt dot.
+- [ ] Palette has `files / symbols / text / commands`; opens in `files`; restores focus on Escape; IME-safe.
+- [ ] Window resizes to 760 × 560 with no control collapsing into overflow.
+
+Trial (`.floatingBar`):
+- [ ] One glass bar, bottom-center, never hidden; scroll views get bottom insets so the last line scrolls clear; Make's caret is never under the bar; Run's prompt is never under the bar (hard inset).
+- [ ] Think shows one stack (composer above bar), not two separate bars.
+- [ ] Palette anchors to the bar and expands upward.
+- [ ] No information is available only on hover.
+
+Revert-readiness:
+- [ ] `ChromePlacement` exists with both cases; both pass their criteria on the same build via the hidden `SideChromePlacement` key.
+- [ ] `grep -rn "floatingBar" SIDE --include='*.swift'` hits only `ShellViewController` / `ChromeHost` (and Think's composer-merge site) — no navigation component references placement.
+- [ ] Screenshots of all five stages in both placements, light and dark, are attached to the PR so the owner can compare.
 
 ---
 
@@ -494,8 +639,12 @@ Impressions form here; the audit found the alpha loop undiscoverable.
    only.
 2. **Borders and pills off (§4 shared rules)** across Tracks/Review/Run/Think.
    Most of the visible change; no logic.
-3. **Chrome (§3)** — pill popover, four segments, palette, min-size, shortcuts,
-   AX labels.
+3. **Chrome v2 (§3)** — in this order: (a) seamless frame + unified top row
+   with tabs/headers (permanent); (b) track pill, stage control, palette as
+   placement-agnostic components; (c) `ChromeHost` with **both** placements;
+   (d) stage pinning + presets; (e) the Think stack. Ship with
+   `.floatingBar` as the default for the trial; the owner decides after use
+   (§3.0). If reverted, set `.topRow` and delete the bar branch.
 4. **Stage compositions (§4.1–4.5)** — Tracks groups and verbs, Review decision
    header, Run task row and status line, Make gutter/LSP/settings.
 5. **Transient surfaces (§5)** — in-place diff, terminal tail, checkpoint sheet,
@@ -520,8 +669,8 @@ description.
 
 ## 8. Files most affected (orientation, not a limit)
 
-`DesignSystem.swift` · `ShellViewController.swift` (toolbar, stage control,
-title) · `AppDelegate.swift` (appearance, menus, shortcuts, first run) ·
+`DesignSystem.swift` · `ShellViewController.swift` (frame, top row,
+`ChromeHost`, stage control, title, pinning) · `AppDelegate.swift` (appearance, menus, shortcuts, first run) ·
 `TracksWorkspaceViewController.swift` · `ReviewWorkspaceViewController.swift` ·
 `DiffView.swift` · `RunWorkspaceViewController.swift` ·
 `TerminalViewController.swift` · `ThinkWorkspaceViewController.swift` ·

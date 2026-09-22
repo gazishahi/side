@@ -52,6 +52,9 @@ final class StageNavigationUITests: XCTestCase {
     func testEveryStageIsReachableFromTheNavigateMenu() {
         // The constitution promises keyboard movement between stages; before the audit there
         // were no stage jumps at all, and nothing has been verifying them since they landed.
+        // The seamless frame (Direction 02 §3.2): no toolbar, and the stage control is in the tree.
+        XCTAssertEqual(app.windows.firstMatch.toolbars.count, 0)
+        XCTAssertTrue(app.windows.firstMatch.radioGroups["Stage"].exists)
         for stage in ["Make", "Think", "Review", "Run", "Tracks"] {
             goToStage(stage)
             XCTAssertTrue(app.windows.firstMatch.exists, "window disappeared after going to \(stage)")
@@ -84,7 +87,7 @@ final class StageNavigationUITests: XCTestCase {
 
         let preferences = app.windows["Preferences"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 5))
-        for pane in ["Providers", "Usage", "Appearance", "History"] {
+        for pane in ["General", "Providers", "Usage", "Appearance", "History"] {
             // `NSTabViewController` in toolbar style exposes its panes as toolbar buttons.
             XCTAssertTrue(preferences.toolbars.buttons[pane].exists, "\(pane) pane is missing from Preferences")
         }
