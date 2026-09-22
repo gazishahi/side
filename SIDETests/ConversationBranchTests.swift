@@ -45,23 +45,40 @@ final class ConversationBranchTests: XCTestCase {
 
     // MARK: - The fork
 
-    func testTheLiveConversationRewindsToJustBeforeTheEditedTurn() {
+    func testTheForkHasTheRightShape() {
+        // The live conversation rewinds to just before the edited turn; the removed turns include
+        // the edited one itself — it is being replaced, so the caller must count it when working
+        // out what those turns already did; the branch is identifiable as one and records where it
+        // diverged; it is titled by the message being edited away, not the conversation's *first*
+        // message (the branch and its parent share that prefix, so the ordinary title would file
+        // both under the same name); it takes a fresh id so it cannot collide with the live
+        // conversation; and it appears in the history picker.
         let store = makeStore()
         let turns = seedFourTurns(store)
-        let branch = store.branchConversation(atTurnId: turns[2].id, forTrackKey: track)
-        XCTAssertNotNil(branch)
+        let liveId = store.session(forTrackKey: track)?.id
+        XCTAssertNotNil(liveId)
+        guard let branch = store.branchConversation(atTurnId: turns[2].id, forTrackKey: track) else {
+            return XCTFail("branch failed")
+        }
+
         let live = store.session(forTrackKey: track)
         XCTAssertEqual(live?.turns.count, 2)
         XCTAssertEqual(live?.turns.map(\.id), [turns[0].id, turns[1].id])
-    }
+        XCTAssertEqual(live?.id, liveId)
 
-    func testTheRemovedTurnsAreReportedIncludingTheEditedOne() {
-        let store = makeStore()
-        let turns = seedFourTurns(store)
-        let branch = store.branchConversation(atTurnId: turns[2].id, forTrackKey: track)
-        // The edited turn itself is "removed" — it is being replaced, so the caller must count it
-        // when working out what those turns already did.
-        XCTAssertEqual(branch?.removedTurns.map(\.id), [turns[2].id, turns[3].id])
+        XCTAssertEqual(branch.removedTurns.map(\.id), [turns[2].id, turns[3].id])
+        XCTAssertEqual(branch.record.isBranch, true)
+        XCTAssertEqual(branch.record.branchPointTurnIndex, 2)
+        XCTAssertEqual(branch.record.title, "second ask")
+        XCTAssertNotEqual(branch.record.id, liveId)
+
+        XCTAssertEqual(store.archivedConversations(forTrackKey: track).count, 1)
+        XCTAssertEqual(store.archivedConversations(forTrackKey: track).first?.isBranch, true)
+
+        // The title skips a leading image block and uses the message's text.
+        let withImage = AgentTurn(role: .user, content: [.image(mediaType: "image/png", base64: "AAAA"), .text("and this")])
+        store.appendTurn(withImage, trackKey: track, providerId: "anthropic", modelId: "m")
+        XCTAssertEqual(store.branchConversation(atTurnId: withImage.id, forTrackKey: track)?.record.title, "and this")
     }
 
     func testTheBranchKeepsTheConversationWholeNotJustTheDiscardedTail() {
@@ -74,41 +91,6 @@ final class ConversationBranchTests: XCTestCase {
         // a branch has to give an ordinary, complete conversation.
         let reopened = store.openArchivedConversation(id: branch.record.id, forTrackKey: track)
         XCTAssertEqual(reopened?.turns.map(\.id), turns.map(\.id))
-    }
-
-    func testTheBranchIsIdentifiableAsOneAndRecordsWhereItDiverged() {
-        let store = makeStore()
-        let turns = seedFourTurns(store)
-        let branch = store.branchConversation(atTurnId: turns[2].id, forTrackKey: track)
-        XCTAssertEqual(branch?.record.isBranch, true)
-        XCTAssertEqual(branch?.record.branchPointTurnIndex, 2)
-    }
-
-    func testTheBranchIsTitledByTheMessageBeingEditedAway() {
-        let store = makeStore()
-        let turns = seedFourTurns(store)
-        let branch = store.branchConversation(atTurnId: turns[2].id, forTrackKey: track)
-        // Not the conversation's *first* message: the branch and its parent share that prefix, so
-        // the ordinary title would file both under the same name.
-        XCTAssertEqual(branch?.record.title, "second ask")
-    }
-
-    func testTheBranchTakesAFreshIdSoItCannotCollideWithTheLiveConversation() {
-        let store = makeStore()
-        let turns = seedFourTurns(store)
-        let liveId = store.session(forTrackKey: track)?.id
-        let branch = store.branchConversation(atTurnId: turns[2].id, forTrackKey: track)
-        XCTAssertNotNil(liveId)
-        XCTAssertNotEqual(branch?.record.id, liveId)
-        XCTAssertEqual(store.session(forTrackKey: track)?.id, liveId)
-    }
-
-    func testTheBranchAppearsInTheHistoryPicker() {
-        let store = makeStore()
-        let turns = seedFourTurns(store)
-        store.branchConversation(atTurnId: turns[2].id, forTrackKey: track)
-        XCTAssertEqual(store.archivedConversations(forTrackKey: track).count, 1)
-        XCTAssertEqual(store.archivedConversations(forTrackKey: track).first?.isBranch, true)
     }
 
     func testTheForkSurvivesARelaunch() {
@@ -148,25 +130,21 @@ final class ConversationBranchTests: XCTestCase {
         XCTAssertEqual(store.session(forTrackKey: track)?.turns.count, 4)
     }
 
-    func testAnUnknownTurnForksNothing() {
-        let store = makeStore()
-        seedFourTurns(store)
-        XCTAssertNil(store.branchConversation(atTurnId: UUID(), forTrackKey: track))
-        XCTAssertEqual(store.session(forTrackKey: track)?.turns.count, 4)
-    }
-
-    func testATrackWithNoConversationForksNothing() {
-        let store = makeStore()
-        XCTAssertNil(store.branchConversation(atTurnId: UUID(), forTrackKey: "empty"))
-    }
-
-    func testATurnFromAnotherTrackDoesNotForkThisOne() {
+    func testForkRefusalsLeaveTheConversationAlone() {
+        // An unknown turn, a track with no conversation, and a turn that belongs to another track
+        // all fork nothing — and the live conversation is untouched by the attempt.
         let store = makeStore()
         let mine = seedFourTurns(store)
+        XCTAssertNil(store.branchConversation(atTurnId: UUID(), forTrackKey: track))
+        XCTAssertEqual(store.session(forTrackKey: track)?.turns.count, 4)
+
+        XCTAssertNil(store.branchConversation(atTurnId: UUID(), forTrackKey: "empty"))
+
         let theirs = AgentTurn(role: .user, content: [.text("other track")])
         store.appendTurn(theirs, trackKey: "other", providerId: "anthropic", modelId: "m")
         XCTAssertNil(store.branchConversation(atTurnId: theirs.id, forTrackKey: track))
         XCTAssertEqual(store.session(forTrackKey: track)?.turns.count, mine.count)
+        XCTAssertTrue(store.archivedConversations(forTrackKey: track).isEmpty)
     }
 
     // MARK: - Repeated forks
@@ -182,19 +160,5 @@ final class ConversationBranchTests: XCTestCase {
         XCTAssertEqual(store.archivedConversations(forTrackKey: track).count, 2)
         XCTAssertEqual(store.session(forTrackKey: track)?.turns.count, 2)
         XCTAssertTrue(store.archivedConversations(forTrackKey: track).allSatisfy(\.isBranch))
-    }
-
-    func testImagesSurviveTheRoundTripIntoTheBranch() {
-        let store = makeStore()
-        append(store, .user, "look at this")
-        let withImage = AgentTurn(role: .user, content: [.image(mediaType: "image/png", base64: "AAAA"), .text("and this")])
-        store.appendTurn(withImage, trackKey: track, providerId: "anthropic", modelId: "m")
-        guard let branch = store.branchConversation(atTurnId: withImage.id, forTrackKey: track) else {
-            return XCTFail("branch failed")
-        }
-        XCTAssertEqual(branch.record.title, "and this")
-        let reopened = store.openArchivedConversation(id: branch.record.id, forTrackKey: track)
-        let images = reopened?.turns.flatMap(\.content).filter { if case .image = $0 { return true } else { return false } }
-        XCTAssertEqual(images?.count, 1)
     }
 }

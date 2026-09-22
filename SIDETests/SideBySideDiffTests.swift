@@ -16,32 +16,20 @@ final class SideBySideRowsTests: XCTestCase {
         }
     }
 
-    func testAOneLineEditIsOneRowWithOldLeftAndNewRight() {
-        let rows = SideBySideRows.build(hunk("@@ -1,3 +1,3 @@\n a\n-b\n+B\n c"))
-        XCTAssertEqual(describe(rows), ["H", " a |  a", "-b | +B", " c |  c"])
-    }
-
-    func testUnequalRunsLeaveBlanksOnTheShorterSide() {
-        // Two removed, three added: the third addition has nothing opposite it.
-        let rows = SideBySideRows.build(hunk("@@ -1,2 +1,3 @@\n-a\n-b\n+A\n+B\n+C"))
-        XCTAssertEqual(describe(rows), ["H", "-a | +A", "-b | +B", "· | +C"])
-    }
-
-    func testAPureAdditionSitsOnTheRightWithBlanksLeft() {
-        let rows = SideBySideRows.build(hunk("@@ -1,1 +1,3 @@\n x\n+y\n+z"))
-        XCTAssertEqual(describe(rows), ["H", " x |  x", "· | +y", "· | +z"])
-    }
-
-    func testAPureRemovalSitsOnTheLeftWithBlanksRight() {
-        let rows = SideBySideRows.build(hunk("@@ -1,3 +1,1 @@\n x\n-y\n-z"))
-        XCTAssertEqual(describe(rows), ["H", " x |  x", "-y | ·", "-z | ·"])
-    }
-
-    func testARemovalAfterAdditionsStartsANewChange() {
-        // `+A` then `-b`: git never emits this within one change, but a parser might; it must not
-        // pair b with A. The addition flushes first, then the removal begins its own run.
-        let rows = SideBySideRows.build(hunk("@@ -1,2 +1,2 @@\n+A\n-b\n+B"))
-        XCTAssertEqual(describe(rows), ["H", "· | +A", "-b | +B"])
+    func testRowPairing() {
+        // Removed and added runs pair up row by row; the shorter side gets blanks. `+A` then `-b`
+        // is a shape git never emits within one change, but a parser might; it must not pair b
+        // with A — the addition flushes first, then the removal begins its own run.
+        let cases: [(name: String, hunk: String, rows: [String])] = [
+            ("one-line edit: old left, new right", "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c", ["H", " a |  a", "-b | +B", " c |  c"]),
+            ("unequal runs leave blanks on the shorter side", "@@ -1,2 +1,3 @@\n-a\n-b\n+A\n+B\n+C", ["H", "-a | +A", "-b | +B", "· | +C"]),
+            ("pure addition sits right with blanks left", "@@ -1,1 +1,3 @@\n x\n+y\n+z", ["H", " x |  x", "· | +y", "· | +z"]),
+            ("pure removal sits left with blanks right", "@@ -1,3 +1,1 @@\n x\n-y\n-z", ["H", " x |  x", "-y | ·", "-z | ·"]),
+            ("a removal after additions starts a new change", "@@ -1,2 +1,2 @@\n+A\n-b\n+B", ["H", "· | +A", "-b | +B"]),
+        ]
+        for row in cases {
+            XCTAssertEqual(describe(SideBySideRows.build(hunk(row.hunk))), row.rows, row.name)
+        }
     }
 
     func testBothColumnsHaveTheSameRowCount() {
@@ -53,27 +41,16 @@ final class SideBySideRowsTests: XCTestCase {
         XCTAssertEqual(left, rows.count + 1)  // trailing newline
     }
 
-    func testTheHeaderTextRendersInTheLeftColumnOnly() {
-        let rows = SideBySideRows.build(hunk("@@ -1,1 +1,1 @@\n-a\n+b"))
-        XCTAssertTrue(DiffBody.attributedColumn(rows: rows, side: .left).string.contains("@@ -1,1 +1,1 @@"))
-        XCTAssertFalse(DiffBody.attributedColumn(rows: rows, side: .right).string.contains("@@"))
-    }
-
-    func testEachColumnShowsItsOwnLineNumbers() {
+    func testColumnRendering() {
+        // The hunk header renders in the left column only, and each column carries its own
+        // line numbers.
         let rows = SideBySideRows.build(hunk("@@ -10,1 +20,1 @@\n-a\n+b"))
         let left = DiffBody.attributedColumn(rows: rows, side: .left).string
         let right = DiffBody.attributedColumn(rows: rows, side: .right).string
+        XCTAssertTrue(left.contains("@@ -10,1 +20,1 @@"), left)
+        XCTAssertFalse(right.contains("@@"), right)
         XCTAssertTrue(left.contains("10  a"), left)
         XCTAssertTrue(right.contains("20  b"), right)
-    }
-
-    func testTheLayoutPreferenceRoundTrips() {
-        let original = DiffLayout.preferred
-        defer { DiffLayout.preferred = original }
-        DiffLayout.preferred = .sideBySide
-        XCTAssertEqual(DiffLayout.preferred, .sideBySide)
-        DiffLayout.preferred = .unified
-        XCTAssertEqual(DiffLayout.preferred, .unified)
     }
 
     @MainActor

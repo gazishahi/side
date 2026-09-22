@@ -38,44 +38,6 @@ final class DataIntegrityAuditTests: XCTestCase {
         git(["commit", "-q", "-m", "first"])
     }
 
-    // MARK: - H3: corrupt store is quarantined, not overwritten
-
-    func testACorruptStoreIsQuarantinedBeforeAnythingCanOverwriteIt() throws {
-        let url = root.appendingPathComponent("tracks.json")
-        let garbage = Data("{ this is not json".utf8)
-        try garbage.write(to: url)
-        PersistenceFailureReporter.shared.resetCounts()
-
-        XCTAssertNil(JSONStore.read([Track].self, from: url))
-        // The original is gone from its path — so a loader's `?? []` followed by `save()`
-        // writes a fresh file rather than clobbering the evidence.
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-        let siblings = try FileManager.default.contentsOfDirectory(atPath: root.path)
-        guard let quarantined = siblings.first(where: { $0.hasPrefix("tracks.json.corrupt-") }) else {
-            return XCTFail("no quarantine file among \(siblings)")
-        }
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(quarantined)), garbage)
-
-        // And the store carries on: the next save lands at the original path.
-        XCTAssertTrue(JSONStore.write([Track(intent: "x", branchName: "x")], to: url))
-        XCTAssertEqual(JSONStore.read([Track].self, from: url)?.payload.count, 1)
-    }
-
-    func testAMissingFileIsNotACorruptFile() throws {
-        // First run: nothing to quarantine, nothing to report.
-        let url = root.appendingPathComponent("never-written.json")
-        XCTAssertNil(JSONStore.read([Track].self, from: url))
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
-    }
-
-    func testQuarantineNamesAreDistinctPerMoment() {
-        let url = root.appendingPathComponent("x.json")
-        let a = JSONStore.quarantinePath(for: url, at: Date(timeIntervalSince1970: 0))
-        let b = JSONStore.quarantinePath(for: url, at: Date(timeIntervalSince1970: 60))
-        XCTAssertNotEqual(a, b)
-        XCTAssertTrue(a.lastPathComponent.hasPrefix("x.json.corrupt-"))
-    }
-
     // MARK: - H4: promote refuses a detached merge root
 
     func testPromoteRefusesWhenTheMergeRootIsDetached() {

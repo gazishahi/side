@@ -17,12 +17,11 @@ final class HistoryRetentionTests: XCTestCase {
         super.tearDown()
     }
 
-    func testForeverNeverExpiresAnything() {
+    func testCutoffDateFollowsTheSetting() throws {
+        // Forever has no cutoff at all; a window is the configured number of days back.
         HistoryRetention.current = .forever
         XCTAssertNil(HistoryRetention.current.cutoffDate())
-    }
 
-    func testCutoffIsTheConfiguredNumberOfDaysBack() throws {
         HistoryRetention.current = .thirtyDays
         let now = Date()
         let cutoff = try XCTUnwrap(HistoryRetention.current.cutoffDate(now: now))

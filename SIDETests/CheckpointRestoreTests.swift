@@ -34,17 +34,26 @@ final class CheckpointRestoreTests: XCTestCase {
         )
     }
 
-    func testRestoringThroughLatestRevertsNewestFirst() {
+    func testRestoringThroughLatestRevertsNewestFirstByTimeAndOnlyKnownTargets() {
         // Order is the whole correctness question: reversing the oldest first would try to undo
         // a change against a tree that later commits have already moved on from, and conflict
         // for reasons that look like git misbehaving.
         let first = checkpoint("first", sha: "aaa", at: 100)
         let second = checkpoint("second", sha: "bbb", at: 200)
         let third = checkpoint("third", sha: "ccc", at: 300)
-        XCTAssertEqual(
-            CheckpointRestore.commitsToRevert(checkpoints: [first, second, third], target: second, scope: .throughLatest),
-            ["ccc", "bbb"]
-        )
+        let stranger = checkpoint("stranger", sha: "zzz", at: 150)
+        let cases: [(name: String, checkpoints: [Checkpoint], target: Checkpoint, expected: [String])] = [
+            ("newest first", [first, second, third], second, ["ccc", "bbb"]),
+            // Sorted by time, not by the order the caller happened to hand them over.
+            ("out-of-order input", [second, first], first, ["bbb", "aaa"]),
+            ("unknown target reverts nothing", [first], stranger, []),
+        ]
+        for row in cases {
+            XCTAssertEqual(
+                CheckpointRestore.commitsToRevert(checkpoints: row.checkpoints, target: row.target, scope: .throughLatest),
+                row.expected, row.name
+            )
+        }
     }
 
     func testCheckpointsWithNoCommitAreSkipped() {
@@ -57,21 +66,6 @@ final class CheckpointRestoreTests: XCTestCase {
             CheckpointRestore.commitsToRevert(checkpoints: [first, second, third], target: first, scope: .throughLatest),
             ["ccc", "aaa"]
         )
-    }
-
-    func testOutOfOrderInputIsSortedByTime() {
-        let first = checkpoint("first", sha: "aaa", at: 100)
-        let second = checkpoint("second", sha: "bbb", at: 200)
-        XCTAssertEqual(
-            CheckpointRestore.commitsToRevert(checkpoints: [second, first], target: first, scope: .throughLatest),
-            ["bbb", "aaa"]
-        )
-    }
-
-    func testAnUnknownTargetRevertsNothing() {
-        let known = checkpoint("known", sha: "aaa", at: 100)
-        let stranger = checkpoint("stranger", sha: "zzz", at: 150)
-        XCTAssertTrue(CheckpointRestore.commitsToRevert(checkpoints: [known], target: stranger, scope: .throughLatest).isEmpty)
     }
 
     func testMessageNamesWhatIsBeingUndone() {
@@ -145,31 +139,16 @@ final class CheckpointRestoreTests: XCTestCase {
         XCTAssertEqual(GitPaths.runGit(["log", "--oneline"], cwd: path).output.split(separator: "\n").count, 4)
     }
 
-    func testAConflictLeavesTheWorktreeUntouched() throws {
-        let path = try makeRepo()
-        _ = commit("line\n", to: "a.txt", in: path, message: "base")
-        let agentSHA = commit("agent line\n", to: "a.txt", in: path, message: "agent edit")
-        // Someone edited the same line afterwards, so the reversal can't apply cleanly.
-        _ = commit("human line\n", to: "a.txt", in: path, message: "human edit")
-
-        let outcome = CheckpointRestore.perform(commits: [agentSHA], message: "Undo", worktreePath: path)
-        guard case .conflicted(let paths) = outcome else { return XCTFail("expected conflict, got \(outcome)") }
-        XCTAssertEqual(paths, ["a.txt"])
-        // Half-undone with conflict markers in it would be the worst possible outcome — the
-        // file must read exactly as it did before the attempt.
-        XCTAssertEqual(try String(contentsOfFile: path + "/a.txt", encoding: .utf8), "human line\n")
-        XCTAssertTrue(GitPaths.runGit(["status", "--porcelain"], cwd: path).output.isEmpty)
-    }
-
-    func testAConflictPreservesUncommittedWorkInOtherFiles() throws {
-        // The case the original conflict test missed: it left the worktree clean at the moment
-        // of the conflict, so `abandon()`'s `git reset --hard HEAD` looked harmless. With real
-        // uncommitted work present, that reset destroyed it — the exact failure this whole file
-        // exists to prevent. Found by an audit, not by the suite.
+    func testAConflictLeavesTheWorktreeAndUncommittedWorkUntouched() throws {
+        // The original conflict test left the worktree clean at the moment of the conflict, so
+        // `abandon()`'s `git reset --hard HEAD` looked harmless. With real uncommitted work
+        // present, that reset destroyed it — the exact failure this whole file exists to
+        // prevent. Found by an audit, not by the suite.
         let path = try makeRepo()
         _ = commit("line\n", to: "a.txt", in: path, message: "base")
         _ = commit("tracked\n", to: "mine.txt", in: path, message: "add mine")
         let agentSHA = commit("agent line\n", to: "a.txt", in: path, message: "agent edit")
+        // Someone edited the same line afterwards, so the reversal can't apply cleanly.
         _ = commit("human line\n", to: "a.txt", in: path, message: "human edit")
 
         // Uncommitted work of both kinds, in files the checkpoint never touched.
@@ -177,13 +156,22 @@ final class CheckpointRestoreTests: XCTestCase {
         try "brand new\n".write(toFile: path + "/untracked.txt", atomically: true, encoding: .utf8)
 
         let outcome = CheckpointRestore.perform(commits: [agentSHA], message: "Undo", worktreePath: path)
-        guard case .conflicted = outcome else { return XCTFail("expected conflict, got \(outcome)") }
+        guard case .conflicted(let paths) = outcome else { return XCTFail("expected conflict, got \(outcome)") }
+        XCTAssertEqual(paths, ["a.txt"])
 
         XCTAssertEqual(try String(contentsOfFile: path + "/mine.txt", encoding: .utf8), "my unsaved edit\n",
                        "a failed undo destroyed the user's uncommitted edit")
         XCTAssertEqual(try String(contentsOfFile: path + "/untracked.txt", encoding: .utf8), "brand new\n")
-        // And the conflicted file itself is still back at HEAD, with no markers left behind.
+        // Half-undone with conflict markers in it would be the worst possible outcome — the
+        // conflicted file must read exactly as it did before the attempt, no revert is left in
+        // progress, and the only thing dirty in the tree is the user's own work.
         XCTAssertEqual(try String(contentsOfFile: path + "/a.txt", encoding: .utf8), "human line\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path + "/.git/REVERT_HEAD"))
+        let status = GitPaths.runGit(["status", "--porcelain"], cwd: path).output
+        // runGit trims its output, which eats the leading space of a " M" row — so compare
+        // (status code, path) rather than raw porcelain lines.
+        let rows = Set(status.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
+        XCTAssertEqual(rows, ["M mine.txt", "?? untracked.txt"], status)
     }
 
     func testUndoingAnUndoIsJustAnotherRevert() throws {

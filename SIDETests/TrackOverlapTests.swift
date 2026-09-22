@@ -19,28 +19,23 @@ final class TrackOverlapTests: XCTestCase {
         XCTAssertEqual(siblings.first?.intent, "tidy the utils")
     }
 
-    func testTracksWithNoOverlapAreDropped() {
-        let siblings = TrackOverlap.siblings(
-            of: "feature-a",
-            changedPathsByBranch: [
-                "feature-a": ["src/App.swift"],
-                "feature-b": ["docs/guide.md"],
-            ],
-            intentsByBranch: [:]
-        )
-        XCTAssertTrue(siblings.isEmpty)
+    func testSiblingFiltering() {
+        // Tracks with no overlap are dropped, the track never overlaps itself, and a track that
+        // changed nothing has no overlap with anyone.
+        let cases: [(name: String, of: String, paths: [String: Set<String>])] = [
+            ("no shared paths", "feature-a", ["feature-a": ["src/App.swift"], "feature-b": ["docs/guide.md"]]),
+            ("only itself", "feature-a", ["feature-a": ["src/App.swift"]]),
+            ("changed nothing", "fresh", ["fresh": [], "busy": ["a.swift"]]),
+        ]
+        for row in cases {
+            let siblings = TrackOverlap.siblings(of: row.of, changedPathsByBranch: row.paths, intentsByBranch: [:])
+            XCTAssertTrue(siblings.isEmpty, "\(row.name): \(siblings.map(\.branchName))")
+        }
     }
 
-    func testTheTrackNeverOverlapsItself() {
-        let siblings = TrackOverlap.siblings(
-            of: "feature-a",
-            changedPathsByBranch: ["feature-a": ["src/App.swift"]],
-            intentsByBranch: [:]
-        )
-        XCTAssertTrue(siblings.isEmpty)
-    }
-
-    func testWorstOverlapComesFirst() {
+    func testSiblingOrdering() {
+        // The worst overlap comes first. Dictionary iteration order isn't stable between runs;
+        // without a tiebreak the banner would reshuffle on every refresh for no visible reason.
         let siblings = TrackOverlap.siblings(
             of: "mine",
             changedPathsByBranch: [
@@ -51,85 +46,64 @@ final class TrackOverlapTests: XCTestCase {
             intentsByBranch: [:]
         )
         XCTAssertEqual(siblings.map(\.branchName), ["heavy", "light"])
-    }
 
-    func testOrderIsStableForEqualOverlap() {
-        // Dictionary iteration order isn't stable between runs; without a tiebreak the banner
-        // would reshuffle on every refresh for no visible reason.
-        let input: [String: Set<String>] = [
+        let equal: [String: Set<String>] = [
             "mine": ["a.swift"],
             "zebra": ["a.swift"],
             "alpha": ["a.swift"],
         ]
         for _ in 0..<5 {
-            let siblings = TrackOverlap.siblings(of: "mine", changedPathsByBranch: input, intentsByBranch: [:])
-            XCTAssertEqual(siblings.map(\.branchName), ["alpha", "zebra"])
+            let tied = TrackOverlap.siblings(of: "mine", changedPathsByBranch: equal, intentsByBranch: [:])
+            XCTAssertEqual(tied.map(\.branchName), ["alpha", "zebra"])
         }
-    }
-
-    func testATrackThatChangedNothingHasNoOverlap() {
-        let siblings = TrackOverlap.siblings(
-            of: "fresh",
-            changedPathsByBranch: ["fresh": [], "busy": ["a.swift"]],
-            intentsByBranch: [:]
-        )
-        XCTAssertTrue(siblings.isEmpty)
     }
 
     // MARK: - Summary
 
-    func testHeadlineNamesTheOtherTrack() {
-        let headline = TrackOverlap.headline(for: [
-            .init(branchName: "feature-b", intent: "tidy the utils", sharedPaths: ["src/Util.swift"])
-        ])
-        XCTAssertEqual(headline, "Also being changed by \u{201C}tidy the utils\u{201D}")
+    func testHeadline() {
+        // Names the other track by intent, falls back to the branch name without one, counts
+        // additional tracks, and is absent when there are no siblings — no banner.
+        let cases: [(name: String, siblings: [TrackOverlap.Sibling], headline: String?)] = [
+            ("names the intent",
+             [.init(branchName: "feature-b", intent: "tidy the utils", sharedPaths: ["src/Util.swift"])],
+             "Also being changed by \u{201C}tidy the utils\u{201D}"),
+            ("falls back to the branch name",
+             [.init(branchName: "feature-b", intent: "", sharedPaths: ["a.swift", "b.swift"])],
+             "Also being changed by \u{201C}feature-b\u{201D}"),
+            ("counts additional tracks",
+             [.init(branchName: "b", intent: "", sharedPaths: ["a.swift"]),
+              .init(branchName: "c", intent: "", sharedPaths: ["a.swift"]),
+              .init(branchName: "d", intent: "", sharedPaths: ["a.swift"])],
+             "Also being changed by \u{201C}b\u{201D} and 2 other tracks"),
+            ("no siblings, no banner", [], nil),
+        ]
+        for row in cases {
+            XCTAssertEqual(TrackOverlap.headline(for: row.siblings), row.headline, row.name)
+        }
     }
 
-    func testHeadlineFallsBackToTheBranchNameWithoutAnIntent() {
-        let headline = TrackOverlap.headline(for: [
-            .init(branchName: "feature-b", intent: "", sharedPaths: ["a.swift", "b.swift"])
-        ])
-        XCTAssertEqual(headline, "Also being changed by \u{201C}feature-b\u{201D}")
-    }
-
-    func testHeadlineCountsAdditionalTracks() {
-        let headline = TrackOverlap.headline(for: [
-            .init(branchName: "b", intent: "", sharedPaths: ["a.swift"]),
-            .init(branchName: "c", intent: "", sharedPaths: ["a.swift"]),
-            .init(branchName: "d", intent: "", sharedPaths: ["a.swift"]),
-        ])
-        XCTAssertEqual(headline, "Also being changed by \u{201C}b\u{201D} and 2 other tracks")
-    }
-
-    func testSharedPathsAreNamedNotCounted() {
+    func testSharedPathsSummary() {
         // The banner has the width; "3 files" without naming them is the count without the
-        // answer to the question it provokes.
-        let summary = TrackOverlap.sharedPathsSummary(for: [
+        // answer to the question it provokes. Paths are deduplicated across tracks, and a large
+        // overlap is capped rather than wrapping.
+        let named = TrackOverlap.sharedPathsSummary(for: [
             .init(branchName: "b", intent: "", sharedPaths: ["src/a.swift", "src/b.swift"])
         ])
-        XCTAssertTrue(summary.contains("src/a.swift"))
-        XCTAssertTrue(summary.contains("src/b.swift"))
-    }
+        XCTAssertTrue(named.contains("src/a.swift"), named)
+        XCTAssertTrue(named.contains("src/b.swift"), named)
 
-    func testSharedPathsAreDeduplicatedAcrossTracks() {
-        let summary = TrackOverlap.sharedPathsSummary(for: [
+        let deduplicated = TrackOverlap.sharedPathsSummary(for: [
             .init(branchName: "b", intent: "", sharedPaths: ["a.swift"]),
             .init(branchName: "c", intent: "", sharedPaths: ["a.swift", "b.swift"]),
         ])
-        XCTAssertEqual(summary, "a.swift  \u{00B7}  b.swift")
-    }
+        XCTAssertEqual(deduplicated, "a.swift  \u{00B7}  b.swift")
 
-    func testALargeOverlapIsCappedRatherThanWrapping() {
         let many = (1...9).map { "file\($0).swift" }
-        let summary = TrackOverlap.sharedPathsSummary(for: [
+        let capped = TrackOverlap.sharedPathsSummary(for: [
             .init(branchName: "b", intent: "", sharedPaths: many)
         ])
-        XCTAssertTrue(summary.contains("+5 more"), summary)
-        XCTAssertFalse(summary.contains("file9.swift"), summary)
-    }
-
-    func testNoSiblingsMeansNoBanner() {
-        XCTAssertNil(TrackOverlap.headline(for: []))
+        XCTAssertTrue(capped.contains("+5 more"), capped)
+        XCTAssertFalse(capped.contains("file9.swift"), capped)
     }
 
     // MARK: - Against a real repository

@@ -38,7 +38,10 @@ final class DirtyPathsTests: XCTestCase {
         XCTAssertTrue(GitPaths.runGit(["add", "--"] + paths.sorted(), cwd: root.path).success)
     }
 
-    func testStagedAndUntrackedEntriesAlsoRoundTrip() throws {
+    func testStatusShapesRoundTrip() throws {
+        // A clean tree reports nothing; every porcelain shape — staged, worktree-modified,
+        // untracked — reports its full path.
+        XCTAssertTrue(GitPaths.dirtyPaths(cwd: root.path).isEmpty)
         try "changed\n".write(to: root.appendingPathComponent("src/a.txt"), atomically: true, encoding: .utf8)
         git(["add", "src/a.txt"])                                    // "M  src/a.txt"
         try "changed\n".write(to: root.appendingPathComponent("src/b.txt"), atomically: true, encoding: .utf8)  // " M src/b.txt"
@@ -61,9 +64,5 @@ final class DirtyPathsTests: XCTestCase {
         // including it would stage a path git must reject.
         XCTAssertTrue(paths.contains("src/renamed.txt"), "\(paths)")
         XCTAssertFalse(paths.contains("src/a.txt"), "\(paths)")
-    }
-
-    func testACleanTreeHasNoDirtyPaths() {
-        XCTAssertTrue(GitPaths.dirtyPaths(cwd: root.path).isEmpty)
     }
 }

@@ -11,34 +11,31 @@ final class ProjectFileAccessGuardTests: XCTestCase {
 
     private func url(_ relative: String) -> URL { root.appendingPathComponent(relative) }
 
-    func testGitAndSideAreNotWritableInAnyCasing() {
-        for path in [".git/config", ".GIT/config", ".Git/hooks/post-checkout", ".gIt/HEAD",
-                     ".side/tracks.json", ".SIDE/tracks.json", ".Side/think/index.json"] {
-            XCTAssertFalse(ProjectFileAccess.isWritable(url(path), root: root), "writable: \(path)")
+    func testWriteGuard() {
+        // `.git` and `.side` are not writable in any casing, nor is the root itself; ordinary
+        // files — including look-alikes such as `.gitignore` and `.github` — are.
+        let cases: [(URL, Bool)] = [
+            (url(".git/config"), false), (url(".GIT/config"), false), (url(".Git/hooks/post-checkout"), false),
+            (url(".gIt/HEAD"), false), (url(".side/tracks.json"), false), (url(".SIDE/tracks.json"), false),
+            (url(".Side/think/index.json"), false), (root, false),
+            (url("src/main.swift"), true), (url("README.md"), true), (url(".gitignore"), true),
+            (url(".github/workflows/ci.yml"), true), (url("gitlab/x"), true),
+        ]
+        for (target, writable) in cases {
+            XCTAssertEqual(ProjectFileAccess.isWritable(target, root: root), writable, "\(writable ? "not writable" : "writable"): \(target.path)")
         }
     }
 
-    func testOrdinaryFilesAreWritable() {
-        for path in ["src/main.swift", "README.md", ".gitignore", ".github/workflows/ci.yml", "gitlab/x"] {
-            XCTAssertTrue(ProjectFileAccess.isWritable(url(path), root: root), "not writable: \(path)")
+    func testReadGuard() {
+        // `.git/side/` holds every track's conversation. Readable, it is a cross-track leak. Only
+        // Side's own state is hidden — HEAD and refs are ordinary read targets.
+        let cases: [(String, Bool)] = [
+            (".git/side/think/index.json", false), (".GIT/side/think/index.json", false), (".git/Side/x", false),
+            (".side/tracks.json", false), (".SIDE/tracks.json", false),
+            (".git/HEAD", true), ("src/a.swift", true),
+        ]
+        for (path, readable) in cases {
+            XCTAssertEqual(ProjectFileAccess.isReadable(url(path), root: root), readable, "\(readable ? "not readable" : "readable"): \(path)")
         }
-    }
-
-    func testTheRootItselfIsNotWritable() {
-        XCTAssertFalse(ProjectFileAccess.isWritable(root, root: root))
-    }
-
-    func testConversationStateIsNotReadableInAnyCasing() {
-        // `.git/side/` holds every track's conversation. Readable, it is a cross-track leak.
-        for path in [".git/side/think/index.json", ".GIT/side/think/index.json", ".git/Side/x",
-                     ".side/tracks.json", ".SIDE/tracks.json"] {
-            XCTAssertFalse(ProjectFileAccess.isReadable(url(path), root: root), "readable: \(path)")
-        }
-    }
-
-    func testTheRestOfGitIsStillReadable() {
-        // Only Side's own state is hidden — HEAD and refs are ordinary read targets.
-        XCTAssertTrue(ProjectFileAccess.isReadable(url(".git/HEAD"), root: root))
-        XCTAssertTrue(ProjectFileAccess.isReadable(url("src/a.swift"), root: root))
     }
 }

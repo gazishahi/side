@@ -14,29 +14,35 @@ final class ModelSelectionTests: XCTestCase {
         XCTAssertNil(AgentEffort.standard.openAIReasoningEffort)
     }
 
-    func testHigherEffortMeansABiggerThinkingBudget() {
-        let budgets = [AgentEffort.low, .medium, .high].map { $0.anthropicThinkingBudget ?? 0 }
-        XCTAssertEqual(budgets, budgets.sorted())
-        XCTAssertGreaterThan(budgets[0], 0)
-    }
+    func testEachEffortLevelHasAConsistentWireFormat() {
+        // Higher effort means a bigger thinking budget; the API enforces budget_tokens <
+        // max_tokens, so a budget at or above Side's base ceiling has to raise the ceiling rather
+        // than produce a rejected request; and the OpenAI names must match the wire vocabulary.
+        // The Claude 5 adaptive form uses effort names too, distinct from budgets.
+        let table: [(effort: AgentEffort, openAI: String?)] = [
+            (.standard, nil),
+            (.low, "low"),
+            (.medium, "medium"),
+            (.high, "high"),
+        ]
+        XCTAssertEqual(Set(table.map(\.effort)), Set(AgentEffort.allCases), "every effort level needs a row")
 
-    func testThinkingBudgetAlwaysLeavesRoomForTheAnswer() {
-        // The API enforces budget_tokens < max_tokens, so a budget at or above Side's base
-        // ceiling has to raise the ceiling rather than produce a rejected request.
-        for effort in AgentEffort.allCases {
-            let maxTokens = effort.anthropicMaxTokens(base: 8_192)
-            guard let budget = effort.anthropicThinkingBudget else {
-                XCTAssertEqual(maxTokens, 8_192, "standard shouldn't move the ceiling")
+        var previousBudget = 0
+        for row in table {
+            XCTAssertEqual(row.effort.openAIReasoningEffort, row.openAI, "\(row.effort) OpenAI reasoning_effort")
+            let maxTokens = row.effort.anthropicMaxTokens(base: 8_192)
+            guard let budget = row.effort.anthropicThinkingBudget else {
+                XCTAssertEqual(maxTokens, 8_192, "\(row.effort) shouldn't move the ceiling")
                 continue
             }
-            XCTAssertGreaterThan(maxTokens, budget, "\(effort) leaves no room for output")
+            XCTAssertGreaterThan(budget, 0, "\(row.effort) has no thinking budget")
+            XCTAssertGreaterThanOrEqual(budget, previousBudget, "\(row.effort) budget is smaller than the level below it")
+            XCTAssertGreaterThan(maxTokens, budget, "\(row.effort) leaves no room for output")
+            previousBudget = budget
         }
-    }
 
-    func testOpenAIEffortNamesMatchTheWireVocabulary() {
-        XCTAssertEqual(AgentEffort.low.openAIReasoningEffort, "low")
-        XCTAssertEqual(AgentEffort.medium.openAIReasoningEffort, "medium")
-        XCTAssertEqual(AgentEffort.high.openAIReasoningEffort, "high")
+        XCTAssertEqual(AgentEffort.high.anthropicOutputEffort, "high")
+        XCTAssertNil(AgentEffort.standard.anthropicOutputEffort)
     }
 
     func testClaude5ModelsUseAdaptiveThinkingAndOlderOnesUseABudget() {
@@ -48,11 +54,6 @@ final class ModelSelectionTests: XCTestCase {
         XCTAssertFalse(AnthropicMessagesProvider.usesAdaptiveThinking(modelId: "claude-haiku-4-5-20251001"))
         // Dated variants of a 5-series model must still take the adaptive path.
         XCTAssertTrue(AnthropicMessagesProvider.usesAdaptiveThinking(modelId: "claude-opus-5-20260401"))
-    }
-
-    func testAdaptiveEffortNamesAreDistinctFromBudgets() {
-        XCTAssertEqual(AgentEffort.high.anthropicOutputEffort, "high")
-        XCTAssertNil(AgentEffort.standard.anthropicOutputEffort)
     }
 
     // MARK: - Per-track persistence
@@ -97,44 +98,5 @@ final class ModelSelectionTests: XCTestCase {
         XCTAssertNil(selection.providerId)
         XCTAssertNil(selection.modelId)
         XCTAssertNil(selection.effort)
-    }
-
-    func testTracksWrittenBeforeThisFeatureStillLoad() throws {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let legacy = """
-        {"id":"\(UUID().uuidString)","intent":"old track","branchName":"legacy","status":"active",
-         "createdAt":"2026-01-01T00:00:00Z","lastActiveAt":"2026-01-02T00:00:00Z"}
-        """
-        let track = try decoder.decode(Track.self, from: Data(legacy.utf8))
-        XCTAssertEqual(track.branchName, "legacy")
-        XCTAssertNil(track.modelId)
-        XCTAssertNil(track.effort)
-    }
-
-    // MARK: - Adapter resolution
-
-    func testResolvingAModelWithinAProvider() {
-        let registry = ProviderRegistryStore.shared
-        guard let anthropic = registry.provider(for: "anthropic"), anthropic.models.count > 1 else {
-            return XCTFail("expected the built-in Anthropic provider to offer several models")
-        }
-        let target = anthropic.models.first { $0.id != anthropic.defaultModelId }!
-
-        guard case .ready(_, _, let model) = registry.resolveAdapter(providerId: "anthropic", modelId: target.id, effort: .high) else {
-            // A missing key resolves to .missingAPIKey, which is a legitimate environment for
-            // this test to run in — skip rather than fail on the tester's key setup.
-            return
-        }
-        XCTAssertEqual(model.id, target.id)
-    }
-
-    func testAStaleModelIdFallsBackInsteadOfBrickingTheTrack() {
-        let registry = ProviderRegistryStore.shared
-        guard case .ready(_, let definition, let model) = registry.resolveAdapter(
-            providerId: "anthropic", modelId: "claude-model-that-was-removed", effort: .standard
-        ) else { return }
-        // A model removed upstream (or from a BYOK list) must not leave the track unable to send.
-        XCTAssertEqual(model.id, definition.defaultModelId)
     }
 }

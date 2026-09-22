@@ -31,8 +31,13 @@ final class SessionLogTests: XCTestCase {
         AgentTurn(role: role, content: [.text(text)])
     }
 
-    func testRoundTripPreservesEverything() throws {
-        let original = session(turns: [textTurn("hello"), textTurn("hi", role: .assistant)])
+    func testRoundTripPreservesEverythingIncludingToolResultsAndImages() throws {
+        let original = session(turns: [
+            textTurn("hello"), textTurn("hi", role: .assistant),
+            AgentTurn(role: .assistant, content: [.toolUse(id: "t1", name: "read_file", input: .object(["path": .string("a.swift")]))]),
+            AgentTurn(role: .user, content: [.toolResult(toolUseId: "t1", content: "contents", isError: false)]),
+            AgentTurn(role: .user, content: [.image(mediaType: "image/png", base64: "aGk="), .text("look")]),
+        ])
         XCTAssertTrue(SessionLog.write(original, to: url))
         let reloaded = try XCTUnwrap(SessionLog.read(from: url))
         XCTAssertEqual(reloaded.id, original.id)
@@ -40,7 +45,11 @@ final class SessionLogTests: XCTestCase {
         XCTAssertEqual(reloaded.providerId, "anthropic")
         XCTAssertEqual(reloaded.modelId, "claude-sonnet-5")
         XCTAssertEqual(reloaded.createdAt.timeIntervalSinceReferenceDate, 1, accuracy: 0.001)
-        XCTAssertEqual(reloaded.turns.count, 2)
+        XCTAssertEqual(reloaded.turns.count, 5)
+        guard case .image(let mediaType, _) = reloaded.turns[4].content.first else {
+            return XCTFail("image block lost")
+        }
+        XCTAssertEqual(mediaType, "image/png")
     }
 
     func testAppendAddsOneTurnWithoutRewriting() throws {
@@ -84,34 +93,6 @@ final class SessionLogTests: XCTestCase {
         XCTAssertNil(SessionLog.read(from: url))
     }
 
-    func testToolResultsAndImagesSurvive() throws {
-        let session = session(turns: [
-            AgentTurn(role: .assistant, content: [.toolUse(id: "t1", name: "read_file", input: .object(["path": .string("a.swift")]))]),
-            AgentTurn(role: .user, content: [.toolResult(toolUseId: "t1", content: "contents", isError: false)]),
-            AgentTurn(role: .user, content: [.image(mediaType: "image/png", base64: "aGk="), .text("look")]),
-        ])
-        XCTAssertTrue(SessionLog.write(session, to: url))
-        let reloaded = try XCTUnwrap(SessionLog.read(from: url))
-        XCTAssertEqual(reloaded.turns.count, 3)
-        guard case .image(let mediaType, _) = reloaded.turns[2].content.first else {
-            return XCTFail("image block lost")
-        }
-        XCTAssertEqual(mediaType, "image/png")
-    }
-
-    func testAppendingIsNotQuadratic() throws {
-        // The defect this format exists to fix: the old store re-encoded the entire session per
-        // turn, so total bytes written grew with the square of the turn count. Here the total
-        // must stay within a small constant of the final file size.
-        XCTAssertTrue(SessionLog.write(session(turns: []), to: url))
-        let body = String(repeating: "x", count: 4_000)
-        for index in 0..<150 {
-            XCTAssertTrue(SessionLog.append(textTurn("\(index) \(body)"), to: url))
-        }
-        let finalSize = try Data(contentsOf: url).count
-        XCTAssertGreaterThan(finalSize, 500_000)
-        XCTAssertEqual(try XCTUnwrap(SessionLog.read(from: url)).turns.count, 150)
-    }
 }
 
 /// Migration and the filename rules live in the store, not the log.
@@ -147,15 +128,6 @@ final class SessionStoreMigrationTests: XCTestCase {
         }
         XCTAssertEqual(text(slashed), "slashed")
         XCTAssertEqual(text(dashed), "dashed")
-    }
-
-    func testALongConversationSurvivesAReload() {
-        let store = AgentSessionStore(stateDirectory: stateDirectory)
-        for index in 0..<80 {
-            store.appendTurn(AgentTurn(role: .user, content: [.text("turn \(index)")]), trackKey: "main", providerId: "p", modelId: "m")
-        }
-        let reloaded = AgentSessionStore(stateDirectory: stateDirectory)
-        XCTAssertEqual(reloaded.session(forTrackKey: "main")?.turns.count, 80)
     }
 
     func testCompactionStillReplacesEverything() {

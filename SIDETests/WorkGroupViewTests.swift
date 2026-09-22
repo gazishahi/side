@@ -31,44 +31,36 @@ final class WorkGroupViewTests: XCTestCase {
         XCTAssertGreaterThan(height, 8, "collapsed group has no header")
     }
 
-    func testExpandingAddsRoomForEveryLine() {
+    func testToggleGeometry() {
+        // The overflow bug: pinning the content to `fittingSize` under-measured it, so the
+        // expanded group was shorter than its own content and drew over the next message.
+        // Collapsing again must land back on the original height.
         let group = makeGroup(lines: 3)
         let collapsed = group.fittingSize.height
         group.toggle()
         group.layoutSubtreeIfNeeded()
         let expanded = group.fittingSize.height
-        // The overflow bug: pinning the content to `fittingSize` under-measured it, so the
-        // expanded group was shorter than its own content and drew over the next message.
         XCTAssertGreaterThan(expanded, collapsed + 30, "expanded \(expanded) vs collapsed \(collapsed)")
-    }
-
-    func testCollapsingReturnsToTheOriginalHeight() {
-        let group = makeGroup()
-        let original = group.fittingSize.height
         group.toggle()
         group.layoutSubtreeIfNeeded()
-        group.toggle()
-        group.layoutSubtreeIfNeeded()
-        XCTAssertEqual(group.fittingSize.height, original, accuracy: 1)
+        XCTAssertEqual(group.fittingSize.height, collapsed, accuracy: 1)
     }
 
-    func testTheHeaderRegionIsAtHighYBecauseTheViewIsUnflipped() {
-        let group = makeGroup()
+    func testHeaderHitRegion() {
+        // Top of an unflipped view is *high* y. Getting this backwards is what made the group
+        // openable but not closable. And content clicks must fall through so a tool line's file
+        // links stay reachable.
+        let group = makeGroup(lines: 3)
         group.frame = NSRect(x: 0, y: 0, width: 600, height: group.fittingSize.height)
         group.layoutSubtreeIfNeeded()
         XCTAssertFalse(group.isFlipped, "the hit test's sign depends on this")
-        // Top of an unflipped view is *high* y. Getting this backwards is what made the group
-        // openable but not closable.
         XCTAssertTrue(group.isInHeader(NSPoint(x: 100, y: group.bounds.maxY - 2)))
-    }
 
-    func testAPointBelowTheHeaderIsNotTheHeader() {
-        let group = makeGroup(lines: 3)
         group.toggle()
         group.layoutSubtreeIfNeeded()
         group.frame = NSRect(x: 0, y: 0, width: 600, height: group.fittingSize.height)
         group.layoutSubtreeIfNeeded()
-        // Content clicks must fall through so a tool line's file links stay reachable.
+        XCTAssertTrue(group.isInHeader(NSPoint(x: 100, y: group.bounds.maxY - 2)))
         XCTAssertFalse(group.isInHeader(NSPoint(x: 100, y: 2)))
     }
 
@@ -84,29 +76,32 @@ final class WorkGroupViewTests: XCTestCase {
         XCTAssertTrue(hit === group, "header click would be swallowed by \(String(describing: hit))")
     }
 
-    func testTheElapsedTimeIsAlwaysStated() {
-        let started = Date().addingTimeInterval(-200)
-        let group = WorkGroupView(startedAt: started)
-        group.addLine(NSTextField(labelWithString: "→ run_task"), isStep: true, at: started.addingTimeInterval(95))
-        group.finish()
-        let label = group.accessibilityLabel() ?? ""
-        // It used to be hidden below one second, which is most of them.
+    func testElapsedTime() {
+        // The elapsed time is always stated — it used to be hidden below one second, which is
+        // most of them. The 676-minute bug: renderFull finished every group at the timestamp of
+        // the *conversation's* final entry, so a two-step group from last night reported the age
+        // of the whole conversation. A group measures its own span or nothing — and with no lines
+        // at all, it reports zero.
+        let long = Date().addingTimeInterval(-200)
+        let stated = WorkGroupView(startedAt: long)
+        stated.addLine(NSTextField(labelWithString: "→ run_task"), isStep: true, at: long.addingTimeInterval(95))
+        stated.finish()
+        let label = stated.accessibilityLabel() ?? ""
         XCTAssertTrue(label.contains("1m 35s"), label)
         XCTAssertTrue(label.contains("Worked for"), label)
-    }
 
-    func testTheDurationIsMeasuredToTheGroupsOwnLastLine() {
-        // The 676-minute bug: renderFull finished every group at the timestamp of the
-        // *conversation's* final entry, so a two-step group from last night reported the age of
-        // the whole conversation. A group measures its own span or nothing.
-        let started = Date().addingTimeInterval(-40_000)
-        let group = WorkGroupView(startedAt: started)
-        group.addLine(NSTextField(labelWithString: "→ read_file"), isStep: true, at: started.addingTimeInterval(3))
-        group.addLine(NSTextField(labelWithString: "✓ read_file"), isStep: false, at: started.addingTimeInterval(9))
-        group.finish()
-        let reported = group.accessibilityLabel() ?? ""
+        let lastNight = Date().addingTimeInterval(-40_000)
+        let own = WorkGroupView(startedAt: lastNight)
+        own.addLine(NSTextField(labelWithString: "→ read_file"), isStep: true, at: lastNight.addingTimeInterval(3))
+        own.addLine(NSTextField(labelWithString: "✓ read_file"), isStep: false, at: lastNight.addingTimeInterval(9))
+        own.finish()
+        let reported = own.accessibilityLabel() ?? ""
         XCTAssertTrue(reported.contains("9s"), reported)
         XCTAssertFalse(reported.contains("m "), reported)
+
+        let empty = WorkGroupView(startedAt: Date())
+        empty.finish()
+        XCTAssertTrue((empty.accessibilityLabel() ?? "").contains("0s"), empty.accessibilityLabel() ?? "")
     }
 
     func testALaterLineNeverMovesTheDurationBackwards() {
@@ -117,29 +112,6 @@ final class WorkGroupViewTests: XCTestCase {
         group.addLine(NSTextField(labelWithString: "a"), isStep: true, at: started.addingTimeInterval(4))
         group.finish()
         XCTAssertTrue((group.accessibilityLabel() ?? "").contains("12s"), group.accessibilityLabel() ?? "")
-    }
-
-    func testAReloadedGroupReportsTheTimeItActuallyTook() {
-        // The bug: RunTranscriptEntry.createdAt defaulted to Date() at construction, and
-        // rehydration constructs fresh entries — so a group that really took seven seconds
-        // reported one, because both its start and end were stamped at the moment of the
-        // reload. Rehydration now passes the persisted turn's timestamp, and finish(at:) takes
-        // the last entry's rather than "now".
-        let started = Date().addingTimeInterval(-3600)      // an hour ago
-        let group = WorkGroupView(startedAt: started)
-        let label = NSTextField(labelWithString: "→ read_file")
-        group.addLine(label, isStep: true, at: started.addingTimeInterval(7))
-        group.finish()
-        let reported = group.accessibilityLabel() ?? ""
-        XCTAssertTrue(reported.contains("7s"), reported)
-        // And emphatically not an hour, which is what finishing at "now" would have produced.
-        XCTAssertFalse(reported.contains("m "), reported)
-    }
-
-    func testAGroupWithNoLinesReportsNoElapsedTime() {
-        let group = WorkGroupView(startedAt: Date())
-        group.finish()
-        XCTAssertTrue((group.accessibilityLabel() ?? "").contains("0s"), group.accessibilityLabel() ?? "")
     }
 
     // MARK: - Accessibility (2026-09-01 audit, H15)

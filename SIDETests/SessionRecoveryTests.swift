@@ -31,14 +31,16 @@ final class SessionRecoveryTests: XCTestCase {
     }
 
     /// The exact force-quit shape: assistant asked for a tool, process died before the result
-    /// was persisted.
-    func testRepairsUnansweredToolUse() {
+    /// was persisted, and the user later said something unrelated. The wire format requires the
+    /// result in the message *immediately after* the call.
+    func testAnUnansweredToolUseIsAnsweredDirectlyAfterTheCallingTurn() {
         let broken = session([
             AgentTurn(role: .user, content: [.text("edit the file")]),
             AgentTurn(role: .assistant, content: [
                 .text("I'll edit it."),
                 .toolUse(id: "call_1", name: "edit_file", input: .object([:])),
             ]),
+            AgentTurn(role: .user, content: [.text("unrelated later message")]),
         ])
         guard let repaired = AgentSessionStore.repairingDanglingToolUses(broken) else {
             return XCTFail("expected a repair")
@@ -46,53 +48,34 @@ final class SessionRecoveryTests: XCTestCase {
         XCTAssertEqual(toolResultIds(repaired), ["call_1"])
         // Every tool_use must now be answered.
         XCTAssertTrue(Set(toolUseIds(repaired)).subtracting(Set(toolResultIds(repaired))).isEmpty)
-    }
-
-    /// The wire format requires the result in the message *immediately after* the call.
-    func testRepairIsInsertedDirectlyAfterTheCallingTurn() {
-        let broken = session([
-            AgentTurn(role: .assistant, content: [.toolUse(id: "call_1", name: "edit_file", input: .object([:]))]),
-            AgentTurn(role: .user, content: [.text("unrelated later message")]),
-        ])
-        let repaired = AgentSessionStore.repairingDanglingToolUses(broken)
-        XCTAssertEqual(repaired?.turns.count, 3)
-        guard case .toolResult(let id, _, let isError)? = repaired?.turns[1].content.first else {
-            return XCTFail("repair turn not inserted at index 1")
+        XCTAssertEqual(repaired.turns.count, 4)
+        guard case .toolResult(let id, _, let isError)? = repaired.turns[2].content.first else {
+            return XCTFail("repair turn not inserted at index 2")
         }
         XCTAssertEqual(id, "call_1")
         XCTAssertTrue(isError, "a never-approved call should read as failed, not as success")
-        XCTAssertEqual(repaired?.turns[1].role, .user)
+        XCTAssertEqual(repaired.turns[2].role, .user)
     }
 
-    /// A batch can have several calls; a crash strands all of them.
-    func testRepairsEveryUnansweredCallInABatch() {
-        let broken = session([
-            AgentTurn(role: .assistant, content: [
-                .toolUse(id: "call_1", name: "edit_file", input: .object([:])),
-                .toolUse(id: "call_2", name: "write_file", input: .object([:])),
-                .toolUse(id: "call_3", name: "run_shell_command", input: .object([:])),
-            ]),
-        ])
-        let repaired = AgentSessionStore.repairingDanglingToolUses(broken)
-        XCTAssertEqual(toolResultIds(repaired!).sorted(), ["call_1", "call_2", "call_3"])
-    }
-
-    /// Partial resolution is the likeliest real crash: one proposal approved, the rest pending.
-    func testRepairsOnlyTheUnansweredCalls() {
+    /// A batch can have several calls; partial resolution is the likeliest real crash — one
+    /// proposal approved, the rest pending — and only the stranded ones get answered.
+    func testOnlyTheUnansweredCallsInABatchAreRepaired() {
         let broken = session([
             AgentTurn(role: .assistant, content: [
                 .toolUse(id: "answered", name: "read_file", input: .object([:])),
-                .toolUse(id: "stranded", name: "edit_file", input: .object([:])),
+                .toolUse(id: "call_2", name: "write_file", input: .object([:])),
+                .toolUse(id: "call_3", name: "run_shell_command", input: .object([:])),
             ]),
             AgentTurn(role: .user, content: [.toolResult(toolUseId: "answered", content: "ok", isError: false)]),
         ])
         let repaired = AgentSessionStore.repairingDanglingToolUses(broken)
-        XCTAssertEqual(toolResultIds(repaired!).sorted(), ["answered", "stranded"])
+        XCTAssertEqual(toolResultIds(repaired!).sorted(), ["answered", "call_2", "call_3"])
         XCTAssertEqual(toolResultIds(repaired!).filter { $0 == "answered" }.count, 1, "must not duplicate an existing result")
     }
 
-    /// Healthy sessions must be left completely alone — no rewrite, no spurious save.
-    func testHealthySessionNeedsNoRepair() {
+    /// Healthy sessions must be left completely alone — no rewrite, no spurious save — and
+    /// repairing must be a fixed point, so its own output is one of those healthy sessions.
+    func testHealthySessionsIncludingARepairedOneNeedNoRepair() {
         let healthy = session([
             AgentTurn(role: .user, content: [.text("read it")]),
             AgentTurn(role: .assistant, content: [.toolUse(id: "call_1", name: "read_file", input: .object([:]))]),
@@ -100,19 +83,12 @@ final class SessionRecoveryTests: XCTestCase {
             AgentTurn(role: .assistant, content: [.text("here's what it says")]),
         ])
         XCTAssertNil(AgentSessionStore.repairingDanglingToolUses(healthy))
-    }
-
-    func testPlainConversationNeedsNoRepair() {
         let plain = session([
             AgentTurn(role: .user, content: [.text("hello")]),
             AgentTurn(role: .assistant, content: [.text("hi")]),
         ])
         XCTAssertNil(AgentSessionStore.repairingDanglingToolUses(plain))
         XCTAssertNil(AgentSessionStore.repairingDanglingToolUses(session([])))
-    }
-
-    /// Repairing must be a fixed point — running it on its own output changes nothing.
-    func testRepairIsIdempotent() {
         let broken = session([
             AgentTurn(role: .assistant, content: [.toolUse(id: "call_1", name: "edit_file", input: .object([:]))]),
         ])

@@ -32,58 +32,45 @@ final class SecretRedactorTests: XCTestCase {
         XCTAssertFalse(SecretRedactor.redacted("id AKIAIOSFODNN7EXAMPLE").contains("AKIA"))
     }
 
-    func testProviderKeyShapesAreCaught() {
-        assertRedacted("export ANTHROPIC_KEY=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAA", drops: ["sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAA"])
-        assertRedacted("token ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", drops: ["ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"])
-        assertRedacted("aws_access_key_id AKIAIOSFODNN7EXAMPLE", drops: ["AKIAIOSFODNN7EXAMPLE"])
-        assertRedacted("slack xoxb-123456789012-abcdefghijkl", drops: ["xoxb-123456789012-abcdefghijkl"])
-    }
-
-    func testAuthorizationHeaderKeepsItsSchemeAndLosesItsCredential() {
-        assertRedacted(
-            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.QQQQQQQQQQQQ",
-            keeps: ["Authorization:"],
-            drops: ["eyJzdWIiOiIxIn0"]
-        )
-    }
-
-    func testConnectionStringLosesOnlyThePassword() {
-        assertRedacted(
-            "postgres://appuser:s3cr3tpassword@db.internal:5432/app",
-            keeps: ["postgres://appuser:", "@db.internal:5432/app"],
-            drops: ["s3cr3tpassword"]
-        )
-    }
-
-    func testPrivateKeyBlockIsRemovedEntirely() {
+    func testRedactionShapes() {
+        // Provider keys, bearer tokens, connection-string passwords and PEM blocks: each loses
+        // its credential and keeps the context around it.
         let pem = """
         -----BEGIN RSA PRIVATE KEY-----
         MIIEowIBAAKCAQEAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
         yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
         -----END RSA PRIVATE KEY-----
         """
-        assertRedacted(pem, drops: ["MIIEowIBAAKCAQEA", "BEGIN RSA PRIVATE KEY"])
+        let cases: [(input: String, keeps: [String], drops: [String])] = [
+            ("export ANTHROPIC_KEY=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAA", [], ["sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAA"]),
+            ("token ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", [], ["ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]),
+            ("aws_access_key_id AKIAIOSFODNN7EXAMPLE", [], ["AKIAIOSFODNN7EXAMPLE"]),
+            ("slack xoxb-123456789012-abcdefghijkl", [], ["xoxb-123456789012-abcdefghijkl"]),
+            ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.QQQQQQQQQQQQ", ["Authorization:"], ["eyJzdWIiOiIxIn0"]),
+            ("postgres://appuser:s3cr3tpassword@db.internal:5432/app", ["postgres://appuser:", "@db.internal:5432/app"], ["s3cr3tpassword"]),
+            (pem, [], ["MIIEowIBAAKCAQEA", "BEGIN RSA PRIVATE KEY"]),
+        ]
+        for row in cases {
+            assertRedacted(row.input, keeps: row.keeps, drops: row.drops)
+        }
     }
 
-    func testOrdinaryOutputIsLeftExactlyAlone() {
+    func testBenignOutputIsLeftExactlyAlone() {
         // False positives are their own kind of damage: a redacted build log or diff is a tool
-        // result the model can no longer reason about.
+        // result the model can no longer reason about. And `TOKEN=x` in a test fixture or a doc
+        // example isn't a credential; blanking it would make the output harder to read for no
+        // safety gain.
         let samples = [
             "Compiling 42 files\nBuild succeeded in 12.4s",
             "func loadKey() -> String? { keychain.read(\"anthropic\") }",
             "total 24\ndrwxr-xr-x  5 user  staff  160 Aug 25 10:00 src",
             "PATH=/usr/bin:/bin\nHOME=/Users/someone",
+            "TOKEN=abc",
         ]
         for sample in samples {
             let result = SecretRedactor.redacting(sample)
             XCTAssertFalse(result.didRedact, "unexpected redaction in: \(sample) → \(result.text)")
             XCTAssertEqual(result.text, sample)
         }
-    }
-
-    func testShortAssignmentsAreNotTreatedAsSecrets() {
-        // `TOKEN=x` in a test fixture or a doc example isn't a credential, and blanking it
-        // would make the output harder to read for no safety gain.
-        XCTAssertFalse(SecretRedactor.redacting("TOKEN=abc").didRedact)
     }
 }

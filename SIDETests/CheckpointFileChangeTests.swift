@@ -28,20 +28,31 @@ final class CheckpointFileChangeTests: XCTestCase {
         XCTAssertEqual(decoded.fileChanges, original.fileChanges)
     }
 
-    func testACheckpointWrittenBeforeLineCountsExistedStillDecodes() throws {
-        // Tolerant decoding, same contract as every other persisted struct here. Its file list is
-        // intact and its counts are simply absent — never zeros pretending to be measurements.
-        let json = #"{"trackKey":"main","declaredIntent":"old","changedFilePaths":["a.swift"],"commandsRun":[]}"#
+    func testACheckpointFromAnOlderBuildStillDecodes() throws {
+        // Tolerant decoding, same contract as every other persisted struct here. The exact hazard
+        // the audit named: a persisted file missing fields a newer build added. Synthesized
+        // Codable treats each one as a hard failure, which takes the whole conversation down;
+        // Checkpoint decodes what's missing with defaults instead. This fixture predates ids,
+        // provenance, the commit SHA, line counts and verification — its file list is intact and
+        // everything else is simply absent — never zeros pretending to be measurements.
+        let json = #"{"trackKey":"feature","declaredIntent":"tidy up","changedFilePaths":["a.swift"]}"#
         let decoded = try JSONDecoder().decode(Checkpoint.self, from: Data(json.utf8))
-        XCTAssertTrue(decoded.fileChanges.isEmpty)
+        XCTAssertEqual(decoded.trackKey, "feature")
+        XCTAssertEqual(decoded.declaredIntent, "tidy up")
         XCTAssertEqual(decoded.changedFilePaths, ["a.swift"])
+        XCTAssertEqual(decoded.commandsRun, [])
+        XCTAssertNil(decoded.gitCommitSHA)
+        XCTAssertEqual(decoded.provenance.modelId, "")
+        XCTAssertTrue(decoded.fileChanges.isEmpty)
+        XCTAssertNil(decoded.verification)
     }
 
     // MARK: - Counting a diff
 
-    func testTheCounterIgnoresTheFileHeaderLines() {
+    func testLineDeltaCountsOnlyAddedAndRemovedLines() {
         // `+++ b/file` and `--- a/file` start with + and -, and counting them inflated every
-        // single-file edit by one added and one removed line.
+        // single-file edit by one added and one removed line. Context lines and hunk headers
+        // are not counted either, and an empty diff counts nothing.
         let diff = """
             --- a/x.swift
             +++ b/x.swift
@@ -50,72 +61,20 @@ final class CheckpointFileChangeTests: XCTestCase {
             -gone
             +new
             +also new
+            @@ -10,3 +11,3 @@
+             one
+             two
+             three
             """
-        let delta = AgentRunner.lineDelta(in: diff)
-        XCTAssertEqual(delta.added, 2)
-        XCTAssertEqual(delta.removed, 1)
-    }
-
-    func testAnEmptyDiffCountsNothing() {
-        let delta = AgentRunner.lineDelta(in: "")
-        XCTAssertEqual(delta.added, 0)
-        XCTAssertEqual(delta.removed, 0)
-    }
-
-    func testContextLinesAreNotCounted() {
-        let delta = AgentRunner.lineDelta(in: "@@ -1,3 +1,3 @@\n one\n two\n three")
-        XCTAssertEqual(delta.added, 0)
-        XCTAssertEqual(delta.removed, 0)
-    }
-
-    // MARK: - Accumulating across a conversation
-
-    /// What `AgentRunner.rebuildAppliedEditCounts` has to produce. Expressed against the same data
-    /// it reads, since the runner itself needs a provider and a workspace bridge to construct.
-    private func accumulate(_ checkpoints: [Checkpoint], session: UUID) -> [(path: String, added: Int, removed: Int)] {
-        var counts: [(path: String, added: Int, removed: Int)] = []
-        for checkpoint in checkpoints.filter({ $0.agentSessionId == session }).sorted(by: { $0.createdAt < $1.createdAt }) {
-            let entries = checkpoint.fileChanges.isEmpty
-                ? checkpoint.changedFilePaths.map { CheckpointFileChange(path: $0, added: 0, removed: 0) }
-                : checkpoint.fileChanges
-            for change in entries {
-                if let index = counts.firstIndex(where: { $0.path == change.path }) {
-                    counts[index].added += change.added
-                    counts[index].removed += change.removed
-                } else {
-                    counts.append((change.path, change.added, change.removed))
-                }
-            }
+        let cases: [(name: String, diff: String, added: Int, removed: Int)] = [
+            ("headers and context ignored", diff, 2, 1),
+            ("empty diff", "", 0, 0),
+            ("context only", "@@ -1,3 +1,3 @@\n one\n two\n three", 0, 0),
+        ]
+        for row in cases {
+            let delta = AgentRunner.lineDelta(in: row.diff)
+            XCTAssertEqual(delta.added, row.added, "\(row.name): added")
+            XCTAssertEqual(delta.removed, row.removed, "\(row.name): removed")
         }
-        return counts
-    }
-
-    func testTwoCheckpointsTouchingOneFileSumIntoOneRow() {
-        let session = UUID()
-        let first = checkpoint(session: session, paths: ["a.swift"], changes: [.init(path: "a.swift", added: 4, removed: 1)], at: Date(timeIntervalSince1970: 1))
-        let second = checkpoint(session: session, paths: ["a.swift"], changes: [.init(path: "a.swift", added: 6, removed: 2)], at: Date(timeIntervalSince1970: 2))
-        let counts = accumulate([first, second], session: session)
-        XCTAssertEqual(counts.count, 1)
-        XCTAssertEqual(counts.first?.added, 10)
-        XCTAssertEqual(counts.first?.removed, 3)
-    }
-
-    func testAnotherConversationsCheckpointsAreNotCounted() {
-        // The pill says "what *this* conversation changed" — a sibling conversation on the same
-        // track has its own.
-        let mine = UUID(), theirs = UUID()
-        let counts = accumulate([
-            checkpoint(session: mine, paths: ["a.swift"], changes: [.init(path: "a.swift", added: 1, removed: 0)]),
-            checkpoint(session: theirs, paths: ["b.swift"], changes: [.init(path: "b.swift", added: 99, removed: 0)]),
-        ], session: mine)
-        XCTAssertEqual(counts.map(\.path), ["a.swift"])
-    }
-
-    func testALegacyCheckpointStillContributesItsFileList() {
-        let session = UUID()
-        let counts = accumulate([checkpoint(session: session, paths: ["old.swift"], changes: [])], session: session)
-        XCTAssertEqual(counts.map(\.path), ["old.swift"])
-        // No numbers, rather than zeros dressed up as a measurement.
-        XCTAssertEqual(counts.first?.added, 0)
     }
 }

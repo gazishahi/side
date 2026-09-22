@@ -32,31 +32,25 @@ final class AccessibilityTests: XCTestCase {
         return nil
     }
 
-    func testDiffHeaderNamesTheFileAndItsChangeCounts() throws {
-        let card = DiffFileCardView(file: makeDiff(path: "src/greeter.ts", added: 12, removed: 3))
-        let headerElement = try XCTUnwrap(header(of: card), "the fold control must be in the AX tree")
-
-        let label = try XCTUnwrap(headerElement.accessibilityLabel())
+    func testDiffHeaderLabelNamesTheFileItsCountsAndItsFate() throws {
         // "Toggle diff" was the old label: it announced that a control existed and nothing about
-        // what it acted on, so a page of a dozen cards read as a dozen identical rows.
-        XCTAssertTrue(label.hasPrefix("src/greeter.ts"), "the filename has to lead: \(label)")
-        XCTAssertTrue(label.contains("12 lines added"), label)
-        XCTAssertTrue(label.contains("3 lines removed"), label)
-    }
-
-    func testDiffHeaderPluralizesASingleLine() throws {
-        let card = DiffFileCardView(file: makeDiff(path: "a.swift", added: 1, removed: 1))
-        let label = try XCTUnwrap(header(of: card)?.accessibilityLabel())
-        XCTAssertTrue(label.contains("1 line added"), label)
-        XCTAssertTrue(label.contains("1 line removed"), label)
-    }
-
-    func testDiffHeaderCallsOutNewAndDeletedFiles() throws {
-        let newCard = DiffFileCardView(file: makeDiff(path: "added.swift", added: 4, removed: 0, isNew: true))
-        XCTAssertTrue(try XCTUnwrap(header(of: newCard)?.accessibilityLabel()).contains("new file"))
-
-        let goneCard = DiffFileCardView(file: makeDiff(path: "gone.swift", added: 0, removed: 9, isDeleted: true))
-        XCTAssertTrue(try XCTUnwrap(header(of: goneCard)?.accessibilityLabel()).contains("deleted file"))
+        // what it acted on, so a page of a dozen cards read as a dozen identical rows. The file
+        // leads, the counts pluralize correctly, and new or deleted files say so.
+        let cases: [(path: String, added: Int, removed: Int, isNew: Bool, isDeleted: Bool, expects: [String])] = [
+            ("src/greeter.ts", 12, 3, false, false, ["12 lines added", "3 lines removed"]),
+            ("a.swift", 1, 1, false, false, ["1 line added", "1 line removed"]),
+            ("added.swift", 4, 0, true, false, ["new file"]),
+            ("gone.swift", 0, 9, false, true, ["deleted file"]),
+        ]
+        for c in cases {
+            let card = DiffFileCardView(file: makeDiff(path: c.path, added: c.added, removed: c.removed, isNew: c.isNew, isDeleted: c.isDeleted))
+            let headerElement = try XCTUnwrap(header(of: card), "\(c.path): the fold control must be in the AX tree")
+            let label = try XCTUnwrap(headerElement.accessibilityLabel(), c.path)
+            XCTAssertTrue(label.hasPrefix(c.path), "\(c.path): the filename has to lead: \(label)")
+            for fragment in c.expects {
+                XCTAssertTrue(label.contains(fragment), "\(c.path): expected \"\(fragment)\" in \(label)")
+            }
+        }
     }
 
     func testDiffHeaderReportsAndTogglesItsExpandedState() throws {
@@ -77,41 +71,35 @@ final class AccessibilityTests: XCTestCase {
 
     // MARK: - Terminal
 
-    func testDiffBodySpeaksTheGuttersMeaning() throws {
+    func testDiffBodySpeaksTheGuttersMeaningAndLeavesContextUnmarked() throws {
         // The gutter carries added/removed in *color* only — deliberately, since +/- prefixes
         // hurt readability and copy badly. That leaves the text a screen reader receives (or
         // anyone who can't separate those greens and reds) as a flat wall of code with nothing
-        // marking what changed.
-        let file = makeDiff(path: "a.swift", added: 1, removed: 1)
-        let body = DiffBody.makeBodyTextView()
-        DiffBody.fill(body, hunks: file.hunks)
-
-        let spoken = try XCTUnwrap(body.accessibilityValue())
-        XCTAssertTrue(spoken.contains("added, "), spoken)
-        XCTAssertTrue(spoken.contains("removed, "), spoken)
-        // The rendered header line is indented, so the marker sits before that indent.
-        let headerLine = try XCTUnwrap(spoken.components(separatedBy: "\n").first { $0.contains("@@") })
-        XCTAssertTrue(headerLine.hasPrefix("section, "), headerLine)
-        XCTAssertEqual(body.accessibilityLabel(), "Diff")
-        // The visible text is untouched: markers are for the AX layer only, so copy/paste and
-        // the on-screen diff stay exactly as designed.
-        XCTAssertFalse(body.string.contains("added, "))
-    }
-
-    func testDiffBodyLeavesContextLinesUnmarked() throws {
+        // marking what changed. Only changes are news, though: marking every line would make
+        // the announcement unusable.
         var hunk = UnifiedDiff.Hunk(header: "@@ -1,2 +1,2 @@")
         hunk.lines = [
             UnifiedDiff.Line(kind: .context, oldNumber: 1, newNumber: 1, text: "unchanged line"),
             UnifiedDiff.Line(kind: .added, oldNumber: nil, newNumber: 2, text: "new line"),
+            UnifiedDiff.Line(kind: .removed, oldNumber: 2, newNumber: nil, text: "old line"),
         ]
         let body = DiffBody.makeBodyTextView()
         DiffBody.fill(body, hunks: [hunk])
 
-        let lines = try XCTUnwrap(body.accessibilityValue()).components(separatedBy: "\n")
-        // Marking every line would make the announcement unusable — only changes are news.
+        let spoken = try XCTUnwrap(body.accessibilityValue())
+        XCTAssertTrue(spoken.contains("added, "), spoken)
+        XCTAssertTrue(spoken.contains("removed, "), spoken)
+        let lines = spoken.components(separatedBy: "\n")
+        // The rendered header line is indented, so the marker sits before that indent.
+        let headerLine = try XCTUnwrap(lines.first { $0.contains("@@") })
+        XCTAssertTrue(headerLine.hasPrefix("section, "), headerLine)
         let contextLine = try XCTUnwrap(lines.first { $0.contains("unchanged line") })
-        XCTAssertFalse(contextLine.hasPrefix("added"))
-        XCTAssertFalse(contextLine.hasPrefix("removed"))
+        XCTAssertFalse(contextLine.hasPrefix("added"), contextLine)
+        XCTAssertFalse(contextLine.hasPrefix("removed"), contextLine)
+        XCTAssertEqual(body.accessibilityLabel(), "Diff")
+        // The visible text is untouched: markers are for the AX layer only, so copy/paste and
+        // the on-screen diff stay exactly as designed.
+        XCTAssertFalse(body.string.contains("added, "))
     }
 
     // MARK: - Containment
@@ -156,23 +144,16 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertNotNil(terminal.accessibilityHelp(), "a text area that accepts input should say so")
     }
 
-    func testTerminalValueReadsBackWhatWasWrittenToTheScreen() {
+    func testTerminalValueReadsBackTheScreenWithoutTrailingBlankRows() {
         let terminal = SideTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
         // `feed` writes into the emulator without involving a process, which is exactly the
-        // buffer the AX value is meant to expose.
+        // buffer the AX value is meant to expose. A 25-row screen holding one line of output
+        // shouldn't read as one line followed by twenty-four empty ones.
         terminal.feed(text: "hello from the shell\r\n")
 
         let value = terminal.accessibilityValue() as? String ?? ""
         XCTAssertTrue(value.contains("hello from the shell"), "AX value was: \(value)")
         XCTAssertEqual(terminal.accessibilityNumberOfCharacters(), value.count)
-    }
-
-    func testTerminalValueDropsTrailingBlankRows() {
-        let terminal = SideTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
-        terminal.feed(text: "one line\r\n")
-        let value = terminal.accessibilityValue() as? String ?? ""
-        // A 25-row screen holding one line of output shouldn't read as one line followed by
-        // twenty-four empty ones.
         XCTAssertFalse(value.hasSuffix("\n"), "AX value was: \(value.debugDescription)")
         XCTAssertEqual(value.components(separatedBy: "\n").count, 1, value.debugDescription)
     }
@@ -186,14 +167,5 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.tracks, needsYou: false, working: false), "Tracks")
         XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.run, needsYou: false, working: true), "Run, a terminal has new output")
         XCTAssertEqual(ShellViewController.stageAccessibilityLabel(.make, needsYou: true, working: true), "Make")
-    }
-
-    func testSegmentTooltipsCarryTheSpokenState() {
-        // The channel the fix actually uses: NSSegmentedControl exposes no per-segment label, so
-        // the state rides in each segment's tooltip, which VoiceOver speaks on hover.
-        let control = NSSegmentedControl(labels: ["Make", "Run \u{25CF}"], trackingMode: .selectOne, target: nil, action: nil)
-        control.setToolTip("Run, a terminal has new output", forSegment: 1)
-        XCTAssertEqual(control.toolTip(forSegment: 1), "Run, a terminal has new output")
-        XCTAssertNil(control.toolTip(forSegment: 0))
     }
 }

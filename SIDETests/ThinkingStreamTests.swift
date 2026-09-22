@@ -31,41 +31,33 @@ final class ThinkingStreamTests: XCTestCase {
         }
     }
 
-    func testThinkingDeltasAreCaptured() {
+    func testThinkingDeltasAreCapturedSeparatelyFromTheAnswer() {
+        // Reasoning and answer arrive interleaved on one stream and must not merge: one goes in
+        // the collapsed activity group, the other into the reply bubble.
         let captured = events([
             #"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
             #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me check "}}"#,
+            #"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}"#,
             #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"the file first."}}"#,
         ])
         XCTAssertEqual(thinking(captured), "Let me check the file first.")
-    }
-
-    func testReasoningAndAnswerStaySeparate() {
-        // They arrive interleaved on one stream and must not merge: one goes in the collapsed
-        // activity group, the other into the reply bubble.
-        let captured = events([
-            #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reasoning"}}"#,
-            #"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}"#,
-        ])
-        XCTAssertEqual(thinking(captured), "reasoning")
         XCTAssertEqual(text(captured), "answer")
     }
 
-    func testASignatureDeltaProducesNothing() {
+    func testEventsThatCarryNoReasoningProduceNothing() {
         // `signature_delta` exists so a thinking block can be passed back intact. Nothing here
-        // passes them back, and emitting its opaque blob as reasoning would print noise.
-        let captured = events([
-            #"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqQBCgIYAhIA"}}"#,
-        ])
-        XCTAssertTrue(captured.isEmpty)
-    }
-
-    func testAThinkingBlockDoesNotLookLikeAToolCall() {
-        // Both arrive via content_block_start; only one has a tool to run.
-        let captured = events([
-            #"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
-        ])
-        XCTAssertTrue(captured.isEmpty)
+        // passes them back, and emitting its opaque blob as reasoning would print noise. A
+        // thinking block's content_block_start is not a tool call, though both arrive the same
+        // way. Malformed events are ignored rather than crashing.
+        let silent: [(name: String, payloads: [String])] = [
+            ("signature delta", [#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqQBCgIYAhIA"}}"#]),
+            ("thinking block start", [#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#]),
+            ("thinking delta without text", [#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta"}}"#]),
+            ("not json", ["not json at all"]),
+        ]
+        for c in silent {
+            XCTAssertTrue(events(c.payloads).isEmpty, "\(c.name) produced events")
+        }
     }
 
     func testAToolCallStillStreamsAlongsideThinking() {
@@ -80,23 +72,18 @@ final class ThinkingStreamTests: XCTestCase {
         XCTAssertTrue(captured.contains { if case .toolUseEnd = $0 { return true } else { return false } })
     }
 
-    func testMalformedThinkingIsIgnoredRatherThanCrashing() {
-        XCTAssertTrue(events([#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta"}}"#]).isEmpty)
-        XCTAssertTrue(events(["not json at all"]).isEmpty)
-    }
-
     // MARK: - Bounding what gets rendered
 
-    func testShortReasoningIsShownWhole() {
-        XCTAssertEqual(ThinkWorkspaceViewController.condensedThinking("  a short thought  "), "a short thought")
-    }
-
-    func testBlankLinesAreCollapsed() {
-        XCTAssertEqual(ThinkWorkspaceViewController.condensedThinking("one\n\ntwo"), "one\ntwo")
-    }
-
-    func testLongReasoningKeepsItsTail() {
-        // Reasoning ends where it concluded, and the conclusion is the part worth reading.
+    func testCondensedThinkingTrimsCollapsesAndKeepsTheTail() {
+        // Short reasoning is shown whole, blank lines collapsed. Long reasoning keeps its tail:
+        // reasoning ends where it concluded, and the conclusion is the part worth reading.
+        let exact: [(input: String, condensed: String)] = [
+            ("  a short thought  ", "a short thought"),
+            ("one\n\ntwo", "one\ntwo"),
+        ]
+        for c in exact {
+            XCTAssertEqual(ThinkWorkspaceViewController.condensedThinking(c.input), c.condensed, c.input.debugDescription)
+        }
         let long = String(repeating: "x", count: 5_000) + "THEREFORE"
         let condensed = ThinkWorkspaceViewController.condensedThinking(long)
         XCTAssertTrue(condensed.hasSuffix("THEREFORE"))

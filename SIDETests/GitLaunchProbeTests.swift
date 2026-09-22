@@ -51,19 +51,30 @@ final class GitLaunchProbeTests: XCTestCase {
         XCTAssertTrue(probe.commonGitDir?.hasSuffix(".git") == true, probe.commonGitDir ?? "nil")
     }
 
-    func testMasterIsRecognizedAsTheDefault() {
-        makeRepo(branch: "master")
-        XCTAssertEqual(GitLaunchProbe.probe(projectRoot: root).defaultBranch, "master")
-    }
+    func testDefaultBranchResolution() {
+        // Three rules, one repo. Before the first commit show-ref can't see refs/heads/master;
+        // HEAD still says where it points, which is why that fallback exists. `master` is
+        // recognized as a default alongside `main`. And the precedence that matters: sitting on a
+        // feature branch must not make that branch look like the trunk, or every promote would
+        // target the wrong base.
+        git(["init", "-b", "master"])
+        var probe = GitLaunchProbe.probe(projectRoot: root)
+        XCTAssertTrue(probe.isRepository)
+        XCTAssertEqual(probe.defaultBranch, "master", "a repo with no commits should still resolve")
 
-    func testTheCheckedOutBranchDoesNotBecomeTheDefault() {
-        // The precedence that matters: sitting on a feature branch must not make that branch
-        // look like the trunk, or every promote would target the wrong base.
-        makeRepo()
+        git(["config", "user.email", "t@t"])
+        git(["config", "user.name", "T"])
+        try? "hi".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        git(["add", "."])
+        git(["commit", "-m", "first"])
+        probe = GitLaunchProbe.probe(projectRoot: root)
+        XCTAssertEqual(probe.currentBranch, "master")
+        XCTAssertEqual(probe.defaultBranch, "master")
+
         git(["checkout", "-b", "feature-x"])
-        let probe = GitLaunchProbe.probe(projectRoot: root)
+        probe = GitLaunchProbe.probe(projectRoot: root)
         XCTAssertEqual(probe.currentBranch, "feature-x")
-        XCTAssertEqual(probe.defaultBranch, "main")
+        XCTAssertEqual(probe.defaultBranch, "master", "the checked-out branch must not become the default")
     }
 
     func testDetachedHeadHasNoCurrentBranch() {
@@ -75,15 +86,6 @@ final class GitLaunchProbeTests: XCTestCase {
         // `--abbrev-ref HEAD` prints the literal string "HEAD" when detached, which is not a
         // branch and must not be treated as one.
         XCTAssertNil(probe.currentBranch)
-    }
-
-    func testARepoWithNoCommitsStillResolves() {
-        git(["init", "-b", "main"])
-        let probe = GitLaunchProbe.probe(projectRoot: root)
-        XCTAssertTrue(probe.isRepository)
-        // show-ref can't see refs/heads/main before the first commit; HEAD still says where it
-        // points, which is why that fallback exists.
-        XCTAssertEqual(probe.defaultBranch, "main")
     }
 
     // TrackStore is @MainActor — it is the view-model half of the split, so a test that
@@ -100,38 +102,28 @@ final class GitLaunchProbeTests: XCTestCase {
 
     // MARK: - Cache
 
-    func testCacheRoundTrips() {
+    func testProbeCache() {
+        // An uncached project reports nothing rather than guessing; a cached probe round-trips;
+        // a full cache never evicts the entry being written (filling with paths that sort *after*
+        // this test's own is what made alphabetical eviction drop the fresh entry instead of the
+        // stale ones); and the cache stays bounded — unbounded growth in UserDefaults is the
+        // failure the cap exists to prevent, and the newest writes are the ones that must survive.
+        XCTAssertNil(GitLaunchProbe.cached(projectRoot: root))
+
         makeRepo()
         let probe = GitLaunchProbe.probe(projectRoot: root)
         GitLaunchProbe.cache(probe, projectRoot: root)
         XCTAssertEqual(GitLaunchProbe.cached(projectRoot: root), probe)
-    }
 
-    func testAnUncachedProjectReportsNothingRatherThanGuessing() {
-        XCTAssertNil(GitLaunchProbe.cached(projectRoot: root))
-    }
-
-    func testAFullCacheNeverEvictsTheEntryBeingWritten() {
-        makeRepo()
-        let probe = GitLaunchProbe.probe(projectRoot: root)
-        // Fill well past the cap with paths that sort *after* this test's own, which is what made
-        // alphabetical eviction drop the fresh entry instead of the stale ones.
         for index in 0..<40 {
             GitLaunchProbe.cache(probe, projectRoot: URL(fileURLWithPath: "/tmp/zzz-filler-\(index)"))
         }
         GitLaunchProbe.cache(probe, projectRoot: root)
-        XCTAssertEqual(GitLaunchProbe.cached(projectRoot: root), probe)
-    }
+        XCTAssertEqual(GitLaunchProbe.cached(projectRoot: root), probe, "a full cache evicted the entry being written")
 
-    func testTheCacheStaysBounded() {
-        makeRepo()
-        let probe = GitLaunchProbe.probe(projectRoot: root)
-        var survivors = 0
         let paths = (0..<40).map { URL(fileURLWithPath: "/tmp/bounded-\(UUID().uuidString)-\($0)") }
         for path in paths { GitLaunchProbe.cache(probe, projectRoot: path) }
-        for path in paths where GitLaunchProbe.cached(projectRoot: path) != nil { survivors += 1 }
-        // Unbounded growth in UserDefaults is the failure the cap exists to prevent; the newest
-        // writes are the ones that must survive it.
+        let survivors = paths.filter { GitLaunchProbe.cached(projectRoot: $0) != nil }.count
         XCTAssertLessThanOrEqual(survivors, 24)
         XCTAssertNotNil(GitLaunchProbe.cached(projectRoot: paths[paths.count - 1]))
     }

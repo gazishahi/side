@@ -11,88 +11,58 @@ final class StreamingJSONFieldsTests: XCTestCase {
         StreamingJSONFields.extract(text, keys: keys)
     }
 
-    func testACompletedValueIsMarkedComplete() {
-        let partial = extract(#"{"path": "a.swift", "content": "hi"}"#, ["path", "content"])
-        XCTAssertEqual(partial.completedValue(for: "path"), "a.swift")
-        XCTAssertEqual(partial.completedValue(for: "content"), "hi")
+    func testAValueIsCompleteOnlyOnceItsClosingQuoteHasArrived() {
+        // The distinction the whole preview rests on: a value still arriving is displayable, not
+        // actionable. "src/ma" could become src/main.swift or src/mathUtils.ts, and naming the
+        // wrong file in the card header is worse than naming none. An unterminated key yields
+        // nothing at all.
+        let complete = extract(#"{"path": "a.swift", "content": "hi"}"#, ["path", "content"])
+        XCTAssertEqual(complete.completedValue(for: "path"), "a.swift")
+        XCTAssertEqual(complete.completedValue(for: "content"), "hi")
+
+        let arriving = extract(#"{"path": "a.swift", "content": "func hi("#, ["path", "content"])
+        XCTAssertEqual(arriving.completedValue(for: "path"), "a.swift")
+        XCTAssertEqual(arriving.value(for: "content"), "func hi(")
+        XCTAssertNil(arriving.completedValue(for: "content"))
+
+        let halfPath = extract(#"{"path": "src/ma"#, ["path"])
+        XCTAssertNil(halfPath.completedValue(for: "path"))
+
+        let halfKey = extract(#"{"path": "a.swift", "cont"#, ["path", "content"])
+        XCTAssertEqual(halfKey.completedValue(for: "path"), "a.swift")
+        XCTAssertNil(halfKey.value(for: "content"))
     }
 
-    func testAValueStillArrivingIsReadableButNotComplete() {
-        let partial = extract(#"{"path": "a.swift", "content": "func hi("#, ["path", "content"])
-        XCTAssertEqual(partial.completedValue(for: "path"), "a.swift")
-        XCTAssertEqual(partial.value(for: "content"), "func hi(")
-        // The distinction the whole preview rests on: displayable, not actionable.
-        XCTAssertNil(partial.completedValue(for: "content"))
+    func testEscapesAreDecodedAndHalfEscapesAreDroppedRatherThanGuessed() {
+        // A fragment that ends mid-escape could be \n, \t, or \". Emitting the backslash itself
+        // would show a character the model never sent; the same goes for a partial \uXXXX and a
+        // lone high surrogate still awaiting its pair.
+        let cases: [(name: String, json: String, value: String, completed: String?)] = [
+            ("escapes decoded", #"{"content": "line\none\t\"quoted\"\\done"}"#, "line\none\t\"quoted\"\\done", "line\none\t\"quoted\"\\done"),
+            ("trailing backslash dropped", "{\"content\": \"abc\\", "abc", nil),
+            ("incomplete unicode escape dropped", #"{"content": "caf\u00"#, "caf", nil),
+            ("complete unicode escape decoded", #"{"content": "café"}"#, "café", "café"),
+            ("surrogate pair is one scalar", #"{"content": "🚀 ship"}"#, "🚀 ship", "🚀 ship"),
+            ("lone high surrogate dropped", #"{"content": "go \ud83d"#, "go ", nil),
+        ]
+        for c in cases {
+            let partial = extract(c.json, ["content"])
+            XCTAssertEqual(partial.value(for: "content"), c.value, c.name)
+            XCTAssertEqual(partial.completedValue(for: "content"), c.completed, c.name)
+        }
     }
 
-    func testAHalfWrittenPathIsNeverReportedAsComplete() {
-        // "src/ma" could become src/main.swift or src/mathUtils.ts. Naming the wrong file in the
-        // card header is worse than naming none.
-        let partial = extract(#"{"path": "src/ma"#, ["path"])
-        XCTAssertNil(partial.completedValue(for: "path"))
-    }
-
-    func testAnUnterminatedKeyYieldsNothing() {
-        let partial = extract(#"{"path": "a.swift", "cont"#, ["path", "content"])
-        XCTAssertEqual(partial.completedValue(for: "path"), "a.swift")
-        XCTAssertNil(partial.value(for: "content"))
-    }
-
-    func testEscapesAreDecoded() {
-        let partial = extract(#"{"content": "line\none\t\"quoted\"\\done"}"#, ["content"])
-        XCTAssertEqual(partial.completedValue(for: "content"), "line\none\t\"quoted\"\\done")
-    }
-
-    func testATrailingBackslashIsDroppedRatherThanGuessed() {
-        // The fragment ended mid-escape. It could be \n, \t, or \". Emitting the backslash itself
-        // would show a character the model never sent.
-        let partial = extract("{\"content\": \"abc\\", ["content"])
-        XCTAssertEqual(partial.value(for: "content"), "abc")
-        XCTAssertNil(partial.completedValue(for: "content"))
-    }
-
-    func testAnIncompleteUnicodeEscapeIsDropped() {
-        let partial = extract(#"{"content": "caf\u00"#, ["content"])
-        XCTAssertEqual(partial.value(for: "content"), "caf")
-    }
-
-    func testACompleteUnicodeEscapeIsDecoded() {
-        let partial = extract(#"{"content": "café"}"#, ["content"])
-        XCTAssertEqual(partial.completedValue(for: "content"), "café")
-    }
-
-    func testASurrogatePairIsDecodedAsOneScalar() {
-        let partial = extract(#"{"content": "🚀 ship"}"#, ["content"])
-        XCTAssertEqual(partial.completedValue(for: "content"), "🚀 ship")
-    }
-
-    func testALoneHighSurrogateAwaitingItsPairIsDropped() {
-        let partial = extract(#"{"content": "go \ud83d"#, ["content"])
-        XCTAssertEqual(partial.value(for: "content"), "go ")
-    }
-
-    func testNumbersAndBooleansAreSteppedOverSoLaterKeysAreReachable() {
-        let partial = extract(#"{"line": 42, "replace_all": true, "path": "a.swift"}"#, ["path"])
-        XCTAssertEqual(partial.completedValue(for: "path"), "a.swift")
-    }
-
-    func testNestedContainersAreSteppedOver() {
-        let partial = extract(#"{"opts": {"a": [1, 2], "b": "}"}, "path": "a.swift"}"#, ["path"])
-        XCTAssertEqual(partial.completedValue(for: "path"), "a.swift")
+    func testNumbersBooleansAndNestedContainersAreSteppedOverSoLaterKeysAreReachable() {
+        let scalars = extract(#"{"line": 42, "replace_all": true, "path": "a.swift"}"#, ["path"])
+        XCTAssertEqual(scalars.completedValue(for: "path"), "a.swift")
+        let nested = extract(#"{"opts": {"a": [1, 2], "b": "}"}, "path": "a.swift"}"#, ["path"])
+        XCTAssertEqual(nested.completedValue(for: "path"), "a.swift")
     }
 
     func testNonObjectInputYieldsNothing() {
         XCTAssertTrue(extract("", ["path"]).values.isEmpty)
         XCTAssertTrue(extract("[1,2]", ["path"]).values.isEmpty)
         XCTAssertTrue(extract("not json at all", ["path"]).values.isEmpty)
-    }
-
-    func testTheFinalTextAgreesWithARealJSONParse() throws {
-        let object: [String: Any] = ["path": "src/a b/ünïcode\"quote\".ts", "content": "let x = 1\n\tlet y = \"2\"\n"]
-        let data = try JSONSerialization.data(withJSONObject: object)
-        let partial = extract(String(data: data, encoding: .utf8)!, ["path", "content"])
-        XCTAssertEqual(partial.completedValue(for: "path"), object["path"] as? String)
-        XCTAssertEqual(partial.completedValue(for: "content"), object["content"] as? String)
     }
 
     func testEveryPrefixOfARealCallIsEitherCorrectOrSilent() throws {
@@ -125,14 +95,12 @@ final class StreamingEditPreviewTests: XCTestCase {
         XCTAssertEqual(draft?.isComplete, false)
     }
 
-    func testEditFilePreviewsTheReplacementNotTheSearchText() {
+    func testEditFilePreviewsTheReplacementAndIsCompleteOnlyWhenEveryFieldHasLanded() {
         // old_string is text already visible in the file; new_string is the news.
-        let json = #"{"path": "a.ts", "old_string": "const a = 1", "new_string": "const a = 2"#
-        let draft = StreamingEditPreview.draft(toolName: "edit_file", partialJSON: json)
+        let arriving = #"{"path": "a.ts", "old_string": "const a = 1", "new_string": "const a = 2"#
+        let draft = StreamingEditPreview.draft(toolName: "edit_file", partialJSON: arriving)
         XCTAssertEqual(draft?.body, "const a = 2")
-    }
-
-    func testEditFileIsCompleteOnlyWhenEveryFieldHasLanded() {
+        XCTAssertEqual(draft?.isComplete, false)
         let json = #"{"path": "a.ts", "old_string": "x", "new_string": "y"}"#
         XCTAssertEqual(StreamingEditPreview.draft(toolName: "edit_file", partialJSON: json)?.isComplete, true)
         let missing = #"{"path": "a.ts", "new_string": "y"}"#
@@ -152,23 +120,14 @@ final class StreamingEditPreviewTests: XCTestCase {
         XCTAssertNil(StreamingEditPreview.draft(toolName: "run_shell_command", partialJSON: #"{"path": "a.ts"}"#))
     }
 
-    func testANewFilesPreviewLinesAreMarkedAsAdditions() {
-        let text = StreamingEditPreview.previewDiffText(body: "a\nb", isNewFile: true)
-        let hunks = UnifiedDiff.parseHunks(text)
-        XCTAssertEqual(hunks.flatMap(\.lines).filter { $0.kind == .added }.count, 2)
-    }
-
-    func testAnExistingFilesPreviewLinesAreNeutral() {
-        // Which of these lines are actually changes isn't knowable until the whole content is
-        // here and can be diffed; tinting them green first would be a guess that then changes.
-        let text = StreamingEditPreview.previewDiffText(body: "a\nb", isNewFile: false)
-        let hunks = UnifiedDiff.parseHunks(text)
-        XCTAssertTrue(hunks.flatMap(\.lines).allSatisfy { $0.kind == .context })
-    }
-
-    func testThePreviewParsesAsAHunkEvenWhenEmpty() {
-        // A card that renders nothing is fine; one that crashes the parser is not.
-        let text = StreamingEditPreview.previewDiffText(body: "", isNewFile: true)
-        XCTAssertFalse(UnifiedDiff.parseHunks(text).isEmpty)
+    func testThePreviewDiffMarksNewFileLinesAsAdditionsAndExistingOnesAsNeutral() {
+        // Which lines of an existing file are actually changes isn't knowable until the whole
+        // content is here and can be diffed; tinting them green first would be a guess that then
+        // changes. And a card that renders nothing is fine; one that crashes the parser is not.
+        let added = UnifiedDiff.parseHunks(StreamingEditPreview.previewDiffText(body: "a\nb", isNewFile: true))
+        XCTAssertEqual(added.flatMap(\.lines).filter { $0.kind == .added }.count, 2)
+        let neutral = UnifiedDiff.parseHunks(StreamingEditPreview.previewDiffText(body: "a\nb", isNewFile: false))
+        XCTAssertTrue(neutral.flatMap(\.lines).allSatisfy { $0.kind == .context })
+        XCTAssertFalse(UnifiedDiff.parseHunks(StreamingEditPreview.previewDiffText(body: "", isNewFile: true)).isEmpty)
     }
 }

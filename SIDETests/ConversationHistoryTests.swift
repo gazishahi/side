@@ -53,39 +53,27 @@ final class ConversationHistoryTests: XCTestCase {
         XCTAssertEqual(reloaded.archivedConversations(forTrackKey: "main").first?.title, "first question")
     }
 
-    func testReopeningArchivesWhateverWasCurrent() throws {
-        let store = store()
-        seed(store, ["the old one"])
-        store.archiveActiveConversation(forTrackKey: "main")
-        seed(store, ["the new one"])
-
-        let old = try XCTUnwrap(store.archivedConversations(forTrackKey: "main").first)
-        let reopened = try XCTUnwrap(store.openArchivedConversation(id: old.id, forTrackKey: "main"))
-
-        func firstText(_ session: AgentSession) -> String? {
-            guard case .text(let value)? = session.turns.first?.content.first else { return nil }
-            return value
-        }
-        XCTAssertEqual(firstText(reopened), "the old one")
-        // Reopening must never be the move that loses the conversation you were in.
-        XCTAssertEqual(store.archivedConversations(forTrackKey: "main").map(\.title), ["the new one"])
-    }
-
-    func testReopeningTwiceSwapsBackAndForthWithoutLosingEither() throws {
+    func testReopeningArchivesWhateverWasCurrentAndSwapsBackAndForth() throws {
+        // Reopening must never be the move that loses the conversation you were in: the current
+        // one is archived, and a second reopen swaps back without losing either.
         let store = store()
         seed(store, ["conversation A"])
         store.archiveActiveConversation(forTrackKey: "main")
         seed(store, ["conversation B"])
 
-        let a = try XCTUnwrap(store.archivedConversations(forTrackKey: "main").first { $0.title == "conversation A" })
-        store.openArchivedConversation(id: a.id, forTrackKey: "main")
-        let b = try XCTUnwrap(store.archivedConversations(forTrackKey: "main").first { $0.title == "conversation B" })
-        store.openArchivedConversation(id: b.id, forTrackKey: "main")
-
         func firstText(_ session: AgentSession?) -> String? {
             guard case .text(let value)? = session?.turns.first?.content.first else { return nil }
             return value
         }
+
+        let a = try XCTUnwrap(store.archivedConversations(forTrackKey: "main").first { $0.title == "conversation A" })
+        let reopened = try XCTUnwrap(store.openArchivedConversation(id: a.id, forTrackKey: "main"))
+        XCTAssertEqual(firstText(reopened), "conversation A")
+        XCTAssertEqual(firstText(store.session(forTrackKey: "main")), "conversation A")
+        XCTAssertEqual(store.archivedConversations(forTrackKey: "main").map(\.title), ["conversation B"])
+
+        let b = try XCTUnwrap(store.archivedConversations(forTrackKey: "main").first { $0.title == "conversation B" })
+        store.openArchivedConversation(id: b.id, forTrackKey: "main")
         XCTAssertEqual(firstText(store.session(forTrackKey: "main")), "conversation B")
         XCTAssertEqual(store.archivedConversations(forTrackKey: "main").map(\.title), ["conversation A"])
     }
@@ -119,25 +107,20 @@ final class ConversationHistoryTests: XCTestCase {
         XCTAssertEqual(store.archivedConversations(forTrackKey: "main").map(\.title), ["newer", "older"])
     }
 
-    func testTitleFallsBackWhenNothingWasSaid() {
-        let session = AgentSession(
-            id: UUID(), trackKey: "main", providerId: "p", modelId: "m",
-            turns: [AgentTurn(role: .assistant, content: [.text("I spoke first")])],
-            createdAt: Date(), lastActiveAt: Date()
-        )
-        // An assistant-only transcript has no user phrasing to title it with.
-        XCTAssertTrue(ArchivedConversation.title(for: session).isEmpty)
-    }
+    func testArchiveTitleComesFromWhatTheUserActuallySaid() {
+        // An assistant-only transcript has no user phrasing to title it with, so the title is
+        // empty. A compaction summary is a user-role turn Side wrote itself; using it as the title
+        // tells the user nothing about which conversation this was, so it is skipped.
+        func session(_ turns: [AgentTurn]) -> AgentSession {
+            AgentSession(
+                id: UUID(), trackKey: "main", providerId: "p", modelId: "m",
+                turns: turns, createdAt: Date(), lastActiveAt: Date()
+            )
+        }
+        XCTAssertTrue(ArchivedConversation.title(for: session([AgentTurn(role: .assistant, content: [.text("I spoke first")])])).isEmpty)
 
-    func testACompactedConversationIsNotTitledWithSidesOwnSummary() {
         let summary = AgentTurn(role: .user, content: [.text(ContextBudget.summaryTurnText("we fixed the parser"))])
         let real = AgentTurn(role: .user, content: [.text("now add a test for it")])
-        let session = AgentSession(
-            id: UUID(), trackKey: "main", providerId: "p", modelId: "m",
-            turns: [summary, real], createdAt: Date(), lastActiveAt: Date()
-        )
-        // The summary is a user-role turn Side wrote itself; using it as the title tells the
-        // user nothing about which conversation this was.
-        XCTAssertEqual(ArchivedConversation.title(for: session), "now add a test for it")
+        XCTAssertEqual(ArchivedConversation.title(for: session([summary, real])), "now add a test for it")
     }
 }

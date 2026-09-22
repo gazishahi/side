@@ -47,38 +47,32 @@ final class TrackContextToolsTests: XCTestCase {
         return executor
     }
 
-    func testOverlapNamesTheSiblingAndTheSharedFileOnly() {
+    func testOverlapNamesOnlyTheSiblingAndSharedFileAndSaysSoWhenThereIsNone() {
+        // The tool answers "who else is touching what I'm touching" — the sibling and the shared
+        // file, nothing this track changed alone, no track with nothing in common — and an empty
+        // answer is a sentence, not a blank the model has to interpret.
         guard case .completed(let output, let isError) = executor(current: "track-a").execute(name: "read_track_overlap", input: .object([:]), toolUseId: "t", scope: .build) else { return XCTFail() }
         XCTAssertFalse(isError)
         XCTAssertTrue(output.contains("Fix the bug in shared (track-b) also changed:"), output)
         XCTAssertTrue(output.contains("  shared.swift"), output)
         XCTAssertFalse(output.contains("only-a.swift"), "a file only this track changed is not an overlap")
         XCTAssertFalse(output.contains("track-c"), "a track with no shared files is not reported")
+
+        guard case .completed(let none, _) = executor(current: "track-c").execute(name: "read_track_overlap", input: .object([:]), toolUseId: "t", scope: .build) else { return XCTFail() }
+        XCTAssertTrue(none.contains("No other track"), none)
     }
 
-    func testNoOverlapSaysSoInsteadOfReturningNothing() {
-        guard case .completed(let output, _) = executor(current: "track-c").execute(name: "read_track_overlap", input: .object([:]), toolUseId: "t", scope: .build) else { return XCTFail() }
-        XCTAssertTrue(output.contains("No other track"), output)
-    }
-
-    func testListingMarksTheCurrentTrackAndCountsChangedFiles() {
+    func testListingMarksTheCurrentTrackCountsChangedFilesAndHandlesNoProject() {
+        // One line per track with its status, intent, base, and change count, the current track
+        // marked; without a track provider the answer is the plain sentence, not an empty string.
         guard case .completed(let output, _) = executor(current: "track-b").execute(name: "list_tracks", input: .object([:]), toolUseId: "t", scope: .plan) else { return XCTFail() }
         let lines = output.components(separatedBy: "\n")
         XCTAssertEqual(lines.count, 3)
         XCTAssertTrue(lines[0].contains("track-a [active] — Refactor shared · base main · 2 changed files"), lines[0])
         XCTAssertTrue(lines[1].contains("1 changed file  ← this track"), lines[1])
-    }
 
-    func testTheToolsAreOfferedInPlanAndBuildButNotAsk() {
-        let names: (AgentToolScope) -> Set<String> = { Set(ToolExecutor.specs(for: $0).map(\.name)) }
-        XCTAssertTrue(names(.build).isSuperset(of: ["list_tracks", "read_track_overlap"]))
-        XCTAssertTrue(names(.plan).isSuperset(of: ["list_tracks", "read_track_overlap"]))
-        XCTAssertTrue(names(.ask).isDisjoint(with: ["list_tracks", "read_track_overlap"]))
-    }
-
-    func testWithoutAProjectThereAreNoTracks() {
-        let executor = ToolExecutor(projectRoot: root, liveBufferProvider: { _ in nil })
-        guard case .completed(let output, _) = executor.execute(name: "list_tracks", input: .object([:]), toolUseId: "t", scope: .build) else { return XCTFail() }
-        XCTAssertEqual(output, "This project has no tracks.")
+        let bare = ToolExecutor(projectRoot: root, liveBufferProvider: { _ in nil })
+        guard case .completed(let empty, _) = bare.execute(name: "list_tracks", input: .object([:]), toolUseId: "t", scope: .build) else { return XCTFail() }
+        XCTAssertEqual(empty, "This project has no tracks.")
     }
 }

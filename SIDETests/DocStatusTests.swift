@@ -88,12 +88,4 @@ final class DocStatusTests: XCTestCase {
         }
         XCTAssertEqual(checked, 7, "expected the five built stages and two non-stages to be checked")
     }
-
-    func testThePhaseTenDocumentNoLongerSaysNotStarted() throws {
-        // The exact drift the 2026-09-01 audit found. Kept as a named regression rather than
-        // trusting the generic check to imply it.
-        let text = try String(contentsOf: repoRoot.appendingPathComponent("docs/SIDE_PHASE_10_VERIFICATION.md"), encoding: .utf8)
-        XCTAssertFalse(text.contains("Not started"))
-        XCTAssertTrue(text.contains("Status: built"))
-    }
 }

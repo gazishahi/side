@@ -31,24 +31,19 @@ final class JSONStoreTests: XCTestCase {
         XCTAssertEqual(loaded?.version, JSONStore.currentVersion)
     }
 
-    func testPreEnvelopeFileReadsAsVersionOne() throws {
+    func testALegacyFileReadsAsVersionOneAndUpgradesWhenRewritten() throws {
         // Every file written before the envelope existed had the payload at the top level.
         // Refusing to read those would have looked exactly like data loss to the user.
         let target = url("legacy.json")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data(#"{"name":"legacy","count":7}"#.utf8).write(to: target)
 
-        let loaded = JSONStore.read(Sample.self, from: target)
-        XCTAssertEqual(loaded?.payload, Sample(name: "legacy", count: 7))
-        XCTAssertEqual(loaded?.version, 1)
-    }
+        let loaded = try XCTUnwrap(JSONStore.read(Sample.self, from: target))
+        XCTAssertEqual(loaded.payload, Sample(name: "legacy", count: 7))
+        XCTAssertEqual(loaded.version, 1)
 
-    func testRewritingALegacyFileUpgradesItInPlace() throws {
-        let target = url("upgrade.json")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data(#"{"name":"legacy","count":7}"#.utf8).write(to: target)
-
-        var payload = try XCTUnwrap(JSONStore.read(Sample.self, from: target)?.payload)
+        // Rewriting it upgrades the file in place.
+        var payload = loaded.payload
         payload.count = 8
         JSONStore.write(payload, to: target)
 
@@ -68,10 +63,12 @@ final class JSONStoreTests: XCTestCase {
         XCTAssertEqual(reported, 0, "First run has no file yet — that isn't an error worth alarming anyone about.")
     }
 
-    func testCorruptFileIsReportedRatherThanSilentlyEmpty() throws {
+    func testACorruptFileIsReportedAndQuarantinedRatherThanSilentlyEmpty() throws {
+        // Audit H3: a corrupt store is quarantined, not overwritten.
         let target = url("corrupt.json")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data("{not json at all".utf8).write(to: target)
+        let garbage = Data("{not json at all".utf8)
+        try garbage.write(to: target)
 
         let expectation = expectation(forNotification: PersistenceFailureReporter.failureNotification, object: nil) { note in
             guard let failure = note.object as? PersistenceFailureReporter.Failure else { return false }
@@ -80,6 +77,19 @@ final class JSONStoreTests: XCTestCase {
 
         XCTAssertNil(JSONStore.read(Sample.self, from: target))
         wait(for: [expectation], timeout: 2)
+
+        // The original is gone from its path — so a loader's `?? []` followed by `save()`
+        // writes a fresh file rather than clobbering the evidence.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        guard let quarantined = siblings.first(where: { $0.hasPrefix("corrupt.json.corrupt-") }) else {
+            return XCTFail("no quarantine file among \(siblings)")
+        }
+        XCTAssertEqual(try Data(contentsOf: url(quarantined)), garbage)
+
+        // And the store carries on: the next save lands at the original path.
+        XCTAssertTrue(JSONStore.write(Sample(name: "fresh", count: 1), to: target))
+        XCTAssertEqual(JSONStore.read(Sample.self, from: target)?.payload.count, 1)
     }
 
     func testUnwritableLocationIsReportedAndReturnsFalse() {
@@ -124,30 +134,6 @@ final class JSONStoreTests: XCTestCase {
         XCTAssertEqual(recovered.trackKey, "feature")
         XCTAssertEqual(recovered.turns.count, 1)
         XCTAssertEqual(recovered.providerId, "")
-    }
-
-    func testCheckpointFromAnOlderBuildStillLoads() throws {
-        let full = Checkpoint(
-            trackKey: "feature", agentSessionId: UUID(), declaredIntent: "tidy up",
-            changedFilePaths: ["a.swift"], commandsRun: ["ls"],
-            provenance: AgentProvenance(providerId: "anthropic", modelId: "claude-sonnet-5", instructionSourceSummary: ""),
-            gitCommitSHA: "abc123"
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: try encoder.encode(full)) as? [String: Any])
-        for key in ["id", "agentSessionId", "changedFilePaths", "commandsRun", "provenance", "gitCommitSHA", "createdAt"] {
-            object.removeValue(forKey: key)
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let checkpoint = try decoder.decode(Checkpoint.self, from: try JSONSerialization.data(withJSONObject: object))
-
-        XCTAssertEqual(checkpoint.trackKey, "feature")
-        XCTAssertEqual(checkpoint.declaredIntent, "tidy up")
-        XCTAssertEqual(checkpoint.changedFilePaths, [])
-        XCTAssertNil(checkpoint.gitCommitSHA)
-        XCTAssertEqual(checkpoint.provenance.modelId, "")
     }
 
     func testSessionStillRequiresTheFieldsThatMakeItMeaningful() {

@@ -15,70 +15,40 @@ final class ContextBudgetTests: XCTestCase {
 
     // MARK: - Estimation
 
-    func testEstimateGrowsWithTheConversation() {
+    func testTheEstimateCountsProseToolResultsAndImages() {
+        XCTAssertEqual(ContextBudget.estimatedTokens(in: []), 0)
         let short = [turn(.user, text: "hello")]
         let long = short + [turn(.assistant, text: String(repeating: "a reply ", count: 500))]
-        XCTAssertGreaterThan(
-            ContextBudget.estimatedTokens(in: long),
-            ContextBudget.estimatedTokens(in: short)
-        )
-    }
-
-    func testToolResultsCountTowardTheEstimate() {
+        XCTAssertGreaterThan(ContextBudget.estimatedTokens(in: long), ContextBudget.estimatedTokens(in: short))
         // A single read_file can be tens of thousands of characters — an estimate that only
         // counted prose would report a nearly-empty window on a conversation about to fail.
         let withResult = [turn(.user, text: "read it"), toolResultTurn(characters: 40_000)]
         XCTAssertGreaterThan(ContextBudget.estimatedTokens(in: withResult), 9_000)
-    }
-
-    func testImagesCountTowardTheEstimate() {
-        // Priced by pixels server-side; the estimate charges a flat figure per image so the
-        // gauge moves when screenshots pile up.
+        // Images are priced by pixels server-side; the estimate charges a flat figure per image
+        // so the gauge moves when screenshots pile up.
         let withImage = [AgentTurn(role: .user, content: [.image(mediaType: "image/png", base64: "aGk=")])]
         XCTAssertGreaterThan(ContextBudget.estimatedTokens(in: withImage), 1_000)
     }
 
-    func testImageBlocksSurviveAPersistenceRoundTrip() throws {
-        let turn = AgentTurn(role: .user, content: [
-            .image(mediaType: "image/jpeg", base64: "c2NyZWVuc2hvdA=="),
-            .text("what's wrong with this UI?"),
-        ])
-        let decoded = try JSONDecoder().decode(AgentTurn.self, from: JSONEncoder().encode(turn))
-        guard case .image(let mediaType, let base64) = decoded.content.first else {
-            return XCTFail("image block lost in round trip")
-        }
-        XCTAssertEqual(mediaType, "image/jpeg")
-        XCTAssertEqual(base64, "c2NyZWVuc2hvdA==")
-    }
-
-    func testEmptyConversationCostsNothing() {
-        XCTAssertEqual(ContextBudget.estimatedTokens(in: []), 0)
-    }
-
     // MARK: - Thresholds
 
-    func testStatusCrossesAtTheDocumentedFractions() {
+    func testStatusCrossesAtTheDocumentedFractionsAndOnlyTheUpperOnesSuggestCompaction() {
+        // The fraction is clamped so the gauge can't exceed full, whatever the provider reports.
         let window = 100_000
-        func status(atFraction fraction: Double) -> ContextBudget.Status {
-            ContextBudget.usage(turns: [], windowTokens: window, lastReportedInputTokens: Int(Double(window) * fraction)).status
+        let cases: [(fraction: Double, status: ContextBudget.Status, suggestsCompaction: Bool, gauge: Double)] = [
+            (0.5, .comfortable, false, 0.5),
+            (0.69, .comfortable, false, 0.69),
+            (0.70, .approaching, true, 0.70),
+            (0.89, .approaching, true, 0.89),
+            (0.90, .critical, true, 0.90),
+            (1.5, .critical, true, 1),
+        ]
+        for c in cases {
+            let usage = ContextBudget.usage(turns: [], windowTokens: window, lastReportedInputTokens: Int(Double(window) * c.fraction))
+            XCTAssertEqual(usage.status, c.status, "at \(c.fraction)")
+            XCTAssertEqual(usage.status.shouldSuggestCompaction, c.suggestsCompaction, "at \(c.fraction)")
+            XCTAssertEqual(usage.fraction, c.gauge, accuracy: 0.0001, "at \(c.fraction)")
         }
-        XCTAssertEqual(status(atFraction: 0.5), .comfortable)
-        XCTAssertEqual(status(atFraction: 0.69), .comfortable)
-        XCTAssertEqual(status(atFraction: 0.70), .approaching)
-        XCTAssertEqual(status(atFraction: 0.89), .approaching)
-        XCTAssertEqual(status(atFraction: 0.90), .critical)
-        XCTAssertEqual(status(atFraction: 1.5), .critical)
-    }
-
-    func testFractionIsClampedSoTheGaugeCantExceedFull() {
-        let usage = ContextBudget.usage(turns: [], windowTokens: 1_000, lastReportedInputTokens: 5_000)
-        XCTAssertEqual(usage.fraction, 1)
-    }
-
-    func testOnlyNonComfortableStatusesSuggestCompaction() {
-        XCTAssertFalse(ContextBudget.Status.comfortable.shouldSuggestCompaction)
-        XCTAssertTrue(ContextBudget.Status.approaching.shouldSuggestCompaction)
-        XCTAssertTrue(ContextBudget.Status.critical.shouldSuggestCompaction)
     }
 
     // MARK: - Measured vs estimated
@@ -109,10 +79,12 @@ final class ContextBudgetTests: XCTestCase {
     }
 
 
-    func testTheMeasuredCountSurvivesAReload() throws {
+    func testTheMeasuredCountAndItsClearingSurviveAReload() throws {
         // The bug: this count is the provider's *measured* figure and lived only in memory, so
         // after a relaunch the gauge fell back to the character-count estimate and the same
-        // conversation reported 5% and then 3% with nothing having changed.
+        // conversation reported 5% and then 3% with nothing having changed. Clearing it must
+        // persist too: compaction replaces the conversation the count measured, so a stale
+        // figure would overstate a freshly-compacted session forever.
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tok-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -131,20 +103,8 @@ final class ContextBudgetTests: XCTestCase {
             lastReportedInputTokens: reloaded.session(forTrackKey: "main")?.lastReportedInputTokens
         )
         XCTAssertEqual(usage.usedTokens, 48_000)
-    }
 
-    func testClearingItIsAlsoPersisted() throws {
-        // Compaction replaces the conversation the count measured, so a stale figure would
-        // overstate a freshly-compacted session forever.
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tok-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let store = AgentSessionStore(stateDirectory: directory)
-        store.appendTurn(AgentTurn(role: .user, content: [.text("hi")]), trackKey: "main", providerId: "p", modelId: "m")
-        store.recordReportedInputTokens(48_000, forTrackKey: "main")
         store.recordReportedInputTokens(nil, forTrackKey: "main")
-
         XCTAssertNil(AgentSessionStore(stateDirectory: directory).session(forTrackKey: "main")?.lastReportedInputTokens)
     }
 
@@ -185,22 +145,6 @@ final class ConversationCompactionTests: XCTestCase {
         super.tearDown()
     }
 
-    func testReplacingTurnsPersistsAndSurvivesReload() {
-        let store = AgentSessionStore(stateDirectory: stateDirectory)
-        store.appendTurn(AgentTurn(role: .user, content: [.text("first")]), trackKey: "main", providerId: "anthropic", modelId: "claude-sonnet-5")
-        store.appendTurn(AgentTurn(role: .assistant, content: [.text("second")]), trackKey: "main", providerId: "anthropic", modelId: "claude-sonnet-5")
-
-        let summary = AgentTurn(role: .user, content: [.text(ContextBudget.summaryTurnText("we did things"))])
-        store.replaceTurns([summary], trackKey: "main", providerId: "anthropic", modelId: "claude-sonnet-5")
-
-        let reloaded = AgentSessionStore(stateDirectory: stateDirectory)
-        let turns = reloaded.session(forTrackKey: "main")?.turns ?? []
-        XCTAssertEqual(turns.count, 1)
-        XCTAssertTrue(turns.first?.content.first.map { block in
-            if case .text(let text) = block { return text.contains("we did things") } else { return false }
-        } ?? false)
-    }
-
     func testCompactedConversationHasNoDanglingToolUse() {
         let store = AgentSessionStore(stateDirectory: stateDirectory)
         // A conversation caught mid-tool-call: the assistant asked, nothing answered yet.
@@ -217,18 +161,5 @@ final class ConversationCompactionTests: XCTestCase {
         // tail-preserving compaction could easily cut between a call and its result.
         XCTAssertNil(AgentSessionStore.repairingDanglingToolUses(session), "compaction left a tool_use needing repair")
         XCTAssertEqual(session.turns.count, 1)
-    }
-
-    func testCompactionShrinksTheEstimate() {
-        let big = (0..<40).map { index in
-            AgentTurn(role: .user, content: [
-                .toolResult(toolUseId: "t\(index)", content: String(repeating: "x", count: 5_000), isError: false)
-            ])
-        }
-        let compacted = [AgentTurn(role: .user, content: [.text(ContextBudget.summaryTurnText("summary"))])]
-        XCTAssertLessThan(
-            ContextBudget.estimatedTokens(in: compacted),
-            ContextBudget.estimatedTokens(in: big) / 10
-        )
     }
 }

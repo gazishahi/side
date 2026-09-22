@@ -31,16 +31,7 @@ final class LSPOutboundQueueTests: XCTestCase {
         for _ in 0..<400 where recorder.ops.count < count { try? await Task.sleep(nanoseconds: 5_000_000) }
     }
 
-    func testChangesArriveInTheOrderTheyWereMade() async {
-        let recorder = Recorder()
-        let queue = makeQueue(recorder)
-        queue.resume()
-        for version in 2...101 { queue.enqueue(.didChange(uri: "f", text: "v\(version)", version: version)) }
-        await settle(recorder, until: 100)
-        XCTAssertEqual(versions(recorder.ops), Array(2...101))
-    }
-
-    func testACompletionNeverOvertakesTheFlushBeforeIt() async {
+    func testChangesArriveInOrderAndACompletionNeverOvertakesTheFlushBeforeIt() async {
         // The exact race the "flush a didChange before completing" fix had: both were detached
         // Tasks, so the request could reach the server before the text it was asked about.
         let recorder = Recorder()
@@ -55,6 +46,7 @@ final class LSPOutboundQueueTests: XCTestCase {
         await settle(recorder, until: 100)
         let ops = recorder.ops
         XCTAssertEqual(ops.count, 100)
+        XCTAssertEqual(versions(ops), Array(2...51))
         var lastSeenVersion = 1
         for (index, op) in ops.enumerated() {
             switch op {
@@ -127,12 +119,16 @@ final class LSPRespawnTests: XCTestCase {
         }
     }
 
-    func testOpenDocumentsAreReannouncedAtVersionOneBeforeAnythingElse() {
+    func testOpenDocumentsAreReannouncedAtVersionOneBeforePendingRequestsWhichSurvive() {
+        // Requests queued during the outage still get answered — after the reopen, in order.
         let ops = LSPManager.respawnOps(
             openDocuments: [("a.py", "python", "A"), ("b.py", "python", "B")],
-            pending: [.completion(uri: "a.py", position: LSPPosition(line: 0, character: 0)) { _ in }]
+            pending: [
+                .completion(uri: "a.py", position: LSPPosition(line: 0, character: 0)) { _ in },
+                .definition(uri: "a.py", position: LSPPosition(line: 1, character: 2)) { _ in },
+            ]
         )
-        XCTAssertEqual(kinds(ops), ["open(a.py,v1)", "open(b.py,v1)", "completion(a.py)"])
+        XCTAssertEqual(kinds(ops), ["open(a.py,v1)", "open(b.py,v1)", "completion(a.py)", "definition(a.py)"])
     }
 
     func testStaleSyncIsDroppedBecauseTheReplayCarriesCurrentText() {
@@ -148,14 +144,6 @@ final class LSPRespawnTests: XCTestCase {
         )
         XCTAssertEqual(kinds(ops), ["open(a.py,v1)"])
         if case .didOpen(_, _, let text, _) = ops[0] { XCTAssertEqual(text, "current") } else { XCTFail() }
-    }
-
-    func testRequestsSurviveTheOutageSoTheyStillGetAnswered() {
-        let ops = LSPManager.respawnOps(
-            openDocuments: [],
-            pending: [.definition(uri: "a.py", position: LSPPosition(line: 1, character: 2)) { _ in }]
-        )
-        XCTAssertEqual(kinds(ops), ["definition(a.py)"])
     }
 }
 

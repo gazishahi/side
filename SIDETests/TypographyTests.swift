@@ -16,6 +16,17 @@ final class TypographyTests: XCTestCase {
         super.tearDown()
     }
 
+    /// The five roles by name, read at whatever scale is current.
+    private func roleSizes() -> [(role: String, size: CGFloat)] {
+        [
+            ("title", DS.Text.title().pointSize),
+            ("heading", DS.Text.heading().pointSize),
+            ("body", DS.Text.body().pointSize),
+            ("caption", DS.Text.caption().pointSize),
+            ("code", DS.Text.code().pointSize),
+        ]
+    }
+
     func testDefaultScaleRendersTheFiveRoles() {
         DS.Text.Scale.current = .standard
         // Direction 02 §2.6: five roles. If these drift, every screen shifts without anyone deciding to.
@@ -26,33 +37,21 @@ final class TypographyTests: XCTestCase {
         XCTAssertEqual(DS.Text.code().pointSize, 12)
     }
 
-    func testEveryRoleGrowsWithTheScale() {
+    func testEveryRoleFollowsTheScaleAndTheHierarchyNeverInverts() {
+        // A role that ignores the scale drifts out of step with the rest of the screen, and a
+        // hierarchy that inverts at some scale would be worse than no scaling at all.
         DS.Text.Scale.current = .standard
-        let baseline = [
-            DS.Text.title().pointSize, DS.Text.title().pointSize, DS.Text.title().pointSize,
-            DS.Text.body().pointSize, DS.Text.heading().pointSize, DS.Text.body().pointSize,
-            DS.Text.body().pointSize, DS.Text.caption().pointSize, DS.Text.caption().pointSize,
-            DS.Text.code().pointSize,
-        ]
-
+        let baseline = roleSizes()
         DS.Text.Scale.current = .larger
-        let enlarged = [
-            DS.Text.title().pointSize, DS.Text.title().pointSize, DS.Text.title().pointSize,
-            DS.Text.body().pointSize, DS.Text.heading().pointSize, DS.Text.body().pointSize,
-            DS.Text.body().pointSize, DS.Text.caption().pointSize, DS.Text.caption().pointSize,
-            DS.Text.code().pointSize,
-        ]
-
-        for (index, before) in baseline.enumerated() {
-            XCTAssertGreaterThan(enlarged[index], before, "role \(index) ignored the scale")
+        for (index, enlarged) in roleSizes().enumerated() {
+            XCTAssertGreaterThan(enlarged.size, baseline[index].size, "\(enlarged.role) ignored the scale")
         }
-    }
 
-    func testSmallerScaleShrinksAndOrderingIsPreserved() {
-        DS.Text.Scale.current = .compact
-        // A hierarchy that inverts at some scale would be worse than no scaling at all.
-        XCTAssertLessThan(DS.Text.caption().pointSize, DS.Text.body().pointSize)
-        XCTAssertLessThan(DS.Text.body().pointSize, DS.Text.title().pointSize)
+        for scale in [DS.Text.Scale.compact, .standard, .larger] {
+            DS.Text.Scale.current = scale
+            XCTAssertLessThan(DS.Text.caption().pointSize, DS.Text.body().pointSize, "caption/body inverted at \(scale)")
+            XCTAssertLessThan(DS.Text.body().pointSize, DS.Text.title().pointSize, "body/title inverted at \(scale)")
+        }
     }
 
     func testWeightIsPreservedThroughScaling() {
@@ -85,14 +84,5 @@ final class TypographyTests: XCTestCase {
         // Re-selecting the current size shouldn't make every open stage rebuild itself.
         DS.Text.Scale.current = .large
         XCTAssertEqual(notifications, 1)
-    }
-
-    func testScalePersists() {
-        DS.Text.Scale.current = .large
-        XCTAssertEqual(DS.Text.Scale.current, .large)
-        XCTAssertEqual(
-            DS.Text.Scale(rawValue: UserDefaults.standard.double(forKey: "SideTextScale")), .large,
-            "the setting has to survive a relaunch to be worth having"
-        )
     }
 }

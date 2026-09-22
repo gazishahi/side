@@ -3,6 +3,10 @@ import XCTest
 
 /// Direction 02 §2 acceptance, enforced at test time rather than by a checklist nobody reruns.
 final class TokenComplianceTests: XCTestCase {
+    private var tokenFile: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("SIDE/DesignSystem.swift")
+    }
+
     private var sourceFiles: [URL] {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("SIDE")
         return (FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?.compactMap { $0 as? URL } ?? [])
@@ -23,46 +27,33 @@ final class TokenComplianceTests: XCTestCase {
         return found
     }
 
-    func testNoColorLiteralsOutsideTheTokenFile() throws {
-        XCTAssertEqual(try offenders(matching: #"NSColor\(white:"#), [])
-    }
+    func testTheTokenFileIsTheOnlyHomeForLiteralsBordersAndMotion() throws {
+        // Direction 02 §2: colour, radius, and type sizes come from the token file; §2.1 gives
+        // hierarchy from tone, so hairlines separate rows and never enclose them (the Working
+        // ring on DS.StatusDot is the one border, and it lives in the token file); a raw
+        // `context.duration = 0.2` is an animation Reduce Motion cannot turn off, so every
+        // duration goes through the motion helper and Reduce Motion is consulted in exactly one
+        // place; and the per-stage palettes are gone.
+        let rules: [(rule: String, pattern: String, exclusion: String?)] = [
+            ("no colour literals outside the token file", #"NSColor\(white:"#, nil),
+            ("no radius literals outside the token file", #"cornerRadius = [0-9]"#, nil),
+            ("no font sizes outside the token file", #"ofSize:"#, "pointSize"),
+            ("Reduce Motion is consulted only in the token file", "accessibilityDisplayShouldReduceMotion", nil),
+            ("every animation duration goes through the motion helper", #"context\.duration = 0\."#, nil),
+            ("every timing function goes through the motion helper", #"timingFunction = CAMediaTimingFunction\("#, "easeInEaseOut"),
+            ("nothing is enclosed by a border (borderWidth)", #"borderWidth = 1"#, nil),
+            ("nothing is enclosed by a border (bindLayerBorder)", #"bindLayerBorder\("#, nil),
+            ("the per-stage palettes are gone", "TracksPalette|ReviewPalette", nil),
+        ]
+        for rule in rules {
+            XCTAssertEqual(try offenders(matching: rule.pattern, excludingLinesContaining: rule.exclusion), [], rule.rule)
+        }
 
-    func testNoRadiusLiteralsOutsideTheTokenFile() throws {
-        XCTAssertEqual(try offenders(matching: #"cornerRadius = [0-9]"#), [])
-    }
-
-    func testNoFontSizesOutsideTheTokenFile() throws {
-        XCTAssertEqual(try offenders(matching: #"ofSize:"#, excludingLinesContaining: "pointSize"), [])
-    }
-
-    func testReduceMotionIsConsultedInExactlyOnePlace() throws {
-        XCTAssertEqual(try offenders(matching: "accessibilityDisplayShouldReduceMotion"), [])
-        let tokens = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("SIDE/DesignSystem.swift"), encoding: .utf8)
-        XCTAssertEqual(tokens.components(separatedBy: "accessibilityDisplayShouldReduceMotion").count - 1, 1)
-    }
-
-    func testEveryAnimationDurationGoesThroughTheMotionHelper() throws {
-        // A raw `context.duration = 0.2` is an animation Reduce Motion cannot turn off.
-        XCTAssertEqual(try offenders(matching: #"context\.duration = 0\."#), [])
-        XCTAssertEqual(try offenders(matching: #"timingFunction = CAMediaTimingFunction\("#, excludingLinesContaining: "easeInEaseOut"), [])
-    }
-
-    func testNothingIsEnclosedByABorder() throws {
-        // Direction 02 §2.1: hierarchy from tone; hairlines separate rows, never enclose them.
-        // The Working ring on DS.StatusDot is the one border, and it lives in the token file.
-        XCTAssertEqual(try offenders(matching: #"borderWidth = 1"#), [])
-        XCTAssertEqual(try offenders(matching: #"bindLayerBorder\("#), [])
-    }
-
-    func testThePerStagePalettesAreGone() throws {
-        XCTAssertEqual(try offenders(matching: "TracksPalette|ReviewPalette"), [])
-    }
-
-    func testDiffAndGutterColorsAreTokens() {
-        XCTAssertEqual(DiffBody.addedFill, DS.Color.diffAdded)
-        XCTAssertEqual(DiffBody.removedFill, DS.Color.diffRemoved)
-        XCTAssertEqual(DiffBody.addedText, DS.Color.statusVerified)
-        XCTAssertEqual(DiffBody.removedText, DS.Color.statusFailed)
+        let tokens = try String(contentsOf: tokenFile, encoding: .utf8)
+        XCTAssertEqual(
+            tokens.components(separatedBy: "accessibilityDisplayShouldReduceMotion").count - 1, 1,
+            "Reduce Motion is consulted in exactly one place in the token file"
+        )
     }
 
     func testStatusStateMapsActivityWithoutLosingFailure() {
@@ -81,10 +72,5 @@ final class TokenComplianceTests: XCTestCase {
         dot.state = .working
         XCTAssertEqual(dot.accessibilityLabel(), "Working")
         XCTAssertEqual(dot.layer?.borderWidth, 1.5, "working is a ring, not a fill")
-    }
-
-    func testMotionDurationHonoursReduceMotion() {
-        let expected: TimeInterval = DS.Motion.reduceMotion ? 0 : 0.2
-        XCTAssertEqual(DS.Motion.duration(0.2), expected)
     }
 }

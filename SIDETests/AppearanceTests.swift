@@ -18,25 +18,23 @@ final class AppearanceTests: XCTestCase {
         return 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
     }
 
-    func testSurfaceTokensInvertWithTheAppearance() {
-        for token in [DS.Color.canvas, DS.Color.canvas, DS.Color.raised, DS.Color.overlay, DS.Color.overlay, DS.Color.raised, DS.Color.raised] {
+    func testSurfaceTokensInvertWithTheAppearanceAndKeepTheirOrdering() {
+        // Surfaces are dark in dark and light in light, text the reverse. The charter's
+        // relationships hold in both: chrome is the deepest, cards a step up, the tab strip
+        // behind everything — in light that means chrome is *darker* than a card, not lighter —
+        // and text always contrasts with the card it sits on.
+        for token in [DS.Color.canvas, DS.Color.raised, DS.Color.overlay] {
             XCTAssertLessThan(luminance(token, in: .darkAqua), 0.35)
             XCTAssertGreaterThan(luminance(token, in: .aqua), 0.80)
         }
-        for token in [NSColor.labelColor, NSColor.labelColor, NSColor.secondaryLabelColor, NSColor.labelColor] {
+        for token in [NSColor.labelColor, NSColor.secondaryLabelColor] {
             XCTAssertGreaterThan(luminance(token, in: .darkAqua), 0.6)
             XCTAssertLessThan(luminance(token, in: .aqua), 0.4)
         }
-    }
-
-    func testTheSurfaceOrderingHoldsInBothAppearances() {
-        // The charter's relationships: chrome is the deepest, cards a step up, the tab strip
-        // behind everything. In light that means chrome is *darker* than a card, not lighter.
         for appearance in [NSAppearance.Name.darkAqua, .aqua] {
             let chrome = luminance(DS.Color.canvas, in: appearance)
             let card = luminance(DS.Color.raised, in: appearance)
             XCTAssertNotEqual(chrome, card, "\(appearance.rawValue)")
-            // Text always contrasts with the card it sits on.
             XCTAssertGreaterThan(abs(luminance(NSColor.labelColor, in: appearance) - card), 0.5, "\(appearance.rawValue)")
         }
     }

@@ -22,43 +22,47 @@ final class FileMentionTests: XCTestCase {
 
     // MARK: - Token scanning
 
-    func testFindsMentionsAndIgnoresEmailAddresses() {
-        let tokens = FileMentionResolver.mentionTokens(in: "look at @src/greeter.ts and mail me@example.com")
-        // An email's `@` has a non-boundary character before it — treating it as a file
-        // reference would make every address in a message a broken mention.
-        XCTAssertEqual(tokens, ["src/greeter.ts"])
-    }
-
-    func testPunctuationAfterAMentionStaysPunctuation() {
-        XCTAssertEqual(
-            FileMentionResolver.mentionTokens(in: "compare @a.swift, @b.swift; then stop"),
-            ["a.swift", "b.swift"]
-        )
-        XCTAssertEqual(FileMentionResolver.mentionTokens(in: "check @README.md?"), ["README.md"])
-        XCTAssertEqual(FileMentionResolver.mentionTokens(in: "(see @src/greeter.ts)"), ["src/greeter.ts"])
-    }
-
-    func testABareAtIsNotAMention() {
-        XCTAssertTrue(FileMentionResolver.mentionTokens(in: "what does @ mean").isEmpty)
-        XCTAssertTrue(FileMentionResolver.mentionTokens(in: "@").isEmpty)
+    func testTokenScanning() {
+        // An email's `@` has a non-boundary character before it — treating it as a file reference
+        // would make every address in a message a broken mention. Punctuation after a mention
+        // stays punctuation, a bare `@` is not a mention, and "with @." in prose is punctuation
+        // too (an early version styled it as a file reference, which made the highlighting look
+        // broken) — but a real dotfile still counts.
+        let cases: [(text: String, tokens: [String])] = [
+            ("look at @src/greeter.ts and mail me@example.com", ["src/greeter.ts"]),
+            ("compare @a.swift, @b.swift; then stop", ["a.swift", "b.swift"]),
+            ("check @README.md?", ["README.md"]),
+            ("(see @src/greeter.ts)", ["src/greeter.ts"]),
+            ("what does @ mean", []),
+            ("@", []),
+            ("referenced with @.", []),
+            ("a @- b", []),
+            ("see @.gitignore", [".gitignore"]),
+        ]
+        for row in cases {
+            XCTAssertEqual(FileMentionResolver.mentionTokens(in: row.text), row.tokens, row.text)
+            XCTAssertEqual(FileMentionResolver.tokenRanges(in: row.text).count, row.tokens.count, "highlight ranges for: \(row.text)")
+        }
     }
 
     // MARK: - Resolution
 
-    func testResolvesRealPathsAndReportsTypos() {
-        let result = FileMentionResolver.resolve(
+    func testResolution() {
+        // Real paths resolve; a typo is reported, not dropped — silently ignoring it is how an
+        // agent ends up confidently answering about a file nobody meant. Directories resolve and
+        // are labelled as such, and a path mentioned twice appears once.
+        let typo = FileMentionResolver.resolve(
             text: "explain @src/greeter.ts and @src/nope.ts", projectRoot: root
         )
-        XCTAssertEqual(result.mentions.map(\.relativePath), ["src/greeter.ts"])
-        // Reported, not dropped: silently ignoring a typo is how an agent ends up confidently
-        // answering about a file nobody meant.
-        XCTAssertEqual(result.unresolved, ["src/nope.ts"])
-    }
+        XCTAssertEqual(typo.mentions.map(\.relativePath), ["src/greeter.ts"])
+        XCTAssertEqual(typo.unresolved, ["src/nope.ts"])
 
-    func testDirectoriesResolveAndAreLabelled() {
-        let result = FileMentionResolver.resolve(text: "look through @src/deep/", projectRoot: root)
-        XCTAssertEqual(result.mentions.first?.relativePath, "src/deep")
-        XCTAssertEqual(result.mentions.first?.isDirectory, true)
+        let directory = FileMentionResolver.resolve(text: "look through @src/deep/", projectRoot: root)
+        XCTAssertEqual(directory.mentions.first?.relativePath, "src/deep")
+        XCTAssertEqual(directory.mentions.first?.isDirectory, true)
+
+        let repeated = FileMentionResolver.resolve(text: "@README.md is like @README.md", projectRoot: root)
+        XCTAssertEqual(repeated.mentions.count, 1)
     }
 
     func testEscapingTheProjectRootIsRefused() {
@@ -70,33 +74,23 @@ final class FileMentionTests: XCTestCase {
         XCTAssertEqual(result.unresolved.count, 2)
     }
 
-    func testRepeatedMentionsAppearOnce() {
-        let result = FileMentionResolver.resolve(
-            text: "@README.md is like @README.md", projectRoot: root
-        )
-        XCTAssertEqual(result.mentions.count, 1)
-    }
-
     // MARK: - What actually gets sent
 
-    func testTheNoteCarriesPathsAndNotFileContents() throws {
+    func testContextNote() throws {
+        // The whole design decision, pinned: the note carries paths, not contents — inlining
+        // content would persist a copy in the session file and re-send it on every later turn for
+        // the rest of the track's life. Unresolved mentions tell the agent to ask rather than
+        // guess, and no mentions means no note at all.
         let result = FileMentionResolver.resolve(text: "summarize @src/greeter.ts", projectRoot: root)
         let note = try XCTUnwrap(FileMentionResolver.contextNote(mentions: result.mentions, unresolved: []))
-
         XCTAssertTrue(note.contains("src/greeter.ts"), note)
-        // The whole design decision, pinned: inlining content would persist a copy in the
-        // session file and re-send it on every later turn for the rest of the track's life.
         XCTAssertFalse(note.contains("export const a = 1"), note)
         XCTAssertTrue(note.lowercased().contains("read_file"), "the agent has to be told how to get the contents")
-    }
 
-    func testUnresolvedMentionsTellTheAgentToAskRatherThanGuess() throws {
-        let note = try XCTUnwrap(FileMentionResolver.contextNote(mentions: [], unresolved: ["src/nope.ts"]))
-        XCTAssertTrue(note.contains("src/nope.ts"))
-        XCTAssertTrue(note.lowercased().contains("ask the user"), note)
-    }
+        let unresolved = try XCTUnwrap(FileMentionResolver.contextNote(mentions: [], unresolved: ["src/nope.ts"]))
+        XCTAssertTrue(unresolved.contains("src/nope.ts"))
+        XCTAssertTrue(unresolved.lowercased().contains("ask the user"), unresolved)
 
-    func testNoMentionsMeansNoNoteAtAll() {
         XCTAssertNil(FileMentionResolver.contextNote(mentions: [], unresolved: []))
     }
 
@@ -132,30 +126,21 @@ final class MentionPresentationTests: XCTestCase {
         return FileMentionResolver.tokenRanges(in: text).map { ns.substring(with: $0) }
     }
 
-    func testHighlightsMentionsAndNothingElse() {
-        XCTAssertEqual(
-            highlighted("look at @src/greeter.ts then @README.md"),
-            ["@src/greeter.ts", "@README.md"]
-        )
-        XCTAssertEqual(highlighted("mail me@example.com about it"), [])
-        XCTAssertEqual(highlighted("what does @ mean"), [])
-    }
-
     func testHighlightRangesAgreeWithWhatGetsSent() {
         // Two code paths read the same text — one decides what's *shown* as a mention, the other
         // what's *sent*. If they disagree, the user sees a styled reference the agent was never
-        // told about (or the reverse).
-        let text = "compare @a.swift, @b/c.swift; ignore me@example.com and a bare @"
-        XCTAssertEqual(
-            highlighted(text).map { String($0.dropFirst()) },
-            FileMentionResolver.mentionTokens(in: text)
-        )
-    }
-
-    func testHighlightsATypoTheSameAsARealPath() throws {
-        // Styling reflects "Side read this as a mention," so a wrong path has to look like one
-        // and fail visibly rather than blend into the sentence.
-        XCTAssertEqual(highlighted("check @src/nope.ts"), ["@src/nope.ts"])
+        // told about (or the reverse). Punctuation-only tokens are where they first diverged.
+        let texts = [
+            "compare @a.swift, @b/c.swift; ignore me@example.com and a bare @",
+            "check @. and @src/a.swift plus @-",
+        ]
+        for text in texts {
+            XCTAssertEqual(
+                highlighted(text).map { String($0.dropFirst()) },
+                FileMentionResolver.mentionTokens(in: text),
+                text
+            )
+        }
     }
 
     func testBareAtOffersShallowPathsFirst() throws {
@@ -175,30 +160,5 @@ final class MentionPresentationTests: XCTestCase {
         // project's top level.
         XCTAssertEqual(index.matches(for: "").first, "TOP.md")
         XCTAssertEqual(index.matches(for: "").last, "a/b/c/deep.swift")
-    }
-}
-
-/// The note must never be persisted into the user's turn — a stored note appears in the bubble
-/// when the transcript is rebuilt from disk (the live and reloaded transcripts disagreed, which
-/// is how this was found) and freezes resolution at send time.
-final class MentionNoteHandlingTests: XCTestCase {
-
-    func testPunctuationOnlyTokensAreNotMentions() {
-        // "with @." in prose is punctuation. An early version styled it as a file reference,
-        // which made the highlighting look broken.
-        XCTAssertTrue(FileMentionResolver.tokenRanges(in: "referenced with @.").isEmpty)
-        XCTAssertTrue(FileMentionResolver.mentionTokens(in: "referenced with @.").isEmpty)
-        XCTAssertTrue(FileMentionResolver.tokenRanges(in: "a @- b").isEmpty)
-        // …but a real dotfile still counts.
-        XCTAssertEqual(FileMentionResolver.mentionTokens(in: "see @.gitignore"), [".gitignore"])
-    }
-
-    func testResolutionAndHighlightingAgreeAboutPunctuation() {
-        let text = "check @. and @src/a.swift plus @-"
-        let ns = text as NSString
-        XCTAssertEqual(
-            FileMentionResolver.tokenRanges(in: text).map { String(ns.substring(with: $0).dropFirst()) },
-            FileMentionResolver.mentionTokens(in: text)
-        )
     }
 }

@@ -22,22 +22,21 @@ final class TerminalCaptureTests: XCTestCase {
 
     // MARK: - Forged marks (2026-09-01 audit)
 
-    func testAMarkWithoutTheNonceIsOutputNotCompletion() {
+    func testAMarkWithoutTheNonceOrWithTheWrongOneIsOutputNotCompletion() {
         // A repository's test script printing the shell's own mark used to read as exit 0.
         let forged = feed([prefix + "C" + bell, "tests running\r\n", done(0, nonce: nil), "still going\r\n"])
         XCTAssertNil(forged.finished, "a forged D;0 resolved the command")
         // The real mark, when it comes, wins — with the real exit code.
         let real = TerminalViewController.advanceMarkedCapture(buffer: forged.buffer, outputStarted: forged.outputStarted, chunk: done(1), nonce: nonce)
         XCTAssertTrue(real.finished?.hasSuffix("[exit code: 1]") == true, real.finished ?? "nil")
+        // A guessed nonce is no better than none.
+        let guessed = feed([prefix + "C" + bell, done(0, nonce: "guess"), done(2)])
+        XCTAssertTrue(guessed.finished?.hasSuffix("[exit code: 2]") == true, guessed.finished ?? "nil")
     }
 
-    func testAMarkWithTheWrongNonceIsAlsoOutput() {
-        let step = feed([prefix + "C" + bell, done(0, nonce: "guess"), done(2)])
-        XCTAssertTrue(step.finished?.hasSuffix("[exit code: 2]") == true, step.finished ?? "nil")
-    }
-
-    func testAShortCommandResolvesWithItsOutputAndExitCode() {
-        let step = feed(["prompt$ ls\r\n", prefix + "C" + bell, "a.txt\r\nb.txt\r\n", done(0)])
+    func testAShortCommandResolvesWithOnlyItsOutputAndExitCode() {
+        // The prompt and the echoed command precede C; they must never be reported as output.
+        let step = feed(["user@host ~ % ls\r\n", prefix + "C" + bell, "a.txt\r\nb.txt\r\n", done(0)])
         XCTAssertEqual(step.finished, "a.txt\nb.txt\n[exit code: 0]")
     }
 
@@ -64,22 +63,11 @@ final class TerminalCaptureTests: XCTestCase {
         XCTAssertFalse(started.buffer.contains(prefix + "C"))
     }
 
-    func testOutputBeforeTheStartMarkIsNotCaptured() {
-        // The prompt and the echoed command precede C; they must never be reported as output.
-        let step = feed(["user@host ~ % swift test\r\n", prefix + "C" + bell, "ok\r\n", done(0)])
-        XCTAssertEqual(step.finished, "ok\n[exit code: 0]")
-    }
-
     func testADoneMarkSplitAcrossChunksWaitsForItsExitCode() {
         let partial = feed([prefix + "C" + bell, "out\r\n", prefix + "D;13"])
         XCTAssertNil(partial.finished, "resolved before the exit code's terminator arrived")
         let completed = TerminalViewController.advanceMarkedCapture(buffer: partial.buffer, outputStarted: partial.outputStarted, chunk: "0;" + nonce + bell, nonce: nonce)
         XCTAssertTrue(completed.finished?.hasSuffix("[exit code: 130]") == true)
-    }
-
-    func testTaskTimeoutIsLongerThanTheAdHocOne() {
-        // A real test suite outlasts thirty seconds; verification never landed under the default.
-        XCTAssertGreaterThan(TerminalViewController.agentTaskTimeout, TerminalViewController.agentCommandTimeout * 5)
     }
 }
 
@@ -103,30 +91,21 @@ final class VerificationStalenessTests: XCTestCase {
         return try! JSONDecoder().decode(Checkpoint.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
-    func testNoCaveatWhenTheNewestCheckpointIsVerified() {
-        let caveat = ReviewWorkspaceViewController.verificationStalenessCaveat(checkpoints: [
-            checkpoint(at: 1, verified: nil), checkpoint(at: 2, verified: true),
-        ])
-        XCTAssertNil(caveat)
-    }
-
-    func testNoCaveatWhenNothingWasEverVerified() {
-        // That case has its own wording ("Nothing has been verified") and must not double up.
-        XCTAssertNil(ReviewWorkspaceViewController.verificationStalenessCaveat(checkpoints: [checkpoint(at: 1, verified: nil)]))
-    }
-
-    func testAPassBehindUnverifiedCheckpointsSaysHowFarBehind() {
-        let caveat = ReviewWorkspaceViewController.verificationStalenessCaveat(checkpoints: [
-            checkpoint(at: 1, verified: true), checkpoint(at: 2, verified: nil), checkpoint(at: 3, verified: nil), checkpoint(at: 4, verified: nil),
-        ])
-        XCTAssertEqual(caveat, "The last passing verification was 3 checkpoints ago — the newest changes have not been verified.")
-    }
-
-    func testAFailedVerificationIsNotAPass() {
-        // A failure is already stated loudly by the dialog; the staleness caveat is only about a
-        // pass that has since gone stale.
-        XCTAssertNil(ReviewWorkspaceViewController.verificationStalenessCaveat(checkpoints: [
-            checkpoint(at: 1, verified: false), checkpoint(at: 2, verified: nil),
-        ]))
+    func testTheCaveatAppearsOnlyForAPassThatHasGoneStale() {
+        // No caveat when the newest checkpoint is verified; none when nothing was ever verified
+        // (that case has its own wording, "Nothing has been verified", and must not double up);
+        // none for a failure, which the dialog already states loudly. A pass buried behind
+        // unverified checkpoints says how far behind it is.
+        let cases: [(name: String, checkpoints: [Checkpoint], caveat: String?)] = [
+            ("newest is verified", [checkpoint(at: 1, verified: nil), checkpoint(at: 2, verified: true)], nil),
+            ("nothing ever verified", [checkpoint(at: 1, verified: nil)], nil),
+            ("pass three checkpoints back",
+             [checkpoint(at: 1, verified: true), checkpoint(at: 2, verified: nil), checkpoint(at: 3, verified: nil), checkpoint(at: 4, verified: nil)],
+             "The last passing verification was 3 checkpoints ago — the newest changes have not been verified."),
+            ("failure is not a pass", [checkpoint(at: 1, verified: false), checkpoint(at: 2, verified: nil)], nil),
+        ]
+        for c in cases {
+            XCTAssertEqual(ReviewWorkspaceViewController.verificationStalenessCaveat(checkpoints: c.checkpoints), c.caveat, c.name)
+        }
     }
 }

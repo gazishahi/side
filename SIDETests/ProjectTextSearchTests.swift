@@ -25,17 +25,19 @@ final class ProjectTextSearchTests: XCTestCase {
         return try ProjectTextSearch.search(root: root, query: query, options: options, liveBuffer: { url in live[url.lastPathComponent] })
     }
 
-    func testSubstringSearchIsCaseInsensitiveAndReportsOneBasedLines() throws {
+    func testSubstringSearch() throws {
+        // Case-insensitive, one-based lines, the trimmed line as the match text — and an empty
+        // query matches nothing rather than everything.
         let results = try search("alpha")
         let located = results.matches.map { "\($0.relativePath):\($0.line)" }.sorted()
         XCTAssertEqual(located, ["README.md:1", "src/a.swift:1", "src/b.ts:1"])
         XCTAssertFalse(results.truncated)
-    }
 
-    func testTheMatchTextIsTheTrimmedLine() throws {
         let match = try search("gamma").matches.first
         XCTAssertEqual(match?.text, "func gamma() {}")
         XCTAssertEqual(match?.line, 3)
+
+        XCTAssertTrue(try search("").matches.isEmpty)
     }
 
     func testRegexSearchAndInvalidRegex() throws {
@@ -64,9 +66,5 @@ final class ProjectTextSearchTests: XCTestCase {
         let results = try search("unsaved", live: ["a.swift": "unsaved edit\n"])
         XCTAssertEqual(results.matches.map { "\($0.relativePath):\($0.line)" }, ["src/a.swift:1"])
         XCTAssertTrue(try search("gamma", live: ["a.swift": "unsaved edit\n"]).matches.isEmpty)
-    }
-
-    func testAnEmptyQueryMatchesNothing() throws {
-        XCTAssertTrue(try search("").matches.isEmpty)
     }
 }

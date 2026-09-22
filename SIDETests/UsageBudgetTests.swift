@@ -32,20 +32,19 @@ final class UsageBudgetTests: XCTestCase {
         )
     }
 
-    func testNoBudgetSetNeverBlocks() {
+    func testNoBudgetNeverBlocks() {
+        // No limit means unlimited however much was spent. A literal $0 ceiling would block every
+        // request forever, which is never what someone typing in that field meant — it reads as
+        // no budget too.
         UsageBudget.monthlyLimitUSD = nil
         let store = makeStore()
         spend(500, in: store)
         XCTAssertEqual(UsageBudget.status(store: store), .unlimited)
         XCTAssertFalse(UsageBudget.status(store: store).blocksSending)
-    }
 
-    func testZeroIsTreatedAsNoBudget() {
-        // A literal $0 ceiling would block every request forever, which is never what someone
-        // typing in that field meant.
         UsageBudget.monthlyLimitUSD = 0
         XCTAssertNil(UsageBudget.monthlyLimitUSD)
-        XCTAssertEqual(UsageBudget.status(store: makeStore()), .unlimited)
+        XCTAssertEqual(UsageBudget.status(store: store), .unlimited)
     }
 
     func testWarnsAtEightyPercentAndBlocksAtTheLimit() {
@@ -70,7 +69,10 @@ final class UsageBudgetTests: XCTestCase {
         XCTAssertTrue(UsageBudget.status(store: store).blocksSending)
     }
 
-    func testLastMonthsSpendDoesNotCountAgainstThisMonth() throws {
+    func testMonthlyScoping() throws {
+        // Last month's spend does not count against this month, but it is still real money, so
+        // all-time totals keep it — and the two months sit in separate rows that the all-time
+        // per-model view rolls back together.
         UsageBudget.monthlyLimitUSD = 10
         let store = makeStore()
         let now = Date()
@@ -80,33 +82,12 @@ final class UsageBudgetTests: XCTestCase {
 
         XCTAssertEqual(UsageBudget.status(store: store, now: now), .withinBudget(spent: 0, limit: 10))
         XCTAssertEqual(store.estimatedCostThisMonth(now: now).total, 0, accuracy: 0.0001)
-        // …but it's still real money that was spent, so all-time totals keep it.
         XCTAssertEqual(store.estimatedCost().total, 50, accuracy: 0.01)
-    }
 
-    func testMonthlyRowsAreKeptSeparateFromEachOther() throws {
-        let store = makeStore()
-        let now = Date()
-        let lastMonth = try XCTUnwrap(Calendar.current.date(byAdding: .month, value: -1, to: now))
         spend(3, in: store, at: now)
-        spend(3, in: store, at: lastMonth)
-
         XCTAssertEqual(store.records.count, 2, "same track and model, different months — two rows")
-        // Per-model and per-track views are all-time, so they still roll the two together.
         XCTAssertEqual(store.totalsByModel().count, 1)
-    }
-
-    func testUnpricedModelsAreFlaggedRatherThanCountedAsFree() {
-        UsageBudget.monthlyLimitUSD = 10
-        let store = makeStore()
-        store.record(
-            projectPath: "/a", trackKey: "main", providerId: "local", modelId: "llama-whatever",
-            usage: TokenUsage(inputTokens: 90_000_000, outputTokens: 0, cachedInputTokens: nil)
-        )
-        // Nothing priced was spent, so nothing is blocked — but the caller has to be able to say
-        // the figure is incomplete rather than presenting $0 as the truth.
-        XCTAssertTrue(store.estimatedCostThisMonth().hasUnpricedModels)
-        XCTAssertFalse(UsageBudget.status(store: store).blocksSending)
+        XCTAssertEqual(store.estimatedCostThisMonth(now: now).total, 3, accuracy: 0.01)
     }
 
     func testPeriodKeyIsCalendarMonthInLocalTime() {

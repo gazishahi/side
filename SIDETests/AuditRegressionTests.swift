@@ -12,45 +12,38 @@ final class JSONRPCFramingTests: XCTestCase {
         return Data("Content-Length: \(n)\r\n\r\n".utf8) + Data(body.utf8)
     }
 
-    func testANegativeContentLengthDoesNotTrap() {
+    func testBadContentLengthsAreReportedNotTrappedAndTheStreamRecovers() {
         // `Int("-5")` is a valid Int; indexing a buffer by it is a crash. Now it is a problem
-        // report, and the stream keeps going.
-        var framing = JSONRPCFraming()
+        // report, and the stream keeps going; an absurd length is refused rather than buffered.
+        var negative = JSONRPCFraming()
         // A negative length has no body worth the name; the next header follows directly.
-        let result = framing.feed(frame("", length: -5) + frame("{\"ok\":1}"))
-        XCTAssertEqual(result.problems, [.invalidContentLength(-5)])
-        XCTAssertEqual(result.messages.map { String(decoding: $0, as: UTF8.self) }, ["{\"ok\":1}"])
-    }
+        let clean = negative.feed(frame("", length: -5) + frame("{\"ok\":1}"))
+        XCTAssertEqual(clean.problems, [.invalidContentLength(-5)])
+        XCTAssertEqual(clean.messages.map { String(decoding: $0, as: UTF8.self) }, ["{\"ok\":1}"])
 
-    func testJunkAfterABadHeaderIsDroppedWithoutTrappingAndTheStreamRecovers() {
-        var framing = JSONRPCFraming()
         // Bytes that were the bad frame's "body" corrupt the next header; both are reported, none
         // crash, and a clean frame after them is delivered.
-        let result = framing.feed(frame("{}", length: -5) + frame("{\"a\":1}") + frame("{\"b\":2}"))
-        XCTAssertEqual(result.problems.first, .invalidContentLength(-5))
-        XCTAssertEqual(result.messages.map { String(decoding: $0, as: UTF8.self) }.last, "{\"b\":2}")
+        var junk = JSONRPCFraming()
+        let recovered = junk.feed(frame("{}", length: -5) + frame("{\"a\":1}") + frame("{\"b\":2}"))
+        XCTAssertEqual(recovered.problems.first, .invalidContentLength(-5))
+        XCTAssertEqual(recovered.messages.map { String(decoding: $0, as: UTF8.self) }.last, "{\"b\":2}")
+
+        var absurd = JSONRPCFraming()
+        let refused = absurd.feed(frame("{}", length: 5_000_000_000))
+        XCTAssertEqual(refused.problems, [.invalidContentLength(5_000_000_000)])
+        XCTAssertTrue(refused.messages.isEmpty)
     }
 
-    func testAnAbsurdContentLengthIsRefusedRatherThanBuffered() {
-        var framing = JSONRPCFraming()
-        let result = framing.feed(frame("{}", length: 5_000_000_000))
-        XCTAssertEqual(result.problems, [.invalidContentLength(5_000_000_000)])
-        XCTAssertTrue(result.messages.isEmpty)
-    }
-
-    func testAMessageSplitAcrossChunksReassembles() {
+    func testMessagesReassembleAcrossChunksAndArriveInOrder() {
         var framing = JSONRPCFraming()
         let whole = frame("{\"method\":\"x\"}")
         let first = framing.feed(whole.prefix(10))
         XCTAssertTrue(first.messages.isEmpty)
         let second = framing.feed(whole.suffix(from: 10))
         XCTAssertEqual(second.messages.map { String(decoding: $0, as: UTF8.self) }, ["{\"method\":\"x\"}"])
-    }
-
-    func testTwoMessagesInOneChunkArriveInOrder() {
-        var framing = JSONRPCFraming()
-        let result = framing.feed(frame("{\"a\":1}") + frame("{\"b\":2}"))
-        XCTAssertEqual(result.messages.map { String(decoding: $0, as: UTF8.self) }, ["{\"a\":1}", "{\"b\":2}"])
+        // Two whole messages in one chunk come out of the same stream in order.
+        let both = framing.feed(frame("{\"a\":1}") + frame("{\"b\":2}"))
+        XCTAssertEqual(both.messages.map { String(decoding: $0, as: UTF8.self) }, ["{\"a\":1}", "{\"b\":2}"])
     }
 
     func testAHeaderWithoutContentLengthIsSkipped() {
@@ -64,24 +57,24 @@ final class JSONRPCFramingTests: XCTestCase {
 // MARK: - SSE framing and cancellation
 
 final class SSEFramingTests: XCTestCase {
-    func testEventNameAppliesToTheFollowingDataLine() {
+    func testLinesBecomeEventsOnlyWhenTheyCarryData() {
+        // An event name applies to the data line that follows it; comments, ids, retry hints and
+        // blank lines produce nothing; data with no event name is still delivered.
+        let cases: [(line: String, event: String?, data: String?)] = [
+            ("event: message_start", nil, nil),
+            ("data: {\"type\":\"message_start\"}", "message_start", "{\"type\":\"message_start\"}"),
+            (":keepalive", nil, nil),
+            ("id: 7", nil, nil),
+            ("retry: 3000", nil, nil),
+            ("", nil, nil),
+            ("data: [DONE]", nil, "[DONE]"),
+        ]
         var name: String?
-        XCTAssertNil(SSEFraming.event(fromLine: "event: message_start", eventName: &name))
-        let event = SSEFraming.event(fromLine: "data: {\"type\":\"message_start\"}", eventName: &name)
-        XCTAssertEqual(event?.event, "message_start")
-        XCTAssertEqual(event?.data, "{\"type\":\"message_start\"}")
-    }
-
-    func testCommentsIdsAndBlankLinesProduceNothing() {
-        var name: String?
-        for line in [":keepalive", "id: 7", "retry: 3000", ""] {
-            XCTAssertNil(SSEFraming.event(fromLine: line, eventName: &name), line)
+        for c in cases {
+            let event = SSEFraming.event(fromLine: c.line, eventName: &name)
+            XCTAssertEqual(event?.data, c.data, c.line)
+            if let expectedName = c.event { XCTAssertEqual(event?.event, expectedName, c.line) }
         }
-    }
-
-    func testDataWithoutAnEventNameIsStillDelivered() {
-        var name: String?
-        XCTAssertEqual(SSEFraming.event(fromLine: "data: [DONE]", eventName: &name)?.data, "[DONE]")
     }
 
     /// Cancelling the surrounding task must tear the connection down promptly — a stream that
@@ -123,8 +116,11 @@ final class SSEFramingTests: XCTestCase {
         let task = Task {
             try await SSEHTTPClient.stream(request: request) { _ in counter.events += 1 }
         }
-        // Let a few events arrive, then cancel.
-        try await Task.sleep(nanoseconds: 300_000_000)
+        // Wait for the stream to actually start — a fixed sleep flaked under load, when python
+        // and the connection took longer than the sleep — then let a few more events arrive.
+        let deadline = Date().addingTimeInterval(5)
+        while counter.events == 0, Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        try await Task.sleep(nanoseconds: 150_000_000)
         let seenBeforeCancel = counter.events
         XCTAssertGreaterThan(seenBeforeCancel, 0, "the stream never started")
         let started = Date()
@@ -147,15 +143,20 @@ final class OpenAICompatibleParserTests: XCTestCase {
         return out
     }
 
-    func testTextDeltasAndTheDoneSentinel() {
+    func testTextDeltasUsageAndTheDoneSentinel() {
+        // Usage arrives in its own choices-less chunk after the finish reason; both survive to
+        // the messageEnd the sentinel produces.
         let out = events([
             #"{"choices":[{"delta":{"content":"Hel"}}]}"#,
             #"{"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"#,
+            #"{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":30}}"#,
             "[DONE]",
         ])
         XCTAssertEqual(out.compactMap { if case .textDelta(let t) = $0 { return t } else { return nil } }.joined(), "Hello")
-        guard case .messageEnd(let reason, _)? = out.last else { return XCTFail("no messageEnd") }
+        guard case .messageEnd(let reason, let usage)? = out.last else { return XCTFail("no messageEnd") }
         XCTAssertEqual(reason, .endTurn)
+        XCTAssertEqual(usage?.inputTokens, 120)
+        XCTAssertEqual(usage?.outputTokens, 30)
     }
 
     func testAToolCallAssemblesAcrossChunksAndEndsAtDone() {
@@ -179,13 +180,6 @@ final class OpenAICompatibleParserTests: XCTestCase {
         XCTAssertEqual(partial, #"{"path":"a"}"#)
         guard case .messageEnd(let reason, _)? = out.last else { return XCTFail("no messageEnd") }
         XCTAssertEqual(reason, .toolUse)
-    }
-
-    func testUsageIsReportedWhenTheServerSendsIt() {
-        let out = events([#"{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":30}}"#, "[DONE]"])
-        guard case .messageEnd(_, let usage)? = out.last else { return XCTFail("no messageEnd") }
-        XCTAssertEqual(usage?.inputTokens, 120)
-        XCTAssertEqual(usage?.outputTokens, 30)
     }
 
     func testMalformedChunksAreIgnored() {
