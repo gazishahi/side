@@ -306,6 +306,8 @@ final class ReviewWorkspaceViewController: NSViewController {
         scrollView.isHidden = empty
         // Nothing to promote when there's nothing to review.
         promoteOverlay.isHidden = empty
+        // No track means no title or branch → base to show; empty chips read as broken.
+        headerRow.isHidden = empty
     }
 
     private static let defaultEmptyStateText = "Switch to a track to review its work."
