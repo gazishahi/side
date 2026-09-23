@@ -132,8 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// specific track rather than whatever this project's globally-active track happens to be,
     /// so two tracks can be watched or worked on side by side without either window's track
     /// switch disturbing the other.
-    /// `soleFile`: a tab torn out of another window — the new window holds that file alone.
-    func openTrackInNewWindow(projectRoot: URL, trackKey: String?, focusingFile: URL? = nil, soleFile: URL? = nil, at screenPoint: NSPoint? = nil) {
+    /// `soleFile` / `soleSession`: a tab or terminal torn out of another window — the new
+    /// window holds it alone.
+    func openTrackInNewWindow(projectRoot: URL, trackKey: String?, focusingFile: URL? = nil, soleFile: URL? = nil, soleSession: TerminalSession? = nil, at screenPoint: NSPoint? = nil) {
         let window = presentNewWindow()
         if let screenPoint {
             // A torn-out tab lands where it was dropped, not wherever the cascade would put it —
@@ -149,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         let shell = window.contentViewController as? ShellViewController
-        shell?.openProject(at: projectRoot, focusingTrackKey: trackKey, soleFile: soleFile)
+        shell?.openProject(at: projectRoot, focusingTrackKey: trackKey, soleFile: soleFile, soleSession: soleSession)
         if let focusingFile, soleFile == nil { shell?.revealFile(focusingFile) }
     }
 

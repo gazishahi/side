@@ -34,4 +34,26 @@ final class TerminalSessionManagerTests: XCTestCase {
         manager.discardSessions(forTrackKey: "feature")
         XCTAssertTrue(manager.sessions(forTrackKey: "feature").isEmpty)
     }
+
+    /// Tear-out moves a terminal, never copies or restarts it: it leaves every other window's
+    /// list for the torn-out window's, and closing that window hands it back to the track.
+    func testATornOutTerminalMovesToItsWindowAndReturnsWhenThatWindowCloses() {
+        let root = FileManager.default.temporaryDirectory
+        let manager = TerminalSessionManager(projectRoot: root) { _ in root }
+        defer { manager.teardownAll() }
+        let (a, b, c) = (manager.makeSession(forTrackKey: "t"), manager.makeSession(forTrackKey: "t"), manager.makeSession(forTrackKey: "t"))
+        manager.setSessions([a, b, c], forTrackKey: "t")
+        manager.setActiveIndex(1, forTrackKey: "t")
+        let window = UUID()
+
+        manager.hold(b, forTrackKey: "t", holder: window)
+        XCTAssertTrue(manager.sessions(forTrackKey: "t").elementsEqual([a, c], by: ===))
+        XCTAssertEqual(manager.activeIndex(forTrackKey: "t"), 1, "the right neighbour takes the torn tab's place")
+        XCTAssertTrue(manager.sessions(forTrackKey: "t", holder: window).elementsEqual([b], by: ===))
+        XCTAssertEqual(manager.activeIndex(forTrackKey: "t", holder: window), 0)
+
+        manager.release(holder: window)
+        XCTAssertTrue(manager.sessions(forTrackKey: "t").elementsEqual([a, c, b], by: ===))
+        XCTAssertTrue(manager.sessions(forTrackKey: "t", holder: window).isEmpty)
+    }
 }

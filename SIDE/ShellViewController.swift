@@ -97,6 +97,10 @@ final class ShellViewController: NSViewController {
             self.makeVC.revealFile(url, line: line)
         }
         runVC.onActivityChanged = { [weak self] in self?.updateStageLabels() }
+        runVC.onTearOutRequested = { [weak self] session, screenPoint in
+            guard let self, let projectURL = self.projectURL else { return }
+            AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectURL, trackKey: self.currentTrackKey, soleSession: session, at: screenPoint)
+        }
         // The one placement-specific hook outside the host: Think's composer and the bar are a
         // single stack, and the bar recedes while the composer holds text (§3.4).
         thinkVC.onComposerEngagedChanged = { [weak self] engaged in self?.chrome.setBarRecessed(engaged) }
@@ -140,15 +144,27 @@ final class ShellViewController: NSViewController {
     /// land on the requested track directly rather than whatever this project's globally-active
     /// track happens to be. `loadProject` runs `projectOpened` synchronously (see its own
     /// comment), so `trackStore` is already populated by the time this looks the track up.
-    func openProject(at url: URL, focusingTrackKey: String?, soleFile: URL? = nil) {
+    /// `soleFile` / `soleSession`: a Make tab or Run terminal torn out of another window —
+    /// this window holds it alone and lands on its stage, and the pill says it's a second view.
+    func openProject(at url: URL, focusingTrackKey: String?, soleFile: URL? = nil, soleSession: TerminalSession? = nil) {
+        isTornOut = soleFile != nil || soleSession != nil
         makeVC.soleFile = soleFile
         makeVC.loadProject(at: url)
+        if let soleSession { runVC.adoptTornOutSession(soleSession, trackKey: focusingTrackKey ?? "") }
+        let landOn: Stage = soleSession != nil ? .run : .make
         guard let focusingTrackKey, let store = trackStore,
               let track = store.tracks.first(where: { $0.branchName == focusingTrackKey }),
               track.status != .active
-        else { return }
-        switchToTrack(track, completion: { _ in })
+        else {
+            if landOn != .make { show(landOn) }
+            trackPill.refresh()
+            return
+        }
+        switchToTrack(track, landOn: landOn, completion: { _ in })
     }
+
+    /// Opened for a tab or terminal torn out of another window on the same track.
+    private var isTornOut = false
 
     func prepareForClose() {
         makeVC.prepareForClose()
@@ -438,6 +454,7 @@ final class ShellViewController: NSViewController {
             stateName: currentTrack.map { state($0).name } ?? "No track"
         )
         snapshot.projectName = projectURL?.lastPathComponent
+        snapshot.isTornOut = isTornOut
         snapshot.branch = gitBranch.map { gitDirtyCount > 0 ? "\($0) · \(gitDirtyCount) changed" : $0 }
         if current == .make, let projectURL, let currentFileURL { snapshot.filePath = humanePath(for: currentFileURL, projectURL: projectURL) }
         for track in store.tracks where track.status != .archived {

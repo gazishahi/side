@@ -3678,7 +3678,7 @@ final class TabChipView: NSView, NSDraggingSource {
         session.animatesToStartingPositionsOnCancelOrFail = true
     }
 
-    /// Set by the owner (Make's file tabs) — the file's own icon, for the drag image.
+    /// Set by the owner — the file's own icon, or Run's terminal glyph — for the drag image.
     var dragIcon: NSImage?
 
     /// The tab as it would look alone: a capsule with the file's icon and name.
@@ -3694,7 +3694,11 @@ final class TabChipView: NSView, NSDraggingSource {
             capsule.stroke()
             var x: CGFloat = 14
             if let icon {
-                icon.draw(in: NSRect(x: x, y: (rect.height - 16) / 2, width: 16, height: 16))
+                // A symbol (Run's terminal glyph) is a template: tint it, or it draws black in dark.
+                let glyph = icon.isTemplate ? NSImage(size: icon.size, flipped: false) { r in
+                    icon.draw(in: r); NSColor.labelColor.set(); r.fill(using: .sourceAtop); return true
+                } : icon
+                glyph.draw(in: NSRect(x: x, y: (rect.height - 16) / 2, width: 16, height: 16))
                 x += 22
             }
             (title as NSString).draw(at: NSPoint(x: x, y: (rect.height - textSize.height) / 2), withAttributes: [.font: font, .foregroundColor: NSColor.labelColor])

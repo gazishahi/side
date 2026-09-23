@@ -31,6 +31,9 @@ final class TrackPill: NSView {
         /// Other tracks in this project needing the user — shown as "+N" beside the intent,
         /// since the pill's own dot is only the current track's.
         var othersNeedingYou = 0
+        /// This window holds a tab or terminal torn out of another window on the same track —
+        /// a second view onto the same work, not a copy of it.
+        var isTornOut = false
 
         static let empty = Snapshot(title: "No project", state: .idle, stateName: "Idle")
     }
@@ -44,8 +47,12 @@ final class TrackPill: NSView {
     private let dot = DS.StatusDot(state: .idle)
     private let titleLabel = NSTextField(labelWithString: "")
     private let extraLabel = NSTextField(labelWithString: "")
+    private let tornOutGlyph = NSImageView()
     private var extraTrailing: NSLayoutConstraint!
     private var titleTrailing: NSLayoutConstraint!
+    private var glyphTrailing: NSLayoutConstraint!
+    private var glyphAfterTitle: NSLayoutConstraint!
+    private var glyphAfterExtra: NSLayoutConstraint!
     private var popover: NSPopover?
 
     init() {
@@ -62,6 +69,12 @@ final class TrackPill: NSView {
         extraLabel.textColor = .secondaryLabelColor
         extraLabel.isHidden = true
         dot.setAccessibilityElement(false)
+        tornOutGlyph.image = NSImage(systemSymbolName: "macwindow.on.rectangle", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
+        tornOutGlyph.contentTintColor = .secondaryLabelColor
+        tornOutGlyph.isHidden = true
+        tornOutGlyph.setAccessibilityElement(false)
+        tornOutGlyph.setContentCompressionResistancePriority(.required, for: .horizontal)
         // Plain constraints, not a stack: the pill is exactly as wide as its name until the bar
         // needs the room, and then the name truncates inside it. (A stack with lowered clipping
         // resistance let the pill shrink under its own text — the name overflowed the glass,
@@ -69,9 +82,12 @@ final class TrackPill: NSView {
         titleLabel.cell?.lineBreakMode = .byTruncatingTail
         titleLabel.setContentHuggingPriority(.required, for: .horizontal)
         extraLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        for view in [dot, titleLabel, extraLabel] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        for view in [dot, titleLabel, extraLabel, tornOutGlyph] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
         extraTrailing = extraLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
         titleTrailing = titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
+        glyphTrailing = tornOutGlyph.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
+        glyphAfterTitle = tornOutGlyph.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: DS.Spacing.s)
+        glyphAfterExtra = tornOutGlyph.leadingAnchor.constraint(equalTo: extraLabel.trailingAnchor, constant: DS.Spacing.s)
         NSLayoutConstraint.activate([
             dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
             dot.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -79,6 +95,7 @@ final class TrackPill: NSView {
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             extraLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: DS.Spacing.s),
             extraLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
+            tornOutGlyph.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleTrailing,
             heightAnchor.constraint(equalToConstant: 28),
             widthAnchor.constraint(lessThanOrEqualToConstant: 280),
@@ -95,14 +112,26 @@ final class TrackPill: NSView {
         titleLabel.stringValue = snapshot.title
         extraLabel.stringValue = "+\(snapshot.othersNeedingYou)"
         let showsExtra = snapshot.othersNeedingYou > 0
+        let showsGlyph = snapshot.isTornOut
         extraLabel.isHidden = !showsExtra
-        titleTrailing.isActive = !showsExtra
-        extraTrailing.isActive = showsExtra
-        toolTip = [snapshot.projectName, snapshot.branch].compactMap { $0 }.joined(separator: " · ")
+        tornOutGlyph.isHidden = !showsGlyph
+        // Whichever piece is last closes the pill: title, then "+N", then the torn-out glyph.
+        NSLayoutConstraint.deactivate([titleTrailing, extraTrailing, glyphTrailing, glyphAfterTitle, glyphAfterExtra])
+        if showsGlyph {
+            NSLayoutConstraint.activate([glyphTrailing, showsExtra ? glyphAfterExtra : glyphAfterTitle])
+        } else {
+            (showsExtra ? extraTrailing : titleTrailing).isActive = true
+        }
+        var tip = [snapshot.projectName, snapshot.branch].compactMap { $0 }.joined(separator: " · ")
+        if showsGlyph { tip += "\n" + Self.tornOutNote }
+        toolTip = tip
         var label = "Current track: \(snapshot.title), \(snapshot.stateName)"
         if snapshot.othersNeedingYou > 0 { label += ". \(snapshot.othersNeedingYou) other tracks need you" }
+        if showsGlyph { label += ". \(Self.tornOutNote)" }
         setAccessibilityLabel(label)
     }
+
+    static let tornOutNote = "Torn-out window — another view of this track"
 
     // MARK: Interaction
 
@@ -170,6 +199,12 @@ private final class TrackPopoverViewController: NSViewController, NSSearchFieldD
         if let project = snapshot.projectName {
             let label = NSTextField(labelWithString: project)
             label.font = DS.Text.body(.semibold)
+            header.addArrangedSubview(label)
+        }
+        if snapshot.isTornOut {
+            let label = NSTextField(labelWithString: TrackPill.tornOutNote)
+            label.font = DS.Text.caption()
+            label.textColor = .secondaryLabelColor
             header.addArrangedSubview(label)
         }
         for line in [snapshot.branch, snapshot.filePath].compactMap({ $0 }) {

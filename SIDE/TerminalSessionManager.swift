@@ -34,8 +34,15 @@ final class TerminalSessionManager {
 
     let projectRoot: URL
     private let directoryProvider: (String) -> URL
-    private var sessionsByTrackKey: [String: [TerminalSession]] = [:]
-    private var activeIndexByTrackKey: [String: Int] = [:]
+    /// A track's own list (`holder == nil`, what every window shows), or the terminals torn out
+    /// into one window (`holder` is that window's id) — out of the track's list, so no other
+    /// window shows them, until that window closes and `release` hands them back.
+    private struct Pool: Hashable {
+        let trackKey: String
+        let holder: UUID?
+    }
+    private var sessionsByPool: [Pool: [TerminalSession]] = [:]
+    private var activeIndexByPool: [Pool: Int] = [:]
     /// The session an agent's commands go to, per track. Pinned the first time the agent needs
     /// one, so interrupting targets the session actually running the command — not whichever
     /// tab happens to be selected now (audit D-4).
@@ -51,23 +58,58 @@ final class TerminalSessionManager {
 
     func workingDirectory(forTrackKey key: String) -> URL { directoryProvider(key) }
 
-    func sessions(forTrackKey key: String) -> [TerminalSession] { sessionsByTrackKey[key] ?? [] }
+    func sessions(forTrackKey key: String, holder: UUID? = nil) -> [TerminalSession] { sessionsByPool[Pool(trackKey: key, holder: holder)] ?? [] }
+
+    /// Every terminal on a track, wherever it's showing.
+    private func allSessions(forTrackKey key: String) -> [TerminalSession] {
+        sessionsByPool.filter { $0.key.trackKey == key }.sorted { $0.key.holder == nil && $1.key.holder != nil }.flatMap(\.value)
+    }
 
     /// Replaces a track's session list — the Run view's open, close, restart and reorder all
     /// land here. Records the new shape so a relaunch can reopen it.
-    func setSessions(_ sessions: [TerminalSession], forTrackKey key: String, origin: AnyObject? = nil) {
-        sessionsByTrackKey[key] = sessions
-        if let active = activeIndexByTrackKey[key], !sessions.indices.contains(active) {
-            activeIndexByTrackKey[key] = sessions.isEmpty ? nil : sessions.count - 1
+    func setSessions(_ sessions: [TerminalSession], forTrackKey key: String, holder: UUID? = nil, origin: AnyObject? = nil) {
+        let pool = Pool(trackKey: key, holder: holder)
+        sessionsByPool[pool] = sessions.isEmpty && holder != nil ? nil : sessions
+        if let active = activeIndexByPool[pool], !sessions.indices.contains(active) {
+            activeIndexByPool[pool] = sessions.isEmpty ? nil : sessions.count - 1
         }
         remember(forTrackKey: key)
         post(origin: origin)
     }
 
-    func activeIndex(forTrackKey key: String) -> Int? { activeIndexByTrackKey[key] }
-    func setActiveIndex(_ index: Int?, forTrackKey key: String) { activeIndexByTrackKey[key] = index }
+    func activeIndex(forTrackKey key: String, holder: UUID? = nil) -> Int? { activeIndexByPool[Pool(trackKey: key, holder: holder)] }
+    func setActiveIndex(_ index: Int?, forTrackKey key: String, holder: UUID? = nil) { activeIndexByPool[Pool(trackKey: key, holder: holder)] = index }
 
-    var hasUnseenOutput: Bool { sessionsByTrackKey.values.contains { $0.contains { $0.hasUnseenOutput } } }
+    var hasUnseenOutput: Bool { sessionsByPool.values.contains { $0.contains { $0.hasUnseenOutput } } }
+
+    /// A terminal torn out into its own window: it leaves the track's list (and any other
+    /// window's) for the window `holder`, still running — nothing restarts.
+    func hold(_ session: TerminalSession, forTrackKey key: String, holder: UUID, origin: AnyObject? = nil) {
+        for pool in sessionsByPool.keys where pool.trackKey == key {
+            guard let index = sessionsByPool[pool]?.firstIndex(where: { $0 === session }) else { continue }
+            let countBefore = sessionsByPool[pool]!.count
+            sessionsByPool[pool]!.remove(at: index)
+            activeIndexByPool[pool] = TabSelection.indexAfterClosing(index, active: activeIndexByPool[pool], countBefore: countBefore)
+        }
+        let target = Pool(trackKey: key, holder: holder)
+        sessionsByPool[target, default: []].append(session)
+        activeIndexByPool[target] = sessionsByPool[target]!.count - 1
+        post(origin: origin)
+    }
+
+    /// The torn-out window closed: its terminals go back to the end of their tracks' lists,
+    /// still running, rather than dying with a window that was only ever a view onto them.
+    func release(holder: UUID) {
+        let held = sessionsByPool.keys.filter { $0.holder == holder }
+        guard !held.isEmpty else { return }
+        for pool in held {
+            let main = Pool(trackKey: pool.trackKey, holder: nil)
+            sessionsByPool[main, default: []].append(contentsOf: sessionsByPool.removeValue(forKey: pool) ?? [])
+            activeIndexByPool.removeValue(forKey: pool)
+            if activeIndexByPool[main] == nil { activeIndexByPool[main] = 0 }
+        }
+        post(origin: nil)
+    }
 
     /// A new, not-yet-started terminal in `directory` (or the track's own worktree).
     func makeSession(forTrackKey key: String, inDirectory directory: String? = nil) -> TerminalSession {
@@ -103,18 +145,20 @@ final class TerminalSessionManager {
 
     /// A deleted track's terminals have nowhere to belong — terminate them rather than leak.
     func discardSessions(forTrackKey key: String) {
-        for session in sessionsByTrackKey[key] ?? [] { session.viewController.prepareForClose() }
-        sessionsByTrackKey.removeValue(forKey: key)
-        activeIndexByTrackKey.removeValue(forKey: key)
+        for session in allSessions(forTrackKey: key) { session.viewController.prepareForClose() }
+        for pool in sessionsByPool.keys where pool.trackKey == key {
+            sessionsByPool.removeValue(forKey: pool)
+            activeIndexByPool.removeValue(forKey: pool)
+        }
         agentSessionIDByTrackKey.removeValue(forKey: key)
         post(origin: nil)
     }
 
     /// The project is being released: the one moment every shell in it ends.
     func teardownAll() {
-        for list in sessionsByTrackKey.values { for session in list { session.viewController.prepareForClose() } }
-        sessionsByTrackKey.removeAll()
-        activeIndexByTrackKey.removeAll()
+        for list in sessionsByPool.values { for session in list { session.viewController.prepareForClose() } }
+        sessionsByPool.removeAll()
+        activeIndexByPool.removeAll()
         agentSessionIDByTrackKey.removeAll()
     }
 
@@ -129,17 +173,18 @@ final class TerminalSessionManager {
 
     func interruptAgentCommand(trackKey: String) {
         guard let id = agentSessionIDByTrackKey[trackKey],
-              let session = sessions(forTrackKey: trackKey).first(where: { $0.id == id }) else { return }
+              let session = allSessions(forTrackKey: trackKey).first(where: { $0.id == id }) else { return }
         session.viewController.interruptAgentCommand()
     }
 
     func agentSession(forTrackKey key: String) -> TerminalSession {
         var list = sessions(forTrackKey: key)
-        if let id = agentSessionIDByTrackKey[key], let pinned = list.first(where: { $0.id == id }), pinned.viewController.isAliveOrUnstarted {
+        // Pinned wherever it is — a torn-out agent terminal is still the one running its command.
+        if let id = agentSessionIDByTrackKey[key], let pinned = allSessions(forTrackKey: key).first(where: { $0.id == id }), pinned.viewController.isAliveOrUnstarted {
             return pinned
         }
         let chosen: TerminalSession
-        if let active = activeIndexByTrackKey[key], list.indices.contains(active), list[active].viewController.isAliveOrUnstarted {
+        if let active = activeIndex(forTrackKey: key), list.indices.contains(active), list[active].viewController.isAliveOrUnstarted {
             chosen = list[active]
         } else if let first = list.first(where: { $0.viewController.isAliveOrUnstarted }) {
             chosen = first
@@ -147,7 +192,7 @@ final class TerminalSessionManager {
             chosen = makeSession(forTrackKey: key)
             chosen.viewController.loadViewIfNeeded()
             list.append(chosen)
-            if activeIndexByTrackKey[key] == nil { activeIndexByTrackKey[key] = list.count - 1 }
+            if activeIndex(forTrackKey: key) == nil { setActiveIndex(list.count - 1, forTrackKey: key) }
             setSessions(list, forTrackKey: key)
         }
         agentSessionIDByTrackKey[key] = chosen.id
@@ -171,7 +216,7 @@ final class TerminalSessionManager {
     private func remember(forTrackKey key: String) {
         guard !AppDelegate.isUITesting else { return }
         var map = UserDefaults.standard.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
-        let directories = sessions(forTrackKey: key).compactMap { $0.viewController.workingDirectory }
+        let directories = allSessions(forTrackKey: key).compactMap { $0.viewController.workingDirectory }
         map.removeValue(forKey: key)
         if directories.isEmpty { map.removeValue(forKey: rememberedKey(key)) } else { map[rememberedKey(key)] = directories }
         UserDefaults.standard.set(map, forKey: Self.rememberedSessionsKey)

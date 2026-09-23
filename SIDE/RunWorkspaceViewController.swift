@@ -9,13 +9,17 @@ final class RunWorkspaceViewController: NSViewController {
     var currentTrackKey: String?
     private var trackKey: String { currentTrackKey ?? "" }
 
+    /// Set in a window a terminal was torn out into: this view shows only the terminals it
+    /// holds, and hands them back to the track when the window closes.
+    private var holder: UUID?
+
     private var sessions: [TerminalSession] {
-        get { terminals?.sessions(forTrackKey: trackKey) ?? [] }
-        set { terminals?.setSessions(newValue, forTrackKey: trackKey, origin: self) }
+        get { terminals?.sessions(forTrackKey: trackKey, holder: holder) ?? [] }
+        set { terminals?.setSessions(newValue, forTrackKey: trackKey, holder: holder, origin: self) }
     }
     private var activeSessionIndex: Int? {
-        get { terminals?.activeIndex(forTrackKey: trackKey) }
-        set { terminals?.setActiveIndex(newValue, forTrackKey: trackKey) }
+        get { terminals?.activeIndex(forTrackKey: trackKey, holder: holder) }
+        set { terminals?.setActiveIndex(newValue, forTrackKey: trackKey, holder: holder) }
     }
     private let tabBar = TabStripView()
     private let tabBarStack = NSStackView()
@@ -25,6 +29,8 @@ final class RunWorkspaceViewController: NSViewController {
 
     var onActivityChanged: (() -> Void)?
     var onOpenFileRequested: ((URL, Int?) -> Void)?
+    /// A tab dragged out of the window: the shell opens a window that adopts the session.
+    var onTearOutRequested: ((TerminalSession, NSPoint) -> Void)?
 
     /// Across every track, not just the current one — a track running in the background with
     /// unseen output should still light up the stage badge even while you're looking elsewhere.
@@ -53,8 +59,10 @@ final class RunWorkspaceViewController: NSViewController {
         guard isViewLoaded, origin != ObjectIdentifier(self) else { return }
         rebuildTabBar()
         if let displayed = displayedSession, !sessions.contains(where: { $0 === displayed }) {
-            // Discarded under us (the track was deleted, or the project torn down).
+            // Discarded under us (the track was deleted, the project torn down), or torn out
+            // into its own window — then the neighbour takes its place, as on a close.
             clearContainer()
+            if let index = activeSessionIndex, sessions.indices.contains(index), view.window != nil { showActiveSession() }
         } else if let displayed = displayedSession, displayed.viewController.parent !== self {
             clearContainer()
             showPlaceholder("This terminal is showing in another window. Select its tab to bring it here.")
@@ -247,6 +255,7 @@ final class RunWorkspaceViewController: NSViewController {
     /// window only gives its view back.
     func prepareForClose() {
         detachDisplayedSession()
+        if let holder { terminals?.release(holder: holder) }
         if let terminalsObserver { NotificationCenter.default.removeObserver(terminalsObserver) }
         terminalsObserver = nil
     }
@@ -310,6 +319,19 @@ final class RunWorkspaceViewController: NSViewController {
         }
     }
 
+    /// This window was opened for a terminal torn out of another: take it, still running.
+    func adoptTornOutSession(_ session: TerminalSession, trackKey: String) {
+        guard let terminals else { return }
+        let holder = UUID()
+        self.holder = holder
+        terminals.hold(session, forTrackKey: trackKey, holder: holder, origin: self)
+    }
+
+    private func tearOutSession(at index: Int, to screenPoint: NSPoint) {
+        guard sessions.indices.contains(index) else { return }
+        onTearOutRequested?(sessions[index], screenPoint)
+    }
+
     private func switchToSession(_ index: Int) {
         guard sessions.indices.contains(index), index != activeSessionIndex else { return }
         activeSessionIndex = index
@@ -362,12 +384,17 @@ final class RunWorkspaceViewController: NSViewController {
             chip.title = session.label
             chip.isDead = !session.viewController.isAliveOrUnstarted
             chip.hasUnseenOutput = session.hasUnseenOutput
+            chip.dragIcon = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
             chip.translatesAutoresizingMaskIntoConstraints = false
             chip.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
             chip.onSelect = { [weak self] i in self?.switchToSession(i) }
             chip.onDragging = { [weak self, weak chip] windowX in
                 guard let self, let chip else { return }
                 self.handleTabDragging(chip, toWindowX: windowX)
+            }
+            chip.onTearOut = { [weak self, weak chip] screenPoint in
+                guard let self, let chip else { return }
+                self.tearOutSession(at: chip.index, to: screenPoint)
             }
 
             let closeButton = TabCloseButton()
