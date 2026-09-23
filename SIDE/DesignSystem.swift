@@ -50,6 +50,9 @@ enum DS {
         static let tabActive = dynamic(dark: NSColor(white: 1, alpha: 0.13), light: NSColor(white: 1, alpha: 1))
         /// A tab's × on hover — stronger than the selected capsule it sits on.
         static let tabCloseHover = dynamic(dark: NSColor(white: 1, alpha: 0.32), light: NSColor(white: 0, alpha: 0.14))
+        /// The overlay scroll thumb Side draws itself where there is no NSScrollView (Run's
+        /// terminal) — the system overlay knob's contrast in each appearance.
+        static let scrollKnob = dynamic(dark: NSColor(white: 1, alpha: 0.45), light: NSColor(white: 0, alpha: 0.4))
         /// Row separators — only. Never an enclosure.
         static let hairline = dynamic(dark: NSColor(white: 1, alpha: 0.08), light: NSColor(white: 0, alpha: 0.08))
         /// The stacked-track connector.

@@ -52,19 +52,66 @@ final class SideTerminalView: LocalProcessTerminalView {
         syncScrollerVisibility()
     }
 
-    /// SwiftTerm's scroller is a bare `NSScroller`, not one inside an `NSScrollView`, so it draws
-    /// its empty track down the right edge even with no scrollback and nothing to scroll —
-    /// the "empty scrollbar" in Run. Shown only once there is history to scroll through.
+    /// SwiftTerm's scroller is a bare `NSScroller`, not one inside an `NSScrollView`, so nothing
+    /// drives its overlay behaviour: it sat on the right edge as an empty track whose thumb never
+    /// showed and which never faded (owner, 2026-09-23). It stays hidden — which also gives its
+    /// reserved column back to the grid — and `thumb` does the job the way Make's scroller does:
+    /// appears while scrolling, fades once scrolling stops, draggable while shown.
     func syncScrollerVisibility() {
-        for case let scroller as NSScroller in subviews {
-            let hidden = !scroller.isEnabled
-            if scroller.isHidden != hidden { scroller.isHidden = hidden }
-        }
+        for case let scroller as NSScroller in subviews where !scroller.isHidden { scroller.isHidden = true }
     }
 
     override func layout() {
         super.layout()
         syncScrollerVisibility()
+        thumb.frame = NSRect(x: bounds.maxX - OverlayScrollThumb.trackWidth, y: bounds.minY, width: OverlayScrollThumb.trackWidth, height: bounds.height)
+        updateThumb()
+    }
+
+    // MARK: - Overlay scroll thumb
+
+    private lazy var thumb: OverlayScrollThumb = {
+        let thumb = OverlayScrollThumb()
+        thumb.onDrag = { [weak self] position in
+            guard let self else { return }
+            self.scrollTo(row: Int((position * Double(self.maxScrollback)).rounded()))
+            self.updateThumb()
+        }
+        addSubview(thumb)
+        return thumb
+    }()
+    private var scrollMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
+        guard window != nil else { return }
+        // SwiftTerm's scrollWheel isn't overridable from outside the package (and its wheel path
+        // doesn't report through `scrolled`); a local monitor scoped to this view sees the same
+        // gesture, and reads the position once SwiftTerm has applied it.
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            if let self, event.window === self.window,
+               self.bounds.contains(self.convert(event.locationInWindow, from: nil)), self.canScroll {
+                DispatchQueue.main.async { self.updateThumb(); self.thumb.flash() }
+            }
+            return event
+        }
+    }
+
+    override func scrolled(source terminal: Terminal, yDisp: Int) {
+        super.scrolled(source: terminal, yDisp: yDisp)
+        updateThumb()
+    }
+
+    /// How far the viewport can scroll, in rows. SwiftTerm keeps the line count internal; the
+    /// public position is yDisp / maxScrollback, so the pair recovers it (at the top, where the
+    /// ratio says nothing, the last known value holds).
+    private var maxScrollback = 0
+
+    private func updateThumb() {
+        let yDisp = terminal.buffer.yDisp
+        if scrollPosition >= 1 { maxScrollback = yDisp } else if scrollPosition > 0 { maxScrollback = Int((Double(yDisp) / scrollPosition).rounded()) }
+        thumb.update(enabled: canScroll, proportion: scrollThumbsize, position: scrollPosition)
     }
 
     // MARK: - Accessibility
@@ -901,3 +948,107 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         onExitStatusChanged?(false, exitCode)
     }
 }
+
+/// A thumb-only overlay scroller: invisible at rest, shown by `flash()` and faded out once
+/// scrolling stops — what an overlay `NSScroller` does inside an `NSScrollView`, which Run's
+/// terminal doesn't have. Hidden (not just transparent) at rest so clicks reach the terminal.
+final class OverlayScrollThumb: NSView {
+    static let trackWidth: CGFloat = 12
+    var onDrag: ((Double) -> Void)?
+    private let knob = NSView()
+    private var enabled = false
+    private var proportion: CGFloat = 1
+    private var position: Double = 0
+    private var hideWork: DispatchWorkItem?
+    private var dragOffset: CGFloat?
+
+    init() {
+        super.init(frame: .zero)
+        isHidden = true
+        alphaValue = 0
+        knob.wantsLayer = true
+        knob.bindLayerBackground(DS.Color.scrollKnob)
+        addSubview(knob)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private var track: NSRect { bounds.insetBy(dx: 0, dy: 3) }
+    private var knobHeight: CGFloat { max(24, track.height * min(1, proportion)) }
+
+    func update(enabled: Bool, proportion: CGFloat, position: Double) {
+        self.enabled = enabled
+        self.proportion = proportion
+        self.position = position
+        if !enabled { hideNow() }
+        layoutKnob()
+    }
+
+    private func layoutKnob() {
+        let travel = track.height - knobHeight
+        // Position 0 is the top of the scrollback; this view's own coordinates are unflipped.
+        let y = track.maxY - travel * CGFloat(position) - knobHeight
+        let width: CGFloat = 7
+        knob.frame = NSRect(x: bounds.maxX - width - 3, y: y, width: width, height: knobHeight)
+        knob.layer?.cornerRadius = width / 2
+    }
+
+    func flash() {
+        guard enabled else { return }
+        hideWork?.cancel()
+        if isHidden || alphaValue < 1 {
+            isHidden = false
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = DS.Motion.duration(0.1)
+                animator().alphaValue = 1
+            }
+        }
+        scheduleHide()
+    }
+
+    private func scheduleHide() {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.dragOffset == nil else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = DS.Motion.duration(0.3)
+                self.animator().alphaValue = 0
+            } completionHandler: { [weak self] in
+                guard let self, self.alphaValue == 0 else { return }
+                self.isHidden = true
+            }
+        }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: work)
+    }
+
+    private func hideNow() {
+        hideWork?.cancel()
+        alphaValue = 0
+        isHidden = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        // Grabbing the knob keeps the grip point; clicking the track jumps the knob there.
+        dragOffset = knob.frame.contains(point) ? point.y - knob.frame.minY : knobHeight / 2
+        hideWork?.cancel()
+        drag(to: point)
+    }
+
+    override func mouseDragged(with event: NSEvent) { drag(to: convert(event.locationInWindow, from: nil)) }
+
+    override func mouseUp(with event: NSEvent) {
+        dragOffset = nil
+        scheduleHide()
+    }
+
+    private func drag(to point: NSPoint) {
+        guard let dragOffset else { return }
+        let travel = track.height - knobHeight
+        guard travel > 0 else { return }
+        let minY = point.y - dragOffset
+        let fromTop = track.maxY - minY - knobHeight
+        onDrag?(Double(max(0, min(1, fromTop / travel))))
+    }
+}
+
