@@ -653,7 +653,8 @@ final class AgentRunner {
         userTaskToolUseIds.insert(command.toolUseId)
         let proposalId = entries[index].id
         if modeProvider().autonomy.autoRunsAllowlistedCommands,
-           CommandAutoRunPolicy.isAutoRunnable(command.command, projectRoot: rootProvider()) {
+           CommandAutoRunPolicy.isAutoRunnable(command.command, projectRoot: rootProvider()),
+           !bridgeProvider().agentTerminalIsOutsideWorktree() {
             executeUserTask(entryIndex: index)
         } else {
             pendingUserTaskProposalId = proposalId
@@ -1523,7 +1524,9 @@ final class AgentRunner {
                 // consults CommandAutoRunPolicy. Either way Manual autonomy always asks.
                 let autoRunnable = command.fetchURL != nil
                     || CommandAutoRunPolicy.isAutoRunnable(command.command, projectRoot: rootProvider())
-                if modeProvider().autonomy.autoRunsAllowlistedCommands, autoRunnable { autoRunEntryIndices.append(index) }
+                // …and never while the agent's terminal sits outside the worktree (audit D-10).
+                if modeProvider().autonomy.autoRunsAllowlistedCommands, autoRunnable,
+                   command.fetchURL != nil || !bridgeProvider().agentTerminalIsOutsideWorktree() { autoRunEntryIndices.append(index) }
             }
         }
 

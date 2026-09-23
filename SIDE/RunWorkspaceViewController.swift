@@ -31,8 +31,9 @@ final class RunWorkspaceViewController: NSViewController {
     private var bottomObstruction: CGFloat = 0
     private var terminalBottom: NSLayoutConstraint?
     private var terminalTop: NSLayoutConstraint?
-    /// The grid starts under the task row when there is one.
-    private var terminalTopConstant: CGFloat { ChromeHost.rowHeight + 4 + (taskRow.isHidden ? 0 : Self.taskRowHeight + 4) }
+    /// The grid starts under the task/status row when it shows.
+    private var terminalTopConstant: CGFloat { ChromeHost.rowHeight + 4 + (statusRowShows ? Self.taskRowHeight + 4 : 0) }
+    private var statusRowShows: Bool { hasProject && displayedSession != nil }
     private var terminalBottomConstant: CGFloat { -(bottomObstruction > 0 ? bottomObstruction + DS.Spacing.s : terminalBottomInset) }
     private let container = NSView()
     private var tabChips: [TabChipView] = []
@@ -56,6 +57,8 @@ final class RunWorkspaceViewController: NSViewController {
     }
     private var taskRowState = TaskRowState()
     private let taskRow = NSStackView()
+    /// `cwd · last exit N · duration · running <task> in tab N` (§4.3), trailing the task row.
+    private let statusLine = NSTextField(labelWithString: "")
     private static let taskRowHeight: CGFloat = 26
     /// A tab dragged out of the window: the shell opens a window that adopts the session.
     var onTearOutRequested: ((TerminalSession, NSPoint) -> Void)?
@@ -84,6 +87,7 @@ final class RunWorkspaceViewController: NSViewController {
     /// output arrived in the background, another window took the terminal this one was showing.
     private func terminalsChanged(origin: ObjectIdentifier?) {
         onActivityChanged?()
+        updateStatusLine()
         guard isViewLoaded, origin != ObjectIdentifier(self) else { return }
         rebuildTabBar()
         if let displayed = displayedSession, !sessions.contains(where: { $0 === displayed }) {
@@ -171,6 +175,11 @@ final class RunWorkspaceViewController: NSViewController {
         taskRow.setAccessibilityRole(.group)
         taskRow.setAccessibilityLabel("Tasks")
         view.addSubview(taskRow)
+        statusLine.lineBreakMode = .byTruncatingHead
+        statusLine.alignment = .right
+        statusLine.translatesAutoresizingMaskIntoConstraints = false
+        statusLine.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.addSubview(statusLine)
 
         view.wantsLayer = true
         view.bindLayerBackground(DS.Color.raised)
@@ -182,8 +191,10 @@ final class RunWorkspaceViewController: NSViewController {
             container.topAnchor.constraint(equalTo: view.topAnchor), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), container.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             taskRow.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight + 2),
             taskRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            taskRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             taskRow.heightAnchor.constraint(equalToConstant: Self.taskRowHeight),
+            statusLine.centerYAnchor.constraint(equalTo: taskRow.centerYAnchor),
+            statusLine.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            statusLine.leadingAnchor.constraint(greaterThanOrEqualTo: taskRow.trailingAnchor, constant: DS.Spacing.xl),
         ])
     }
 
@@ -406,6 +417,40 @@ final class RunWorkspaceViewController: NSViewController {
             vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16), bottom
         ])
         vc.activate()
+        updateStatusLine()
+    }
+
+    /// Reads the shown session's live cwd (OSC 7) and last command (OSC 133). A cwd outside the
+    /// track's worktree is flagged, and agent commands there always ask (audit D-10).
+    private func updateStatusLine() {
+        guard isViewLoaded else { return }
+        terminalTop?.constant = terminalTopConstant
+        guard statusRowShows, let session = displayedSession, let terminals else { statusLine.stringValue = ""; return }
+        let vc = session.viewController
+        let worktree = terminals.workingDirectory(forTrackKey: trackKey).path
+        let cwd = vc.currentDirectory ?? vc.workingDirectory ?? worktree
+        let outside = !TerminalSessionManager.isInside(cwd, root: worktree)
+        let base: [NSAttributedString.Key: Any] = [.font: DS.Text.code(11, weight: .regular), .foregroundColor: NSColor.tertiaryLabelColor]
+        let text = NSMutableAttributedString(string: (cwd as NSString).abbreviatingWithTildeInPath,
+                                             attributes: base.merging([.foregroundColor: outside ? DS.Color.statusNeedsYou : NSColor.secondaryLabelColor]) { $1 })
+        var parts: [String] = []
+        let status = vc.commandStatus
+        if let code = status.lastExitCode { parts.append("last exit \(code)") }
+        if let duration = status.lastDuration { parts.append(Self.durationText(duration)) }
+        if let task = taskRowState.runningTaskName {
+            let agentTab = terminals.agentSessionIndex(forTrackKey: trackKey)
+            parts.append(agentTab.map { $0 != activeSessionIndex && sessions.count > 1 ? "running \(task) in tab \($0 + 1)" : "running \(task)" } ?? "running \(task)")
+        }
+        for part in parts { text.append(NSAttributedString(string: " \u{00B7} " + part, attributes: base)) }
+        statusLine.attributedStringValue = text
+        statusLine.toolTip = outside ? "Outside this track's worktree \u{2014} agent commands in this terminal always ask first." : cwd
+    }
+
+    static func durationText(_ seconds: TimeInterval) -> String {
+        if seconds < 10 { return String(format: "%.1f s", seconds) }
+        if seconds < 60 { return "\(Int(seconds.rounded())) s" }
+        let whole = Int(seconds.rounded())
+        return "\(whole / 60) m \(whole % 60) s"
     }
 
     private func clearUnseenOutput(at index: Int) {
@@ -579,8 +624,8 @@ final class RunWorkspaceViewController: NSViewController {
         guard isViewLoaded else { return }
         taskRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let hasContent = !state.tasks.isEmpty || state.pendingCommand != nil
-        taskRow.isHidden = !hasContent || !hasProject
-        terminalTop?.constant = terminalTopConstant
+        taskRow.isHidden = !hasContent
+        updateStatusLine()
         guard hasContent else { return }
 
         if let pending = state.pendingCommand {

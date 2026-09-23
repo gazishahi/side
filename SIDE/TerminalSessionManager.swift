@@ -118,6 +118,9 @@ final class TerminalSessionManager {
         vc.workingDirectory = path
         let session = TerminalSession(label: (path as NSString).lastPathComponent, viewController: vc)
         vc.onExitStatusChanged = { [weak self] _, _ in self?.post(origin: nil) }
+        // Run's status line: live cwd and the last command's exit and duration.
+        vc.onDirectoryChanged = { [weak self] _ in self?.post(origin: nil) }
+        vc.onCommandStatusChanged = { [weak self] in self?.post(origin: nil) }
         vc.onOutputReceived = { [weak self, weak session] in
             guard let self, let session else { return }
             // A shell still settling (integration line echoing, first prompt painting) is
@@ -175,6 +178,31 @@ final class TerminalSessionManager {
         guard let id = agentSessionIDByTrackKey[trackKey],
               let session = allSessions(forTrackKey: trackKey).first(where: { $0.id == id }) else { return }
         session.viewController.interruptAgentCommand()
+    }
+
+    /// Which tab the agent's commands run in, if it has one pinned — non-creating.
+    func agentSessionIndex(forTrackKey key: String) -> Int? {
+        guard let id = agentSessionIDByTrackKey[key] else { return nil }
+        return sessions(forTrackKey: key).firstIndex { $0.id == id }
+    }
+
+    /// True when the terminal the agent's commands would go to has been `cd`-ed outside the
+    /// track's worktree (audit D-10) — then no command auto-runs, whatever the autonomy: an
+    /// allowlisted `rm -rf build` means something else in another directory. Non-creating.
+    func agentSessionIsOutsideWorktree(trackKey key: String) -> Bool {
+        let list = sessions(forTrackKey: key)
+        let pinned = agentSessionIDByTrackKey[key].flatMap { id in allSessions(forTrackKey: key).first { $0.id == id } }
+        let active = activeIndex(forTrackKey: key).flatMap { list.indices.contains($0) ? list[$0] : nil }
+        guard let session = pinned ?? active ?? list.first, let cwd = session.viewController.currentDirectory else { return false }
+        return !Self.isInside(cwd, root: directoryProvider(key).path)
+    }
+
+    /// Path containment with symlinks resolved (`/tmp` is `/private/tmp`), component-wise so
+    /// `/work/app2` is not inside `/work/app`.
+    static func isInside(_ path: String, root: String) -> Bool {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        let base = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        return resolved.count >= base.count && Array(resolved.prefix(base.count)) == base
     }
 
     func agentSession(forTrackKey key: String) -> TerminalSession {

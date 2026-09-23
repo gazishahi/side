@@ -138,6 +138,9 @@ final class ProjectContext {
             },
             interruptShellCommand: { [weak terminals] in
                 terminals?.interruptAgentCommand(trackKey: trackKey)
+            },
+            agentTerminalIsOutsideWorktree: { [weak terminals] in
+                terminals?.agentSessionIsOutsideWorktree(trackKey: trackKey) ?? false
             }
         )
     }

@@ -23,6 +23,8 @@ struct WorkspaceBridge: @unchecked Sendable {
     /// Interrupts whatever agent command is running for this track, if any — in the session that
     /// is running it, not whichever tab is selected.
     var interruptShellCommand: () -> Void
+    /// The agent's terminal has been moved outside the track's worktree: nothing auto-runs.
+    var agentTerminalIsOutsideWorktree: () -> Bool = { false }
 
     /// No window is currently both key and showing this track — reads fall back to disk, writes
     /// go straight to disk via `ProposedEditApplier`, and there's nowhere to jump to. Every one

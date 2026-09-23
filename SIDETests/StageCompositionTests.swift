@@ -87,5 +87,29 @@ final class StageCompositionTests: XCTestCase {
             return XCTFail("card not resolved")
         }
     }
+
+    /// Run's status line reads the shell's own marks: C starts, D;code;nonce finishes, a mark
+    /// split across reads is joined, and a D without this terminal's nonce is output, not status.
+    func testCommandMarksForTheStatusLine() {
+        let p = TerminalViewController.markPrefix, t = "\u{07}"
+        let cases: [([String], String?, [TerminalViewController.CommandMark])] = [
+            (["\(p)C\(t)out\(p)D;0;N\(t)"], "N", [.started, .finished(exitCode: 0)]),
+            (["\(p)C\(t)x\(p)D;", "2;N\(t)"], "N", [.started, .finished(exitCode: 2)]),
+            (["\(p)D;0;FORGED\(t)"], "N", []),
+            (["\(p)D;1\(t)"], nil, [.finished(exitCode: 1)]),
+        ]
+        for (chunks, nonce, expected) in cases {
+            var carry = "", marks: [TerminalViewController.CommandMark] = []
+            for chunk in chunks {
+                let scan = TerminalViewController.scanCommandMarks(carry: carry, chunk: chunk, nonce: nonce)
+                carry = scan.carry
+                marks += scan.marks
+            }
+            XCTAssertEqual(marks, expected, chunks.joined())
+        }
+        XCTAssertEqual(TerminalViewController.pathFromOSC7("file://mac.local/Users/me/My%20App"), "/Users/me/My App")
+        XCTAssertTrue(TerminalSessionManager.isInside("/work/app/src", root: "/work/app"))
+        XCTAssertFalse(TerminalSessionManager.isInside("/work/app2", root: "/work/app"))
+    }
 }
 

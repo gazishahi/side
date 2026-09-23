@@ -235,6 +235,17 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// from an I/O error rather than a normal exit.
     var onExitStatusChanged: ((Bool, Int32?) -> Void)?
     var onDirectoryChanged: ((String?) -> Void)?
+
+    /// The last command the shell ran, from its own OSC 133 marks — every command, not just the
+    /// agent's — for Run's status line (§4.3).
+    struct CommandStatus: Equatable {
+        var lastExitCode: Int?
+        var lastDuration: TimeInterval?
+        var runningSince: Date?
+    }
+    private(set) var commandStatus = CommandStatus()
+    var onCommandStatusChanged: (() -> Void)?
+    private var markScanCarry = ""
     var onOutputReceived: (() -> Void)?
     /// Return true if handled (opened in Make); returning false falls through to the default
     /// NSWorkspace.open behavior, which is what makes plain URLs already clickable for free.
@@ -314,12 +325,13 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         let dir = support.appendingPathComponent("Side/zsh-integration", isDirectory: true)
         let hooks = #"""
         __SIDE_NONCE=$SIDE_MARK_NONCE; unset SIDE_MARK_NONCE
-        __side_done(){ printf '\e]133;D;%s;%s\a' $? $__SIDE_NONCE; }
+        __side_done(){ printf '\e]133;D;%s;%s\a' $? $__SIDE_NONCE; printf '\e]7;file://%s%s\a' "$HOST" "${PWD// /%20}"; }
         __side_start(){ printf '\e]133;C\a'; }
         typeset -ga precmd_functions preexec_functions
         precmd_functions=(__side_done ${precmd_functions:#__side_done})
         preexec_functions=(${preexec_functions:#__side_start} __side_start)
         printf '\e]133;D;0;%s\a' $__SIDE_NONCE
+        printf '\e]7;file://%s%s\a' "$HOST" "${PWD// /%20}"
         """#
         func wrapper(_ name: String, extra: String = "") -> String {
             """
@@ -407,7 +419,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             // `$?` would read the previous hook's status rather than the command's.
             setup = "__side_done(){ printf '\\e]133;D;%s\\a' $?; }; __side_start(){ printf '\\e]133;C\\a'; }; typeset -ga precmd_functions preexec_functions; precmd_functions=(__side_done ${precmd_functions:#__side_done}); preexec_functions=(${preexec_functions:#__side_start} __side_start); printf '\\e]133;D;0\\a'"
         } else if shell.contains("bash") {
-            setup = "__side_done(){ printf '\\e]133;D;%s\\a' \"$?\"; }; PROMPT_COMMAND=\"__side_done;${PROMPT_COMMAND}\"; trap 'printf \"\\e]133;C\\a\"' DEBUG; printf '\\e]133;D;0\\a'"
+            setup = "__side_done(){ printf '\\e]133;D;%s\\a' \"$?\"; printf '\\e]7;file://%s%s\\a' \"$HOSTNAME\" \"${PWD// /%20}\"; }; PROMPT_COMMAND=\"__side_done;${PROMPT_COMMAND}\"; trap 'printf \"\\e]133;C\\a\"' DEBUG; printf '\\e]133;D;0\\a'"
         } else {
             shellIntegration = .unavailable
             return
@@ -575,6 +587,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// the first (false) match.
     private func handleAgentCommandData(_ slice: ArraySlice<UInt8>) {
         let chunk = String(decoding: slice, as: UTF8.self)
+        trackCommandStatus(chunk)
         // The probe: any `D` mark proves the shell is emitting OSC 133, whoever caused it.
         if shellIntegration == .probing, chunk.contains(";" + markNonce + Self.markTerminator) {
             shellIntegration = .confirmed
@@ -767,7 +780,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     }
 
     /// OSC 133 semantic-prompt marks: `ESC ] 133 ; <kind> BEL`.
-    private static let markPrefix = "\u{1B}]133;"
+    static let markPrefix = "\u{1B}]133;"
     private static let markTerminator = "\u{07}"
 
     static func stripANSI(_ raw: String) -> String {
@@ -928,8 +941,70 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
-        currentDirectory = directory
-        onDirectoryChanged?(directory)
+        let path = directory.map(Self.pathFromOSC7)
+        guard path != currentDirectory else { return }
+        currentDirectory = path
+        onDirectoryChanged?(path)
+    }
+
+    /// OSC 7 carries `file://host/path` with spaces percent-encoded; the status line wants a path.
+    static func pathFromOSC7(_ value: String) -> String {
+        guard value.hasPrefix("file://") else { return value }
+        let rest = value.dropFirst("file://".count)
+        let path = rest.firstIndex(of: "/").map { String(rest[$0...]) } ?? String(rest)
+        return path.removingPercentEncoding ?? path
+    }
+
+    private func trackCommandStatus(_ chunk: String) {
+        // Only the nonce-carrying marks count where the rc install provides one; the typed bash
+        // setup has no nonce, and its marks drive nothing but this display.
+        let scan = Self.scanCommandMarks(carry: markScanCarry, chunk: chunk, nonce: integrationInstalledViaRc ? markNonce : nil)
+        markScanCarry = scan.carry
+        guard !scan.marks.isEmpty else { return }
+        var status = commandStatus
+        for mark in scan.marks {
+            switch mark {
+            case .started:
+                status.runningSince = Date()
+            case .finished(let code):
+                // The startup mark has no command before it; nothing ran, nothing to report.
+                guard let start = status.runningSince else { continue }
+                status.lastExitCode = code
+                status.lastDuration = Date().timeIntervalSince(start)
+                status.runningSince = nil
+            }
+        }
+        guard status != commandStatus else { return }
+        commandStatus = status
+        onCommandStatusChanged?()
+    }
+
+    enum CommandMark: Equatable { case started, finished(exitCode: Int) }
+
+    /// Every OSC 133 C / D mark in `chunk`, in order, with `carry` joining a mark split across
+    /// reads. `nonce` nil accepts marks without one (the typed bash setup emits none).
+    static func scanCommandMarks(carry: String, chunk: String, nonce: String?) -> (carry: String, marks: [CommandMark]) {
+        let text = carry + chunk
+        var marks: [CommandMark] = []
+        var searchFrom = text.startIndex
+        while let prefix = text.range(of: markPrefix, range: searchFrom..<text.endIndex) {
+            let after = text[prefix.upperBound...]
+            guard let terminator = after.range(of: markTerminator) else {
+                // Still arriving: keep it (bounded) for the next read.
+                return (String(text[prefix.lowerBound...].suffix(256)), marks)
+            }
+            let body = after[after.startIndex..<terminator.lowerBound]
+            if body == "C" {
+                marks.append(.started)
+            } else if body.hasPrefix("D;") {
+                let payload = body.dropFirst(2).split(separator: ";", omittingEmptySubsequences: false)
+                let nonceMatches = nonce.map { payload.count == 2 && payload[1] == $0 } ?? (payload.count <= 2)
+                if nonceMatches, let first = payload.first, let code = Int(first) { marks.append(.finished(exitCode: code)) }
+            }
+            searchFrom = terminator.upperBound
+        }
+        // A tail shorter than the prefix can't hold a whole mark, so nothing is seen twice.
+        return (String(text[searchFrom...].suffix(markPrefix.count - 1)), marks)
     }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
