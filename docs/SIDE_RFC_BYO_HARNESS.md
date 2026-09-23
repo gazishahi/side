@@ -1,6 +1,9 @@
 # RFC — Bring your own harness
 
-*2026-09-23. Status: **decisions pending** — the owner decides D1–D8 below before any code.
+*2026-09-23. Status: **accepted** — the owner accepted D1–D8 as recommended the same day, with
+D1 settled explicitly: outside agents may write straight to disk ("it is the user's
+responsibility to know what the agents are up to"); those changes are reviewable and reversible
+through the turn-end checkpoint rather than pre-approved.
 Companion to `SIDE_PRODUCT_CONSTITUTION.md` (non-negotiables 3, 4, 5 and 8 are the ones at
 stake) and `SIDE_DESIGN.md`.*
 

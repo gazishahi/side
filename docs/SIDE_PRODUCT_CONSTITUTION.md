@@ -72,6 +72,13 @@ As built:
 - **Persistence.** One `AgentSession` per track (its turns, provider, model), stored under `.git/side/think/` — same state directory `TrackStore` uses. **Superseded shape:** this was one `think.json` holding every track's full history, which was loaded eagerly at launch and never evicted; it is now a lightweight `index.json`, a `checkpoints.json`, and one file per track's session, so a track's turns load only when that track is actually opened. Existing single-file state migrates on first launch.
 - **Safety properties.** A `WorkspaceBridge` (live editor-buffer access, apply-into-open-tab, reveal-after-apply) is resolved fresh from whichever window is both frontmost and actually showing the relevant track — never captured once — so an agent can never land an edit into the wrong window's editor. A stall watchdog (90 seconds with no stream event) plus an explicit transport timeout mean a hung connection surfaces as a visible blocked state, never as an agent that merely looks busy forever.
 
+**Outside harnesses (accepted 2026-09-23, `SIDE_RFC_BYO_HARNESS.md`).** Heron is the default,
+not the only engine: a track may run on an outside agent (Claude Code, Codex, Gemini CLI, Pi…)
+through the Agent Client Protocol, on the user's own account. Such an agent may write straight to
+disk; non-negotiable 5 then holds as it does for Full autonomy — every change lands in the
+track's own worktree, is checkpointed at the end of the turn, and stays reviewable and
+reversible, and promotion toward `main` is still an explicit human action.
+
 Named to stay distinct from "Think," the stage that hosts it. Code lives under a `Heron/` directory, mirroring the existing `LSP/` directory's role for Make's language-server support.
 
 #### Alloy — powers Make (name reserved; not yet designed or built)
