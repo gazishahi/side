@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Pairing a hunk into two columns.
 final class SideBySideRowsTests: XCTestCase {

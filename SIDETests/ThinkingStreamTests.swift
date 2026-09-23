@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Capturing the model's reasoning off the wire.
 ///

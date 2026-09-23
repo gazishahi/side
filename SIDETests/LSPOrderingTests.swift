@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// H10 from the 2026-09-01 audit: document sync to a language server must be ordered, and a
 /// server that came back from a crash must be told about open documents before anything else.

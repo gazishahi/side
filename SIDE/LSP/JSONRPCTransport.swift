@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// Frames JSON-RPC messages over a language server's stdin/stdout using the
 /// `Content-Length: N\r\n\r\n<json>` framing required by the LSP spec.

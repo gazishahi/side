@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 import UniformTypeIdentifiers
 
 /// Make's file explorer: a transient glass overlay over the leading edge, never a permanent

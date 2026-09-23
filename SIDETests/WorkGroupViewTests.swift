@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// The tool-activity disclosure. Its layout has been wrong three separate ways — a tall empty
 /// gap when collapsed, content overflowing onto the next message when expanded, and a header

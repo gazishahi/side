@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 import UniformTypeIdentifiers
 
 /// A small capsule control: an icon and/or a word, on glass, that presses like the rest of the

@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 import SwiftTerm
 
 /// Subclasses LocalProcessTerminalView purely to hook three things it exposes specifically for
@@ -223,13 +224,8 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// environment — same-user code can — but it moves the attack from "print a line" to
     /// "deliberately go looking", which is a different threat. (2026-09-01 audit, terminal Med.)
     private let markNonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-    static let agentCommandTimeout: TimeInterval = 30
-    /// For a *task* — the project's own build or test command — which the user asked to run by
-    /// name and can watch in the terminal. Thirty seconds is shorter than most real test suites,
-    /// so the default timeout meant verification never landed for exactly the projects Phase 10
-    /// was built for (2026-09-01 audit, H14a). The command is still visible and still
-    /// interruptible with Stop; this only decides how long the conversation waits for the result.
-    static let agentTaskTimeout: TimeInterval = 600
+    static let agentCommandTimeout = CommandTimeout.command
+    static let agentTaskTimeout = CommandTimeout.task
 
     /// (isAlive, exitCode) — exitCode is nil if the process never actually started or died
     /// from an I/O error rather than a normal exit.

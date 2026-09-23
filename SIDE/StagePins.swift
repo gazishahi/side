@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// Which stages the stage control shows (Direction 02 §3.1). A stage is a view over shared
 /// engines: unpinning hides a view, never a capability — every stage stays reachable through

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 @MainActor
 final class ModelSelectionTests: XCTestCase {

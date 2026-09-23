@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// The append-only conversation log. A persistence format's bugs are silent and permanent, so
 /// these cover the round trip, the migration, and the partial-corruption cases specifically.

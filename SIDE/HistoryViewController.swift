@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// The History pane of Preferences: how long Think conversations are kept, and a way to delete
 /// them now.

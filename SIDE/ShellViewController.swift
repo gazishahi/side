@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 import UserNotifications
 
 /// One system notification per transition into "needs you" — no queueing or coalescing across

@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// One message bound for a language server, in the order the editor produced it.
 enum LSPOutboundOp: Sendable {

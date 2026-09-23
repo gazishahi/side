@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Automated coverage for the AX contracts the audit found broken by inspection. These assert the
 /// element properties VoiceOver actually reads — role, label, value, expanded state — because

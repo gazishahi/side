@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import Side
+@testable import Heron
 
 @MainActor
 final class TypographyTests: XCTestCase {

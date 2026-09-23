@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 final class UsageStoreTests: XCTestCase {
     private var storeURL: URL!

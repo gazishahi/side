@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// One running language server process, speaking JSON-RPC 2.0 / LSP over stdio.
 actor LSPClient {

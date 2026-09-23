@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// One terminal: a live PTY and the view that renders it. A class so every window's Run stage
 /// and the agent's command path hold the same object rather than copies that drift.

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Conversation history. `/new` used to delete the transcript, which is where a change's
 /// reasoning lives — so the thing these tests care most about is that no path loses one.

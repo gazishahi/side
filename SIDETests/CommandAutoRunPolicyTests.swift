@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Auto-run is a consent boundary: anything that reaches `isAutoRunnable == true` executes with
 /// no human action on a track that opted in. These cases are the regression fence around that.

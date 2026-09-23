@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// The Appearance pane of Preferences — currently one setting, and the reason `DS.Text` exists:
 /// text size.

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Documentation truthfulness, checked by machine.
 ///
@@ -20,10 +21,7 @@ final class DocStatusTests: XCTestCase {
         return all.filter { $0.pathExtension == "md" && !$0.lastPathComponent.contains("AUDIT_REPORT") }.sorted { $0.path < $1.path }
     }
     private lazy var sourceText: String = {
-        let dir = repoRoot.appendingPathComponent("SIDE")
-        let files = (FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)?.compactMap { $0 as? URL } ?? [])
-            .filter { $0.pathExtension == "swift" }
-        return files.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
+        SourceTree.swiftFiles.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
     }()
 
     private func status(of doc: URL) throws -> (status: String, symbols: [String], head: String) {

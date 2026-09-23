@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Undo is the one feature whose bugs are unrecoverable by definition — if it destroys work, the
 /// work is gone. These cover both halves: the ordering/selection logic (pure), and the git

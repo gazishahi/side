@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// A segmented control whose selection *slides*: the thumb moves between segments on
 /// `DS.Motion.curve` instead of the stock control's instant swap. Shared by Think's session

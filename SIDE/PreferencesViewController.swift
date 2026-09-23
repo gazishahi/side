@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// The first real content behind Cmd+, — replaces the "no preferences yet" stub now that
 /// there's something genuinely configurable: model providers. Generalized beyond the built-in

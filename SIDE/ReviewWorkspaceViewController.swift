@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// Flipped scroll-document container — same arrangement Think's transcript uses. Review used to
 /// hand its content stack directly to the scroll view with only a width constraint, which left

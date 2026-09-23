@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Two subprocess hazards the codebase has now fixed three times, checked statically so the
 /// fourth time fails a test instead of hanging a user.
@@ -9,12 +10,20 @@ import XCTest
 /// 2. `standardOutput = Pipe()` / `standardError = Pipe()` with nothing holding the pipe: the
 ///    child blocks the same way the moment it writes more than 64 KB, and nothing will ever read.
 ///    Output nobody wants goes to `FileHandle.nullDevice`, which never fills.
-final class ProcessHygieneTests: XCTestCase {
-    private var sourceFiles: [URL] {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("SIDE")
-        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return [] }
-        return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+/// Every Swift source Side ships: the app and the Heron package. Tree-scanning tests read this,
+/// so the engine moving into its own package doesn't quietly drop it from their coverage.
+enum SourceTree {
+    static let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+    static var swiftFiles: [URL] {
+        ["SIDE", "Packages/Heron/Sources"].flatMap { dir in
+            (FileManager.default.enumerator(at: repoRoot.appendingPathComponent(dir), includingPropertiesForKeys: nil)?
+                .compactMap { $0 as? URL } ?? []).filter { $0.pathExtension == "swift" }
+        }
     }
+}
+
+final class ProcessHygieneTests: XCTestCase {
+    private var sourceFiles: [URL] { SourceTree.swiftFiles }
 
     func testNoPipeIsCreatedWithoutAReader() throws {
         var offenders: [String] = []

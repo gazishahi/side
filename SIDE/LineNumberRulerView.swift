@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 final class LineNumberGutterView: NSView {
     private weak var textView: NSTextView?

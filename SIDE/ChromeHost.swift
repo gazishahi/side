@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// Where the navigation components live (Direction 02 §3.0). The floating bar is on trial; the
 /// seamless frame and top row are permanent and correct under both. Reverting = default this to

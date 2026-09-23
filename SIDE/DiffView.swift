@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// A parsed unified diff — the data half of the diff viewer. Deliberately its own type rather
 /// than view-internal state so anything that produces `git diff` text (Review's branch diff,

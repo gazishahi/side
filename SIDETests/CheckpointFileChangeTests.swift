@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Line counts on a checkpoint, and the pill that reads them back.
 ///

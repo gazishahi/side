@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// A session whose `tool_use` blocks aren't all answered by `tool_result` blocks is not merely
 /// untidy — the whole turn list is replayed to the provider on every send, and an unanswered

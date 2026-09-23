@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 private enum TabKind { case text, image, csv }
 

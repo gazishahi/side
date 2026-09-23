@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// Everything scoped to one open project, shared by every window that has that project open:
 /// `TrackStore`, `AgentSessionStore`, and `AgentRunnerManager` (so an agent conversation now

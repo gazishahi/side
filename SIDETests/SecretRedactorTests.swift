@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 final class SecretRedactorTests: XCTestCase {
     private func assertRedacted(_ input: String, keeps: [String] = [], drops: [String], file: StaticString = #filePath, line: UInt = #line) {

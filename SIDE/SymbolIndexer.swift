@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 struct CodeSymbol {
     let name: String

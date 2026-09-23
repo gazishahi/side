@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 // MARK: - Outgoing (Encodable) — only the fields the servers we target require.
 

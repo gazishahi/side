@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 enum SyntaxHighlighter {
     private struct Rule { let regex: NSRegularExpression; let color: NSColor; var italic: Bool = false; var groupIndex: Int = 0 }

@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 final class FileExplorerPanel: NSPanel {
     convenience init() {

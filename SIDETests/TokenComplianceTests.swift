@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Direction 02 §2 acceptance, enforced at test time rather than by a checklist nobody reruns.
 final class TokenComplianceTests: XCTestCase {
@@ -8,9 +9,7 @@ final class TokenComplianceTests: XCTestCase {
     }
 
     private var sourceFiles: [URL] {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("SIDE")
-        return (FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?.compactMap { $0 as? URL } ?? [])
-            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "DesignSystem.swift" }
+        SourceTree.swiftFiles.filter { $0.lastPathComponent != "DesignSystem.swift" }
     }
 
     private func offenders(matching pattern: String, excludingLinesContaining exclusion: String? = nil) throws -> [String] {

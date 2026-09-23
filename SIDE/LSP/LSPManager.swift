@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// Owns at most one LSPClient per server *binary* (not per language — several extensions,
 /// e.g. .ts/.tsx/.js/.jsx, can share a single typescript-language-server process) for a

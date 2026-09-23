@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// Maps file extensions to language server launch commands, and resolves
 /// those binaries on disk.

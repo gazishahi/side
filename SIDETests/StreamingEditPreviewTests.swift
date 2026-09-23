@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Reading fields out of tool-call arguments that haven't finished arriving. Everything here is
 /// about one hazard: a preview built from a fragment must never claim something the completed

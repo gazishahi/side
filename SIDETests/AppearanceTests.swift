@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Light mode. Every token is dynamic, layer colours re-resolve on an appearance change, and the
 /// terminal derives its colours from the same tokens.

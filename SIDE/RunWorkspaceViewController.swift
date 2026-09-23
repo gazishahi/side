@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 final class RunWorkspaceViewController: NSViewController {
     /// The project's terminals (RFC R2). Run is a view onto them: it attaches to a track's

@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 import CoreServices
 
 /// One FSEvents stream per project root, so open buffers, the file index, and `@`-mention

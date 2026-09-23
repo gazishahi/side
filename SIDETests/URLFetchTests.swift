@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// What the agent may fetch. The policy is the floor at every autonomy level: it decides which
 /// URLs can even become a proposal, before anything is shown to the user.

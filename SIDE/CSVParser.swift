@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 enum CSVParser {
     /// Handles quoted fields, commas/newlines inside quotes, and escaped `""` quotes —

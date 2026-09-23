@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+@testable import Heron
 
 /// Audit H7 (encoding-safe saves) and H8 (external changes reach the editor and the indexes).
 final class FileIntegrityTests: XCTestCase {

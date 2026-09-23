@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// The Usage pane of Preferences: what every model has cost across every project, with a
 /// per-project breakdown underneath.
