@@ -547,6 +547,10 @@ final class AgentRunner {
     }
 
     private func resolveCommandProposal(entryIndex: Int, presentation: CommandPresentation, decision: ProposalDecision) {
+        if userTaskToolUseIds.contains(presentation.command.toolUseId) {
+            resolveUserTask(entryIndex: entryIndex, presentation: presentation, decision: decision)
+            return
+        }
         guard pendingBatch?.unresolvedToolUseIds.contains(presentation.command.toolUseId) == true else { return }
         switch decision {
         case .reject:
@@ -618,6 +622,88 @@ final class AgentRunner {
         }
         pendingBatch = batch
         finishBatchIfReady()
+    }
+
+    // MARK: - User-started tasks (Run's task chips)
+
+    /// Commands the *user* started from Run's task row. Same card, same auto-run policy, same
+    /// visible terminal as the agent's — nothing new executes (Direction 02 §4.3) — but not part
+    /// of any model tool batch: there is no tool_use to answer, so the result goes to the
+    /// checkpoint (when it's a verification) and to the card, never back to the model.
+    private var userTaskToolUseIds: Set<String> = []
+    /// The task running now, for Run's chip (the one with the working ring).
+    private(set) var runningUserTaskName: String?
+    /// A task proposal waiting for the user's Run / Cancel.
+    private(set) var pendingUserTaskProposalId: UUID?
+
+    /// Proposes `task` as a command card. Runs it straight away when the track's autonomy
+    /// auto-runs allowlisted commands and this one is on the list; otherwise it waits for the
+    /// same approval the agent's commands get. `nil` when the agent is mid-turn or a task is
+    /// already in flight — the terminal is shared, and two commands interleaving in it would
+    /// corrupt both results.
+    @discardableResult
+    func proposeUserTask(_ task: ProjectTask) -> UUID? {
+        guard pendingBatch == nil, userTaskToolUseIds.isEmpty else { return nil }
+        switch phase {
+        case .streaming, .runningTools, .awaitingApproval: return nil
+        default: break
+        }
+        let command = ProposedCommand(toolUseId: "user-task-\(UUID().uuidString)", command: task.command, taskName: task.name)
+        let index = appendEntry(.commandProposal(CommandPresentation(command: command, resolution: nil)))
+        userTaskToolUseIds.insert(command.toolUseId)
+        let proposalId = entries[index].id
+        if modeProvider().autonomy.autoRunsAllowlistedCommands,
+           CommandAutoRunPolicy.isAutoRunnable(command.command, projectRoot: rootProvider()) {
+            executeUserTask(entryIndex: index)
+        } else {
+            pendingUserTaskProposalId = proposalId
+            notify(.phaseChanged)
+        }
+        return proposalId
+    }
+
+    private func resolveUserTask(entryIndex: Int, presentation: CommandPresentation, decision: ProposalDecision) {
+        pendingUserTaskProposalId = nil
+        switch decision {
+        case .apply:
+            executeUserTask(entryIndex: entryIndex)
+        case .reject:
+            userTaskToolUseIds.remove(presentation.command.toolUseId)
+            var resolved = presentation
+            resolved.resolution = .rejected
+            updateEntry(at: entryIndex, .commandProposal(resolved))
+            notify(.phaseChanged)
+        }
+    }
+
+    private func executeUserTask(entryIndex: Int) {
+        guard entries.indices.contains(entryIndex), case .commandProposal(let presentation) = entries[entryIndex].kind else { return }
+        let command = presentation.command
+        runningUserTaskName = command.taskName
+        notify(.phaseChanged)
+        bridgeProvider().runShellCommand(command.command, TerminalViewController.agentTaskTimeout) { [weak self] output in
+            guard let self else { return }
+            self.userTaskToolUseIds.remove(command.toolUseId)
+            self.runningUserTaskName = nil
+            if self.entries.indices.contains(entryIndex), case .commandProposal(var current) = self.entries[entryIndex].kind {
+                current.resolution = .executed(output: output)
+                self.updateEntry(at: entryIndex, .commandProposal(current))
+            }
+            // A named task's result is evidence about the code: it lands on the newest
+            // checkpoint, where Review and Promote read it (redacted, as the agent path is).
+            if let taskName = command.taskName {
+                let verification = CheckpointVerification(
+                    taskName: taskName, command: command.command,
+                    exitCode: Self.exitCode(fromCommandOutput: output), output: SecretRedactor.redacted(output)
+                )
+                if self.sessionStore.attachVerification(verification, toLatestCheckpointFor: self.trackKey) {
+                    self.appendEntry(.meta(verification.passed
+                        ? "\u{2713} Verified — \(taskName) passed"
+                        : "\u{26A0}\u{FE0E} \(taskName) failed — the newest checkpoint is recorded as failed"))
+                }
+            }
+            self.notify(.phaseChanged)
+        }
     }
 
     private func announceVerificationIfNeeded(_ batch: PendingToolBatch) {

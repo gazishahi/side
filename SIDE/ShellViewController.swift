@@ -97,6 +97,21 @@ final class ShellViewController: NSViewController {
             self.makeVC.revealFile(url, line: line)
         }
         runVC.onActivityChanged = { [weak self] in self?.updateStageLabels() }
+        runVC.onRunTask = { [weak self] task in
+            guard let self, let manager = self.projectContext?.runnerManager else { return }
+            // Refused while the agent is mid-turn or another task holds the terminal — two
+            // commands interleaving in one shell would corrupt both results.
+            if manager.runner(forTrackKey: self.currentTrackKey ?? "").proposeUserTask(task) == nil { NSSound.beep() }
+            self.refreshRunTasks()
+        }
+        runVC.onResolvePendingTask = { [weak self] run in
+            guard let self, let runner = self.currentRunner, let id = runner.pendingUserTaskProposalId else { return }
+            runner.resolve(proposalId: id, decision: run ? .apply : .reject)
+            self.refreshRunTasks()
+        }
+        NotificationCenter.default.addObserver(forName: AgentSessionStore.checkpointsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshRunTasks() }
+        }
         runVC.onTearOutRequested = { [weak self] session, screenPoint in
             guard let self, let projectURL = self.projectURL else { return }
             AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectURL, trackKey: self.currentTrackKey, soleSession: session, at: screenPoint)
@@ -601,7 +616,48 @@ final class ShellViewController: NSViewController {
     /// Called after every debounced runner-manager change. Diffs against `lastKnownNeedsYouTrackIDs`
     /// so a notification fires once per transition *into* needing attention, not once per
     /// recompute while it stays that way, and refreshes the dock badge either way.
+    // MARK: - Run's task row
+
+    /// The project's tasks for the current track's working copy — detection reads a few files,
+    /// so it runs off-main and is cached until the track or project changes.
+    private var projectTasks: [ProjectTask] = []
+    private var projectTasksRoot: URL?
+
+    private func reloadProjectTasks() {
+        guard projectURL != nil else { projectTasks = []; projectTasksRoot = nil; refreshRunTasks(); return }
+        let root = workingDirectoryURL(for: currentTrackKey)
+        guard root != projectTasksRoot else { refreshRunTasks(); return }
+        projectTasksRoot = root
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let tasks = ProjectTasks.tasks(projectRoot: root)
+            DispatchQueue.main.async {
+                guard let self, self.projectTasksRoot == root else { return }
+                self.projectTasks = tasks
+                self.refreshRunTasks()
+            }
+        }
+    }
+
+    /// Task chips, the Verify chip when the newest checkpoint is unverified, the running task,
+    /// and a pending Run / Cancel — all read without creating a runner.
+    private func refreshRunTasks() {
+        var state = RunWorkspaceViewController.TaskRowState()
+        guard projectURL != nil else { runVC.setTaskRow(state); return }
+        state.tasks = projectTasks
+        let runner = currentRunner
+        state.runningTaskName = runner?.runningUserTaskName
+        if let id = runner?.pendingUserTaskProposalId,
+           let entry = runner?.entries.first(where: { $0.id == id }), case .commandProposal(let presentation) = entry.kind {
+            state.pendingCommand = presentation.command.command
+        }
+        let verification = projectTasks.first { $0.isVerification } ?? projectTasks.first { $0.name == "test" }
+        let newest = projectContext?.sessionStore.checkpoints(forTrackKey: currentTrackKey ?? "").max { $0.createdAt < $1.createdAt }
+        if let verification, let newest, newest.verification == nil { state.verifyTask = verification }
+        runVC.setTaskRow(state)
+    }
+
     private func runnerActivityChanged() {
+        refreshRunTasks()
         let currentNeedsYou = needsYouTrackIDs()
         let newlyNeedsYou = currentNeedsYou.subtracting(lastKnownNeedsYouTrackIDs)
         lastKnownNeedsYouTrackIDs = currentNeedsYou
@@ -689,6 +745,7 @@ final class ShellViewController: NSViewController {
             runVC.reloadForTrackSwitch(trackKey: currentTrackKey)
         }
         runVC.attach(to: context.terminals)
+        reloadProjectTasks()
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
         thinkVC.onOpenReviewRequested = { [weak self] in self?.show(.review) }
         LaunchSignposts.begin("thinkConfigure")
@@ -748,6 +805,7 @@ final class ShellViewController: NSViewController {
                     self.currentTrackKey = track.branchName
                     self.makeVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
                     self.runVC.reloadForTrackSwitch(trackKey: track.branchName)
+                    self.reloadProjectTasks()
                     self.thinkVC.reloadForTrackSwitch(trackKey: track.branchName)
                     self.reviewVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
                     self.show(landOn)
@@ -779,6 +837,7 @@ final class ShellViewController: NSViewController {
         currentTrackKey = branchName
         makeVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
         runVC.reloadForTrackSwitch(trackKey: branchName)
+        reloadProjectTasks()
         thinkVC.reloadForTrackSwitch(trackKey: branchName)
         reviewVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
         show(.make)
