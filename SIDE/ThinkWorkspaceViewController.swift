@@ -1629,6 +1629,10 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         needsDisplay = true
+        // A bubble built before Think was first on screen got its own frame but never ran its
+        // own layout pass, so the text view inside stayed 0×0: every bubble drawn, no text in
+        // any, until re-entering Think rebuilt them in-window (owner, 2026-09-23).
+        needsLayout = true
     }
 
     /// The iMessage bubble: a rounded rect whose bottom tail-side corner sweeps out into a small

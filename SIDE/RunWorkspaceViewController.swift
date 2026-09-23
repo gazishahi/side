@@ -410,6 +410,19 @@ final class RunWorkspaceViewController: NSViewController {
                 closeButton.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: chip.centerYAnchor)
             ])
 
+            // Items carry the session's id, not its index — the menu can outlive a reorder.
+            let menu = NSMenu()
+            func item(_ title: String, _ action: Selector) {
+                let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+                item.target = self
+                item.representedObject = session.id
+            }
+            item("Close", #selector(closeSessionFromMenu(_:)))
+            item("Close Others", #selector(closeOtherSessionsFromMenu(_:)))
+            menu.addItem(NSMenuItem.separator())
+            item("Move to New Window", #selector(moveSessionToNewWindowFromMenu(_:)))
+            chip.menu = menu
+
             tabBarStack.addArrangedSubview(chip)
             tabChips.append(chip)
         }
@@ -443,6 +456,32 @@ final class RunWorkspaceViewController: NSViewController {
     }
 
     @objc private func closeSessionButton(_ sender: NSButton) { closeSession(at: sender.tag) }
+
+    // MARK: - Tab context-menu actions (sender.representedObject is the session's UUID)
+
+    private func sessionIndex(from sender: NSMenuItem) -> Int? {
+        guard let id = sender.representedObject as? UUID else { return nil }
+        return sessions.firstIndex { $0.id == id }
+    }
+
+    @objc private func closeSessionFromMenu(_ sender: NSMenuItem) {
+        if let index = sessionIndex(from: sender) { closeSession(at: index) }
+    }
+
+    @objc private func closeOtherSessionsFromMenu(_ sender: NSMenuItem) {
+        guard let index = sessionIndex(from: sender) else { return }
+        let kept = sessions[index]
+        for session in sessions where session !== kept { session.viewController.prepareForClose() }
+        sessions = [kept]
+        activeSessionIndex = 0
+        onActivityChanged?()
+        rebuildTabBar()
+        showActiveSession()
+    }
+
+    @objc private func moveSessionToNewWindowFromMenu(_ sender: NSMenuItem) {
+        if let index = sessionIndex(from: sender) { tearOutSession(at: index, to: NSEvent.mouseLocation) }
+    }
 
     private func handleTabDragging(_ chip: TabChipView, toWindowX x: CGFloat) {
         guard let draggedIndex = tabChips.firstIndex(where: { $0 === chip }) else { return }

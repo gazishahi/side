@@ -166,7 +166,7 @@ final class ChromeHost {
     /// never over the stage control. Returns false when there is no bar (the top-row
     /// placement), so the stage keeps them itself.
     @discardableResult
-    func dockAccessories(leading: NSView?, trailing: NSView?) -> Bool {
+    private func dockAccessories(leading: NSView?, trailing: NSView?) -> Bool {
         dockedAccessories.forEach { $0.removeFromSuperview() }
         dockedAccessories = []
         guard placement == .floatingBar, let root = barRoot, let pillPiece, let bar else { return false }
@@ -177,7 +177,7 @@ final class ChromeHost {
             root.addSubview(leading)
             constraints += [
                 leading.leadingAnchor.constraint(equalTo: pillPiece.trailingAnchor, constant: DS.Spacing.m),
-                leading.trailingAnchor.constraint(lessThanOrEqualTo: bar.leadingAnchor, constant: -DS.Spacing.m),
+                Self.yieldingToResize(leading.trailingAnchor.constraint(lessThanOrEqualTo: bar.leadingAnchor, constant: -DS.Spacing.m)),
                 leading.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             ]
             dockedAccessories.append(leading)
@@ -188,13 +188,22 @@ final class ChromeHost {
             root.addSubview(trailing)
             constraints += [
                 trailing.trailingAnchor.constraint(equalTo: searchButton.leadingAnchor, constant: -DS.Spacing.m),
-                trailing.leadingAnchor.constraint(greaterThanOrEqualTo: bar.trailingAnchor, constant: DS.Spacing.m),
+                Self.yieldingToResize(trailing.leadingAnchor.constraint(greaterThanOrEqualTo: bar.trailingAnchor, constant: DS.Spacing.m)),
                 trailing.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             ]
             dockedAccessories.append(trailing)
         }
         NSLayoutConstraint.activate(constraints)
         return true
+    }
+
+    /// Never holds the window's size: any resize narrower than the docked pills allow goes
+    /// through, and `adapt(toWidth:)` then undocks them. (They only dock when they fit, so this
+    /// never gives way in a settled layout.) Just above the track pill's name (490), which
+    /// truncates first.
+    private static func yieldingToResize(_ constraint: NSLayoutConstraint) -> NSLayoutConstraint {
+        constraint.priority = NSLayoutConstraint.Priority(rawValue: NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1)
+        return constraint
     }
 
     /// Lines the bar up with Think's composer row (the + button and the composer's edge).
@@ -308,7 +317,59 @@ final class ChromeHost {
     /// Narrow windows: the pill's intent truncates with an ellipsis — layout decides, not a width
     /// threshold. The old threshold flipped the pill to dot-only on a transient layout pass and
     /// could stay there, so the track name "suddenly disappeared".
-    func adapt(toWidth width: CGFloat) {}
+    /// Re-decides docking as the window resizes: a narrow window takes the pills back above
+    /// the composer, a wide enough one docks them again.
+    func adapt(toWidth width: CGFloat) {
+        guard accessoryStage != nil, dockedWidthNeeded > 0 else { return }
+        if accessoriesDocked != (width >= dockedWidthNeeded) { updateAccessoryDocking(width: width) }
+    }
+
+    private var accessoryStage: (any StageChromeProviding)?
+    private var accessoriesDocked = false
+    /// The window width the bar needs with the accessories in it, measured when they last were.
+    private var dockedWidthNeeded: CGFloat = 0
+
+    /// Puts a stage's accessories in the bar row when they fit, else leaves them to the stage.
+    /// Docking only when there's room is what keeps a narrow window narrow: docked, the pills'
+    /// required spacing beside a centred stage control pushed a 760 pt window out to 856 the
+    /// moment Think was entered.
+    func placeAccessories(of stage: (any StageChromeProviding)?, width: CGFloat) {
+        accessoryStage = stage
+        dockedWidthNeeded = 0
+        updateAccessoryDocking(width: width)
+    }
+
+    private func updateAccessoryDocking(width: CGFloat) {
+        let accessories: (leading: NSView?, trailing: NSView?) = accessoryStage?.barAccessories ?? (nil, nil)
+        guard let stage = accessoryStage, accessories.leading != nil || accessories.trailing != nil else {
+            dockAccessories(leading: nil, trailing: nil)
+            accessoriesDocked = false
+            return
+        }
+        // Dock, measure at bar size, and back out before any layout pass if it doesn't fit —
+        // the window never sees the wider arrangement.
+        accessoriesDocked = dockAccessories(leading: accessories.leading, trailing: accessories.trailing)
+        stage.setAccessoriesDocked(accessoriesDocked)
+        guard accessoriesDocked else { return }
+        dockedWidthNeeded = widthNeeded(leading: accessories.leading, trailing: accessories.trailing)
+        if width < dockedWidthNeeded {
+            dockAccessories(leading: nil, trailing: nil)
+            accessoriesDocked = false
+            stage.setAccessoriesDocked(false)
+        }
+    }
+
+    /// The stage control is centred, so the wider side sets the width: track pill (at a
+    /// readable, truncated width) and the leading pill on one side, search and the trailing
+    /// pill on the other.
+    private func widthNeeded(leading: NSView?, trailing: NSView?) -> CGFloat {
+        guard let bar else { return 0 }
+        func piece(_ view: NSView?) -> CGFloat { view.map { $0.fittingSize.width + DS.Spacing.m } ?? 0 }
+        let pillWidth = min(pillPiece?.fittingSize.width ?? 0, 180)
+        let left = Self.barMargin + pillWidth + DS.Spacing.m + piece(leading)
+        let right = Self.barMargin + searchButton.fittingSize.width + DS.Spacing.m + piece(trailing)
+        return bar.fittingSize.width + 2 * max(left, right)
+    }
 
     /// Where the palette goes, in `root`'s coordinates: expanding upward from the bar, or
     /// centred in the window under the top row.

@@ -564,9 +564,8 @@ final class ShellViewController: NSViewController {
         chrome.setRowBackground((next as? StageChromeProviding)?.topRowBackground ?? DS.Color.canvas)
         // Think's changes and session pills join the bar row when there is one (the spread-row
         // decision, 2026-09-22); anywhere else — or with no bar — they stay above the composer.
-        let accessories: (leading: NSView?, trailing: NSView?) = (next as? StageChromeProviding)?.barAccessories ?? (nil, nil)
-        let docked = chrome.dockAccessories(leading: accessories.leading, trailing: accessories.trailing)
-        (next as? StageChromeProviding)?.setAccessoriesDocked(docked)
+        // Only when they fit — a narrow window keeps them there rather than being widened.
+        chrome.placeAccessories(of: next as? StageChromeProviding, width: view.bounds.width)
         chrome.watchScrollBeneathTopRow((next as? StageChromeProviding)?.scrollViewUnderTopRow)
         (next as? StageChromeProviding)?.setBottomObstruction(chrome.bottomObstruction)
         (next as? StageChromeProviding)?.setTopObstruction(ChromeHost.rowHeight)
