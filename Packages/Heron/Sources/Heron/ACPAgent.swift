@@ -11,20 +11,27 @@ public struct ACPAgent: Equatable, Sendable {
     public let arguments: [String]
     /// What to run if it isn't installed — shown to copy, never run for the user.
     public let installHint: String
+    /// Variables removed from the agent's environment. An API key in the user's login
+    /// environment makes Claude Code bill the key instead of the user's subscription — and if
+    /// the key is stale, the prompt hangs with no error (found 2026-09-23). RFC D7: an outside
+    /// agent runs on the user's own account, through its own login.
+    public let hiddenEnvironment: [String]
 
-    public init(id: String, displayName: String, binary: String, arguments: [String] = [], installHint: String) {
+    public init(id: String, displayName: String, binary: String, arguments: [String] = [], installHint: String, hiddenEnvironment: [String] = []) {
         self.id = id
         self.displayName = displayName
         self.binary = binary
         self.arguments = arguments
         self.installHint = installHint
+        self.hiddenEnvironment = hiddenEnvironment
     }
 
     /// The agents Side knows how to launch. Claude Code, Codex and Pi speak ACP through small
     /// adapters; Gemini CLI speaks it natively.
     public static let known: [ACPAgent] = [
         ACPAgent(id: "claude-code", displayName: "Claude Code", binary: "claude-agent-acp",
-                 installHint: "npm install -g @agentclientprotocol/claude-agent-acp"),
+                 installHint: "npm install -g @agentclientprotocol/claude-agent-acp",
+                 hiddenEnvironment: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]),
         ACPAgent(id: "codex", displayName: "Codex", binary: "codex-acp",
                  installHint: "npm install -g @agentclientprotocol/codex-acp"),
         ACPAgent(id: "gemini", displayName: "Gemini CLI", binary: "gemini", arguments: ["--acp"],

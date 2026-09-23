@@ -678,12 +678,17 @@ final class TracksWorkspaceViewController: NSViewController {
     /// Not private: referenced cross-file via `#selector` for the "Track > New Track…" menu item
     /// (MakeWorkspaceViewController.buildMenu()), which reaches this through the responder chain
     /// while the Tracks stage is active — same pattern already used for Run's menu items.
+    /// An alert's accessory width. The macOS 26 alert is narrower than older ones, and NSAlert
+    /// doesn't widen itself for a wider accessory — at 280 the field and the fork picker ran
+    /// past the sheet's right edge. Matches Make's rename/new-file fields.
+    static let alertFieldWidth: CGFloat = 240
+
     @objc func newTrackTapped() {
         guard let window = view.window, let store = trackStore else { return }
         let alert = NSAlert()
         alert.messageText = "New Track"
         alert.informativeText = "What are you working on?"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 24))
         field.placeholderString = "Fix the save-conflict race"
 
         // A base-track picker only makes sense once there's another track worth forking from —
@@ -691,7 +696,7 @@ final class TracksWorkspaceViewController: NSViewController {
         // base. With nothing eligible, keep the dialog exactly as simple as it's always been
         // rather than showing a picker with only the default-branch option in it.
         let stackableBases = store.tracks.filter { [.active, .waiting, .reviewReady].contains($0.status) }
-        let basePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        let basePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 24))
         if !stackableBases.isEmpty {
             basePopup.addItem(withTitle: "Fork from \(store.defaultBranchName())")
             for track in stackableBases {
@@ -705,7 +710,8 @@ final class TracksWorkspaceViewController: NSViewController {
             // NSAlert sizes the sheet from accessoryView.frame before Auto Layout resolves
             // anything — see CommandProposalView/AddProviderForm for the same lesson learned
             // the hard way earlier.
-            stack.frame = NSRect(x: 0, y: 0, width: 280, height: 60)
+            stack.frame = NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 60)
+            for view in [field, basePopup] { view.widthAnchor.constraint(equalToConstant: Self.alertFieldWidth).isActive = true }
             alert.accessoryView = stack
         } else {
             alert.accessoryView = field
@@ -756,7 +762,7 @@ final class TracksWorkspaceViewController: NSViewController {
             let alert = NSAlert()
             alert.messageText = "Switch to Existing Branch"
             alert.informativeText = "Choose a branch that isn't a track yet."
-            let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+            let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 24))
             popup.addItems(withTitles: branches)
             alert.accessoryView = popup
             alert.addButton(withTitle: "Switch")
@@ -803,7 +809,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let alert = NSAlert()
         alert.messageText = "Turn Into a Track"
         alert.informativeText = "What are you working on?"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 24))
         field.placeholderString = "Fix the save-conflict race"
         alert.accessoryView = field
         alert.addButton(withTitle: "Create")
@@ -842,7 +848,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let alert = NSAlert()
         alert.messageText = "Turn Into a Track"
         alert.informativeText = "What are you working on?"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 24))
         field.placeholderString = "Fix the save-conflict race"
         alert.accessoryView = field
         alert.addButton(withTitle: "Create")
@@ -1063,7 +1069,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let alert = NSAlert()
         alert.messageText = "Rename Track"
         alert.informativeText = "What are you working on?"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 24))
         field.stringValue = track.intent
         alert.accessoryView = field
         alert.addButton(withTitle: "Rename")

@@ -35,7 +35,9 @@ final class ProjectContext {
             // the shell doesn't look — and for checking the client against a mock agent.
             let override = UserDefaults.standard.string(forKey: "SideACPAgentPath.\(agent.id)").map(URL.init(fileURLWithPath:))
             guard let executable = override ?? LanguageServerRegistry.resolveExecutable(named: agent.binary) else { return nil }
-            return ACPLaunch(executable: executable, arguments: agent.arguments, environment: LanguageServerRegistry.environmentForSpawning())
+            var environment = LanguageServerRegistry.environmentForSpawning()
+            for name in agent.hiddenEnvironment { environment.removeValue(forKey: name) }
+            return ACPLaunch(executable: executable, arguments: agent.arguments, environment: environment)
         }
         manager.acpTerminalHost = acpTerminals
         return manager

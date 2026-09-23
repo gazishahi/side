@@ -77,6 +77,18 @@ public final class ACPHarness: Harness {
     private var turnPrompt = ""
     private var appliedCounts: [String: (added: Int, removed: Int)] = [:]
     private var usage: (used: Int, size: Int)?
+    /// What the agent says it's running as — model, effort, mode (its `configOptions`) and
+    /// account (`_auth/status_update`) — shown when a session opens.
+    private var sessionSettings: [(id: String, value: String)] = []
+    private var accountLabel: String?
+    /// Fires when a turn has gone silent too long (`stallInterval`).
+    private var stallWorkItem: DispatchWorkItem?
+    /// `terminal/wait_for_exit` calls still waiting on a command — silence then is a command
+    /// running, not a hang.
+    private var waitingOnTerminals = 0
+    /// Longer than Heron's 90 s: an outside agent can think or run its own tools without
+    /// streaming anything for a while.
+    var stallInterval: TimeInterval = 180
     /// The agent is being found and launched; a second send waits for that to finish.
     private var starting = false
 
@@ -110,6 +122,8 @@ public final class ACPHarness: Harness {
         guard phase != newPhase else { return }
         let wasNeedsYou = activity == .needsYou
         phase = newPhase
+        // Waiting on the user isn't the agent hanging.
+        if newPhase == .awaitingApproval { disarmStallTimer() } else if newPhase == .streaming || newPhase == .runningTools { armStallTimer() }
         let isNeedsYou = activity == .needsYou
         if isNeedsYou, !wasNeedsYou { needsYouSince = Date() } else if !isNeedsYou { needsYouSince = nil }
         notify(.phaseChanged)
@@ -163,6 +177,7 @@ public final class ACPHarness: Harness {
     }
 
     private func prompt(_ text: String, sessionId: String) {
+        armStallTimer()
         connection?.request("session/prompt", params: [
             "sessionId": sessionId,
             "prompt": [["type": "text", "text": text]],
@@ -179,6 +194,7 @@ public final class ACPHarness: Harness {
     }
 
     private func finishTurn(stopReason: String) {
+        disarmStallTimer()
         streamingIndex = nil
         thinkingIndex = nil
         answerPendingPermissions(with: nil)
@@ -200,6 +216,7 @@ public final class ACPHarness: Harness {
     }
 
     private func fail(_ message: String) {
+        disarmStallTimer()
         streamingIndex = nil
         thinkingIndex = nil
         answerPendingPermissions(with: nil)
@@ -282,6 +299,8 @@ public final class ACPHarness: Harness {
                             return
                         }
                         self.sessionId = id
+                        self.sessionSettings = Self.settings(from: value)
+                        self.describeSession()
                         body(id)
                     }
                 }
@@ -301,6 +320,12 @@ public final class ACPHarness: Harness {
     // MARK: Updates from the agent
 
     private func handleNotification(_ method: String, _ params: [String: Any]) {
+        armStallTimerIfRunning()
+        if method == "_auth/status_update", let status = params["authStatus"] as? [String: Any] {
+            // "Claude Team", or "Anthropic API key" — which one pays matters to the user.
+            accountLabel = status["label"] as? String
+            return
+        }
         guard method == "session/update", let update = params["update"] as? [String: Any],
               let kind = update["sessionUpdate"] as? String else { return }
         switch kind {
@@ -358,6 +383,7 @@ public final class ACPHarness: Harness {
     }
 
     private func handleRequest(id: Any, method: String, params: [String: Any]) {
+        armStallTimerIfRunning()
         switch method {
         case "session/request_permission": requestPermission(id: id, params: params)
         case "fs/read_text_file": readTextFile(id: id, params: params)
@@ -483,6 +509,7 @@ public final class ACPHarness: Harness {
     public func proposeUserTask(_ task: ProjectTask) -> UUID? { nil }
 
     public func teardown() {
+        disarmStallTimer()
         answerPendingPermissions(with: nil)
         settlePendingWrites(reason: "The conversation closed before this edit was decided. The file is unchanged.")
         terminalHostProvider()?.endAll(owner: ownerId, closeTabs: true)
@@ -726,8 +753,18 @@ public final class ACPHarness: Harness {
             if let exit = output.exit { result["exitStatus"] = exit.json }
             connection?.respond(id: id, result: result)
         case "terminal/wait_for_exit":
-            let known = host.waitForExit(terminalId) { [weak self] exit in self?.connection?.respond(id: id, result: exit.json) }
-            if !known { unknownTerminal(id) }
+            waitingOnTerminals += 1
+            disarmStallTimer()
+            let known = host.waitForExit(terminalId) { [weak self] exit in
+                guard let self else { return }
+                self.waitingOnTerminals = max(0, self.waitingOnTerminals - 1)
+                self.connection?.respond(id: id, result: exit.json)
+                self.armStallTimerIfRunning()
+            }
+            if !known {
+                waitingOnTerminals = max(0, waitingOnTerminals - 1)
+                unknownTerminal(id)
+            }
         case "terminal/kill":
             host.kill(terminalId) ? connection?.respond(id: id, result: [:]) : unknownTerminal(id)
         default: // terminal/release
@@ -737,6 +774,66 @@ public final class ACPHarness: Harness {
 
     private func unknownTerminal(_ id: Any) {
         connection?.respondError(id: id, code: -32602, message: "No such terminal.")
+    }
+
+    // MARK: Stalls
+
+    private func armStallTimerIfRunning() {
+        if phase == .streaming || phase == .runningTools { armStallTimer() }
+    }
+
+    /// A turn that goes silent for `stallInterval` says so, instead of looking busy forever —
+    /// the same promise Heron's watchdog keeps (constitution: attention is explicit).
+    private func armStallTimer() {
+        stallWorkItem?.cancel()
+        guard waitingOnTerminals == 0 else { stallWorkItem = nil; return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.phase == .streaming || self.phase == .runningTools, self.waitingOnTerminals == 0 else { return }
+            if let sessionId = self.sessionId { self.connection?.notify("session/cancel", params: ["sessionId": sessionId]) }
+            self.streamingIndex = nil
+            self.thinkingIndex = nil
+            self.answerPendingPermissions(with: nil)
+            self.settlePendingWrites(reason: "The turn stalled before this edit was decided. The file is unchanged.")
+            self.checkpointTurn()
+            let seconds = Int(self.stallInterval)
+            let span = seconds >= 120 ? "\(seconds / 60) minutes" : "\(seconds) seconds"
+            self.append(.failure("No response from \(self.agent.displayName) for \(span), so Side stopped waiting. Send the message again. If it keeps happening, run the agent's CLI in a terminal to check it works and is signed in."))
+            self.setPhase(.blocked(.stalled))
+        }
+        stallWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + stallInterval, execute: work)
+    }
+
+    private func disarmStallTimer() {
+        stallWorkItem?.cancel()
+        stallWorkItem = nil
+    }
+
+    // MARK: Session settings
+
+    /// `configOptions` (model, effort, mode…) as (id, current option's name), in the agent's order.
+    static func settings(from sessionResult: Any) -> [(id: String, value: String)] {
+        let options = (sessionResult as? [String: Any])?["configOptions"] as? [[String: Any]] ?? []
+        return options.compactMap { option in
+            guard let id = option["id"] as? String, let current = option["currentValue"] as? String else { return nil }
+            let choices = option["options"] as? [[String: Any]] ?? []
+            let name = choices.first { $0["value"] as? String == current }?["name"] as? String ?? current
+            return (id, name)
+        }
+    }
+
+    /// "Claude Code · Opus 5.5 · Medium effort · Auto mode · Claude Team" — which model, how
+    /// hard it thinks, who decides permissions, and which account pays. (Changing them from the
+    /// pill is plan step 4.)
+    private func describeSession() {
+        let value = { (id: String) in self.sessionSettings.first { $0.id == id }?.value }
+        var parts = [agent.displayName]
+        if let model = value("model") { parts.append(model) }
+        if let effort = value("effort") { parts.append("\(effort) effort") }
+        if let mode = value("mode") { parts.append("\(mode) mode") }
+        if let accountLabel { parts.append(accountLabel) }
+        guard parts.count > 1 else { return }
+        append(.meta(parts.joined(separator: " · ")))
     }
 
     // MARK: The turn's checkpoint

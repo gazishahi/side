@@ -161,6 +161,61 @@ final class ACPFileTerminalTests: XCTestCase {
         XCTAssertTrue(terminals.sessions(forTrackKey: "t").isEmpty, "released tab is closed")
     }
 
+    /// A turn that goes silent says so instead of looking busy forever.
+    func testASilentTurnStallsVisibly() throws {
+        let h = try harness()
+        defer { h.teardown() }
+        h.stallInterval = 1.5
+        let stalled = expectation(description: "stalled")
+        stalled.assertForOverFulfill = false
+        h.addObserver { _ in if h.phase == .blocked(.stalled) { stalled.fulfill() } }
+        h.send("silent \(root.path)")
+        wait(for: [stalled], timeout: 20)
+        guard case .failure(let message)? = h.entries.last(where: { if case .failure = $0.kind { return true }; return false })?.kind else { return XCTFail("no failure") }
+        XCTAssertTrue(message.contains("No response from Mock"), message)
+    }
+
+    /// The session line says which model, effort, mode and account the agent runs as.
+    func testSessionSettingsNameTheCurrentChoices() {
+        let result: [String: Any] = ["configOptions": [
+            ["id": "model", "currentValue": "opus[1m]", "options": [["value": "opus[1m]", "name": "Opus 5.5"], ["value": "sonnet", "name": "Sonnet 5"]]],
+            ["id": "effort", "currentValue": "medium", "options": [["value": "medium", "name": "Medium"]]],
+            ["id": "mode", "currentValue": "auto", "options": [["value": "auto", "name": "Auto"]]],
+        ]]
+        let settings = ACPHarness.settings(from: result)
+        XCTAssertEqual(settings.map(\.id), ["model", "effort", "mode"])
+        XCTAssertEqual(settings.map(\.value), ["Opus 5.5", "Medium", "Auto"])
+        XCTAssertEqual(ACPAgent.agent(id: "claude-code")?.hiddenEnvironment, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"])
+    }
+
+    /// Opt-in (`TEST_RUNNER_SIDE_LIVE_ACP=1`): the real Claude Code adapter, launched the way the
+    /// app launches it — API keys hidden, so it runs on the user's subscription — answers a
+    /// prompt and names its model and account.
+    func testLiveClaudeCodeAnswers() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_LIVE_ACP"] == "1", "live agent test is opt-in")
+        let adapter = URL(fileURLWithPath: "/opt/homebrew/bin/claude-agent-acp")
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: adapter.path), "claude-agent-acp not installed")
+        let agent = try XCTUnwrap(ACPAgent.agent(id: "claude-code"))
+        var spawnEnvironment = LanguageServerRegistry.environmentForSpawning()
+        for name in agent.hiddenEnvironment { spawnEnvironment.removeValue(forKey: name) }
+        let environment = spawnEnvironment
+        let root = self.root!
+        let h = ACPHarness(trackKey: "t", agent: agent, launchProvider: { ACPLaunch(executable: adapter, arguments: [], environment: environment) },
+                           rootProvider: { root }, sessionStore: store, terminalHost: { [unowned self] in self.broker })
+        defer { h.teardown() }
+        let done = expectation(description: "answered")
+        done.assertForOverFulfill = false
+        h.addObserver { _ in if h.phase == .finishedTurn || h.phase == .blocked(.failed) || h.phase == .blocked(.stalled) { done.fulfill() } }
+        h.send("Reply with exactly the word: ok")
+        wait(for: [done], timeout: 120)
+        XCTAssertEqual(h.phase, .finishedTurn, "\(h.entries.map(\.kind))")
+        let said = h.entries.compactMap { if case .assistantText(let t) = $0.kind { return t } else { return nil } }.joined()
+        XCTAssertTrue(said.lowercased().contains("ok"), said)
+        let meta = h.entries.compactMap { if case .meta(let t) = $0.kind { return t } else { return nil } }.joined(separator: "\n")
+        print("LIVE SESSION LINE: \(meta)")
+        XCTAssertTrue(meta.hasPrefix("Claude Code · "), meta)
+    }
+
     /// A command tab is never where the agent's typed commands go.
     func testACommandTabIsNeverTheAgentsShell() {
         let launch = TerminalViewController.CommandLaunch(command: "/bin/sleep", arguments: ["5"], environment: [:])
@@ -231,6 +286,8 @@ for line in sys.stdin:
             say("W:" + ("ERR " + w["error"]["message"] if "error" in w else "ok"))
             n = call("fs/write_text_file", {"sessionId": "s", "path": f("d.txt"), "content": "never read\n"})
             say("N:" + ("ERR " + n["error"]["message"] if "error" in n else "ok"))
+        elif scenario == "silent":
+            continue  # never answers the prompt
         elif scenario == "term":
             t = call("terminal/create", {"sessionId": "s", "command": "/bin/echo", "args": ["hello-acp"], "cwd": root})
             tid = t["result"]["terminalId"]
