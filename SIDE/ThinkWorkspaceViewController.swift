@@ -101,7 +101,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     var onOpenCheckpointRequested: ((UUID) -> Void)?
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
     private var attachedTrackKey: String?
-    private var runner: AgentRunner?
+    private var runner: (any Harness)?
     private var observerToken: UUID?
     /// Parallel to `runner.entries` — the view currently rendering each entry, so a streamed
     /// delta or a proposal resolution can update one block in place instead of rebuilding the

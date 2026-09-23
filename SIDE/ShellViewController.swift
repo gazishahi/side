@@ -444,7 +444,7 @@ final class ShellViewController: NSViewController {
         return result
     }
 
-    private var currentRunner: AgentRunner? {
+    private var currentRunner: (any Harness)? {
         projectContext?.runnerManager.existingRunner(forTrackKey: currentTrackKey ?? "")
     }
 
@@ -755,7 +755,7 @@ final class ShellViewController: NSViewController {
 
     /// The instruct in flight: its runner, the observer watching it, and where in the transcript
     /// it began — so only what it produced is shown back in Make.
-    private var instruct: (runner: AgentRunner, token: UUID, start: Int, request: InlineInstruct.Request)?
+    private var instruct: (runner: any Harness, token: UUID, start: Int, request: InlineInstruct.Request)?
     /// `send` records the message before the turn starts; "not busy" means finished only after
     /// the turn has been seen running.
     private var instructTurnStarted = false

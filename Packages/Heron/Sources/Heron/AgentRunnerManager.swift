@@ -24,7 +24,9 @@ public final class AgentRunnerManager {
     /// Per-track provider/model/effort, resolved fresh per request — same reasoning as
     /// `rootProvider`.
     private let modelSelectionProvider: (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?)
-    private var runners: [String: AgentRunner] = [:]
+    /// One harness per track. Today always Heron's `AgentRunner`; the Agent Client Protocol client
+    /// joins it here when a track picks an outside agent (`SIDE_RFC_BYO_HARNESS.md`).
+    private var runners: [String: any Harness] = [:]
 
     /// Fires whenever any owned runner's phase or unseen-completion state changes, debounced so
     /// a Tracks ledger or stage badge driven by many runners doesn't relayout on every single
@@ -73,7 +75,7 @@ public final class AgentRunnerManager {
     /// in this codebase already uses. Creating one wires it into the debounced multicast above
     /// for the rest of its life — no separate teardown needed, since that observer closure is
     /// only ever referenced by this manager, not by any external caller.
-    public func runner(forTrackKey trackKey: String) -> AgentRunner {
+    public func runner(forTrackKey trackKey: String) -> any Harness {
         if let existing = runners[trackKey] { return existing }
         let runner = AgentRunner(
             trackKey: trackKey,
@@ -95,7 +97,7 @@ public final class AgentRunnerManager {
 
     /// Non-creating peek — a track that's never had an agent run shouldn't spin one up just to
     /// ask "what's its activity," which would always answer `.none` anyway.
-    public func existingRunner(forTrackKey trackKey: String) -> AgentRunner? {
+    public func existingRunner(forTrackKey trackKey: String) -> (any Harness)? {
         runners[trackKey]
     }
 
