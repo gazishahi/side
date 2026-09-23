@@ -313,6 +313,7 @@ final class PreferencesTabViewController: NSTabViewController {
 final class GeneralPreferencesViewController: NSViewController {
     private var boxes: [NSButton] = []
     private var observer: NSObjectProtocol?
+    private var sideObserver: NSObjectProtocol?
 
     override func loadView() {
         let title = NSTextField(labelWithString: "Stages")
@@ -332,14 +333,33 @@ final class GeneralPreferencesViewController: NSViewController {
             stack.addArrangedSubview(box)
         }
         detail.widthAnchor.constraint(equalToConstant: 420).isActive = true
+
+        let explorerTitle = NSTextField(labelWithString: "File explorer")
+        explorerTitle.font = DS.Text.heading()
+        stack.setCustomSpacing(DS.Spacing.xl, after: stack.arrangedSubviews.last!)
+        stack.addArrangedSubview(explorerTitle)
+        let sidePopup = NSPopUpButton()
+        for side in FileExplorer.Side.allCases { sidePopup.addItem(withTitle: side.title) }
+        sidePopup.selectItem(withTitle: FileExplorer.Side.preferred.title)
+        sidePopup.target = self
+        sidePopup.action = #selector(explorerSideChanged(_:))
+        let sideRow = NSStackView(views: [NSTextField(labelWithString: "Opens on the"), sidePopup, NSTextField(labelWithString: "side of the window")])
+        sideRow.orientation = .horizontal
+        sideRow.spacing = DS.Spacing.s
+        stack.addArrangedSubview(sideRow)
+        explorerPopup = sidePopup
         view = stack
         refresh()
         observer = NotificationCenter.default.addObserver(forName: StagePins.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
+        sideObserver = NotificationCenter.default.addObserver(forName: FileExplorer.Side.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
     private func refresh() {
+        explorerPopup?.selectItem(withTitle: FileExplorer.Side.preferred.title)
         let pinned = StagePins.pinned
         for box in boxes {
             let isPinned = pinned.contains { $0.rawValue == box.identifier?.rawValue }
@@ -347,6 +367,12 @@ final class GeneralPreferencesViewController: NSViewController {
             // The last pinned stage can't be unpinned — the control would be empty.
             box.isEnabled = !(isPinned && pinned.count == 1)
         }
+    }
+
+    private var explorerPopup: NSPopUpButton?
+
+    @objc private func explorerSideChanged(_ sender: NSPopUpButton) {
+        FileExplorer.Side.preferred = FileExplorer.Side.allCases[max(0, sender.indexOfSelectedItem)]
     }
 
     @objc private func toggled(_ sender: NSButton) {

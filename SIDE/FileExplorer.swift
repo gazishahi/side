@@ -26,6 +26,22 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
 
     enum GitMark { case modified, added, conflicted }
 
+    /// Which edge the explorer slides in from. A preference — Settings › General, or the
+    /// button in the explorer's own header.
+    enum Side: String, CaseIterable {
+        case left, right
+        var title: String { self == .left ? "Left" : "Right" }
+        static let didChangeNotification = Notification.Name("SideExplorerSideDidChange")
+        private static let key = "SideExplorerSide"
+        static var preferred: Side {
+            get { UserDefaults.standard.string(forKey: key).flatMap(Side.init(rawValue:)) ?? .left }
+            set {
+                UserDefaults.standard.set(newValue.rawValue, forKey: key)
+                NotificationCenter.default.post(name: didChangeNotification, object: nil)
+            }
+        }
+    }
+
     // Host callbacks
     var onOpen: ((URL) -> Void)?
     var onMoved: ((URL, URL) -> Void)?
@@ -111,9 +127,12 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         let frame = window.frame
         let top = frame.maxY - ChromeHost.rowHeight - 8
         let bottom = frame.minY + ChromeHost.barGap + ChromeHost.barHeight + 12
-        let target = NSRect(x: frame.minX + 10, y: bottom, width: Self.width, height: max(200, top - bottom))
+        let side = Side.preferred
+        let x = side == .left ? frame.minX + 10 : frame.maxX - Self.width - 10
+        let target = NSRect(x: x, y: bottom, width: Self.width, height: max(200, top - bottom))
+        sideButton.image = Self.sideSymbol(for: side)
         panel.alphaValue = 0
-        panel.setFrame(target.offsetBy(dx: -24, dy: 0), display: false)
+        panel.setFrame(target.offsetBy(dx: side == .left ? -24 : 24, dy: 0), display: false)
         if panel.parent == nil { window.addChildWindow(panel, ordered: .above) }
         panel.orderFront(nil)
         refreshGitStatus()
@@ -134,7 +153,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
     func hide() {
         removeDismissMonitors()
         guard panel.isVisible else { return }
-        let end = panel.frame.offsetBy(dx: -20, dy: 0)
+        let end = panel.frame.offsetBy(dx: Side.preferred == .left ? -20 : 20, dy: 0)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = DS.Motion.duration(0.16)
             context.timingFunction = DS.Motion.curve
@@ -229,7 +248,11 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         let newFile = Self.headerButton("doc.badge.plus", "New File", #selector(newFileAtRoot), self)
         let newFolder = Self.headerButton("folder.badge.plus", "New Folder", #selector(newFolderAtRoot), self)
         let collapse = Self.headerButton("arrow.down.right.and.arrow.up.left", "Collapse All", #selector(collapseAll), self)
-        let header = NSStackView(views: [titleLabel, NSView(), newFile, newFolder, collapse])
+        sideButton.target = self
+        sideButton.action = #selector(switchSide)
+        sideButton.toolTip = "Move to the Other Side"
+        sideButton.setAccessibilityLabel("Move to the other side")
+        let header = NSStackView(views: [titleLabel, NSView(), newFile, newFolder, collapse, sideButton])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = DS.Spacing.xs
@@ -267,6 +290,38 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         effect.setAccessibilityRole(.group)
         effect.setAccessibilityLabel("Files")
         return effect
+    }
+
+    private lazy var sideButton = Self.headerButton("sidebar.right", "Move to the Other Side", #selector(switchSide), self)
+
+    private static func sideSymbol(for side: Side) -> NSImage? {
+        NSImage(systemSymbolName: side == .left ? "sidebar.right" : "sidebar.left", accessibilityDescription: "Move to the other side")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))
+    }
+
+    @objc private func switchSide() {
+        Side.preferred = Side.preferred == .left ? .right : .left
+    }
+
+    /// The side changed (here or in Settings): move without hiding, so nothing is lost.
+    private func sideDidChange() {
+        guard panel.isVisible, let window = hostWindow else { return }
+        let frame = window.frame
+        var target = panel.frame
+        target.origin.x = Side.preferred == .left ? frame.minX + 10 : frame.maxX - Self.width - 10
+        sideButton.image = Self.sideSymbol(for: Side.preferred)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = DS.Motion.duration(0.24)
+            context.timingFunction = DS.Motion.curve
+            panel.animator().setFrame(target, display: true)
+        }
+    }
+
+    override init() {
+        super.init()
+        NotificationCenter.default.addObserver(forName: Side.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sideDidChange() }
+        }
     }
 
     private static func headerButton(_ symbol: String, _ label: String, _ action: Selector, _ target: AnyObject) -> NSButton {

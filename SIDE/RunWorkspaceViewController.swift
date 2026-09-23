@@ -79,7 +79,9 @@ final class RunWorkspaceViewController: NSViewController {
 
         tabBar.wantsLayer = true
         tabBar.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.clipsToBounds = true
+        // Not clipped: the glass track's shadow extends past the strip, and clipping it drew a
+        // faint rectangle under the capsule. The tabs clip inside their own scroll view.
+        tabBar.clipsToBounds = false
         // Transparent: the top row takes the terminal's tone, so tabs sit on the same sheet.
         tabBarStack.orientation = .horizontal
         tabBarStack.alignment = .centerY
@@ -108,6 +110,7 @@ final class RunWorkspaceViewController: NSViewController {
         tabBarStack.removeFromSuperview()
         tabScroll.documentView = tabBarStack
         tabBar.addSubview(tabScroll)
+        tabBar.installGlassTrack(behind: tabScroll, hugging: tabBarStack)
 
         // The tab strip is hosted in the window's top row (Direction 02 §3.2) — `topRowContent`.
         // The terminal sheet: edge-to-edge on the sides and bottom, but with rounded top
@@ -289,6 +292,8 @@ final class RunWorkspaceViewController: NSViewController {
         guard sessions.indices.contains(index) else { return }
         animateChipClosed(at: index) { [weak self] in
             guard let self, self.sessions.indices.contains(index) else { return }
+            let wasActive = self.activeSessionIndex == index
+            let next = TabSelection.indexAfterClosing(index, active: self.activeSessionIndex, countBefore: self.sessions.count)
             self.sessions[index].viewController.prepareForClose()
             self.sessions.remove(at: index)
             // The closed tab may have been the last one holding unseen output — without this
@@ -299,9 +304,9 @@ final class RunWorkspaceViewController: NSViewController {
                 self.createSession()
                 return
             }
-            self.activeSessionIndex = min(index, self.sessions.count - 1)
+            self.activeSessionIndex = next
             self.rebuildTabBar()
-            self.showActiveSession()
+            if wasActive { self.showActiveSession() }
         }
     }
 
@@ -355,7 +360,7 @@ final class RunWorkspaceViewController: NSViewController {
             chip.index = index
             chip.isActive = index == activeSessionIndex
             chip.title = session.label
-            chip.isDead = !session.viewController.isAlive
+            chip.isDead = !session.viewController.isAliveOrUnstarted
             chip.hasUnseenOutput = session.hasUnseenOutput
             chip.translatesAutoresizingMaskIntoConstraints = false
             chip.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true

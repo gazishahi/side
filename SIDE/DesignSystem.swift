@@ -445,9 +445,48 @@ class CircularIconButton: NSControl {
 /// descendants to the AX tree, and the `setAccessibility*` setters on a plain `NSView` are
 /// unreliable for a view AppKit otherwise treats as a non-element pass-through. Overriding the
 /// methods works; setting the properties did not.
+/// Which tab is active after one closes — shared by Make's files and Run's sessions.
+///
+/// Closing a tab you are *not* on leaves you where you are; closing the one you're on moves to
+/// its right-hand neighbour, else its left, as Safari and Xcode do. Both stages used to take
+/// `min(closedIndex, count − 1)` either way, so closing a background tab switched your file.
+enum TabSelection {
+    /// `active` and `closed` are indices before the close; the result indexes the tabs after it.
+    static func indexAfterClosing(_ closed: Int, active: Int?, countBefore: Int) -> Int? {
+        let remaining = countBefore - 1
+        guard remaining > 0 else { return nil }
+        guard let active else { return min(closed, remaining - 1) }
+        if closed < active { return active - 1 }
+        if closed > active { return active }
+        return min(closed, remaining - 1)
+    }
+}
+
 final class TabStripView: NSView {
     /// The chips to publish, in visual order. Set on every strip rebuild.
-    var accessibleTabs: [NSView] = []
+    var accessibleTabs: [NSView] = [] { didSet { glassTrack?.isHidden = accessibleTabs.isEmpty } }
+    private var glassTrack: NSView?
+
+    /// The strip's tabs sit in one Liquid Glass capsule, the same 40 pt piece the bar's stage
+    /// control is — so tabs read as the same family of control, not as the one flat thing left.
+    /// The capsule hugs the tabs and never grows past the strip.
+    func installGlassTrack(behind scroll: NSScrollView, hugging stack: NSStackView) {
+        let glass = DS.makeGlass(cornerRadius: ChromeHost.barHeight / 2)
+        glass.translatesAutoresizingMaskIntoConstraints = false
+        glass.isHidden = true
+        addSubview(glass, positioned: .below, relativeTo: scroll)
+        let hug = glass.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        hug.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            glass.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            glass.centerYAnchor.constraint(equalTo: centerYAnchor),
+            glass.heightAnchor.constraint(equalToConstant: ChromeHost.barHeight),
+            glass.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor),
+            hug,
+        ])
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
+        glassTrack = glass
+    }
     var accessibilityGroupLabel: String = "Tabs"
 
     override func isAccessibilityElement() -> Bool { !accessibleTabs.isEmpty }

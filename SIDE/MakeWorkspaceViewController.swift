@@ -266,7 +266,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // No fill and no seam line of its own: the strip sits in the window's top row, which
         // takes the editor's surface, so the tabs and the file below are one sheet.
         tabBar.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.clipsToBounds = true
+        // Not clipped: the glass track's shadow extends past the strip, and clipping it drew a
+        // faint rectangle under the capsule. The tabs clip inside their own scroll view.
+        tabBar.clipsToBounds = false
         let divider = NSBox()
         divider.boxType = .custom
         divider.borderType = .noBorder
@@ -290,6 +292,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tabScroll.translatesAutoresizingMaskIntoConstraints = false
         tabScroll.documentView = tabBarStack
         tabBar.addSubview(tabScroll)
+        tabBar.installGlassTrack(behind: tabScroll, hugging: tabBarStack)
         // Hosted in the window's top row (Direction 02 §3.2) — see `topRowContent`.
         lspStatusButton.translatesAutoresizingMaskIntoConstraints = false
         tabBar.addSubview(lspStatusButton)
@@ -1776,13 +1779,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         animateChipClosed(at: index) { [weak self] in
             guard let self, let index = self.indexForTab(id: tabID) else { return }
             let closedTab = self.openTabs[index]
+            let wasActive = self.activeTabIndex == index
+            if !wasActive { self.captureActiveTabSelection() }
+            let next = TabSelection.indexAfterClosing(index, active: self.activeTabIndex, countBefore: self.openTabs.count)
             self.openTabs.remove(at: index)
             if closedTab.kind == .text { self.lspManager?.closed(url: closedTab.url) }
             if self.openTabs.isEmpty {
                 self.closeAllTabsImmediately()
             } else {
-                self.activeTabIndex = min(index, self.openTabs.count - 1)
-                self.loadActiveTabIntoEditor()
+                self.activeTabIndex = next
+                // Only the tab you were on closing changes what the editor shows.
+                if wasActive { self.loadActiveTabIntoEditor() }
                 self.rebuildTabBar()
             }
         }
@@ -3414,7 +3421,9 @@ final class TabChipView: NSView {
     private static let textInset: CGFloat = 12
     private static let trailingReserve: CGFloat = 26
     private static let maxTextWidth: CGFloat = 200
-    static let height: CGFloat = 30
+    /// The bar's stage segments are 32 pt capsules; tabs match.
+    static let height: CGFloat = 32
+    private static let minWidth: CGFloat = 96
     /// Horizontal margin reserved on each side for the active tab's bottom flares — the outward
     /// curves that let the tab pour into the content surface below instead of meeting it at a
     /// hard corner. Reserved on every chip (not just the active one) so activating a tab never
@@ -3440,7 +3449,7 @@ final class TabChipView: NSView {
     override var intrinsicContentSize: NSSize {
         let font = DS.Text.body(.medium)
         let textWidth = min((title as NSString).size(withAttributes: [.font: font]).width, Self.maxTextWidth)
-        return NSSize(width: textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2, height: Self.height)
+        return NSSize(width: max(Self.minWidth, textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2), height: Self.height)
     }
 
     override func updateTrackingAreas() {
@@ -3482,21 +3491,23 @@ final class TabChipView: NSView {
     /// `overlay` tone and full-strength text; the rest recede.
     override func draw(_ dirtyRect: NSRect) {
         guard bounds.width > Self.flare * 2 + 16, bounds.height > 4 else { return }
-        let pill = NSBezierPath(roundedRect: bounds.insetBy(dx: Self.flare - 2, dy: 3), xRadius: DS.Radius.control, yRadius: DS.Radius.control)
-        // Every tab is a visible pill, so the unselected ones still read as tabs; the active one
-        // is lifted — white with a soft shadow in light, a brighter tone in dark.
+        // A capsule on the strip's glass, drawn exactly like the stage control's selection:
+        // the active tab is the soft selected capsule, the rest are the glass itself until
+        // hovered. The glass track is what says "these are tabs".
+        let body = bounds.insetBy(dx: Self.flare - 2, dy: 0)
+        let pill = NSBezierPath(roundedRect: body, xRadius: body.height / 2, yRadius: body.height / 2)
         if isActive {
             NSGraphicsContext.saveGraphicsState()
             let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(DS.Appearance.isDark ? 0 : 0.14)
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.12)
             shadow.shadowBlurRadius = 2
             shadow.shadowOffset = NSSize(width: 0, height: -0.5)
             shadow.set()
-            DS.Color.tabActive.setFill()
+            DS.Color.selectedCapsule.setFill()
             pill.fill()
             NSGraphicsContext.restoreGraphicsState()
-        } else {
-            (isHovered ? DS.Color.scrimMedium : DS.Color.scrimSoft).setFill()
+        } else if isHovered {
+            DS.Color.scrimSoft.setFill()
             pill.fill()
         }
 

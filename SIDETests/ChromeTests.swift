@@ -32,6 +32,20 @@ final class ChromeTests: XCTestCase {
         XCTAssertEqual(StagePins.pinned, [.think, .run])
     }
 
+    func testClosingABackgroundTabNeverChangesWhichTabYouAreOn() {
+        // (closed, active, countBefore) → active after. Tabs: [A, B, C, D], on C (index 2).
+        let cases: [(Int, Int?, Int, Int?, String)] = [
+            (3, 2, 4, 2, "close a tab to the right: stay on C"),
+            (0, 2, 4, 1, "close a tab to the left: still C, one slot left"),
+            (2, 2, 4, 2, "close C itself: its right neighbour D"),
+            (3, 3, 4, 2, "close the last tab while on it: its left neighbour"),
+            (0, 0, 1, nil, "close the only tab: nothing"),
+        ]
+        for (closed, active, count, expected, why) in cases {
+            XCTAssertEqual(TabSelection.indexAfterClosing(closed, active: active, countBefore: count), expected, why)
+        }
+    }
+
     func testTheWindowTitleNamesTheFileOnlyInMakeAndNeverAPath() {
         let cases: [(Stage?, String?, String?, String?, String)] = [
             (.make, "App.swift", "Fix the race", "side", "App.swift — Fix the race"),
