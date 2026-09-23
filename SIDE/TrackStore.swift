@@ -525,8 +525,22 @@ final class TrackStore {
     func setHarness(_ harnessId: String?, forTrackKey trackKey: String) {
         guard let index = tracks.firstIndex(where: { $0.branchName == trackKey }), tracks[index].harnessId != harnessId else { return }
         tracks[index].harnessId = harnessId
+        // Another agent's model ids and modes mean nothing to this one.
+        tracks[index].harnessOptions = nil
         save()
         notifyChange()
+    }
+
+    func harnessOptions(forTrackKey trackKey: String) -> [String: String] {
+        tracks.first { $0.branchName == trackKey }?.harnessOptions ?? [:]
+    }
+
+    /// Remembers one of the outside agent's settings for this track. No change notification:
+    /// the harness already shows it, and nothing else renders these.
+    func setHarnessOption(_ id: String, value: String, forTrackKey trackKey: String) {
+        guard let index = tracks.firstIndex(where: { $0.branchName == trackKey }), tracks[index].harnessOptions?[id] != value else { return }
+        tracks[index].harnessOptions = (tracks[index].harnessOptions ?? [:]).merging([id: value]) { $1 }
+        save()
     }
 
     func harness(forTrackKey trackKey: String) -> ACPAgent? {

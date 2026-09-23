@@ -420,6 +420,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             let newRunner = runnerManager.runner(forTrackKey: trackKey)
             runner = newRunner
             observerToken = newRunner.addObserver { [weak self] event in self?.handle(event) }
+            // An outside agent's model and mode are only known once it opens a session; open it
+            // now so the pill shows them before the first message (RFC step 4).
+            newRunner.prepareSession()
         } else {
             runner = nil
         }
@@ -490,6 +493,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             finalizeStreamedBubbles()
             updateSendButton()
             refreshSessionPill()
+            (sessionPopover?.contentViewController as? AgentSessionSettingsViewController)?.refresh()
             // A blocked/finished phase change can happen while this stage is the one on screen
             // (a stall firing, a round-trip cap hitting) — same acknowledgement as viewDidAppear,
             // just triggered by the runner instead of by becoming visible. `view.window != nil`
@@ -859,7 +863,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     /// The pill's popover: every session control in one place, as real controls.
     private func showSessionPopover() {
+        if let runner, runner.harnessName != nil {
+            let agentSettings = AgentSessionSettingsViewController()
+            agentSettings.harness = runner
+            agentSettings.harnessId = trackStore?.harness(forTrackKey: attachedTrackKey ?? "")?.id
+            agentSettings.onAgentChosen = { [weak self] id in self?.chooseAgent(id) }
+            presentSessionPopover(agentSettings)
+            return
+        }
         let settings = SessionSettingsViewController()
+        settings.onAgentChosen = { [weak self] id in self?.chooseAgent(id) }
         settings.snapshot = sessionSnapshot()
         settings.onModelChosen = { [weak self] providerId, modelId in
             guard let self else { return }
@@ -894,12 +907,35 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             self.trackStore?.setMode(AgentMode(scope: self.currentMode().scope, autonomy: autonomy), forTrackKey: self.attachedTrackKey ?? "")
             self.refreshSessionPill()
         }
+        presentSessionPopover(settings)
+    }
+
+    private func presentSessionPopover(_ content: NSViewController) {
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentViewController = settings
+        popover.contentViewController = content
         popover.delegate = self
         popover.show(relativeTo: sessionPill.bounds, of: sessionPill, preferredEdge: .maxY)
         sessionPopover = popover
+    }
+
+    /// The pill's AGENT row (RFC step 4): the same choice as Tracks › Agent. The track's store
+    /// change swaps the engine and reattaches Think (`ShellViewController.syncHarnesses`).
+    private func chooseAgent(_ id: String) {
+        sessionPopover?.close()
+        guard let trackKey = attachedTrackKey, !trackKey.isEmpty else { return }
+        let current = trackStore?.harness(forTrackKey: trackKey)?.id ?? ""
+        guard id != current else { return }
+        if let agent = ACPAgent.agent(id: id), AgentAvailability.isInstalled(agent) == false {
+            appendLocalNotice("\(agent.displayName) isn't installed. Install it in a terminal, then pick it again:\n\n\(agent.installHint)")
+            return
+        }
+        // Switching puts the current engine away; mid-turn that would drop work in flight.
+        if runner?.phase.isBusy == true || runner?.phase == .awaitingApproval {
+            appendLocalNotice("Stop the current turn before switching agents.")
+            return
+        }
+        trackStore?.setHarness(id.isEmpty ? nil : id, forTrackKey: trackKey)
     }
 
     private func sessionSnapshot() -> SessionSettingsViewController.Snapshot {
@@ -1068,8 +1104,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private func refreshSessionPill() {
         // Color updates always land — changing a segmented control in the popover should recolor
         // the pill edge and send button immediately, and color doesn't move the anchor.
-        let scopeTint = Self.tint(for: currentMode().scope)
-        pillModeTint.color = scopeTint.withAlphaComponent(0.16)
+        // Scope is Heron's; an outside agent's pill isn't tinted by a scope it doesn't have.
+        let isOutsideAgent = runner?.harnessName != nil
+        let scopeTint = isOutsideAgent ? NSColor.controlAccentColor : Self.tint(for: currentMode().scope)
+        pillModeTint.color = isOutsideAgent ? .clear : scopeTint.withAlphaComponent(0.16)
         composer.setModeTint(scopeTint)
         // The popover is anchored to the pill: resizing the pill mid-edit visibly drags the
         // popover sideways. Hold the label until the popover closes.
@@ -1078,10 +1116,18 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             return
         }
         let mode = currentMode()
-        // An outside agent names itself; Heron's model and scope don't apply to it (RFC D6).
-        var title = runner?.harnessName ?? "\(resolvedSelectionModelName()) · \(mode.scope.displayName)"
+        // An outside agent names itself and its own model; Heron's model and scope don't apply
+        // to it (RFC D6).
+        var title: String
+        if let runner, let agentName = runner.harnessName {
+            let model = runner.agentOptions.first { $0.category == .model }?.currentChoice?.name
+            title = [agentName, model].compactMap { $0 }.joined(separator: " · ")
+        } else {
+            title = "\(resolvedSelectionModelName()) · \(mode.scope.displayName)"
+        }
         var tint = NSColor.secondaryLabelColor
-        if let runner {
+        // Until an outside agent reports usage there's no window to be a percentage of.
+        if let runner, runner.harnessName == nil || runner.contextUsage().windowTokens > 0 {
             let usage = runner.contextUsage()
             title += " · \(Int((usage.fraction * 100).rounded()))%"
             switch usage.status {
@@ -3025,7 +3071,10 @@ private final class SessionSettingsViewController: NSViewController {
     var onEffortChosen: ((AgentEffort) -> Void)?
     var onScopeChosen: ((AgentToolScope) -> Void)?
     var onAutonomyChosen: ((AgentAutonomy) -> Void)?
+    /// The AGENT row: an agent id, "" for Heron.
+    var onAgentChosen: ((String) -> Void)?
 
+    private lazy var agentPopup = AgentPicker.makePopup(currentId: nil, target: self, action: #selector(agentChanged))
     private let modelPopup = NSPopUpButton()
     private let effortControl = SlidingSegmentedControl(titles: AgentEffort.allCases.map { $0 == .standard ? "Standard" : $0.shortLabel.capitalized })
     private let scopeControl = SlidingSegmentedControl(titles: AgentToolScope.allCases.map(\.displayName))
@@ -3078,7 +3127,13 @@ private final class SessionSettingsViewController: NSViewController {
         let separator = NSBox()
         separator.boxType = .separator
 
+        agentPopup.widthAnchor.constraint(equalToConstant: 312).isActive = true
+        AgentAvailability.refresh { [weak self] in
+            guard let self else { return }
+            AgentPicker.fill(self.agentPopup, currentId: nil)
+        }
         let stack = NSStackView(views: [
+            caption("AGENT"), agentPopup,
             caption("MODEL"), modelPopup,
             caption("THINKING"), effortControl,
             caption("WHAT THE AGENT CAN DO"), scopeControl,
@@ -3088,6 +3143,7 @@ private final class SessionSettingsViewController: NSViewController {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = DS.Spacing.s
+        stack.setCustomSpacing(DS.Spacing.xl, after: agentPopup)
         stack.setCustomSpacing(DS.Spacing.xl, after: modelPopup)
         stack.setCustomSpacing(DS.Spacing.xl, after: effortControl)
         stack.setCustomSpacing(DS.Spacing.xl, after: scopeControl)
@@ -3162,6 +3218,11 @@ private final class SessionSettingsViewController: NSViewController {
         budgetLabel.stringValue = snapshot.budgetLine ?? ""
         budgetLabel.isHidden = snapshot.budgetLine == nil
         budgetLabel.textColor = .systemOrange
+    }
+
+    @objc private func agentChanged() {
+        guard let id = agentPopup.selectedItem?.representedObject as? String else { return }
+        onAgentChosen?(id)
     }
 
     @objc private func modelChanged() {

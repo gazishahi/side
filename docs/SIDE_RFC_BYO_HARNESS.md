@@ -183,6 +183,18 @@ another agent).
 
    **3c — advertise terminals.** Flip `terminal: true` once 3a's sessions pass their acceptance.
 4. **Picker and detection** in the session pill; **Codex** (`codex-acp`) and **Pi** (`pi-acp`).
+   **Built 2026-09-23.** The pill's popover starts with an **Agent** row (Heron or each known
+   agent, marked "not installed" with its install line when the login shell can't find it —
+   `AgentAvailability`). For an outside agent the popover shows the agent's own settings as it
+   reports them (`HarnessOption`, from ACP `configOptions`, or the older `modes`/`models`),
+   changed with `session/set_config_option` / `set_mode` / `set_model`, remembered per track
+   (`Track.harnessOptions`) and re-applied to each new session; modes that let the agent act
+   without asking say "Edits land directly — each turn is checkpointed" (D1). The pill reads
+   "Claude Code · Opus 5.5 · 12%". The session opens when Think attaches, so all of this shows
+   before the first message. Verified live with Claude Code; **Codex, Gemini CLI and Pi are
+   selectable and detected but not yet verified against the real adapters** (not installed on
+   the development machine). Environment hiding (`ACPAgent.hiddenEnvironment`) is Claude Code
+   only: an exported Gemini or OpenAI key is often the user's only credential for those agents.
 5. **Durability**: the tagged session log and `session/load`.
 
 Each step is its own commit with its acceptance below.

@@ -53,6 +53,9 @@ struct Track: Codable, Identifiable {
     /// The outside agent this track runs on (`ACPAgent.id`), nil for Heron —
     /// `SIDE_RFC_BYO_HARNESS.md`.
     var harnessId: String?
+    /// The outside agent's settings chosen on this track (option id → value: model, effort,
+    /// mode), re-applied to each new session. Cleared when the track changes agent.
+    var harnessOptions: [String: String]?
 
     /// Never nil in practice — resolves the stored values, the migrated old bool, or the
     /// default, in that order.
@@ -79,11 +82,12 @@ struct Track: Codable, Identifiable {
         self.toolScope = nil
         self.autonomy = nil
         self.harnessId = nil
+        self.harnessOptions = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands, parentTrackId
-        case providerId, modelId, effort, toolScope, autonomy, harnessId
+        case providerId, modelId, effort, toolScope, autonomy, harnessId, harnessOptions
     }
 
     init(from decoder: Decoder) throws {
@@ -103,5 +107,6 @@ struct Track: Codable, Identifiable {
         toolScope = try container.decodeIfPresent(AgentToolScope.self, forKey: .toolScope)
         autonomy = try container.decodeIfPresent(AgentAutonomy.self, forKey: .autonomy)
         harnessId = try container.decodeIfPresent(String.self, forKey: .harnessId)
+        harnessOptions = try container.decodeIfPresent([String: String].self, forKey: .harnessOptions)
     }
 }

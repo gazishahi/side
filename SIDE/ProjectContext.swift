@@ -31,15 +31,14 @@ final class ProjectContext {
         // where — the same PATH lookup and spawn environment the language servers use.
         manager.agentProvider = { [weak self] trackKey in self?.trackStore.harness(forTrackKey: trackKey) }
         manager.acpLaunchProvider = { agent in
-            // A hidden per-agent path (`SideACPAgentPath.<id>`) for an agent installed somewhere
-            // the shell doesn't look — and for checking the client against a mock agent.
-            let override = UserDefaults.standard.string(forKey: "SideACPAgentPath.\(agent.id)").map(URL.init(fileURLWithPath:))
-            guard let executable = override ?? LanguageServerRegistry.resolveExecutable(named: agent.binary) else { return nil }
+            guard let executable = AgentAvailability.executable(for: agent) else { return nil }
             var environment = LanguageServerRegistry.environmentForSpawning()
             for name in agent.hiddenEnvironment { environment.removeValue(forKey: name) }
             return ACPLaunch(executable: executable, arguments: agent.arguments, environment: environment)
         }
         manager.acpTerminalHost = acpTerminals
+        manager.agentOptionsProvider = { [weak self] trackKey in self?.trackStore.harnessOptions(forTrackKey: trackKey) ?? [:] }
+        manager.agentOptionChanged = { [weak self] trackKey, id, value in self?.trackStore.setHarnessOption(id, value: value, forTrackKey: trackKey) }
         return manager
     }()
 

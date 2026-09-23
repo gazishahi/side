@@ -35,6 +35,10 @@ public final class AgentRunnerManager {
     /// Where outside agents' `terminal/*` requests run — the project's Run terminals. Nil means
     /// Side doesn't offer terminals, and the agent runs commands itself.
     public weak var acpTerminalHost: ACPTerminalHost?
+    /// A track's remembered choices for its outside agent (option id → value), and where a new
+    /// choice is recorded — so a model or mode picked once survives new conversations and relaunch.
+    public var agentOptionsProvider: ((String) -> [String: String])?
+    public var agentOptionChanged: ((String, String, String) -> Void)?
 
     /// Fires whenever any owned runner's phase or unseen-completion state changes, debounced so
     /// a Tracks ledger or stage badge driven by many runners doesn't relayout on every single
@@ -91,7 +95,9 @@ public final class AgentRunnerManager {
                                      bridgeProvider: { [bridgeProvider] in bridgeProvider(trackKey) },
                                      modeProvider: { [modeProvider] in modeProvider(trackKey) },
                                      sessionStore: sessionStore,
-                                     terminalHost: { [weak self] in self?.acpTerminalHost })
+                                     terminalHost: { [weak self] in self?.acpTerminalHost },
+                                     preferredOptions: { [weak self] in self?.agentOptionsProvider?(trackKey) ?? [:] },
+                                     onOptionChanged: { [weak self] id, value in self?.agentOptionChanged?(trackKey, id, value) })
             harness.addObserver { [weak self] event in
                 guard case .phaseChanged = event else { return }
                 self?.scheduleChangeNotification()

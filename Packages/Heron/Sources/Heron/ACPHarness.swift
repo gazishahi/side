@@ -77,10 +77,19 @@ public final class ACPHarness: Harness {
     private var turnPrompt = ""
     private var appliedCounts: [String: (added: Int, removed: Int)] = [:]
     private var usage: (used: Int, size: Int)?
-    /// What the agent says it's running as — model, effort, mode (its `configOptions`) and
-    /// account (`_auth/status_update`) — shown when a session opens.
-    private var sessionSettings: [(id: String, value: String)] = []
-    private var accountLabel: String?
+    /// The agent's own settings — model, effort, mode — from its session (plan step 4, D6).
+    public private(set) var agentOptions: [HarnessOption] = []
+    /// How each option is changed: ACP `configOptions` are set with `session/set_config_option`;
+    /// agents that predate them use `session/set_mode` / `session/set_model`.
+    enum OptionBacking: Equatable { case config, mode, model }
+    private var optionBacking: [String: OptionBacking] = [:]
+    /// The account the agent reports (`_auth/status_update`) — which one pays matters.
+    public private(set) var accountLabel: String?
+    /// The track's remembered choices (option id → value), re-applied to each new session.
+    private let preferredOptions: () -> [String: String]
+    private let onOptionChanged: (String, String) -> Void
+    /// Sends waiting for the session that's being opened (by a send, or by `prepareSession`).
+    private var sessionWaiters: [(String) -> Void] = []
     /// Fires when a turn has gone silent too long (`stallInterval`).
     private var stallWorkItem: DispatchWorkItem?
     /// `terminal/wait_for_exit` calls still waiting on a command — silence then is a command
@@ -94,7 +103,8 @@ public final class ACPHarness: Harness {
 
     public init(trackKey: String, agent: ACPAgent, launchProvider: @escaping @Sendable () -> ACPLaunch?, rootProvider: @escaping () -> URL,
                 bridgeProvider: @escaping () -> WorkspaceBridge = { .none }, modeProvider: @escaping () -> AgentMode = { .default },
-                sessionStore: AgentSessionStore? = nil, terminalHost: @escaping () -> ACPTerminalHost? = { nil }) {
+                sessionStore: AgentSessionStore? = nil, terminalHost: @escaping () -> ACPTerminalHost? = { nil },
+                preferredOptions: @escaping () -> [String: String] = { [:] }, onOptionChanged: @escaping (String, String) -> Void = { _, _ in }) {
         self.trackKey = trackKey
         self.agent = agent
         self.launchProvider = launchProvider
@@ -103,6 +113,8 @@ public final class ACPHarness: Harness {
         self.modeProvider = modeProvider
         self.sessionStore = sessionStore
         self.terminalHostProvider = terminalHost
+        self.preferredOptions = preferredOptions
+        self.onOptionChanged = onOptionChanged
     }
 
     // MARK: Observation
@@ -147,7 +159,7 @@ public final class ACPHarness: Harness {
 
     public func send(_ text: String, attachments: [AgentImageAttachment]) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !phase.isBusy, !starting else { return }
+        guard !trimmed.isEmpty, !phase.isBusy else { return }
         append(.userText(trimmed))
         streamingIndex = nil
         thinkingIndex = nil
@@ -160,13 +172,11 @@ public final class ACPHarness: Harness {
         // What was already dirty before the agent starts — the checkpoint won't claim it. One
         // git spawn, off the main thread, before the prompt goes out.
         let root = rootProvider().path
-        starting = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let baseline = GitPaths.dirtyPaths(cwd: root)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.starting = false
                     self.turnBaseline = baseline
                     self.withSession { [weak self] sessionId in
                         self?.prompt(trimmed, sessionId: sessionId)
@@ -232,7 +242,14 @@ public final class ACPHarness: Harness {
     /// — once; later messages reuse it.
     private func withSession(_ body: @escaping (String) -> Void) {
         if let sessionId, connection?.isRunning == true { body(sessionId); return }
+        sessionWaiters.append(body)
+        // Already being opened (by `prepareSession`, or an earlier send): join it.
+        guard !starting else { return }
         starting = true
+        if let connection, connection.isRunning {
+            openSession(on: connection)
+            return
+        }
         let launchProvider = self.launchProvider
         let agent = self.agent
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -241,24 +258,44 @@ public final class ACPHarness: Harness {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.starting = false
                     guard let launch else {
-                        self.fail("\(agent.displayName) isn't installed, or isn't on your shell's PATH. Install it with:\n\n\(agent.installHint)")
+                        self.sessionFailed("\(agent.displayName) isn't installed, or isn't on your shell's PATH. Install it with:\n\n\(agent.installHint)")
                         return
                     }
-                    self.start(launch, then: body)
+                    self.start(launch)
                 }
             }
         }
     }
 
-    private func start(_ launch: ACPLaunch, then body: @escaping (String) -> Void) {
+    /// Opens the session before the first message so the agent's settings show in the pill.
+    public func prepareSession() {
+        guard sessionId == nil || connection?.isRunning != true, !starting, !phase.isBusy else { return }
+        withSession { _ in }
+    }
+
+    private func sessionReady(_ id: String) {
+        starting = false
+        let waiters = sessionWaiters
+        sessionWaiters.removeAll()
+        for waiter in waiters { waiter(id) }
+    }
+
+    /// The session couldn't be opened. With a message waiting it's that turn's failure; opened
+    /// ahead of time (nothing sent) it's a note, not a failed run.
+    private func sessionFailed(_ message: String) {
+        starting = false
+        sessionWaiters.removeAll()
+        if phase.isBusy { fail(message) } else { append(.meta(message)) }
+    }
+
+    private func start(_ launch: ACPLaunch) {
         let root = rootProvider()
         let connection: ACPConnection
         do {
             connection = try ACPConnection(launch: launch, cwd: root)
         } catch {
-            fail("Couldn't start \(agent.displayName): \(error.localizedDescription)")
+            sessionFailed("Couldn't start \(agent.displayName): \(error.localizedDescription)")
             return
         }
         self.connection = connection
@@ -268,7 +305,8 @@ public final class ACPHarness: Harness {
             guard let self else { return }
             self.sessionId = nil
             self.connection = nil
-            if self.phase.isBusy || self.phase == .awaitingApproval { self.fail(message) }
+            if self.starting { self.sessionFailed(message) }
+            else if self.phase.isBusy || self.phase == .awaitingApproval { self.fail(message) }
         }
         connection.request("initialize", params: [
             "protocolVersion": 1,
@@ -280,30 +318,39 @@ public final class ACPHarness: Harness {
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.fail("\(self.agent.displayName) didn't start: \(error.localizedDescription)")
+                self.sessionFailed("\(self.agent.displayName) didn't start: \(error.localizedDescription)")
             case .success(let value):
                 let version = ((value as? [String: Any])?["protocolVersion"] as? NSNumber)?.intValue ?? 1
                 guard version == 1 else {
-                    self.fail("\(self.agent.displayName) speaks ACP version \(version); Side speaks version 1.")
+                    self.sessionFailed("\(self.agent.displayName) speaks ACP version \(version); Side speaks version 1.")
                     connection.terminate()
                     return
                 }
-                connection.request("session/new", params: ["cwd": root.path, "mcpServers": [Any]()]) { [weak self] result in
-                    guard let self else { return }
-                    switch result {
-                    case .failure(let error):
-                        self.fail(Self.explain(error, agent: self.agent))
-                    case .success(let value):
-                        guard let id = (value as? [String: Any])?["sessionId"] as? String else {
-                            self.fail("\(self.agent.displayName) didn't open a session.")
-                            return
-                        }
-                        self.sessionId = id
-                        self.sessionSettings = Self.settings(from: value)
-                        self.describeSession()
-                        body(id)
-                    }
+                self.openSession(on: connection)
+            }
+        }
+    }
+
+    /// `session/new` in the track's worktree, on a running agent — the first session, or a
+    /// fresh one after "New Conversation", which reuses the process rather than starting another.
+    private func openSession(on connection: ACPConnection) {
+        let root = rootProvider()
+        connection.request("session/new", params: ["cwd": root.path, "mcpServers": [Any]()]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.sessionFailed(Self.explain(error, agent: self.agent))
+            case .success(let value):
+                guard let id = (value as? [String: Any])?["sessionId"] as? String else {
+                    self.sessionFailed("\(self.agent.displayName) didn't open a session.")
+                    return
                 }
+                self.sessionId = id
+                (self.agentOptions, self.optionBacking) = Self.options(from: value)
+                self.applyPreferredOptions()
+                self.describeSession()
+                self.notify(.phaseChanged)
+                self.sessionReady(id)
             }
         }
     }
@@ -324,6 +371,7 @@ public final class ACPHarness: Harness {
         if method == "_auth/status_update", let status = params["authStatus"] as? [String: Any] {
             // "Claude Team", or "Anthropic API key" — which one pays matters to the user.
             accountLabel = status["label"] as? String
+            notify(.phaseChanged)
             return
         }
         guard method == "session/update", let update = params["update"] as? [String: Any],
@@ -373,9 +421,21 @@ public final class ACPHarness: Harness {
             default:
                 if title != name || locations != summary { replace(index, .toolCall(name: title, summary: locations)) }
             }
+        case "config_option_update":
+            let (options, backing) = Self.options(from: ["configOptions": update["configOptions"] ?? []])
+            guard !options.isEmpty else { return }
+            agentOptions = options
+            optionBacking = backing
+            notify(.phaseChanged)
+        case "current_mode_update":
+            guard let mode = update["currentModeId"] as? String,
+                  let index = agentOptions.firstIndex(where: { optionBacking[$0.id] == .mode }) else { return }
+            agentOptions[index].current = mode
+            notify(.phaseChanged)
         case "usage_update":
             if let used = (update["used"] as? NSNumber)?.intValue, let size = (update["size"] as? NSNumber)?.intValue, size > 0 {
                 usage = (used, size)
+                notify(.phaseChanged) // the pill's context %
             }
         default:
             break // plans, command lists, mode changes: not shown yet
@@ -492,6 +552,7 @@ public final class ACPHarness: Harness {
         appliedCounts.removeAll()
         conversationId = UUID()
         usage = nil
+        agentOptions = []
         notify(.reset)
         setPhase(.idle)
     }
@@ -510,6 +571,7 @@ public final class ACPHarness: Harness {
 
     public func teardown() {
         disarmStallTimer()
+        sessionWaiters.removeAll()
         answerPendingPermissions(with: nil)
         settlePendingWrites(reason: "The conversation closed before this edit was decided. The file is unchanged.")
         terminalHostProvider()?.endAll(owner: ownerId, closeTabs: true)
@@ -809,28 +871,106 @@ public final class ACPHarness: Harness {
         stallWorkItem = nil
     }
 
-    // MARK: Session settings
+    // MARK: The agent's own settings (plan step 4, D6)
 
-    /// `configOptions` (model, effort, mode…) as (id, current option's name), in the agent's order.
+    /// Options from a session result or a `config_option_update`: `configOptions` when the agent
+    /// has them, else its older `modes` and `models`.
+    static func options(from sessionResult: Any) -> ([HarnessOption], [String: OptionBacking]) {
+        let result = sessionResult as? [String: Any] ?? [:]
+        var options: [HarnessOption] = []
+        var backing: [String: OptionBacking] = [:]
+        func choice(_ raw: [String: Any], valueKey: String) -> HarnessOption.Choice? {
+            guard let value = raw[valueKey] as? String else { return nil }
+            return HarnessOption.Choice(value: value, name: raw["name"] as? String ?? value, detail: raw["description"] as? String,
+                                        kind: (raw["_meta"] as? [String: Any])?["kind"] as? String)
+        }
+        for raw in result["configOptions"] as? [[String: Any]] ?? [] {
+            guard let id = raw["id"] as? String, let current = raw["currentValue"] as? String,
+                  (raw["type"] as? String ?? "select") == "select" else { continue }
+            let category: HarnessOption.Category
+            switch raw["category"] as? String {
+            case "model": category = .model
+            case "thought_level": category = .effort
+            case "mode": category = .mode
+            default: category = .other
+            }
+            let choices = (raw["options"] as? [[String: Any]] ?? []).compactMap { choice($0, valueKey: "value") }
+            options.append(HarnessOption(id: id, name: raw["name"] as? String ?? id, category: category, current: current, choices: choices))
+            backing[id] = .config
+        }
+        guard options.isEmpty else { return (options, backing) }
+        if let modes = result["modes"] as? [String: Any], let current = modes["currentModeId"] as? String {
+            let choices = (modes["availableModes"] as? [[String: Any]] ?? []).compactMap { choice($0, valueKey: "id") }
+            options.append(HarnessOption(id: "mode", name: "Mode", category: .mode, current: current, choices: choices))
+            backing["mode"] = .mode
+        }
+        if let models = result["models"] as? [String: Any], let current = models["currentModelId"] as? String {
+            let choices = (models["availableModels"] as? [[String: Any]] ?? []).compactMap { choice($0, valueKey: "modelId") }
+            options.insert(HarnessOption(id: "model", name: "Model", category: .model, current: current, choices: choices), at: 0)
+            backing["model"] = .model
+        }
+        return (options, backing)
+    }
+
+    /// (id, current choice's name) — the session line's parts.
     static func settings(from sessionResult: Any) -> [(id: String, value: String)] {
-        let options = (sessionResult as? [String: Any])?["configOptions"] as? [[String: Any]] ?? []
-        return options.compactMap { option in
-            guard let id = option["id"] as? String, let current = option["currentValue"] as? String else { return nil }
-            let choices = option["options"] as? [[String: Any]] ?? []
-            let name = choices.first { $0["value"] as? String == current }?["name"] as? String ?? current
-            return (id, name)
+        options(from: sessionResult).0.map { ($0.id, $0.currentChoice?.name ?? $0.current) }
+    }
+
+    /// Changes one of the agent's settings. Remembered on the track either way; sent now if a
+    /// session is open, else applied when one opens.
+    public func setAgentOption(id: String, value: String) {
+        setAgentOption(id: id, value: value, remember: true)
+    }
+
+    private func setAgentOption(id: String, value: String, remember: Bool) {
+        if remember { onOptionChanged(id, value) }
+        guard let index = agentOptions.firstIndex(where: { $0.id == id }),
+              agentOptions[index].choices.contains(where: { $0.value == value }),
+              agentOptions[index].current != value, let sessionId, let connection else { return }
+        let previous = agentOptions[index].current
+        agentOptions[index].current = value
+        notify(.phaseChanged)
+        let name = agentOptions[index].name
+        let (method, params): (String, [String: Any])
+        switch optionBacking[id] ?? .config {
+        case .config: (method, params) = ("session/set_config_option", ["sessionId": sessionId, "configId": id, "value": value])
+        case .mode: (method, params) = ("session/set_mode", ["sessionId": sessionId, "modeId": value])
+        case .model: (method, params) = ("session/set_model", ["sessionId": sessionId, "modelId": value])
+        }
+        connection.request(method, params: params) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let value):
+                // Setting one option can change others (a model has its own effort levels).
+                let (options, backing) = Self.options(from: value)
+                if !options.isEmpty {
+                    self.agentOptions = options
+                    self.optionBacking = backing
+                    self.notify(.phaseChanged)
+                }
+            case .failure(let error):
+                if let index = self.agentOptions.firstIndex(where: { $0.id == id }) { self.agentOptions[index].current = previous }
+                self.append(.meta("Couldn't change \(self.agent.displayName)'s \(name.lowercased()): \(error.localizedDescription)"))
+                self.notify(.phaseChanged)
+            }
         }
     }
 
-    /// "Claude Code · Opus 5.5 · Medium effort · Auto mode · Claude Team" — which model, how
-    /// hard it thinks, who decides permissions, and which account pays. (Changing them from the
-    /// pill is plan step 4.)
+    /// The track's remembered choices, applied to a freshly opened session. Sent before the
+    /// first prompt on the same stream, so the prompt runs with them.
+    private func applyPreferredOptions() {
+        for (id, value) in preferredOptions() { setAgentOption(id: id, value: value, remember: false) }
+    }
+
+    /// "Claude Code · Opus 5.5 · Medium effort · Auto mode · Claude Team" — a record in the
+    /// transcript of what the session started as.
     private func describeSession() {
-        let value = { (id: String) in self.sessionSettings.first { $0.id == id }?.value }
+        let value = { (category: HarnessOption.Category) in self.agentOptions.first { $0.category == category }?.currentChoice?.name }
         var parts = [agent.displayName]
-        if let model = value("model") { parts.append(model) }
-        if let effort = value("effort") { parts.append("\(effort) effort") }
-        if let mode = value("mode") { parts.append("\(mode) mode") }
+        if let model = value(.model) { parts.append(model) }
+        if let effort = value(.effort) { parts.append("\(effort) effort") }
+        if let mode = value(.mode) { parts.append("\(mode) mode") }
         if let accountLabel { parts.append(accountLabel) }
         guard parts.count > 1 else { return }
         append(.meta(parts.joined(separator: " · ")))

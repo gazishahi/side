@@ -40,6 +40,8 @@ final class ACPFileTerminalTests: XCTestCase {
         return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var remembered: [String: String] = [:]
+
     private func harness(autonomy: AgentAutonomy = .manual) throws -> ACPHarness {
         let python = URL(fileURLWithPath: "/usr/bin/python3")
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: python.path), "needs python3 for the mock agent")
@@ -55,7 +57,67 @@ final class ACPFileTerminalTests: XCTestCase {
         return ACPHarness(trackKey: "t", agent: agent,
                           launchProvider: { ACPLaunch(executable: python, arguments: [script.path], environment: ProcessInfo.processInfo.environment) },
                           rootProvider: { root }, bridgeProvider: { bridge }, modeProvider: { mode },
-                          sessionStore: store, terminalHost: { [unowned self] in self.broker })
+                          sessionStore: store, terminalHost: { [unowned self] in self.broker },
+                          preferredOptions: { [unowned self] in self.remembered },
+                          onOptionChanged: { [unowned self] id, value in self.remembered[id] = value })
+    }
+
+    private func waitFor(_ condition: @escaping () -> Bool, timeout: TimeInterval = 15) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        return condition()
+    }
+
+    /// Step 4: the session opens before any message, its settings show, a choice is sent to
+    /// the agent and remembered, and a remembered choice is re-applied to the next session.
+    func testAgentSettingsOpenEarlyChangeAndAreRemembered() throws {
+        let h = try harness()
+        defer { h.teardown() }
+        h.prepareSession()
+        XCTAssertTrue(waitFor { !h.agentOptions.isEmpty }, "the session opened without a message")
+        XCTAssertEqual(h.phase, .idle)
+        XCTAssertEqual(h.agentOptions.map(\.id), ["model", "mode"])
+        XCTAssertEqual(h.agentOptions.first?.currentChoice?.name, "Big")
+        XCTAssertFalse(h.agentOptions[1].actsWithoutAsking)
+
+        h.setAgentOption(id: "mode", value: "auto")
+        XCTAssertEqual(remembered, ["mode": "auto"])
+        XCTAssertTrue(waitFor { h.agentOptions[1].current == "auto" })
+        XCTAssertTrue(h.agentOptions[1].actsWithoutAsking, "Auto is a mode where edits land directly")
+
+        // A fresh conversation is a fresh session: the remembered choice goes with it.
+        remembered = ["model": "small"]
+        h.startNewConversation()
+        h.prepareSession()
+        XCTAssertTrue(waitFor { h.agentOptions.first?.current == "small" }, "\(h.agentOptions)")
+    }
+
+    /// Opening a session ahead of time for an agent that isn't there is a note, not a failed run.
+    func testPreparingAMissingAgentIsANoteNotAFailure() {
+        let agent = ACPAgent(id: "mock", displayName: "Mock", binary: "mock", installHint: "install mock")
+        let h = ACPHarness(trackKey: "t", agent: agent, launchProvider: { nil }, rootProvider: { FileManager.default.temporaryDirectory })
+        h.prepareSession()
+        XCTAssertTrue(waitFor { !h.entries.isEmpty })
+        guard case .meta(let note)? = h.entries.last?.kind else { return XCTFail("\(h.entries.map(\.kind))") }
+        XCTAssertTrue(note.contains("install mock"), note)
+        XCTAssertEqual(h.phase, .idle)
+    }
+
+    /// Agents that predate `configOptions` describe modes and models separately.
+    func testLegacyModesAndModelsBecomeOptions() {
+        let result: [String: Any] = [
+            "modes": ["currentModeId": "code", "availableModes": [["id": "code", "name": "Code"], ["id": "yolo", "name": "Yolo", "_meta": ["kind": "full_access"]]]],
+            "models": ["currentModelId": "m1", "availableModels": [["modelId": "m1", "name": "Model One"]]],
+        ]
+        let (options, _) = ACPHarness.options(from: result)
+        XCTAssertEqual(options.map(\.id), ["model", "mode"])
+        XCTAssertEqual(options[0].currentChoice?.name, "Model One")
+        var mode = options[1]
+        mode.current = "yolo"
+        XCTAssertTrue(mode.actsWithoutAsking)
     }
 
     /// Runs one scenario; `whileAsked` runs when the harness is waiting on the user.
@@ -214,6 +276,9 @@ final class ACPFileTerminalTests: XCTestCase {
         let meta = h.entries.compactMap { if case .meta(let t) = $0.kind { return t } else { return nil } }.joined(separator: "\n")
         print("LIVE SESSION LINE: \(meta)")
         XCTAssertTrue(meta.hasPrefix("Claude Code · "), meta)
+        XCTAssertTrue(h.agentOptions.contains { $0.category == .model && !$0.choices.isEmpty }, "\(h.agentOptions)")
+        XCTAssertTrue(h.agentOptions.contains { $0.category == .effort }, "\(h.agentOptions)")
+        XCTAssertNotNil(h.accountLabel)
     }
 
     /// A command tab is never where the agent's typed commands go.
@@ -250,12 +315,21 @@ def call(method, params):
         m = json.loads(line)
         if m.get("id") == rid and "method" not in m: return m
     sys.exit(0)
+state = {"model": "big", "mode": "ask"}
+def options():
+    return [{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": state["model"],
+             "options": [{"value": "big", "name": "Big"}, {"value": "small", "name": "Small"}]},
+            {"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": state["mode"],
+             "options": [{"value": "ask", "name": "Ask first", "_meta": {"kind": "standard"}}, {"value": "auto", "name": "Auto", "description": "Decides itself", "_meta": {"kind": "auto_review"}}]}]
 def res(m, key):
     return ("ERR " + m["error"]["message"]) if "error" in m else m["result"].get(key, "ok")
 for line in sys.stdin:
     m = json.loads(line); meth = m.get("method"); p = m.get("params", {})
     if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1}})
-    elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s"}})
+    elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s", "configOptions": options()}})
+    elif meth == "session/set_config_option":
+        state[p["configId"]] = p["value"]
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"configOptions": options()}})
     elif meth == "session/prompt":
         scenario, root = p["prompt"][0]["text"].split(" ", 1)
         f = lambda n: os.path.join(root, n)
