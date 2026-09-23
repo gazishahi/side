@@ -65,7 +65,7 @@ struct PaletteCommand {
 /// Which list the palette is showing. `commands` is also reached by typing `>` in any mode.
 enum PaletteMode { case files, symbols, text, commands }
 
-final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
+final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
     private let editor = EditorTextView()
     private let editorScroll = NSScrollView()
@@ -101,17 +101,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private weak var paletteReturnResponder: NSResponder?
     private var commandMatches: [PaletteCommand] = []
     private let resultsTable = NSTableView()
-    private var fileExplorerPanelStorage: FileExplorerPanel?
-    private var fileExplorerSurface: NSView?
-    private var fileExplorerPanel: FileExplorerPanel {
-        if let existing = fileExplorerPanelStorage { return existing }
-        let panel = FileExplorerPanel()
-        panel.contentView = fileExplorerSurface
-        fileExplorerPanelStorage = panel
-        return panel
-    }
-    private let fileExplorerOutline = ExplorerOutlineView()
-    private var fileTreeRoots: [FileTreeNode] = []
+    /// The file explorer (`FileExplorer`): its own component; Make only hosts it.
+    private let explorer = FileExplorer()
     private let imageScroll = NSScrollView()
     private let imageView = NSImageView()
     private let csvScroll = NSScrollView()
@@ -137,8 +128,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var suppressNextSelectionDismiss = false
     private var quickOpenLocalMonitor: Any?
     private var quickOpenGlobalMonitor: Any?
-    private var fileExplorerLocalMonitor: Any?
-    private var fileExplorerGlobalMonitor: Any?
     private var currentDiffHunks: [GitHunk] = []
     private var currentDiffHeadContent: String?
     /// Canonical identity — the repo root as originally opened. Used for window/recent-project
@@ -236,7 +225,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// into while looking at another stage.
     override func viewWillDisappear() {
         super.viewWillDisappear()
-        hideFileExplorer()
+        explorer.hide()
     }
 
     /// Opening a file (or dismissing quick-open) claims first responder as a side effect
@@ -437,7 +426,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         ])
         LaunchSignposts.begin("makePanelSurfaces")
         configureQuickOpenPanel()
-        configureFileExplorerPanel()
+        configureExplorer()
         configureCompletionPanel()
         LaunchSignposts.end("makePanelSurfaces")
     }
@@ -648,200 +637,57 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     // MARK: - File explorer
 
-    private func configureFileExplorerPanel() {
-        fileExplorerOutline.headerView = nil
-        fileExplorerOutline.backgroundColor = .clear
-        fileExplorerOutline.dataSource = self
-        fileExplorerOutline.delegate = self
-        fileExplorerOutline.indentationPerLevel = 14
-        fileExplorerOutline.doubleAction = #selector(openSelectedTreeItem)
-        fileExplorerOutline.target = self
-        fileExplorerOutline.onEscape = { [weak self] in self?.hideFileExplorer() }
-        fileExplorerOutline.onEnter = { [weak self] in self?.openSelectedTreeItem() }
-        let contextMenu = NSMenu()
-        contextMenu.delegate = self
-        fileExplorerOutline.menu = contextMenu
-
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
-        column.width = 260
-        fileExplorerOutline.addTableColumn(column)
-        fileExplorerOutline.outlineTableColumn = column
-
-        let scroll = NSScrollView()
-        scroll.documentView = fileExplorerOutline
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.automaticallyAdjustsContentInsets = false
-        scroll.contentInsets = NSEdgeInsetsZero
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-
-        let padded = NSView()
-        padded.translatesAutoresizingMaskIntoConstraints = false
-        padded.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: padded.topAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: padded.leadingAnchor, constant: 4),
-            scroll.trailingAnchor.constraint(equalTo: padded.trailingAnchor, constant: -4), scroll.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -10)
-        ])
-
-        // Behind-window vibrancy, not NSGlassEffectView: the explorer is its own child *window*,
-        // and glass only refracts content within the window it lives in — with nothing behind it
-        // in-window it rendered as a flat overlay whose corners didn't read as the panel's (the
-        // same failure the mention palette had). This material samples the editor behind the
-        // panel, which is what the floating-panel version of Liquid Glass actually is.
-        let effect = NSVisualEffectView()
-        effect.material = .hudWindow
-        effect.state = .active
-        effect.blendingMode = .behindWindow
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = DS.Radius.surface
-        effect.maskImage = DS.roundedMask(radius: DS.Radius.surface)
-        effect.layer?.masksToBounds = true
-        effect.addSubview(padded)
-        NSLayoutConstraint.activate([
-            padded.topAnchor.constraint(equalTo: effect.topAnchor), padded.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            padded.trailingAnchor.constraint(equalTo: effect.trailingAnchor), padded.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
-        ])
-        fileExplorerSurface = effect
-    }
 
     @objc private func toggleFileExplorer() {
-        if fileExplorerPanel.isVisible {
-            hideFileExplorer()
-            return
-        }
-        guard let window = view.window, let root = focusedRoot else { return }
-        let files = allFiles
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let tree = Self.buildFileTree(from: files, root: root)
-            DispatchQueue.main.async {
-                guard let self, self.focusedRoot == root else { return }
-                self.fileTreeRoots = tree
-                self.fileExplorerOutline.reloadData()
-                self.showFileExplorer(in: window)
-            }
-        }
+        guard let window = view.window else { return }
+        explorer.toggle(in: window)
     }
 
-    private static let fileExplorerWidth: CGFloat = 280
-    private static let fileExplorerTopMargin: CGFloat = 90
-    private static let fileExplorerBottomMargin: CGFloat = 20
-    private static let fileExplorerTrailingMargin: CGFloat = 14
-
-    private func showFileExplorer(in window: NSWindow) {
-        let windowFrame = window.frame
-        let width = Self.fileExplorerWidth
-        let height = windowFrame.height - Self.fileExplorerTopMargin - Self.fileExplorerBottomMargin
-        let targetX = windowFrame.maxX - width - Self.fileExplorerTrailingMargin
-        let y = windowFrame.minY + Self.fileExplorerBottomMargin
-        // Short travel distance reads as a reveal; sliding the full window width reads as "thrown in."
-        let startFrame = NSRect(x: targetX + 28, y: y, width: width, height: height)
-        let targetFrame = NSRect(x: targetX, y: y, width: width, height: height)
-
-        fileExplorerPanel.alphaValue = 0
-        fileExplorerPanel.setFrame(startFrame, display: false)
-        if fileExplorerPanel.parent == nil { window.addChildWindow(fileExplorerPanel, ordered: .above) }
-        fileExplorerPanel.orderFront(nil)
-        installFileExplorerDismissMonitors()
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.32)
-            context.timingFunction = DS.Motion.curve
-            fileExplorerPanel.animator().setFrame(targetFrame, display: true)
-            fileExplorerPanel.animator().alphaValue = 1
-        } completionHandler: { [weak self] in
+    /// The explorer reports what it did to the files; Make keeps its tabs and index true to it.
+    private func configureExplorer() {
+        explorer.onOpen = { [weak self] url in self?.open(url) }
+        explorer.currentFile = { [weak self] in
+            guard let self, let index = self.activeTabIndex, self.openTabs.indices.contains(index) else { return nil }
+            return self.openTabs[index].url
+        }
+        explorer.onFilesChanged = { [weak self] in self?.refreshFileTreeAndReindex() }
+        explorer.onHidden = { [weak self] in
+            guard let self, self.view.window != nil else { return }
+            self.view.window?.makeFirstResponder(self.editor)
+        }
+        // A moved file or folder keeps its tabs: every tab at or under the old path follows it.
+        explorer.onMoved = { [weak self] from, to in
             guard let self else { return }
-            self.fileExplorerPanel.makeKey()
-            self.fileExplorerPanel.makeFirstResponder(self.fileExplorerOutline)
-        }
-    }
-
-    private func installFileExplorerDismissMonitors() {
-        guard fileExplorerLocalMonitor == nil else { return }
-        fileExplorerLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            self?.dismissFileExplorerIfClickOutside()
-            return event
-        }
-        fileExplorerGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            self?.hideFileExplorer()
-        }
-    }
-
-    private func removeFileExplorerDismissMonitors() {
-        if let m = fileExplorerLocalMonitor { NSEvent.removeMonitor(m); fileExplorerLocalMonitor = nil }
-        if let m = fileExplorerGlobalMonitor { NSEvent.removeMonitor(m); fileExplorerGlobalMonitor = nil }
-    }
-
-    private func dismissFileExplorerIfClickOutside() {
-        let point = NSEvent.mouseLocation
-        if fileExplorerPanel.frame.insetBy(dx: -2, dy: -2).contains(point) { return }
-        hideFileExplorer()
-    }
-
-    private func hideFileExplorer() {
-        removeFileExplorerDismissMonitors()
-        guard fileExplorerPanel.isVisible else { return }
-        var endFrame = fileExplorerPanel.frame
-        endFrame.origin.x += 24
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.16)
-            context.timingFunction = DS.Motion.curve
-            fileExplorerPanel.animator().setFrame(endFrame, display: true)
-            fileExplorerPanel.animator().alphaValue = 0
-        } completionHandler: { [weak self] in
-            guard let self else { return }
-            self.view.window?.removeChildWindow(self.fileExplorerPanel)
-            self.fileExplorerPanel.orderOut(nil)
-            self.fileExplorerPanel.alphaValue = 1
-        }
-        view.window?.makeFirstResponder(editor)
-    }
-
-    nonisolated private static func buildFileTree(from files: [IndexedFile], root: URL) -> [FileTreeNode] {
-        var roots: [FileTreeNode] = []
-        var directoryLookup: [String: FileTreeNode] = [:]
-
-        for file in files {
-            let components = file.relativePath.components(separatedBy: "/")
-            var parentNode: FileTreeNode?
-            var accumulatedPath = ""
-            for (i, component) in components.enumerated() {
-                accumulatedPath = accumulatedPath.isEmpty ? component : accumulatedPath + "/" + component
-                let isLast = i == components.count - 1
-                if isLast {
-                    let fileNode = FileTreeNode(name: component, url: file.url, isDirectory: false)
-                    if let parentNode { parentNode.children.append(fileNode) } else { roots.append(fileNode) }
-                } else if let existing = directoryLookup[accumulatedPath] {
-                    parentNode = existing
-                } else {
-                    let dirNode = FileTreeNode(name: component, url: root.appendingPathComponent(accumulatedPath), isDirectory: true)
-                    if let parentNode { parentNode.children.append(dirNode) } else { roots.append(dirNode) }
-                    directoryLookup[accumulatedPath] = dirNode
-                    parentNode = dirNode
+            let old = from.standardizedFileURL.path
+            var changed = false
+            for index in self.openTabs.indices {
+                let path = self.openTabs[index].url.path
+                if path == old || path.hasPrefix(old + "/") {
+                    self.openTabs[index].url = URL(fileURLWithPath: to.standardizedFileURL.path + path.dropFirst(old.count))
+                    changed = true
                 }
             }
+            guard changed else { return }
+            self.rebuildTabBar()
+            if let active = self.activeTabIndex { self.onFileOpened?(self.openTabs[active].url) }
         }
-
-        func sortRecursively(_ nodes: [FileTreeNode]) -> [FileTreeNode] {
-            let sorted = nodes.sorted { a, b in
-                if a.isDirectory != b.isDirectory { return a.isDirectory }
-                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        explorer.onTrashed = { [weak self] url in
+            guard let self else { return }
+            let old = url.standardizedFileURL.path
+            for index in self.openTabs.indices.reversed() where self.openTabs[index].url.path == old || self.openTabs[index].url.path.hasPrefix(old + "/") {
+                self.closeTab(at: index)
             }
-            for node in sorted where node.isDirectory { node.children = sortRecursively(node.children) }
-            return sorted
         }
-        return sortRecursively(roots)
     }
 
-    @objc private func openSelectedTreeItem() {
-        let row = fileExplorerOutline.selectedRow
-        guard row >= 0, let node = fileExplorerOutline.item(atRow: row) as? FileTreeNode else { return }
-        if node.isDirectory {
-            if fileExplorerOutline.isItemExpanded(node) { fileExplorerOutline.collapseItem(node) } else { fileExplorerOutline.expandItem(node) }
-        } else {
-            open(node.url)
-            hideFileExplorer()
-        }
-    }
+
+
+
+
+
+
+
+
 
     // MARK: - File explorer context menu (new / rename / delete)
 
@@ -861,111 +707,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
             return
         }
-        menu.removeAllItems()
-        let row = fileExplorerOutline.clickedRow
-        let clickedNode = row >= 0 ? fileExplorerOutline.item(atRow: row) as? FileTreeNode : nil
-        guard let root = focusedRoot else { return }
-
-        let folderForNewItems: FileTreeNode
-        if let clickedNode, clickedNode.isDirectory {
-            folderForNewItems = clickedNode
-        } else {
-            folderForNewItems = FileTreeNode(name: root.lastPathComponent, url: root, isDirectory: true)
-        }
-        let newFile = menu.addItem(withTitle: "New File…", action: #selector(newFileInFolder(_:)), keyEquivalent: "")
-        newFile.representedObject = folderForNewItems
-        let newFolder = menu.addItem(withTitle: "New Folder…", action: #selector(newFolderInFolder(_:)), keyEquivalent: "")
-        newFolder.representedObject = folderForNewItems
-
-        if let clickedNode {
-            menu.addItem(NSMenuItem.separator())
-            let rename = menu.addItem(withTitle: "Rename…", action: #selector(renameTreeItem(_:)), keyEquivalent: "")
-            rename.representedObject = clickedNode
-            let delete = menu.addItem(withTitle: "Move to Trash", action: #selector(deleteTreeItem(_:)), keyEquivalent: "")
-            delete.representedObject = clickedNode
-        }
-        menu.items.forEach { $0.target = self }
     }
 
-    @objc private func newFileInFolder(_ sender: NSMenuItem) {
-        guard let folder = sender.representedObject as? FileTreeNode else { return }
-        promptForName(title: "New File", placeholder: "filename.txt") { [weak self] name in
-            guard let self, let name, !name.isEmpty else { return }
-            let newURL = folder.url.appendingPathComponent(name)
-            guard let window = self.view.window else { return }
-            guard !FileManager.default.fileExists(atPath: newURL.path) else {
-                self.showAlert(title: "File already exists", message: "\(name) already exists in \(folder.name).", window: window)
-                return
-            }
-            guard FileManager.default.createFile(atPath: newURL.path, contents: Data()) else {
-                self.showAlert(title: "Couldn't create file", message: newURL.lastPathComponent, window: window)
-                return
-            }
-            self.refreshFileTreeAndReindex()
-            self.open(newURL)
-        }
-    }
 
-    @objc private func newFolderInFolder(_ sender: NSMenuItem) {
-        guard let folder = sender.representedObject as? FileTreeNode else { return }
-        promptForName(title: "New Folder", placeholder: "folder name") { [weak self] name in
-            guard let self, let name, !name.isEmpty else { return }
-            let newURL = folder.url.appendingPathComponent(name)
-            do {
-                try FileManager.default.createDirectory(at: newURL, withIntermediateDirectories: true)
-                self.refreshFileTreeAndReindex()
-            } catch {
-                guard let window = self.view.window else { return }
-                self.showAlert(title: "Couldn't create folder", message: error.localizedDescription, window: window)
-            }
-        }
-    }
 
-    @objc private func renameTreeItem(_ sender: NSMenuItem) {
-        guard let node = sender.representedObject as? FileTreeNode else { return }
-        promptForName(title: "Rename", placeholder: node.name, initialValue: node.name) { [weak self] name in
-            guard let self, let name, !name.isEmpty, name != node.name else { return }
-            let newURL = node.url.deletingLastPathComponent().appendingPathComponent(name)
-            do {
-                try FileManager.default.moveItem(at: node.url, to: newURL)
-                if let idx = self.openTabs.firstIndex(where: { $0.url == node.url }) {
-                    self.openTabs[idx].url = newURL
-                    self.rebuildTabBar()
-                    if self.activeTabIndex == idx { self.onFileOpened?(newURL) }
-                }
-                self.refreshFileTreeAndReindex()
-            } catch {
-                guard let window = self.view.window else { return }
-                self.showAlert(title: "Couldn't rename", message: error.localizedDescription, window: window)
-            }
-        }
-    }
 
-    @objc private func deleteTreeItem(_ sender: NSMenuItem) {
-        guard let node = sender.representedObject as? FileTreeNode, let window = view.window else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Move \u{201C}\(node.name)\u{201D} to the Trash?"
-        alert.informativeText = node.isDirectory ? "This folder and everything inside it will be moved to the Trash." : "This file will be moved to the Trash."
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .alertFirstButtonReturn else { return }
-            // Its siblings (new folder, rename) both surface failures; delete swallowed them
-            // and then closed the tab anyway, so a refused trash looked exactly like a
-            // successful one — with the file still on disk and its tab gone.
-            do {
-                try FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
-            } catch {
-                self.showFileOperationError("Couldn't move \u{201C}\(node.url.lastPathComponent)\u{201D} to the Trash", error)
-                return
-            }
-            if let idx = self.openTabs.firstIndex(where: { $0.url == node.url }) {
-                self.closeTab(at: idx)
-            }
-            self.refreshFileTreeAndReindex()
-        }
-    }
 
     private func showFileOperationError(_ message: String, _ error: Error) {
         guard let window = view.window else { return }
@@ -997,55 +743,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let root = focusedRoot else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let indexed = Self.indexFiles(at: root)
-            let tree = Self.buildFileTree(from: indexed, root: root)
             DispatchQueue.main.async {
                 guard let self, self.focusedRoot == root else { return }
                 self.allFiles = indexed
-                self.fileTreeRoots = tree
-                self.fileExplorerOutline.reloadData()
             }
         }
     }
 
-    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        if let node = item as? FileTreeNode { return node.children.count }
-        return fileTreeRoots.count
-    }
-    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        if let node = item as? FileTreeNode { return node.children[index] }
-        return fileTreeRoots[index]
-    }
-    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        (item as? FileTreeNode)?.isDirectory ?? false
-    }
-    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
-        guard let node = item as? FileTreeNode else { return nil }
-        let id = NSUserInterfaceItemIdentifier("treeCell")
-        let cell = outlineView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
-        cell.identifier = id
-        let text = cell.textField ?? NSTextField(labelWithString: "")
-        let icon = cell.imageView ?? NSImageView()
-        if cell.textField == nil {
-            cell.textField = text
-            cell.imageView = icon
-            text.translatesAutoresizingMaskIntoConstraints = false
-            icon.translatesAutoresizingMaskIntoConstraints = false
-            text.font = DS.Text.body()
-            text.lineBreakMode = .byTruncatingMiddle
-            cell.addSubview(icon)
-            cell.addSubview(text)
-            NSLayoutConstraint.activate([
-                icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 14), icon.heightAnchor.constraint(equalToConstant: 14),
-                text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-            ])
-        }
-        text.stringValue = node.name
-        text.textColor = node.isDirectory ? NSColor.secondaryLabelColor : NSColor.labelColor
-        let symbolName = node.isDirectory ? "folder.fill" : "doc.text"
-        icon.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
-        icon.contentTintColor = node.isDirectory ? DS.Color.dynamic(dark: NSColor(red: 0.55, green: 0.75, blue: 0.98, alpha: 1), light: NSColor(red: 0.15, green: 0.45, blue: 0.85, alpha: 1)) : NSColor.tertiaryLabelColor
-        return cell
-    }
 
     // MARK: - Per-project (and per-track) file memory & recent projects
 
@@ -1363,6 +1067,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         manager.onAvailabilityChanged = { [weak self] in self?.updateLSPIndicator() }
         lspManager = manager
         focusedRoot = root
+        explorer.setRoot(root)
         searchField.placeholderString = "Indexing \(root.lastPathComponent)…"
         projectWatcher = ProjectWatcher(root: root) { [weak self] urls in self?.filesChangedOnDisk(urls) }
     }
@@ -1372,6 +1077,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Every FSEvents batch under the focused root lands here. Open tabs are checked against the
     /// stamp they were loaded or saved with; anything else means the file list may have changed.
     private func filesChangedOnDisk(_ urls: [URL]) {
+        explorer.filesChanged(urls)
         let changed = Set(urls.map(\.path))
         for index in openTabs.indices where changed.contains(openTabs[index].url.path) {
             reconcileTabWithDisk(index)
@@ -3607,9 +3313,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// undefined behavior on window teardown — this makes sure neither lingers.
     func prepareForClose() {
         removeQuickOpenDismissMonitors()
-        removeFileExplorerDismissMonitors()
-        hideQuickOpenPanel()
-        for panel in [fileExplorerPanelStorage, completionPanelStorage].compactMap({ $0 as NSWindow? }) {
+                hideQuickOpenPanel()
+        explorer.tearDown()
+        for panel in [completionPanelStorage].compactMap({ $0 as NSWindow? }) {
             if panel.parent != nil { view.window?.removeChildWindow(panel) }
             panel.orderOut(nil)
         }
@@ -3747,11 +3453,18 @@ final class TabChipView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
+        setWindowMovable(false)
         updateCloseVisibility()
     }
     override func mouseExited(with event: NSEvent) {
         isHovered = false
+        if dragOrigin == nil { window?.isMovable = true }
         updateCloseVisibility()
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        // A chip removed while hovered (closed, strip rebuilt) must not leave the window stuck.
+        if isHovered { window?.isMovable = true }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     /// Unsaved edits: a dot where the close button sits, until hover swaps it for the ×.
@@ -3812,7 +3525,17 @@ final class TabChipView: NSView {
         }
     }
 
+    /// In the title-bar strip the window server decides a press is a window drag before any
+    /// view sees it, whatever the view says — so the window is unmovable only while the pointer
+    /// is over a tab, and the drag is the tab's. Never left off: an unmovable window also
+    /// refuses window managers and tiling.
+    private func setWindowMovable(_ movable: Bool) {
+        guard dragOrigin == nil || movable == false else { return }
+        window?.isMovable = movable
+    }
+
     override func mouseDown(with event: NSEvent) {
+        window?.isMovable = false
         dragOrigin = event.locationInWindow
         grabOffsetX = event.locationInWindow.x - convert(NSPoint.zero, to: nil).x
         didDrag = false
@@ -3867,7 +3590,10 @@ final class TabChipView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { dragOrigin = nil }
+        defer {
+            dragOrigin = nil
+            if !isHovered { window?.isMovable = true }
+        }
         guard dragOrigin != nil else { return }
         if didDrag {
             if isTearArmed {
@@ -3934,6 +3660,7 @@ final class QuickOpenSearchField: NSTextField {
 }
 
 extension MakeWorkspaceViewController: StageChromeProviding {
+    var scrollViewUnderTopRow: NSScrollView? { loadViewIfNeeded(); return editorScroll }
     /// The file tabs (with the language-server indicator trailing) live in the window's top row.
     var topRowContent: NSView? { loadViewIfNeeded(); return tabBar }
 

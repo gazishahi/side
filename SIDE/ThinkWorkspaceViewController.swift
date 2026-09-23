@@ -25,6 +25,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private let transcriptStack = NSStackView()
     private let composer = ComposerView()
     private var composerBottom: NSLayoutConstraint!
+    private let changesGroup = NSView()
+    private let sessionGroup = NSView()
+    private var undockedPillConstraints: [NSLayoutConstraint] = []
+    private var editingChipLeading: NSLayoutConstraint!
+    private var pillsDocked = false
     /// The band at the bottom of the window something else is drawn over; the composer sits
     /// above it. Zero when nothing is.
     private var bottomObstruction: CGFloat = 0
@@ -163,16 +168,23 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // transcript, and subview order is what keeps scrolled bubbles from painting across it.
         view.addSubview(plusGlass)
         view.addSubview(plusButton)
-        view.addSubview(sessionPillGlass)
-        view.addSubview(pillModeTint)
-        view.addSubview(sessionPill)
+        // Each pill travels with its glass as one group, so the window's bar can take the pair
+        // into its row (see `barAccessories`) without the pill leaving its backdrop behind.
+        for group in [changesGroup, sessionGroup] {
+            group.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(group)
+        }
+        sessionGroup.addSubview(sessionPillGlass)
+        sessionGroup.addSubview(pillModeTint)
+        sessionGroup.addSubview(sessionPill)
         changesPill.glassBackdrop = changesPillGlass
         changesPill.onPress = { [weak self] in self?.showChangedFiles() }
         changesPill.toolTip = "What this conversation changed"
         changesPill.isHidden = true
         changesPillGlass.isHidden = true
-        view.addSubview(changesPillGlass)
-        view.addSubview(changesPill)
+        changesGroup.addSubview(changesPillGlass)
+        changesGroup.addSubview(changesPill)
+        changesGroup.isHidden = true
         queuedChip.glassBackdrop = queuedChipGlass
         queuedChip.onPress = { [weak self] in self?.editQueuedMessage() }
         queuedChip.isHidden = true
@@ -196,6 +208,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         view.addSubview(emptyStateLabel)
 
         composerBottom = composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.xl)
+        // Where the pills sit when the window has no bar to take them: above the composer's
+        // corners, as before.
+        undockedPillConstraints = [
+            sessionPill.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
+            sessionPill.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
+            changesPill.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs),
+            changesPill.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
+        ]
+        editingChipLeading = editingChip.leadingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.xl + DS.Spacing.s * 2)
+        NSLayoutConstraint.activate(undockedPillConstraints + [editingChipLeading])
         NSLayoutConstraint.activate([
             emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -226,8 +248,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
             composerBottom,
             // The session pill floats just above the composer's trailing corner.
-            sessionPill.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
-            sessionPill.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
+            sessionGroup.topAnchor.constraint(equalTo: sessionPillGlass.topAnchor),
+            sessionGroup.bottomAnchor.constraint(equalTo: sessionPillGlass.bottomAnchor),
+            sessionGroup.leadingAnchor.constraint(equalTo: sessionPillGlass.leadingAnchor),
+            sessionGroup.trailingAnchor.constraint(equalTo: sessionPillGlass.trailingAnchor),
             sessionPillGlass.topAnchor.constraint(equalTo: sessionPill.topAnchor, constant: -2),
             sessionPillGlass.bottomAnchor.constraint(equalTo: sessionPill.bottomAnchor, constant: 2),
             sessionPillGlass.leadingAnchor.constraint(equalTo: sessionPill.leadingAnchor, constant: -DS.Spacing.s),
@@ -237,8 +261,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             pillModeTint.leadingAnchor.constraint(equalTo: sessionPillGlass.leadingAnchor),
             pillModeTint.trailingAnchor.constraint(equalTo: sessionPillGlass.trailingAnchor),
             // Mirror of the session pill, on the composer's leading corner.
-            changesPill.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs),
-            changesPill.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.s),
+            changesGroup.topAnchor.constraint(equalTo: changesPillGlass.topAnchor),
+            changesGroup.bottomAnchor.constraint(equalTo: changesPillGlass.bottomAnchor),
+            changesGroup.leadingAnchor.constraint(equalTo: changesPillGlass.leadingAnchor),
+            changesGroup.trailingAnchor.constraint(equalTo: changesPillGlass.trailingAnchor),
             // Holds the band's height whether or not the pill is showing, so the editing chip
             // beside it lands on the same line in a conversation that hasn't changed any files.
             changesPill.heightAnchor.constraint(equalToConstant: 24),
@@ -249,7 +275,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // Above the pills, so it reads as "next" rather than as part of the session chrome.
             queuedChip.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs),
             queuedChip.trailingAnchor.constraint(lessThanOrEqualTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
-            queuedChip.bottomAnchor.constraint(equalTo: changesPill.topAnchor, constant: -DS.Spacing.s),
+            queuedChip.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -(DS.Spacing.s + 30)),
             queuedChipGlass.topAnchor.constraint(equalTo: queuedChip.topAnchor, constant: -2),
             queuedChipGlass.bottomAnchor.constraint(equalTo: queuedChip.bottomAnchor, constant: 2),
             queuedChipGlass.leadingAnchor.constraint(equalTo: queuedChip.leadingAnchor, constant: -DS.Spacing.s),
@@ -260,9 +286,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // `xl` plus both glass overhangs. Each capsule's glass backdrop extends `s` past its
             // button on every side, so a bare 12pt button-to-button gap put the two glass edges
             // exactly touching — the chips read as one smeared capsule.
-            editingChip.leadingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.xl + DS.Spacing.s * 2),
             editingChip.trailingAnchor.constraint(lessThanOrEqualTo: composer.trailingAnchor, constant: -DS.Spacing.xs),
-            editingChip.centerYAnchor.constraint(equalTo: changesPill.centerYAnchor),
+            editingChip.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -(DS.Spacing.s + 2)),
             editingChipGlass.topAnchor.constraint(equalTo: editingChip.topAnchor, constant: -2),
             editingChipGlass.bottomAnchor.constraint(equalTo: editingChip.bottomAnchor, constant: 2),
             editingChipGlass.leadingAnchor.constraint(equalTo: editingChip.leadingAnchor, constant: -DS.Spacing.s),
@@ -305,7 +330,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     override func viewDidLayout() {
         super.viewDidLayout()
         transcriptScroll.automaticallyAdjustsContentInsets = false
-        let overlap = composer.frame.height + 26 /* pill */ + composerGap + DS.Spacing.l
+        let overlap = composer.frame.height + (pillsDocked ? 0 : 26) /* pill row */ + composerGap + DS.Spacing.l
         if abs(transcriptScroll.contentInsets.bottom - overlap) > 0.5 {
             // The transcript starts below the window's top row and scrolls up underneath it.
             transcriptScroll.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight + DS.Spacing.m, left: 0, bottom: overlap, right: 0)
@@ -1072,6 +1097,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         guard changesPill.isHidden != isEmpty else { return }
         changesPill.isHidden = isEmpty
         changesPillGlass.isHidden = isEmpty
+        changesGroup.isHidden = isEmpty
         if !isEmpty { DS.Motion.appear(changesPill) }
     }
 
@@ -3719,6 +3745,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 }
 
 extension ThinkWorkspaceViewController: StageChromeProviding {
+    var scrollViewUnderTopRow: NSScrollView? { loadViewIfNeeded(); return transcriptScroll }
     var topRowContent: NSView? {
         loadViewIfNeeded()
         conversationTitle.font = DS.Text.caption()
@@ -3727,6 +3754,31 @@ extension ThinkWorkspaceViewController: StageChromeProviding {
         conversationTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refreshConversationTitle()
         return conversationTitle
+    }
+
+    var barAccessories: (leading: NSView?, trailing: NSView?) {
+        loadViewIfNeeded()
+        return (changesGroup, sessionGroup)
+    }
+
+    /// Docked: the pills live in the window's bar row and the editing chip takes the composer's
+    /// leading corner. Undocked: back above the composer, where they were.
+    func setAccessoriesDocked(_ docked: Bool) {
+        loadViewIfNeeded()
+        pillsDocked = docked
+        if !docked {
+            for group in [changesGroup, sessionGroup] where group.superview !== view {
+                group.removeFromSuperview()
+                view.addSubview(group, positioned: .below, relativeTo: queuedChipGlass)
+            }
+        }
+        NSLayoutConstraint.deactivate(undockedPillConstraints + [editingChipLeading])
+        editingChipLeading = docked
+            ? editingChip.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: DS.Spacing.xs)
+            : editingChip.leadingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.xl + DS.Spacing.s * 2)
+        if !docked { NSLayoutConstraint.activate(undockedPillConstraints) }
+        editingChipLeading.isActive = true
+        view.needsLayout = true
     }
 
     func setBottomObstruction(_ height: CGFloat) {

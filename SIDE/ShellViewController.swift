@@ -178,11 +178,6 @@ final class ShellViewController: NSViewController {
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
         window.toolbar = nil
-        // The window moves only when the top row says so (`TopRowView.mouseDown` →
-        // `performDrag`). With AppKit's own title-bar dragging on, the whole 38 pt row was a
-        // drag region the window server honoured before any view saw the press — dragging a tab
-        // moved the window, and no view-level opt-out reached it.
-        window.isMovable = false
         chrome.positionTrafficLights(in: window)
         for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
@@ -413,7 +408,7 @@ final class ShellViewController: NSViewController {
             }
         case .run:
             if currentRunner?.hasCommandAwaitingApproval == true { return (.needsYou, "a command is waiting for approval") }
-            return runVC.hasBackgroundActivity ? (.working, "a terminal has new output") : nil
+            return runVC.hasBackgroundActivity ? (.unread, "a terminal has new output") : nil
         case .review:
             guard let track = trackStore?.tracks.first(where: { $0.branchName == currentTrackKey }) else { return nil }
             let newest = projectContext?.sessionStore.checkpoints(forTrackKey: track.branchName).max { $0.createdAt < $1.createdAt }
@@ -548,6 +543,12 @@ final class ShellViewController: NSViewController {
 
         chrome.setStageContent((next as? StageChromeProviding)?.topRowContent)
         chrome.setRowBackground((next as? StageChromeProviding)?.topRowBackground ?? DS.Color.canvas)
+        // Think's changes and session pills join the bar row when there is one (the spread-row
+        // decision, 2026-09-22); anywhere else — or with no bar — they stay above the composer.
+        let accessories: (leading: NSView?, trailing: NSView?) = (next as? StageChromeProviding)?.barAccessories ?? (nil, nil)
+        let docked = chrome.dockAccessories(leading: accessories.leading, trailing: accessories.trailing)
+        (next as? StageChromeProviding)?.setAccessoriesDocked(docked)
+        chrome.watchScrollBeneathTopRow((next as? StageChromeProviding)?.scrollViewUnderTopRow)
         (next as? StageChromeProviding)?.setBottomObstruction(chrome.bottomObstruction)
         (next as? StageChromeProviding)?.setTopObstruction(ChromeHost.rowHeight)
         if stage == .run {

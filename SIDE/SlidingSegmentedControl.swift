@@ -148,7 +148,9 @@ final class SlidingSegmentedControl: NSView {
         for (index, button) in buttons.enumerated() {
             button.frame = NSRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
             let titleWidth = min(button.intrinsicContentSize.width, width)
-            badges[index].frame = NSRect(x: (width + titleWidth) / 2 + 3, y: bounds.height / 2 + 3, width: 5, height: 5)
+            // On the title's centre line, just after it — a dot riding up like a superscript read
+            // as misaligned.
+            badges[index].frame = NSRect(x: min((width + titleWidth) / 2 + 4, width - 8), y: (bounds.height - 5) / 2, width: 5, height: 5)
         }
         // Snap the thumb only when the control actually resized — selecting re-tints a label,
         // which schedules a layout pass that would otherwise teleport the thumb mid-slide.

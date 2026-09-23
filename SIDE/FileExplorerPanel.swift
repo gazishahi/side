@@ -1,17 +1,5 @@
 import AppKit
 
-final class FileTreeNode {
-    let name: String
-    let url: URL
-    let isDirectory: Bool
-    var children: [FileTreeNode] = []
-    init(name: String, url: URL, isDirectory: Bool) {
-        self.name = name
-        self.url = url
-        self.isDirectory = isDirectory
-    }
-}
-
 final class FileExplorerPanel: NSPanel {
     convenience init() {
         self.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
@@ -32,11 +20,13 @@ final class FileExplorerPanel: NSPanel {
 final class ExplorerOutlineView: NSOutlineView {
     var onEscape: (() -> Void)?
     var onEnter: (() -> Void)?
+    var onTrash: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53: onEscape?()
         case 36: onEnter?()
+        case 51 where event.modifierFlags.contains(.command): onTrash?()  // ⌘⌫, as in Finder
         default: super.keyDown(with: event)
         }
     }

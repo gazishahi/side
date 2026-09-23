@@ -25,12 +25,23 @@ protocol StageChromeProviding: AnyObject {
     func setTopObstruction(_ height: CGFloat)
     /// The stage's own surface, which the top row takes on so the two read as one sheet.
     var topRowBackground: NSColor { get }
+    /// Stage controls that belong beside the bar when there is one (Think's changes and session
+    /// pills): leading sits after the track pill, trailing before search.
+    var barAccessories: (leading: NSView?, trailing: NSView?) { get }
+    /// Told whether the accessories are in the bar, so the stage can lay them out itself if not.
+    func setAccessoriesDocked(_ docked: Bool)
+    /// The scroll view whose content runs up under the top row, if any — the row frosts only
+    /// once that content has actually scrolled beneath it.
+    var scrollViewUnderTopRow: NSScrollView? { get }
 }
 
 extension StageChromeProviding {
     func setBottomObstruction(_ height: CGFloat) {}
     func setTopObstruction(_ height: CGFloat) {}
     var topRowBackground: NSColor { DS.Color.canvas }
+    var barAccessories: (leading: NSView?, trailing: NSView?) { (nil, nil) }
+    func setAccessoriesDocked(_ docked: Bool) {}
+    var scrollViewUnderTopRow: NSScrollView? { nil }
 }
 
 /// Owns placement: the top row every window has, and — under `.floatingBar` — the glass bar.
@@ -112,7 +123,7 @@ final class ChromeHost {
             topRowBackdrop.topAnchor.constraint(equalTo: root.topAnchor),
             topRowBackdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             topRowBackdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            topRowBackdrop.heightAnchor.constraint(equalToConstant: Self.rowHeight + TopRowBackdrop.fade),
+            topRowBackdrop.heightAnchor.constraint(equalToConstant: Self.rowHeight),
             content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -140,6 +151,47 @@ final class ChromeHost {
         ])
         bar = stagesCapsule
         barPieces = [pillCapsule, stagesCapsule, searchButton]
+        barRoot = root
+        pillPiece = pillCapsule
+    }
+
+    private weak var barRoot: NSView?
+    private weak var pillPiece: NSView?
+    private var dockedAccessories: [NSView] = []
+
+    /// Places a stage's accessories in the bar row — after the track pill and before search,
+    /// never over the stage control. Returns false when there is no bar (the top-row
+    /// placement), so the stage keeps them itself.
+    @discardableResult
+    func dockAccessories(leading: NSView?, trailing: NSView?) -> Bool {
+        dockedAccessories.forEach { $0.removeFromSuperview() }
+        dockedAccessories = []
+        guard placement == .floatingBar, let root = barRoot, let pillPiece, let bar else { return false }
+        var constraints: [NSLayoutConstraint] = []
+        if let leading {
+            leading.removeFromSuperview()
+            leading.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(leading)
+            constraints += [
+                leading.leadingAnchor.constraint(equalTo: pillPiece.trailingAnchor, constant: DS.Spacing.m),
+                leading.trailingAnchor.constraint(lessThanOrEqualTo: bar.leadingAnchor, constant: -DS.Spacing.m),
+                leading.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            ]
+            dockedAccessories.append(leading)
+        }
+        if let trailing {
+            trailing.removeFromSuperview()
+            trailing.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(trailing)
+            constraints += [
+                trailing.trailingAnchor.constraint(equalTo: searchButton.leadingAnchor, constant: -DS.Spacing.m),
+                trailing.leadingAnchor.constraint(greaterThanOrEqualTo: bar.trailingAnchor, constant: DS.Spacing.m),
+                trailing.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            ]
+            dockedAccessories.append(trailing)
+        }
+        NSLayoutConstraint.activate(constraints)
+        return true
     }
 
     /// Lines the bar up with Think's composer row (the + button and the composer's edge).
@@ -166,6 +218,39 @@ final class ChromeHost {
     /// The row takes the stage's own surface, so the top of the window and the stage are one
     /// sheet: canvas for most stages, the terminal's tone for Run.
     func setRowBackground(_ color: NSColor) { topRowBackdrop.tint = color }
+
+    private var scrollObserver: NSObjectProtocol?
+    private weak var watchedScroll: NSScrollView?
+
+    /// macOS's own toolbar behaviour: the row is clear — nothing but the stage — until content
+    /// scrolls beneath it, and only then frosts. A permanently frosted row was a band a few
+    /// levels lighter than the stage even with nothing under it.
+    func watchScrollBeneathTopRow(_ scroll: NSScrollView?) {
+        if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
+        scrollObserver = nil
+        watchedScroll = scroll
+        guard let scroll else { topRowBackdrop.setFrosted(false, animated: false); return }
+        scroll.contentView.postsBoundsChangedNotifications = true
+        scrollObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateFrost(animated: true) }
+        }
+        updateFrost(animated: false)
+    }
+
+    private func updateFrost(animated: Bool) {
+        guard let scroll = watchedScroll else { return }
+        let clip = scroll.contentView
+        let flipped = scroll.documentView?.isFlipped ?? true
+        // At rest the clip sits `contentInsets.top` above the document's top edge.
+        let scrolled: Bool
+        if flipped {
+            scrolled = clip.bounds.minY > -scroll.contentInsets.top + 1
+        } else {
+            let top = (scroll.documentView?.frame.maxY ?? 0) + scroll.contentInsets.top
+            scrolled = clip.bounds.maxY < top - 1
+        }
+        topRowBackdrop.setFrosted(scrolled, animated: animated)
+    }
 
     /// Replaces the stage's top-row content (its tabs or header).
     func setStageContent(_ view: NSView?) {
@@ -214,7 +299,7 @@ final class ChromeHost {
     /// equally loud things at the bottom of the window.
     func setBarRecessed(_ recessed: Bool) {
         guard placement == .floatingBar else { return }
-        barPieces.forEach { $0.alphaValue = recessed ? 0.55 : 1 }
+        (barPieces + dockedAccessories).forEach { $0.alphaValue = recessed ? 0.55 : 1 }
     }
 
     /// Narrow windows: the pill's intent truncates with an ellipsis — layout decides, not a width
@@ -258,13 +343,13 @@ final class ChromeHost {
 }
 
 /// Behind the top row: the stage's own tone, translucent and blurred over whatever has scrolled
-/// beneath, fading out below the row's edge — a seamless frame, the way a translucent web
-/// header melts into the page instead of ending at a line.
+/// beneath — the row is a pane of frosted glass the stage runs under, with no edge and no fade
+/// (a gradient fall-off read as a smudge; owner's call, 2026-09-22).
 final class TopRowBackdrop: NSView {
-    static let fade: CGFloat = 22
     private let blur = NSVisualEffectView()
     private let tintView = NSView()
-    var tint: NSColor = DS.Color.canvas { didSet { tintView.bindLayerBackground(tint.withAlphaComponent(0.78)) } }
+    private var frosted = false
+    var tint: NSColor = DS.Color.canvas { didSet { tintView.bindLayerBackground(tint.withAlphaComponent(0.72)) } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -282,31 +367,24 @@ final class TopRowBackdrop: NSView {
             ])
         }
         tint = DS.Color.canvas
-        wantsLayer = true
+        alphaValue = 0
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    /// Opaque through the row, then a smooth fall-off over `fade`.
-    override func layout() {
-        super.layout()
-        let height = bounds.height, fadeFraction = Self.fade / max(height, 1)
-        let mask = NSImage(size: bounds.size, flipped: false) { rect in
-            let gradient = NSGradient(colors: [NSColor.black.withAlphaComponent(0), NSColor.black.withAlphaComponent(0.5), .black],
-                                      atLocations: [0, fadeFraction * 0.55, fadeFraction], colorSpace: .sRGB)
-            gradient?.draw(in: rect, angle: 90)
-            return true
+    /// Clear at rest; frosted glass once something has scrolled underneath.
+    func setFrosted(_ on: Bool, animated: Bool) {
+        guard on != frosted else { return }
+        frosted = on
+        guard animated else { alphaValue = on ? 1 : 0; return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = DS.Motion.duration(0.15)
+            context.timingFunction = DS.Motion.curve
+            animator().alphaValue = on ? 1 : 0
         }
-        blur.maskImage = mask
-        let gradientLayer = CAGradientLayer()
-        gradientLayer.frame = tintView.bounds
-        gradientLayer.colors = [NSColor.clear.cgColor, NSColor.black.cgColor, NSColor.black.cgColor]
-        gradientLayer.locations = [0, NSNumber(value: Double(fadeFraction)), 1]
-        gradientLayer.startPoint = CGPoint(x: 0.5, y: 0)
-        gradientLayer.endPoint = CGPoint(x: 0.5, y: 1)
-        tintView.layer?.mask = gradientLayer
     }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 /// The unified top row: traffic lights, then the stage's tabs or header. Every point that isn't

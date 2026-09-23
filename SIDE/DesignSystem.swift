@@ -67,7 +67,9 @@ enum DS {
         // colour, colour-blindness, and both appearances. Never `controlAccentColor` — an orange
         // accent would collide with needs-you.
         static let statusNeedsYou = hex(0xD9A441, 0xB8860B)
-        static let statusWorking = NSColor.labelColor.withAlphaComponent(0.6)
+        /// Built per appearance, not `labelColor.withAlphaComponent(_:)`: that resolves the system
+        /// colour once, at launch, so a dot drawn in dark mode came out black.
+        static let statusWorking = dynamic(dark: NSColor(white: 1, alpha: 0.6), light: NSColor(white: 0, alpha: 0.6))
         static let statusVerified = hex(0x5FBF7A, 0x2E8B57)
         static let statusFailed = hex(0xE0655C, 0xC9433A)
         static let statusIdle = NSColor.quaternaryLabelColor
@@ -593,7 +595,9 @@ extension NSView {
 extension DS {
     /// The one vocabulary for "what state is this in", shared by every surface.
     enum StatusState: Equatable {
-        case needsYou, working, verified, failed, idle
+        /// `unread`: something new to look at (a terminal printed while you were elsewhere) — a
+        /// quiet filled dot, never the breathing ring, which means an agent is working.
+        case needsYou, working, verified, failed, idle, unread
 
         var name: String {
             switch self {
@@ -602,6 +606,7 @@ extension DS {
             case .verified: return "Verified"
             case .failed: return "Failed"
             case .idle: return "Idle"
+            case .unread: return "New output"
             }
         }
 
@@ -612,6 +617,7 @@ extension DS {
             case .verified: return Color.statusVerified
             case .failed: return Color.statusFailed
             case .idle: return Color.statusIdle
+            case .unread: return Color.statusWorking
             }
         }
 

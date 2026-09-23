@@ -802,6 +802,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 }
 
 extension ReviewWorkspaceViewController: StageChromeProviding {
+    var scrollViewUnderTopRow: NSScrollView? { loadViewIfNeeded(); return scrollView }
     var topRowContent: NSView? { loadViewIfNeeded(); return headerRow }
 
     func setBottomObstruction(_ height: CGFloat) {

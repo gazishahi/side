@@ -14,7 +14,7 @@ enum ProjectFileAccess {
     static let maxIndexedFiles = 25000
     static let maxReadableFileSize = 10_000_000
 
-    private static let ignoredDirectories: Set<String> = [
+    static let ignoredDirectories: Set<String> = [
         ".git", ".build", "DerivedData", "node_modules", ".next", "Pods", "dist", "build",
         ".venv", "venv", "vendor", "Carthage", "target", "out", ".cache", "coverage",
         "__pycache__", ".tox", ".mypy_cache", ".pytest_cache",
