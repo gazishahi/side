@@ -16,11 +16,20 @@ public struct FileMention: Equatable {
     /// Project-relative path, resolved against what's actually on disk.
     public let relativePath: String
     public let isDirectory: Bool
+    /// `@path#L12-L40` — the lines the user pointed at (Make's inline instruct, Direction 02
+    /// §5.3). Still a pointer: the model is told the range, never given the text.
+    public let lines: ClosedRange<Int>?
 
-    public init(raw: String, relativePath: String, isDirectory: Bool) {
+    public init(raw: String, relativePath: String, isDirectory: Bool, lines: ClosedRange<Int>? = nil) {
         self.raw = raw
         self.relativePath = relativePath
         self.isDirectory = isDirectory
+        self.lines = lines
+    }
+
+    /// The pointer form Side writes for a range: `@path#L12-L40`, or `@path#L12` for one line.
+    public static func pointer(relativePath: String, lines: ClosedRange<Int>) -> String {
+        lines.count == 1 ? "@\(relativePath)#L\(lines.lowerBound)" : "@\(relativePath)#L\(lines.lowerBound)-L\(lines.upperBound)"
     }
 }
 
@@ -70,7 +79,19 @@ public enum FileMentionResolver {
         var seen = Set<String>()
 
         for token in mentionTokens(in: text) {
-            let cleaned = token.hasSuffix("/") ? String(token.dropLast()) : token
+            // A trailing `#L12` / `#L12-L40` is a line range on the path, not part of it.
+            var pathPart = Substring(token)
+            var lines: ClosedRange<Int>?
+            if let match = token.range(of: #"#L(\d+)(-L(\d+))?$"#, options: .regularExpression) {
+                let spec = token[match].dropFirst(2)
+                let bounds = spec.split(separator: "-").map { Int($0.drop(while: { $0 == "L" })) ?? 0 }
+                if let first = bounds.first, first > 0 {
+                    let last = max(first, bounds.count > 1 ? bounds[1] : first)
+                    lines = first...last
+                }
+                pathPart = token[..<match.lowerBound]
+            }
+            let cleaned = pathPart.hasSuffix("/") ? String(pathPart.dropLast()) : String(pathPart)
             guard !cleaned.isEmpty else { continue }
             // Containment, not string trust: `@../../etc/passwd` must not resolve, and this is
             // the same rule `ProjectFileAccess` applies to tool arguments.
@@ -93,8 +114,8 @@ public enum FileMentionResolver {
                 continue
             }
             let relativePath = String(candidate.path.dropFirst(rootPath.count).drop(while: { $0 == "/" }))
-            guard seen.insert(relativePath).inserted else { continue }
-            mentions.append(FileMention(raw: token, relativePath: relativePath, isDirectory: isDirectory.boolValue))
+            guard seen.insert(relativePath + (lines.map { "#\($0)" } ?? "")).inserted else { continue }
+            mentions.append(FileMention(raw: token, relativePath: relativePath, isDirectory: isDirectory.boolValue, lines: lines))
         }
         return (mentions, unresolved)
     }
@@ -145,7 +166,8 @@ public enum FileMentionResolver {
         if !mentions.isEmpty {
             lines.append("The user referenced these project paths with @. Read the ones you need with read_file or list_files — their contents are not included here:")
             for mention in mentions {
-                lines.append("- \(mention.relativePath)\(mention.isDirectory ? "/ (directory)" : "")")
+                let range = mention.lines.map { $0.count == 1 ? " (line \($0.lowerBound))" : " (lines \($0.lowerBound)–\($0.upperBound))" } ?? ""
+                lines.append("- \(mention.relativePath)\(mention.isDirectory ? "/ (directory)" : "")\(range)")
             }
         }
         if !unresolved.isEmpty {

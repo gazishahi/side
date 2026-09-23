@@ -46,6 +46,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// an option and its absence; persisted, because a layout choice is a habit, not a mood.
     private let diffLayoutControl = NSSegmentedControl(labels: ["Unified", "Split"], trackingMode: .selectOne, target: nil, action: nil)
     private let diffViewer = DiffViewer()
+    /// "Instruct…" on a file: (relative path, lines, anchor). The shell owns the conversation.
+    var onInstructRequested: ((String, ClosedRange<Int>, NSView) -> Void)? {
+        didSet { diffViewer.onInstruct = onInstructRequested }
+    }
     // Real label set per-track in refresh() — "to main" isn't right for a stacked track, whose
     // actual base is its parent's branch.
     private let promoteButton = ChipButton(symbolName: nil, accessibilityLabel: "Promote this track's changes to its base branch", height: ReviewWorkspaceViewController.promoteHeight)

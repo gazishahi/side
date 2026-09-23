@@ -112,5 +112,25 @@ final class StageCompositionTests: XCTestCase {
         XCTAssertTrue(TerminalSessionManager.isInside("/work/app/src", root: "/work/app"))
         XCTAssertFalse(TerminalSessionManager.isInside("/work/app2", root: "/work/app"))
     }
+
+    /// ⌘K sends a pointer, never content (§5.3 acceptance): the message names `@path#Lx-Ly`
+    /// and none of the lines themselves; the mention resolver reads the range back.
+    func testInlineInstructSendsAPointerNotContent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("instruct-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("src"), withIntermediateDirectories: true)
+        let body = "export function save(){\n  // lock first\n  return true\n}\n"
+        try body.write(to: root.appendingPathComponent("src/save.ts"), atomically: true, encoding: .utf8)
+        let request = InlineInstruct.Request(verb: .change, instruction: "take the lock", url: root.appendingPathComponent("src/save.ts"),
+                                             relativePath: "src/save.ts", lines: 2...3, diagnostic: nil)
+        let message = InlineInstruct.message(for: request)
+        XCTAssertTrue(message.contains("@src/save.ts#L2-L3"), message)
+        XCTAssertFalse(message.contains("lock first") || message.contains("return true"), "file content leaked: \(message)")
+
+        let resolved = FileMentionResolver.resolve(text: message, projectRoot: root)
+        XCTAssertEqual(resolved.mentions.first?.relativePath, "src/save.ts")
+        XCTAssertEqual(resolved.mentions.first?.lines, 2...3)
+        XCTAssertTrue(resolved.unresolved.isEmpty)
+        XCTAssertEqual(FileMention.pointer(relativePath: "a.swift", lines: 7...7), "@a.swift#L7")
+    }
 }
 

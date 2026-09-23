@@ -170,6 +170,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// A tab torn off the strip (drag-out or "Move to New Window") — the shell owns windows, so
     /// it decides what a new one on this project/track looks like. Point is in screen coords.
     var onTearOutRequested: ((URL, NSPoint) -> Void)?
+    /// ⌘K on a selection (or a diagnostic): the shell sends it to the track's Think conversation.
+    var onInstruct: ((InlineInstruct.Request) -> Void)?
+    /// "Continue in Think" / "Open in Think" from an instruct surface.
+    var onOpenThinkRequested: (() -> Void)?
+    private var instructPopover: NSPopover?
+    private var instructController: InstructPopoverController?
+    private var instructCard: InstructProposalCard?
     /// Set on a window made by tearing a tab out: it opens with that one file, not the
     /// project's remembered tabs, and never writes its tabs back into that memory — a
     /// scratch window must not change what the main window restores next launch.
@@ -1735,7 +1742,105 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         switchToTab(index)
     }
 
+    // MARK: - Inline instruct (§5.3)
+
+    /// ⌘K: the selected lines — or the line under the caret when a diagnostic is there — become a
+    /// pointer, and a small popover at the selection asks what to do with them.
+    @objc func instructAtSelection() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
+              !openTabs[index].isUntitled else { NSSound.beep(); return }
+        let tab = openTabs[index]
+        let text = tab.textStorage.string as NSString
+        let selection = editor.selectedRange()
+        let startLine = text.substring(to: selection.location).components(separatedBy: "\n").count
+        var endLine = text.substring(to: NSMaxRange(selection)).components(separatedBy: "\n").count
+        // A selection ending just after a newline doesn't reach into the next line.
+        if selection.length > 0, NSMaxRange(selection) > 0, text.character(at: NSMaxRange(selection) - 1) == 10 { endLine = max(startLine, endLine - 1) }
+        let diagnostic = tab.diagnostics.first { $0.range.start.line + 1 == startLine }?.message
+        guard selection.length > 0 || diagnostic != nil else { NSSound.beep(); return }
+        let relative = relativePath(tab.url)
+        let lines = startLine...max(startLine, endLine)
+        dismissInstructSurfaces()
+
+        let controller = InstructPopoverController(pointer: FileMention.pointer(relativePath: relative, lines: lines))
+        controller.onSubmit = { [weak self] verb, instruction in
+            self?.onInstruct?(InlineInstruct.Request(verb: verb, instruction: instruction, url: tab.url, relativePath: relative, lines: lines, diagnostic: diagnostic))
+        }
+        controller.onContinueInThink = { [weak self] in
+            self?.dismissInstructSurfaces()
+            self?.onOpenThinkRequested?()
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = controller
+        instructPopover = popover
+        instructController = controller
+        popover.show(relativeTo: rect(forCharacterRange: selection.length > 0 ? selection : NSRange(location: selection.location, length: 0)), of: editor, preferredEdge: .maxY)
+    }
+
+    /// Where a range sits in the editor's own coordinates — the popover's anchor.
+    private func rect(forCharacterRange range: NSRange) -> NSRect {
+        guard let layoutManager = editor.layoutManager, let container = editor.textContainer else { return editor.visibleRect }
+        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
+        rect.origin.x += editor.textContainerOrigin.x
+        rect.origin.y += editor.textContainerOrigin.y
+        if rect.width < 1 { rect.size.width = 1 }
+        return rect
+    }
+
+    func instructWaiting() { instructController?.showWaiting() }
+    func instructAnswer(_ text: String) { instructController?.showAnswer(text) }
+    func instructProblem(_ text: String) { instructController?.showProblem(text) }
+    /// Change was sent: the popover's job is done; the proposal comes back as a card.
+    func instructSent() {
+        instructPopover?.close()
+        instructPopover = nil
+        instructController = nil
+    }
+
+    /// The proposal Think is showing, as a compact card beside its lines. Lives in the editor so
+    /// it scrolls with the text.
+    func showInstructProposal(id: UUID, url: URL, line: Int, added: Int, removed: Int,
+                              apply: @escaping () -> Void, reject: @escaping () -> Void) {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].url.standardizedFileURL == url.standardizedFileURL else { return }
+        guard instructCard?.proposalId != id else { return }
+        instructCard?.removeFromSuperview()
+        let card = InstructProposalCard(proposalId: id, added: added, removed: removed)
+        card.onApply = { [weak self] in apply(); self?.dismissInstructCard() }
+        card.onReject = { [weak self] in reject(); self?.dismissInstructCard() }
+        card.onOpenInThink = { [weak self] in self?.onOpenThinkRequested?() }
+        let text = openTabs[index].textStorage.string as NSString
+        var location = 0
+        for _ in 1..<max(1, line) {
+            let next = text.range(of: "\n", range: NSRange(location: location, length: text.length - location))
+            guard next.location != NSNotFound else { break }
+            location = NSMaxRange(next)
+        }
+        let lineRect = rect(forCharacterRange: NSRange(location: min(location, text.length), length: 0))
+        let size = card.fittingSize
+        let width = max(size.width, 320)
+        card.frame = NSRect(x: max(8, editor.visibleRect.maxX - width - 16), y: max(0, lineRect.minY - size.height - 4), width: width, height: size.height)
+        card.autoresizingMask = [.minXMargin]
+        editor.addSubview(card)
+        instructCard = card
+    }
+
+    func dismissInstructCard() {
+        instructCard?.removeFromSuperview()
+        instructCard = nil
+    }
+
+    /// Escape, a tab switch or a stage change: instruct surfaces never linger (§5 acceptance).
+    func dismissInstructSurfaces() {
+        instructPopover?.close()
+        instructPopover = nil
+        instructController = nil
+        dismissInstructCard()
+    }
+
     private func switchToTab(_ index: Int) {
+        dismissInstructSurfaces()
         guard openTabs.indices.contains(index), index != activeTabIndex else { return }
         captureActiveTabSelection()
         activeTabIndex = index
@@ -2781,6 +2886,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         guard textView === editor else { return false }
+        if instructCard != nil, commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            dismissInstructCard()
+            return true
+        }
         if completionPanel.isVisible {
             switch commandSelector {
             case #selector(NSResponder.moveUp(_:)):
@@ -2913,6 +3022,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(NSMenuItem.separator())
+        // Direction 02 §5.3 — a Make action, so it's live only while Make is on screen.
+        editMenu.addItem(withTitle: "Instruct…", action: #selector(instructAtSelection), keyEquivalent: "k")
         editMenu.addItem(NSMenuItem.separator())
         let find = editMenu.addItem(withTitle: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
         find.tag = NSTextFinder.Action.showFindInterface.rawValue

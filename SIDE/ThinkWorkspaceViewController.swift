@@ -81,6 +81,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private var usageObserverToken: UUID?
     /// Set by `ShellViewController` — Think can't reach Make directly, and shouldn't.
     var onRevealFileRequested: ((URL) -> Void)?
+    /// A mention with a line range (`@path#L12-L40`) opens at its first line.
+    var onRevealFileAtLineRequested: ((URL, Int) -> Void)?
     /// Set by the shell: switches the window to the Review stage, where checkpoints hold the
     /// durable record of what changed.
     var onOpenReviewRequested: (() -> Void)?
@@ -914,7 +916,15 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     }
 
     /// Existence check for bare-path linking — same root, same containment rule as opening.
-    private func mentionedFileExists(_ path: String) -> Bool {
+    /// `path#L12-L40` → (path, 12); a plain path has no line.
+    private static func splitLineSuffix(_ token: String) -> (path: String, line: Int?) {
+        guard let match = token.range(of: #"#L(\d+)(-L\d+)?$"#, options: .regularExpression) else { return (token, nil) }
+        let digits = token[match].dropFirst(2).prefix { $0.isNumber }
+        return (String(token[..<match.lowerBound]), Int(digits))
+    }
+
+    private func mentionedFileExists(_ token: String) -> Bool {
+        let path = Self.splitLineSuffix(token).path
         guard let projectPath else { return false }
         let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath
         let url = URL(fileURLWithPath: root).appendingPathComponent(path).standardizedFileURL
@@ -926,13 +936,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Opens a clicked mention in Make, resolved against the same directory the mention itself
     /// resolved against. Silently does nothing for a path that no longer exists — a stale
     /// mention in old scrollback shouldn't produce an error dialog years later.
-    private func openMentionedFile(_ path: String) {
+    private func openMentionedFile(_ token: String) {
+        let (path, line) = Self.splitLineSuffix(token)
         guard let projectPath else { return }
         let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath
         let url = URL(fileURLWithPath: root).appendingPathComponent(path)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { return }
-        onRevealFileRequested?(url)
+        if let line { onRevealFileAtLineRequested?(url, line) } else { onRevealFileRequested?(url) }
     }
 
     /// Shift+Tab in the composer walks Ask → Plan → Build → Ask, same as Cursor and Claude Code.

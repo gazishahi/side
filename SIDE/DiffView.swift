@@ -27,6 +27,14 @@ struct UnifiedDiff {
         var removedCount: Int {
             hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .removed }.count }
         }
+        /// First to last new-side line the diff adds or keeps as context — what an instruct
+        /// about this file points at.
+        var changedNewLines: ClosedRange<Int>? {
+            let added = hunks.flatMap(\.lines).filter { $0.kind == .added }.compactMap(\.newNumber)
+            let numbers = added.isEmpty ? hunks.flatMap(\.lines).compactMap(\.newNumber) : added
+            guard let low = numbers.min(), let high = numbers.max() else { return nil }
+            return low...high
+        }
     }
 
     var files: [File] = []
@@ -195,6 +203,9 @@ enum SideBySideRows {
 
 final class DiffViewer: NSStackView {
     var layout: DiffLayout = .preferred
+    /// Set by Review: "Instruct…" on a file's header — its path, the new-side lines the diff
+    /// touches, and the control to anchor the popover to (Direction 02 §5.3).
+    var onInstruct: ((String, ClosedRange<Int>, NSView) -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -237,6 +248,9 @@ final class DiffViewer: NSStackView {
                 hairline.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
             }
             let card = DiffFileCardView(file: file, layout: layout)
+            if let onInstruct, !file.isDeleted, let span = file.changedNewLines {
+                card.onInstruct = { anchor in onInstruct(file.path, span, anchor) }
+            }
             addArrangedSubview(card)
             card.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
@@ -272,6 +286,27 @@ final class DiffFileCardView: NSView {
         // A little breathing room below the last line, and never zero for an empty diff.
         return max(24, ceil(used) + textView.textContainerInset.height * 2 + 4)
     }
+
+    /// "Instruct…" in the header, revealed on hover; nil hides it.
+    var onInstruct: ((NSView) -> Void)? {
+        didSet {
+            instructButton.isHidden = onInstruct == nil
+            headerButton.instructAction = onInstruct == nil ? nil : { [weak self] in self?.instructTapped() }
+        }
+    }
+    private let instructButton = NSButton(title: "", target: nil, action: nil)
+    private var headerTracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let headerTracking { removeTrackingArea(headerTracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        headerTracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { instructButton.animator().alphaValue = 1 }
+    override func mouseExited(with event: NSEvent) { instructButton.animator().alphaValue = 0 }
+    @objc private func instructTapped() { onInstruct?(instructButton) }
 
     init(file: UnifiedDiff.File, layout: DiffLayout = .unified) {
         super.init(frame: .zero)
@@ -315,6 +350,14 @@ final class DiffFileCardView: NSView {
             headerViews.append(badge)
         }
         headerViews.append(NSView())  // flexible spacer
+        instructButton.isBordered = false
+        instructButton.attributedTitle = NSAttributedString(string: "Instruct\u{2026}", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+        instructButton.target = self
+        instructButton.action = #selector(instructTapped)
+        instructButton.alphaValue = 0
+        instructButton.isHidden = true
+        instructButton.setAccessibilityLabel("Instruct about \(file.path)")
+        headerViews.append(instructButton)
         headerViews.append(counts)
         let header = NSStackView(views: headerViews)
         header.orientation = .horizontal
@@ -664,7 +707,15 @@ private final class HeaderClickView: NSView {
     /// The path/count labels inside the header would otherwise swallow the click — same
     /// route-decorative-hits-to-the-row trick TrackRowView uses.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        super.hitTest(point) == nil ? nil : self
+        guard let hit = super.hitTest(point) else { return nil }
+        // A real control in the header (Instruct…) keeps its own click.
+        return hit is NSButton ? hit : self
+    }
+    /// Reaches "Instruct…" without hovering for it.
+    var instructAction: (() -> Void)?
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        guard let instructAction else { return nil }
+        return [NSAccessibilityCustomAction(name: "Instruct…") { instructAction(); return true }]
     }
 
     // Hand-rolled click target — invisible and dead to accessibility without these.

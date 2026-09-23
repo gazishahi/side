@@ -88,6 +88,9 @@ final class ShellViewController: NSViewController {
         makeVC.onProjectOpened = { [weak self] url in self?.projectOpened(url) }
         makeVC.onFileOpened = { [weak self] url in self?.fileOpened(url) }
         makeVC.onDirtyChanged = { [weak self] dirty in self?.isDirty = dirty; self?.applyWindowChrome() }
+        makeVC.onInstruct = { [weak self] request in self?.startInstruct(request) }
+        reviewVC.onInstructRequested = { [weak self] path, lines, anchor in self?.presentReviewInstruct(path: path, lines: lines, anchor: anchor) }
+        makeVC.onOpenThinkRequested = { [weak self] in self?.show(.think) }
         makeVC.onTearOutRequested = { [weak self] url, screenPoint in
             guard let self, let projectURL = self.projectURL else { return }
             AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectURL, trackKey: self.currentTrackKey, soleFile: url, at: screenPoint)
@@ -562,6 +565,9 @@ final class ShellViewController: NSViewController {
         // Transient surfaces never outlive the stage they were opened on (§5 acceptance).
         dismissCheckpointSheet()
         pendingAttach = nil
+        makeVC.dismissInstructSurfaces()
+        reviewInstructPopover?.close()
+        reviewInstructPopover = nil
         current = stage
         // Visiting an unpinned stage that showed itself for attention is what dismisses it.
         if lastAttention.contains(stage) { dismissedAttention.insert(stage) }
@@ -631,6 +637,101 @@ final class ShellViewController: NSViewController {
     /// Called after every debounced runner-manager change. Diffs against `lastKnownNeedsYouTrackIDs`
     /// so a notification fires once per transition *into* needing attention, not once per
     /// recompute while it stays that way, and refreshes the dock badge either way.
+    // MARK: - Inline instruct (Direction 02 §5.3)
+
+    /// The instruct in flight: its runner, the observer watching it, and where in the transcript
+    /// it began — so only what it produced is shown back in Make.
+    private var instruct: (runner: AgentRunner, token: UUID, start: Int, request: InlineInstruct.Request)?
+    /// `send` records the message before the turn starts; "not busy" means finished only after
+    /// the turn has been seen running.
+    private var instructTurnStarted = false
+
+    /// Sends the pointer message to the track's conversation. No stage change: Change comes back
+    /// as a card beside the lines, Ask as an answer in the popover.
+    private func startInstruct(_ request: InlineInstruct.Request) {
+        guard let manager = projectContext?.runnerManager else { return }
+        let runner = manager.runner(forTrackKey: currentTrackKey ?? "")
+        guard runner.isReadyToSend else {
+            makeVC.instructProblem(runner.notReadyReason)
+            reviewInstructController?.showProblem(runner.notReadyReason)
+            return
+        }
+        endInstruct()
+        let start = runner.entries.count
+        let token = runner.addObserver { [weak self] _ in self?.instructProgressed() }
+        instruct = (runner, token, start, request)
+        runner.send(InlineInstruct.message(for: request))
+        if request.verb == .ask {
+            makeVC.instructWaiting()
+            reviewInstructController?.showWaiting()
+        } else {
+            makeVC.instructSent()
+            reviewInstructPopover?.close()
+            reviewInstructPopover = nil
+        }
+    }
+
+    private func instructProgressed() {
+        guard let (runner, _, start, request) = instruct else { return }
+        if runner.phase.isBusy { instructTurnStarted = true }
+        let turnEnded = instructTurnStarted && !runner.phase.isBusy
+        switch request.verb {
+        case .change:
+            if let (id, proposal) = InlineInstruct.pendingProposal(forRelativePath: request.relativePath, in: runner.entries, after: start) {
+                let delta = AgentRunner.lineDelta(in: proposal.diffText)
+                makeVC.showInstructProposal(
+                    id: id, url: request.url, line: request.lines.lowerBound, added: delta.added, removed: delta.removed,
+                    apply: { [weak runner] in runner?.resolve(proposalId: id, decision: .apply) },
+                    reject: { [weak runner] in runner?.resolve(proposalId: id, decision: .reject) }
+                )
+            } else {
+                // Decided in Think instead, or the turn ended without an edit to this file.
+                makeVC.dismissInstructCard()
+                if turnEnded { endInstruct() }
+            }
+        case .ask:
+            guard turnEnded else { return }
+            let answer = runner.entries.dropFirst(start).reversed().lazy.compactMap { entry -> String? in
+                if case .assistantText(let text) = entry.kind { return text }
+                return nil
+            }.first
+            let text = answer ?? "No answer came back — the conversation in Think has the details."
+            makeVC.instructAnswer(text)
+            reviewInstructController?.showAnswer(text)
+            endInstruct()
+        }
+    }
+
+    private var reviewInstructPopover: NSPopover?
+    private var reviewInstructController: InstructPopoverController?
+
+    /// Review's "Instruct…" on a file: the same popover and the same message, pointing at the
+    /// lines the diff touches in the track's working copy. Results come back in Think.
+    private func presentReviewInstruct(path: String, lines: ClosedRange<Int>, anchor: NSView) {
+        reviewInstructPopover?.close()
+        let url = workingDirectoryURL(for: currentTrackKey).appendingPathComponent(path)
+        let controller = InstructPopoverController(pointer: FileMention.pointer(relativePath: path, lines: lines))
+        controller.onSubmit = { [weak self] verb, instruction in
+            self?.startInstruct(InlineInstruct.Request(verb: verb, instruction: instruction, url: url, relativePath: path, lines: lines, diagnostic: nil))
+        }
+        controller.onContinueInThink = { [weak self] in
+            self?.reviewInstructPopover?.close()
+            self?.show(.think)
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = controller
+        reviewInstructPopover = popover
+        reviewInstructController = controller
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+    }
+
+    private func endInstruct() {
+        if let instruct { instruct.runner.removeObserver(instruct.token) }
+        instruct = nil
+        instructTurnStarted = false
+    }
+
     // MARK: - Checkpoint sheet (Direction 02 §5.1)
 
     private var checkpointSheet: NSWindow?
@@ -805,6 +906,10 @@ final class ShellViewController: NSViewController {
         runVC.attach(to: context.terminals)
         reloadProjectTasks()
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
+        thinkVC.onRevealFileAtLineRequested = { [weak self] url, line in
+            self?.show(.make)
+            self?.makeVC.revealFile(url, line: line)
+        }
         thinkVC.onOpenReviewRequested = { [weak self] in self?.show(.review) }
         thinkVC.onOpenRunRequested = { [weak self] in self?.show(.run) }
         thinkVC.onOpenCheckpointRequested = { [weak self] id in self?.presentCheckpointSheet(id) }
