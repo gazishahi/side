@@ -331,7 +331,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         if abs(transcriptScroll.contentInsets.bottom - overlap) > 0.5 {
             // The transcript starts below the window's top row and scrolls up underneath it.
             transcriptScroll.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight + DS.Spacing.m, left: 0, bottom: overlap, right: 0)
-            transcriptScroll.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: overlap - DS.Spacing.l, right: 0)
+            // The track runs down the window's edge beside the composer and stops above the bar,
+            // as Make's does. Ending it above the composer left the thumb ~150 pt short of the
+            // bottom when the chat was scrolled all the way down (owner, 2026-09-23). The
+            // contents' own inset still stands, so this moves only the track.
+            transcriptScroll.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: bottomObstruction + DS.Spacing.s - overlap, right: 0)
         }
     }
 
