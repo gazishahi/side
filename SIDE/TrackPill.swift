@@ -125,7 +125,17 @@ final class TrackPill: NSView {
     }
     override func mouseEntered(with event: NSEvent) { hover.alphaValue = 1 }
     override func mouseExited(with event: NSEvent) { hover.alphaValue = 0 }
-    override func mouseDown(with event: NSEvent) { togglePopover() }
+    /// The bar's press: the pill's glass swells under the pointer and springs back on release,
+    /// then the popover opens — the same feel as search and Think's pills beside it.
+    override func mouseDown(with event: NSEvent) {
+        let piece = superview ?? self
+        piece.wantsLayer = true
+        DS.Motion.press(piece, down: true)
+    }
+    override func mouseUp(with event: NSEvent) {
+        DS.Motion.press(superview ?? self, down: false)
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { togglePopover() }
+    }
     override var mouseDownCanMoveWindow: Bool { false }
     override func accessibilityPerformPress() -> Bool { togglePopover(); return true }
     override var acceptsFirstResponder: Bool { true }

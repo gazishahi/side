@@ -1970,6 +1970,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         container.isActive = isActive
         container.title = tab.url.lastPathComponent
         container.isDirty = tab.dirty
+        container.dragIcon = tab.isUntitled ? nil : NSWorkspace.shared.icon(forFile: tab.url.path)
         container.toolTip = tab.isUntitled ? "Unsaved" : relativePath(tab.url)
         container.translatesAutoresizingMaskIntoConstraints = false
         container.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
@@ -3401,7 +3402,7 @@ final class CompletionPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-final class TabChipView: NSView {
+final class TabChipView: NSView, NSDraggingSource {
     weak var closeButton: TabCloseButton?
     weak var closeMenuItem: NSMenuItem?
     var index: Int = 0
@@ -3584,7 +3585,13 @@ final class TabChipView: NSView {
         // to become its own window." Dragging back within range re-arms reordering.
         let dy = event.locationInWindow.y - dragOrigin.y
         isTearArmed = onTearOut != nil && abs(dy) > Self.tearThreshold
-        alphaValue = isTearArmed ? 0.6 : 1
+        // Pulled off the strip: from here it's a system drag, so an image of the tab follows the
+        // cursor anywhere on screen — out of the window, over other apps — instead of the chip
+        // stopping at the window's edge with nothing to show where the file is going.
+        if isTearArmed && !isTearingOut {
+            beginTearOut(with: event)
+            return
+        }
 
         if !isTearArmed {
             // Reorder the model/stack first (siblings animate into their new slots)...
@@ -3639,6 +3646,69 @@ final class TabChipView: NSView {
         }
     }
 
+    // MARK: Tear-out
+
+    private var isTearingOut = false
+    static let tabPasteboardType = NSPasteboard.PasteboardType("com.shahi.side.tab")
+
+    private func beginTearOut(with event: NSEvent) {
+        isTearingOut = true
+        layer?.setAffineTransform(.identity)
+        layer?.zPosition = 0
+        layer?.shadowOpacity = 0
+        alphaValue = 0.35  // the tab's slot stays, ghosted, until the drop decides
+        // A private type, never a file URL: dropping a tab on Finder must not move the file.
+        let item = NSPasteboardItem()
+        item.setString(title, forType: Self.tabPasteboardType)
+        let dragItem = NSDraggingItem(pasteboardWriter: item)
+        let image = Self.dragImage(title: title, icon: dragIcon)
+        let origin = convert(event.locationInWindow, from: nil)
+        dragItem.setDraggingFrame(NSRect(x: origin.x - image.size.width / 2, y: origin.y - image.size.height / 2, width: image.size.width, height: image.size.height), contents: image)
+        let session = beginDraggingSession(with: [dragItem], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = true
+    }
+
+    /// Set by the owner (Make's file tabs) — the file's own icon, for the drag image.
+    var dragIcon: NSImage?
+
+    /// The tab as it would look alone: a capsule with the file's icon and name.
+    static func dragImage(title: String, icon: NSImage?) -> NSImage {
+        let font = DS.Text.body(.medium)
+        let textSize = (title as NSString).size(withAttributes: [.font: font])
+        let size = NSSize(width: ceil(textSize.width) + (icon == nil ? 28 : 50), height: 30)
+        return NSImage(size: size, flipped: false) { rect in
+            let capsule = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: rect.height / 2, yRadius: rect.height / 2)
+            NSColor.windowBackgroundColor.withAlphaComponent(0.96).setFill()
+            capsule.fill()
+            NSColor.separatorColor.setStroke()
+            capsule.stroke()
+            var x: CGFloat = 14
+            if let icon {
+                icon.draw(in: NSRect(x: x, y: (rect.height - 16) / 2, width: 16, height: 16))
+                x += 22
+            }
+            (title as NSString).draw(at: NSPoint(x: x, y: (rect.height - textSize.height) / 2), withAttributes: [.font: font, .foregroundColor: NSColor.labelColor])
+            return true
+        }
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .move
+    }
+
+    /// Released outside the window: the tab becomes its own window there. Back inside: it
+    /// returns to its slot.
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        isTearingOut = false
+        isTearArmed = false
+        didDrag = false
+        dragOrigin = nil
+        alphaValue = 1
+        if !isHovered { window?.isMovable = true }
+        guard let window, !window.frame.contains(screenPoint) else { return }
+        onTearOut?(screenPoint)
+    }
+
     // Hand-drawn view — invisible to accessibility without saying what it is ourselves.
     // A tab is a radio button inside its strip's tab group, and must announce whether it's the
     // selected one.
@@ -3658,7 +3728,7 @@ final class TabCloseButton: CircularIconButton {
         setSymbol("xmark", pointSize: 9, weight: .bold, color: NSColor.secondaryLabelColor, accessibilityLabel: "Close Tab")
         // Stronger than the selected tab it sits on: in dark mode the old hover (white 16 %) sat
         // on an active tab of white 18 % and disappeared.
-        hoverBackgroundColor = DS.Color.dynamic(dark: NSColor(white: 1, alpha: 0.32), light: NSColor(white: 0, alpha: 0.14))
+        hoverBackgroundColor = DS.Color.tabCloseHover
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

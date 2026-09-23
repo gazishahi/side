@@ -48,6 +48,8 @@ enum DS {
         /// The active tab: lifted off the canvas — white with a soft shadow in light, a brighter
         /// tone in dark. Inactive tabs sit on `scrimSoft`.
         static let tabActive = dynamic(dark: NSColor(white: 1, alpha: 0.13), light: NSColor(white: 1, alpha: 1))
+        /// A tab's × on hover — stronger than the selected capsule it sits on.
+        static let tabCloseHover = dynamic(dark: NSColor(white: 1, alpha: 0.32), light: NSColor(white: 0, alpha: 0.14))
         /// Row separators — only. Never an enclosure.
         static let hairline = dynamic(dark: NSColor(white: 1, alpha: 0.08), light: NSColor(white: 0, alpha: 0.08))
         /// The stacked-track connector.
@@ -274,7 +276,7 @@ enum DS {
         /// about the view's centre (AppKit layers scale about their origin).
         static func press(_ view: NSView, down: Bool) {
             guard !reduceMotion, let layer = view.layer else { return }
-            let scale: CGFloat = down ? 1.12 : 1
+            let scale: CGFloat = down ? 1.08 : 1
             let cx = view.bounds.midX, cy = view.bounds.midY
             let target = CATransform3DConcat(CATransform3DConcat(CATransform3DMakeTranslation(-cx, -cy, 0), CATransform3DMakeScale(scale, scale, 1)), CATransform3DMakeTranslation(cx, cy, 0))
             let animation = spring(keyPath: "transform")

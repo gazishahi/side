@@ -116,27 +116,33 @@ final class ChipButton: NSButton {
         return layer
     }
 
+    /// The Liquid Glass press, the same one the bar's search button has (owner's call,
+    /// 2026-09-23: that is the macOS-native feel): the control swells under the pointer and holds
+    /// there, then springs back on release with a little bounce. It used to dip *inward* to 93 %,
+    /// which read as a different control family from the glass beside it.
     private func pressDown(_ view: NSView) {
         guard let layer = centeredLayer(view) else { return }
         layer.removeAnimation(forKey: "springRelease")
-        let dip = CABasicAnimation(keyPath: "transform.scale")
-        dip.toValue = 0.93
-        dip.duration = DS.Motion.duration(0.16)
-        dip.timingFunction = DS.Motion.curve
-        // Held, not removed: the pill stays pushed back for as long as the mouse is down.
-        dip.fillMode = .forwards
-        dip.isRemovedOnCompletion = false
-        layer.add(dip, forKey: "springDown")
+        guard !DS.Motion.reduceMotion else { return }
+        let swell = DS.Motion.spring(keyPath: "transform.scale")
+        swell.fromValue = layer.presentation()?.value(forKeyPath: "transform.scale") ?? 1
+        swell.toValue = 1.08
+        // Held, not removed: the control stays swollen for as long as the mouse is down.
+        swell.fillMode = .forwards
+        swell.isRemovedOnCompletion = false
+        layer.add(swell, forKey: "springDown")
     }
 
     private func pressRelease(_ view: NSView) {
         guard let layer = centeredLayer(view) else { return }
+        let from = layer.presentation()?.value(forKeyPath: "transform.scale") ?? 1.08
         layer.removeAnimation(forKey: "springDown")
-        let spring = CAKeyframeAnimation(keyPath: "transform.scale")
-        spring.values = settlesOnRelease ? [0.93, 1.04, 0.99, 1] : [0.93, 1]
-        spring.keyTimes = settlesOnRelease ? [0, 0.45, 0.8, 1] : [0, 1]
-        spring.duration = DS.Motion.duration(0.36)
-        spring.timingFunctions = [DS.Motion.curve, DS.Motion.curve, DS.Motion.curve]
+        guard !DS.Motion.reduceMotion else { return }
+        let spring = DS.Motion.spring(keyPath: "transform.scale")
+        spring.damping *= settlesOnRelease ? 0.45 : 0.6  // Promote's settle bounces a touch more
+        spring.duration = spring.settlingDuration
+        spring.fromValue = from
+        spring.toValue = 1
         layer.add(spring, forKey: "springRelease")
     }
 
