@@ -24,6 +24,13 @@ final class RunWorkspaceViewController: NSViewController {
     private let tabBar = TabStripView()
     private let tabBarStack = NSStackView()
     private let terminalBottomInset: CGFloat = 12
+    /// What the floating bar covers at the bottom. The terminal's grid ends above it: a grid
+    /// has no scrolling-under — its last rows are where you type, so anything the bar covered
+    /// was the prompt itself (owner, 2026-09-23). The sheet's own tone still runs to the edge
+    /// under the bar, so the window keeps its full-bleed look without a footer seam.
+    private var bottomObstruction: CGFloat = 0
+    private var terminalBottom: NSLayoutConstraint?
+    private var terminalBottomConstant: CGFloat { -(bottomObstruction > 0 ? bottomObstruction + DS.Spacing.s : terminalBottomInset) }
     private let container = NSView()
     private var tabChips: [TabChipView] = []
 
@@ -353,9 +360,11 @@ final class RunWorkspaceViewController: NSViewController {
         addChild(vc)
         vc.view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(vc.view)
+        let bottom = vc.view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: terminalBottomConstant)
+        terminalBottom = bottom
         NSLayoutConstraint.activate([
             vc.view.topAnchor.constraint(equalTo: container.topAnchor, constant: ChromeHost.rowHeight + 4), vc.view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16), vc.view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -terminalBottomInset)
+            vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16), bottom
         ])
         vc.activate()
     }
@@ -553,10 +562,12 @@ extension RunWorkspaceViewController: StageChromeProviding {
 
     var topRowBackground: NSColor { DS.Color.raised }
 
-    /// The terminal is the whole window and the bar floats over it (owner's call, 2026-09-22):
-    /// the terminal view runs to the bottom edge rather than stopping above the bar, which read
-    /// as the bar sitting in a footer under the terminal.
-    func setBottomObstruction(_ height: CGFloat) {}
+    /// The sheet is the whole window and the bar floats over it (2026-09-22); the grid stops
+    /// above the bar so the prompt is never under it (2026-09-23) — see `bottomObstruction`.
+    func setBottomObstruction(_ height: CGFloat) {
+        bottomObstruction = height
+        terminalBottom?.constant = terminalBottomConstant
+    }
 
     func selectAdjacentTab(_ offset: Int) {
         guard !sessions.isEmpty else { return }
