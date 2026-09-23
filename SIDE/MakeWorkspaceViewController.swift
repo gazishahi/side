@@ -1926,8 +1926,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         lastKnownTabCount = openTabs.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         tabChips.removeAll()
-        // The strip is the file's title now that there is no title bar, so one tab shows too.
-        guard !openTabs.isEmpty else { publishTabAccessibility(); return }
+        // One file needs no tabs: a single tab is only a label with a close button that closes
+        // the one thing you're looking at. The strip appears once there's a second.
+        guard openTabs.count > 1 else { publishTabAccessibility(); return }
         for (index, tab) in openTabs.enumerated() {
             let chip = makeTabChip(index: index, tab: tab, isActive: index == activeTabIndex)
             tabBarStack.addArrangedSubview(chip)
@@ -3421,8 +3422,8 @@ final class TabChipView: NSView {
     private static let textInset: CGFloat = 12
     private static let trailingReserve: CGFloat = 26
     private static let maxTextWidth: CGFloat = 200
-    /// The bar's stage segments are 32 pt capsules; tabs match.
-    static let height: CGFloat = 32
+    /// A capsule inside the strip's 30 pt glass track.
+    static let height: CGFloat = 24
     private static let minWidth: CGFloat = 96
     /// Horizontal margin reserved on each side for the active tab's bottom flares — the outward
     /// curves that let the tab pour into the content surface below instead of meeting it at a
@@ -3594,7 +3595,13 @@ final class TabChipView: NSView {
         // just placed it in the stack, by transforming relative to its *current* laid-out
         // position rather than the position at mouseDown.
         let naturalXInWindow = convert(NSPoint.zero, to: nil).x
-        let desiredXInWindow = event.locationInWindow.x - grabOffsetX
+        // Held inside the strip's glass track: a tab can't be dragged out of its container, over
+        // the traffic lights or past the last tab.
+        var desiredXInWindow = event.locationInWindow.x - grabOffsetX
+        if !isTearArmed, let track = superview {
+            let trackFrame = track.convert(track.bounds, to: nil).insetBy(dx: 3, dy: 0)
+            desiredXInWindow = min(max(desiredXInWindow, trackFrame.minX), trackFrame.maxX - bounds.width)
+        }
         // Flipped view: window +y is up, layer translation follows view coords (down-positive).
         let liftY = isTearArmed ? -dy : 0
         layer?.setAffineTransform(CGAffineTransform(translationX: desiredXInWindow - naturalXInWindow, y: liftY).scaledBy(x: 1.04, y: 1.04))
@@ -3649,7 +3656,9 @@ final class TabCloseButton: CircularIconButton {
     init() {
         super.init(diameter: 16)
         setSymbol("xmark", pointSize: 9, weight: .bold, color: NSColor.secondaryLabelColor, accessibilityLabel: "Close Tab")
-        hoverBackgroundColor = DS.Color.scrimStrong
+        // Stronger than the selected tab it sits on: in dark mode the old hover (white 16 %) sat
+        // on an active tab of white 18 % and disappeared.
+        hoverBackgroundColor = DS.Color.dynamic(dark: NSColor(white: 1, alpha: 0.32), light: NSColor(white: 0, alpha: 0.14))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

@@ -49,9 +49,10 @@ extension StageChromeProviding {
 /// never read this class or their own position.
 @MainActor
 final class ChromeHost {
-    /// 52: the macOS 26 unified-toolbar height — tall enough for the tabs' 40 pt glass capsule,
-    /// the same height as every piece of the floating bar.
-    static let rowHeight: CGFloat = 52
+    /// 38: the traffic lights' own title-bar strip, with the lights centred in it. (52 was
+    /// tried for a bar-height tab capsule: too tall, and the lights then had to sit lower than
+    /// their system container allows, so AppKit's re-layouts kept snapping them back up.)
+    static let rowHeight: CGFloat = 38
     static let barHeight: CGFloat = 40
     static let barGap: CGFloat = 12
 

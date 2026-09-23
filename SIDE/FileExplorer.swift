@@ -130,7 +130,6 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         let side = Side.preferred
         let x = side == .left ? frame.minX + 10 : frame.maxX - Self.width - 10
         let target = NSRect(x: x, y: bottom, width: Self.width, height: max(200, top - bottom))
-        sideButton.image = Self.sideSymbol(for: side)
         panel.alphaValue = 0
         panel.setFrame(target.offsetBy(dx: side == .left ? -24 : 24, dy: 0), display: false)
         if panel.parent == nil { window.addChildWindow(panel, ordered: .above) }
@@ -247,12 +246,16 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         titleLabel.lineBreakMode = .byTruncatingMiddle
         let newFile = Self.headerButton("doc.badge.plus", "New File", #selector(newFileAtRoot), self)
         let newFolder = Self.headerButton("folder.badge.plus", "New Folder", #selector(newFolderAtRoot), self)
-        let collapse = Self.headerButton("arrow.down.right.and.arrow.up.left", "Collapse All", #selector(collapseAll), self)
-        sideButton.target = self
-        sideButton.action = #selector(switchSide)
-        sideButton.toolTip = "Move to the Other Side"
-        sideButton.setAccessibilityLabel("Move to the other side")
-        let header = NSStackView(views: [titleLabel, NSView(), newFile, newFolder, collapse, sideButton])
+        // Two unambiguous glyphs and one overflow menu — the collapse and move-side glyphs read
+        // as nothing in particular. Which side the explorer opens on lives in Settings.
+        let more = NSButton(image: NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "More")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)) ?? NSImage(), target: self, action: #selector(showMoreMenu(_:)))
+        more.isBordered = false
+        more.contentTintColor = .secondaryLabelColor
+        more.toolTip = "More"
+        more.translatesAutoresizingMaskIntoConstraints = false
+        more.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        let header = NSStackView(views: [titleLabel, NSView(), newFile, newFolder, more])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = DS.Spacing.xs
@@ -292,15 +295,18 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         return effect
     }
 
-    private lazy var sideButton = Self.headerButton("sidebar.right", "Move to the Other Side", #selector(switchSide), self)
-
-    private static func sideSymbol(for side: Side) -> NSImage? {
-        NSImage(systemSymbolName: side == .left ? "sidebar.right" : "sidebar.left", accessibilityDescription: "Move to the other side")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))
+    @objc private func showMoreMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        for (title, action) in [("Collapse All Folders", #selector(collapseAll)), ("Reveal Project in Finder", #selector(revealRoot))] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
     }
 
-    @objc private func switchSide() {
-        Side.preferred = Side.preferred == .left ? .right : .left
+    @objc private func revealRoot() {
+        guard let root else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([root])
     }
 
     /// The side changed (here or in Settings): move without hiding, so nothing is lost.
@@ -309,7 +315,6 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         let frame = window.frame
         var target = panel.frame
         target.origin.x = Side.preferred == .left ? frame.minX + 10 : frame.maxX - Self.width - 10
-        sideButton.image = Self.sideSymbol(for: Side.preferred)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = DS.Motion.duration(0.24)
             context.timingFunction = DS.Motion.curve

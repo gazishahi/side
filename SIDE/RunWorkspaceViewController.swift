@@ -353,8 +353,8 @@ final class RunWorkspaceViewController: NSViewController {
         lastKnownSessionCount = sessions.count
         tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         tabChips.removeAll()
-        // Shown for a single session too: with no title bar, the tab is the terminal's name.
-        guard !sessions.isEmpty else { return }
+        // One terminal needs no tabs; the strip appears once there's a second.
+        guard sessions.count > 1 else { tabBar.accessibleTabs = []; return }
         for (index, session) in sessions.enumerated() {
             let chip = TabChipView()
             chip.index = index

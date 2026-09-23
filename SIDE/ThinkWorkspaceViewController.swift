@@ -265,9 +265,6 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             changesGroup.bottomAnchor.constraint(equalTo: changesPillGlass.bottomAnchor),
             changesGroup.leadingAnchor.constraint(equalTo: changesPillGlass.leadingAnchor),
             changesGroup.trailingAnchor.constraint(equalTo: changesPillGlass.trailingAnchor),
-            // Holds the band's height whether or not the pill is showing, so the editing chip
-            // beside it lands on the same line in a conversation that hasn't changed any files.
-            changesPill.heightAnchor.constraint(equalToConstant: 24),
             changesPillGlass.topAnchor.constraint(equalTo: changesPill.topAnchor, constant: -2),
             changesPillGlass.bottomAnchor.constraint(equalTo: changesPill.bottomAnchor, constant: 2),
             changesPillGlass.leadingAnchor.constraint(equalTo: changesPill.leadingAnchor, constant: -DS.Spacing.s),
@@ -1074,22 +1071,22 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         if !isEmpty {
             let added = counts.reduce(0) { $0 + $1.added }
             let removed = counts.reduce(0) { $0 + $1.removed }
-            let identity = "\(counts.count)|\(added)|\(removed)"
+            let identity = "\(counts.count)|\(added)|\(removed)|\(pillsDocked)"
             if changesPill.labelIdentity != identity {
                 // Green and red, matching the panel behind the pill and every diff in the app —
                 // the counts are the part worth reading at a glance, and a uniformly grey label
                 // makes them the part that reads last.
                 let label = NSMutableAttributedString(
                     string: "\(counts.count) file\(counts.count == 1 ? "" : "s")  ",
-                    attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.secondaryLabelColor]
+                    attributes: [.font: pillFont, .foregroundColor: NSColor.secondaryLabelColor]
                 )
                 label.append(NSAttributedString(
                     string: "+\(added)",
-                    attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.systemGreen]
+                    attributes: [.font: pillFont, .foregroundColor: NSColor.systemGreen]
                 ))
                 label.append(NSAttributedString(
                     string: " −\(removed)",
-                    attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.systemRed]
+                    attributes: [.font: pillFont, .foregroundColor: NSColor.systemRed]
                 ))
                 changesPill.setAttributedLabel(label, identity: identity)
             }
@@ -3761,11 +3758,23 @@ extension ThinkWorkspaceViewController: StageChromeProviding {
         return (changesGroup, sessionGroup)
     }
 
+    /// The pills' type: the bar's own 13 pt medium when they sit in it, so every piece of the
+    /// bar reads at one size; composer-caption size above the composer.
+    private var pillFont: NSFont { pillsDocked ? DS.Text.body(.medium) : DS.Text.caption(.medium) }
+
     /// Docked: the pills live in the window's bar row and the editing chip takes the composer's
     /// leading corner. Undocked: back above the composer, where they were.
     func setAccessoriesDocked(_ docked: Bool) {
         loadViewIfNeeded()
         pillsDocked = docked
+        // In the bar they are bar pieces: 40 pt glass capsules (36 pt chip + the glass's 2 pt
+        // rim), the same height as the track pill and the stage control beside them.
+        let chipHeight: CGFloat = docked ? ChromeHost.barHeight - 4 : 24
+        for chip in [changesPill, sessionPill] { chip.setHeight(chipHeight); chip.font = pillFont }
+        for glass in [changesPillGlass, sessionPillGlass] { DS.setGlassCornerRadius(glass, (chipHeight + 4) / 2) }
+        pillModeTint.layer?.cornerRadius = (chipHeight + 4) / 2
+        refreshChangesPill()
+        refreshSessionPill()
         if !docked {
             for group in [changesGroup, sessionGroup] where group.superview !== view {
                 group.removeFromSuperview()

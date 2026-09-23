@@ -217,6 +217,12 @@ enum DS {
     /// refraction. Returned as a plain `NSView` to be inserted as the *backmost* subview of
     /// whatever it backs: content stays as ordinary siblings above it, which works identically
     /// for both variants.
+    /// Re-rounds a view made by `makeGlass` — for glass whose height changes with its context.
+    static func setGlassCornerRadius(_ view: NSView, _ radius: CGFloat) {
+        if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView { glass.cornerRadius = radius; return }
+        view.layer?.cornerRadius = radius
+    }
+
     static func makeGlass(cornerRadius: CGFloat) -> NSView {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
@@ -467,11 +473,11 @@ final class TabStripView: NSView {
     var accessibleTabs: [NSView] = [] { didSet { glassTrack?.isHidden = accessibleTabs.isEmpty } }
     private var glassTrack: NSView?
 
-    /// The strip's tabs sit in one Liquid Glass capsule, the same 40 pt piece the bar's stage
-    /// control is — so tabs read as the same family of control, not as the one flat thing left.
-    /// The capsule hugs the tabs and never grows past the strip.
+    /// The strip's tabs sit in one Liquid Glass capsule — the same family as the bar's stage
+    /// control, sized for the 38 pt row. It hugs the tabs and never grows past the strip.
+    static let trackHeight: CGFloat = 30
     func installGlassTrack(behind scroll: NSScrollView, hugging stack: NSStackView) {
-        let glass = DS.makeGlass(cornerRadius: ChromeHost.barHeight / 2)
+        let glass = DS.makeGlass(cornerRadius: Self.trackHeight / 2)
         glass.translatesAutoresizingMaskIntoConstraints = false
         glass.isHidden = true
         addSubview(glass, positioned: .below, relativeTo: scroll)
@@ -480,11 +486,11 @@ final class TabStripView: NSView {
         NSLayoutConstraint.activate([
             glass.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             glass.centerYAnchor.constraint(equalTo: centerYAnchor),
-            glass.heightAnchor.constraint(equalToConstant: ChromeHost.barHeight),
+            glass.heightAnchor.constraint(equalToConstant: Self.trackHeight),
             glass.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor),
             hug,
         ])
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 3, bottom: 0, right: 3)
         glassTrack = glass
     }
     var accessibilityGroupLabel: String = "Tabs"

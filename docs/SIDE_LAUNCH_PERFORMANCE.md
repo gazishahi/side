@@ -272,3 +272,21 @@ strip; that is where the next 50–80 ms live, and it should be measured with th
 report when it lands rather than claimed. A consistent sub-300 ms warm launch is
 within reach there; a cold post-build launch under a full bounce is not, on any
 architecture, without a stable signature.
+
+## Open: Review with a large change set (reported 2026-09-23)
+
+Owner report: on a repository with *a lot* of changes, Review lags, and entering and
+leaving the stage is slow. Not yet profiled — recorded for the performance pass.
+Likely suspects, from reading the code (to be confirmed with Instruments, not assumed):
+
+- Review builds a `DiffFileCardView` — attributed text, line kinds, ruler — for
+  **every** changed file up front, on stage entry, on the main thread; nothing is lazy
+  or virtualised, so cost scales with the whole diff rather than what's on screen.
+- The full `git diff` against the base is re-read and re-parsed on each entry rather
+  than cached per HEAD/worktree state.
+- Split layout doubles the per-line work (two columns per file).
+- Leaving the stage tears the card stack down, so the next entry pays everything again.
+
+Acceptance for the fix: entering Review on a 500-file / 20k-line diff shows the header and
+checkpoint list within one frame and the first screen of diffs within ~100 ms; scrolling
+stays at display refresh; leaving is instant.

@@ -60,7 +60,9 @@ final class LineNumberGutterView: NSView {
 
         var lineNumber = text.substring(to: characterRange.location).components(separatedBy: "\n").count
         var index = characterRange.location
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.quaternaryLabelColor]
+        // Tertiary, not quaternary: quaternary is for things that should recede entirely, and
+        // line numbers are read — both appearances found them too faint to.
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]
 
         var safetyCounter = 0
         let maxIterations = 5000

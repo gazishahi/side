@@ -26,6 +26,11 @@ final class ChipButton: NSButton {
     /// The one control allowed a ceremonial settle — Promote — sets this.
     var settlesOnRelease = false
     private var tracking: NSTrackingArea?
+    private var heightConstraint: NSLayoutConstraint!
+
+    /// For a chip that lives in more than one place — Think's pills are composer-sized above the
+    /// composer and bar-sized in the window's bar.
+    func setHeight(_ height: CGFloat) { heightConstraint.constant = height }
 
     /// `height` exists for controls larger than a composer chip — Review's Promote is a stage's
     /// primary action, and 24pt of capsule reads as an afterthought at that size.
@@ -39,7 +44,8 @@ final class ChipButton: NSButton {
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.control
         translatesAutoresizingMaskIntoConstraints = false
-        heightAnchor.constraint(equalToConstant: height).isActive = true
+        heightConstraint = heightAnchor.constraint(equalToConstant: height)
+        heightConstraint.isActive = true
         setAccessibilityLabel(accessibilityLabel)
         if let symbolName { setSymbol(symbolName) }
         target = self
