@@ -182,6 +182,36 @@ enum DS {
         /// half-measure that makes the setting untrustworthy.
         static let scaleDidChangeNotification = Notification.Name("SideTextScaleDidChange")
 
+        /// The editor's and the terminal's own text sizes (§2.6) — their own settings, separate
+        /// from the interface scale: someone who wants 16 pt code rarely wants 16 pt chrome.
+        enum CodeSize {
+            static let didChangeNotification = Notification.Name("SideCodeSizeDidChange")
+            static let choices: [CGFloat] = [11, 12, 13, 14, 15, 16, 18, 20, 24]
+            static let standard: CGFloat = 14
+            private static let editorKey = "side.editor-text-size"
+            private static let terminalKey = "side.terminal-text-size"
+
+            static var editor: CGFloat {
+                get { stored(editorKey) }
+                set { store(newValue, editorKey) }
+            }
+            static var terminal: CGFloat {
+                get { stored(terminalKey) }
+                set { store(newValue, terminalKey) }
+            }
+            private static func stored(_ key: String) -> CGFloat {
+                let value = UserDefaults.standard.double(forKey: key)
+                return value > 0 ? CGFloat(value) : standard
+            }
+            private static func store(_ value: CGFloat, _ key: String) {
+                UserDefaults.standard.set(Double(value), forKey: key)
+                NotificationCenter.default.post(name: didChangeNotification, object: nil)
+            }
+        }
+
+        /// Make's editor font, at the editor size setting.
+        static func editor(_ weight: NSFont.Weight = .regular) -> NSFont { .monospacedSystemFont(ofSize: CodeSize.editor, weight: weight) }
+
         private static func scaled(_ size: CGFloat) -> CGFloat {
             (size * Scale.current.rawValue).rounded(.toNearestOrEven)
         }

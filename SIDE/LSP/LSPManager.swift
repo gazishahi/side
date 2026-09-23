@@ -9,8 +9,8 @@ import Foundation
 /// thread — every entry point below and the diagnostics callback dispatch onto it.
 final class LSPManager: @unchecked Sendable {
     private let projectRoot: URL
-    private var clients: [String: LSPClient] = [:]
-    private var startingServers: Set<String> = []
+    private var clients: [String: LSPClient] = [:] { didSet { announceStateChange() } }
+    private var startingServers: Set<String> = [] { didSet { announceStateChange() } }
     private var documentVersions: [URL: Int] = [:]
     /// The text of every open document, so a respawned server can be given `didOpen` for each.
     /// A server that crashed and came back used to receive a bare `didChange` for a URI it had
@@ -36,6 +36,32 @@ final class LSPManager: @unchecked Sendable {
     /// Fires whenever `unavailableBinaries` changes, so the UI can re-check whether the
     /// currently active file's language server is missing.
     var onAvailabilityChanged: (() -> Void)?
+
+    /// What Make's tab-strip indicator says about the active file's server (§4.5).
+    enum ServerState: Equatable { case none, starting, running, unavailable, stopped }
+
+    func serverState(forExtension ext: String) -> ServerState {
+        guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return .none }
+        let binary = entry.binaryName
+        if unavailableBinaries.contains(binary) { return .unavailable }
+        if clients[binary] != nil { return .running }
+        if startingServers.contains(binary) { return .starting }
+        if crashedBinaries.contains(binary) { return .stopped }
+        return .none
+    }
+
+    /// Coalesced onto the next main-loop turn: spawn bookkeeping mutates both sets in a row, and
+    /// the indicator only needs the settled state.
+    private var stateChangeScheduled = false
+    private func announceStateChange() {
+        guard !stateChangeScheduled else { return }
+        stateChangeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.stateChangeScheduled = false
+            self.onAvailabilityChanged?()
+        }
+    }
 
     func isUnavailable(forExtension ext: String) -> Bool {
         guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return false }

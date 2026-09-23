@@ -253,11 +253,17 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     override func loadView() { view = NSView() }
 
+    /// The terminal text size setting (Appearance). The Nerd Font stays — themed prompts draw
+    /// their segments with its glyphs — with the system monospace as the fallback.
+    @objc private func applyTextSize() {
+        let size = DS.Text.CodeSize.terminal
+        terminalView.font = NSFont(name: "MesloLGS-NF-Regular", size: size) ?? DS.Text.code(size)
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
-        if let nerdFont = NSFont(name: "MesloLGS-NF-Regular", size: 14) {
-            terminalView.font = nerdFont
-        }
+        applyTextSize()
+        NotificationCenter.default.addObserver(self, selector: #selector(applyTextSize), name: DS.Text.CodeSize.didChangeNotification, object: nil)
         // SwiftTerm's own defaults are a ~54%-gray foreground on a pure black background —
         // legible but noticeably dim next to the editor. Terminal background is deliberately
         // darker than the editor's own (near-black rather than matching exactly) — a common

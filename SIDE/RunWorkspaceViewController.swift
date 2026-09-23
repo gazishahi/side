@@ -175,7 +175,10 @@ final class RunWorkspaceViewController: NSViewController {
         taskRow.setAccessibilityRole(.group)
         taskRow.setAccessibilityLabel("Tasks")
         view.addSubview(taskRow)
-        statusLine.lineBreakMode = .byTruncatingHead
+        // One line; a long path gives way from its start so the exit and duration stay readable.
+        statusLine.usesSingleLineMode = true
+        statusLine.maximumNumberOfLines = 1
+        statusLine.cell?.lineBreakMode = .byTruncatingHead
         statusLine.alignment = .right
         statusLine.translatesAutoresizingMaskIntoConstraints = false
         statusLine.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -442,6 +445,10 @@ final class RunWorkspaceViewController: NSViewController {
             parts.append(agentTab.map { $0 != activeSessionIndex && sessions.count > 1 ? "running \(task) in tab \($0 + 1)" : "running \(task)" } ?? "running \(task)")
         }
         for part in parts { text.append(NSAttributedString(string: " \u{00B7} " + part, attributes: base)) }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingHead
+        paragraph.alignment = .right
+        text.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
         statusLine.attributedStringValue = text
         statusLine.toolTip = outside ? "Outside this track's worktree \u{2014} agent commands in this terminal always ask first." : cwd
     }

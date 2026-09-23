@@ -13,6 +13,8 @@ final class AppearanceViewController: NSViewController {
     private let sampleCode = NSTextField(labelWithString: "let sample = \"code and diffs\"")
     private var titleLabel = NSTextField(labelWithString: "Appearance")
     private var scaleLabel = NSTextField(labelWithString: "Text size:")
+    private let editorSizePopup = NSPopUpButton()
+    private let terminalSizePopup = NSPopUpButton()
 
     override func loadView() { view = NSView() }
 
@@ -48,7 +50,23 @@ final class AppearanceViewController: NSViewController {
         scaleRow.orientation = .horizontal
         scaleRow.spacing = DS.Spacing.m
 
-        let note = NSTextField(wrappingLabelWithString: "Applies to Side's own interface — stage headers, transcripts, diffs, lists, and this window. The editor's and terminal's own text size is set separately, in Make and Run.")
+        for (popup, current, action) in [(editorSizePopup, DS.Text.CodeSize.editor, #selector(editorSizeChanged)), (terminalSizePopup, DS.Text.CodeSize.terminal, #selector(terminalSizeChanged))] {
+            for size in DS.Text.CodeSize.choices {
+                popup.addItem(withTitle: "\(Int(size)) pt")
+                popup.lastItem?.representedObject = Double(size)
+            }
+            popup.selectItem(at: DS.Text.CodeSize.choices.firstIndex(of: current) ?? DS.Text.CodeSize.choices.firstIndex(of: DS.Text.CodeSize.standard) ?? 0)
+            popup.target = self
+            popup.action = action
+        }
+        let editorRow = NSStackView(views: [NSTextField(labelWithString: "Editor text:"), editorSizePopup])
+        editorRow.orientation = .horizontal
+        editorRow.spacing = DS.Spacing.m
+        let terminalRow = NSStackView(views: [NSTextField(labelWithString: "Terminal text:"), terminalSizePopup])
+        terminalRow.orientation = .horizontal
+        terminalRow.spacing = DS.Spacing.m
+
+        let note = NSTextField(wrappingLabelWithString: "Text size applies to Side's own interface — stage headers, transcripts, diffs, lists, and this window. The editor and terminal have their own sizes.")
         note.textColor = .tertiaryLabelColor
         note.translatesAutoresizingMaskIntoConstraints = false
         note.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true
@@ -59,7 +77,7 @@ final class AppearanceViewController: NSViewController {
         samples.spacing = DS.Spacing.s
         sampleCaption.textColor = .secondaryLabelColor
 
-        let stack = NSStackView(views: [titleLabel, themeRow, scaleRow, note, samples])
+        let stack = NSStackView(views: [titleLabel, themeRow, scaleRow, editorRow, terminalRow, note, samples])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = DS.Spacing.l
@@ -94,6 +112,16 @@ final class AppearanceViewController: NSViewController {
         sampleCaption.font = DS.Text.caption()
         sampleCode.font = DS.Text.code()
         (view.subviews.first as? NSStackView)?.layoutSubtreeIfNeeded()
+    }
+
+    @objc private func editorSizeChanged() {
+        guard let size = editorSizePopup.selectedItem?.representedObject as? Double else { return }
+        DS.Text.CodeSize.editor = CGFloat(size)
+    }
+
+    @objc private func terminalSizeChanged() {
+        guard let size = terminalSizePopup.selectedItem?.representedObject as? Double else { return }
+        DS.Text.CodeSize.terminal = CGFloat(size)
     }
 
     @objc private func scaleChanged() {

@@ -146,7 +146,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let externalChangeLabel = NSTextField(labelWithString: "")
     private var lspManager: LSPManager?
     /// Trails Make's tab strip in the top row (Direction 02 §4.5).
-    let lspStatusButton = NSButton(image: NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Language server not installed") ?? NSImage(), target: nil, action: nil)
+    /// The active file's language server, trailing the tab strip: caption + dot (§4.5).
+    let lspStatusButton = LSPStatusChip()
     private var lspInstallPopover: NSPopover?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
@@ -182,13 +183,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
     private static let editorBackground = DS.Color.canvas
-    private static let editorFont = DS.Text.code(14, weight: .regular)
+    /// At the editor text-size setting (Appearance), not the interface scale.
+    private static var editorFont: NSFont { DS.Text.editor() }
     private static let editorTextColor = NSColor.labelColor
 
     override func loadView() { view = NSView() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(self, selector: #selector(editorTextSizeChanged), name: DS.Text.CodeSize.didChangeNotification, object: nil)
         // Undo and redo can land the buffer back on what's saved; typing never can, so only
         // these two re-check (a hash of the buffer, never on every keystroke).
         for name in [Notification.Name.NSUndoManagerDidUndoChange, Notification.Name.NSUndoManagerDidRedoChange] {
@@ -202,9 +205,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         buildMenu()
         configureQuickOpenKeys()
         refreshRecentProjectsList()
-        lspStatusButton.bezelStyle = .texturedRounded
-        lspStatusButton.isBordered = false
-        lspStatusButton.contentTintColor = .systemYellow
         lspStatusButton.target = self
         lspStatusButton.action = #selector(showLSPStatusPopover)
         lspStatusButton.isHidden = true
@@ -310,7 +310,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         ])
         NSLayoutConstraint.activate([
             tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: lspStatusButton.leadingAnchor, constant: -DS.Spacing.s), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            lspStatusButton.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), lspStatusButton.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor), lspStatusButton.widthAnchor.constraint(equalToConstant: 24),
+            lspStatusButton.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), lspStatusButton.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
             tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1)
         ])
@@ -1529,19 +1529,37 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         onFileOpened?(tab.url)
     }
 
-    /// Drives the title-bar warning glyph: visible only when the active file's extension has a
-    /// registered, installable language server that isn't actually on PATH. Never shown for
-    /// sourcekit-lsp (no installFormula) since there's nothing the user could do about that here.
+    /// The editor text size changed in Appearance: every open text tab re-renders at it now,
+    /// not only files opened afterwards.
+    @objc private func editorTextSizeChanged() {
+        for tab in openTabs where tab.kind == .text {
+            SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+        }
+        editor.font = Self.editorFont
+        editor.typingAttributes = [.foregroundColor: Self.editorTextColor, .font: Self.editorFont]
+        gutter.invalidate()
+    }
+
+    /// The active file's language server as a caption and a dot: ready, starting (the working
+    /// ring), stopped, or not installed — the last one clickable to install. Hidden for files
+    /// with no server, and for a missing server the user can't install from here (sourcekit-lsp).
     private func updateLSPIndicator() {
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
               let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension),
-              entry.installFormula != nil,
-              lspManager?.isUnavailable(forExtension: openTabs[index].url.pathExtension) == true else {
+              let state = lspManager?.serverState(forExtension: openTabs[index].url.pathExtension), state != .none,
+              state != .unavailable || entry.installFormula != nil else {
             lspStatusButton.isHidden = true
             return
         }
+        let language = LSPStatusChip.languageName(entry.languageId)
+        switch state {
+        case .running: lspStatusButton.set(state: .verified, text: language, clickable: false, tip: "\(language) language server running")
+        case .starting: lspStatusButton.set(state: .working, text: "\(language) \u{00B7} starting", clickable: false, tip: "Starting the \(language) language server")
+        case .stopped: lspStatusButton.set(state: .failed, text: "\(language) \u{00B7} stopped", clickable: false, tip: "The \(language) language server stopped \u{2014} it restarts on the next edit")
+        case .unavailable: lspStatusButton.set(state: .needsYou, text: "\(language) \u{00B7} not installed", clickable: true, tip: "\(language) language server not installed \u{2014} click to install")
+        case .none: break
+        }
         lspStatusButton.isHidden = false
-        lspStatusButton.toolTip = "\(entry.languageId.capitalized) language server not installed — click to install"
     }
 
     @objc private func showLSPStatusPopover() {
@@ -3864,3 +3882,60 @@ private final class PaletteRowView: NSTableRowView {
         NSBezierPath(roundedRect: bounds.insetBy(dx: 8, dy: 1), xRadius: 8, yRadius: 8).fill()
     }
 }
+
+/// Make's language-server indicator: `DS.StatusDot` + a caption, as status is everywhere else
+/// (§2.4). Only the not-installed state is a button — the rest just say what's true.
+final class LSPStatusChip: NSButton {
+    private let dot = DS.StatusDot(state: .idle)
+    private var clickable = false
+
+    init() {
+        super.init(frame: .zero)
+        isBordered = false
+        title = ""
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(dot)
+        NSLayoutConstraint.activate([
+            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func set(state: DS.StatusState, text: String, clickable: Bool, tip: String) {
+        dot.state = state
+        self.clickable = clickable
+        attributedTitle = NSAttributedString(string: text, attributes: [
+            .font: DS.Text.caption(clickable ? .medium : .regular),
+            .foregroundColor: clickable ? NSColor.labelColor : NSColor.secondaryLabelColor,
+        ])
+        toolTip = tip
+        setAccessibilityLabel(tip)
+        invalidateIntrinsicContentSize()
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let size = attributedTitle.size()
+        return NSSize(width: ceil(size.width) + 18, height: 22)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let size = attributedTitle.size()
+        attributedTitle.draw(at: NSPoint(x: 16, y: (bounds.height - size.height) / 2))
+    }
+    override func mouseDown(with event: NSEvent) { if clickable { super.mouseDown(with: event) } }
+    override func accessibilityPerformPress() -> Bool { clickable ? super.accessibilityPerformPress() : false }
+
+    static func languageName(_ languageId: String) -> String {
+        switch languageId {
+        case "typescript", "typescriptreact": return "TypeScript"
+        case "javascript", "javascriptreact": return "JavaScript"
+        case "python": return "Python"
+        case "swift": return "Swift"
+        case "rust": return "Rust"
+        case "go": return "Go"
+        default: return languageId.prefix(1).uppercased() + languageId.dropFirst()
+        }
+    }
+}
+
