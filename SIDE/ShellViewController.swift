@@ -107,10 +107,10 @@ final class ShellViewController: NSViewController {
         tracksVC.onSwitchRequested = { [weak self] track, completion in
             self?.switchToTrack(track, completion: completion)
         }
-        tracksVC.onReviewRequested = { [weak self] track in
+        tracksVC.onOpenStageRequested = { [weak self] track, stage in
             guard let self else { return }
-            guard track.status != .active else { self.show(.think); return }
-            self.switchToTrack(track, landOn: .think, completion: { _ in })
+            guard track.status != .active else { self.show(stage); return }
+            self.switchToTrack(track, landOn: stage, completion: { _ in })
         }
         tracksVC.onCreateTrackRequested = { [weak self] completion in
             self?.confirmCloseAllUnsaved(completion: completion)

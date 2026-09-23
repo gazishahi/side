@@ -26,8 +26,13 @@ final class TracksWorkspaceViewController: NSViewController {
     private let documentContainer = FocusableContainerView()
     private let contentStack = NSStackView()
 
-    private let newTrackButton = NSButton(title: "New Track…", target: nil, action: nil)
-    private let switchExistingBranchButton = NSButton(title: "Switch to Existing Branch…", target: nil, action: nil)
+    private let newTrackButton = NSButton(title: "New Track", target: nil, action: nil)
+    /// Filters intent and branch — archived tracks included (constitution: "search retrieves
+    /// archived work").
+    private let searchField = NSSearchField()
+    private var searchQuery: String { searchField.stringValue.trimmingCharacters(in: .whitespaces) }
+    /// Branches Side didn't create, fetched off the render path; one line, not rows.
+    private var untrackedBranchCount = 0
     private let showArchivedButton = NSButton(checkboxWithTitle: "Show Archived", target: nil, action: nil)
     private let archivedCountLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
@@ -64,12 +69,8 @@ final class TracksWorkspaceViewController: NSViewController {
     /// to any uncommitted changes so it can be surfaced to the user.
     var onSwitchRequested: ((Track, @escaping (TrackSwitchOutcome?) -> Void) -> Void)?
 
-    /// Jump straight to the review from the ledger row — the whole point of the row's
-    /// state-dependent primary button surfacing "Review" instead of just "Switch" once a track
-    /// needs a decision. For the active track this is just a stage switch; for any other track
-    /// it's ShellViewController's job to switch to it first (same guard `onSwitchRequested`
-    /// goes through) and land on Think instead of Make.
-    var onReviewRequested: ((Track) -> Void)?
+    /// A verb that lands on a specific stage — Review's "Review" goes to Review, not Think.
+    var onOpenStageRequested: ((Track, ShellViewController.Stage) -> Void)?
 
     /// ShellViewController resolves unsaved Make edits before letting a new track's checkout
     /// proceed — same guard `onSwitchRequested` uses, since creating a track moves `HEAD` just
@@ -144,11 +145,18 @@ final class TracksWorkspaceViewController: NSViewController {
 
         newTrackButton.target = self
         newTrackButton.action = #selector(newTrackTapped)
-        newTrackButton.bezelStyle = .rounded
+        newTrackButton.bezelStyle = .push
+        // The screen's one accent-filled action (§4 shared rules).
+        newTrackButton.bezelColor = .controlAccentColor
+        newTrackButton.keyEquivalent = "\r"
 
-        switchExistingBranchButton.target = self
-        switchExistingBranchButton.action = #selector(switchExistingBranchTapped)
-        switchExistingBranchButton.bezelStyle = .rounded
+        searchField.placeholderString = "Search tracks"
+        searchField.sendsSearchStringImmediately = true
+        searchField.target = self
+        searchField.action = #selector(searchChanged)
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        searchField.setAccessibilityLabel("Search tracks")
 
         showArchivedButton.target = self
         showArchivedButton.action = #selector(showArchivedToggled)
@@ -164,7 +172,7 @@ final class TracksWorkspaceViewController: NSViewController {
         topControlsRow.orientation = .horizontal
         topControlsRow.alignment = .centerY
         topControlsRow.spacing = DS.Spacing.xl
-        [newTrackButton, switchExistingBranchButton, showArchivedButton, archivedCountLabel, statusLabel].forEach(topControlsRow.addArrangedSubview)
+        [newTrackButton, searchField, showArchivedButton, archivedCountLabel, statusLabel].forEach(topControlsRow.addArrangedSubview)
 
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
@@ -223,6 +231,7 @@ final class TracksWorkspaceViewController: NSViewController {
         refreshTopHeader()
         renderLedger()
         refreshGitSummariesIfNeeded()
+        refreshUntrackedBranchCount()
     }
 
     private func refreshGitSummariesIfNeeded() {
@@ -264,7 +273,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let hasProject = trackStore != nil
         let isRepo = hasProject && trackStore?.repoState != .notAGitRepo
         newTrackButton.isEnabled = isRepo
-        switchExistingBranchButton.isEnabled = isRepo
+        searchField.isEnabled = isRepo
         showArchivedButton.isEnabled = isRepo
         guard hasProject else {
             let banner = makeInfoBannerCard(
@@ -297,36 +306,73 @@ final class TracksWorkspaceViewController: NSViewController {
         }
 
         let needsYou = needsYouTracks()
-        let families = families()
-        if needsYou.isEmpty && families.isEmpty {
-            let empty = NSTextField(labelWithString: "No tracks yet — create one to get started.")
+        let pinnedIDs = Set(needsYou.map(\.id))
+        // Everything not pinned, flat on canvas; a pinned track appears once, in the group.
+        let rest = families().map { $0.filter { !pinnedIDs.contains($0.id) } }.filter { !$0.isEmpty }
+        if needsYou.isEmpty && rest.isEmpty {
+            let empty = NSTextField(labelWithString: searchQuery.isEmpty ? "No tracks yet — create one to get started." : "No tracks match \u{201C}\(searchQuery)\u{201D}.")
             empty.font = DS.Text.body()
             empty.textColor = .tertiaryLabelColor
             contentStack.addArrangedSubview(empty)
             empty.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
         } else {
-            // Pinned above everything else, including Active — a blocked agent on a `.waiting`
-            // track would otherwise sink into a group that reads as "nothing happening." Drawn
-            // from activity, not `TrackStatus`, so the same track still appears again below in
-            // its normal status group; this section exists purely to make sure it isn't missed.
+            // Pinned first, on `raised` — the one grouped surface on the stage (§4.1). Drawn
+            // from activity, not `TrackStatus`: a blocked agent on a `.waiting` track would
+            // otherwise sink into rows that read as "nothing happening."
             if !needsYou.isEmpty {
-                let group = makeGroup(label: "Needs You", tracks: needsYou)
+                let group = makeGroup(label: "NEEDS YOU", tracks: needsYou)
                 contentStack.addArrangedSubview(group)
                 group.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
             }
-            for family in families {
-                let card = makeCard(tracks: family)
-                contentStack.addArrangedSubview(card)
-                card.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            if !rest.isEmpty {
+                let list = makeRows(tracks: rest.flatMap { $0 }, onRaised: false)
+                contentStack.addArrangedSubview(list)
+                list.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
             }
+        }
+        if untrackedBranchCount > 0 && searchQuery.isEmpty {
+            let line = makeUntrackedBranchesLine(count: untrackedBranchCount)
+            contentStack.addArrangedSubview(line)
+            line.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
         }
 
         updateArchivedCountLabel()
     }
 
+    /// Archived work shows when asked for — the toggle, or a search, which reaches it too.
     private func visibleTracks() -> [Track] {
         let all = trackStore?.tracks ?? []
-        return showArchived ? all : all.filter { $0.status != .archived }
+        let query = searchQuery
+        guard !query.isEmpty else { return showArchived ? all : all.filter { $0.status != .archived } }
+        return all.filter { $0.intent.localizedCaseInsensitiveContains(query) || $0.branchName.localizedCaseInsensitiveContains(query) }
+    }
+
+    @objc private func searchChanged() { renderLedger() }
+
+    /// One line per project for branches Side didn't create (§4.1) — adopting one is the
+    /// existing "switch to an existing branch" flow.
+    private func makeUntrackedBranchesLine(count: Int) -> NSView {
+        let label = NSTextField(labelWithString: count == 1 ? "1 untracked branch" : "\(count) untracked branches")
+        label.font = DS.Text.caption()
+        label.textColor = .secondaryLabelColor
+        let adopt = NSButton(title: "", target: self, action: #selector(switchExistingBranchTapped))
+        adopt.isBordered = false
+        adopt.attributedTitle = NSAttributedString(string: "Adopt…", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+        let row = NSStackView(views: [label, adopt])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = DS.Spacing.m
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+        return row
+    }
+
+    private func refreshUntrackedBranchCount() {
+        guard let store = trackStore, store.repoState != .notAGitRepo else { return }
+        store.availableBranchesToAdopt { [weak self] branches in
+            guard let self, self.untrackedBranchCount != branches.count else { return }
+            self.untrackedBranchCount = branches.count
+            self.renderLedger()
+        }
     }
 
     /// Grouped by lineage rather than by status — a stacked track's card is its root plus every
@@ -350,10 +396,14 @@ final class TracksWorkspaceViewController: NSViewController {
         func collect(_ track: Track) -> [Track] {
             [track] + (childrenOf[track.id] ?? []).flatMap(collect)
         }
+        // Live families first, then parked/finished ones; newest first within each, so the
+        // oldest parked work sinks to the bottom (§4.1).
+        func isResting(_ family: [Track]) -> Bool { family.allSatisfy { [.parked, .completed, .archived].contains($0.status) } }
         return roots
             .map(collect)
             .sorted { lhs, rhs in
-                (lhs.map(\.lastActiveAt).max() ?? .distantPast) > (rhs.map(\.lastActiveAt).max() ?? .distantPast)
+                if isResting(lhs) != isResting(rhs) { return !isResting(lhs) }
+                return (lhs.map(\.lastActiveAt).max() ?? .distantPast) > (rhs.map(\.lastActiveAt).max() ?? .distantPast)
             }
     }
 
@@ -385,26 +435,26 @@ final class TracksWorkspaceViewController: NSViewController {
         groupStack.alignment = .leading
         groupStack.spacing = DS.Spacing.s
 
+        // Uppercase only for 11 pt section labels (§4 shared rules).
         let labelField = NSTextField(labelWithString: label)
-        labelField.font = DS.Text.body(.semibold)
+        labelField.font = DS.Text.custom(11, weight: .semibold)
         labelField.textColor = .secondaryLabelColor
         groupStack.addArrangedSubview(labelField)
 
-        let card = makeCard(tracks: tracks)
+        let card = makeRows(tracks: tracks, onRaised: true)
         groupStack.addArrangedSubview(card)
         card.widthAnchor.constraint(equalTo: groupStack.widthAnchor).isActive = true
 
         return groupStack
     }
 
-    /// The actual "card": one rounded, stroked container per status, holding its rows with
-    /// hairline dividers between them — the inset-grouped-list pattern System Settings and
-    /// Reminders use, not a table and not a stack of independently floating rows.
-    private func makeCard(tracks: [Track]) -> NSView {
+    /// Rows with hairlines between them. On `raised` (the pinned group) the tone *is* the card,
+    /// with 6/14 padding; everywhere else the rows sit flat on canvas (§4.1).
+    private func makeRows(tracks: [Track], onRaised: Bool) -> NSView {
         let card = NSView()
         card.wantsLayer = true
         card.layer?.cornerRadius = DS.Radius.surface
-        card.bindLayerBackground(DS.Color.raised)
+        if onRaised { card.bindLayerBackground(DS.Color.raised) }
         card.layer?.masksToBounds = true
 
         let rowsStack = NSStackView()
@@ -418,12 +468,14 @@ final class TracksWorkspaceViewController: NSViewController {
             // for the last child it stops at this row's curve.
             let nextIsChild = index + 1 < ordered.count && ordered[index + 1].indent
             let row = makeRow(for: entry.track, indent: entry.indent, connectorContinues: entry.indent && nextIsChild)
+            row.hoverTone = onRaised ? DS.Color.overlay : DS.Color.raised
+            row.layer?.cornerRadius = DS.Radius.control
             rowsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
             if index < ordered.count - 1 {
                 // When the next row is a child, inset the hairline past the connector column so
                 // the branch line runs unbroken from parent to child instead of being sliced.
-                let inset: CGFloat = nextIsChild ? 34 : 0
+                let inset: CGFloat = nextIsChild ? 14 + TrackRowView.indentWidth : 0
                 let hairlineRow = NSView()
                 hairlineRow.translatesAutoresizingMaskIntoConstraints = false
                 let hairline = NSBox()
@@ -445,11 +497,12 @@ final class TracksWorkspaceViewController: NSViewController {
         }
 
         card.addSubview(rowsStack)
+        let padding: CGFloat = onRaised ? 6 : 0
         NSLayoutConstraint.activate([
-            rowsStack.topAnchor.constraint(equalTo: card.topAnchor),
+            rowsStack.topAnchor.constraint(equalTo: card.topAnchor, constant: padding),
             rowsStack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
             rowsStack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            rowsStack.bottomAnchor.constraint(equalTo: card.bottomAnchor)
+            rowsStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -padding)
         ])
         return card
     }
@@ -501,16 +554,15 @@ final class TracksWorkspaceViewController: NSViewController {
         )
         row.menu = buildContextMenu(for: track)
         row.onDoubleClick = { [weak self] in self?.requestSwitch(to: track) }
-        row.onPrimaryActionTapped = { [weak self] kind in
+        row.onVerb = { [weak self] verb in
             guard let self else { return }
-            switch kind {
-            case .watch: self.requestSwitch(to: track)
-            case .review: self.onReviewRequested?(track)
-            case .markReviewReady:
-                self.trackStore?.setStatus(.reviewReady, for: track)
-                self.runnerManager?.existingRunner(forTrackKey: track.branchName)?.acknowledgeCompletion()
+            switch verb {
+            case .respond, .retry: self.onOpenStageRequested?(track, .think)
+            case .review: self.onOpenStageRequested?(track, .review)
+            case .open, .resume: self.requestSwitch(to: track)
             }
         }
+        row.onWatch = { [weak self] in self?.onOpenStageRequested?(track, .think) }
         row.onMenuButtonTapped = { [weak self] button in
             guard let self else { return }
             self.buildContextMenu(for: track).popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
@@ -1138,29 +1190,39 @@ private final class TrackConnectorView: NSView {
     }
 }
 
-/// What the row's single primary button does — exactly the three states the plan calls for,
-/// plus no button at all (the active track with nothing to report — you're already looking at
-/// it, there's nothing to switch to or review yet).
-private enum TrackRowPrimaryAction {
-    case watch
-    case review
-    case markReviewReady
+/// A row's trailing action is the specific verb for what the track needs, never a stage name
+/// that goes somewhere else (Direction 02 §4.1, audit A-3).
+enum TrackRowVerb: Equatable {
+    case respond   // an approval or question is waiting → Think
+    case retry     // the run failed → Think
+    case review    // review-ready, or a finished run nobody has looked at → Review
+    case open      // live work → switch to it
+    case resume    // parked, completed, archived → switch back to it
 
     var title: String {
         switch self {
-        case .watch: return "Watch"
+        case .respond: return "Respond"
+        case .retry: return "Retry"
         case .review: return "Review"
-        case .markReviewReady: return "Mark Review Ready"
+        case .open: return "Open"
+        case .resume: return "Resume"
         }
     }
 
-    /// `.review`/`.markReviewReady` stay on screen always — an agent needing you or a finished
-    /// run worth a look shouldn't be something you only discover by hovering every row. Plain
-    /// `.watch` (nothing agent-related going on) keeps the original hover-only behavior.
-    var alwaysVisible: Bool {
-        switch self {
-        case .watch: return false
-        case .review, .markReviewReady: return true
+    /// Attention verbs stay on screen; the rest appear on hover with the secondary actions.
+    var alwaysVisible: Bool { self == .respond || self == .retry || self == .review }
+
+    static func primary(status: TrackStatus, activity: AgentActivity) -> TrackRowVerb {
+        switch activity {
+        case .needsYou: return .respond
+        case .failed: return .retry
+        case .doneUnread: return .review
+        case .none, .working, .doneSeen: break
+        }
+        switch status {
+        case .reviewReady: return .review
+        case .parked, .completed, .archived: return .resume
+        case .active, .waiting: return .open
         }
     }
 }
@@ -1169,25 +1231,26 @@ private enum TrackRowPrimaryAction {
 /// (secondary), and a primary-action/kebab pair. The kebab always only appears on hover; the
 /// primary button does too *unless* it's `.review`/`.markReviewReady`, per `alwaysVisible` above.
 private final class TrackRowView: NSView {
-    var onPrimaryActionTapped: ((TrackRowPrimaryAction) -> Void)?
+    var onVerb: ((TrackRowVerb) -> Void)?
+    /// "Watch": straight to the track's conversation, whatever its state.
+    var onWatch: (() -> Void)?
     var onMenuButtonTapped: ((NSButton) -> Void)?
     var onDoubleClick: (() -> Void)?
 
     private let actionsStack = NSStackView()
     private let primaryButton = NSButton(title: "", target: nil, action: nil)
+    private let watchButton = NSButton(title: "Watch", target: nil, action: nil)
     private let menuButton = NSButton(title: "\u{22EF}", target: nil, action: nil)
+    private let hoverActions = NSStackView()
     private var trackingArea: NSTrackingArea?
-    private let primaryAction: TrackRowPrimaryAction?
+    private let verb: TrackRowVerb
 
     private var accessibilitySummary = ""
 
+    static let indentWidth: CGFloat = 26
+
     init(intentText: String, branchText: String, metaText: String, activity: AgentActivity, status: TrackStatus, indent: Bool = false, connectorContinues: Bool = false) {
-        let isActiveTrack = status == .active
-        switch activity {
-        case .needsYou, .failed: primaryAction = .review
-        case .doneUnread: primaryAction = .markReviewReady
-        case .none, .working, .doneSeen: primaryAction = isActiveTrack ? nil : .watch
-        }
+        verb = TrackRowVerb.primary(status: status, activity: activity)
 
         super.init(frame: .zero)
         accessibilitySummary = "\(intentText), \(trackStatusText(for: status)), \(branchText)"
@@ -1195,8 +1258,19 @@ private final class TrackRowView: NSView {
         wantsLayer = true
 
         let intentLabel = NSTextField(labelWithString: intentText)
-        intentLabel.font = DS.Text.heading(.semibold)
-        intentLabel.textColor = .labelColor
+        // The subject is the only semibold (§4 shared rules). Parked work recedes a step;
+        // archived work recedes further — it's only on screen because it was asked for.
+        switch status {
+        case .parked, .completed:
+            intentLabel.font = DS.Text.body(.medium)
+            intentLabel.textColor = .secondaryLabelColor
+        case .archived:
+            intentLabel.font = DS.Text.body(.medium)
+            intentLabel.textColor = .quaternaryLabelColor
+        case .active, .waiting, .reviewReady:
+            intentLabel.font = DS.Text.body(.semibold)
+            intentLabel.textColor = .labelColor
+        }
         intentLabel.lineBreakMode = .byTruncatingTail
 
         let branchLabel = NSTextField(labelWithString: branchText)
@@ -1243,45 +1317,48 @@ private final class TrackRowView: NSView {
         mainStack.spacing = DS.Spacing.xxs
         mainStack.translatesAutoresizingMaskIntoConstraints = false
 
-        primaryButton.bezelStyle = .rounded
-        primaryButton.controlSize = .small
+        // Text actions, not bezels (§4 shared rules): the screen's one filled button is New Track.
+        Self.styleTextAction(primaryButton, title: verb.title, emphasized: verb.alwaysVisible)
         primaryButton.target = self
         primaryButton.action = #selector(handlePrimaryActionTapped)
-        if let primaryAction {
-            primaryButton.title = primaryAction.title
-            if primaryAction == .review { primaryButton.keyEquivalent = "" } // no accidental Enter-triggered switch
-        }
+        Self.styleTextAction(watchButton, title: "Watch", emphasized: false)
+        watchButton.target = self
+        watchButton.action = #selector(handleWatchTapped)
+        // Respond and Retry already go to the conversation; Watch would say the same thing twice.
+        watchButton.isHidden = verb == .respond || verb == .retry
 
         menuButton.isBordered = false
         menuButton.font = DS.Text.heading()
         menuButton.contentTintColor = .secondaryLabelColor
         menuButton.target = self
         menuButton.action = #selector(handleMenuTapped)
+        menuButton.setAccessibilityLabel("More actions")
+
+        hoverActions.orientation = .horizontal
+        hoverActions.alignment = .centerY
+        hoverActions.spacing = DS.Spacing.l
+        hoverActions.addArrangedSubview(menuButton)
+        hoverActions.addArrangedSubview(watchButton)
+        hoverActions.alphaValue = 0
 
         actionsStack.orientation = .horizontal
         actionsStack.alignment = .centerY
-        actionsStack.spacing = DS.Spacing.s
+        actionsStack.spacing = DS.Spacing.l
         actionsStack.translatesAutoresizingMaskIntoConstraints = false
-        actionsStack.alphaValue = (primaryAction?.alwaysVisible == true) ? 1 : 0
-        if let primaryAction {
-            actionsStack.addArrangedSubview(primaryButton)
-            // The always-visible actions get their own visual weight (a filled/tinted bezel)
-            // so a row worth acting on reads as such at a glance, not just as one more gray
-            // button among the hover-only ones.
-            primaryButton.contentTintColor = primaryAction.alwaysVisible ? Self.tintColor(for: activity) : nil
-        }
-        actionsStack.addArrangedSubview(menuButton)
+        actionsStack.addArrangedSubview(hoverActions)
+        actionsStack.addArrangedSubview(primaryButton)
+        primaryButton.alphaValue = verb.alwaysVisible ? 1 : 0
 
         addSubview(mainStack)
         addSubview(actionsStack)
         var constraints = [
-            mainStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent ? 34 : 14),
-            mainStack.topAnchor.constraint(equalTo: topAnchor, constant: 9),
-            mainStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
+            mainStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent ? 14 + Self.indentWidth : 14),
+            mainStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            mainStack.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 6),
             mainStack.trailingAnchor.constraint(lessThanOrEqualTo: actionsStack.leadingAnchor, constant: -12),
-            actionsStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            actionsStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             actionsStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            heightAnchor.constraint(greaterThanOrEqualToConstant: 42)
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 52)
         ]
         // The connector is what actually reads as "this branches from the row above" — a line
         // dropping from the parent that curves into this row, git-graph style, continuing
@@ -1291,7 +1368,7 @@ private final class TrackRowView: NSView {
             connector.translatesAutoresizingMaskIntoConstraints = false
             addSubview(connector)
             constraints.append(contentsOf: [
-                connector.widthAnchor.constraint(equalToConstant: 34),
+                connector.widthAnchor.constraint(equalToConstant: 14 + Self.indentWidth),
                 connector.leadingAnchor.constraint(equalTo: leadingAnchor),
                 connector.topAnchor.constraint(equalTo: topAnchor),
                 connector.bottomAnchor.constraint(equalTo: bottomAnchor)
@@ -1310,14 +1387,19 @@ private final class TrackRowView: NSView {
         trackingArea = area
     }
 
+    /// Set by the owner for rows sitting on a `raised` group, where hover takes `overlay`.
+    var hoverTone = DS.Color.raised
+
     override func mouseEntered(with event: NSEvent) {
-        bindLayerBackground(DS.Color.raised)
-        actionsStack.animator().alphaValue = 1
+        bindLayerBackground(hoverTone)
+        hoverActions.animator().alphaValue = 1
+        primaryButton.animator().alphaValue = 1
     }
 
     override func mouseExited(with event: NSEvent) {
         layer?.backgroundColor = nil
-        actionsStack.animator().alphaValue = (primaryAction?.alwaysVisible == true) ? 1 : 0
+        hoverActions.animator().alphaValue = 0
+        primaryButton.animator().alphaValue = verb.alwaysVisible ? 1 : 0
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -1330,7 +1412,7 @@ private final class TrackRowView: NSView {
     /// but leaves genuine control hits (the primary/kebab buttons) alone.
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let result = super.hitTest(point) else { return nil }
-        if result === self || result === primaryButton || result === menuButton { return result }
+        if result === self || result === primaryButton || result === menuButton || result === watchButton { return result }
         return self
     }
 
@@ -1342,12 +1424,35 @@ private final class TrackRowView: NSView {
         onDoubleClick?()
         return true
     }
-
-    @objc private func handlePrimaryActionTapped() {
-        guard let primaryAction else { return }
-        onPrimaryActionTapped?(primaryAction)
+    /// The hover-only verbs are reachable without a pointer (§4 shared rules, audit 30.7).
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        var actions = [NSAccessibilityCustomAction(name: verb.title) { [weak self] in
+            guard let self else { return false }
+            self.onVerb?(self.verb)
+            return true
+        }]
+        if !watchButton.isHidden {
+            actions.append(NSAccessibilityCustomAction(name: "Watch") { [weak self] in self?.onWatch?(); return true })
+        }
+        actions.append(NSAccessibilityCustomAction(name: "More actions") { [weak self] in
+            guard let self else { return false }
+            self.onMenuButtonTapped?(self.menuButton)
+            return true
+        })
+        return actions
     }
+
+    @objc private func handlePrimaryActionTapped() { onVerb?(verb) }
+    @objc private func handleWatchTapped() { onWatch?() }
     @objc private func handleMenuTapped() { onMenuButtonTapped?(menuButton) }
+
+    private static func styleTextAction(_ button: NSButton, title: String, emphasized: Bool) {
+        button.isBordered = false
+        button.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: DS.Text.body(emphasized ? .semibold : .regular),
+            .foregroundColor: emphasized ? NSColor.labelColor : NSColor.secondaryLabelColor,
+        ])
+    }
 
     /// Short label + semantic color for the always-on activity indicator in the meta row — `nil`
     /// for `.none`, since a track with no agent history shouldn't show an empty chip.
@@ -1359,15 +1464,6 @@ private final class TrackRowView: NSView {
         case .failed: return ("Failed", DS.Color.statusFailed)
         case .doneUnread: return ("Done", DS.Color.statusVerified)
         case .doneSeen: return ("Done", DS.Color.statusIdle)
-        }
-    }
-
-    private static func tintColor(for activity: AgentActivity) -> NSColor {
-        switch activity {
-        case .needsYou: return DS.Color.statusNeedsYou
-        case .failed: return DS.Color.statusFailed
-        case .doneUnread: return DS.Color.statusVerified
-        case .none, .working, .doneSeen: return .labelColor
         }
     }
 }
