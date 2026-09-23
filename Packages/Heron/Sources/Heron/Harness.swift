@@ -13,6 +13,9 @@ import Foundation
 public protocol Harness: AnyObject {
     /// The track this conversation belongs to — its branch name.
     var trackKey: String { get }
+    /// The outside agent's name ("Claude Code"), nil for Heron — the session pill says which
+    /// engine a track is on.
+    var harnessName: String? { get }
 
     // MARK: What's on screen
 
@@ -46,6 +49,8 @@ public protocol Harness: AnyObject {
     func send(_ text: String, attachments: [AgentImageAttachment])
     func stop()
     func resolve(proposalId: UUID, decision: ProposalDecision)
+    /// Answers a `.permissionRequest` entry with one of its options; nil cancels it.
+    func answerPermission(proposalId: UUID, optionId: String?)
     func acknowledgeCompletion()
     func editableMessage(turnId: UUID) -> (text: String, attachments: [AgentImageAttachment])?
     func editAndResend(turnId: UUID, text: String, attachments: [AgentImageAttachment])
@@ -72,4 +77,8 @@ extension Harness {
     public func editAndResend(turnId: UUID, text: String) { editAndResend(turnId: turnId, text: text, attachments: []) }
 }
 
-extension AgentRunner: Harness {}
+extension AgentRunner: Harness {
+    public var harnessName: String? { nil }
+    /// Heron asks through proposal cards, never permission prompts.
+    public func answerPermission(proposalId: UUID, optionId: String?) {}
+}

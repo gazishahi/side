@@ -51,6 +51,35 @@ public struct RunTranscriptEntry: Identifiable {
         /// "✓ Checkpoint (sha): intent" — a meta line that knows which checkpoint it names, so
         /// the transcript can open that checkpoint's files and diff in place (Direction 02 §5.1).
         case checkpoint(id: UUID, text: String)
+        /// An outside agent asking before it acts (ACP `session/request_permission`): the agent's
+        /// own options become the card's buttons (`SIDE_RFC_BYO_HARNESS.md` D3).
+        case permissionRequest(PermissionPresentation)
+    }
+}
+
+/// An outside agent's permission prompt and, once answered, which option was chosen.
+public struct PermissionPresentation {
+    public struct Option: Equatable {
+        public enum Kind: String { case allowOnce = "allow_once", allowAlways = "allow_always", rejectOnce = "reject_once", rejectAlways = "reject_always" }
+        public let id: String
+        public let name: String
+        public let kind: Kind?
+        public init(id: String, name: String, kind: Kind?) {
+            self.id = id
+            self.name = name
+            self.kind = kind
+        }
+    }
+    /// What the agent wants to do, in its own words (the tool call's title).
+    public let title: String
+    public let options: [Option]
+    /// The option picked; nil while waiting. "cancelled" when the turn was stopped first.
+    public var chosenOptionName: String?
+
+    public init(title: String, options: [Option], chosenOptionName: String? = nil) {
+        self.title = title
+        self.options = options
+        self.chosenOptionName = chosenOptionName
     }
 }
 

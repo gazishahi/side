@@ -146,5 +146,80 @@ final class StageCompositionTests: XCTestCase {
             XCTAssertEqual(FirstRun.shouldPresent(dismissed: c.dismissed, hasRecentProjects: c.recents, modelReady: c.model), c.shows, "\(c)")
         }
     }
+
+    /// Step 2 of the harness RFC: an ACP agent streams into the same transcript Heron fills —
+    /// text, tool lines with their results folded in, a permission card whose answer goes back —
+    /// and a missing agent fails with its install line, not silence.
+    func testAnACPAgentStreamsAsksAndFinishes() throws {
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: python.path), "needs python3 for the mock agent")
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("mock-acp-\(UUID().uuidString).py")
+        try Self.mockAgent.write(to: script, atomically: true, encoding: .utf8)
+        let agent = ACPAgent(id: "mock", displayName: "Mock", binary: "mock", installHint: "install mock")
+        let harness = ACPHarness(trackKey: "t", agent: agent,
+                                 launchProvider: { ACPLaunch(executable: python, arguments: [script.path], environment: ProcessInfo.processInfo.environment) },
+                                 rootProvider: { FileManager.default.temporaryDirectory })
+        defer { harness.teardown() }
+
+        let asked = expectation(description: "permission asked")
+        let finished = expectation(description: "turn finished")
+        // Every event during the wait re-reports the same phase.
+        asked.assertForOverFulfill = false
+        finished.assertForOverFulfill = false
+        harness.addObserver { _ in
+            if harness.phase == .awaitingApproval { asked.fulfill() }
+            if harness.phase == .finishedTurn { finished.fulfill() }
+        }
+        harness.send("go")
+        wait(for: [asked], timeout: 15)
+        guard let card = harness.entries.first(where: { if case .permissionRequest = $0.kind { return true }; return false }) else { return XCTFail("no card") }
+        harness.answerPermission(proposalId: card.id, optionId: "yes")
+        wait(for: [finished], timeout: 15)
+
+        let texts = harness.entries.compactMap { entry -> String? in
+            switch entry.kind {
+            case .assistantText(let text): return text
+            case .toolCall(let name, let summary): return name + summary
+            case .permissionRequest(let p): return "asked:" + (p.chosenOptionName ?? "")
+            default: return nil
+            }
+        }
+        XCTAssertEqual(texts, ["Looking.", "Read README.md — ✓ # Fixture", "Edit NOTES.md — ✓ Changed NOTES.md", "asked:Allow", "Done."])
+        XCTAssertEqual(harness.contextUsage().usedTokens, 1000)
+
+        // Not installed: a failure that says how to install, and the track shows it failed.
+        let missing = ACPHarness(trackKey: "t", agent: agent, launchProvider: { nil }, rootProvider: { FileManager.default.temporaryDirectory })
+        let failed = expectation(description: "failed")
+        failed.assertForOverFulfill = false
+        missing.addObserver { _ in if missing.phase == .blocked(.failed) { failed.fulfill() } }
+        missing.send("go")
+        wait(for: [failed], timeout: 10)
+        guard case .failure(let message)? = missing.entries.last?.kind else { return XCTFail("no failure") }
+        XCTAssertTrue(message.contains("install mock"), message)
+    }
+
+    private static let mockAgent = #"""
+import json, sys
+def send(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+def up(s, u): send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": s, "update": u}})
+prompt_id = None
+for line in sys.stdin:
+    m = json.loads(line); meth = m.get("method"); p = m.get("params", {})
+    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1}})
+    elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s"}})
+    elif meth == "session/prompt":
+        prompt_id = m["id"]
+        up("s", {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Look"}})
+        up("s", {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "ing."}})
+        up("s", {"sessionUpdate": "tool_call", "toolCallId": "a", "title": "Read README.md", "kind": "read", "status": "in_progress", "locations": [{"path": "README.md"}]})
+        up("s", {"sessionUpdate": "tool_call_update", "toolCallId": "a", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "# Fixture\nmore"}}]})
+        up("s", {"sessionUpdate": "tool_call", "toolCallId": "b", "title": "Edit NOTES.md", "kind": "edit", "status": "pending"})
+        send({"jsonrpc": "2.0", "id": 77, "method": "session/request_permission", "params": {"sessionId": "s", "toolCall": {"toolCallId": "b", "title": "Edit NOTES.md"}, "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"}, {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}})
+    elif meth is None and m.get("id") == 77:
+        up("s", {"sessionUpdate": "tool_call_update", "toolCallId": "b", "status": "completed", "content": [{"type": "diff", "path": "NOTES.md", "oldText": "a", "newText": "b"}]})
+        up("s", {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Done."}})
+        up("s", {"sessionUpdate": "usage_update", "used": 1000, "size": 100000})
+        send({"jsonrpc": "2.0", "id": prompt_id, "result": {"stopReason": "end_turn"}})
+"""#
 }
 

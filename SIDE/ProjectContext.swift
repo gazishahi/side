@@ -18,7 +18,7 @@ final class ProjectContext {
         // requires an explicit, non-optional-chained `self` for stored-property access even
         // when the fallback only runs after confirming `self` is nil).
         let fallbackRoot = projectRoot
-        return AgentRunnerManager(
+        let manager = AgentRunnerManager(
             sessionStore: sessionStore,
             projectPath: fallbackRoot.path,
             bridgeProvider: { [weak self] trackKey in self?.bridge(forTrackKey: trackKey) ?? .none },
@@ -27,6 +27,17 @@ final class ProjectContext {
             modelSelectionProvider: { [weak self] trackKey in self?.trackStore.modelSelection(forTrackKey: trackKey) ?? (nil, nil, nil) },
             trackContextProvider: { [weak self] trackKey in self?.trackSummaries(currentTrackKey: trackKey) ?? [] }
         )
+        // Outside agents (SIDE_RFC_BYO_HARNESS.md): the track says which; the login shell says
+        // where — the same PATH lookup and spawn environment the language servers use.
+        manager.agentProvider = { [weak self] trackKey in self?.trackStore.harness(forTrackKey: trackKey) }
+        manager.acpLaunchProvider = { agent in
+            // A hidden per-agent path (`SideACPAgentPath.<id>`) for an agent installed somewhere
+            // the shell doesn't look — and for checking the client against a mock agent.
+            let override = UserDefaults.standard.string(forKey: "SideACPAgentPath.\(agent.id)").map(URL.init(fileURLWithPath:))
+            guard let executable = override ?? LanguageServerRegistry.resolveExecutable(named: agent.binary) else { return nil }
+            return ACPLaunch(executable: executable, arguments: agent.arguments, environment: LanguageServerRegistry.environmentForSpawning())
+        }
+        return manager
     }()
 
     /// Every terminal in the project, per track (RFC R2). Here rather than in a window so a

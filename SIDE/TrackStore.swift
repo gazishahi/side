@@ -521,6 +521,18 @@ final class TrackStore {
         notifyChange()
     }
 
+    /// Which engine runs the track's conversation: an outside agent's id, or nil for Heron.
+    func setHarness(_ harnessId: String?, forTrackKey trackKey: String) {
+        guard let index = tracks.firstIndex(where: { $0.branchName == trackKey }), tracks[index].harnessId != harnessId else { return }
+        tracks[index].harnessId = harnessId
+        save()
+        notifyChange()
+    }
+
+    func harness(forTrackKey trackKey: String) -> ACPAgent? {
+        ACPAgent.agent(id: tracks.first { $0.branchName == trackKey }?.harnessId)
+    }
+
     func mode(forTrackKey trackKey: String) -> AgentMode {
         tracks.first { $0.branchName == trackKey }?.mode ?? .default
     }

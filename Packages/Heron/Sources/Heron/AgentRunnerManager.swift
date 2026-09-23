@@ -27,6 +27,11 @@ public final class AgentRunnerManager {
     /// One harness per track. Today always Heron's `AgentRunner`; the Agent Client Protocol client
     /// joins it here when a track picks an outside agent (`SIDE_RFC_BYO_HARNESS.md`).
     private var runners: [String: any Harness] = [:]
+    /// The outside agent a track runs on, nil for Heron. Set by the app, which stores the choice
+    /// on the track.
+    public var agentProvider: ((String) -> ACPAgent?)?
+    /// Finds an agent's executable (login-shell PATH) and its spawn environment. Called off-main.
+    public var acpLaunchProvider: (@Sendable (ACPAgent) -> ACPLaunch?)?
 
     /// Fires whenever any owned runner's phase or unseen-completion state changes, debounced so
     /// a Tracks ledger or stage badge driven by many runners doesn't relayout on every single
@@ -77,6 +82,16 @@ public final class AgentRunnerManager {
     /// only ever referenced by this manager, not by any external caller.
     public func runner(forTrackKey trackKey: String) -> any Harness {
         if let existing = runners[trackKey] { return existing }
+        if let agent = agentProvider?(trackKey), let launch = acpLaunchProvider {
+            let harness = ACPHarness(trackKey: trackKey, agent: agent, launchProvider: { launch(agent) },
+                                     rootProvider: { [rootProvider] in rootProvider(trackKey) })
+            harness.addObserver { [weak self] event in
+                guard case .phaseChanged = event else { return }
+                self?.scheduleChangeNotification()
+            }
+            runners[trackKey] = harness
+            return harness
+        }
         let runner = AgentRunner(
             trackKey: trackKey,
             sessionStore: sessionStore,

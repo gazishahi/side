@@ -641,6 +641,24 @@ final class ShellViewController: NSViewController {
     /// Called after every debounced runner-manager change. Diffs against `lastKnownNeedsYouTrackIDs`
     /// so a notification fires once per transition *into* needing attention, not once per
     /// recompute while it stays that way, and refreshes the dock badge either way.
+    // MARK: - Harness choice (SIDE_RFC_BYO_HARNESS.md)
+
+    /// A track's agent changed (Tracks › Agent): its old engine is put away and Think reattaches
+    /// to the new one. Every window runs this on the shared store's change; the first discards,
+    /// and any window showing the track reattaches.
+    private func syncHarnesses() {
+        guard let context = projectContext else { return }
+        for track in context.trackStore.tracks {
+            let wanted = ACPAgent.agent(id: track.harnessId)?.displayName
+            if let existing = context.runnerManager.existingRunner(forTrackKey: track.branchName), existing.harnessName != wanted {
+                context.runnerManager.discardRunner(forTrackKey: track.branchName)
+            }
+            if track.branchName == currentTrackKey, thinkVC.attachedHarnessName != wanted {
+                thinkVC.reloadForTrackSwitch(trackKey: currentTrackKey)
+            }
+        }
+    }
+
     // MARK: - First run (Direction 02 §6)
 
     private var firstRunSheet: NSWindow?
@@ -1056,6 +1074,7 @@ final class ShellViewController: NSViewController {
             // defeating "Open Track in New Window" (and any other case of two windows
             // deliberately looking at two different tracks) the moment either one changed.
             self.applyWindowChrome()
+            self.syncHarnesses()
         }
         // Same multicast reasoning as the TrackStore observer above — `context.runnerManager`
         // is shared across every window on this project, so this can't be a single-assignment

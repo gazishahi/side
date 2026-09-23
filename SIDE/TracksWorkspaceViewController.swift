@@ -937,6 +937,20 @@ final class TracksWorkspaceViewController: NSViewController {
             item.state = track.mode.autonomy == autonomy ? .on : .off
         }
         modeItem.submenu = modeMenu
+        // Which engine runs the conversation: Heron, or an outside agent on the user's own
+        // account (SIDE_RFC_BYO_HARNESS.md).
+        let agentItem = menu.addItem(withTitle: "Agent", action: nil, keyEquivalent: "")
+        let agentMenu = NSMenu()
+        let heron = agentMenu.addItem(withTitle: "Heron", action: #selector(setHarnessMenuItem(_:)), keyEquivalent: "")
+        heron.representedObject = [track, ""] as [Any]
+        heron.state = track.harnessId == nil ? .on : .off
+        agentMenu.addItem(NSMenuItem.separator())
+        for agent in ACPAgent.known {
+            let item = agentMenu.addItem(withTitle: agent.displayName, action: #selector(setHarnessMenuItem(_:)), keyEquivalent: "")
+            item.representedObject = [track, agent.id] as [Any]
+            item.state = track.harnessId == agent.id ? .on : .off
+        }
+        agentItem.submenu = agentMenu
         // Available regardless of status — the whole point is watching/working on two tracks
         // side by side, and that's just as useful for a parked or completed track as an active
         // one (reviewing old work while something else runs, say).
@@ -1003,6 +1017,12 @@ final class TracksWorkspaceViewController: NSViewController {
     /// Sets the autonomy axis of this track's mode — how much the agent may do without asking.
     /// Manual keeps every edit and command waiting; Guarded auto-runs allowlisted commands;
     /// Full also auto-applies edits. The command allowlist is a floor at every level.
+    @objc private func setHarnessMenuItem(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [Any], pair.count == 2,
+              let track = pair[0] as? Track, let id = pair[1] as? String else { return }
+        trackStore?.setHarness(id.isEmpty ? nil : id, forTrackKey: track.branchName)
+    }
+
     @objc private func setAutonomyMenuItem(_ sender: NSMenuItem) {
         guard let pair = sender.representedObject as? [Any], pair.count == 2,
               let track = pair[0] as? Track, let raw = pair[1] as? String,

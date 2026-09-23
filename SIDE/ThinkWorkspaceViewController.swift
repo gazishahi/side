@@ -102,6 +102,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
     private var attachedTrackKey: String?
     private var runner: (any Harness)?
+    /// Which engine this view is attached to (nil for Heron) — the shell compares it with the
+    /// track's choice to know when to reattach.
+    var attachedHarnessName: String? { runner?.harnessName }
     private var observerToken: UUID?
     /// Parallel to `runner.entries` — the view currently rendering each entry, so a streamed
     /// delta or a proposal resolution can update one block in place instead of rebuilding the
@@ -1075,7 +1078,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             return
         }
         let mode = currentMode()
-        var title = "\(resolvedSelectionModelName()) · \(mode.scope.displayName)"
+        // An outside agent names itself; Heron's model and scope don't apply to it (RFC D6).
+        var title = runner?.harnessName ?? "\(resolvedSelectionModelName()) · \(mode.scope.displayName)"
         var tint = NSColor.secondaryLabelColor
         if let runner {
             let usage = runner.contextUsage()
@@ -1341,6 +1345,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             label.stringValue = Self.condensedThinking(text)
         case .checkpoint(_, let text):
             (entryViews[index] as? CheckpointLineButton)?.setText(text)
+        case .permissionRequest(let presentation):
+            if let chosen = presentation.chosenOptionName { (entryViews[index] as? PermissionRequestView)?.showChoice(chosen) }
+        case .toolCall(let name, let summary):
+            // An outside agent reports a tool's result on its own line (ACP tool_call_update).
+            (entryViews[index] as? LinkedTextLine)?.configure(
+                text: "→ \(name)\(summary)", font: DS.Text.caption(), color: .secondaryLabelColor,
+                existingPath: { [weak self] path in self?.mentionedFileExists(path) ?? false }
+            )
         case .meta(let text):
             // Checkpoint markers are rewritten once the agent describes what it did, so a meta
             // line is not write-once. Without this the data updated and the label didn't: Review
@@ -1359,6 +1371,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         switch entry.kind {
         case .meta(let text):
             return makeLabel(text, font: DS.Text.body(), color: .tertiaryLabelColor)
+        case .permissionRequest(let presentation):
+            // An outside agent asking before it acts: its own options, its own words (RFC D3).
+            let card = PermissionRequestView(presentation: presentation)
+            let entryId = entry.id
+            card.onChoose = { [weak self] optionId in self?.runner?.answerPermission(proposalId: entryId, optionId: optionId) }
+            return card
         case .checkpoint(let id, let text):
             // Same quiet line as any meta note, but it opens that checkpoint's files and diff in
             // a sheet — no trip to Review to see what just changed (§5.1).
@@ -1461,7 +1479,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private static func spacing(before kind: RunTranscriptEntry.Kind) -> CGFloat {
         switch kind {
-        case .meta, .checkpoint, .userText, .userImage, .assistantText, .proposal, .commandProposal: return 8
+        case .meta, .checkpoint, .userText, .userImage, .assistantText, .proposal, .commandProposal, .permissionRequest: return 8
         case .toolCall, .toolResult, .failure, .thinking: return 4
         }
     }
@@ -3959,3 +3977,71 @@ private final class CheckpointLineButton: NSButton {
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     @objc private func open() { onOpen?() }
 }
+
+/// An outside agent's permission prompt: what it wants to do, and its own options as buttons —
+/// the allow options first and emphasised. Once answered, the choice replaces the buttons.
+private final class PermissionRequestView: NSView {
+    var onChoose: ((String) -> Void)?
+    private let buttonRow = NSStackView()
+    private let choiceLabel = NSTextField(labelWithString: "")
+
+    init(presentation: PermissionPresentation) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = DS.Radius.surface
+        bindLayerBackground(DS.Color.raised)
+        let title = NSTextField(wrappingLabelWithString: presentation.title)
+        title.font = DS.Text.body(.semibold)
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = DS.Spacing.m
+        let ordered = presentation.options.sorted { lhs, rhs in
+            func rank(_ option: PermissionPresentation.Option) -> Int {
+                switch option.kind { case .allowOnce: 0; case .allowAlways: 1; case .rejectOnce: 2; case .rejectAlways: 3; case nil: 4 }
+            }
+            return rank(lhs) < rank(rhs)
+        }
+        for (index, option) in ordered.enumerated() {
+            let button = NSButton(title: option.name, target: self, action: #selector(chose(_:)))
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.identifier = NSUserInterfaceItemIdentifier(option.id)
+            if index == 0, option.kind == .allowOnce { button.keyEquivalent = "\r" }
+            buttonRow.addArrangedSubview(button)
+        }
+        choiceLabel.font = DS.Text.caption(.medium)
+        choiceLabel.textColor = .secondaryLabelColor
+        choiceLabel.isHidden = true
+        buttonRow.addArrangedSubview(choiceLabel)
+        let stack = NSStackView(views: [title, buttonRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Spacing.m
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            title.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -24),
+        ])
+        if let chosen = presentation.chosenOptionName { showChoice(chosen) }
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Permission request: \(presentation.title)")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func showChoice(_ name: String) {
+        for view in buttonRow.arrangedSubviews where view is NSButton { view.isHidden = true }
+        choiceLabel.stringValue = name
+        choiceLabel.isHidden = false
+    }
+
+    @objc private func chose(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        onChoose?(id)
+    }
+}
+
