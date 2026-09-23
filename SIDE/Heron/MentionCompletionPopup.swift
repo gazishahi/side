@@ -57,6 +57,7 @@ final class MentionCompletionPopup: NSObject {
         background.state = .active
         background.wantsLayer = true
         background.layer?.cornerRadius = DS.Radius.surface
+        background.maskImage = DS.roundedMask(radius: DS.Radius.surface)
         background.layer?.masksToBounds = true
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("path"))

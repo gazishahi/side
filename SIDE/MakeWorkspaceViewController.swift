@@ -36,6 +36,10 @@ private struct OpenTab {
     /// Set when the file changed on disk while this tab had unsaved edits; cleared by Reload or
     /// Keep. A clean tab is simply reloaded instead.
     var hasExternalChange = false
+    /// The content as last loaded or saved, as a length and a hash — so undoing back to it
+    /// clears the unsaved state instead of leaving a file "edited" that matches disk.
+    var savedLength = 0
+    var savedHash = 0
     var lastSelectedRange = NSRange(location: 0, length: 0)
     var csvRows: [[String]] = []
     var diagnostics: [LSPDiagnostic] = []
@@ -192,6 +196,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Undo and redo can land the buffer back on what's saved; typing never can, so only
+        // these two re-check (a hash of the buffer, never on every keystroke).
+        for name in [Notification.Name.NSUndoManagerDidUndoChange, Notification.Name.NSUndoManagerDidRedoChange] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let managerID = (note.object as AnyObject?).map(ObjectIdentifier.init)
+                MainActor.assumeIsolated { self?.undoStateChanged(managerID) }
+            }
+        }
         LaunchSignposts.begin("makeViewDidLoad")
         buildView()
         buildMenu()
@@ -262,7 +274,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // tab (filled with the editor's own color, flush to the strip's bottom edge) read as
         // attached to the content below rather than floating in a bar.
         tabBar.wantsLayer = true
-        tabBar.bindLayerBackground(DS.Color.canvas)
+        // No fill and no seam line of its own: the strip sits in the window's top row, which
+        // takes the editor's surface, so the tabs and the file below are one sheet.
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
         let divider = NSBox()
@@ -270,14 +283,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         divider.borderType = .noBorder
         divider.fillColor = DS.Color.hairlineStrong
         divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.isHidden = true
         tabBar.addSubview(divider)
         tabBarStack.orientation = .horizontal
-        tabBarStack.alignment = .bottom
+        tabBarStack.alignment = .centerY
         tabBarStack.spacing = DS.Spacing.xxs
         tabBarStack.translatesAutoresizingMaskIntoConstraints = false
         // The strip scrolls once chips outgrow the window — the old required trailing
         // constraint literally forced the *window* to widen with every opened tab.
-        let tabScroll = NSScrollView()
+        let tabScroll = TabStripScrollView()
         tabScroll.drawsBackground = false
         tabScroll.hasHorizontalScroller = false
         tabScroll.hasVerticalScroller = false
@@ -434,13 +448,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         searchField.onCancel = { [weak self] in self?.dismissQuickOpen() }
     }
 
-    private let quickOpenRowHeight: CGFloat = 34
+    private let quickOpenRowHeight: CGFloat = 36
     private let quickOpenMaxVisibleRows = 8
 
+    private let paletteDivider = NSBox()
+
+    /// Spotlight's shape: one large borderless field, results below it on the same glass, a
+    /// divider only when there are results, and a height that is exactly its rows.
     private func configureQuickOpenPanel() {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("path"))
         resultsTable.addTableColumn(column)
         resultsTable.headerView = nil
+        // `.plain`, explicitly: the default (inset) style pads every row beyond `rowHeight`,
+        // which is what clipped a single result off the bottom of the surface.
+        resultsTable.style = .plain
         resultsTable.rowHeight = quickOpenRowHeight
         resultsTable.intercellSpacing = NSSize(width: 0, height: 0)
         resultsTable.backgroundColor = .clear
@@ -458,25 +479,41 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         scroll.contentInsets = NSEdgeInsetsZero
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        searchField.translatesAutoresizingMaskIntoConstraints = false
+        let glyph = NSImageView(image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)) ?? NSImage())
+        glyph.contentTintColor = .secondaryLabelColor
+        glyph.translatesAutoresizingMaskIntoConstraints = false
+        searchField.isBordered = false
+        searchField.isBezeled = false
+        searchField.drawsBackground = false
         searchField.focusRingType = .none
-        let divider = NSBox()
-        divider.boxType = .custom
-        divider.borderType = .noBorder
-        divider.fillColor = DS.Color.hairline
-        divider.translatesAutoresizingMaskIntoConstraints = false
+        searchField.font = DS.Text.custom(19)
+        searchField.cell?.usesSingleLineMode = true
+        searchField.cell?.lineBreakMode = .byTruncatingTail
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        paletteDivider.boxType = .custom
+        paletteDivider.borderType = .noBorder
+        paletteDivider.fillColor = DS.Color.hairline
+        paletteDivider.translatesAutoresizingMaskIntoConstraints = false
         let body = NSView()
         body.translatesAutoresizingMaskIntoConstraints = false
-        for view in [searchField, divider, scroll] as [NSView] { body.addSubview(view) }
+        for view in [glyph, searchField, paletteDivider, scroll] as [NSView] { body.addSubview(view) }
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: body.topAnchor), searchField.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 12),
-            searchField.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -12), searchField.heightAnchor.constraint(equalToConstant: 28),
-            divider.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 10), divider.leadingAnchor.constraint(equalTo: body.leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: body.trailingAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
-            scroll.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: body.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: body.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: body.bottomAnchor),
+            glyph.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 18),
+            glyph.centerYAnchor.constraint(equalTo: body.topAnchor, constant: Self.paletteHeaderHeight / 2),
+            searchField.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 10),
+            searchField.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -18),
+            searchField.centerYAnchor.constraint(equalTo: glyph.centerYAnchor),
+            paletteDivider.topAnchor.constraint(equalTo: body.topAnchor, constant: Self.paletteHeaderHeight),
+            paletteDivider.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            paletteDivider.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            paletteDivider.heightAnchor.constraint(equalToConstant: 1),
+            scroll.topAnchor.constraint(equalTo: paletteDivider.bottomAnchor, constant: Self.paletteListPadding),
+            scroll.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: body.bottomAnchor, constant: -Self.paletteListPadding),
         ])
-        paletteSurface = Self.makeFloatingPanelSurface(embedding: body, cornerRadius: DS.Radius.surface, padding: 12)
+        paletteSurface = Self.makeFloatingPanelSurface(embedding: body, cornerRadius: 16, padding: 0)
         paletteSurface.setAccessibilityElement(true)
         paletteSurface.setAccessibilityRole(.group)
         paletteSurface.setAccessibilityLabel("Palette")
@@ -541,14 +578,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
-    private static let paletteWidth: CGFloat = 560
-    private static let paletteChromeHeight: CGFloat = 12 + 28 + 10 + 1 + 6 + 12
+    private static let paletteWidth: CGFloat = 640
+    private static let paletteHeaderHeight: CGFloat = 54
+    private static let paletteListPadding: CGFloat = 6
 
     private func showQuickOpenPanel() {
         guard paletteIsOpen else { return }
-        let rows = resultCount
-        let visibleRows = min(quickOpenMaxVisibleRows, rows)
-        let height = Self.paletteChromeHeight + CGFloat(visibleRows) * quickOpenRowHeight
+        let rows = min(quickOpenMaxVisibleRows, resultCount)
+        paletteDivider.isHidden = rows == 0
+        let list = rows == 0 ? 0 : 1 + Self.paletteListPadding * 2 + CGFloat(rows) * quickOpenRowHeight
+        let height = Self.paletteHeaderHeight + list
         onPaletteShow?(NSSize(width: Self.paletteWidth, height: height))
         installQuickOpenDismissMonitors()
     }
@@ -655,6 +694,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         effect.blendingMode = .behindWindow
         effect.wantsLayer = true
         effect.layer?.cornerRadius = DS.Radius.surface
+        effect.maskImage = DS.roundedMask(radius: DS.Radius.surface)
         effect.layer?.masksToBounds = true
         effect.addSubview(padded)
         NSLayoutConstraint.activate([
@@ -1071,6 +1111,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tab.textStorage.replaceCharacters(in: fullRange, with: newContent)
         SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
         openTabs[index].dirty = false
+        openTabs[index].savedLength = (newContent as NSString).length
+        openTabs[index].savedHash = newContent.hashValue
         // The applier just wrote this file, so the stamp used for external-change detection has
         // to move with it — otherwise the next save or focus-in reports "changed on disk" about
         // Side's own write.
@@ -1369,6 +1411,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
         tab.undoManager.removeAllActions()
         openTabs[index].format = decoded.format
+        openTabs[index].savedLength = (decoded.text as NSString).length
+        openTabs[index].savedHash = decoded.text.hashValue
         openTabs[index].dirty = false
         openTabs[index].hasExternalChange = false
         openTabs[index].knownModificationDate = modificationDate(of: tab.url)
@@ -1640,6 +1684,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, textStorage: NSTextStorage(string: source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
                 tab.csvRows = rows
                 tab.format = decoded.format
+                tab.savedLength = (source as NSString).length
+                tab.savedHash = source.hashValue
                 self.openTabs.append(tab)
                 self.activeTabIndex = self.openTabs.count - 1
                 self.loadActiveTabIntoEditor()
@@ -2208,7 +2254,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let container = TabChipView()
         container.index = index
         container.isActive = isActive
-        container.title = tab.dirty ? "\(tab.url.lastPathComponent) •" : tab.url.lastPathComponent
+        container.title = tab.url.lastPathComponent
+        container.isDirty = tab.dirty
         container.toolTip = tab.isUntitled ? "Unsaved" : relativePath(tab.url)
         container.translatesAutoresizingMaskIntoConstraints = false
         container.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
@@ -2230,6 +2277,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         closeButton.isHidden = true
         container.addSubview(closeButton)
         container.closeButton = closeButton
+        container.updateCloseVisibility()
         NSLayoutConstraint.activate([
             closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
@@ -2660,45 +2708,34 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
 
         guard tableView === resultsTable else { return nil }
-        let id = NSUserInterfaceItemIdentifier("result")
-        let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
+        let id = NSUserInterfaceItemIdentifier("paletteRow")
+        let cell = tableView.makeView(withIdentifier: id, owner: self) as? PaletteCellView ?? PaletteCellView()
         cell.identifier = id
-        let text = cell.textField ?? NSTextField(labelWithString: "")
-        if cell.textField == nil {
-            cell.textField = text
-            text.translatesAutoresizingMaskIntoConstraints = false
-            text.font = DS.Text.code(12, weight: .regular)
-            text.lineBreakMode = .byTruncatingMiddle
-            cell.addSubview(text)
-            NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
-        }
-        text.lineBreakMode = .byTruncatingMiddle
         switch effectiveMode {
         case .commands:
             let command = commandMatches[row]
-            text.maximumNumberOfLines = 1
-            let attributed = NSMutableAttributedString(string: command.title, attributes: [.foregroundColor: NSColor.labelColor])
-            if let shortcut = command.shortcut {
-                attributed.append(NSAttributedString(string: "   \(shortcut)", attributes: [.foregroundColor: NSColor.tertiaryLabelColor]))
-            }
-            text.attributedStringValue = attributed
+            cell.configure(icon: Self.paletteSymbol("command"), title: command.title, detail: nil, trailing: command.shortcut)
         case .files:
-            text.stringValue = relativePath(matches[row])
+            let url = matches[row]
+            let relative = relativePath(url)
+            let folder = (relative as NSString).deletingLastPathComponent
+            cell.configure(icon: NSWorkspace.shared.icon(forFile: url.path), title: url.lastPathComponent, detail: folder.isEmpty ? nil : folder, trailing: nil)
         case .symbols:
             let symbol = symbolMatches[row]
-            text.stringValue = "\(symbol.name)  —  \(symbol.kind) · line \(symbol.line)"
+            cell.configure(icon: Self.paletteSymbol("function"), title: symbol.name, detail: "\(symbol.kind)", trailing: "line \(symbol.line)")
         case .text:
             let match = textMatches[row]
-            // Location first, dimmed; the matching line carries the answer. One line, tail-cut:
-            // an attributed value flips the field back to wrapping, and a wrapped row spilled its
-            // second line into the neighbour below.
-            text.maximumNumberOfLines = 1
-            text.lineBreakMode = .byTruncatingTail
-            let attributed = NSMutableAttributedString(string: "\(match.relativePath):\(match.line)  ", attributes: [.foregroundColor: NSColor.tertiaryLabelColor])
-            attributed.append(NSAttributedString(string: match.text, attributes: [.foregroundColor: NSColor.labelColor]))
-            text.attributedStringValue = attributed
+            cell.configure(icon: NSWorkspace.shared.icon(forFile: match.url.path), title: match.text, detail: nil, trailing: "\(match.relativePath):\(match.line)")
         }
         return cell
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        tableView === resultsTable ? PaletteRowView() : nil
+    }
+
+    private static func paletteSymbol(_ name: String) -> NSImage? {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         guard control === searchField else { return false }
@@ -2726,10 +2763,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var isLoadingTab = false
     private var pendingDiffWorkItem: DispatchWorkItem?
     private var pendingLSPWorkItem: DispatchWorkItem?
+    private func undoStateChanged(_ managerID: ObjectIdentifier?) {
+        guard let managerID, let index = openTabs.firstIndex(where: { ObjectIdentifier($0.undoManager) == managerID }), openTabs[index].kind == .text else { return }
+        let text = openTabs[index].textStorage.string
+        let matchesSaved = (text as NSString).length == openTabs[index].savedLength && text.hashValue == openTabs[index].savedHash
+        guard openTabs[index].dirty == matchesSaved else { return }
+        openTabs[index].dirty = !matchesSaved
+        if activeTabIndex == index { dirty = !matchesSaved }
+        rebuildTabBar()
+    }
+
     func textDidChange(_ notification: Notification) {
         guard !isLoadingTab else { return }
         dirty = true
-        if let index = activeTabIndex { openTabs[index].dirty = true }
+        if let index = activeTabIndex, !openTabs[index].dirty {
+            openTabs[index].dirty = true
+            rebuildTabBar()  // the tab's unsaved dot
+        }
         gutter.invalidate()
         scheduleHighlight()
         scheduleDiffRefresh()
@@ -3395,6 +3445,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 throw CocoaError(.fileWriteInapplicableStringEncoding, userInfo: [NSLocalizedDescriptionKey: "This file is \(format.encodingName), and the buffer now contains a character that encoding can't represent. Save As a new file to keep it as UTF-8."])
             }
             try data.write(to: url, options: .atomic)
+            openTabs[index].savedLength = (content as NSString).length
+            openTabs[index].savedHash = content.hashValue
             openTabs[index].knownModificationDate = modificationDate(of: url)
             openTabs[index].hasExternalChange = false
             if activeTabIndex == index { externalChangeBanner.isHidden = true }
@@ -3647,7 +3699,7 @@ final class TabChipView: NSView {
     /// appear). Left nil by owners whose tabs can't become windows (Run's terminal sessions).
     var onTearOut: ((NSPoint) -> Void)?
     var title: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
-    var isActive: Bool = false { didSet { needsDisplay = true } }
+    var isActive: Bool = false { didSet { needsDisplay = true; updateCloseVisibility() } }
     /// Used by Run's terminal tabs (unused by Make's file tabs, which never set these) to show
     /// an exited-process state and an unseen-output dot without needing a separate chip type.
     var isDead: Bool = false { didSet { needsDisplay = true } }
@@ -3661,7 +3713,7 @@ final class TabChipView: NSView {
     /// curves that let the tab pour into the content surface below instead of meeting it at a
     /// hard corner. Reserved on every chip (not just the active one) so activating a tab never
     /// changes its width and shuffles the whole row.
-    static let flare: CGFloat = 8
+    static let flare: CGFloat = 4
 
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
@@ -3673,8 +3725,14 @@ final class TabChipView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// In the title-bar region AppKit moves the window for any transparent view that doesn't
+    /// say otherwise — which swallowed every tab drag once the tabs moved up there.
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    /// Measured at the heavier weight whatever the state, so selecting a tab never changes its
+    /// width — the whole strip used to shuffle by a few points on every click.
     override var intrinsicContentSize: NSSize {
-        let font = DS.Text.body(isActive ? .semibold : .regular)
+        let font = DS.Text.body(.medium)
         let textWidth = min((title as NSString).size(withAttributes: [.font: font]).width, Self.maxTextWidth)
         return NSSize(width: textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2, height: Self.height)
     }
@@ -3688,74 +3746,51 @@ final class TabChipView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        closeButton?.isHidden = false
         isHovered = true
+        updateCloseVisibility()
     }
     override func mouseExited(with event: NSEvent) {
-        closeButton?.isHidden = true
         isHovered = false
+        updateCloseVisibility()
     }
 
-    /// The Safari/Chrome tab silhouette, in flipped coordinates (minY = top): rounded top
-    /// corners, straight sides, and *outward* bottom flares — the tab's bottom corners curve
-    /// away into the content surface it shares a fill with, instead of meeting it at hard
-    /// corners. Returned open (bottom-left flare tip → around the top → bottom-right flare tip)
-    /// so the same path both fills the shape and strokes its outline without underlining the
-    /// bottom edge, where tab and content are one surface.
-    private static func attachedTabOutline(in rect: NSRect, topRadius: CGFloat, flare: CGFloat, bottomInset: CGFloat = 0) -> NSBezierPath {
-        let body = rect.insetBy(dx: flare, dy: 0)
-        let bottom = rect.maxY - bottomInset
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: body.minX - flare, y: bottom))
-        // Concave quarter-curves at the feet, convex at the shoulders — a single control point
-        // at each corner traces the quarter turn without any flipped-arc direction guesswork.
-        path.curve(to: NSPoint(x: body.minX, y: bottom - flare),
-                   controlPoint1: NSPoint(x: body.minX, y: bottom),
-                   controlPoint2: NSPoint(x: body.minX, y: bottom))
-        path.line(to: NSPoint(x: body.minX, y: rect.minY + topRadius))
-        path.curve(to: NSPoint(x: body.minX + topRadius, y: rect.minY),
-                   controlPoint1: NSPoint(x: body.minX, y: rect.minY),
-                   controlPoint2: NSPoint(x: body.minX, y: rect.minY))
-        path.line(to: NSPoint(x: body.maxX - topRadius, y: rect.minY))
-        path.curve(to: NSPoint(x: body.maxX, y: rect.minY + topRadius),
-                   controlPoint1: NSPoint(x: body.maxX, y: rect.minY),
-                   controlPoint2: NSPoint(x: body.maxX, y: rect.minY))
-        path.line(to: NSPoint(x: body.maxX, y: bottom - flare))
-        path.curve(to: NSPoint(x: body.maxX + flare, y: bottom),
-                   controlPoint1: NSPoint(x: body.maxX, y: bottom),
-                   controlPoint2: NSPoint(x: body.maxX, y: bottom))
-        return path
+    /// Unsaved edits: a dot where the close button sits, until hover swaps it for the ×.
+    var isDirty: Bool = false { didSet { needsDisplay = true; updateCloseVisibility() } }
+
+    /// The active tab always offers its ×; others on hover. A dirty tab shows its dot there
+    /// instead until hovered.
+    func updateCloseVisibility() {
+        closeButton?.isHidden = !(isHovered || (isActive && !isDirty))
     }
 
+    /// Tabs live in the window's top row now, on the stage's own surface — so a tab is a pill
+    /// on that surface, not a silhouette pouring into the content below (that shape drew a seam
+    /// across the whole window once there was no title bar above it). The active tab takes the
+    /// `overlay` tone and full-strength text; the rest recede.
     override func draw(_ dirtyRect: NSRect) {
-        // During the close animation the chip's width sweeps to zero — the tab silhouette's
-        // geometry degenerates below ~2×flare and NSBezierPath's curveToPoint throws
-        // (crash observed live closing the active tab). Nothing meaningful fits at those
-        // sizes anyway, so skip drawing entirely.
         guard bounds.width > Self.flare * 2 + 16, bounds.height > 4 else { return }
+        let pill = NSBezierPath(roundedRect: bounds.insetBy(dx: Self.flare - 2, dy: 3), xRadius: DS.Radius.control, yRadius: DS.Radius.control)
+        // Every tab is a visible pill, so the unselected ones still read as tabs; the active one
+        // is lifted — white with a soft shadow in light, a brighter tone in dark.
         if isActive {
-            let fill = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare)
-            fill.close()
-            DS.Color.canvas.setFill()
-            fill.fill()
-            // The thin light edge that ties the tab to the surface it overlaps — traced along
-            // the silhouette only, never the bottom. Stroked on a path whose flare tips land
-            // exactly on the strip's bottom hairline (centered in its 1px row, same color
-            // token), so the line reads as one continuous edge flowing around the tab rather
-            // than two lines that visibly stop where they meet.
-            let stroke = Self.attachedTabOutline(in: bounds, topRadius: 8, flare: Self.flare, bottomInset: 0.5)
-            DS.Color.hairlineStrong.setStroke()
-            stroke.lineWidth = 1
-            stroke.stroke()
-        } else if isHovered {
-            DS.Color.scrimSoft.setFill()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: Self.flare - 2, dy: 4), xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(DS.Appearance.isDark ? 0 : 0.14)
+            shadow.shadowBlurRadius = 2
+            shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+            shadow.set()
+            DS.Color.tabActive.setFill()
+            pill.fill()
+            NSGraphicsContext.restoreGraphicsState()
+        } else {
+            (isHovered ? DS.Color.scrimMedium : DS.Color.scrimSoft).setFill()
+            pill.fill()
         }
 
         let dimmed = isDead ? 0.35 : 1.0
         let attributes: [NSAttributedString.Key: Any] = [
-            .foregroundColor: (isActive ? NSColor.labelColor : NSColor.tertiaryLabelColor).withAlphaComponent(dimmed),
-            .font: DS.Text.body(isActive ? .semibold : .regular)
+            .foregroundColor: (isActive ? NSColor.labelColor : NSColor.secondaryLabelColor).withAlphaComponent(dimmed),
+            .font: DS.Text.body(isActive ? .medium : .regular)
         ]
         let text = title as NSString
         let size = text.size(withAttributes: attributes)
@@ -3765,9 +3800,15 @@ final class TabChipView: NSView {
         text.draw(in: drawRect, withAttributes: attributes)
 
         if hasUnseenOutput {
-            NSColor.controlAccentColor.setFill()
-            let dotSize: CGFloat = 6
-            NSBezierPath(ovalIn: NSRect(x: Self.flare + 2, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
+            DS.Color.statusWorking.setFill()
+            let dotSize: CGFloat = 5
+            NSBezierPath(ovalIn: NSRect(x: Self.flare + 3, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
+        }
+        if isDirty && !isHovered {
+            NSColor.secondaryLabelColor.setFill()
+            let dotSize: CGFloat = 7
+            let x = bounds.width - Self.flare - 5 - 8 - dotSize / 2
+            NSBezierPath(ovalIn: NSRect(x: x, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
         }
     }
 
@@ -3870,14 +3911,14 @@ final class TabChipView: NSView {
 final class TabCloseButton: CircularIconButton {
     init() {
         super.init(diameter: 16)
-        setSymbol("xmark", pointSize: 8, weight: .semibold, color: NSColor.tertiaryLabelColor, accessibilityLabel: "Close Tab")
+        setSymbol("xmark", pointSize: 9, weight: .bold, color: NSColor.secondaryLabelColor, accessibilityLabel: "Close Tab")
         hoverBackgroundColor = DS.Color.scrimStrong
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-final class QuickOpenSearchField: NSSearchField {
+final class QuickOpenSearchField: NSTextField {
     var onMove: ((Int) -> Void)?
     var onConfirm: (() -> Void)?
     var onCancel: (() -> Void)?
@@ -3903,7 +3944,15 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         let inset = height > 0 ? height + DS.Spacing.l : 0
         for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
             scroll.automaticallyAdjustsContentInsets = false
-            scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: inset, right: 0)
+            scroll.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight, left: 0, bottom: inset, right: 0)
+        }
+    }
+
+    func setTopObstruction(_ height: CGFloat) {
+        loadViewIfNeeded()
+        for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
+            scroll.automaticallyAdjustsContentInsets = false
+            scroll.contentInsets.top = height
         }
     }
 
@@ -3912,5 +3961,75 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         guard !openTabs.isEmpty else { return }
         let current = activeTabIndex ?? 0
         switchToTab((current + offset + openTabs.count) % openTabs.count)
+    }
+}
+
+/// A palette result: icon, the name in the system font, where it lives dimmed beside it, and a
+/// trailing detail (a shortcut, a line) right-aligned — the Spotlight row.
+private final class PaletteCellView: NSTableCellView {
+    private let icon = NSImageView()
+    private let title = NSTextField(labelWithString: "")
+    private let detail = NSTextField(labelWithString: "")
+    private let trailing = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: .zero)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        title.font = DS.Text.body()
+        title.lineBreakMode = .byTruncatingTail
+        title.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        detail.font = DS.Text.caption()
+        detail.lineBreakMode = .byTruncatingHead
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        trailing.font = DS.Text.caption()
+        trailing.alignment = .right
+        trailing.setContentCompressionResistancePriority(.required, for: .horizontal)
+        for view in [icon, title, detail, trailing] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        imageView = icon
+        textField = title
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor),
+            detail.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 8),
+            detail.firstBaselineAnchor.constraint(equalTo: title.firstBaselineAnchor),
+            trailing.leadingAnchor.constraint(greaterThanOrEqualTo: detail.trailingAnchor, constant: 12),
+            trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            trailing.firstBaselineAnchor.constraint(equalTo: title.firstBaselineAnchor),
+        ])
+        applyColors()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(icon image: NSImage?, title text: String, detail detailText: String?, trailing trailingText: String?) {
+        icon.image = image
+        icon.contentTintColor = .secondaryLabelColor
+        title.stringValue = text
+        detail.stringValue = detailText ?? ""
+        trailing.stringValue = trailingText ?? ""
+        setAccessibilityLabel([text, detailText, trailingText].compactMap { $0 }.joined(separator: ", "))
+    }
+
+    override var backgroundStyle: NSView.BackgroundStyle { didSet { applyColors() } }
+
+    /// On the accent selection everything turns white, the way a system list does.
+    private func applyColors() {
+        let selected = backgroundStyle == .emphasized
+        title.textColor = selected ? .white : .labelColor
+        detail.textColor = selected ? NSColor.white.withAlphaComponent(0.75) : .tertiaryLabelColor
+        trailing.textColor = selected ? NSColor.white.withAlphaComponent(0.75) : .tertiaryLabelColor
+        icon.contentTintColor = selected ? .white : .secondaryLabelColor
+    }
+}
+
+/// The accent-filled rounded selection a system list draws, inset from the palette's edges.
+/// Always emphasized: focus stays in the field while the list is what's being chosen from.
+private final class PaletteRowView: NSTableRowView {
+    override var isEmphasized: Bool { get { true } set {} }
+    override func drawSelection(in dirtyRect: NSRect) {
+        NSColor.selectedContentBackgroundColor.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 8, dy: 1), xRadius: 8, yRadius: 8).fill()
     }
 }

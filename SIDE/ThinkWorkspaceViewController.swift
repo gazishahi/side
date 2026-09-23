@@ -307,7 +307,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         transcriptScroll.automaticallyAdjustsContentInsets = false
         let overlap = composer.frame.height + 26 /* pill */ + composerGap + DS.Spacing.l
         if abs(transcriptScroll.contentInsets.bottom - overlap) > 0.5 {
-            transcriptScroll.contentInsets = NSEdgeInsets(top: DS.Spacing.m, left: 0, bottom: overlap, right: 0)
+            // The transcript starts below the window's top row and scrolls up underneath it.
+            transcriptScroll.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight + DS.Spacing.m, left: 0, bottom: overlap, right: 0)
             transcriptScroll.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: overlap - DS.Spacing.l, right: 0)
         }
     }
@@ -1492,7 +1493,7 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         var fillColor: NSColor {
             switch self {
             case .sent: return .controlAccentColor
-            case .received: return DS.Color.raised
+            case .received: return DS.Color.bubbleReceived
             case .error: return NSColor.systemRed.withAlphaComponent(0.18)
             }
         }
@@ -2273,8 +2274,27 @@ private final class BubbleRowView: NSView {
         trackingArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) { actions.animator().alphaValue = 1 }
+    // Checked against where the pointer actually is, not just which event arrived: rows are
+    // built stacked at one origin and laid out a moment later, so a pointer resting there sent
+    // every new row a mouseEntered — and no row ever got the matching exit. Every copy and edit
+    // icon in the transcript showed at once until each row was hovered.
+    private var pointerIsInside: Bool {
+        guard let window else { return false }
+        return bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+    override func mouseEntered(with event: NSEvent) { actions.animator().alphaValue = pointerIsInside ? 1 : 0 }
     override func mouseExited(with event: NSEvent) { actions.animator().alphaValue = 0 }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        actions.alphaValue = 0
+    }
+    override func layout() {
+        super.layout()
+        // Settle to the truth after every layout pass — including showing them for a row that
+        // has just been laid out under a pointer that never moved.
+        let shouldShow = pointerIsInside && window?.isKeyWindow == true
+        if (actions.alphaValue > 0) != shouldShow { actions.alphaValue = shouldShow ? 1 : 0 }
+    }
 
     @objc private func editTapped() { onEdit?() }
 

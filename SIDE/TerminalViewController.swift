@@ -49,6 +49,22 @@ final class SideTerminalView: LocalProcessTerminalView {
         onRawDataReceived?(slice)
         super.dataReceived(slice: slice)
         scheduleAccessibilityValueUpdate()
+        syncScrollerVisibility()
+    }
+
+    /// SwiftTerm's scroller is a bare `NSScroller`, not one inside an `NSScrollView`, so it draws
+    /// its empty track down the right edge even with no scrollback and nothing to scroll —
+    /// the "empty scrollbar" in Run. Shown only once there is history to scroll through.
+    func syncScrollerVisibility() {
+        for case let scroller as NSScroller in subviews {
+            let hidden = !scroller.isEnabled
+            if scroller.isHidden != hidden { scroller.isHidden = hidden }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        syncScrollerVisibility()
     }
 
     // MARK: - Accessibility

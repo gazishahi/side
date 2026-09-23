@@ -20,10 +20,17 @@ protocol StageChromeProviding: AnyObject {
     /// Height at the bottom of the stage that something else is drawn over. Scrolling content
     /// scrolls clear of it; content that must never be covered (a prompt) ends above it.
     func setBottomObstruction(_ height: CGFloat)
+    /// The same at the top: the window's top row floats over the stage, which runs to the top
+    /// edge. Content starts below it and scrolls up underneath it.
+    func setTopObstruction(_ height: CGFloat)
+    /// The stage's own surface, which the top row takes on so the two read as one sheet.
+    var topRowBackground: NSColor { get }
 }
 
 extension StageChromeProviding {
     func setBottomObstruction(_ height: CGFloat) {}
+    func setTopObstruction(_ height: CGFloat) {}
+    var topRowBackground: NSColor { DS.Color.canvas }
 }
 
 /// Owns placement: the top row every window has, and — under `.floatingBar` — the glass bar.
@@ -37,16 +44,17 @@ final class ChromeHost {
 
     let placement: ChromePlacement
     let topRow = TopRowView()
+    private let topRowBackdrop = TopRowBackdrop()
     let pill: TrackPill
     let stageControl: SlidingSegmentedControl
-    let searchButton: NSButton
+    let searchButton: GlassCircleButton
     private let stageSlot = NSView()
     private var stageContent: NSView?
     private var bar: NSView?
-    private var barStack: NSStackView?
+    private var barPieces: [NSView] = []
     private var leadingInset: NSLayoutConstraint?
 
-    init(placement: ChromePlacement, pill: TrackPill, stageControl: SlidingSegmentedControl, searchButton: NSButton) {
+    init(placement: ChromePlacement, pill: TrackPill, stageControl: SlidingSegmentedControl, searchButton: GlassCircleButton) {
         self.placement = placement
         self.pill = pill
         self.stageControl = stageControl
@@ -61,9 +69,14 @@ final class ChromeHost {
         topRow.translatesAutoresizingMaskIntoConstraints = false
         stageSlot.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(content)
+        root.addSubview(topRowBackdrop)
         root.addSubview(topRow)
 
         let row = NSStackView()
+        // Never let the row's contents size the window: a stack view's default clipping
+        // resistance is *required*, so a long conversation title or track intent widened the
+        // whole window the moment Think or Review came forward.
+        row.setClippingResistancePriority(.defaultLow, for: .horizontal)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = DS.Spacing.m
@@ -71,9 +84,7 @@ final class ChromeHost {
         topRow.addSubview(row)
         switch placement {
         case .topRow:
-            stageControl.setContentHuggingPriority(.required, for: .horizontal)
-            stageControl.setContentCompressionResistancePriority(.required, for: .horizontal)
-            searchButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+            searchButton.setGlass(false)
             for view in [pill, stageSlot, stageControl, searchButton] as [NSView] { row.addArrangedSubview(view) }
             row.setCustomSpacing(DS.Spacing.l, after: stageSlot)
         case .floatingBar:
@@ -96,40 +107,65 @@ final class ChromeHost {
             row.bottomAnchor.constraint(equalTo: topRow.bottomAnchor),
             stageSlot.topAnchor.constraint(equalTo: row.topAnchor),
             stageSlot.bottomAnchor.constraint(equalTo: row.bottomAnchor),
-            content.topAnchor.constraint(equalTo: topRow.bottomAnchor),
+            // Edge to edge: the stage runs under the top row, which fades into it.
+            content.topAnchor.constraint(equalTo: root.topAnchor),
+            topRowBackdrop.topAnchor.constraint(equalTo: root.topAnchor),
+            topRowBackdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            topRowBackdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            topRowBackdrop.heightAnchor.constraint(equalToConstant: Self.rowHeight + TopRowBackdrop.fade),
             content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
     }
 
+    /// The bar: three pieces of glass spread across the bottom — the track pill at the leading
+    /// margin, the stage control centred, search at the trailing margin — so under Think's
+    /// full-width composer the row spans the same width and no corner is left empty. On a
+    /// narrow window the pill gives way (truncates, then dot only) before anything overlaps.
     private func installBar(in root: NSView) {
-        let glass = DS.makeGlass(cornerRadius: Self.barHeight / 2)
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(glass)
-        let stack = NSStackView(views: [pill, stageControl, searchButton])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = DS.Spacing.m
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: DS.Spacing.s, bottom: 0, right: DS.Spacing.m)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stageControl.setContentCompressionResistancePriority(.required, for: .horizontal)
-        container.addSubview(stack)
-        root.addSubview(container)
+        let pillCapsule = Self.glassCapsule(around: pill, insets: NSEdgeInsets(top: 0, left: DS.Spacing.xs, bottom: 0, right: DS.Spacing.xs))
+        let stagesCapsule = Self.glassCapsule(around: stageControl, insets: NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4))
+        searchButton.setGlass(true)
+        for piece in [pillCapsule, stagesCapsule, searchButton] as [NSView] { root.addSubview(piece) }
         NSLayoutConstraint.activate([
-            glass.topAnchor.constraint(equalTo: container.topAnchor), glass.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            glass.leadingAnchor.constraint(equalTo: container.leadingAnchor), glass.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: container.topAnchor), stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor), stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            container.heightAnchor.constraint(equalToConstant: Self.barHeight),
-            container.widthAnchor.constraint(lessThanOrEqualToConstant: 640),
-            container.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            container.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.barGap),
+            pillCapsule.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Self.barMargin),
+            pillCapsule.trailingAnchor.constraint(lessThanOrEqualTo: stagesCapsule.leadingAnchor, constant: -DS.Spacing.m),
+            stagesCapsule.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            searchButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -Self.barMargin),
+            searchButton.leadingAnchor.constraint(greaterThanOrEqualTo: stagesCapsule.trailingAnchor, constant: DS.Spacing.m),
+            pillCapsule.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.barGap),
+            stagesCapsule.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.barGap),
+            searchButton.centerYAnchor.constraint(equalTo: stagesCapsule.centerYAnchor),
         ])
-        bar = container
-        barStack = stack
+        bar = stagesCapsule
+        barPieces = [pillCapsule, stagesCapsule, searchButton]
     }
+
+    /// Lines the bar up with Think's composer row (the + button and the composer's edge).
+    static let barMargin: CGFloat = DS.Spacing.xxl
+
+    private static func glassCapsule(around content: NSView, insets: NSEdgeInsets) -> NSView {
+        let capsule = NSView()
+        capsule.translatesAutoresizingMaskIntoConstraints = false
+        let glass = DS.makeGlass(cornerRadius: barHeight / 2)
+        capsule.addSubview(glass)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        capsule.addSubview(content)
+        NSLayoutConstraint.activate([
+            glass.topAnchor.constraint(equalTo: capsule.topAnchor), glass.bottomAnchor.constraint(equalTo: capsule.bottomAnchor),
+            glass.leadingAnchor.constraint(equalTo: capsule.leadingAnchor), glass.trailingAnchor.constraint(equalTo: capsule.trailingAnchor),
+            content.leadingAnchor.constraint(equalTo: capsule.leadingAnchor, constant: insets.left),
+            content.trailingAnchor.constraint(equalTo: capsule.trailingAnchor, constant: -insets.right),
+            content.centerYAnchor.constraint(equalTo: capsule.centerYAnchor),
+            capsule.heightAnchor.constraint(equalToConstant: barHeight),
+        ])
+        return capsule
+    }
+
+    /// The row takes the stage's own surface, so the top of the window and the stage are one
+    /// sheet: canvas for most stages, the terminal's tone for Run.
+    func setRowBackground(_ color: NSColor) { topRowBackdrop.tint = color }
 
     /// Replaces the stage's top-row content (its tabs or header).
     func setStageContent(_ view: NSView?) {
@@ -140,36 +176,51 @@ final class ChromeHost {
         view.removeFromSuperview()
         view.translatesAutoresizingMaskIntoConstraints = false
         stageSlot.addSubview(view)
+        defer {
+            // A strip re-parented into the row keeps the layout it had in its old home until
+            // something resizes the window — why the tabs sometimes didn't draw until a resize.
+            topRow.layoutSubtreeIfNeeded()
+            Self.markNeedsDisplay(view)
+        }
         // Tab strips fill the row so the active tab reaches the content below it; a header
         // sits on the row's centre line, level with the traffic lights.
-        let vertical: [NSLayoutConstraint] = view is TabStripView
-            ? [view.topAnchor.constraint(equalTo: stageSlot.topAnchor), view.bottomAnchor.constraint(equalTo: stageSlot.bottomAnchor)]
-            : [view.centerYAnchor.constraint(equalTo: stageSlot.centerYAnchor)]
-        NSLayoutConstraint.activate(vertical + [
+        //
+        // A strip must *fill* the slot: its scroll view has no intrinsic width, so pinned with
+        // `≤` it collapsed to zero the second time it was placed here — the tabs that vanished
+        // after a trip to another stage and came back on resize. A header hugs its text.
+        let isStrip = view is TabStripView
+        NSLayoutConstraint.activate([
+            isStrip ? view.topAnchor.constraint(equalTo: stageSlot.topAnchor) : view.centerYAnchor.constraint(equalTo: stageSlot.centerYAnchor),
+            isStrip ? view.bottomAnchor.constraint(equalTo: stageSlot.bottomAnchor) : view.heightAnchor.constraint(lessThanOrEqualTo: stageSlot.heightAnchor),
             view.leadingAnchor.constraint(equalTo: stageSlot.leadingAnchor),
-            view.trailingAnchor.constraint(lessThanOrEqualTo: stageSlot.trailingAnchor),
+            isStrip ? view.trailingAnchor.constraint(equalTo: stageSlot.trailingAnchor) : view.trailingAnchor.constraint(lessThanOrEqualTo: stageSlot.trailingAnchor),
         ])
+    }
+
+    private static func markNeedsDisplay(_ view: NSView) {
+        view.needsLayout = true
+        view.needsDisplay = true
+        view.subviews.forEach(markNeedsDisplay)
+    }
+
+    /// Where the palette grows from, in `root`'s coordinates: the stage bar under
+    /// `.floatingBar`, the search button in the top row.
+    func paletteSource(in root: NSView) -> NSRect {
+        if let bar { return bar.convert(bar.bounds, to: root) }
+        return searchButton.convert(searchButton.bounds, to: root)
     }
 
     /// While Think's composer holds text, the bar recedes (still operable) so there aren't two
     /// equally loud things at the bottom of the window.
     func setBarRecessed(_ recessed: Bool) {
         guard placement == .floatingBar else { return }
-        barStack?.alphaValue = recessed ? 0.55 : 1
+        barPieces.forEach { $0.alphaValue = recessed ? 0.55 : 1 }
     }
 
-    /// Narrow windows: the pill truncates to its dot first, then the stage control goes to icons.
-    func adapt(toWidth width: CGFloat) {
-        switch placement {
-        case .topRow:
-            // The stage control fits the row at the 760 pt minimum with its titles, so it never
-            // needs to go to icons here; the pill gives way first.
-            pill.dotOnly = width < 1040
-        case .floatingBar:
-            pill.dotOnly = width < 800
-            stageControl.compact = false
-        }
-    }
+    /// Narrow windows: the pill's intent truncates with an ellipsis — layout decides, not a width
+    /// threshold. The old threshold flipped the pill to dot-only on a transient layout pass and
+    /// could stay there, so the track name "suddenly disappeared".
+    func adapt(toWidth width: CGFloat) {}
 
     /// Where the palette goes, in `root`'s coordinates: expanding upward from the bar, or
     /// centred in the window under the top row.
@@ -206,18 +257,71 @@ final class ChromeHost {
     }
 }
 
+/// Behind the top row: the stage's own tone, translucent and blurred over whatever has scrolled
+/// beneath, fading out below the row's edge — a seamless frame, the way a translucent web
+/// header melts into the page instead of ending at a line.
+final class TopRowBackdrop: NSView {
+    static let fade: CGFloat = 22
+    private let blur = NSVisualEffectView()
+    private let tintView = NSView()
+    var tint: NSColor = DS.Color.canvas { didSet { tintView.bindLayerBackground(tint.withAlphaComponent(0.78)) } }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        blur.material = .headerView
+        blur.blendingMode = .withinWindow
+        blur.state = .active
+        tintView.wantsLayer = true
+        for view in [blur, tintView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: topAnchor), view.bottomAnchor.constraint(equalTo: bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: leadingAnchor), view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ])
+        }
+        tint = DS.Color.canvas
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// Opaque through the row, then a smooth fall-off over `fade`.
+    override func layout() {
+        super.layout()
+        let height = bounds.height, fadeFraction = Self.fade / max(height, 1)
+        let mask = NSImage(size: bounds.size, flipped: false) { rect in
+            let gradient = NSGradient(colors: [NSColor.black.withAlphaComponent(0), NSColor.black.withAlphaComponent(0.5), .black],
+                                      atLocations: [0, fadeFraction * 0.55, fadeFraction], colorSpace: .sRGB)
+            gradient?.draw(in: rect, angle: 90)
+            return true
+        }
+        blur.maskImage = mask
+        let gradientLayer = CAGradientLayer()
+        gradientLayer.frame = tintView.bounds
+        gradientLayer.colors = [NSColor.clear.cgColor, NSColor.black.cgColor, NSColor.black.cgColor]
+        gradientLayer.locations = [0, NSNumber(value: Double(fadeFraction)), 1]
+        gradientLayer.startPoint = CGPoint(x: 0.5, y: 0)
+        gradientLayer.endPoint = CGPoint(x: 0.5, y: 1)
+        tintView.layer?.mask = gradientLayer
+    }
+}
+
 /// The unified top row: traffic lights, then the stage's tabs or header. Every point that isn't
 /// a control drags the window, and a double-click does what the system titlebar would.
 final class TopRowView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
-        wantsLayer = true
-        bindLayerBackground(DS.Color.canvas)
         setAccessibilityElement(false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override var mouseDownCanMoveWindow: Bool { true }
+    /// False, deliberately: a `true` here marks the whole row as a window-drag region that
+    /// AppKit honours before any subview sees the press, so dragging a tab dragged the window.
+    /// Empty space still drags — `mouseDown` below calls `performDrag` itself.
+    override var mouseDownCanMoveWindow: Bool { false }
 
     /// Controls keep their clicks; everything else — empty tab-strip space, labels, stack
     /// padding — belongs to the row, so it drags.
@@ -232,7 +336,7 @@ final class TopRowView: NSView {
     }
 
     static func isInteractive(_ view: NSView) -> Bool {
-        if view is TrackPill || view is SlidingSegmentedControl || view is TabChipView { return true }
+        if view is TrackPill || view is TabChipView { return true }
         if let field = view as? NSTextField { return field.isEditable || field.isSelectable }
         return view is NSControl
     }

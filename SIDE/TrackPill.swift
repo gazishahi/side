@@ -39,14 +39,14 @@ final class TrackPill: NSView {
     var onSelectRow: ((Row) -> Void)?
     var onNewTrack: (() -> Void)?
     var onOpenTracks: (() -> Void)?
-    /// Narrow windows: the pill truncates to its dot first.
-    var dotOnly = false { didSet { titleLabel.isHidden = dotOnly; extraLabel.isHidden = dotOnly || snapshot.othersNeedingYou == 0 } }
 
     private(set) var snapshot = Snapshot.empty
     private let dot = DS.StatusDot(state: .idle)
     private let titleLabel = NSTextField(labelWithString: "")
     private let extraLabel = NSTextField(labelWithString: "")
     private let hover = NSView()
+    private var extraTrailing: NSLayoutConstraint!
+    private var titleTrailing: NSLayoutConstraint!
     private var popover: NSPopover?
     private var trackingArea: NSTrackingArea?
 
@@ -63,25 +63,35 @@ final class TrackPill: NSView {
         titleLabel.font = DS.Text.body(.medium)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Just under the window's own stay-put priority (500): the name never widens the window,
+        // but nothing weaker squeezes it either.
+        titleLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(490), for: .horizontal)
         extraLabel.font = DS.Text.caption()
         extraLabel.textColor = .secondaryLabelColor
         extraLabel.isHidden = true
         dot.setAccessibilityElement(false)
-        let row = NSStackView(views: [dot, titleLabel, extraLabel])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = DS.Spacing.s
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
+        // Plain constraints, not a stack: the pill is exactly as wide as its name until the bar
+        // needs the room, and then the name truncates inside it. (A stack with lowered clipping
+        // resistance let the pill shrink under its own text — the name overflowed the glass,
+        // or "disappeared".)
+        titleLabel.cell?.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+        extraLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        for view in [dot, titleLabel, extraLabel] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        extraTrailing = extraLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
+        titleTrailing = titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
         NSLayoutConstraint.activate([
             hover.topAnchor.constraint(equalTo: topAnchor), hover.bottomAnchor.constraint(equalTo: bottomAnchor),
             hover.leadingAnchor.constraint(equalTo: leadingAnchor), hover.trailingAnchor.constraint(equalTo: trailingAnchor),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
-            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
+            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: DS.Spacing.s),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            extraLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: DS.Spacing.s),
+            extraLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
+            titleTrailing,
             heightAnchor.constraint(equalToConstant: 28),
-            widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+            widthAnchor.constraint(lessThanOrEqualToConstant: 280),
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(.popUpButton)
@@ -94,7 +104,10 @@ final class TrackPill: NSView {
         dot.state = snapshot.state
         titleLabel.stringValue = snapshot.title
         extraLabel.stringValue = "+\(snapshot.othersNeedingYou)"
-        extraLabel.isHidden = dotOnly || snapshot.othersNeedingYou == 0
+        let showsExtra = snapshot.othersNeedingYou > 0
+        extraLabel.isHidden = !showsExtra
+        titleTrailing.isActive = !showsExtra
+        extraTrailing.isActive = showsExtra
         toolTip = [snapshot.projectName, snapshot.branch].compactMap { $0 }.joined(separator: " · ")
         var label = "Current track: \(snapshot.title), \(snapshot.stateName)"
         if snapshot.othersNeedingYou > 0 { label += ". \(snapshot.othersNeedingYou) other tracks need you" }
@@ -113,6 +126,7 @@ final class TrackPill: NSView {
     override func mouseEntered(with event: NSEvent) { hover.alphaValue = 1 }
     override func mouseExited(with event: NSEvent) { hover.alphaValue = 0 }
     override func mouseDown(with event: NSEvent) { togglePopover() }
+    override var mouseDownCanMoveWindow: Bool { false }
     override func accessibilityPerformPress() -> Bool { togglePopover(); return true }
     override var acceptsFirstResponder: Bool { true }
     override func keyDown(with event: NSEvent) {

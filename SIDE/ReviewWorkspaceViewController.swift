@@ -259,7 +259,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            promoteOverlay.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            promoteOverlay.topAnchor.constraint(equalTo: view.topAnchor, constant: 14 + ChromeHost.rowHeight),
             promoteOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
             // Wide enough to matter, never wide enough to crowd the title: "Promote to
             // origin/some-long-default" is a real label.
@@ -807,6 +807,12 @@ extension ReviewWorkspaceViewController: StageChromeProviding {
     func setBottomObstruction(_ height: CGFloat) {
         loadViewIfNeeded()
         scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: height > 0 ? height + DS.Spacing.l : 0, right: 0)
+        scrollView.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight, left: 0, bottom: height > 0 ? height + DS.Spacing.l : 0, right: 0)
+    }
+
+    func setTopObstruction(_ height: CGFloat) {
+        loadViewIfNeeded()
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets.top = height
     }
 }

@@ -39,6 +39,15 @@ enum DS {
         static let raised = hex(0x1C1F23, 0xFFFFFF)
         /// Selected segment, running chip, popover and menu bodies.
         static let overlay = hex(0x25292E, 0xE8E8EC)
+        /// Think's received message bubble: the system chat grey in light, the raised tone in dark.
+        static let bubbleReceived = hex(0x24272C, 0xE9E9EB)
+        /// The selected segment of a control sitting on glass — the toolbar segmented look.
+        /// On glass, light mode's glass is itself near-white — a white thumb vanished into it, so
+        /// light mode selects with a tint of the label colour instead.
+        static let selectedCapsule = dynamic(dark: NSColor(white: 1, alpha: 0.18), light: NSColor(white: 0, alpha: 0.09))
+        /// The active tab: lifted off the canvas — white with a soft shadow in light, a brighter
+        /// tone in dark. Inactive tabs sit on `scrimSoft`.
+        static let tabActive = dynamic(dark: NSColor(white: 1, alpha: 0.13), light: NSColor(white: 1, alpha: 1))
         /// Row separators — only. Never an enclosure.
         static let hairline = dynamic(dark: NSColor(white: 1, alpha: 0.08), light: NSColor(white: 0, alpha: 0.08))
         /// The stacked-track connector.
@@ -253,6 +262,21 @@ enum DS {
             return animation
         }
 
+        /// The Liquid Glass press: the control swells under the finger and springs back. Scales
+        /// about the view's centre (AppKit layers scale about their origin).
+        static func press(_ view: NSView, down: Bool) {
+            guard !reduceMotion, let layer = view.layer else { return }
+            let scale: CGFloat = down ? 1.12 : 1
+            let cx = view.bounds.midX, cy = view.bounds.midY
+            let target = CATransform3DConcat(CATransform3DConcat(CATransform3DMakeTranslation(-cx, -cy, 0), CATransform3DMakeScale(scale, scale, 1)), CATransform3DMakeTranslation(cx, cy, 0))
+            let animation = spring(keyPath: "transform")
+            animation.damping = down ? animation.damping : animation.damping * 0.55  // a little bounce on release
+            animation.fromValue = layer.presentation()?.transform ?? layer.transform
+            animation.toValue = target
+            layer.transform = target
+            layer.add(animation, forKey: "press")
+        }
+
         /// The only place Reduce Motion is consulted. Zero means "just set the final state".
         static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
@@ -280,6 +304,24 @@ enum DS {
             group.timingFunction = curve
             layer.add(group, forKey: "dsAppear")
         }
+    }
+}
+
+extension DS {
+    /// The corner mask a behind-window `NSVisualEffectView` actually honours. Its layer's
+    /// `cornerRadius` clips the view's subviews but not the material, which the window server
+    /// composites itself — so in light mode a panel showed square white corners behind its
+    /// rounded content (dark mode hid them).
+    static func roundedMask(radius: CGFloat) -> NSImage {
+        let size = NSSize(width: radius * 2 + 1, height: radius * 2 + 1)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
     }
 }
 
@@ -414,6 +456,14 @@ final class TabStripView: NSView {
     override func accessibilityTabs() -> [Any]? { accessibleTabs }
 }
 
+
+/// The scroll view inside a tab strip. In the title-bar region AppKit works out which parts of
+/// the window drag it before any view sees the event, and it treats a transparent scroll view
+/// as draggable without looking inside it — so pressing on a tab and dragging moved the window
+/// instead of the tab. Empty strip space still drags: the top row's own mouse handling does it.
+final class TabStripScrollView: NSScrollView {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
 
 // MARK: - Appearance
 

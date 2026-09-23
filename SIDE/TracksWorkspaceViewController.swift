@@ -197,7 +197,7 @@ final class TracksWorkspaceViewController: NSViewController {
         view.addSubview(scrollView)
 
         NSLayoutConstraint.activate([
-            headerStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            headerStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16 + ChromeHost.rowHeight),
             headerStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             headerStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             scrollView.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 14),

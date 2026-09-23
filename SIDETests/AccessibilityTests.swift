@@ -160,10 +160,10 @@ final class AccessibilityTests: XCTestCase {
 
     // MARK: - Stage control (2026-09-01 audit, H16; Direction 02 §3.6)
 
-    func testEachStageSegmentIsARadioButtonThatSpeaksItsState() {
+    func testEachStageSegmentSpeaksItsStateWithoutAGlyph() {
         // The stock segmented control exposed no per-segment element, so state rode in a ● glyph
         // VoiceOver read as "black circle". Each segment now names itself and its state.
-        let control = SlidingSegmentedControl(titles: ["Make", "Think", "Review", "Run"], style: .overlay)
+        let control = SlidingSegmentedControl(titles: ["Make", "Think", "Review", "Run"], style: .capsule)
         control.setBadge(.needsYou, spokenState: "needs you", at: 1)
         control.setBadge(.working, spokenState: "a terminal has new output", at: 3)
         XCTAssertEqual(control.accessibilityRole(), .radioGroup)

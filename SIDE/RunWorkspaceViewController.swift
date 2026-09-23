@@ -19,7 +19,7 @@ final class RunWorkspaceViewController: NSViewController {
     }
     private let tabBar = TabStripView()
     private let tabBarStack = NSStackView()
-    private var containerBottom: NSLayoutConstraint!
+    private let terminalBottomInset: CGFloat = 12
     private let container = NSView()
     private var tabChips: [TabChipView] = []
 
@@ -80,9 +80,9 @@ final class RunWorkspaceViewController: NSViewController {
         tabBar.wantsLayer = true
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         tabBar.clipsToBounds = true
-        tabBar.bindLayerBackground(DS.Color.canvas)
+        // Transparent: the top row takes the terminal's tone, so tabs sit on the same sheet.
         tabBarStack.orientation = .horizontal
-        tabBarStack.alignment = .bottom
+        tabBarStack.alignment = .centerY
         tabBarStack.spacing = DS.Spacing.xxs
         tabBarStack.translatesAutoresizingMaskIntoConstraints = false
         tabBar.addSubview(tabBarStack)
@@ -93,10 +93,11 @@ final class RunWorkspaceViewController: NSViewController {
         divider.fillColor = DS.Color.hairlineStrong
         divider.translatesAutoresizingMaskIntoConstraints = false
         // Behind the chips, so the active tab's fill covers it and attaches to the content.
+        divider.isHidden = true
         tabBar.addSubview(divider, positioned: .below, relativeTo: tabBarStack)
 
         // Same scrolling strip as Make — the strip scrolls, the window never widens.
-        let tabScroll = NSScrollView()
+        let tabScroll = TabStripScrollView()
         tabScroll.drawsBackground = false
         tabScroll.hasHorizontalScroller = false
         tabScroll.hasVerticalScroller = false
@@ -114,19 +115,20 @@ final class RunWorkspaceViewController: NSViewController {
         // sliding up under the tabs, not a floating card and not a flush slab touching chrome.
         container.translatesAutoresizingMaskIntoConstraints = false
         container.wantsLayer = true
-        container.layer?.cornerRadius = DS.Radius.surface
-        container.layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+        // Full bleed: the terminal is the whole window — edge to edge, under the top row's tone
+        // and under the floating bar. Only the text keeps clear of the bar (terminalBottom).
         container.bindLayerBackground(DS.Color.raised)
         container.clipsToBounds = true
         view.addSubview(container)
 
-        containerBottom = container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        view.wantsLayer = true
+        view.bindLayerBackground(DS.Color.raised)
         NSLayoutConstraint.activate([
             tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
             tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
             // Attached to the tab row above it: the active tab and the terminal are one surface.
-            container.topAnchor.constraint(equalTo: view.topAnchor), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), containerBottom
+            container.topAnchor.constraint(equalTo: view.topAnchor), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), container.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
 
@@ -325,8 +327,8 @@ final class RunWorkspaceViewController: NSViewController {
         vc.view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(vc.view)
         NSLayoutConstraint.activate([
-            vc.view.topAnchor.constraint(equalTo: container.topAnchor, constant: 8), vc.view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10), vc.view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8)
+            vc.view.topAnchor.constraint(equalTo: container.topAnchor, constant: ChromeHost.rowHeight + 4), vc.view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16), vc.view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -terminalBottomInset)
         ])
         vc.activate()
     }
@@ -371,6 +373,7 @@ final class RunWorkspaceViewController: NSViewController {
             closeButton.isHidden = true
             chip.addSubview(closeButton)
             chip.closeButton = closeButton
+            chip.updateCloseVisibility()
             NSLayoutConstraint.activate([
                 closeButton.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: chip.centerYAnchor)
             ])
@@ -477,12 +480,12 @@ final class RunWorkspaceViewController: NSViewController {
 extension RunWorkspaceViewController: StageChromeProviding {
     var topRowContent: NSView? { loadViewIfNeeded(); return tabBar }
 
-    /// A hard inset: the terminal is shortened, never scrolled under, so the prompt line is
-    /// never beneath anything drawn over the bottom of the window.
-    func setBottomObstruction(_ height: CGFloat) {
-        loadViewIfNeeded()
-        containerBottom.constant = height > 0 ? -(height + DS.Spacing.l) : 0
-    }
+    var topRowBackground: NSColor { DS.Color.raised }
+
+    /// The terminal is the whole window and the bar floats over it (owner's call, 2026-09-22):
+    /// the terminal view runs to the bottom edge rather than stopping above the bar, which read
+    /// as the bar sitting in a footer under the terminal.
+    func setBottomObstruction(_ height: CGFloat) {}
 
     func selectAdjacentTab(_ offset: Int) {
         guard !sessions.isEmpty else { return }

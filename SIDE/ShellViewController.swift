@@ -32,9 +32,9 @@ final class ShellViewController: NSViewController {
 
     /// Direction 02 §3: no title bar, no toolbar. The navigation components are plain views;
     /// `chrome` decides where they go.
-    private let stageControl = SlidingSegmentedControl(titles: StagePins.pinnable.map(\.rawValue), style: .overlay)
+    private let stageControl = SlidingSegmentedControl(titles: StagePins.pinnable.map(\.rawValue), style: .capsule, height: 32)
     private let trackPill = TrackPill()
-    private let searchButton = NSButton()
+    private let searchButton = GlassCircleButton(symbol: "magnifyingglass", accessibilityLabel: "Search")
     private lazy var chrome = ChromeHost(placement: ChromePlacement.current, pill: trackPill, stageControl: stageControl, searchButton: searchButton)
     private let container = NSView()
     /// The stages the control currently shows, in order — see `StagePins.visible`.
@@ -178,6 +178,11 @@ final class ShellViewController: NSViewController {
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
         window.toolbar = nil
+        // The window moves only when the top row says so (`TopRowView.mouseDown` →
+        // `performDrag`). With AppKit's own title-bar dragging on, the whole 38 pt row was a
+        // drag region the window server honoured before any view saw the press — dragging a tab
+        // moved the window, and no view-level opt-out reached it.
+        window.isMovable = false
         chrome.positionTrafficLights(in: window)
         for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
@@ -208,15 +213,9 @@ final class ShellViewController: NSViewController {
         }
         stageControl.setAccessibilityLabel("Stage")
         stageControl.menu = pinsMenu()
-        searchButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Search")
-        searchButton.isBordered = false
-        searchButton.contentTintColor = .secondaryLabelColor
-        searchButton.target = self
-        searchButton.action = #selector(showQuickOpen(_:))
-        searchButton.toolTip = "Search (⌘P)"
-        searchButton.setAccessibilityLabel("Search")
-        searchButton.translatesAutoresizingMaskIntoConstraints = false
-        searchButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        searchButton.button.target = self
+        searchButton.button.action = #selector(showQuickOpen(_:))
+        searchButton.button.toolTip = "Search (⌘P)"
         trackPill.snapshotProvider = { [weak self] in self?.trackPillSnapshot() ?? .empty }
         trackPill.onSelectRow = { [weak self] row in self?.selectTrackRow(row) }
         trackPill.onNewTrack = { [weak self] in
@@ -263,12 +262,53 @@ final class ShellViewController: NSViewController {
         paletteHost = host
         makeVC.onPaletteShow = { [weak self, weak host] size in
             guard let self, let host else { return }
+            let appearing = host.isHidden
             host.frame = self.chrome.paletteFrame(size: size, in: self.view)
             host.isHidden = false
+            if appearing { self.animatePalette(host, in: true) }
         }
-        makeVC.onPaletteHide = { [weak host] in host?.isHidden = true }
+        makeVC.onPaletteHide = { [weak self, weak host] in
+            guard let self, let host, !host.isHidden else { return }
+            self.animatePalette(host, in: false)
+        }
         makeVC.onPaletteNavigated = { [weak self] in self?.show(.make) }
         makeVC.commandsProvider = { [weak self] in self?.paletteCommands() ?? [] }
+    }
+
+    /// The palette grows out of the search button and shrinks back into it — presentation,
+    /// which §2.8 allows to move, on the one curve and gone under Reduce Motion.
+    private func animatePalette(_ host: NSView, in appearing: Bool) {
+        guard let layer = host.layer else { host.isHidden = !appearing; return }
+        let duration = DS.Motion.duration(appearing ? 0.28 : 0.18)
+        guard duration > 0 else { host.isHidden = !appearing; return }
+        // It grows out of the stage bar — the collapsed state *is* the bar's rectangle — so the
+        // palette reads as the bar opening up rather than something zooming in from a corner.
+        // Layer-backed NSViews transform about their origin.
+        let source = chrome.paletteSource(in: view)
+        let sx = max(source.width / max(host.bounds.width, 1), 0.05), sy = max(source.height / max(host.bounds.height, 1), 0.05)
+        let collapsed = CATransform3DConcat(
+            CATransform3DMakeScale(sx, sy, 1),
+            CATransform3DMakeTranslation(source.minX - host.frame.minX, source.minY - host.frame.minY, 0))
+        let transform = CABasicAnimation(keyPath: "transform")
+        transform.fromValue = appearing ? collapsed : CATransform3DIdentity
+        transform.toValue = appearing ? CATransform3DIdentity : collapsed
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = appearing ? 0 : 1
+        fade.toValue = appearing ? 1 : 0
+        let group = CAAnimationGroup()
+        group.animations = [transform, fade]
+        group.duration = duration
+        group.timingFunction = DS.Motion.curve
+        group.fillMode = .forwards
+        group.isRemovedOnCompletion = false
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak host] in
+            guard let host else { return }
+            if !appearing { host.isHidden = true }
+            host.layer?.removeAnimation(forKey: "palette")
+        }
+        layer.add(group, forKey: "palette")
+        CATransaction.commit()
     }
 
     /// Every stage — pinned or not — and every Navigate menu item, by name.
@@ -336,7 +376,7 @@ final class ShellViewController: NSViewController {
         let stages = StagePins.visible(pinned: StagePins.pinned, attention: attention, dismissed: dismissedAttention, current: current)
         if stages != visibleStages || stageControl.segmentAccessibilityLabels.count != stages.count {
             visibleStages = stages
-            stageControl.setSegments(stages.map(\.rawValue), symbols: stages.map(Self.stageSymbol), selected: current.flatMap { stages.firstIndex(of: $0) } ?? -1)
+            stageControl.setSegments(stages.map(\.rawValue), selected: current.flatMap { stages.firstIndex(of: $0) } ?? -1)
         } else if let current, let index = stages.firstIndex(of: current) {
             if index != stageControl.selectedIndex { stageControl.select(index, animated: true) }
         } else {
@@ -345,16 +385,6 @@ final class ShellViewController: NSViewController {
         for (index, stage) in stages.enumerated() {
             let badge = stageBadge(stage)
             stageControl.setBadge(badge?.state, spokenState: badge?.spoken, at: index)
-        }
-    }
-
-    private static func stageSymbol(_ stage: Stage) -> String? {
-        switch stage {
-        case .make: return "chevron.left.forwardslash.chevron.right"
-        case .think: return "bubble.left"
-        case .review: return "checkmark.seal"
-        case .run: return "terminal"
-        case .tracks: return "square.stack"
         }
     }
 
@@ -517,7 +547,9 @@ final class ShellViewController: NSViewController {
         ])
 
         chrome.setStageContent((next as? StageChromeProviding)?.topRowContent)
+        chrome.setRowBackground((next as? StageChromeProviding)?.topRowBackground ?? DS.Color.canvas)
         (next as? StageChromeProviding)?.setBottomObstruction(chrome.bottomObstruction)
+        (next as? StageChromeProviding)?.setTopObstruction(ChromeHost.rowHeight)
         if stage == .run {
             runVC.activateActiveSession()
         }

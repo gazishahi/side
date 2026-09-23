@@ -8,7 +8,10 @@ import AppKit
 /// no per-segment accessibility element — its only child is the cell — so a state like "Think,
 /// needs you" could only ride in a glyph. Here each segment is a radio button with its own label.
 final class SlidingSegmentedControl: NSView {
-    enum ThumbStyle { case glass, overlay }
+    /// `glass`: a glass thumb on a faint track (Think's session popover). `capsule`: the
+    /// toolbar segmented look — a soft selected capsule on whatever glass the control sits on,
+    /// no track and no separators (the window's stage control).
+    enum ThumbStyle { case glass, overlay, capsule }
 
     var onChange: ((Int) -> Void)?
     private(set) var selectedIndex = 0
@@ -43,7 +46,7 @@ final class SlidingSegmentedControl: NSView {
         setAccessibilityRole(.radioGroup)
 
         track.wantsLayer = true
-        track.layer?.cornerRadius = style == .glass ? DS.Radius.capsule(height: height) : DS.Radius.control + 2
+        track.layer?.cornerRadius = style == .overlay ? DS.Radius.control + 2 : DS.Radius.capsule(height: height)
         if style == .glass { track.bindLayerBackground(DS.Color.scrimFaint) }
         addSubview(track)
         switch style {
@@ -56,6 +59,14 @@ final class SlidingSegmentedControl: NSView {
             thumbContainer.wantsLayer = true
             thumbContainer.layer?.cornerRadius = DS.Radius.control
             thumbContainer.bindLayerBackground(DS.Color.overlay)
+        case .capsule:
+            thumbContainer.wantsLayer = true
+            thumbContainer.layer?.cornerRadius = (height - 4) / 2
+            thumbContainer.bindLayerBackground(DS.Color.selectedCapsule)
+            thumbContainer.shadow = NSShadow()
+            thumbContainer.layer?.shadowOpacity = 0.12
+            thumbContainer.layer?.shadowRadius = 2
+            thumbContainer.layer?.shadowOffset = CGSize(width: 0, height: -0.5)
         }
         addSubview(thumbContainer)
         heightAnchor.constraint(equalToConstant: height).isActive = true
@@ -122,6 +133,8 @@ final class SlidingSegmentedControl: NSView {
         lastLayoutBounds = .zero
         needsLayout = true
     }
+
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override var menu: NSMenu? {
         didSet { buttons.forEach { $0.menu = menu } }

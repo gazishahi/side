@@ -178,6 +178,8 @@ inset **16 / 18**; pinned group padding **6 / 14**.
 
 **Decision (2026-09-04): Option B.** Two named exceptions on `DS.Motion.curve` and `DS.Motion.duration`: Promote keeps a single ~300 ms settle, and streaming bubble growth stays (feedback on live content, not layout the user waits on). Nothing else is exempt.
 
+**Addendum (2026-09-22, owner):** a third named exception — the floating bar's glass controls (search) use the Liquid Glass press: swell to 1.12 and spring back (`DS.Motion.press`). The palette's grow-from-the-bar / shrink-back is *presentation* (allowed use 2). Both honour Reduce Motion through `DS.Motion`.
+
 > **Contradiction on record.** As drafted, this section removes the Promote
 > bounce (requested 2026-09-01) and makes streaming bubble growth instant (tuned
 > for perceived speed). Two coherent options; the owner decides before step 1:
