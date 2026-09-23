@@ -547,7 +547,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     /// `model · time · +a −r · N files · N commands · <verification word>` — the word coloured
     /// only when it's a result (verified or failed); unverified stays in the caption's grey.
-    private static func checkpointMeta(_ checkpoint: Checkpoint) -> NSAttributedString {
+    static func checkpointMeta(_ checkpoint: Checkpoint) -> NSAttributedString {
         let base: [NSAttributedString.Key: Any] = [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]
         var parts: [NSAttributedString] = []
         func plain(_ text: String) { parts.append(NSAttributedString(string: text, attributes: base)) }
@@ -649,49 +649,12 @@ final class ReviewWorkspaceViewController: NSViewController {
               let track = currentTrack,
               let checkpoints = sessionStore?.checkpoints(forTrackKey: track.branchName),
               let target = checkpoints.first(where: { $0.id == id }),
-              let worktreePath = track.workingDirectoryPath ?? canonicalRoot?.path else { return }
-
-        let laterCount = checkpoints.filter { $0.createdAt > target.createdAt && $0.gitCommitSHA != nil }.count
-        let alert = NSAlert()
-        alert.messageText = "Undo this checkpoint?"
-        let intent = target.declaredIntent.isEmpty ? "this checkpoint" : "\u{201C}\(target.declaredIntent)\u{201D}"
-        // Says plainly what it does *and* what it doesn't: nothing is deleted, and the choice
-        // between the two scopes is the only real decision.
-        alert.informativeText = laterCount == 0
-            ? "The changes from \(intent) are reversed by a new commit. Nothing is deleted — the checkpoint stays in your history, and the undo can itself be undone."
-            : "The changes from \(intent) are reversed by a new commit. \(laterCount) later checkpoint\(laterCount == 1 ? " was" : "s were") made on top of it — you can undo just this one, or everything back to it.\n\nNothing is deleted either way, and an undo can itself be undone."
-        alert.addButton(withTitle: laterCount == 0 ? "Undo" : "Undo Just This One")
-        if laterCount > 0 { alert.addButton(withTitle: "Undo Everything After") }
-        alert.addButton(withTitle: "Cancel")
-        // A sheet on the window, never an app-modal `runModal` (audit 32.6).
-        guard let window = view.window else { return }
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response != .alertThirdButtonReturn, !(laterCount == 0 && response == .alertSecondButtonReturn) else { return }
-            let scope: CheckpointRestore.Scope = (laterCount > 0 && response == .alertSecondButtonReturn) ? .throughLatest : .single
-            self.performUndo(target: target, checkpoints: checkpoints, scope: scope, worktreePath: worktreePath)
-        }
-    }
-
-    private func performUndo(target: Checkpoint, checkpoints: [Checkpoint], scope: CheckpointRestore.Scope, worktreePath: String) {
-
-        let commits = CheckpointRestore.commitsToRevert(checkpoints: checkpoints, target: target, scope: scope)
-        let message = CheckpointRestore.revertMessage(target: target, scope: scope, count: commits.count)
-        let outcome = CheckpointRestore.perform(commits: commits, message: message, worktreePath: worktreePath)
-
-        switch outcome {
-        case .reverted(_, let count):
-            statusLabel.stringValue = "Undid \(count) checkpoint\(count == 1 ? "" : "s") — reversed by a new commit, nothing deleted."
-            statusLabel.textColor = .secondaryLabelColor
-            refresh()
-        case .conflicted(let paths):
-            statusLabel.stringValue = "⚠︎ Couldn't undo cleanly — \(paths.joined(separator: ", ")) changed since. Nothing was modified."
-            statusLabel.textColor = DS.Color.statusNeedsYou
-        case .failed(let message):
-            statusLabel.stringValue = "⚠︎ Undo failed: \(message)"
-            statusLabel.textColor = DS.Color.statusNeedsYou
-        case .nothingToDo:
-            statusLabel.stringValue = "Nothing to undo — that checkpoint changed no files."
-            statusLabel.textColor = .secondaryLabelColor
+              let worktreePath = track.workingDirectoryPath ?? canonicalRoot?.path,
+              let window = view.window else { return }
+        CheckpointUndo.present(target: target, checkpoints: checkpoints, worktreePath: worktreePath, window: window) { [weak self] message, color, changed in
+            self?.statusLabel.stringValue = message
+            self?.statusLabel.textColor = color
+            if changed { self?.refresh() }
         }
     }
 

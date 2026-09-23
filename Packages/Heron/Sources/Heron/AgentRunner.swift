@@ -885,9 +885,7 @@ public final class AgentRunner {
         checkpointAwaitingDescription = checkpoint.id
         checkpointMarkerEntryIndex = nil
 
-        let intentText = checkpoint.declaredIntent.isEmpty ? "no description" : checkpoint.declaredIntent
-        let marker = commitSHA.map { "✓ Checkpoint (\(String($0.prefix(7)))): \(intentText)" } ?? "✓ Checkpoint: \(intentText) (no file changes)"
-        checkpointMarkerEntryIndex = appendEntry(.meta(marker))
+        checkpointMarkerEntryIndex = appendEntry(.checkpoint(id: checkpoint.id, text: Self.checkpointMarker(checkpoint)))
         checkpointMarkerSHA = commitSHA
     }
 
@@ -1601,7 +1599,7 @@ public final class AgentRunner {
         if let index = checkpointMarkerEntryIndex {
             let marker = checkpointMarkerSHA.map { "✓ Checkpoint (\(String($0.prefix(7)))): \(trimmed)" }
                 ?? "✓ Checkpoint: \(trimmed) (no file changes)"
-            updateEntry(at: index, .meta(marker))
+            updateEntry(at: index, .checkpoint(id: id, text: marker))
         }
         checkpointMarkerEntryIndex = nil
         checkpointMarkerSHA = nil
@@ -1661,7 +1659,21 @@ public final class AgentRunner {
         guard let session = sessionStore.session(forTrackKey: trackKey) else { return }
         lastReportedInputTokens = session.lastReportedInputTokens
         rebuildAppliedEditCounts(sessionId: session.id)
+        // This conversation's checkpoints go back where they happened, between the turns — the
+        // marker used to exist only in the session that made it, so after a relaunch the
+        // transcript no longer said when anything had been checkpointed (or opened it, §5.1).
+        var pendingCheckpoints = sessionStore.checkpoints(forTrackKey: trackKey)
+            .filter { $0.agentSessionId == session.id }
+            .sorted { $0.createdAt < $1.createdAt }[...]
+        func appendCheckpoints(through date: Date) {
+            while let next = pendingCheckpoints.first, next.createdAt <= date {
+                pendingCheckpoints = pendingCheckpoints.dropFirst()
+                appendEntry(.checkpoint(id: next.id, text: Self.checkpointMarker(next)), at: next.createdAt)
+            }
+        }
+        defer { appendCheckpoints(through: .distantFuture) }
         for turn in session.turns {
+            appendCheckpoints(through: turn.createdAt)
             // The turn's own persisted timestamp, so a reloaded transcript reports the elapsed
             // times that actually happened rather than the instant of the reload.
             for block in turn.content {
@@ -1692,6 +1704,12 @@ public final class AgentRunner {
     }
 
     // MARK: - Static helpers
+
+    /// "✓ Checkpoint (sha7): intent", or "(no file changes)" when nothing was committed.
+    static func checkpointMarker(_ checkpoint: Checkpoint) -> String {
+        let intent = checkpoint.declaredIntent.isEmpty ? "no description" : checkpoint.declaredIntent
+        return checkpoint.gitCommitSHA.map { "✓ Checkpoint (\(String($0.prefix(7)))): \(intent)" } ?? "✓ Checkpoint: \(intent) (no file changes)"
+    }
 
     /// Other git activity in this app (window-subtitle status polling, Tracks' uncommitted-file
     /// counts) can legitimately land at the same instant as a checkpoint's own `git add` — both

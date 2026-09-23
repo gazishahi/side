@@ -105,6 +105,17 @@ final class ShellViewController: NSViewController {
             if manager.runner(forTrackKey: self.currentTrackKey ?? "").proposeUserTask(task) == nil { NSSound.beep() }
             self.refreshRunTasks()
         }
+        runVC.onUserCommandFinished = { [weak self] command, exitCode, screen in
+            self?.offerAttach(command: command, exitCode: exitCode, screen: screen)
+        }
+        runVC.onResolveAttachOffer = { [weak self] attach in
+            guard let self else { return }
+            if attach, let verification = self.pendingAttach {
+                self.projectContext?.sessionStore.attachVerification(verification, toLatestCheckpointFor: self.currentTrackKey ?? "")
+            }
+            self.pendingAttach = nil
+            self.refreshRunTasks()
+        }
         runVC.onResolvePendingTask = { [weak self] run in
             guard let self, let runner = self.currentRunner, let id = runner.pendingUserTaskProposalId else { return }
             runner.resolve(proposalId: id, decision: run ? .apply : .reject)
@@ -548,6 +559,9 @@ final class ShellViewController: NSViewController {
 
     private func show(_ stage: Stage) {
         guard current != stage else { return }
+        // Transient surfaces never outlive the stage they were opened on (§5 acceptance).
+        dismissCheckpointSheet()
+        pendingAttach = nil
         current = stage
         // Visiting an unpinned stage that showed itself for attention is what dismisses it.
         if lastAttention.contains(stage) { dismissedAttention.insert(stage) }
@@ -617,6 +631,35 @@ final class ShellViewController: NSViewController {
     /// Called after every debounced runner-manager change. Diffs against `lastKnownNeedsYouTrackIDs`
     /// so a notification fires once per transition *into* needing attention, not once per
     /// recompute while it stays that way, and refreshes the dock badge either way.
+    // MARK: - Checkpoint sheet (Direction 02 §5.1)
+
+    private var checkpointSheet: NSWindow?
+
+    /// A checkpoint's files and diff over Think, from its transcript line — no stage change.
+    private func presentCheckpointSheet(_ id: UUID) {
+        guard checkpointSheet == nil, let window = view.window, let store = projectContext?.sessionStore else { return }
+        let all = store.checkpoints(forTrackKey: currentTrackKey ?? "")
+        guard let checkpoint = all.first(where: { $0.id == id }) else { return }
+        let controller = CheckpointSheetController(checkpoint: checkpoint, checkpoints: all, worktreePath: workingDirectoryURL(for: currentTrackKey).path)
+        controller.onClose = { [weak self] in self?.dismissCheckpointSheet() }
+        controller.onOpenInReview = { [weak self] in
+            self?.dismissCheckpointSheet()
+            self?.show(.review)
+        }
+        let sheet = DismissableSheetWindow(contentViewController: controller)
+        sheet.styleMask = [.titled, .resizable]
+        sheet.onCancel = { [weak self] in self?.dismissCheckpointSheet() }
+        sheet.setContentSize(NSSize(width: min(820, window.frame.width - 80), height: min(600, window.frame.height - 80)))
+        checkpointSheet = sheet
+        window.beginSheet(sheet)
+    }
+
+    private func dismissCheckpointSheet() {
+        guard let sheet = checkpointSheet else { return }
+        checkpointSheet = nil
+        view.window?.endSheet(sheet)
+    }
+
     // MARK: - Run's task row
 
     /// The project's tasks for the current track's working copy — detection reads a few files,
@@ -641,10 +684,24 @@ final class ShellViewController: NSViewController {
 
     /// Task chips, the Verify chip when the newest checkpoint is unverified, the running task,
     /// and a pending Run / Cancel — all read without creating a runner.
+    /// A typed command's result, held until the user attaches or dismisses it (§5.2).
+    private var pendingAttach: CheckpointVerification?
+
+    /// Offered only while the newest checkpoint has no verification — the gap this path fills.
+    private func offerAttach(command: String, exitCode: Int, screen: String) {
+        let newest = projectContext?.sessionStore.checkpoints(forTrackKey: currentTrackKey ?? "").max { $0.createdAt < $1.createdAt }
+        guard let newest, newest.verification == nil else { return }
+        let name = command.count > 48 ? String(command.prefix(47)) + "\u{2026}" : command
+        // Redacted like every verification excerpt that reaches checkpoints.json.
+        pendingAttach = CheckpointVerification(taskName: name, command: command, exitCode: exitCode, output: SecretRedactor.redacted(screen))
+        refreshRunTasks()
+    }
+
     private func refreshRunTasks() {
         var state = RunWorkspaceViewController.TaskRowState()
         guard projectURL != nil else { runVC.setTaskRow(state); return }
         state.tasks = projectTasks
+        if let attach = pendingAttach { state.attachOffer = .init(command: attach.command, exitCode: attach.exitCode ?? -1) }
         let runner = currentRunner
         state.runningTaskName = runner?.runningUserTaskName
         if let id = runner?.pendingUserTaskProposalId,
@@ -749,6 +806,8 @@ final class ShellViewController: NSViewController {
         reloadProjectTasks()
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
         thinkVC.onOpenReviewRequested = { [weak self] in self?.show(.review) }
+        thinkVC.onOpenRunRequested = { [weak self] in self?.show(.run) }
+        thinkVC.onOpenCheckpointRequested = { [weak self] id in self?.presentCheckpointSheet(id) }
         LaunchSignposts.begin("thinkConfigure")
         thinkVC.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: context.projectRoot.path, trackKey: currentTrackKey)
         LaunchSignposts.end("thinkConfigure")

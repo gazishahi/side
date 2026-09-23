@@ -137,6 +137,9 @@ final class SideTerminalView: LocalProcessTerminalView {
 
     /// The screen as text: every visible row, trailing blanks trimmed, empty trailing rows
     /// dropped so a mostly-empty screen doesn't read as a wall of silence.
+    /// The visible screen as text, trailing blank rows dropped.
+    func visibleText() -> String { accessibleText() }
+
     private func accessibleText() -> String {
         guard let terminal = terminal else { return "" }
         var lines: [String] = []
@@ -238,6 +241,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         var lastExitCode: Int?
         var lastDuration: TimeInterval?
         var runningSince: Date?
+        /// The last command was the agent's (or a task's) — those record their own results.
+        var lastCommandWasAgent = false
+        /// Counts finished commands, so a watcher can tell a new result from a redraw.
+        var finishedCount = 0
     }
     private(set) var commandStatus = CommandStatus()
     var onCommandStatusChanged: (() -> Void)?
@@ -974,6 +981,8 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                 status.lastExitCode = code
                 status.lastDuration = Date().timeIntervalSince(start)
                 status.runningSince = nil
+                status.lastCommandWasAgent = pendingAgentCommand != nil
+                status.finishedCount += 1
             }
         }
         guard status != commandStatus else { return }

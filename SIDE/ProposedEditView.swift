@@ -15,6 +15,17 @@ final class ProposedEditView: NSView {
     private let rejectButton = NSButton(title: "Reject", target: nil, action: nil)
     private let resolutionLabel = NSTextField(labelWithString: "")
     private let buttonRow = NSStackView()
+    /// "Whole file" / "Changes only" — the proposal's diff expands in place to the full file
+    /// (Direction 02 §5.1), so judging a change in context needs no trip to Make or Review.
+    private let wholeFileButton = NSButton(title: "", target: nil, action: nil)
+    /// Set while the proposal is pending (its full content is still held); computes the
+    /// whole-file diff off-main. Nil once resolved — the content is dropped then.
+    var wholeFileDiff: ((@escaping (String) -> Void) -> Void)? { didSet { wholeFileButton.isHidden = wholeFileDiff == nil } }
+    private var changesOnlyText = ""
+    private var showingWholeFile = false
+    private var diffCap: NSLayoutConstraint!
+    private static let changesCap: CGFloat = 260
+    private static let wholeFileCap: CGFloat = 420
 
     /// Height of the diff box. Mutable because a streaming preview's body grows as the model
     /// writes: pinned at init, the card was sized for the first fragment that arrived and then
@@ -66,18 +77,30 @@ final class ProposedEditView: NSView {
         buttonRow.addArrangedSubview(resolutionLabel)
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
 
+        wholeFileButton.isBordered = false
+        wholeFileButton.target = self
+        wholeFileButton.action = #selector(toggleWholeFile)
+        wholeFileButton.isHidden = true
+        wholeFileButton.translatesAutoresizingMaskIntoConstraints = false
+        styleWholeFileButton()
+        changesOnlyText = diffText
+
         headerLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(headerLabel)
+        addSubview(wholeFileButton)
         addSubview(diffScroll)
         addSubview(buttonRow)
+        diffCap = diffScroll.heightAnchor.constraint(lessThanOrEqualToConstant: Self.changesCap)
         NSLayoutConstraint.activate([
             headerLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             headerLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            headerLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            headerLabel.trailingAnchor.constraint(lessThanOrEqualTo: wholeFileButton.leadingAnchor, constant: -12),
+            wholeFileButton.firstBaselineAnchor.constraint(equalTo: headerLabel.firstBaselineAnchor),
+            wholeFileButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             diffScroll.topAnchor.constraint(equalTo: headerLabel.bottomAnchor, constant: 8),
             diffScroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             diffScroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            diffScroll.heightAnchor.constraint(lessThanOrEqualToConstant: 260),
+            diffCap,
             buttonRow.topAnchor.constraint(equalTo: diffScroll.bottomAnchor, constant: 8),
             buttonRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             buttonRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
@@ -110,7 +133,35 @@ final class ProposedEditView: NSView {
             with: NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude),
             options: .usesLineFragmentOrigin
         )
-        return min(max(bounding.height + 16, 40), 260)
+        return min(max(bounding.height + 16, 40), showingWholeFile ? Self.wholeFileCap : Self.changesCap)
+    }
+
+    private func styleWholeFileButton() {
+        let title = showingWholeFile ? "Changes only" : "Whole file"
+        wholeFileButton.attributedTitle = NSAttributedString(string: title, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.secondaryLabelColor])
+        wholeFileButton.setAccessibilityLabel(showingWholeFile ? "Show only the changes" : "Show the whole file with changes")
+    }
+
+    /// Instant, like every expansion (§4.2): the text swaps and the box re-measures.
+    @objc private func toggleWholeFile() {
+        if showingWholeFile {
+            showingWholeFile = false
+            render(changesOnlyText)
+            return
+        }
+        wholeFileDiff? { [weak self] full in
+            guard let self, !full.isEmpty else { return }
+            self.showingWholeFile = true
+            self.render(full)
+        }
+    }
+
+    private func render(_ diffText: String) {
+        DiffBody.fill(diffView, hunks: UnifiedDiff.parseHunks(diffText))
+        diffCap.constant = showingWholeFile ? Self.wholeFileCap : Self.changesCap
+        diffHeight.constant = measuredDiffHeight()
+        styleWholeFileButton()
+        diffView.scrollToBeginningOfDocument(nil)
     }
 
     private func setStreaming(_ streaming: Bool) {
@@ -123,6 +174,8 @@ final class ProposedEditView: NSView {
     /// refresh, so it does the minimum: refill the text and re-measure the box.
     func update(edit: ProposedEdit, diffText: String, isStreaming: Bool) {
         headerLabel.stringValue = Self.headerText(for: edit, isStreaming: isStreaming)
+        changesOnlyText = diffText
+        guard !showingWholeFile else { return }
         DiffBody.fill(diffView, hunks: UnifiedDiff.parseHunks(diffText))
         diffHeight.constant = measuredDiffHeight()
         setStreaming(isStreaming)
@@ -144,6 +197,8 @@ final class ProposedEditView: NSView {
     /// was proposed and what the human decided, rather than vanishing.
     func showResolution(_ text: String, color: NSColor) {
         setStreaming(false)
+        wholeFileDiff = nil
+        if showingWholeFile { showingWholeFile = false; render(changesOnlyText) }
         applyButton.isHidden = true
         rejectButton.isHidden = true
         resolutionLabel.stringValue = text

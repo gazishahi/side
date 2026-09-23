@@ -84,6 +84,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Set by the shell: switches the window to the Review stage, where checkpoints hold the
     /// durable record of what changed.
     var onOpenReviewRequested: (() -> Void)?
+    /// Set by the shell: to the Run stage, where the command's terminal is.
+    var onOpenRunRequested: (() -> Void)?
+    /// Set by the shell: presents a checkpoint's files and diff as a sheet over Think (§5.1).
+    var onOpenCheckpointRequested: ((UUID) -> Void)?
     /// Branch-name key, "" for "no active track" — same convention as Make/Run.
     private var attachedTrackKey: String?
     private var runner: AgentRunner?
@@ -1272,14 +1276,17 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 let proposalId = entry.id
                 card.onApply = { [weak self] in self?.runner?.resolve(proposalId: proposalId, decision: .apply) }
                 card.onReject = { [weak self] in self?.runner?.resolve(proposalId: proposalId, decision: .reject) }
+                card.wholeFileDiff = wholeFileDiffProvider(for: presentation.edit)
                 card.enableDecision()
             }
         case .commandProposal(let presentation):
             guard let card = entryViews[index] as? CommandProposalView, let resolution = presentation.resolution else { return }
-            Self.showCommandResolution(card, resolution)
+            showCommandResolution(card, presentation.command, resolution)
         case .thinking(let text):
             guard let label = entryViews[index] as? NSTextField else { return }
             label.stringValue = Self.condensedThinking(text)
+        case .checkpoint(_, let text):
+            (entryViews[index] as? CheckpointLineButton)?.setText(text)
         case .meta(let text):
             // Checkpoint markers are rewritten once the agent describes what it did, so a meta
             // line is not write-once. Without this the data updated and the label didn't: Review
@@ -1298,6 +1305,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         switch entry.kind {
         case .meta(let text):
             return makeLabel(text, font: DS.Text.body(), color: .tertiaryLabelColor)
+        case .checkpoint(let id, let text):
+            // Same quiet line as any meta note, but it opens that checkpoint's files and diff in
+            // a sheet — no trip to Review to see what just changed (§5.1).
+            let line = CheckpointLineButton(text: text)
+            line.onOpen = { [weak self] in self?.onOpenCheckpointRequested?(id) }
+            return line
         case .userImage(let data):
             return ImageBubbleRowView(imageData: data, alignRight: true)
         case .userText(let text):
@@ -1347,12 +1360,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 let proposalId = entry.id
                 card.onApply = { [weak self] in self?.runner?.resolve(proposalId: proposalId, decision: .apply) }
                 card.onReject = { [weak self] in self?.runner?.resolve(proposalId: proposalId, decision: .reject) }
+                card.wholeFileDiff = wholeFileDiffProvider(for: presentation.edit)
             }
             return card
         case .commandProposal(let presentation):
             let card = CommandProposalView(command: presentation.command)
             if let resolution = presentation.resolution {
-                Self.showCommandResolution(card, resolution)
+                showCommandResolution(card, presentation.command, resolution)
             } else {
                 let proposalId = entry.id
                 card.onApply = { [weak self] in self?.runner?.resolve(proposalId: proposalId, decision: .apply) }
@@ -1362,11 +1376,30 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
     }
 
-    private static func showCommandResolution(_ card: CommandProposalView, _ resolution: CommandPresentation.Resolution) {
+    /// The whole file with the proposal's changes, computed off-main from the proposal's own
+    /// base and proposed content (held until it's resolved).
+    private func wholeFileDiffProvider(for edit: ProposedEdit) -> ((@escaping (String) -> Void) -> Void)? {
+        guard !edit.proposedContent.isEmpty || edit.isNewFile, let projectPath else { return nil }
+        let base = edit.baseContent, proposed = edit.proposedContent
+        let root = URL(fileURLWithPath: projectPath)
+        return { completion in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let full = GitDiffComputer.unifiedDiffText(original: base, proposed: proposed, projectRoot: root, contextLines: 1_000_000)
+                DispatchQueue.main.async { completion(full) }
+            }
+        }
+    }
+
+    private func showCommandResolution(_ card: CommandProposalView, _ command: ProposedCommand, _ resolution: CommandPresentation.Resolution) {
         switch resolution {
+        case .executed(let output) where command.fetchURL != nil:
+            // A fetched page isn't terminal output: a short preview, no terminal to open.
+            let preview = output.isEmpty ? "(no content)" : String(output.prefix(300))
+            card.showResolution("Fetched — \(preview)", color: DS.Color.statusVerified)
         case .executed(let output):
-            let preview = output.isEmpty ? "(no output)" : String(output.prefix(300))
-            card.showResolution("Ran — \(preview)", color: .systemGreen)
+            // The terminal's tail, in place (§5.1): what it printed, and the way to its terminal.
+            card.showResolution("Ran", color: DS.Color.statusVerified)
+            card.showOutputTail(output, onOpenInRun: { [weak self] in self?.onOpenRunRequested?() })
         case .rejected:
             card.showResolution("Rejected", color: .secondaryLabelColor)
         }
@@ -1374,7 +1407,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private static func spacing(before kind: RunTranscriptEntry.Kind) -> CGFloat {
         switch kind {
-        case .meta, .userText, .userImage, .assistantText, .proposal, .commandProposal: return 8
+        case .meta, .checkpoint, .userText, .userImage, .assistantText, .proposal, .commandProposal: return 8
         case .toolCall, .toolResult, .failure, .thinking: return 4
         }
     }
@@ -3811,3 +3844,42 @@ extension ThinkWorkspaceViewController: StageChromeProviding {
         view.needsLayout = true
     }
 }
+
+/// A checkpoint marker in the transcript: reads like the other meta lines, underlines on hover,
+/// and opens the checkpoint's sheet on click or VoiceOver press.
+private final class CheckpointLineButton: NSButton {
+    var onOpen: (() -> Void)?
+    private var text = ""
+    private var hovering = false { didSet { restyle() } }
+
+    init(text: String) {
+        super.init(frame: .zero)
+        isBordered = false
+        translatesAutoresizingMaskIntoConstraints = false
+        target = self
+        action = #selector(open)
+        setText(text)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setText(_ text: String) {
+        self.text = text
+        restyle()
+        setAccessibilityLabel(text)
+        setAccessibilityHelp("Shows this checkpoint's files and changes")
+    }
+
+    private func restyle() {
+        var attributes: [NSAttributedString.Key: Any] = [.font: DS.Text.body(), .foregroundColor: hovering ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor]
+        if hovering { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        attributedTitle = NSAttributedString(string: text, attributes: attributes)
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    @objc private func open() { onOpen?() }
+}
+

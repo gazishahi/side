@@ -45,6 +45,11 @@ final class RunWorkspaceViewController: NSViewController {
     var onRunTask: ((ProjectTask) -> Void)?
     /// The confirm strip's Run (true) or Cancel (false) for a proposed task.
     var onResolvePendingTask: ((Bool) -> Void)?
+    /// A command the user typed finished: (command, exit code, the screen's last lines). The
+    /// shell decides whether to offer it as the newest checkpoint's verification (§5.2).
+    var onUserCommandFinished: ((String, Int, String) -> Void)?
+    /// The attach offer's Attach (true) or Dismiss (false).
+    var onResolveAttachOffer: ((Bool) -> Void)?
 
     /// What the task row shows (§4.3) — computed by the shell, which owns the runner and the
     /// project's task list; this view only draws it.
@@ -55,6 +60,12 @@ final class RunWorkspaceViewController: NSViewController {
         var runningTaskName: String?
         /// A proposed task waiting for Run / Cancel (Manual autonomy, or off the allowlist).
         var pendingCommand: String?
+        /// A typed command's result the user can attach to the newest, unverified checkpoint.
+        var attachOffer: AttachOffer?
+    }
+    struct AttachOffer: Equatable {
+        var command: String
+        var exitCode: Int
     }
     private var taskRowState = TaskRowState()
     private let taskRow = NSStackView()
@@ -89,6 +100,7 @@ final class RunWorkspaceViewController: NSViewController {
     private func terminalsChanged(origin: ObjectIdentifier?) {
         onActivityChanged?()
         updateStatusLine()
+        reportUserCommandIfFinished()
         guard isViewLoaded, origin != ObjectIdentifier(self) else { return }
         rebuildTabBar()
         if let displayed = displayedSession, !sessions.contains(where: { $0 === displayed }) {
@@ -422,6 +434,7 @@ final class RunWorkspaceViewController: NSViewController {
         ])
         vc.activate()
         updateStatusLine()
+        reportUserCommandIfFinished()
     }
 
     /// Reads the shown session's live cwd (OSC 7) and last command (OSC 133). A cwd outside the
@@ -631,7 +644,7 @@ final class RunWorkspaceViewController: NSViewController {
         taskRowState = state
         guard isViewLoaded else { return }
         taskRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let hasContent = !state.tasks.isEmpty || state.pendingCommand != nil
+        let hasContent = !state.tasks.isEmpty || state.pendingCommand != nil || state.attachOffer != nil
         taskRow.isHidden = !hasContent
         updateStatusLine()
         guard hasContent else { return }
@@ -647,6 +660,22 @@ final class RunWorkspaceViewController: NSViewController {
             taskRow.addArrangedSubview(question)
             taskRow.addArrangedSubview(Self.textAction("Run", emphasized: true, target: self, action: #selector(confirmPendingTask)))
             taskRow.addArrangedSubview(Self.textAction("Cancel", emphasized: false, target: self, action: #selector(cancelPendingTask)))
+            return
+        }
+
+        if let offer = state.attachOffer {
+            // The manual verification path (§5.2): a result the user got by hand becomes the
+            // newest checkpoint's evidence only when they say so.
+            let line = NSTextField(labelWithString: "")
+            let text = NSMutableAttributedString(string: offer.command, attributes: [.font: DS.Text.code(11.5, weight: .medium), .foregroundColor: NSColor.labelColor])
+            text.append(NSAttributedString(string: offer.exitCode == 0 ? " passed" : " exited \(offer.exitCode)", attributes: [
+                .font: DS.Text.caption(), .foregroundColor: offer.exitCode == 0 ? DS.Color.statusVerified : DS.Color.statusFailed,
+            ]))
+            line.attributedStringValue = text
+            line.lineBreakMode = .byTruncatingMiddle
+            taskRow.addArrangedSubview(line)
+            taskRow.addArrangedSubview(Self.textAction("Attach to checkpoint", emphasized: true, target: self, action: #selector(attachOffered)))
+            taskRow.addArrangedSubview(Self.textAction("Dismiss", emphasized: false, target: self, action: #selector(dismissOffered)))
             return
         }
 
@@ -681,6 +710,23 @@ final class RunWorkspaceViewController: NSViewController {
         // The task runs in the terminal on screen; bring it forward if it's elsewhere.
         onRunTask?(task)
     }
+
+    @objc private func attachOffered() { onResolveAttachOffer?(true) }
+    @objc private func dismissOffered() { onResolveAttachOffer?(false) }
+
+    /// A typed command in the shown terminal just finished — report it once. The first look at
+    /// a session only records where it stands: a result already on screen isn't news.
+    private func reportUserCommandIfFinished() {
+        guard let session = displayedSession else { return }
+        let vc = session.viewController
+        let status = vc.commandStatus
+        let previous = reportedFinishCount[session.id]
+        reportedFinishCount[session.id] = status.finishedCount
+        guard let previous, status.finishedCount > previous, taskRowState.runningTaskName == nil,
+              let code = status.lastExitCode, !status.lastCommandWasAgent, let command = vc.lastSubmittedCommand else { return }
+        onUserCommandFinished?(command, code, vc.terminalView.visibleText())
+    }
+    private var reportedFinishCount: [UUID: Int] = [:]
 
     @objc private func confirmPendingTask() { onResolvePendingTask?(true) }
     @objc private func cancelPendingTask() { onResolvePendingTask?(false) }

@@ -15,6 +15,11 @@ final class CommandProposalView: NSView {
     private let rejectButton = NSButton(title: "Reject", target: nil, action: nil)
     private let resolutionLabel = NSTextField(labelWithString: "")
     private let buttonRow = NSStackView()
+    /// The terminal's last lines once the command has run (Direction 02 §5.1) — what it printed,
+    /// right here, without a trip to Run.
+    private let tailStack = NSStackView()
+    private var tailTop: NSLayoutConstraint!
+    static let tailLineCount = 40
 
     init(command: ProposedCommand) {
         super.init(frame: .zero)
@@ -75,11 +80,18 @@ final class CommandProposalView: NSView {
         buttonRow.addArrangedSubview(resolutionLabel)
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
 
+        tailStack.orientation = .vertical
+        tailStack.alignment = .trailing
+        tailStack.spacing = DS.Spacing.s
+        tailStack.translatesAutoresizingMaskIntoConstraints = false
+
         headerLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(headerLabel)
         addSubview(commandLabel)
         addSubview(warningLabel)
         addSubview(buttonRow)
+        addSubview(tailStack)
+        tailTop = tailStack.topAnchor.constraint(equalTo: buttonRow.bottomAnchor, constant: 0)
         NSLayoutConstraint.activate([
             headerLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             headerLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
@@ -92,7 +104,10 @@ final class CommandProposalView: NSView {
             warningLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             buttonRow.topAnchor.constraint(equalTo: warningLabel.bottomAnchor, constant: 8),
             buttonRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            buttonRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            tailTop,
+            tailStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            tailStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            tailStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
         ])
     }
 
@@ -108,6 +123,66 @@ final class CommandProposalView: NSView {
         resolutionLabel.textColor = color
         resolutionLabel.isHidden = false
     }
+
+    /// The last `tailLineCount` lines of what the command printed, in code type on `overlay`
+    /// (the card is `raised`), radius 10, with "Open in Run" when there's a terminal to go to.
+    func showOutputTail(_ output: String, onOpenInRun: (() -> Void)?) {
+        tailStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+        let tail = lines.suffix(Self.tailLineCount).joined(separator: "\n").trimmingCharacters(in: .newlines)
+        guard !tail.isEmpty || onOpenInRun != nil else { return }
+        tailTop.constant = 8
+        if !tail.isEmpty {
+            let text = NSTextView()
+            text.isEditable = false
+            text.isSelectable = true
+            text.drawsBackground = false
+            text.font = DS.Text.code(11, weight: .regular)
+            text.textColor = .secondaryLabelColor
+            text.string = tail
+            text.textContainerInset = NSSize(width: 10, height: 8)
+            text.isVerticallyResizable = true
+            text.autoresizingMask = [.width]
+            text.textContainer?.widthTracksTextView = true
+            let scroll = NSScrollView()
+            scroll.documentView = text
+            scroll.hasVerticalScroller = true
+            scroll.drawsBackground = false
+            scroll.translatesAutoresizingMaskIntoConstraints = false
+            // The tone lives on a plain container: a scroll view's own layer fill never shows.
+            let surface = NSView()
+            surface.wantsLayer = true
+            surface.layer?.cornerRadius = DS.Radius.surface
+            surface.layer?.masksToBounds = true
+            surface.bindLayerBackground(DS.Color.overlay)
+            surface.translatesAutoresizingMaskIntoConstraints = false
+            surface.addSubview(scroll)
+            let lineHeight = ceil(DS.Text.code(11).boundingRectForFont.height)
+            let shown = min(tail.split(separator: "\n", omittingEmptySubsequences: false).count, 14)
+            NSLayoutConstraint.activate([
+                scroll.topAnchor.constraint(equalTo: surface.topAnchor), scroll.bottomAnchor.constraint(equalTo: surface.bottomAnchor),
+                scroll.leadingAnchor.constraint(equalTo: surface.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
+                surface.heightAnchor.constraint(equalToConstant: CGFloat(shown) * lineHeight + 18),
+            ])
+            tailStack.addArrangedSubview(surface)
+            surface.widthAnchor.constraint(equalTo: tailStack.widthAnchor).isActive = true
+            // Starts at the end, where a command's result — and its error — lives.
+            DispatchQueue.main.async { text.scrollToEndOfDocument(nil) }
+            scroll.setAccessibilityLabel("Command output, last lines")
+        }
+        if let onOpenInRun {
+            let open = NSButton(title: "Open in Run", target: nil, action: nil)
+            open.isBordered = false
+            open.attributedTitle = NSAttributedString(string: "Open in Run", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+            openInRun = onOpenInRun
+            open.target = self
+            open.action = #selector(openInRunTapped)
+            tailStack.addArrangedSubview(open)
+        }
+    }
+
+    private var openInRun: (() -> Void)?
+    @objc private func openInRunTapped() { openInRun?() }
 
     @objc private func applyTapped() { onApply?() }
     @objc private func rejectTapped() { onReject?() }
