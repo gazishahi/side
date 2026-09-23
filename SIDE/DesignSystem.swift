@@ -784,6 +784,43 @@ extension DS {
     }
 
     /// Dot plus 12 pt secondary text: `● Needs you`.
+    /// An empty state (Direction 02 §6): one sentence and the one action that fixes it — never a
+    /// paragraph of explainer. The action is the screen's primary, so it takes the accent.
+    final class EmptyState: NSStackView {
+        private let label = NSTextField(wrappingLabelWithString: "")
+        private let button = NSButton(title: "", target: nil, action: nil)
+        private var handler: (() -> Void)?
+
+        init() {
+            super.init(frame: .zero)
+            orientation = .vertical
+            alignment = .centerX
+            spacing = Spacing.l
+            translatesAutoresizingMaskIntoConstraints = false
+            label.font = Text.body()
+            label.textColor = .secondaryLabelColor
+            label.alignment = .center
+            label.preferredMaxLayoutWidth = 420
+            button.bezelStyle = .push
+            button.bezelColor = .controlAccentColor
+            button.target = self
+            button.action = #selector(performAction)
+            addArrangedSubview(label)
+            addArrangedSubview(button)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        func configure(_ text: String, action title: String?, handler: (() -> Void)?) {
+            label.stringValue = text
+            button.title = title ?? ""
+            button.isHidden = title == nil
+            self.handler = handler
+        }
+
+        @objc private func performAction() { handler?() }
+    }
+
     final class StatusLabel: NSStackView {
         let dot: StatusDot
         let label = NSTextField(labelWithString: "")
@@ -814,3 +851,10 @@ extension DS {
         }
     }
 }
+
+/// What an empty state's one action does. The shell performs it — a stage can't open a project,
+/// initialise git or start a track on its own.
+enum EmptyStateAction {
+    case openProject, initializeGit, newTrack, chooseTrack, setUpModel
+}
+

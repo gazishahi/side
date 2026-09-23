@@ -132,5 +132,19 @@ final class StageCompositionTests: XCTestCase {
         XCTAssertTrue(resolved.unresolved.isEmpty)
         XCTAssertEqual(FileMention.pointer(relativePath: "a.swift", lines: 7...7), "@a.swift#L7")
     }
+
+    /// The first-run sheet shows only on a true first run — no recent projects and no model that
+    /// can answer — and never again once dismissed (§6 acceptance).
+    func testFirstRunShowsOnceAndOnlyOnAFirstRun() {
+        let cases: [(dismissed: Bool, recents: Bool, model: Bool, shows: Bool)] = [
+            (false, false, false, true),
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+        ]
+        for c in cases {
+            XCTAssertEqual(FirstRun.shouldPresent(dismissed: c.dismissed, hasRecentProjects: c.recents, modelReady: c.model), c.shows, "\(c)")
+        }
+    }
 }
 

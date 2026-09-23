@@ -93,6 +93,8 @@ final class TracksWorkspaceViewController: NSViewController {
     /// (Make's remembered file, Run's terminal sessions) — this controller only owns the ledger
     /// itself, not those other stages' bookkeeping.
     var onTrackDeleted: ((Track) -> Void)?
+    /// Set by the shell, which performs empty-state actions (§6).
+    var onEmptyStateAction: ((EmptyStateAction) -> Void)?
 
     func configure(with store: TrackStore, runnerManager: AgentRunnerManager) {
         self.runnerManager = runnerManager
@@ -277,14 +279,7 @@ final class TracksWorkspaceViewController: NSViewController {
         searchField.isEnabled = isRepo
         showArchivedButton.isEnabled = isRepo
         guard hasProject else {
-            let banner = makeInfoBannerCard(
-                symbolName: "folder.badge.questionmark",
-                text: "No project is open. Tracks are parallel lines of work inside a project — open one to get started.",
-                buttonTitle: nil,
-                action: nil
-            )
-            contentStack.addArrangedSubview(banner)
-            banner.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            addEmptyState("Open a project to see its tracks.", action: "Open Project…") { [weak self] in self?.onEmptyStateAction?(.openProject) }
             updateArchivedCountLabel()
             return
         }
@@ -311,11 +306,15 @@ final class TracksWorkspaceViewController: NSViewController {
         // Everything not pinned, flat on canvas; a pinned track appears once, in the group.
         let rest = families().map { $0.filter { !pinnedIDs.contains($0.id) } }.filter { !$0.isEmpty }
         if needsYou.isEmpty && rest.isEmpty {
-            let empty = NSTextField(labelWithString: searchQuery.isEmpty ? "No tracks yet — create one to get started." : "No tracks match \u{201C}\(searchQuery)\u{201D}.")
-            empty.font = DS.Text.body()
-            empty.textColor = .tertiaryLabelColor
-            contentStack.addArrangedSubview(empty)
-            empty.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            if searchQuery.isEmpty {
+                addEmptyState("A track is one line of work, on its own branch.", action: "New Track") { [weak self] in self?.newTrackTapped() }
+            } else {
+                let empty = NSTextField(labelWithString: "No tracks match \u{201C}\(searchQuery)\u{201D}.")
+                empty.font = DS.Text.body()
+                empty.textColor = .tertiaryLabelColor
+                contentStack.addArrangedSubview(empty)
+                empty.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            }
         } else {
             // Pinned first, on `raised` — the one grouped surface on the stage (§4.1). Drawn
             // from activity, not `TrackStatus`: a blocked agent on a `.waiting` track would
@@ -341,6 +340,18 @@ final class TracksWorkspaceViewController: NSViewController {
     }
 
     /// Archived work shows when asked for — the toggle, or a search, which reaches it too.
+    /// §6: one sentence and its one action, centred in the space the list would fill.
+    private func addEmptyState(_ text: String, action: String, handler: @escaping () -> Void) {
+        let state = DS.EmptyState()
+        state.configure(text, action: action, handler: handler)
+        state.edgeInsets = NSEdgeInsets(top: 80, left: 0, bottom: 0, right: 0)
+        contentStack.addArrangedSubview(state)
+        state.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+    }
+
+    /// For the shell's "Initialize Git…" from other stages' empty states.
+    func initializeGit() { initializeGitTapped() }
+
     private func visibleTracks() -> [Track] {
         let all = trackStore?.tracks ?? []
         let query = searchQuery

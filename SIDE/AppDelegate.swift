@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             volatile.removePersistentDomain(forName: "side.uitesting.volatile")
             GitLaunchProbe.defaults = volatile
             ProjectRules.defaults = volatile
+            DispatchQueue.main.async { (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded() }
             if let fixture = UserDefaults.standard.string(forKey: "SideUITestingProject") {
                 DispatchQueue.main.async {
                     (window.contentViewController as? ShellViewController)?.openProject(at: URL(fileURLWithPath: fixture), focusingTrackKey: nil)
@@ -78,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             LaunchSignposts.begin("restoreSession")
             (window.contentViewController as? ShellViewController)?.restoreLastSessionIfAvailable()
             LaunchSignposts.end("restoreSession")
+            (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded()
             self?.didFinishRestoring = true
         }
     }
@@ -169,6 +171,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         return window
+    }
+
+    enum PreferencesPane: Int { case general = 0, providers = 1, usage = 2, appearance = 3, history = 4 }
+
+    /// Opens Preferences on a given pane — "Set up a model…" lands on Providers (§6).
+    func openPreferences(on pane: PreferencesPane) {
+        showPreferences()
+        (preferencesWindow?.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex = pane.rawValue
     }
 
     @objc func showPreferences() {

@@ -25,7 +25,9 @@ final class ReviewWorkspaceViewController: NSViewController {
     private var currentTrack: Track?
     private var currentWorkingDirectory: URL?
 
-    private let emptyStateLabel = NSTextField(labelWithString: "Switch to a track to review its work.")
+    /// One sentence and the one action that fixes it (§6).
+    private let emptyState = DS.EmptyState()
+    var onEmptyStateAction: ((EmptyStateAction) -> Void)?
     private let contentStack = NSStackView()
     private let scrollView = NSScrollView()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -76,9 +78,6 @@ final class ReviewWorkspaceViewController: NSViewController {
             name: AgentSessionStore.checkpointsDidChangeNotification, object: nil
         )
 
-        emptyStateLabel.font = DS.Text.heading()
-        emptyStateLabel.textColor = .tertiaryLabelColor
-        emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // The track's intent heads the window's top row (Direction 02 §3.2), with the
         // `branch → target` line beside it.
@@ -216,7 +215,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         // identity of the thing being acted on.
         view.addSubview(scrollView)
         view.addSubview(promoteOverlay)
-        view.addSubview(emptyStateLabel)
+        view.addSubview(emptyState)
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -232,8 +231,9 @@ final class ReviewWorkspaceViewController: NSViewController {
             contentStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
             contentStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
             contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
-            emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
         ])
         // Not just `showEmptyState(true)` — `reloadForTrackSwitch` can (and typically does, on
         // a restored window) run before this view ever loads, since it's only added as a child
@@ -262,10 +262,11 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     /// `message` overrides the default copy — the empty state has to say *which* thing is
     /// missing (no project, no repo, no track), since the remedy differs for each.
-    private func showEmptyState(_ empty: Bool, message: String? = nil) {
-        if let message { emptyStateLabel.stringValue = message }
-        else if empty { emptyStateLabel.stringValue = Self.defaultEmptyStateText }
-        emptyStateLabel.isHidden = !empty
+    private func showEmptyState(_ empty: Bool, message: String? = nil, action: (title: String, kind: EmptyStateAction)? = nil) {
+        if empty {
+            emptyState.configure(message ?? Self.defaultEmptyStateText, action: action?.title, handler: action.map { action in { [weak self] in self?.onEmptyStateAction?(action.kind) } })
+        }
+        emptyState.isHidden = !empty
         scrollView.isHidden = empty
         // Nothing to promote when there's nothing to review.
         promoteOverlay.isHidden = empty
@@ -273,7 +274,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         headerRow.isHidden = empty
     }
 
-    private static let defaultEmptyStateText = "Switch to a track to review its work."
+    private static let defaultEmptyStateText = "Review shows what a track has changed."
 
     /// Horizontal room the floating Promote capsule needs; the title truncates short of it.
     private static let promoteGutter: CGFloat = 240
@@ -345,15 +346,16 @@ final class ReviewWorkspaceViewController: NSViewController {
         // its work" — advice the user cannot follow, since tracks require a repo. Tracks says
         // this plainly; Review used to never mention git at all.
         if trackStore == nil {
-            showEmptyState(true, message: "No project is open. Review shows an open project's checkpoints and the changes a track has made.")
+            showEmptyState(true, message: "Open a project to review its work.", action: ("Open Project…", .openProject))
             return
         }
         if trackStore?.repoState == .notAGitRepo {
-            showEmptyState(true, message: "This project isn't a git repository yet. Review works from commits and branches — initialize git in Tracks to get started.")
+            showEmptyState(true, message: "Review works from commits, and this project isn't a git repository yet.", action: ("Initialize Git…", .initializeGit))
             return
         }
         guard let track = currentTrack, let trackStore else {
-            showEmptyState(true)
+            let hasTracks = trackStore?.tracks.contains { $0.status != .archived } ?? false
+            showEmptyState(true, message: Self.defaultEmptyStateText, action: hasTracks ? ("Choose a Track…", .chooseTrack) : ("New Track", .newTrack))
             return
         }
         showEmptyState(false)

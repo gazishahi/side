@@ -257,8 +257,18 @@ final class RunWorkspaceViewController: NSViewController {
         }
     }
 
+    /// Set by the shell, which performs empty-state actions (§6).
+    var onEmptyStateAction: ((EmptyStateAction) -> Void)?
+
     private func showNoProjectState() {
-        showPlaceholder("No project is open. Run gives each track its own terminals inside a project.")
+        let state = DS.EmptyState()
+        state.configure("Open a project to run its terminals.", action: "Open Project…", handler: { [weak self] in self?.onEmptyStateAction?(.openProject) })
+        container.addSubview(state)
+        NSLayoutConstraint.activate([
+            state.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            state.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            state.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+        ])
     }
 
     private func showPlaceholder(_ text: String) {
@@ -827,4 +837,3 @@ private final class TaskChip: NSButton {
         attributedTitle.draw(at: NSPoint(x: leadingInset, y: (bounds.height - size.height) / 2))
     }
 }
-

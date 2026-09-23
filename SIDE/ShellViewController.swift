@@ -89,6 +89,10 @@ final class ShellViewController: NSViewController {
         makeVC.onFileOpened = { [weak self] url in self?.fileOpened(url) }
         makeVC.onDirtyChanged = { [weak self] dirty in self?.isDirty = dirty; self?.applyWindowChrome() }
         makeVC.onInstruct = { [weak self] request in self?.startInstruct(request) }
+        thinkVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
+        reviewVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
+        runVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
+        tracksVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
         reviewVC.onInstructRequested = { [weak self] path, lines, anchor in self?.presentReviewInstruct(path: path, lines: lines, anchor: anchor) }
         makeVC.onOpenThinkRequested = { [weak self] in self?.show(.think) }
         makeVC.onTearOutRequested = { [weak self] url, screenPoint in
@@ -637,6 +641,116 @@ final class ShellViewController: NSViewController {
     /// Called after every debounced runner-manager change. Diffs against `lastKnownNeedsYouTrackIDs`
     /// so a notification fires once per transition *into* needing attention, not once per
     /// recompute while it stays that way, and refreshes the dock badge either way.
+    // MARK: - First run (Direction 02 §6)
+
+    private var firstRunSheet: NSWindow?
+    /// The sheet is in play this session: shown, or stepped aside while one of its steps runs.
+    private var firstRunActive = false
+    /// Ending our own sheet posts the same notification as a step's sheet ending; skip that one.
+    private var ignoreNextSheetEnd = false
+    private var firstRunObservers: [NSObjectProtocol] = []
+
+    /// Called once launch has restored (or not) the last session.
+    func presentFirstRunIfNeeded() {
+        guard let window = view.window else { return }
+        if !FirstRun.forced {
+            guard !AppDelegate.isUITesting else { return }
+            let recents = (UserDefaults.standard.array(forKey: "side.recent-projects") as? [String]) ?? []
+            let hasRecents = !recents.isEmpty || UserDefaults.standard.string(forKey: "side.last-project-path") != nil
+            guard FirstRun.shouldPresent(dismissed: FirstRun.dismissed, hasRecentProjects: hasRecents, modelReady: FirstRun.modelReady) else { return }
+        }
+        firstRunActive = true
+        // A step's own sheet (open panel, New Track) ending, or Preferences closing, brings the
+        // sheet back with that step ticked.
+        firstRunObservers = [
+            NotificationCenter.default.addObserver(forName: NSWindow.didEndSheetNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if self.ignoreNextSheetEnd { self.ignoreNextSheetEnd = false; return }
+                    self.resumeFirstRun()
+                }
+            },
+            NotificationCenter.default.addObserver(forName: NSWindow.didBecomeMainNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.resumeFirstRun() }
+            },
+        ]
+        showFirstRun()
+    }
+
+    private func firstRunDone() -> Set<FirstRun.Step> {
+        var done: Set<FirstRun.Step> = []
+        if projectURL != nil { done.insert(.project) }
+        if FirstRun.modelReady { done.insert(.model) }
+        if trackStore?.tracks.isEmpty == false { done.insert(.track) }
+        return done
+    }
+
+    private func resumeFirstRun() {
+        DispatchQueue.main.async { [weak self] in self?.showFirstRun() }
+    }
+
+    private func showFirstRun() {
+        guard firstRunActive, firstRunSheet == nil, let window = view.window, window.attachedSheet == nil else { return }
+        let done = firstRunDone()
+        guard done.count < FirstRun.Step.allCases.count else { endFirstRun(forever: true); return }
+        let controller = FirstRunSheetController(done: done)
+        controller.onStep = { [weak self] step in
+            guard let self else { return }
+            self.hideFirstRun()
+            switch step {
+            case .project: self.performEmptyStateAction(.openProject)
+            case .model: self.performEmptyStateAction(.setUpModel)
+            case .track: self.performEmptyStateAction(.newTrack)
+            }
+        }
+        controller.onDismiss = { [weak self] in self?.endFirstRun(forever: true) }
+        let sheet = DismissableSheetWindow(contentViewController: controller)
+        sheet.styleMask = [.titled]
+        // Escape puts it away for this session; only "Don't Show Again" is forever.
+        sheet.onCancel = { [weak self] in self?.endFirstRun(forever: false) }
+        firstRunSheet = sheet
+        window.beginSheet(sheet)
+    }
+
+    /// A step finished while the sheet was already back up (track creation completes after its
+    /// alert closes): redraw it with the new tick.
+    private func refreshFirstRunIfShown() {
+        guard firstRunSheet != nil else { return }
+        hideFirstRun()
+        resumeFirstRun()
+    }
+
+    private func hideFirstRun() {
+        guard let sheet = firstRunSheet else { return }
+        firstRunSheet = nil
+        ignoreNextSheetEnd = true
+        view.window?.endSheet(sheet)
+    }
+
+    private func endFirstRun(forever: Bool) {
+        if forever, !FirstRun.forced { FirstRun.dismissed = true }
+        firstRunActive = false
+        hideFirstRun()
+        firstRunObservers.forEach(NotificationCenter.default.removeObserver)
+        firstRunObservers = []
+    }
+
+    // MARK: - Empty states (Direction 02 §6)
+
+    /// Every empty state's one action lands here: the shell is the only place that can open a
+    /// project, initialise git, start or choose a track, or open Providers.
+    private func performEmptyStateAction(_ action: EmptyStateAction) {
+        switch action {
+        case .openProject: makeVC.openProjectFromMenuAction()
+        case .initializeGit:
+            show(.tracks)
+            tracksVC.initializeGit()
+        case .newTrack: trackPill.onNewTrack?()
+        case .chooseTrack: trackPill.togglePopover()
+        case .setUpModel: AppDelegate.shared?.openPreferences(on: .providers)
+        }
+    }
+
     // MARK: - Inline instruct (Direction 02 §5.3)
 
     /// The instruct in flight: its runner, the observer watching it, and where in the transcript
@@ -650,7 +764,14 @@ final class ShellViewController: NSViewController {
     /// as a card beside the lines, Ask as an answer in the popover.
     private func startInstruct(_ request: InlineInstruct.Request) {
         guard let manager = projectContext?.runnerManager else { return }
-        let runner = manager.runner(forTrackKey: currentTrackKey ?? "")
+        // Conversations happen on tracks (§6), and an instruct is a message in one.
+        guard let trackKey = currentTrackKey, !trackKey.isEmpty else {
+            let note = "Instruct works on a track — start one first."
+            makeVC.instructProblem(note)
+            reviewInstructController?.showProblem(note)
+            return
+        }
+        let runner = manager.runner(forTrackKey: trackKey)
         guard runner.isReadyToSend else {
             makeVC.instructProblem(runner.notReadyReason)
             reviewInstructController?.showProblem(runner.notReadyReason)
@@ -948,6 +1069,7 @@ final class ShellViewController: NSViewController {
         tracksVC.configure(with: store, runnerManager: context.runnerManager)
         applyWindowChrome()
         refreshGitInfo(for: workingDirectory)
+        refreshFirstRunIfShown()
     }
 
     /// Switching to a track with its own worktree is instant bookkeeping — no checkout, so no
@@ -1006,6 +1128,7 @@ final class ShellViewController: NSViewController {
         thinkVC.reloadForTrackSwitch(trackKey: branchName)
         reviewVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
         show(.make)
+        refreshFirstRunIfShown()
     }
 
     /// `url` is non-nil for an actual file open — from anywhere reachable regardless of stage

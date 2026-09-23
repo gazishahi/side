@@ -66,7 +66,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private let plusGlass = DS.makeGlass(cornerRadius: 19)
     /// The explainer lives here now — visible only while there's nothing else to look at,
     /// instead of as a permanent first line of every conversation.
-    private let emptyStateLabel = NSTextField(wrappingLabelWithString: "Ask about this project. The agent can read files, propose edits, and run commands — everything it changes waits for your approval.")
+    /// One sentence and the one action that fixes it (§6): open a project, initialise git, start
+    /// a track — Think works on a track — or, on a track with nothing said yet, just a line.
+    private let emptyState = DS.EmptyState()
+    /// Set by the shell, which performs empty-state actions.
+    var onEmptyStateAction: ((EmptyStateAction) -> Void)?
+    /// The active provider can take a message. Read on attach and whenever the window becomes
+    /// main again (Preferences closing is the usual reason it changed); not per keystroke — it's a
+    /// Keychain read.
+    private var modelReady = true
+    private var mainWindowObserver: NSObjectProtocol?
 
     private var runnerManager: AgentRunnerManager?
     /// Which project's usage the header reports — set alongside `runnerManager`.
@@ -154,6 +163,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
         composer.onSlashCommand = { [weak self] name in self?.performSlashCommand(name) }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
+        composer.onSetUpModel = { [weak self] in self?.onEmptyStateAction?(.setUpModel) }
         composer.onCycleMode = { [weak self] in self?.cycleScope() }
         composer.onEscape = { [weak self] in self?.escapePressed() ?? false }
         composer.onEngagedChanged = { [weak self] engaged in self?.onComposerEngagedChanged?(engaged) }
@@ -208,11 +218,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         view.addSubview(editingChipGlass)
         view.addSubview(editingChip)
 
-        emptyStateLabel.font = DS.Text.body()
-        emptyStateLabel.textColor = .tertiaryLabelColor
-        emptyStateLabel.alignment = .center
-        emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(emptyStateLabel)
+        view.addSubview(emptyState)
 
         composerBottom = composer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.xl)
         // Where the pills sit when the window has no bar to take them: above the composer's
@@ -226,9 +232,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         editingChipLeading = editingChip.leadingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.xl + DS.Spacing.s * 2)
         NSLayoutConstraint.activate(undockedPillConstraints + [editingChipLeading])
         NSLayoutConstraint.activate([
-            emptyStateLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            emptyStateLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            emptyStateLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+            emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
             // Full bleed to the window's bottom: the composer *floats over* the transcript on
             // glass, no separating line — the messages refract under it as they scroll, which is
             // the whole point of the material. The scroll view gets a bottom content inset in
@@ -351,6 +357,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// menu-routed actions targeting this controller silently go nowhere.
     override func viewDidAppear() {
         super.viewDidAppear()
+        refreshModelReadiness()
+        if let window = view.window, mainWindowObserver == nil {
+            mainWindowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeMainNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshModelReadiness() }
+            }
+        }
         refreshSessionPill()
         composer.focus()
         // Mirrors RunWorkspaceViewController.clearUnseenOutput: becoming visible is what counts
@@ -399,17 +411,47 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         detach()
         attachedTrackKey = trackKey
         refreshFileIndex()
-        if let runnerManager {
-            let newRunner = runnerManager.runner(forTrackKey: trackKey ?? "")
+        // Think works on a track (§6): with none, there's no conversation to attach to — the
+        // empty state offers to start one.
+        if let runnerManager, let trackKey, !trackKey.isEmpty {
+            let newRunner = runnerManager.runner(forTrackKey: trackKey)
             runner = newRunner
             observerToken = newRunner.addObserver { [weak self] event in self?.handle(event) }
         } else {
             runner = nil
         }
+        refreshModelReadiness()
         if isViewLoaded {
             renderFull()
             if view.window != nil { runner?.acknowledgeCompletion() }
         }
+    }
+
+    /// Which empty state, if any: no project → Open Project; not a repository → Initialize Git;
+    /// no track → New Track (or Choose a Track when some exist); an empty conversation → a line.
+    private func refreshEmptyState() {
+        guard isViewLoaded else { return }
+        let hasEntries = !(runner?.entries.isEmpty ?? true)
+        emptyState.isHidden = hasEntries
+        composer.isEnabled = runner != nil && runner?.phase != .awaitingApproval
+        guard !hasEntries else { return }
+        let act: (EmptyStateAction) -> () -> Void = { action in { [weak self] in self?.onEmptyStateAction?(action) } }
+        if runnerManager == nil {
+            emptyState.configure("Open a project to start a conversation.", action: "Open Project…", handler: act(.openProject))
+        } else if trackStore?.repoState == .notAGitRepo {
+            emptyState.configure("Conversations happen on tracks, and tracks need git.", action: "Initialize Git…", handler: act(.initializeGit))
+        } else if runner == nil {
+            let hasTracks = trackStore?.tracks.contains { $0.status != .archived } ?? false
+            emptyState.configure("Think works on a track.", action: hasTracks ? "Choose a Track…" : "New Track", handler: act(hasTracks ? .chooseTrack : .newTrack))
+        } else {
+            emptyState.configure("Ask anything about this track — every change waits for your approval.", action: nil, handler: nil)
+        }
+    }
+
+    private func refreshModelReadiness() {
+        modelReady = runner?.isReadyToSend ?? true
+        guard isViewLoaded else { return }
+        composer.setNeedsModelSetup(!modelReady)
     }
 
     private func detach() {
@@ -457,10 +499,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     // MARK: - Sending
 
     private func composerActionTapped() {
-        guard let runner else {
-            appendLocalNotice("Open a project first — Think conversations belong to a project.")
-            return
-        }
+        guard let runner else { return }
         // While the agent is working the button means Stop — but pressing Return with text in
         // the composer means "send this next", which is what every other harness does and what
         // typing during a long turn obviously intends. Without this the keystroke was simply
@@ -485,7 +524,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // Checked before clearing: a message that can't be sent must stay in the composer
         // rather than vanishing behind a muted notice.
         guard runner.isReadyToSend else {
-            appendLocalNotice(runner.notReadyReason)
+            // "Set up a model…" (§6): straight to Providers; the message stays where it is.
+            refreshModelReadiness()
+            onEmptyStateAction?(.setUpModel)
             return
         }
         composer.clear()
@@ -576,7 +617,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         composer.setBusy(busy)
         let awaitingApproval = phase == .awaitingApproval
         composer.isEnabled = !awaitingApproval
-        composer.placeholder = awaitingApproval
+        composer.placeholder = runner == nil
+            ? "Start a track to begin a conversation"
+            : awaitingApproval
             ? "Apply or reject the proposed change above to continue…"
             : (busy ? "Working — your next message will be sent when it finishes…" : "Ask about this project…")
         // A turn just ended: send whatever was typed while it was running.
@@ -1178,7 +1221,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // Finished at the last entry's own timestamp, not now — this is the rehydration path.
         currentWorkGroup?.finish()
         currentWorkGroup = nil
-        emptyStateLabel.isHidden = !(runner?.entries.isEmpty ?? true)
+        refreshEmptyState()
         updateSendButton()
         scrollToBottom()
     }
@@ -1193,7 +1236,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
         let entry = entries[index]
         let view = appendRendered(entry, isFirst: index == 0)
-        emptyStateLabel.isHidden = true
+        emptyState.isHidden = true
         // Only live appends animate — `renderFull` (reattach, track switch) lays the whole
         // history out instantly rather than replaying every arrival. A line that joined an
         // existing group animates the group's header count, not itself.
@@ -3353,6 +3396,9 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     private let scroll = NSScrollView()
 
     private let actionButton = CircularIconButton(diameter: 28)
+    /// Replaces Send while no model is set up (§6).
+    private let setupButton = NSButton(title: "Set up a model…", target: nil, action: nil)
+    var onSetUpModel: (() -> Void)?
     private let micButton = NSButton()
     private var textHeightConstraint: NSLayoutConstraint!
     /// Includes the text container's own 8pt vertical padding each side.
@@ -3443,6 +3489,18 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         addSubview(scroll)
         addSubview(micButton)
         addSubview(actionButton)
+        setupButton.bezelStyle = .push
+        setupButton.controlSize = .small
+        setupButton.bezelColor = .controlAccentColor
+        setupButton.target = self
+        setupButton.action = #selector(setupTapped)
+        setupButton.isHidden = true
+        setupButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(setupButton)
+        NSLayoutConstraint.activate([
+            setupButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
+            setupButton.centerYAnchor.constraint(equalTo: bottomAnchor, constant: -Self.capsuleRadius),
+        ])
         textHeightConstraint = scroll.heightAnchor.constraint(equalToConstant: Self.minTextHeight)
         stripHeightConstraint = attachmentStrip.heightAnchor.constraint(equalToConstant: 0)
         stripTopConstraint = attachmentStrip.topAnchor.constraint(equalTo: topAnchor, constant: 0)
@@ -3665,6 +3723,14 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     }
 
     @objc private func actionTapped() { onAction?() }
+    @objc private func setupTapped() { onSetUpModel?() }
+
+    func setNeedsModelSetup(_ needed: Bool) {
+        setupButton.isHidden = !needed
+        actionButton.isHidden = needed
+        // Dictation sits beside Send; the wider setup button takes both places.
+        micButton.isHidden = needed
+    }
 
     func textDidEndEditing(_ notification: Notification) { isEngaged = false }
 
@@ -3893,4 +3959,3 @@ private final class CheckpointLineButton: NSButton {
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     @objc private func open() { onOpen?() }
 }
-
