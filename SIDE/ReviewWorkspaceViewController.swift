@@ -30,19 +30,13 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleRow = NSStackView()
     private let headerRow = NSStackView()
-    private let branchChip = NSView()
-    private let branchChipLabel = NSTextField(labelWithString: "")
-    private let baseChip = NSView()
-    private let baseChipLabel = NSTextField(labelWithString: "")
-    private let arrowLabel = NSTextField(labelWithString: "\u{2192}")
-    /// Sibling-overlap warning; hidden entirely when nothing overlaps, because a banner that's
-    /// always present is a banner nobody reads.
-    private let overlapBanner = NSView()
-    private let overlapLabel = NSTextField(wrappingLabelWithString: "")
-    /// The shared paths themselves. They used to live only in a tooltip, which left the banner
-    /// as a wide strip of empty colour saying "3 files" — the count without the answer to the
-    /// question it provokes.
-    private let overlapPathsLabel = NSTextField(wrappingLabelWithString: "")
+    /// `branch → target · N checkpoints ahead`, in code type beside the intent (§4.2).
+    private let headerDetail = NSTextField(labelWithString: "")
+    /// The decision block's status lines: verification recency, then sibling overlap. Hidden
+    /// when there is nothing to say — a line that's always present is a line nobody reads.
+    private let verificationLine = DS.StatusLabel(state: .idle, text: "")
+    private let overlapLine = DS.StatusLabel(state: .needsYou, text: "")
+    private let decisionStack = NSStackView()
     private let checkpointsHeader = NSTextField(labelWithString: "Checkpoints")
     private let checkpointsStack = NSStackView()
     private let diffHeader = NSTextField(labelWithString: "")
@@ -85,26 +79,33 @@ final class ReviewWorkspaceViewController: NSViewController {
         // `branch → target` line beside it.
         titleLabel.font = DS.Text.heading()
 
-        Self.styleChip(branchChip, branchChipLabel)
-        Self.styleChip(baseChip, baseChipLabel)
-        arrowLabel.font = DS.Text.caption()
-        arrowLabel.textColor = .tertiaryLabelColor
+        headerDetail.font = DS.Text.code(11.5, weight: .regular)
+        headerDetail.textColor = .secondaryLabelColor
+        headerDetail.lineBreakMode = .byTruncatingMiddle
+        headerDetail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         subtitleRow.orientation = .horizontal
-        subtitleRow.alignment = .centerY
-        subtitleRow.spacing = DS.Spacing.s
-        subtitleRow.addArrangedSubview(branchChip)
-        subtitleRow.addArrangedSubview(arrowLabel)
-        subtitleRow.addArrangedSubview(baseChip)
+        subtitleRow.alignment = .firstBaseline
+        subtitleRow.addArrangedSubview(headerDetail)
         subtitleRow.translatesAutoresizingMaskIntoConstraints = false
 
-        checkpointsHeader.font = DS.Text.body(.semibold)
+        decisionStack.orientation = .vertical
+        decisionStack.alignment = .leading
+        decisionStack.spacing = DS.Spacing.s
+        decisionStack.addArrangedSubview(verificationLine)
+        decisionStack.addArrangedSubview(overlapLine)
+        overlapLine.isHidden = true
+
+        // Uppercase only for 11 pt section labels (§4 shared rules).
+        checkpointsHeader.stringValue = "CHECKPOINTS"
+        checkpointsHeader.font = DS.Text.custom(11, weight: .semibold)
         checkpointsHeader.textColor = .secondaryLabelColor
         checkpointsStack.orientation = .vertical
         checkpointsStack.alignment = .leading
-        checkpointsStack.spacing = DS.Spacing.m
+        // Sections separated by hairlines, not cards (§4.2) — the hairlines carry the spacing.
+        checkpointsStack.spacing = 0
         checkpointsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        diffHeader.font = DS.Text.body(.semibold)
+        diffHeader.font = DS.Text.custom(11, weight: .semibold)
         diffHeader.textColor = .secondaryLabelColor
         diffLayoutControl.controlSize = .small
         diffLayoutControl.font = DS.Text.caption()
@@ -164,57 +165,13 @@ final class ReviewWorkspaceViewController: NSViewController {
         contentStack.spacing = DS.Spacing.xl
         contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
-        overlapBanner.wantsLayer = true
-        overlapBanner.layer?.cornerRadius = DS.Radius.surface
-        overlapBanner.bindLayerBackground(DS.Color.statusNeedsYou.withAlphaComponent(0.12))
-        overlapBanner.isHidden = true
-        overlapBanner.translatesAutoresizingMaskIntoConstraints = false
-        overlapLabel.font = DS.Text.body(.medium)
-        overlapLabel.textColor = .labelColor
-        overlapLabel.translatesAutoresizingMaskIntoConstraints = false
-        overlapPathsLabel.font = DS.Text.caption()
-        overlapPathsLabel.textColor = .secondaryLabelColor
-        overlapPathsLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let overlapIcon = NSImageView()
-        overlapIcon.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
-        overlapIcon.contentTintColor = .systemOrange
-        overlapIcon.translatesAutoresizingMaskIntoConstraints = false
-        // A fixed size, and not by accident: NSImageView hugs its content only weakly, so
-        // without this it stretched to fill the banner — leaving the glyph floating in the
-        // middle of a wide empty strip with the text shoved against the right edge.
-        NSLayoutConstraint.activate([
-            overlapIcon.widthAnchor.constraint(equalToConstant: 16),
-            overlapIcon.heightAnchor.constraint(equalToConstant: 16),
-        ])
-
-        let overlapText = NSStackView(views: [overlapLabel, overlapPathsLabel])
-        overlapText.orientation = .vertical
-        overlapText.alignment = .leading
-        overlapText.spacing = 2
-        overlapText.translatesAutoresizingMaskIntoConstraints = false
-
-        overlapBanner.addSubview(overlapIcon)
-        overlapBanner.addSubview(overlapText)
-        NSLayoutConstraint.activate([
-            overlapIcon.leadingAnchor.constraint(equalTo: overlapBanner.leadingAnchor, constant: 12),
-            // Aligned to the first line's centre, not the top edge — the glyph should sit with
-            // the headline whether or not a second line is present.
-            overlapIcon.centerYAnchor.constraint(equalTo: overlapLabel.centerYAnchor),
-            overlapText.leadingAnchor.constraint(equalTo: overlapIcon.trailingAnchor, constant: DS.Spacing.l),
-            overlapText.trailingAnchor.constraint(lessThanOrEqualTo: overlapBanner.trailingAnchor, constant: -12),
-            overlapText.topAnchor.constraint(equalTo: overlapBanner.topAnchor, constant: 10),
-            overlapText.bottomAnchor.constraint(equalTo: overlapBanner.bottomAnchor, constant: -10),
-        ])
-
         headerRow.orientation = .horizontal
         headerRow.alignment = .centerY
         headerRow.spacing = DS.Spacing.l
         headerRow.addArrangedSubview(titleLabel)
         headerRow.addArrangedSubview(subtitleRow)
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for view in [overlapBanner, checkpointsHeader, checkpointsStack, diffHeaderRow, diffViewer] {
+        for view in [decisionStack, checkpointsHeader, checkpointsStack, diffHeaderRow, diffViewer] {
             contentStack.addArrangedSubview(view)
             // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
             // width by default — without this, a wrapping label or the diff card would collapse
@@ -224,14 +181,15 @@ final class ReviewWorkspaceViewController: NSViewController {
             // The title is the exception: the floating Promote capsule occupies the top-right, so
             // a full-width title would slide underneath it. `<=` lets the label take the width it
             // needs and truncate short of the button instead.
-            // The overlap banner is the first thing under the floating Promote capsule, so it
-            // stops short of it rather than sliding underneath.
-            let gutter: CGFloat = view === overlapBanner ? -32 - Self.promoteGutter : -32
+            // The decision lines are the first thing under the floating Promote capsule, so they
+            // stop short of it rather than sliding underneath.
+            let gutter: CGFloat = view === decisionStack ? -32 - Self.promoteGutter : -32
             view.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: gutter).isActive = true
         }
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
         contentStack.setCustomSpacing(DS.Spacing.section, after: checkpointsStack)
+        contentStack.setCustomSpacing(DS.Spacing.section, after: decisionStack)
 
         let documentView = ReviewDocumentView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
@@ -398,12 +356,18 @@ final class ReviewWorkspaceViewController: NSViewController {
 
         let baseRef = Self.baseRef(for: track, trackStore: trackStore)
         titleLabel.stringValue = track.intent.isEmpty ? track.branchName : track.intent
-        branchChipLabel.stringValue = track.branchName
-        baseChipLabel.stringValue = baseRef
-        setPromoteTitle("Promote to \(baseRef)")
+        headerDetail.stringValue = "\(track.branchName) \u{2192} \(baseRef)"
+        setPromoteTitle("Promote to \(baseRef)\u{2026}")
 
         checkpointsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let allCheckpoints = (sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []).sorted { $0.createdAt > $1.createdAt }
+        // Verification recency, stated before anyone reaches for Promote (§4.2, audit H14).
+        if let summary = Self.verificationSummary(checkpoints: allCheckpoints) {
+            verificationLine.set(state: summary.state, text: summary.text)
+            verificationLine.isHidden = false
+        } else {
+            verificationLine.isHidden = true
+        }
         // Newest few, with the rest behind a disclosure. An unbounded list is the wrong default
         // for something that grows once per approved batch forever: after a week of real use the
         // page is mostly history nobody is reading, and the diff — the thing Review is actually
@@ -412,19 +376,25 @@ final class ReviewWorkspaceViewController: NSViewController {
         if checkpoints.isEmpty {
             checkpointsStack.addArrangedSubview(Self.makeMetaLabel("No checkpoints yet — one is created automatically the first time an approved edit or command lands on this track."))
         } else {
-            for checkpoint in checkpoints {
-                let card = makeCheckpointCard(checkpoint)
-                checkpointsStack.addArrangedSubview(card)
-                // Only after the card is in the stack's hierarchy — activating this inside the
+            for (offset, checkpoint) in checkpoints.enumerated() {
+                if offset > 0 {
+                    let hairline = Self.makeHairline()
+                    checkpointsStack.addArrangedSubview(hairline)
+                    hairline.widthAnchor.constraint(equalTo: checkpointsStack.widthAnchor).isActive = true
+                }
+                let number = allCheckpoints.count - (allCheckpoints.firstIndex { $0.id == checkpoint.id } ?? 0)
+                let section = makeCheckpointSection(checkpoint, number: number)
+                checkpointsStack.addArrangedSubview(section)
+                // Only after the section is in the stack's hierarchy — activating this inside the
                 // factory (before addArrangedSubview) threw NSGenericException, which AppKit
                 // swallowed mid-viewDidLoad and left the whole stage blank on first visit. That
                 // was the "Review renders blank after a fresh launch" bug: it only fired for
                 // tracks that actually had a checkpoint to build a card for.
-                card.widthAnchor.constraint(equalTo: checkpointsStack.widthAnchor).isActive = true
+                section.widthAnchor.constraint(equalTo: checkpointsStack.widthAnchor).isActive = true
             }
         }
 
-        overlapBanner.isHidden = true
+        overlapLine.isHidden = true
         // The "show the rest" affordance, and the count, so the page says how much it is hiding
         // rather than silently truncating.
         if allCheckpoints.count > checkpoints.count {
@@ -445,7 +415,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             checkpointsStack.addArrangedSubview(button)
         }
 
-        diffHeader.stringValue = "Changes vs \(baseRef)"
+        diffHeader.stringValue = "CHANGES VS \(baseRef.uppercased())"
         diffViewer.renderLoading()
         setPromoteEnabled(false)
 
@@ -461,9 +431,22 @@ final class ReviewWorkspaceViewController: NSViewController {
             uniqueKeysWithValues: siblingTracks.map { ($0.branchName, Self.baseRef(for: $0, trackStore: trackStore)) }
         )
         let intentsByBranch = Dictionary(uniqueKeysWithValues: siblingTracks.map { ($0.branchName, $0.intent) })
+        let checkpointSHAs = Set(allCheckpoints.compactMap(\.gitCommitSHA))
+        // Where Promote would merge, and whether it can: resolved here (main-actor state), and
+        // checked for a dirty base off-main, so a disabled Promote says why before the click.
+        let target = mergeTarget(for: track, trackStore: trackStore)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let diffText = GitDiffComputer.refDiff(fromRef: baseRef, toRef: branchName, cwd: cwd)
+            // One spawn: every commit on the branch not yet in its base; checkpoints are ahead
+            // when their commit is among them.
+            let aheadList = GitPaths.runGit(["rev-list", "\(baseRef)..\(branchName)"], cwd: cwd)
+            let aheadSHAs = aheadList.success ? Set(aheadList.output.split(separator: "\n").map(String.init)) : []
+            let checkpointsAhead = checkpointSHAs.filter { sha in aheadSHAs.contains { $0.hasPrefix(sha) || sha.hasPrefix($0) } }.count
+            let blockedReason: String? = {
+                guard let target else { return "\u{201C}\(baseRef)\u{201D}\u{2019}s working copy has been removed \u{2014} resume it in Tracks to promote into it." }
+                return GitPaths.dirtyPaths(cwd: target.root.path).isEmpty ? nil : "\(target.isParent ? "\u{201C}\(baseRef)\u{201D}" : "Your main working copy") has uncommitted changes \u{2014} commit or stash them first."
+            }()
             // One `git diff --name-only` per track — cheap, and it costs the model nothing:
             // this is awareness for the human, not context for the agent.
             var changedPathsByBranch = [branchName: TrackOverlap.changedPaths(branch: branchName, baseRef: baseRef, cwd: cwd)]
@@ -476,83 +459,172 @@ final class ReviewWorkspaceViewController: NSViewController {
             DispatchQueue.main.async {
                 guard let self, self.currentTrack?.branchName == branchName else { return }
                 self.diffViewer.render(diffText: diffText)
-                self.setPromoteEnabled(!diffText.isEmpty)
-                self.overlapBanner.isHidden = siblings.isEmpty
+                self.headerDetail.stringValue = "\(branchName) \u{2192} \(baseRef) \u{00B7} \(checkpointsAhead) checkpoint\(checkpointsAhead == 1 ? "" : "s") ahead"
+                self.setPromoteEnabled(!diffText.isEmpty && blockedReason == nil)
+                if let blockedReason, !diffText.isEmpty {
+                    self.statusLabel.stringValue = blockedReason
+                    self.statusLabel.textColor = .secondaryLabelColor
+                }
                 if let headline = TrackOverlap.headline(for: siblings) {
-                    self.overlapLabel.stringValue = headline
-                    self.overlapPathsLabel.stringValue = TrackOverlap.sharedPathsSummary(for: siblings)
-                    self.overlapBanner.setAccessibilityLabel("\(headline). \(self.overlapPathsLabel.stringValue)")
+                    self.overlapLine.set(state: .needsYou, text: "\(headline) \u{2014} \(TrackOverlap.sharedPathsSummary(for: siblings))")
+                    self.overlapLine.isHidden = false
+                } else {
+                    self.overlapLine.isHidden = true
                 }
             }
         }
     }
 
-    private func makeCheckpointCard(_ checkpoint: Checkpoint) -> NSView {
-        let card = NSView()
-        card.wantsLayer = true
-        card.layer?.cornerRadius = DS.Radius.surface
-        card.bindLayerBackground(DS.Color.raised)
-        let intentLabel = NSTextField(wrappingLabelWithString: checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)
-        intentLabel.font = DS.Text.body(.medium)
-        intentLabel.translatesAutoresizingMaskIntoConstraints = false
+    /// One checkpoint as a hairline-separated section (§4.2): intent as the heading with
+    /// `n · sha` trailing, one meta caption, and the row's actions revealed on hover.
+    private func makeCheckpointSection(_ checkpoint: Checkpoint, number: Int) -> NSView {
+        let section = CheckpointSectionView()
+        section.translatesAutoresizingMaskIntoConstraints = false
 
-        // Verification reads before the metadata: "did this work?" outranks "when did it
-        // happen?" for anyone deciding whether to promote.
-        let verificationLabel = NSTextField(labelWithString: Self.verificationText(for: checkpoint))
-        verificationLabel.font = DS.Text.caption(.medium)
-        verificationLabel.textColor = Self.verificationColor(for: checkpoint)
-        verificationLabel.translatesAutoresizingMaskIntoConstraints = false
+        let intentLabel = NSTextField(wrappingLabelWithString: checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)
+        intentLabel.font = DS.Text.heading()
+        intentLabel.translatesAutoresizingMaskIntoConstraints = false
+        intentLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let shaText = checkpoint.gitCommitSHA.map { "\(number) \u{00B7} \($0.prefix(7))" } ?? "\(number)"
+        let shaLabel = NSTextField(labelWithString: shaText)
+        shaLabel.font = DS.Text.code(11, weight: .regular)
+        shaLabel.textColor = .tertiaryLabelColor
+        shaLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let metaLabel = NSTextField(wrappingLabelWithString: "")
+        metaLabel.attributedStringValue = Self.checkpointMeta(checkpoint)
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false
         if let verification = checkpoint.verification, !verification.passed {
-            // The failing output is what the user actually needs; the card stays one line.
-            verificationLabel.toolTip = verification.outputExcerpt
+            // The failing output is what the user actually needs; the section stays one line.
+            metaLabel.toolTip = verification.outputExcerpt
         }
 
-        var metaParts: [String] = [Self.relativeTime(checkpoint.createdAt)]
-        if let sha = checkpoint.gitCommitSHA { metaParts.append(String(sha.prefix(7))) }
+        // Text actions on hover (§4.2): Undo… opens a sheet; Copy SHA copies.
+        var actions: [NSButton] = []
+        if checkpoint.gitCommitSHA != nil {
+            // Only a checkpoint that produced a commit can be undone — a command-only one
+            // changed no files, so there is nothing to reverse.
+            let undo = Self.textAction("Undo\u{2026}", target: self, action: #selector(undoCheckpointTapped(_:)))
+            undo.identifier = NSUserInterfaceItemIdentifier(checkpoint.id.uuidString)
+            let copy = Self.textAction("Copy SHA", target: self, action: #selector(copySHATapped(_:)))
+            copy.identifier = NSUserInterfaceItemIdentifier(checkpoint.gitCommitSHA ?? "")
+            actions = [copy, undo]
+        }
+        let actionsStack = NSStackView(views: actions)
+        actionsStack.orientation = .horizontal
+        actionsStack.spacing = DS.Spacing.l
+        actionsStack.translatesAutoresizingMaskIntoConstraints = false
+        section.hoverActions = actionsStack
+        section.setAccessibilityElement(true)
+        section.setAccessibilityRole(.group)
+        section.setAccessibilityLabel("Checkpoint \(number): \(intentLabel.stringValue). \(metaLabel.stringValue)")
+        section.setAccessibilityCustomActions(actions.map { button in
+            NSAccessibilityCustomAction(name: button.title) { [weak button] in
+                guard let button else { return false }
+                button.performClick(nil)
+                return true
+            }
+        })
+
+        for view in [intentLabel, shaLabel, metaLabel, actionsStack] as [NSView] { section.addSubview(view) }
+        NSLayoutConstraint.activate([
+            intentLabel.topAnchor.constraint(equalTo: section.topAnchor, constant: 12),
+            intentLabel.leadingAnchor.constraint(equalTo: section.leadingAnchor),
+            intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: shaLabel.leadingAnchor, constant: -DS.Spacing.l),
+            shaLabel.firstBaselineAnchor.constraint(equalTo: intentLabel.firstBaselineAnchor),
+            shaLabel.trailingAnchor.constraint(equalTo: section.trailingAnchor),
+            metaLabel.topAnchor.constraint(equalTo: intentLabel.bottomAnchor, constant: 4),
+            metaLabel.leadingAnchor.constraint(equalTo: section.leadingAnchor),
+            metaLabel.trailingAnchor.constraint(lessThanOrEqualTo: actionsStack.leadingAnchor, constant: -DS.Spacing.l),
+            metaLabel.bottomAnchor.constraint(equalTo: section.bottomAnchor, constant: -12),
+            actionsStack.trailingAnchor.constraint(equalTo: section.trailingAnchor),
+            actionsStack.centerYAnchor.constraint(equalTo: metaLabel.centerYAnchor),
+        ])
+        return section
+    }
+
+    /// `model · time · +a −r · N files · N commands · <verification word>` — the word coloured
+    /// only when it's a result (verified or failed); unverified stays in the caption's grey.
+    private static func checkpointMeta(_ checkpoint: Checkpoint) -> NSAttributedString {
+        let base: [NSAttributedString.Key: Any] = [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]
+        var parts: [NSAttributedString] = []
+        func plain(_ text: String) { parts.append(NSAttributedString(string: text, attributes: base)) }
+        if !checkpoint.provenance.modelId.isEmpty { plain(checkpoint.provenance.modelId) }
+        plain(relativeTime(checkpoint.createdAt))
+        if !checkpoint.fileChanges.isEmpty {
+            let added = checkpoint.fileChanges.reduce(0) { $0 + $1.added }
+            let removed = checkpoint.fileChanges.reduce(0) { $0 + $1.removed }
+            let delta = NSMutableAttributedString(string: "+\(added)", attributes: base.merging([.foregroundColor: DS.Color.statusVerified]) { $1 })
+            delta.append(NSAttributedString(string: " \u{2212}\(removed)", attributes: base.merging([.foregroundColor: DS.Color.statusFailed]) { $1 }))
+            parts.append(delta)
+        }
         if !checkpoint.changedFilePaths.isEmpty {
-            metaParts.append("\(checkpoint.changedFilePaths.count) file\(checkpoint.changedFilePaths.count == 1 ? "" : "s")")
+            plain("\(checkpoint.changedFilePaths.count) file\(checkpoint.changedFilePaths.count == 1 ? "" : "s")")
         }
         if !checkpoint.commandsRun.isEmpty {
-            metaParts.append("\(checkpoint.commandsRun.count) command\(checkpoint.commandsRun.count == 1 ? "" : "s")")
+            plain("\(checkpoint.commandsRun.count) command\(checkpoint.commandsRun.count == 1 ? "" : "s")")
         }
-        let metaLabel = NSTextField(labelWithString: metaParts.joined(separator: " · "))
-        metaLabel.font = DS.Text.caption()
-        metaLabel.textColor = .secondaryLabelColor
-        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+        switch checkpoint.verification {
+        case .none: plain("unverified")
+        case .some(let v) where v.passed:
+            parts.append(NSAttributedString(string: "verified", attributes: base.merging([.foregroundColor: DS.Color.statusVerified]) { $1 }))
+        case .some(let v):
+            parts.append(NSAttributedString(string: v.exitCode.map { "failed (exit \($0))" } ?? "failed", attributes: base.merging([.foregroundColor: DS.Color.statusFailed]) { $1 }))
+        }
+        let result = NSMutableAttributedString()
+        for (index, part) in parts.enumerated() {
+            if index > 0 { result.append(NSAttributedString(string: " \u{00B7} ", attributes: base)) }
+            result.append(part)
+        }
+        return result
+    }
 
-        card.addSubview(intentLabel)
-        card.addSubview(verificationLabel)
-        card.addSubview(metaLabel)
-        var constraints: [NSLayoutConstraint] = [
-            intentLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
-            intentLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            verificationLabel.topAnchor.constraint(equalTo: intentLabel.bottomAnchor, constant: 5),
-            verificationLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            metaLabel.topAnchor.constraint(equalTo: verificationLabel.bottomAnchor, constant: 3),
-            metaLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            metaLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
-        ]
-        // Only a checkpoint that produced a commit can be undone — a command-only one changed
-        // no files, so there is nothing to reverse.
-        if checkpoint.gitCommitSHA != nil {
-            let undoButton = NSButton(title: "Undo…", target: self, action: #selector(undoCheckpointTapped(_:)))
-            undoButton.bezelStyle = .rounded
-            undoButton.controlSize = .small
-            undoButton.font = DS.Text.caption()
-            undoButton.identifier = NSUserInterfaceItemIdentifier(checkpoint.id.uuidString)
-            undoButton.translatesAutoresizingMaskIntoConstraints = false
-            card.addSubview(undoButton)
-            constraints += [
-                undoButton.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-                undoButton.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-                intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: undoButton.leadingAnchor, constant: -12),
-            ]
-        } else {
-            constraints.append(intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -12))
+    private static func textAction(_ title: String, target: AnyObject, action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: target, action: action)
+        button.isBordered = false
+        button.attributedTitle = NSAttributedString(string: title, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+        return button
+    }
+
+    private static func makeHairline() -> NSView {
+        let hairline = NSBox()
+        hairline.boxType = .custom
+        hairline.borderType = .noBorder
+        hairline.fillColor = DS.Color.hairline
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        hairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        return hairline
+    }
+
+    @objc private func copySHATapped(_ sender: NSButton) {
+        guard let sha = sender.identifier?.rawValue, !sha.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(sha, forType: .string)
+        statusLabel.stringValue = "Copied \(sha.prefix(7))."
+        statusLabel.textColor = .secondaryLabelColor
+    }
+
+    /// The decision header's verification line (§4.2) — time, and where the newest result sits
+    /// relative to the newest checkpoint, for the four cases. `nil` with no checkpoints: there
+    /// is nothing yet that could have been verified.
+    static func verificationSummary(checkpoints: [Checkpoint], now: Date = Date()) -> (state: DS.StatusState, text: String)? {
+        let newestFirst = checkpoints.sorted { $0.createdAt > $1.createdAt }
+        guard !newestFirst.isEmpty else { return nil }
+        guard let index = newestFirst.firstIndex(where: { $0.verification != nil }),
+              let verification = newestFirst[index].verification else { return (.idle, "Unverified") }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        let when = formatter.localizedString(for: verification.ranAt, relativeTo: now)
+        guard verification.passed else {
+            let how = verification.exitCode.map { "exit \($0)" } ?? "no exit status"
+            return (.failed, "Failed \u{00B7} \(verification.taskName) \(how), \(when)")
         }
-        NSLayoutConstraint.activate(constraints)
-        card.translatesAutoresizingMaskIntoConstraints = false
-        return card
+        guard index > 0 else {
+            return (.verified, "Verified \u{00B7} \(verification.taskName) passed \(when), after the latest checkpoint")
+        }
+        let plural = index == 1 ? "" : "s"
+        return (.idle, "Verified \(index) checkpoint\(plural) ago \u{00B7} \(index) unverified since")
     }
 
     /// "Verified, but not the newest changes." A pass on checkpoint N said nothing about N+1…N+3,
@@ -565,24 +637,6 @@ final class ReviewWorkspaceViewController: NSViewController {
               let verifiedIndex = newestFirst.firstIndex(where: { $0.verification?.passed == true }) else { return nil }
         let behind = verifiedIndex
         return "The last passing verification was \(behind) checkpoint\(behind == 1 ? "" : "s") ago — the newest changes have not been verified."
-    }
-
-    private static func verificationText(for checkpoint: Checkpoint) -> String {
-        guard let verification = checkpoint.verification else {
-            return "Unverified — no task has been run against this change"
-        }
-        if verification.passed {
-            return "\u{2713} Verified — \(verification.taskName) passed"
-        }
-        if let code = verification.exitCode {
-            return "\u{2715} \(verification.taskName) failed (exit \(code))"
-        }
-        return "\u{26A0}\u{FE0E} \(verification.taskName) ran, but its result couldn't be read"
-    }
-
-    private static func verificationColor(for checkpoint: Checkpoint) -> NSColor {
-        guard let verification = checkpoint.verification else { return .tertiaryLabelColor }
-        return verification.passed ? .systemGreen : .systemRed
     }
 
     // MARK: - Undo
@@ -608,9 +662,16 @@ final class ReviewWorkspaceViewController: NSViewController {
         alert.addButton(withTitle: laterCount == 0 ? "Undo" : "Undo Just This One")
         if laterCount > 0 { alert.addButton(withTitle: "Undo Everything After") }
         alert.addButton(withTitle: "Cancel")
-        let response = alert.runModal()
-        guard response != .alertThirdButtonReturn, !(laterCount == 0 && response == .alertSecondButtonReturn) else { return }
-        let scope: CheckpointRestore.Scope = (laterCount > 0 && response == .alertSecondButtonReturn) ? .throughLatest : .single
+        // A sheet on the window, never an app-modal `runModal` (audit 32.6).
+        guard let window = view.window else { return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response != .alertThirdButtonReturn, !(laterCount == 0 && response == .alertSecondButtonReturn) else { return }
+            let scope: CheckpointRestore.Scope = (laterCount > 0 && response == .alertSecondButtonReturn) ? .throughLatest : .single
+            self.performUndo(target: target, checkpoints: checkpoints, scope: scope, worktreePath: worktreePath)
+        }
+    }
+
+    private func performUndo(target: Checkpoint, checkpoints: [Checkpoint], scope: CheckpointRestore.Scope, worktreePath: String) {
 
         let commits = CheckpointRestore.commitsToRevert(checkpoints: checkpoints, target: target, scope: scope)
         let message = CheckpointRestore.revertMessage(target: target, scope: scope, count: commits.count)
@@ -623,31 +684,14 @@ final class ReviewWorkspaceViewController: NSViewController {
             refresh()
         case .conflicted(let paths):
             statusLabel.stringValue = "⚠︎ Couldn't undo cleanly — \(paths.joined(separator: ", ")) changed since. Nothing was modified."
-            statusLabel.textColor = .systemOrange
+            statusLabel.textColor = DS.Color.statusNeedsYou
         case .failed(let message):
             statusLabel.stringValue = "⚠︎ Undo failed: \(message)"
-            statusLabel.textColor = .systemOrange
+            statusLabel.textColor = DS.Color.statusNeedsYou
         case .nothingToDo:
             statusLabel.stringValue = "Nothing to undo — that checkpoint changed no files."
             statusLabel.textColor = .secondaryLabelColor
         }
-    }
-
-    private static func styleChip(_ chip: NSView, _ label: NSTextField) {
-        chip.wantsLayer = true
-        chip.bindLayerBackground(DS.Color.overlay)
-        chip.layer?.cornerRadius = DS.Radius.control
-        chip.translatesAutoresizingMaskIntoConstraints = false
-        label.font = DS.Text.code(11, weight: .regular)
-        label.textColor = .secondaryLabelColor
-        label.translatesAutoresizingMaskIntoConstraints = false
-        chip.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 5),
-            label.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -5),
-            label.topAnchor.constraint(equalTo: chip.topAnchor, constant: 1),
-            label.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -1),
-        ])
     }
 
     // MARK: - Promote
@@ -657,7 +701,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         let baseRef = Self.baseRef(for: track, trackStore: trackStore)
         guard let target = mergeTarget(for: track, trackStore: trackStore) else {
             statusLabel.stringValue = "⚠︎ \u{201C}\(baseRef)\u{201D}'s working copy has been removed — resume it (Tracks) before promoting into it."
-            statusLabel.textColor = .systemOrange
+            statusLabel.textColor = DS.Color.statusNeedsYou
             return
         }
         // Verification is the point of recording it: promoting known-broken work should take a
@@ -732,7 +776,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.statusLabel.stringValue = outcome.message
-                self.statusLabel.textColor = outcome.succeeded ? .systemGreen : .systemOrange
+                self.statusLabel.textColor = outcome.succeeded ? DS.Color.statusVerified : DS.Color.statusNeedsYou
                 self.setPromoteEnabled(true)
                 if outcome.succeeded {
                     trackStore.setStatus(.completed, for: track)
@@ -818,4 +862,22 @@ extension ReviewWorkspaceViewController: StageChromeProviding {
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets.top = height
     }
+}
+
+/// A checkpoint section: its text actions (Undo…, Copy SHA) appear while the pointer is over it,
+/// and are reachable without one as AX custom actions.
+private final class CheckpointSectionView: NSView {
+    weak var hoverActions: NSView? { didSet { hoverActions?.alphaValue = 0 } }
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hoverActions?.animator().alphaValue = 1 }
+    override func mouseExited(with event: NSEvent) { hoverActions?.animator().alphaValue = 0 }
 }

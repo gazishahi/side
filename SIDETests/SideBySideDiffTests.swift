@@ -59,7 +59,7 @@ final class SideBySideRowsTests: XCTestCase {
         let card = DiffFileCardView(file: file, layout: .sideBySide)
         card.frame = NSRect(x: 0, y: 0, width: 800, height: 300)
         card.layoutSubtreeIfNeeded()
-        let columns = card.subviews.compactMap { ($0 as? NSScrollView)?.documentView as? SideBySideDocumentView }.first
+        let columns = card.subviews.flatMap { [$0] + $0.subviews }.compactMap { ($0 as? NSScrollView)?.documentView as? SideBySideDocumentView }.first
         XCTAssertNotNil(columns, "split layout did not produce a two-column document")
         let texts = columns?.subviews.compactMap { $0 as? NSTextView } ?? []
         XCTAssertEqual(texts.count, 2)

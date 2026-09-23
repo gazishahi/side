@@ -199,7 +199,8 @@ final class DiffViewer: NSStackView {
         super.init(frame: .zero)
         orientation = .vertical
         alignment = .leading
-        spacing = 12
+        // Files are rows separated by hairlines (§4.2); the hairlines carry the spacing.
+        spacing = 0
         translatesAutoresizingMaskIntoConstraints = false
     }
 
@@ -223,7 +224,17 @@ final class DiffViewer: NSStackView {
             addArrangedSubview(empty)
             return
         }
-        for file in diff.files {
+        for (index, file) in diff.files.enumerated() {
+            if index > 0 {
+                let hairline = NSBox()
+                hairline.boxType = .custom
+                hairline.borderType = .noBorder
+                hairline.fillColor = DS.Color.hairline
+                hairline.translatesAutoresizingMaskIntoConstraints = false
+                hairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
+                addArrangedSubview(hairline)
+                hairline.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            }
             let card = DiffFileCardView(file: file, layout: layout)
             addArrangedSubview(card)
             card.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
@@ -231,14 +242,18 @@ final class DiffViewer: NSStackView {
     }
 }
 
-/// One file's card: header row (chevron, path, +/− counts, NEW/DELETED badge) over the rendered
-/// hunk body; clicking the header collapses/expands the body.
+/// One file: a `code` header row on canvas (chevron, path, +/− counts, NEW/DELETED) over its
+/// diff body, which is the `raised` surface (§4.2). Clicking the header folds the body —
+/// instantly: expansion is not something anyone waits to watch.
 final class DiffFileCardView: NSView {
     private let bodyScroll = NSScrollView()
+    private let bodySurface = NSView()
     private let chevron = NSImageView()
+    private let pathLabel = NSTextField(labelWithString: "")
     private let headerButton = HeaderClickView()
     private var isCollapsed = false
     private var bodyHeightConstraint: NSLayoutConstraint?
+    private var bodyBottomGap: NSLayoutConstraint?
     /// Set from the text's *measured* height once it has been laid out, not from a guess.
     private var bodyHeight: CGFloat = 0
     private static let maximumBodyHeight: CGFloat = 420
@@ -260,10 +275,6 @@ final class DiffFileCardView: NSView {
     init(file: UnifiedDiff.File, layout: DiffLayout = .unified) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        layer?.cornerRadius = DS.Radius.surface
-        bindLayerBackground(DS.Color.raised)
-        layer?.masksToBounds = true
 
         chevron.image = NSImage(
             systemSymbolName: "chevron.down", accessibilityDescription: "Collapse")?
@@ -271,8 +282,9 @@ final class DiffFileCardView: NSView {
         chevron.contentTintColor = .secondaryLabelColor
         chevron.wantsLayer = true
 
-        let pathLabel = NSTextField(labelWithString: file.path)
-        pathLabel.font = DS.Text.code(12, weight: .semibold)
+        pathLabel.stringValue = file.path
+        pathLabel.font = DS.Text.code(12, weight: .medium)
+        // The expanded file reads in the label colour; folded ones recede (§4.2).
         pathLabel.textColor = .labelColor
         pathLabel.lineBreakMode = .byTruncatingMiddle
 
@@ -362,33 +374,36 @@ final class DiffFileCardView: NSView {
         bodyScroll.wantsLayer = true
         bodyScroll.layer?.masksToBounds = true
 
-        let divider = NSBox()
-        divider.boxType = .custom
-        divider.borderType = .noBorder
-        divider.fillColor = DS.Color.hairline
-        divider.translatesAutoresizingMaskIntoConstraints = false
+        // The diff body is the card: `raised`, radius 10, no border (§4.2).
+        bodySurface.wantsLayer = true
+        bodySurface.layer?.cornerRadius = DS.Radius.surface
+        bodySurface.layer?.masksToBounds = true
+        bodySurface.bindLayerBackground(DS.Color.raised)
+        bodySurface.translatesAutoresizingMaskIntoConstraints = false
+        bodySurface.addSubview(bodyScroll)
 
         addSubview(headerButton)
-        addSubview(divider)
-        addSubview(bodyScroll)
+        addSubview(bodySurface)
         let bodyConstraint = bodyScroll.heightAnchor.constraint(equalToConstant: bodyHeight)
         bodyHeightConstraint = bodyConstraint
+        let bottomGap = bodySurface.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.bodyGap)
+        bodyBottomGap = bottomGap
         NSLayoutConstraint.activate([
             headerButton.topAnchor.constraint(equalTo: topAnchor),
             headerButton.leadingAnchor.constraint(equalTo: leadingAnchor),
             headerButton.trailingAnchor.constraint(equalTo: trailingAnchor),
             headerButton.heightAnchor.constraint(equalToConstant: 34),
-            header.leadingAnchor.constraint(equalTo: headerButton.leadingAnchor, constant: 12),
-            header.trailingAnchor.constraint(equalTo: headerButton.trailingAnchor, constant: -12),
+            header.leadingAnchor.constraint(equalTo: headerButton.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: headerButton.trailingAnchor),
             header.centerYAnchor.constraint(equalTo: headerButton.centerYAnchor),
-            divider.topAnchor.constraint(equalTo: headerButton.bottomAnchor),
-            divider.leadingAnchor.constraint(equalTo: leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: trailingAnchor),
-            divider.heightAnchor.constraint(equalToConstant: 1),
-            bodyScroll.topAnchor.constraint(equalTo: divider.bottomAnchor),
-            bodyScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            bodyScroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            bodyScroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            bodySurface.topAnchor.constraint(equalTo: headerButton.bottomAnchor),
+            bodySurface.leadingAnchor.constraint(equalTo: leadingAnchor),
+            bodySurface.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bottomGap,
+            bodyScroll.topAnchor.constraint(equalTo: bodySurface.topAnchor),
+            bodyScroll.leadingAnchor.constraint(equalTo: bodySurface.leadingAnchor),
+            bodyScroll.trailingAnchor.constraint(equalTo: bodySurface.trailingAnchor),
+            bodyScroll.bottomAnchor.constraint(equalTo: bodySurface.bottomAnchor),
             bodyConstraint,
         ])
     }
@@ -406,41 +421,23 @@ final class DiffFileCardView: NSView {
         return parts.joined(separator: ", ")
     }
 
+    /// Space under an expanded body before the next file's hairline.
+    private static let bodyGap: CGFloat = 10
+
     private func toggleCollapsed() {
         isCollapsed.toggle()
         headerButton.isCollapsed = isCollapsed
         // Without this, VoiceOver keeps reading the state it was told at build time — the
         // element's own value changed, and nothing else announces it.
         NSAccessibility.post(element: headerButton, notification: .valueChanged)
-        // Rotate the chevron a quarter turn rather than swapping glyphs — same duration as the
-        // fold itself so the two read as one gesture.
-        if let layer = chevron.layer {
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            layer.position = CGPoint(x: chevron.frame.midX, y: chevron.frame.midY)
-            let rotate = CABasicAnimation(keyPath: "transform.rotation.z")
-            rotate.fromValue = isCollapsed ? 0 : CGFloat.pi / 2
-            rotate.toValue = isCollapsed ? CGFloat.pi / 2 : 0
-            rotate.duration = DS.Motion.duration(0.18)
-            rotate.timingFunction = DS.Motion.curve
-            rotate.isRemovedOnCompletion = false
-            rotate.fillMode = .forwards
-            layer.add(rotate, forKey: "chevronTurn")
-        }
-        // Expanding pairs the height animation with a fade-in — revealing already-laid-out
-        // text through a growing clip reads as glitchy clipping; fading it in as the card
-        // grows reads as content arriving.
-        if !isCollapsed { bodyScroll.alphaValue = 0 }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.18)
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
-            bodyHeightConstraint?.constant = isCollapsed ? 0 : bodyHeight
-            bodyScroll.animator().alphaValue = isCollapsed ? 0 : 1
-            window?.layoutIfNeeded()
-        } completionHandler: { [weak self] in
-            guard let self else { return }
-            if self.isCollapsed { self.bodyScroll.alphaValue = 1 }
-        }
+        chevron.image = NSImage(
+            systemSymbolName: isCollapsed ? "chevron.right" : "chevron.down",
+            accessibilityDescription: isCollapsed ? "Expand" : "Collapse")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+        pathLabel.textColor = isCollapsed ? .secondaryLabelColor : .labelColor
+        bodySurface.isHidden = isCollapsed
+        bodyHeightConstraint?.constant = isCollapsed ? 0 : bodyHeight
+        bodyBottomGap?.constant = isCollapsed ? 0 : -Self.bodyGap
     }
 
 }
