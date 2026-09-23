@@ -3124,6 +3124,11 @@ private final class ComposerTextView: NSTextView {
     var placeholderString: String = ""
     var showsPlaceholder = true
 
+    // The placeholder is drawn, so AppKit doesn't know it exists; say it, and what the field is
+    // (§4.4, audit 30.10).
+    override func accessibilityLabel() -> String? { "Message" }
+    override func accessibilityPlaceholderValue() -> String? { placeholderString.isEmpty ? nil : placeholderString }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard string.isEmpty, showsPlaceholder, !placeholderString.isEmpty else { return }
