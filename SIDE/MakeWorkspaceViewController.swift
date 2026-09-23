@@ -3301,6 +3301,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 throw CocoaError(.fileWriteInapplicableStringEncoding, userInfo: [NSLocalizedDescriptionKey: "This file is \(format.encodingName), and the buffer now contains a character that encoding can't represent. Save As a new file to keep it as UTF-8."])
             }
             try data.write(to: url, options: .atomic)
+            // The user's own save — a checkpoint being written right now mustn't claim it
+            // as the agent's (`UserSaveLog`, audit F4).
+            UserSaveLog.shared.record(url)
             openTabs[index].savedLength = (content as NSString).length
             openTabs[index].savedHash = content.hashValue
             openTabs[index].knownModificationDate = modificationDate(of: url)

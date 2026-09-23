@@ -37,8 +37,12 @@ final class ProjectContext {
             guard let executable = override ?? LanguageServerRegistry.resolveExecutable(named: agent.binary) else { return nil }
             return ACPLaunch(executable: executable, arguments: agent.arguments, environment: LanguageServerRegistry.environmentForSpawning())
         }
+        manager.acpTerminalHost = acpTerminals
         return manager
     }()
+
+    /// Outside agents' terminals, as Run tabs of their own (harness RFC step 3a).
+    lazy var acpTerminals = ACPTerminalBroker(terminals: terminals)
 
     /// Every terminal in the project, per track (RFC R2). Here rather than in a window so a
     /// running command outlives the window that started it, and so an agent on a track no

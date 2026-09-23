@@ -3,7 +3,9 @@
 *2026-09-23. Status: **accepted** — the owner accepted D1–D8 as recommended the same day, with
 D1 settled explicitly: outside agents may write straight to disk ("it is the user's
 responsibility to know what the agents are up to"); those changes are reviewable and reversible
-through the turn-end checkpoint rather than pre-approved.
+through the turn-end checkpoint rather than pre-approved. **D9** (one approval per edit) added and
+accepted 2026-09-23; plan step 3 revised the same day to resolve its conflicts with D1–D4 and the
+open audit finding F4.
 Companion to `SIDE_PRODUCT_CONSTITUTION.md` (non-negotiables 3, 4, 5 and 8 are the ones at
 stake) and `SIDE_DESIGN.md`.*
 
@@ -68,7 +70,7 @@ with no code, and it's the honest fallback for any agent without ACP — but it 
   | tool call `execute` / terminal content | a command card with the terminal tail |
   | `session/request_permission` | the approval card, the agent's own options as its buttons |
   | `fs/write_text_file` | `ProposedEditApplier` — the same path Heron's edits take |
-  | `terminal/create` | the track's visible Run terminal (`TerminalSessionManager`) |
+  | `terminal/create` | a Run tab of its own running the command directly (`ACPTerminalBroker`) |
   | turn end | checkpoint, exactly as Heron's batches produce one |
 
 - **Selection**: the session pill gains a harness row — Heron, or each detected agent — per track.
@@ -119,14 +121,67 @@ an automatic install. *Decide:* accept; confirm no bundling of third-party adapt
 follow the track's harness; a task chip's result still attaches as verification. *Decide:*
 accept, or keep those Heron-only in v1.
 
+**D9 — One approval per edit (accepted 2026-09-23).** D1 and D3 together would ask twice for one
+edit: the agent's `session/request_permission` card, then a `ProposedEdit` card for the
+`fs/write_text_file` that follows. The rule:
+
+- A write that follows a **granted** permission for the same tool call (matched by
+  `toolCallId`, or by path within that tool call's `locations`) is applied **without a second
+  card** — the diff was on the permission card.
+- A write that arrives **without** a permission request is governed by the track's autonomy
+  **exactly as Heron's edits are** (D1): **Full** applies it; **Manual and Guarded** show a
+  `ProposedEdit` card. (Corrected 2026-09-23 during the build: Guarded never auto-applies
+  Heron's edits — `AgentAutonomy.autoAppliesEdits` is Full only — so "Guarded applies" would
+  have made autonomy mean two things.)
+- A write to disk that bypasses Side entirely remains checkpoint-only (D1).
+- Every write through Side, however approved, goes through `ProposedEditApplier` (disk first,
+  open-buffer sync, staleness refusal — see step 3a).
+
+This makes autonomy mean one thing across harnesses: it answers *Side's* questions (an
+unannounced write), never the agent's (D3 stands: Side never picks a permission option for
+another agent).
+
 ## Plan
 
 1. **`Harness` protocol** in Heron; `AgentRunner` conforms; Think, the pill, Tracks and Run move
    onto the protocol with no visible change. Tests: the existing suite, unchanged.
 2. **`AcpHarness` read-only**: launch, initialize, prompt, stream text and tool lines, cancel,
    permission cards. Proven first with **Gemini CLI**, then **Claude Code** (`claude-agent-acp`).
-3. **Writes and terminals**: `fs/*` through `ProposedEditApplier` with containment; `terminal/*`
-   through Run; the turn-end checkpoint for direct writes.
+3. **Writes and terminals** — revised 2026-09-23; split so the conflict-free half ships first.
+   **Built 2026-09-23 (3a, 3b and 3c together):** `ACPHarness` (files, writes, terminals, turn
+   checkpoint), `ACPTerminalHost` / `ACPTerminalBroker`, `UserSaveLog` (also closes F4 for Heron),
+   `TerminalViewController.CommandLaunch`; tests `ACPFileTerminalTests`.
+
+   **3a — conflict-free.**
+   - **`fs/read_text_file`** served by Side: contained to the worktree (D4); returns the open
+     buffer's unsaved content when that file is dirty in Make; records the content served per
+     path as that path's **base** for later writes. `line`/`limit` honoured.
+   - **Containment:** any `fs/*` path or `terminal/create` `cwd` outside the track's worktree is
+     refused with a JSON-RPC error that says why (D4).
+   - **`terminal/*` as their own sessions.** Each `terminal/create` gets a **dedicated Run tab** in
+     the track's `TerminalSessionManager` pool, spawning `command` + `args` with the given `env`
+     directly — **never typed into the user's interactive shell**, never queued behind Run's
+     agent-command queue. Output is kept in a bounded buffer (`outputByteLimit`, default 1 MB,
+     truncating from the front) for `terminal/output`; `terminal/wait_for_exit`,
+     `terminal/kill` and `terminal/release` are implemented; Stop and `session/cancel` kill every
+     terminal the session created. The tab is visible and interruptible (non-negotiable 8) and is
+     titled with the command.
+   - **Attribution before the turn-end checkpoint** (also closes audit F4 for Heron): snapshot
+     dirty paths at **turn start**; record paths the agent touched (tool-call `locations`, diff
+     paths, writes through Side); record paths the **user** saved in Make during the turn. The
+     checkpoint commits `agentTouched ∪ (newlyDirty − userSaved)`. A path both the user and the
+     agent changed is committed as the agent's and named in the checkpoint's meta line as shared.
+   - **Write staleness:** `fs/write_text_file` compares the file's current content (buffer if
+     open and dirty, else disk) with the base recorded at read time; if it moved, the write is
+     refused with an error the agent can act on ("file changed since you read it; read it again").
+     A write to a path never read is a create if the file does not exist, and refused if it does.
+
+   **3b — writes through Side, under D9.** Advertise `fs.writeTextFile`; route every write through
+   `ProposedEditApplier` with D9's approval rule; the turn-end checkpoint covers direct writes. The
+   pill states the mode ("Edits land directly · checkpointed each turn" for agents observed
+   writing to disk without Side).
+
+   **3c — advertise terminals.** Flip `terminal: true` once 3a's sessions pass their acceptance.
 4. **Picker and detection** in the session pill; **Codex** (`codex-acp`) and **Pi** (`pi-acp`).
 5. **Durability**: the tagged session log and `session/load`.
 
@@ -137,12 +192,19 @@ Each step is its own commit with its acceptance below.
 - [ ] Heron behaves exactly as before on the `Harness` protocol (full suite green, no UI change).
 - [ ] A track on an ACP agent streams into Think, shows tool lines, and approval cards answer
       `session/request_permission` with the chosen option.
-- [ ] An agent write through `fs/write_text_file` produces a `ProposedEdit` that Manual holds for
-      approval and applies through `ProposedEditApplier`.
+- [ ] `fs/read_text_file` returns unsaved buffer content for a dirty tab and refuses paths
+      outside the worktree.
+- [ ] An agent write through `fs/write_text_file` after a granted permission applies with **no**
+      second card; an unannounced write is held by Manual and applied by Guarded/Full; all go
+      through `ProposedEditApplier`.
+- [ ] A write whose base moved since the agent read it is refused with an actionable error.
+- [ ] A file the user saves in Make during an outside agent's turn is **not** in that turn's
+      checkpoint (and the same holds for Heron batches — F4).
 - [ ] A turn that changed files — however they were written — ends in a checkpoint Review shows
       and Undo can reverse.
-- [ ] `terminal/create` runs in the track's Run terminal; requests outside the worktree are
-      refused.
+- [ ] `terminal/create` opens its own Run tab running the command directly (not typed into a
+      shell); output, wait-for-exit, kill and release work; Stop kills them; a `cwd` outside the
+      worktree is refused.
 - [ ] The pill names the harness and, for direct-write agents, says edits land directly.
 - [ ] No third-party credential is read, stored or sent by Side.
 

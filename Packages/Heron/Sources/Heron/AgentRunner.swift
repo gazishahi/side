@@ -37,6 +37,9 @@ private struct PendingToolBatch {
     /// (plus whatever `changedFilePaths` names directly), so a concurrent manual edit sitting in
     /// the same worktree never gets swept into the agent's commit.
     public let baselineDirtyPaths: Set<String>
+    /// When the batch was presented. Files the user saves after this aren't the agent's
+    /// (`UserSaveLog`, audit F4) — the approval wait can be minutes, and people keep typing.
+    public var startedAt = Date()
 
     public var remaining: Int { unresolvedToolUseIds.count }
 }
@@ -792,12 +795,13 @@ public final class AgentRunner {
         let root = rootProvider().path
         let baseline = batch.baselineDirtyPaths
         let knownChanged = batch.changedFilePaths
+        let userSaved = UserSaveLog.shared.paths(savedSince: batch.startedAt, under: root)
         let described = Self.describedIntent(batch.declaredIntent, changedPaths: batch.changedFilePaths)
         let commitMessage = described.isEmpty ? "Agent checkpoint" : String(described.prefix(72))
 
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Self.stageAndCommit(
-                root: root, baseline: baseline, knownChanged: knownChanged, message: commitMessage
+                root: root, baseline: baseline, knownChanged: knownChanged, userSaved: userSaved, message: commitMessage
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return completion() }
@@ -811,7 +815,7 @@ public final class AgentRunner {
     /// reference so it cannot touch main-actor state from a background queue.
     // Internal so the staging rule — only what the batch touched — can be tested against a repo.
     public nonisolated static func stageAndCommit(
-        root: String, baseline: Set<String>, knownChanged: Set<String>, message: String
+        root: String, baseline: Set<String>, knownChanged: Set<String>, userSaved: Set<String> = [], message: String
     ) -> CheckpointCommitOutcome? {
 
         // Stage only what this batch actually touched: paths a command left newly dirty (not
@@ -820,8 +824,11 @@ public final class AgentRunner {
         // certain to have touched, even if that path happened to already be dirty. Deliberately
         // not `git add -A` — that would sweep any unrelated in-progress change in this worktree
         // into the agent's commit and misattribute it.
+        //
+        // `userSaved` closes the same hole from the other side: a file that only became dirty
+        // because the user saved it in Make while the batch waited (audit F4) is theirs.
         let currentDirtyPaths = GitPaths.dirtyPaths(cwd: root)
-        let pathsToStage = currentDirtyPaths.subtracting(baseline).union(knownChanged)
+        let pathsToStage = currentDirtyPaths.subtracting(baseline).subtracting(userSaved).union(knownChanged)
         // Everything the batch did left the tree exactly as it already was (e.g. a command that
         // ran but touched nothing) — nothing to checkpoint at all.
         guard !pathsToStage.isEmpty else { return nil }

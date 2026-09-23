@@ -32,6 +32,9 @@ public final class AgentRunnerManager {
     public var agentProvider: ((String) -> ACPAgent?)?
     /// Finds an agent's executable (login-shell PATH) and its spawn environment. Called off-main.
     public var acpLaunchProvider: (@Sendable (ACPAgent) -> ACPLaunch?)?
+    /// Where outside agents' `terminal/*` requests run — the project's Run terminals. Nil means
+    /// Side doesn't offer terminals, and the agent runs commands itself.
+    public weak var acpTerminalHost: ACPTerminalHost?
 
     /// Fires whenever any owned runner's phase or unseen-completion state changes, debounced so
     /// a Tracks ledger or stage badge driven by many runners doesn't relayout on every single
@@ -84,7 +87,11 @@ public final class AgentRunnerManager {
         if let existing = runners[trackKey] { return existing }
         if let agent = agentProvider?(trackKey), let launch = acpLaunchProvider {
             let harness = ACPHarness(trackKey: trackKey, agent: agent, launchProvider: { launch(agent) },
-                                     rootProvider: { [rootProvider] in rootProvider(trackKey) })
+                                     rootProvider: { [rootProvider] in rootProvider(trackKey) },
+                                     bridgeProvider: { [bridgeProvider] in bridgeProvider(trackKey) },
+                                     modeProvider: { [modeProvider] in modeProvider(trackKey) },
+                                     sessionStore: sessionStore,
+                                     terminalHost: { [weak self] in self?.acpTerminalHost })
             harness.addObserver { [weak self] event in
                 guard case .phaseChanged = event else { return }
                 self?.scheduleChangeNotification()

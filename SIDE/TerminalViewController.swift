@@ -173,6 +173,23 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private var didStart = false
     var workingDirectory: String?
 
+    /// A program to run in place of the login shell — an outside agent's `terminal/create`
+    /// (`SIDE_RFC_BYO_HARNESS.md` step 3a). The command runs directly, never typed into a shell
+    /// someone is using, and the tab ends when it does.
+    struct CommandLaunch {
+        let command: String
+        let arguments: [String]
+        /// Added to the terminal's own minimal environment (and the login shell's PATH).
+        let environment: [String: String]
+    }
+    var commandLaunch: CommandLaunch?
+    /// A command tab, not a shell: never chosen for the agent's typed commands, never restored.
+    var isCommandSession: Bool { commandLaunch != nil }
+    /// Every byte the program writes, for `terminal/output`.
+    var onCommandOutput: ((ArraySlice<UInt8>) -> Void)?
+    /// The process ended — its exit code, or nil when it didn't exit normally.
+    var onProcessExit: ((Int32?) -> Void)?
+
     private(set) var isAlive = false
     /// Usable for a command: running, or not started yet (it starts on first use). A shell that
     /// exited is neither, and gets replaced rather than typed into.
@@ -283,7 +300,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         terminalView.onFileLinkRequested = { [weak self] link in self?.onFileLinkRequested?(link) ?? false }
         terminalView.onLineSubmitted = { [weak self] line in self?.lastSubmittedCommand = line }
         terminalView.onDataReceived = { [weak self] in self?.onOutputReceived?() }
-        terminalView.onRawDataReceived = { [weak self] slice in self?.handleAgentCommandData(slice) }
+        terminalView.onRawDataReceived = { [weak self] slice in
+            self?.onCommandOutput?(slice)
+            self?.handleAgentCommandData(slice)
+        }
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(terminalView)
         NSLayoutConstraint.activate([
@@ -303,10 +323,23 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// agent's `run_shell_command` can lazily spin up a track's session in the background
     /// (e.g. its first command ever) without stealing focus from whatever the user is actually
     /// looking at in this window.
+    /// Starts the process without taking focus — for a command tab created in the background.
+    func start() { ensureStarted() }
+
     private func ensureStarted() {
         guard !didStart else { return }
         didStart = true
         isAlive = true
+        if let launch = commandLaunch {
+            // `env` resolves the command on PATH, which comes from the login shell — a GUI
+            // app's own PATH has no Homebrew, nvm or the like.
+            var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
+            if let path = LanguageServerRegistry.environmentForSpawning()["PATH"] { environment.append("PATH=\(path)") }
+            environment += launch.environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
+            shellIntegration = .unavailable
+            terminalView.startProcess(executable: "/usr/bin/env", args: [launch.command] + launch.arguments, environment: environment, currentDirectory: workingDirectory)
+            return
+        }
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         // zsh gets its integration through a ZDOTDIR wrapper (the VS Code technique): the shell
         // sources our rc — which sources the user's own — so the hooks install before the first
@@ -1020,6 +1053,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         isAlive = false
+        onProcessExit?(exitCode)
         // A command like `exit` kills the shell, so the sentinel can never print. Without this
         // the call sat until the timeout and then claimed it was "still running" — of a shell
         // that no longer existed.

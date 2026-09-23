@@ -134,6 +134,34 @@ final class TerminalSessionManager {
         return session
     }
 
+    /// A tab that runs one program instead of a shell — an outside agent's `terminal/create`.
+    /// Appended to the track's list, not selected: it's visible and interruptible without taking
+    /// the tab the user was looking at.
+    func makeCommandSession(forTrackKey key: String, launch: TerminalViewController.CommandLaunch, directory: String) -> TerminalSession {
+        let session = makeSession(forTrackKey: key, inDirectory: directory)
+        session.viewController.commandLaunch = launch
+        session.label = ([ (launch.command as NSString).lastPathComponent ] + launch.arguments.prefix(2)).joined(separator: " ")
+        session.viewController.loadViewIfNeeded()
+        var list = sessions(forTrackKey: key)
+        list.append(session)
+        if activeIndex(forTrackKey: key) == nil { setActiveIndex(list.count - 1, forTrackKey: key) }
+        setSessions(list, forTrackKey: key)
+        return session
+    }
+
+    /// Takes one terminal out of whichever list holds it, ending its process if it still runs.
+    func removeSession(_ session: TerminalSession) {
+        session.viewController.prepareForClose()
+        for pool in sessionsByPool.keys {
+            guard let index = sessionsByPool[pool]?.firstIndex(where: { $0 === session }) else { continue }
+            let countBefore = sessionsByPool[pool]!.count
+            sessionsByPool[pool]!.remove(at: index)
+            activeIndexByPool[pool] = TabSelection.indexAfterClosing(index, active: activeIndexByPool[pool], countBefore: countBefore)
+            remember(forTrackKey: pool.trackKey)
+        }
+        post(origin: nil)
+    }
+
     func markDisplayed(_ session: TerminalSession?, by host: AnyObject) {
         let key = ObjectIdentifier(host)
         guard displayedByHost[key] != session?.id else { return }
@@ -191,7 +219,7 @@ final class TerminalSessionManager {
     /// track's worktree (audit D-10) — then no command auto-runs, whatever the autonomy: an
     /// allowlisted `rm -rf build` means something else in another directory. Non-creating.
     func agentSessionIsOutsideWorktree(trackKey key: String) -> Bool {
-        let list = sessions(forTrackKey: key)
+        let list = sessions(forTrackKey: key).filter { !$0.viewController.isCommandSession }
         let pinned = agentSessionIDByTrackKey[key].flatMap { id in allSessions(forTrackKey: key).first { $0.id == id } }
         let active = activeIndex(forTrackKey: key).flatMap { list.indices.contains($0) ? list[$0] : nil }
         guard let session = pinned ?? active ?? list.first, let cwd = session.viewController.currentDirectory else { return false }
@@ -208,14 +236,17 @@ final class TerminalSessionManager {
 
     func agentSession(forTrackKey key: String) -> TerminalSession {
         var list = sessions(forTrackKey: key)
+        // A command tab (an outside agent's `terminal/create`) runs one program; nothing is ever
+        // typed into it.
+        let shells = list.filter { !$0.viewController.isCommandSession }
         // Pinned wherever it is — a torn-out agent terminal is still the one running its command.
         if let id = agentSessionIDByTrackKey[key], let pinned = allSessions(forTrackKey: key).first(where: { $0.id == id }), pinned.viewController.isAliveOrUnstarted {
             return pinned
         }
         let chosen: TerminalSession
-        if let active = activeIndex(forTrackKey: key), list.indices.contains(active), list[active].viewController.isAliveOrUnstarted {
+        if let active = activeIndex(forTrackKey: key), list.indices.contains(active), !list[active].viewController.isCommandSession, list[active].viewController.isAliveOrUnstarted {
             chosen = list[active]
-        } else if let first = list.first(where: { $0.viewController.isAliveOrUnstarted }) {
+        } else if let first = shells.first(where: { $0.viewController.isAliveOrUnstarted }) {
             chosen = first
         } else {
             chosen = makeSession(forTrackKey: key)
@@ -245,7 +276,8 @@ final class TerminalSessionManager {
     private func remember(forTrackKey key: String) {
         guard !AppDelegate.isUITesting else { return }
         var map = UserDefaults.standard.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
-        let directories = allSessions(forTrackKey: key).compactMap { $0.viewController.workingDirectory }
+        // Command tabs are an agent's one-off programs, not terminals to reopen.
+        let directories = allSessions(forTrackKey: key).filter { !$0.viewController.isCommandSession }.compactMap { $0.viewController.workingDirectory }
         map.removeValue(forKey: key)
         if directories.isEmpty { map.removeValue(forKey: rememberedKey(key)) } else { map[rememberedKey(key)] = directories }
         UserDefaults.standard.set(map, forKey: Self.rememberedSessionsKey)
