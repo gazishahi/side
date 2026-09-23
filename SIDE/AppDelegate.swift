@@ -132,15 +132,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// specific track rather than whatever this project's globally-active track happens to be,
     /// so two tracks can be watched or worked on side by side without either window's track
     /// switch disturbing the other.
-    func openTrackInNewWindow(projectRoot: URL, trackKey: String?, focusingFile: URL? = nil, at screenPoint: NSPoint? = nil) {
+    /// `soleFile`: a tab torn out of another window — the new window holds that file alone.
+    func openTrackInNewWindow(projectRoot: URL, trackKey: String?, focusingFile: URL? = nil, soleFile: URL? = nil, at screenPoint: NSPoint? = nil) {
         let window = presentNewWindow()
         if let screenPoint {
-            // A torn-out tab lands where it was dropped, not wherever the cascade would put it.
+            // A torn-out tab lands where it was dropped, not wherever the cascade would put it —
+            // but always wholly on a screen: a drop near the bottom edge used to put the new
+            // window mostly off it.
             window.setFrameTopLeftPoint(screenPoint)
+            let screen = NSScreen.screens.first { $0.frame.contains(screenPoint) } ?? window.screen ?? NSScreen.main
+            if let visible = screen?.visibleFrame {
+                var frame = window.frame
+                frame.origin.x = min(max(frame.origin.x, visible.minX), visible.maxX - frame.width)
+                frame.origin.y = min(max(frame.origin.y, visible.minY), visible.maxY - frame.height)
+                window.setFrame(frame, display: false)
+            }
         }
         let shell = window.contentViewController as? ShellViewController
-        shell?.openProject(at: projectRoot, focusingTrackKey: trackKey)
-        if let focusingFile { shell?.revealFile(focusingFile) }
+        shell?.openProject(at: projectRoot, focusingTrackKey: trackKey, soleFile: soleFile)
+        if let focusingFile, soleFile == nil { shell?.revealFile(focusingFile) }
     }
 
     @discardableResult

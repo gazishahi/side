@@ -168,6 +168,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// A tab torn off the strip (drag-out or "Move to New Window") — the shell owns windows, so
     /// it decides what a new one on this project/track looks like. Point is in screen coords.
     var onTearOutRequested: ((URL, NSPoint) -> Void)?
+    /// Set on a window made by tearing a tab out: it opens with that one file, not the
+    /// project's remembered tabs, and never writes its tabs back into that memory — a
+    /// scratch window must not change what the main window restores next launch.
+    var soleFile: URL?
     private let lastProjectKey = "side.last-project-path"
     private let lastFilesByProjectKey = "side.last-files-by-project"
     private let openTabsByProjectKey = "side.open-tabs-by-project"
@@ -767,6 +771,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func rememberLastFile(_ fileURL: URL, forProject project: URL) {
+        guard soleFile == nil else { return }
         var map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String] ?? [:]
         map[compositeMemoryKey(for: project)] = fileURL.path
         UserDefaults.standard.set(map, forKey: lastFilesByProjectKey)
@@ -788,6 +793,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Untitled tabs are deliberately excluded: they have no path to restore from, and their
     /// content lives only in the buffer.
     private func rememberOpenTabs(forProject project: URL) {
+        guard soleFile == nil else { return }
         var map = UserDefaults.standard.dictionary(forKey: openTabsByProjectKey) as? [String: [String]] ?? [:]
         let paths = openTabs.filter { !$0.isUntitled }.map(\.url.path)
         if paths.isEmpty {
@@ -1238,6 +1244,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 // Every remembered tab, in order, filtered against what the index actually
                 // found — a branch switch or a deletion can legitimately remove a file, and a
                 // missing one should be dropped silently rather than reported.
+                if let sole = self.soleFile {
+                    self.open(sole)
+                    return
+                }
                 let indexedPaths = Set(indexed.map(\.url.path))
                 let remembered = self.rememberedOpenTabs(forProject: memoryRoot)
                     .filter { indexedPaths.contains($0.path) }

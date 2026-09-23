@@ -120,13 +120,17 @@ final class ChipButton: NSButton {
     /// 2026-09-23: that is the macOS-native feel): the control swells under the pointer and holds
     /// there, then springs back on release with a little bounce. It used to dip *inward* to 93 %,
     /// which read as a different control family from the glass beside it.
+    /// Gentler than the search circle's 1.08: on a wide pill the same scale is a lot more
+    /// movement, and it read as aggressive (owner, 2026-09-23).
+    static let pressScale: CGFloat = 1.035
+
     private func pressDown(_ view: NSView) {
         guard let layer = centeredLayer(view) else { return }
         layer.removeAnimation(forKey: "springRelease")
         guard !DS.Motion.reduceMotion else { return }
         let swell = DS.Motion.spring(keyPath: "transform.scale")
         swell.fromValue = layer.presentation()?.value(forKeyPath: "transform.scale") ?? 1
-        swell.toValue = 1.08
+        swell.toValue = Self.pressScale
         // Held, not removed: the control stays swollen for as long as the mouse is down.
         swell.fillMode = .forwards
         swell.isRemovedOnCompletion = false
@@ -135,11 +139,11 @@ final class ChipButton: NSButton {
 
     private func pressRelease(_ view: NSView) {
         guard let layer = centeredLayer(view) else { return }
-        let from = layer.presentation()?.value(forKeyPath: "transform.scale") ?? 1.08
+        let from = layer.presentation()?.value(forKeyPath: "transform.scale") ?? Self.pressScale
         layer.removeAnimation(forKey: "springDown")
         guard !DS.Motion.reduceMotion else { return }
         let spring = DS.Motion.spring(keyPath: "transform.scale")
-        spring.damping *= settlesOnRelease ? 0.45 : 0.6  // Promote's settle bounces a touch more
+        spring.damping *= settlesOnRelease ? 0.6 : 0.85  // barely a bounce; Promote's settle a touch more
         spring.duration = spring.settlingDuration
         spring.fromValue = from
         spring.toValue = 1

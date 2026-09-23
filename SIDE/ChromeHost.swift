@@ -332,16 +332,64 @@ final class ChromeHost {
         leadingInset?.constant = fullScreen ? 12 : Self.trafficLightInset
     }
 
-    /// Centres the lights vertically in the 38 pt row. AppKit lays them out for a 28 pt title
-    /// bar and re-lays them on resize and full-screen transitions, so this runs from layout.
+    /// The one line the row's contents centre on — the tab capsule, headers, and the lights.
+    static var rowCentreFromTop: CGFloat { rowHeight / 2 }
+
+    private var lightObservers: [NSObjectProtocol] = []
+    private var isPositioningLights = false
+
+    /// Centres the traffic lights on the row's centre line, and keeps them there.
+    ///
+    /// AppKit lays the lights out for its own ~28 pt title bar (centre ≈ 15 pt down) and re-lays
+    /// them whenever it likes — stage switches, resizes, key changes, full-screen exits. Moving
+    /// them once, from Side's own layout pass, lost that race at random: Make happened to look
+    /// right, other stages didn't, and even Make sat ~4 pt above the tabs. So the buttons are
+    /// watched, and every time AppKit moves one it goes straight back to the shared centre line.
     func positionTrafficLights(in window: NSWindow) {
-        guard !window.styleMask.contains(.fullScreen) else { return }
+        guard !window.styleMask.contains(.fullScreen), !isPositioningLights else { return }
+        isPositioningLights = true
+        defer { isPositioningLights = false }
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             guard let button = window.standardWindowButton(type), let container = button.superview else { continue }
-            let height = container.bounds.height
-            let y = max(0, height - Self.rowHeight / 2 - button.frame.height / 2)
-            if abs(button.frame.origin.y - y) > 0.5 { button.setFrameOrigin(NSPoint(x: button.frame.origin.x, y: y)) }
+            // The container is unflipped: y counts up from its bottom edge, and its top edge is
+            // the window's top edge.
+            let y = container.bounds.height - Self.rowCentreFromTop - button.frame.height / 2
+            if abs(button.frame.origin.y - y) > 0.25 { button.setFrameOrigin(NSPoint(x: button.frame.origin.x, y: y)) }
         }
+    }
+
+    private var lightCorrectionPending = false
+
+    /// After AppKit's pass, not inside it: a frame set from within the button's own
+    /// frame-change notification is overwritten when AppKit finishes laying that button out —
+    /// which is exactly how one light (usually the green one) stayed 3 pt high.
+    private func scheduleLightCorrection(in window: NSWindow) {
+        guard !isPositioningLights, !lightCorrectionPending else { return }
+        lightCorrectionPending = true
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self else { return }
+            self.lightCorrectionPending = false
+            if let window { self.positionTrafficLights(in: window) }
+        }
+    }
+
+    /// Re-centres the lights whenever AppKit moves them.
+    func keepTrafficLightsCentred(in window: NSWindow) {
+        lightObservers.forEach(NotificationCenter.default.removeObserver)
+        lightObservers = []
+        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            guard let button = window.standardWindowButton(type) else { continue }
+            for view in [button, button.superview].compactMap({ $0 }) {
+                view.postsFrameChangedNotifications = true
+                lightObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self, weak window] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, let window else { return }
+                        self.scheduleLightCorrection(in: window)
+                    }
+                })
+            }
+        }
+        positionTrafficLights(in: window)
     }
 }
 

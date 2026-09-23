@@ -44,22 +44,14 @@ final class TrackPill: NSView {
     private let dot = DS.StatusDot(state: .idle)
     private let titleLabel = NSTextField(labelWithString: "")
     private let extraLabel = NSTextField(labelWithString: "")
-    private let hover = NSView()
     private var extraTrailing: NSLayoutConstraint!
     private var titleTrailing: NSLayoutConstraint!
     private var popover: NSPopover?
-    private var trackingArea: NSTrackingArea?
 
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        hover.wantsLayer = true
-        hover.layer?.cornerRadius = DS.Radius.control
-        hover.bindLayerBackground(DS.Color.overlay)
-        hover.alphaValue = 0
-        hover.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(hover)
         titleLabel.font = DS.Text.body(.medium)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -81,8 +73,6 @@ final class TrackPill: NSView {
         extraTrailing = extraLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
         titleTrailing = titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
         NSLayoutConstraint.activate([
-            hover.topAnchor.constraint(equalTo: topAnchor), hover.bottomAnchor.constraint(equalTo: bottomAnchor),
-            hover.leadingAnchor.constraint(equalTo: leadingAnchor), hover.trailingAnchor.constraint(equalTo: trailingAnchor),
             dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
             dot.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: DS.Spacing.s),
@@ -116,24 +106,17 @@ final class TrackPill: NSView {
 
     // MARK: Interaction
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self)
-        addTrackingArea(area)
-        trackingArea = area
-    }
-    override func mouseEntered(with event: NSEvent) { hover.alphaValue = 1 }
-    override func mouseExited(with event: NSEvent) { hover.alphaValue = 0 }
+    // No hover fill: the pill sits on its own glass, where a hover shape inside the capsule read
+    // as a second control (owner, 2026-09-23). The press is the feedback.
     /// The bar's press: the pill's glass swells under the pointer and springs back on release,
     /// then the popover opens — the same feel as search and Think's pills beside it.
     override func mouseDown(with event: NSEvent) {
         let piece = superview ?? self
         piece.wantsLayer = true
-        DS.Motion.press(piece, down: true)
+        DS.Motion.press(piece, down: true, amount: ChipButton.pressScale)
     }
     override func mouseUp(with event: NSEvent) {
-        DS.Motion.press(superview ?? self, down: false)
+        DS.Motion.press(superview ?? self, down: false, amount: ChipButton.pressScale)
         if bounds.contains(convert(event.locationInWindow, from: nil)) { togglePopover() }
     }
     override var mouseDownCanMoveWindow: Bool { false }

@@ -89,7 +89,7 @@ final class ShellViewController: NSViewController {
         makeVC.onDirtyChanged = { [weak self] dirty in self?.isDirty = dirty; self?.applyWindowChrome() }
         makeVC.onTearOutRequested = { [weak self] url, screenPoint in
             guard let self, let projectURL = self.projectURL else { return }
-            AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectURL, trackKey: self.currentTrackKey, focusingFile: url, at: screenPoint)
+            AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectURL, trackKey: self.currentTrackKey, soleFile: url, at: screenPoint)
         }
         runVC.onOpenFileRequested = { [weak self] url, line in
             guard let self else { return }
@@ -140,7 +140,8 @@ final class ShellViewController: NSViewController {
     /// land on the requested track directly rather than whatever this project's globally-active
     /// track happens to be. `loadProject` runs `projectOpened` synchronously (see its own
     /// comment), so `trackStore` is already populated by the time this looks the track up.
-    func openProject(at url: URL, focusingTrackKey: String?) {
+    func openProject(at url: URL, focusingTrackKey: String?, soleFile: URL? = nil) {
+        makeVC.soleFile = soleFile
         makeVC.loadProject(at: url)
         guard let focusingTrackKey, let store = trackStore,
               let track = store.tracks.first(where: { $0.branchName == focusingTrackKey }),
@@ -178,13 +179,14 @@ final class ShellViewController: NSViewController {
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
         window.toolbar = nil
-        chrome.positionTrafficLights(in: window)
+        chrome.keepTrafficLightsCentred(in: window)
         for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
                 MainActor.assumeIsolated {
                     guard let self, let window else { return }
                     self.chrome.setFullScreen(window.styleMask.contains(.fullScreen))
-                    self.chrome.positionTrafficLights(in: window)
+                    // Leaving full screen hands AppKit fresh buttons' layout; re-watch them.
+                    self.chrome.keepTrafficLightsCentred(in: window)
                 }
             }
         }

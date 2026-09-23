@@ -274,9 +274,11 @@ enum DS {
 
         /// The Liquid Glass press: the control swells under the finger and springs back. Scales
         /// about the view's centre (AppKit layers scale about their origin).
-        static func press(_ view: NSView, down: Bool) {
+        /// `amount` is how far it swells: search's circle takes the full 1.08; larger pieces
+        /// (pills, chips) swell less, so the same gesture reads as the same feel at any size.
+        static func press(_ view: NSView, down: Bool, amount: CGFloat = 1.08) {
             guard !reduceMotion, let layer = view.layer else { return }
-            let scale: CGFloat = down ? 1.08 : 1
+            let scale: CGFloat = down ? amount : 1
             let cx = view.bounds.midX, cy = view.bounds.midY
             let target = CATransform3DConcat(CATransform3DConcat(CATransform3DMakeTranslation(-cx, -cy, 0), CATransform3DMakeScale(scale, scale, 1)), CATransform3DMakeTranslation(cx, cy, 0))
             let animation = spring(keyPath: "transform")

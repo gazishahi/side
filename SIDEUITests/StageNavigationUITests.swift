@@ -55,9 +55,16 @@ final class StageNavigationUITests: XCTestCase {
         // The seamless frame (Direction 02 §3.2): no toolbar, and the stage control is in the tree.
         XCTAssertEqual(app.windows.firstMatch.toolbars.count, 0)
         XCTAssertTrue(app.windows.firstMatch.radioGroups["Stage"].exists)
-        for stage in ["Make", "Think", "Review", "Run", "Tracks"] {
+        for stage in ["Make", "Think", "Review", "Run", "Tracks", "Make"] {
             goToStage(stage)
-            XCTAssertTrue(app.windows.firstMatch.exists, "window disappeared after going to \(stage)")
+            let window = app.windows.firstMatch
+            XCTAssertTrue(window.exists, "window disappeared after going to \(stage)")
+            // The traffic lights sit on the top row's centre line (19 pt down, where the tabs
+            // and headers centre) on every stage — AppKit's own re-layouts used to win on some.
+            let close = window.buttons[XCUIIdentifierCloseWindow]
+            if close.exists {
+                XCTAssertEqual(close.frame.midY - window.frame.minY, 19, accuracy: 0.75, "lights off the row's centre line on \(stage)")
+            }
         }
     }
 
