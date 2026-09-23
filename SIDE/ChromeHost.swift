@@ -1,9 +1,9 @@
 import AppKit
 import Heron
 
-/// Where the navigation components live (Direction 02 §3.0). The floating bar is on trial; the
-/// seamless frame and top row are permanent and correct under both. Reverting = default this to
-/// `.topRow`, then delete the `.floatingBar` branch and the key.
+/// Where the navigation components live (Direction 02 §3.0). The floating bar is the layout —
+/// its trial ended 2026-09-23 with the owner keeping it. `.topRow` stays as the hidden fallback;
+/// the seamless frame and top row are correct under both.
 enum ChromePlacement: String {
     case floatingBar, topRow
 

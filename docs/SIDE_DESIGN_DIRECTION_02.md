@@ -1,10 +1,28 @@
 # Side — Design Direction 02: "Tone over lines"
 
 *Rewritten 2026-09-03 after review; **reconciled against HEAD `40199d0`** the same day.
-Status: **agreed, ready to implement.** §2.8 Motion decided 2026-09-04: option B.
-§3 replaced 2026-09-22 by chrome v2 (seamless frame permanent; floating nav bar
-on trial with a defined revert path — §3.0).*
-*Companion docs: `SIDE_DESIGN.md` (charter — update it to match §2 when this lands),
+Status: **built** — steps 1–7 shipped 2026-09-04 → 2026-09-23 (step 4 `f066775`…`6d87011`,
+step 5 `9f4711c` `65e1335`, step 6 `beb4129`); `SIDE_DESIGN.md` rewritten to match. §2.8 Motion
+decided 2026-09-04: option B. §3 replaced 2026-09-22 by chrome v2; the floating bar's trial
+ended 2026-09-23 — **kept**.*
+
+Symbols: `ChromeHost` `TrackPill` `StatusDot` `StatusLabel` `EmptyState` `InlineInstruct` `CheckpointSheetController` `FirstRun` `OverlayScrollThumb` `LSPStatusChip`
+
+### As built — where the build departs from the text below
+
+- **Floating bar kept** (§3.0): the trial is over; `.topRow` remains only as the hidden fallback.
+- **Bubble arrival** keeps its short rise and fade — a documented exception to §2.8's "only the
+  working ring moves"; streaming growth is unaffected (`SIDE_DESIGN.md` › Motion).
+- **Run's terminal** is full-bleed with its grid ending above the bar (owner, 2026-09-22/23), not
+  on a radius-10 inset card, and keeps the Nerd Font its prompt glyphs need rather than SF Mono.
+- **Review:** line numbers stay in the diff text (quaternary) rather than 44 pt unselectable
+  columns; the checkpoint meta line omits scope and autonomy, which checkpoints don't record;
+  "Instruct…" is per file, not per hunk — a hunk has no row of its own to hover.
+- **Think requires a track** (§6) — conversations started with no track are no longer shown.
+- **Beyond the spec:** terminal and file tabs tear out into windows; Run's task chips go through
+  the command card via `AgentRunner.proposeUserTask` without answering the model; Heron was
+  extracted into `Packages/Heron` between steps 4 and 5.
+*Companion docs: `SIDE_DESIGN.md` (charter — updated to match on 2026-09-23),
 `SIDE_AUDIT_REPORT_2026-09-01.md` (defects referenced by ID below),
 `SIDE_RFC_NAVIGATION_LEDGER.md` (product decisions **not** in scope here).*
 

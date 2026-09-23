@@ -1,6 +1,6 @@
 # Side — Design Charter
 
-Status: reference — governs every UI change; the token layer it names is `DS` in `DesignSystem.swift`.
+Status: reference — governs every UI change; the token layer it names is `DS` in `DesignSystem.swift`. Tokens, motion, components and surfaces rewritten 2026-09-23 to match Direction 02 as built.
 
 Companion to `SIDE_PRODUCT_CONSTITUTION.md`. The constitution says what Side
 *is*; this says what Side *looks and feels like*. Every UI change from here
@@ -29,130 +29,127 @@ priority order:
 
 ## Tokens
 
-One source of truth in code: `DesignSystem.swift` (`Palette`, `Type`, `Spacing`,
-`Radius`, `Motion`). The per-file palettes that exist today (`TracksPalette`,
-`ReviewPalette`, the ad-hoc grays in Heron's proposal cards, ChromeBackground)
-migrate into it and die.
+One source of truth in code: `DesignSystem.swift` — `DS.Color`, `DS.Text`, `DS.Spacing`,
+`DS.Radius`, `DS.Motion`. No color literal, raw `ofSize:` or numeric corner radius outside it;
+`TokenComplianceTests` greps the app and the Heron package for them. Rewritten 2026-09-23 when
+Direction 02 ("tone over lines") was built — that document holds the reasoning; this one holds
+the rules.
 
-**Palette (dark values; every token is dynamic and carries a light counterpart in `DS.Color` since 2026-09-01 — Appearance is a preference, Match System / Light / Dark):**
-| Token | Value | Use |
-|---|---|---|
-| `bg0` | white 0.10 | stage background, the deepest layer |
-| `bg1` | white 0.145 | cards, panels |
-| `bg2` | white 0.17 | active tab, selected row |
-| `bg3` | white 0.21 | chips, code spans |
-| `bg4` | white 0.24 | received bubbles, hover fills |
-| `hairline` | white 0.24 | the only border color |
-| `accent` | `controlAccentColor` | sent bubbles, primary actions, focus |
-| status | systemGreen / Orange / Purple / Teal / Red / Gray | the existing `TrackStatus` mapping, unchanged |
+**Surfaces — three tones, no borders.** Every color is dynamic (`DS.Color.dynamic(dark:light:)`);
+Appearance is a preference (Match System / Light / Dark).
+| Token | Dark | Light | Use |
+|---|---|---|---|
+| `canvas` | `#15171A` | `#F4F4F6` | stage background |
+| `raised` | `#1C1F23` | `#FFFFFF` | the card itself (a tone *is* the card), pinned groups, terminal, diff body |
+| `overlay` | `#25292E` | `#E8E8EC` | chips on a raised surface, running task, hover on raised rows |
+| `hairline` | white/black α .08 | | row separators only — never enclosing |
+| `hairlineStrong` | α .13 / .14 | | the stacked-track connector |
 
-Text: `labelColor` / `secondaryLabelColor` / `tertiaryLabelColor` only. Never a
-hand-mixed gray for text.
+Also: `bubbleReceived`, `selectedCapsule` (stage control, tabs), `tabActive`, `tabCloseHover`,
+`scrollKnob` (Side's own overlay thumb), `diffAdded` / `diffRemoved` (full-row tints), and the
+`scrim*` overlays. New layer colours go through `bindLayerBackground`, never a resolved
+`.cgColor` — that would freeze the appearance at the moment it was read.
 
-**Type:** 11 (meta/labels), 12 (secondary UI), 13 (body/editor UI), 15
-(section), 17 (page title). Semibold for emphasis, never bold below 15. Mono at
-−1pt from its context.
+**Text:** system label colours only (`label` / `secondary` / `tertiary` / `quaternary` — the last
+for line numbers, archived rows). Never a hand-mixed gray.
 
-**Spacing:** 4 / 8 / 12 / 16 / 20. Nothing off-scale without a comment saying
-why.
+**Accent:** `controlAccentColor`, for focus, selection and the *one* primary action per screen.
+Never status.
 
-**Radius:** 4 (chips, code spans), 6 (buttons, small controls), 10 (cards,
-panels), 17 (bubbles), plus `tabStrip`/`tabEdge`/`rail`/`rowHover` chrome tokens
-added when the tab system and Tracks tree were built.
+**Status — dot + text, never a filled pill.** `DS.StatusDot(state:)` (6 pt) and
+`DS.StatusLabel(state:text:)`, states `needsYou` (amber), `working` (hollow ring, breathing —
+the only animated indicator), `verified` (green), `failed` (red), `idle` (quaternary), `unread`
+(a quiet dot for new terminal output). Meaning is carried by the word; colour reinforces.
 
-**Typography (added 2026-08-27):** `DS.Text` is the type layer — `display`, `figure`, `title`,
-`subtitle`, `heading`, `body`, `control`, `caption`, `micro`, `code` — each a function returning a
-scaled `NSFont`. Every size is one that was already in the app, named; the migration was not a
-redesign. `DS.Text.Scale` (Compact 0.9 / Default 1.0 / Large 1.15 / Larger 1.3) multiplies all of
-them, is persisted, and posts `DS.Text.scaleDidChangeNotification` so open stages rebuild rather
-than waiting for a new window. macOS has no app-wide Dynamic Type, which is exactly why this
-exists: a hardcoded-point-size app offers a low-vision user nothing. Set in Settings →
-Appearance. New UI text uses a role; a raw `ofSize:` in a view is now a defect.
+**Type — five roles** on `DS.Text`, each scaled by `DS.Text.Scale` (Compact / Default / Large /
+Larger, Settings › Appearance): `title` 20, `heading` 15, `body` 13, `caption` 11, `code`
+(monospaced), plus `custom(_:)` for the few one-off sizes that still scale. Section labels are
+caption, uppercase and tracked (`sectionLabelAttributes`) — the only uppercase on screen.
+The subject of a row is the only semibold. The editor and terminal have their own sizes
+(`DS.Text.CodeSize`), separate from the interface scale.
 
-**Spacing (added 2026-08-27):** `DS.Spacing` — `xxs 2 / xs 4 / s 6 / m 8 / l 10 / xl 12 /
-xxl 14 / section 20`, a 4pt base because every value already in the code was a multiple or
-half-step of it. Stack spacing, custom spacing, and edge insets are migrated (~70 call sites);
-the few off-scale leftovers (16, 18, 13, 7, 1) were snapped onto the scale rather than given
-tokens of their own. Constraint constants are deliberately *not* migrated: those are geometry
-against a specific neighbour, not rhythm. Also added the text/editor colors the charter listed
-and the code had been carrying as literals — `text`, `textStrong`, `textSecondary`, `textMuted`,
-`textFaint`, `comment`, and the four `scrim*` white overlays.
+**Spacing:** `xxs 2 / xs 4 / s 6 / m 8 / l 10 / xl 12 / xxl 14 / section 20`. Constraint
+constants that are geometry against a neighbour aren't rhythm and stay literal.
 
-**Token status (audited 2026-08-25):** `DS.Color`, `DS.Radius`, `DS.Motion`, and
-`CircularIconButton` exist. `Spacing` and `Type` namespaces named above are **not
-yet in code** — the scale is followed by hand, and an audit counted 24 remaining
-`NSColor(white:)` uses, 8 numeric `cornerRadius` assignments, and 57 off-scale
-layout constants outside `DesignSystem.swift`. Editor/syntax/terminal colors are
-the largest legitimate holdouts; the rest is unmigrated.
+**Radius:** `control` 6 (buttons, chips, segments), `surface` 10 (cards, diff body, terminal
+tail, popovers), `bubble` 17 (Think's bubbles only), and `capsule(height:)` for glass capsules,
+whose radius is always half their height.
 
-**Motion:** appearance = fade + 12–16pt rise + 0.96 scale, 0.25–0.3s ease-out.
-Hover reveals = alpha animate, ~0.15s. Reordering = let NSStackView/Auto Layout
-animate positions. Never animate during a full re-render (reattach lays out
-instantly — Think already does this correctly).
+## Motion
+
+One curve (`DS.Motion.curve`), durations through `DS.Motion.duration(_:)` so Reduce Motion
+shortens every one of them. Nothing the user is waiting on animates: expansion, folding,
+full re-renders and reattaching all lay out instantly.
+
+- **Press:** glass controls swell and spring back (`DS.Motion.press`) — 1.08 on the search
+  button, a gentler 1.035 on the bar's chips and pills (`ChipButton.pressScale`). Promote alone
+  keeps one ~300 ms settle (`settlesOnRelease`).
+- **Hover reveals:** alpha, ~0.15 s.
+- **Appearance:** a new chip, tab or bubble fades in with a short rise (`DS.Motion.appear`).
+  Think's bubble arrival is a **documented exception** to "only the working ring moves": it marks
+  where the new message is, and it never plays on a full re-render.
+- **Streaming:** agent text grows in place as it arrives; the bubble never rebuilds per token.
+- **The working ring** breathes on a 2 s ease-in-out — the only indicator that moves on its own.
 
 ## Component canon
 
-- **Card**: `bg1` fill, `hairline` 1pt border, radius 10. Rows inside separated by hairlines,
-  never nested borders.
-- **Chip**: `bg3` fill, radius 4, mono 11 — branch names, code spans.
-- **Status pill**: status color at 16% fill, status color text, semibold 10.5, radius 4.
-- **Bubble**: solid fill (accent = sent, `bg4` = received), radius 17, hugs content, no border.
-- **Primary action**: one per surface, accent-tinted. Everything else is quiet until hover.
-- **Hover affordances**: actions live *beside* content (Tracks rows, bubble copy), revealed at
-  alpha, circular hit areas for icon buttons — a circle, measured, not an
-  approximation.
-- **Empty states**: one sentence, `tertiaryLabelColor`, centered, plus the single action that
-  fixes it. Never explainer paragraphs baked into a working screen (see: Think's
-  removed intro line). Explaining belongs in empty states and onboarding, not
-  permanent chrome.
+- **Card:** a `raised` tone, radius 10, no border. Rows inside are separated by hairlines.
+- **Chip:** `overlay` on raised (or glass in the bar), radius 6, code type for branches and
+  task names.
+- **Status:** `DS.StatusDot` / `DS.StatusLabel`. There is no status pill.
+- **Bubble:** solid fill (accent = sent, `bubbleReceived` = received), radius 17, a drawn iMessage
+  tail, hugs its content.
+- **Glass capsule:** `DS.makeGlass`, radius half the height — the floating bar's pieces, tab
+  track, Promote.
+- **Primary action:** one per screen, accent-filled. Everything else is a text action.
+- **Row actions:** text, revealed on hover in the row's trailing column, and always exposed as
+  accessibility custom actions — never kebab-only.
+- **Empty state:** `DS.EmptyState` — one sentence plus the one action that fixes it, performed by
+  the shell (`EmptyStateAction`). Never an explainer paragraph.
+- **Transient surfaces:** popovers, sheets and in-place expansions only — scoped to the current
+  track, dismissed by Escape and by any stage change, never persisted, never a second canvas.
 
 ## Per-surface direction
 
-- **Window title**: humane — `file — track` (project lives in the toolbar already). Never a raw
-  worktree filesystem path; the user should never see `Application
-  Support/Side/Worktrees/…`.
-- **Tabs (Make + Run, one shared system)**: active tab visually attached to the content below it
-  (same fill as editor surface, no bottom seam); inactive tabs quiet; circular
-  close hover; insert/remove animate (fade+slide); drag = lift (shadow + slight
-  scale) and glide, siblings animating aside. Kill the duplicate filename label
-  sitting left of the tab strip.
-- **Toolbar**: stage switcher is the centerpiece — needs badge states (● pending) and must never
-  collapse into overflow. Quick Open gets a minimum window width or a
-  functioning collapsed button — a dead control is worse than no control.
-- **Menu bar**: `Switch to Tab 1…8` collapses into a `Tabs` submenu (⌘1–8 still work,
-  unadvertised at top level). Stages get first-class jump shortcuts (⌃1–⌃5,
-  Navigate menu). `Toggle Markdown Preview` moves from File to a View section.
-- **Review**: a real diff viewer, not a `git diff` text dump — per-file collapsible cards with
-  filename header and +/− counts, line numbers, colored gutter bars rather than
-  +/− prefixes. This is the single highest-leverage visual upgrade in the app;
-  the same component then serves Make (hunk review), Think (edit proposals), and
-  Review.
-- **Tracks**: real tree rendering — curved connector lines from parent row to child rows (the
-  git-graph read), not just an indent + straight rail. Status pills stay.
-- **Run**: terminal gets breathing room (12pt inset) inside a proper container; session tabs use
-  the same tab system as Make instead of a floating pill colliding with the
-  prompt.
-- **Think**: an **iMessage-anatomy composer on Liquid Glass** — `[+] [capsule text field · mic]
-  [send]`, one thin row, floating over a full-bleed transcript with no separating line, so
-  messages refract through the glass as they scroll (`DS.makeGlass`: `NSGlassEffectView` on
-  macOS 26, `NSVisualEffectView` fallback; the glass view needs a `contentView` or it renders
-  nothing). + opens Add File Reference / Compact / New Conversation; mic triggers system
-  dictation. Sent/received bubbles carry the real iMessage tail — a drawn bezier, not a corner
-  radius; errors get no tail, they aren't speech. Session state lives in **one glass pill**
-  above the composer's trailing corner ("Claude Sonnet 5 · Build · 1%", tinted by context
-  status) opening an NSPopover of real controls: a model popup grouped by provider, capsule
-  segmented controls for thinking effort, tool scope, and autonomy, and the context/spend
-  figures. One pill, not five chips — the capsule holds only input affordances. The pill and
-  composer are added to the view *after* the scroll view, or scrolled bubbles paint over them.
-  NSButton is flipped: a menu popped "above" needs negative y. The slash-command palette
-  (/compact, /new, /ask, /plan, /build, /manual, /guarded, /full) is the keyboard path to
-  everything in the popover. The explainer paragraph stays empty-state only.
-- **Preferences**: an `NSTabViewController` with a toolbar tab style — Providers, Usage,
-  History. Panes are plain AppKit stacks at 20pt insets; the Usage summary is the one card
-  (`DS.Color.bg2`, `DS.Radius.card`), with figures at 20pt semibold over 10.5pt secondary
-  captions and fixed-width right-aligned numeric columns so rows line up down the table.
+- **Window:** a seamless frame — no toolbar, no drawn title bar; the traffic lights sit on the
+  top row's centre line. The title (for Mission Control and VoiceOver) is humane: never a
+  worktree path.
+- **Top row (38 pt):** each stage's own header — Make's and Run's tab capsule, Review's
+  `intent · branch → target · N checkpoints ahead`, Think's conversation title. Clear at rest; it
+  frosts only once content scrolls beneath it.
+- **Floating bar (kept, 2026-09-23):** track pill at the leading margin, stage capsule centred,
+  search at the trailing margin, each on glass. Think's changes and session pills dock into the
+  bar row when the window is wide enough and stay above the composer when it isn't — the bar
+  never widens the window. `ChromeHost` owns placement; the `.topRow` fallback still exists
+  behind the hidden `SideChromePlacement` key.
+- **Tabs (Make and Run):** capsule chips in one glass track; hidden with a single tab; drag to
+  reorder, drag out (or the tab's menu) to tear off into a window of its own — terminals move
+  with their process running. The track pill marks a torn-out window.
+- **Make:** editor with its own text size; the file explorer (left or right, Settings ›
+  General); the language-server chip trailing the tabs; ⌘K inline instruct — a pointer
+  (`@path#L12-L40`) sent to the track's conversation, never the code itself.
+- **Think:** a full-bleed transcript under an iMessage-anatomy glass composer; one session pill
+  for model, effort, scope and autonomy. Think works on a track. Proposal cards expand to the whole
+  file in place; command cards show the terminal's tail; checkpoint lines open a sheet.
+- **Review:** the decision header (verification recency relative to the newest checkpoint,
+  Promote with its reason when it can't), checkpoints as hairline sections, files as code rows
+  over raised diff bodies — no gutter bars, no borders, no visible `+`/`−`.
+- **Run:** the terminal is the whole window, its grid ending above the bar; a task row
+  (ProjectTasks chips, Verify, the approval question in place) and a status line (live cwd,
+  last exit, duration, the running task); a cwd outside the track's worktree is flagged and
+  stops agent commands auto-running there.
+- **Tracks:** Needs you pinned on `raised`; everything else flat on canvas; specific trailing
+  verbs (Respond, Retry, Review, Open, Resume); stacked children under one connector; search
+  reaches archived tracks.
+- **First run:** one sheet, three steps (open a project, choose a model, create a track), each a
+  button that does it; dismissed once, gone for good.
 
-## Audit findings (2026-08-24, all verified live or in code)
+## History — the 2026-08-24 audit
+
+Every finding below was resolved by the batches that followed and by Direction 02; kept as the
+record of where the design started.
+
+### Audit findings (2026-08-24, all verified live or in code)
 
 Confirmed from the user's report: tab chips are flat floaters with a
 non-circular close hover and zero add/close/drag animation polish; Quick Open
@@ -182,7 +179,7 @@ Found in the audit beyond the user's list:
    the harness roadmap notes) — worth fixing inside the Review rebuild.
 7. **Stage backgrounds differ between stages**, so switching stages visibly "jumps" in tone.
 
-## Sequencing
+### Sequencing (complete)
 
 Fix batches, in order — each lands on the tokens first so nothing is styled
 twice:
