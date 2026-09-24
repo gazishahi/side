@@ -55,6 +55,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     // Real label set per-track in refresh() — "to main" isn't right for a stacked track, whose
     // actual base is its parent's branch.
     private let promoteButton = ChipButton(symbolName: nil, accessibilityLabel: "Promote this track's changes to its base branch", height: ReviewWorkspaceViewController.promoteHeight)
+    /// Review's publishing half: push the branch, open a pull request, check the remote. Quiet
+    /// beside Promote, which stays the one primary action.
+    private let publishButton = ChipButton(symbolName: nil, accessibilityLabel: "Publish this track: push its branch or open a pull request", height: ReviewWorkspaceViewController.promoteHeight)
+    private let publishHost = NSView()
     private let statusLabel = NSTextField(labelWithString: "")
     /// The glass capsule Promote sits on, plus the status line beneath it. Floats over the
     /// scrolling content in the stage's top-right corner rather than living in a bar of its own.
@@ -157,10 +161,36 @@ final class ReviewWorkspaceViewController: NSViewController {
             promoteHost.heightAnchor.constraint(equalToConstant: Self.promoteHeight),
         ])
 
+        publishButton.onPress = { [weak self] in self?.publishTapped() }
+        publishButton.settlesOnRelease = true
+        let publishGlass = DS.makeGlass(cornerRadius: Self.promoteHeight / 2)
+        publishButton.glassBackdrop = publishGlass
+        publishButton.contentTintColor = .secondaryLabelColor
+        publishButton.setAttributedLabel(
+            NSAttributedString(string: "Publish\u{2026}", attributes: [.font: DS.Text.body(.medium), .foregroundColor: NSColor.secondaryLabelColor]),
+            identity: "publish"
+        )
+        publishHost.translatesAutoresizingMaskIntoConstraints = false
+        publishHost.addSubview(publishGlass)
+        publishHost.addSubview(publishButton)
+        NSLayoutConstraint.activate([
+            publishGlass.topAnchor.constraint(equalTo: publishHost.topAnchor),
+            publishGlass.leadingAnchor.constraint(equalTo: publishHost.leadingAnchor),
+            publishGlass.trailingAnchor.constraint(equalTo: publishHost.trailingAnchor),
+            publishGlass.bottomAnchor.constraint(equalTo: publishHost.bottomAnchor),
+            publishButton.centerYAnchor.constraint(equalTo: publishHost.centerYAnchor),
+            publishButton.leadingAnchor.constraint(equalTo: publishHost.leadingAnchor, constant: DS.Spacing.xl),
+            publishButton.trailingAnchor.constraint(equalTo: publishHost.trailingAnchor, constant: -DS.Spacing.xl),
+            publishHost.heightAnchor.constraint(equalToConstant: Self.promoteHeight),
+        ])
+        let actions = NSStackView(views: [publishHost, promoteHost])
+        actions.orientation = .horizontal
+        actions.spacing = DS.Spacing.m
+
         promoteOverlay.orientation = .vertical
         promoteOverlay.alignment = .trailing
         promoteOverlay.spacing = DS.Spacing.s
-        promoteOverlay.addArrangedSubview(promoteHost)
+        promoteOverlay.addArrangedSubview(actions)
         promoteOverlay.addArrangedSubview(statusLabel)
         promoteOverlay.translatesAutoresizingMaskIntoConstraints = false
 
@@ -277,7 +307,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private static let defaultEmptyStateText = "Review shows what a track has changed."
 
     /// Horizontal room the floating Promote capsule needs; the title truncates short of it.
-    private static let promoteGutter: CGFloat = 240
+    private static let promoteGutter: CGFloat = 360
     private static let promoteHeight: CGFloat = 30
 
     /// A borderless NSButton draws its title in the default label colour and ignores
@@ -664,6 +694,186 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
     }
 
+    // MARK: - Publish (the Integration half of Review)
+
+    /// Where git runs for this track: its own worktree (the branch is checked out there), else
+    /// the shared checkout. Any checkout of the repository sees every branch and remote.
+    private var repositoryPath: String? { currentWorkingDirectory?.path ?? canonicalRoot?.path }
+
+    private func setStatus(_ text: String, _ color: NSColor = .secondaryLabelColor) {
+        statusLabel.stringValue = text
+        statusLabel.textColor = color
+    }
+
+    /// Reads the remote state (and any pull request) off the main thread, then shows the menu.
+    private func publishTapped() {
+        guard let track = currentTrack, let trackStore, let cwd = repositoryPath else { return }
+        let baseRef = Self.baseRef(for: track, trackStore: trackStore)
+        let branch = track.branchName
+        setStatus("Checking the remote\u{2026}")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let state = Publishing.state(branch: branch, baseRef: baseRef, cwd: cwd)
+            let hasGH = GitHubCLI.executable() != nil
+            let pullRequest: GitHubCLI.PullRequest?
+            if hasGH, state.isOnRemote, case .github? = state.remote?.web {
+                pullRequest = GitHubCLI.pullRequest(branch: branch, cwd: cwd)
+            } else {
+                pullRequest = nil
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.setStatus("")
+                self.showPublishMenu(track: track, baseRef: baseRef, cwd: cwd, state: state, hasGH: hasGH, pullRequest: pullRequest)
+            }
+        }
+    }
+
+    private func showPublishMenu(track: Track, baseRef: String, cwd: String, state: Publishing.State, hasGH: Bool, pullRequest: GitHubCLI.PullRequest?) {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func item(_ title: String, subtitle: String? = nil, enabled: Bool = true, action: (() -> Void)? = nil) {
+            let entry = PublishMenuItem(title: title, handler: action)
+            entry.subtitle = subtitle
+            entry.isEnabled = enabled && action != nil
+            menu.addItem(entry)
+        }
+        guard let remote = state.remote else {
+            item("No remote", subtitle: "Add one in a terminal: git remote add origin <url>", enabled: false)
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: publishButton.bounds.height + 4), in: publishButton)
+            return
+        }
+        let branch = track.branchName
+        item("\(remote.name) \u{00B7} \(remote.web?.displayName ?? remote.url)", enabled: false)
+        menu.addItem(.separator())
+
+        let pushSubtitle: String
+        var canPush = true
+        if state.remoteOnly > 0 {
+            pushSubtitle = "\(remote.name) has \(state.remoteOnly) commit\(state.remoteOnly == 1 ? "" : "s") this branch doesn't. Pull them into the track first."
+            canPush = false
+        } else if !state.isOnRemote {
+            pushSubtitle = "Not on \(remote.name) yet \u{00B7} \(state.unpushed) commit\(state.unpushed == 1 ? "" : "s")"
+        } else if state.unpushed > 0 {
+            pushSubtitle = "\(state.unpushed) commit\(state.unpushed == 1 ? "" : "s") to push"
+        } else {
+            pushSubtitle = "Up to date with \(remote.name)"
+            canPush = false
+        }
+        item("Push \u{201C}\(branch)\u{201D}", subtitle: pushSubtitle, enabled: canPush) { [weak self] in
+            self?.confirmPush(branch: branch, remote: remote, cwd: cwd, commits: state.unpushed)
+        }
+
+        if let pullRequest {
+            item("View Pull Request #\(pullRequest.number)", subtitle: pullRequest.state.capitalized) { NSWorkspace.shared.open(pullRequest.url) }
+        } else if let web = remote.web {
+            let needsPush = !state.isOnRemote || state.unpushed > 0
+            let kind = { if case .gitlab = web { return "Merge Request" } else { return "Pull Request" } }()
+            if !state.baseIsOnRemote {
+                item("Open \(kind)\u{2026}", subtitle: "\(baseRef) isn't on \(remote.name). Push it first.", enabled: false)
+            } else {
+                let finishes = hasGH && { if case .github = web { return true } else { return false } }() ? "" : " \u{00B7} finishes on \(web.displayName.split(separator: "/").first ?? "")"
+                item(needsPush ? "Push and Open \(kind)\u{2026}" : "Open \(kind)\u{2026}", subtitle: "Into \(baseRef)\(finishes)", enabled: canPush || !needsPush) { [weak self] in
+                    self?.confirmPullRequest(track: track, baseRef: baseRef, remote: remote, web: web, cwd: cwd, pushFirst: needsPush, commits: state.unpushed, useGH: hasGH)
+                }
+            }
+        }
+
+        menu.addItem(.separator())
+        item("Check \(remote.name) for New Commits", subtitle: nil) { [weak self] in
+            self?.fetchRemote(remote: remote, baseRef: baseRef, branch: branch, cwd: cwd)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: publishButton.bounds.height + 4), in: publishButton)
+    }
+
+    private func confirmPush(branch: String, remote: Publishing.Remote, cwd: String, commits: Int) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Push \u{201C}\(branch)\u{201D} to \(remote.name)?"
+        alert.informativeText = "Publishes \(commits) commit\(commits == 1 ? "" : "s") to \(remote.web?.displayName ?? remote.url). Anyone with access to that repository can see them."
+        alert.addButton(withTitle: "Push")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.setStatus("Pushing\u{2026}")
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Publishing.push(branch: branch, remote: remote.name, cwd: cwd)
+                DispatchQueue.main.async {
+                    self?.setStatus(result.message, result.succeeded ? DS.Color.statusVerified : DS.Color.statusNeedsYou)
+                }
+            }
+        }
+    }
+
+    private func confirmPullRequest(track: Track, baseRef: String, remote: Publishing.Remote, web: Publishing.WebHost, cwd: String, pushFirst: Bool, commits: Int, useGH: Bool) {
+        guard let window = view.window else { return }
+        let direct = useGH && { if case .github = web { return true } else { return false } }()
+        let alert = NSAlert()
+        alert.messageText = "Open a pull request into \(baseRef)?"
+        var detail = pushFirst ? "Pushes \(commits) commit\(commits == 1 ? "" : "s") to \(remote.name) first. " : ""
+        detail += direct
+            ? "Side opens it on GitHub with gh, as you. The description lists the track's checkpoints and what was verified."
+            : "Your browser opens the new pull request page with the title and description filled in; you finish it there."
+        alert.informativeText = detail
+        let title = NSTextField(frame: NSRect(x: 0, y: 0, width: TracksWorkspaceViewController.alertFieldWidth, height: 24))
+        title.stringValue = track.intent.isEmpty ? track.branchName : track.intent
+        title.setAccessibilityLabel("Pull request title")
+        alert.accessoryView = title
+        alert.addButton(withTitle: "Open Pull Request")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = title
+        let body = Publishing.pullRequestBody(intent: track.intent, checkpoints: sessionStore?.checkpoints(forTrackKey: track.branchName) ?? [])
+        let branch = track.branchName
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            let titleText = title.stringValue.trimmingCharacters(in: .whitespaces).isEmpty ? branch : title.stringValue
+            self?.setStatus(pushFirst ? "Pushing\u{2026}" : "Opening the pull request\u{2026}")
+            DispatchQueue.global(qos: .userInitiated).async {
+                if pushFirst {
+                    let pushed = Publishing.push(branch: branch, remote: remote.name, cwd: cwd)
+                    guard pushed.succeeded else {
+                        DispatchQueue.main.async { self?.setStatus(pushed.message, DS.Color.statusNeedsYou) }
+                        return
+                    }
+                }
+                if direct {
+                    let created = GitHubCLI.create(base: baseRef, branch: branch, title: titleText, body: body, cwd: cwd)
+                    DispatchQueue.main.async {
+                        switch created {
+                        case .success(let url):
+                            self?.setStatus("Pull request opened.", DS.Color.statusVerified)
+                            NSWorkspace.shared.open(url)
+                        case .failure(let failure):
+                            self?.setStatus("Couldn't open the pull request: \(failure.message)", DS.Color.statusNeedsYou)
+                        }
+                    }
+                } else if let url = Publishing.newPullRequestURL(host: web, base: baseRef, branch: branch, title: titleText, body: body) {
+                    DispatchQueue.main.async {
+                        self?.setStatus("Finish the pull request in your browser.")
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+    }
+
+    private func fetchRemote(remote: Publishing.Remote, baseRef: String, branch: String, cwd: String) {
+        setStatus("Checking \(remote.name)\u{2026}")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fetched = Publishing.fetch(remote: remote.name, cwd: cwd)
+            let state = Publishing.state(branch: branch, baseRef: baseRef, cwd: cwd)
+            DispatchQueue.main.async {
+                guard fetched.succeeded else { self?.setStatus(fetched.message, DS.Color.statusNeedsYou); return }
+                if state.baseBehindRemote > 0 {
+                    self?.setStatus("\(baseRef) on \(remote.name) has \(state.baseBehindRemote) commit\(state.baseBehindRemote == 1 ? "" : "s") you don't have yet. Update \(baseRef) before promoting.", DS.Color.statusNeedsYou)
+                } else if state.remoteOnly > 0 {
+                    self?.setStatus("\(remote.name) has \(state.remoteOnly) commit\(state.remoteOnly == 1 ? "" : "s") on \(branch) this track doesn't.", DS.Color.statusNeedsYou)
+                } else {
+                    self?.setStatus("Up to date with \(remote.name).", DS.Color.statusVerified)
+                }
+            }
+        }
+    }
+
     // MARK: - Promote
 
     @objc private func promoteTapped() {
@@ -850,4 +1060,17 @@ private final class CheckpointSectionView: NSView {
 
     override func mouseEntered(with event: NSEvent) { hoverActions?.animator().alphaValue = 1 }
     override func mouseExited(with event: NSEvent) { hoverActions?.animator().alphaValue = 0 }
+}
+
+
+/// A menu item that runs a closure: Publish's items carry their action with them.
+private final class PublishMenuItem: NSMenuItem {
+    private let handler: (() -> Void)?
+    init(title: String, handler: (() -> Void)?) {
+        self.handler = handler
+        super.init(title: title, action: handler == nil ? nil : #selector(run), keyEquivalent: "")
+        target = self
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func run() { handler?() }
 }

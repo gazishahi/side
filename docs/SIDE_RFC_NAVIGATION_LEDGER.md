@@ -109,7 +109,7 @@ Recorded as agreed: **Integration** is Review's publishing half (push, PR,
 remote verification land in the decision header when remote support exists);
 **Library** (prompts, skills, instruction files, templates, archive management)
 is a separate window (⇧⌘L), also reachable from Think's "+" and Preferences.
-`ShellViewController.Stage` gains no cases. **Decision:** do now — a table edit;
+`ShellViewController.Stage` gains no cases. **Integration's publishing half built 2026-09-23** (`Publishing`, Review › Publish…: push, open a pull request with `gh` or on the host's page, check the remote for new commits). **Decision:** do now — a table edit;
 `DocStatusTests` already asserts the two are not `Stage` cases, so constitution
 and code stay in agreement mechanically.
 

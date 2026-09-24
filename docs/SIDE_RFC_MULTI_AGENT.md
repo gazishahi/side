@@ -1,6 +1,6 @@
 # RFC: Multi-agent work across providers
 
-*2026-09-23. Status: **decisions pending** (step 1 built the same day; see Plan).*
+*2026-09-23. Status: **accepted**: the owner accepted M1–M4 as recommended the same day. Step 1 built; see Plan.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` (non-negotiables 1–5 and 8 are at stake),
 `SIDE_RFC_BYO_HARNESS.md` (outside agents, which this builds on) and
 `SIDE_RFC_NAVIGATION_LEDGER.md` (R3 runner ceiling, R4 track tools).*
