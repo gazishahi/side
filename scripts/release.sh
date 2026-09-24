@@ -39,7 +39,7 @@ echo "==> Archive"
 xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -destination 'generic/platform=macOS' \
   -archivePath "$ARCHIVE" -clonedSourcePackagesDirPath "$SPM" archive \
   DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" OTHER_CODE_SIGN_FLAGS="--timestamp" \
-  | grep -E " error: |warning: .*sign|ARCHIVE (SUCCEEDED|FAILED)" || true
+  | grep -E ":[0-9]+:[0-9]+: error:|error: .*sign|ARCHIVE (SUCCEEDED|FAILED)" || true
 [[ -d "$ARCHIVE" ]] || { echo "archive failed" >&2; exit 1; }
 
 echo "==> Export (Developer ID)"
@@ -53,7 +53,7 @@ cat > "$OUT/ExportOptions.plist" <<PLIST
   <key>signingCertificate</key><string>Developer ID Application</string>
 </dict></plist>
 PLIST
-xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$OUT/ExportOptions.plist" -exportPath "$OUT/export" | grep -E " error: |EXPORT (SUCCEEDED|FAILED)" || true
+xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$OUT/ExportOptions.plist" -exportPath "$OUT/export" | grep -E "^error:|: error:|EXPORT (SUCCEEDED|FAILED)" || true
 [[ -d "$APP" ]] || { echo "export failed" >&2; exit 1; }
 
 echo "==> Verify signature"
