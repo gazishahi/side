@@ -1,5 +1,4 @@
 import XCTest
-@testable import Side
 @testable import Heron
 
 /// RFC R4: two read-only tools, same project only. Structure, not conversation.

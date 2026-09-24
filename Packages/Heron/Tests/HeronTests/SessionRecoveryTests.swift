@@ -1,5 +1,4 @@
 import XCTest
-@testable import Side
 @testable import Heron
 
 /// A session whose `tool_use` blocks aren't all answered by `tool_result` blocks is not merely

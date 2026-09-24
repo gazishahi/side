@@ -1,5 +1,4 @@
 import XCTest
-@testable import Side
 @testable import Heron
 
 /// The one search behind both the agent's `search_files` and the human's Find in Project.

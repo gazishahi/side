@@ -1,5 +1,4 @@
 import XCTest
-@testable import Side
 @testable import Heron
 
 /// Auto-run is a consent boundary: anything that reaches `isAutoRunnable == true` executes with

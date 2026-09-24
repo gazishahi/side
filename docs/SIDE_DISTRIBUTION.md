@@ -54,6 +54,18 @@ repository; each update is verified against `SUPublicEDKey` (Side's own key, Key
 `scripts/release.sh` now writes the signed `appcast.xml` next to the DMG and prints the
 `gh release create` command; publishing is left to the owner because it's public.
 
+## Heron: ready to publish
+
+**Built 2026-09-24 (local; nothing published).** `Packages/Heron` is laid out as its own
+repository: `LICENSE` (Apache-2.0, the canonical text), `NOTICE`, `README.md`, `.gitignore`, and
+a GitHub Actions workflow (`swift build`, `swift test` on macOS 15). The 24 test files that need
+only Heron moved from `SIDETests` into `Packages/Heron/Tests/HeronTests`: 140 tests pass with
+`swift test` alone. The app keeps its own 28. `scripts/test.sh` runs both.
+
+Left before the split (D5): an API pass (today's `public` is whatever the app needed), then
+`git subtree split --prefix=Packages/Heron` into `gazishahi/heron`, tag `0.1.0`, and point Side at
+it by version. Creating the public repository and pushing are the owner's call.
+
 ## Decisions
 
 Answered by the owner 2026-09-24: **D1** Sparkle, **D2** GitHub Releases, **D3** Apache-2.0,

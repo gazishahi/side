@@ -1,5 +1,4 @@
 import XCTest
-@testable import Side
 @testable import Heron
 
 /// Conversation history. `/new` used to delete the transcript, which is where a change's

@@ -1,5 +1,4 @@
 import XCTest
-@testable import Side
 @testable import Heron
 
 /// The append-only conversation log. A persistence format's bugs are silent and permanent, so

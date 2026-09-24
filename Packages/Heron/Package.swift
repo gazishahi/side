@@ -7,6 +7,9 @@ let package = Package(
     name: "Heron",
     platforms: [.macOS(.v15)],
     products: [.library(name: "Heron", targets: ["Heron"])],
-    targets: [.target(name: "Heron", path: "Sources/Heron")],
+    targets: [
+        .target(name: "Heron", path: "Sources/Heron"),
+        .testTarget(name: "HeronTests", dependencies: ["Heron"], path: "Tests/HeronTests"),
+    ],
     swiftLanguageModes: [.v6]
 )

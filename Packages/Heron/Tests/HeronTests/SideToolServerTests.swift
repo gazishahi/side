@@ -1,5 +1,4 @@
 import XCTest
-@testable import Side
 @testable import Heron
 
 /// Multi-agent RFC step 1: Side's track tools over MCP, for outside agents.

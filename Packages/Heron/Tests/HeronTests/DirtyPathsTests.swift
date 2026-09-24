@@ -1,5 +1,4 @@
 import XCTest
-@testable import Side
 @testable import Heron
 
 /// `dirtyPaths` decides which files a checkpoint stages. A path it gets wrong is a checkpoint
