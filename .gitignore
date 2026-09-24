@@ -8,3 +8,6 @@ buildServer.json
 
 # Coverage output from a stray test run
 default.profraw
+
+# Release output (scripts/release.sh)
+/build/

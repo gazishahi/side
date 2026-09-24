@@ -1,0 +1,85 @@
+#!/bin/zsh
+# Builds a Developer ID–signed, notarized Side.dmg (docs/SIDE_DISTRIBUTION.md).
+#
+# One-time setup on the machine that ships:
+#   1. A "Developer ID Application" certificate in the login keychain (Xcode › Settings ›
+#      Accounts › Manage Certificates, or developer.apple.com).
+#   2. Notary credentials stored once, never in this repo:
+#        xcrun notarytool store-credentials side-notary --apple-id <you> --team-id <TEAM>
+#   3. export SIDE_TEAM_ID=<TEAM>  (and SIDE_NOTARY_PROFILE if not "side-notary")
+#
+# Usage: scripts/release.sh            full build, notarize, staple
+#        scripts/release.sh --dry-run  build and sign only; no notarization
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+TEAM="${SIDE_TEAM_ID:?Set SIDE_TEAM_ID to your Apple Developer Team ID}"
+PROFILE="${SIDE_NOTARY_PROFILE:-side-notary}"
+DRY_RUN=0; [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+
+VERSION=$(xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -showBuildSettings 2>/dev/null | awk -F' = ' '/ MARKETING_VERSION /{print $2; exit}')
+BUILD=$(xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -showBuildSettings 2>/dev/null | awk -F' = ' '/ CURRENT_PROJECT_VERSION /{print $2; exit}')
+OUT="build/release/$VERSION"
+ARCHIVE="$OUT/Side.xcarchive"
+APP="$OUT/export/Side.app"
+DMG="$OUT/Side-$VERSION.dmg"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "warning: the working tree has uncommitted changes; this build won't match a commit." >&2
+fi
+rm -rf "$OUT"; mkdir -p "$OUT"
+echo "Side $VERSION ($BUILD), team $TEAM"
+
+echo "==> Archive"
+xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -destination 'generic/platform=macOS' \
+  -archivePath "$ARCHIVE" archive \
+  DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" OTHER_CODE_SIGN_FLAGS="--timestamp" \
+  | grep -E " error: |warning: .*sign|ARCHIVE (SUCCEEDED|FAILED)" || true
+[[ -d "$ARCHIVE" ]] || { echo "archive failed" >&2; exit 1; }
+
+echo "==> Export (Developer ID)"
+cat > "$OUT/ExportOptions.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>method</key><string>developer-id</string>
+  <key>teamID</key><string>$TEAM</string>
+  <key>signingStyle</key><string>manual</string>
+  <key>signingCertificate</key><string>Developer ID Application</string>
+</dict></plist>
+PLIST
+xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$OUT/ExportOptions.plist" -exportPath "$OUT/export" | grep -E " error: |EXPORT (SUCCEEDED|FAILED)" || true
+[[ -d "$APP" ]] || { echo "export failed" >&2; exit 1; }
+
+echo "==> Verify signature"
+codesign --verify --deep --strict --verbose=2 "$APP"
+codesign -dv "$APP" 2>&1 | grep -E "Authority=Developer ID Application|flags=.*runtime" >/dev/null \
+  || { echo "not signed with Developer ID and the hardened runtime" >&2; exit 1; }
+
+notarize() {
+  xcrun notarytool submit "$1" --keychain-profile "$PROFILE" --wait
+}
+
+if (( ! DRY_RUN )); then
+  echo "==> Notarize the app"
+  ditto -c -k --keepParent "$APP" "$OUT/Side.zip"
+  notarize "$OUT/Side.zip"
+  xcrun stapler staple "$APP"
+fi
+
+echo "==> Disk image"
+STAGE="$OUT/dmg"; mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname "Side $VERSION" -srcfolder "$STAGE" -format UDZO -ov "$DMG" >/dev/null
+codesign --sign "Developer ID Application" --timestamp "$DMG"
+
+if (( ! DRY_RUN )); then
+  echo "==> Notarize the disk image"
+  notarize "$DMG"
+  xcrun stapler staple "$DMG"
+  spctl --assess --type open --context context:primary-signature -vv "$DMG"
+fi
+
+shasum -a 256 "$DMG" | tee "$DMG.sha256"
+echo "Done: $DMG"
