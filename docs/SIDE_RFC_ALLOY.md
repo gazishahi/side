@@ -1,6 +1,6 @@
 # RFC: Alloy, the editing engine
 
-*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–1 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
+*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–2 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` ("Alloy: powers Make"), `SIDE_DESIGN.md` (tokens,
 motion, accessibility) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -131,6 +131,22 @@ headers, inline agent ghost text.
    with 1,000 cursors 14 ms (to batch before it matters).
 2. **AlloyRender:** Metal view, line shaping cache, glyph atlas, viewport, carets and selections,
    120 Hz scrolling.
+   **Built 2026-09-24:** `AlloyRender`: `DocumentLayout` (CoreText lays out a line when it's
+   drawn, wrapping at the view width with `CTTypesetter`; layouts are cached by line text; a
+   Fenwick `RowIndex` maps y to line in O(log n), unmeasured lines counting one row), `GlyphAtlas`
+   (one BGRA texture; coverage for text, full color for emoji; quarter-pixel positions; starts
+   over when full) and `TextRenderer` (current-line band, selections, glyphs and carets as
+   instanced quads in one draw; shaders compiled at startup; a ring of instance buffers).
+   `AlloyAppKit.AlloyEditorView`: AppKit's `NSScrollView` for scrolling, with the Metal layer
+   floating over the visible area and drawn on the display link. `AlloyPlayground` opens a file
+   in a window (`--dark`, `--screenshot`, `--scroll-test`). 21 package tests, including an
+   off-screen render whose pixels are checked against the layout (selection, caret, ink, background).
+   **Measured** (`--scroll-test`: a 99,275-line file flicked at 3,000 pt/s for 5 s, 120 Hz):
+   frame CPU median 0.85 ms, p99 2.1 ms (budget 8.3 ms). 3–9 of ~600 frames missed a vsync; every
+   miss was the main thread waiting in `nextDrawable` (up to 17 ms), and a control run drawing
+   nothing (`ALLOY_CLEAR_ONLY=1`) missed as many, on a machine at load average 7.5: the
+   compositor, not Alloy's drawing. "No dropped frames" is to be re-measured on an idle machine;
+   drawing off the main thread, so a late drawable can't hold up input, is a candidate for step 3.
 3. **AlloyAppKit input:** `NSTextInputClient`, key bindings, mouse, drag, pasteboard, find.
 4. **Syntax:** tree-sitter highlighting (A3).
 5. **Make parity** on the seam, feature by feature, each with a test.
