@@ -97,7 +97,9 @@ public final class AgentRunnerManager {
                                      sessionStore: sessionStore,
                                      terminalHost: { [weak self] in self?.acpTerminalHost },
                                      preferredOptions: { [weak self] in self?.agentOptionsProvider?(trackKey) ?? [:] },
-                                     onOptionChanged: { [weak self] id, value in self?.agentOptionChanged?(trackKey, id, value) })
+                                     onOptionChanged: { [weak self] id, value in self?.agentOptionChanged?(trackKey, id, value) },
+                                     toolServer: .shared,
+                                     trackContext: { [weak self] in self?.trackContextProvider(trackKey) ?? [] })
             harness.addObserver { [weak self] event in
                 guard case .phaseChanged = event else { return }
                 self?.scheduleChangeNotification()

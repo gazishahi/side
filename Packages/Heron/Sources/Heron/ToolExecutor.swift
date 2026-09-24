@@ -284,7 +284,7 @@ public struct ToolExecutor {
     }
 
     /// A track's changed files against its base, via git in the shared checkout.
-    private static func changedPaths(_ track: AgentTrackSummary) -> Set<String> {
+    static func changedPaths(_ track: AgentTrackSummary) -> Set<String> {
         TrackOverlap.changedPaths(branch: track.branchName, baseRef: track.baseRef, cwd: track.gitDirectory)
     }
 

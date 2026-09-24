@@ -454,6 +454,39 @@ for line in sys.stdin:
         XCTAssertTrue(answer.lowercased().contains("pelican"), answer)
     }
 
+    /// Opt-in live (multi-agent step 1): Claude Code, handed Side's MCP server, calls Side's own
+    /// `list_tracks` and reports what it returned.
+    func testLiveClaudeCodeCallsSidesTrackTools() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_LIVE_ACP"] == "1", "live agent test is opt-in")
+        let adapter = URL(fileURLWithPath: "/opt/homebrew/bin/claude-agent-acp")
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: adapter.path))
+        let agent = try XCTUnwrap(ACPAgent.agent(id: "claude-code"))
+        let environment = agent.launchEnvironment(from: LanguageServerRegistry.environmentForSpawning())
+        let root = self.root!
+        let tracks = [AgentTrackSummary(branchName: "pelican-billing", intent: "Teach the pelican to invoice", status: "active", baseRef: "main", isCurrent: false, gitDirectory: root.path),
+                      AgentTrackSummary(branchName: "t", intent: "This one", status: "active", baseRef: "main", isCurrent: true, gitDirectory: root.path)]
+        let h = ACPHarness(trackKey: "t", agent: agent, launchProvider: { ACPLaunch(executable: adapter, arguments: [], environment: environment) },
+                           rootProvider: { root }, sessionStore: store, terminalHost: { [unowned self] in self.broker },
+                           toolServer: SideToolServer(), trackContext: { tracks })
+        defer { h.teardown() }
+        let done = expectation(description: "answered")
+        done.assertForOverFulfill = false
+        h.addObserver { _ in
+            // Claude Code may ask before using a new MCP tool: allow it.
+            for entry in h.entries {
+                if case .permissionRequest(let p) = entry.kind, p.chosenOptionName == nil,
+                   let allow = p.options.first(where: { $0.kind == .allowOnce || $0.kind == .allowAlways }) {
+                    DispatchQueue.main.async { h.answerPermission(proposalId: entry.id, optionId: allow.id) }
+                }
+            }
+            if h.phase == .finishedTurn || h.phase == .blocked(.failed) || h.phase == .blocked(.stalled) { done.fulfill() }
+        }
+        h.send("Call the list_tracks tool from the \"side\" MCP server. Reply with only the intent of the track that is not the current one.")
+        wait(for: [done], timeout: 180)
+        let answer = h.entries.compactMap { if case .assistantText(let t) = $0.kind { return t } else { return nil } }.joined()
+        XCTAssertTrue(answer.lowercased().contains("pelican to invoice"), "\(answer)\n\(h.entries.map(\.kind))")
+    }
+
     /// A command tab is never where the agent's typed commands go.
     func testACommandTabIsNeverTheAgentsShell() {
         let launch = TerminalViewController.CommandLaunch(command: "/bin/sleep", arguments: ["5"], environment: [:])

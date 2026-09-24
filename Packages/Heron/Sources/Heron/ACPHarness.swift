@@ -102,6 +102,12 @@ public final class ACPHarness: Harness {
     private var agentCanLoadSession = false
     /// While the agent replays a reopened session's history: Side's record already shows it.
     private var replaying = false
+    // Side's tools for the agent over MCP (multi-agent RFC step 1).
+    private let toolServer: SideToolServer?
+    private let trackContext: @MainActor @Sendable () -> [AgentTrackSummary]
+    private var toolServerRegistration: (url: URL, token: String)?
+    /// The agent accepts MCP servers over HTTP (`agentCapabilities.mcpCapabilities.http`).
+    private var agentTakesHTTPTools = false
     /// How the agent was asked to sign in (Settings › Agents), for agents that ask.
     private var signIn: ACPAgent.SignIn = .subscription
     /// Sends waiting for the session that's being opened (by a send, or by `prepareSession`).
@@ -120,7 +126,8 @@ public final class ACPHarness: Harness {
     public init(trackKey: String, agent: ACPAgent, launchProvider: @escaping @Sendable () -> ACPLaunch?, rootProvider: @escaping () -> URL,
                 bridgeProvider: @escaping () -> WorkspaceBridge = { .none }, modeProvider: @escaping () -> AgentMode = { .default },
                 sessionStore: AgentSessionStore? = nil, terminalHost: @escaping () -> ACPTerminalHost? = { nil },
-                preferredOptions: @escaping () -> [String: String] = { [:] }, onOptionChanged: @escaping (String, String) -> Void = { _, _ in }) {
+                preferredOptions: @escaping () -> [String: String] = { [:] }, onOptionChanged: @escaping (String, String) -> Void = { _, _ in },
+                toolServer: SideToolServer? = nil, trackContext: @escaping @MainActor @Sendable () -> [AgentTrackSummary] = { [] }) {
         self.trackKey = trackKey
         self.agent = agent
         self.launchProvider = launchProvider
@@ -131,6 +138,8 @@ public final class ACPHarness: Harness {
         self.terminalHostProvider = terminalHost
         self.preferredOptions = preferredOptions
         self.onOptionChanged = onOptionChanged
+        self.toolServer = toolServer
+        self.trackContext = trackContext
         agentOptions = seededOptions()
         restoreFromLog()
     }
@@ -430,6 +439,7 @@ public final class ACPHarness: Harness {
                 let methods = (value as? [String: Any])?["authMethods"] as? [[String: Any]] ?? []
                 let capabilities = (value as? [String: Any])?["agentCapabilities"] as? [String: Any]
                 self.agentCanLoadSession = (capabilities?["loadSession"] as? Bool) ?? false
+                self.agentTakesHTTPTools = ((capabilities?["mcpCapabilities"] as? [String: Any])?["http"] as? Bool) ?? false
                 self.signInIfAsked(methods: methods, on: connection) { [weak self] in self?.openSession(on: connection) }
             }
         }
@@ -479,14 +489,26 @@ public final class ACPHarness: Harness {
 
     /// `session/new` in the track's worktree, on a running agent — the first session, or a
     /// fresh one after "New Conversation", which reuses the process rather than starting another.
+    /// The MCP servers handed to the agent with a session: Side's own tools, when the agent can
+    /// take an HTTP server. One URL per conversation, valid until it ends.
+    private func sideToolServers() -> [Any] {
+        guard agentTakesHTTPTools, let toolServer else { return [] }
+        if toolServerRegistration == nil {
+            toolServerRegistration = toolServer.register(.init(trackKey: trackKey, tracks: trackContext))
+        }
+        guard let url = toolServerRegistration?.url else { return [] }
+        return [["type": "http", "name": "side", "url": url.absoluteString, "headers": [Any]()]]
+    }
+
     private func openSession(on connection: ACPConnection) {
         let root = rootProvider()
+        let mcpServers = sideToolServers()
         // Reopen the agent's own session when this conversation had one and the agent can:
         // then it remembers what was said. Its replay of that history isn't drawn again; Side's
         // record already shows it.
         if let stored = storedAgentSessionId, agentCanLoadSession {
             replaying = true
-            connection.request("session/load", params: ["sessionId": stored, "cwd": root.path, "mcpServers": [Any]()]) { [weak self] result in
+            connection.request("session/load", params: ["sessionId": stored, "cwd": root.path, "mcpServers": mcpServers]) { [weak self] result in
                 guard let self else { return }
                 self.replaying = false
                 switch result {
@@ -506,7 +528,7 @@ public final class ACPHarness: Harness {
             }
             return
         }
-        connection.request("session/new", params: ["cwd": root.path, "mcpServers": [Any]()]) { [weak self] result in
+        connection.request("session/new", params: ["cwd": root.path, "mcpServers": mcpServers]) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
@@ -772,6 +794,8 @@ public final class ACPHarness: Harness {
 
     public func teardown() {
         disarmStallTimer()
+        if let token = toolServerRegistration?.token { toolServer?.unregister(token: token) }
+        toolServerRegistration = nil
         sessionWaiters.removeAll()
         defer { persistNewEntries() }
         answerPendingPermissions(with: nil)
