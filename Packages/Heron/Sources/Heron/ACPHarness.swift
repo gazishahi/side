@@ -122,6 +122,8 @@ public final class ACPHarness: Harness {
     private var coordinatorGrants: [String: Date] = [:]
     /// The agent accepts MCP servers over HTTP (`agentCapabilities.mcpCapabilities.http`).
     private var agentTakesHTTPTools = false
+    /// The PATH the agent runs with, to resolve the user's MCP server commands against.
+    private var launchSearchPath: String?
     /// How the agent was asked to sign in (Settings › Agents), for agents that ask.
     private var signIn: ACPAgent.SignIn = .subscription
     /// Sends waiting for the session that's being opened (by a send, or by `prepareSession`).
@@ -431,6 +433,7 @@ public final class ACPHarness: Harness {
 
     private func start(_ launch: ACPLaunch) {
         signIn = launch.signIn
+        launchSearchPath = launch.environment["PATH"]
         let root = rootProvider()
         let connection: ACPConnection
         do {
@@ -567,7 +570,8 @@ public final class ACPHarness: Harness {
 
     private func openSession(on connection: ACPConnection) {
         let root = rootProvider()
-        let mcpServers = sideToolServers()
+        // Side's own tools, then the user's servers switched on for this project (Library).
+        let mcpServers = sideToolServers() + (usageProjectPath.map { MCPServerStore.acpDescriptors(forProject: $0, searchPath: launchSearchPath) as [Any] } ?? [])
         // Reopen the agent's own session when this conversation had one and the agent can:
         // then it remembers what was said. Its replay of that history isn't drawn again; Side's
         // record already shows it.

@@ -80,15 +80,28 @@ struct LibraryTarget: Equatable {
 @MainActor
 final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     enum Section: Int, CaseIterable {
-        case instructions, prompts
-        var title: String { self == .instructions ? "Instructions" : "Prompts" }
-        var symbol: String { self == .instructions ? "text.book.closed" : "text.bubble" }
+        case instructions, prompts, mcpServers
+        var title: String {
+            switch self {
+            case .instructions: "Instructions"
+            case .prompts: "Prompts"
+            case .mcpServers: "MCP Servers"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .instructions: "text.book.closed"
+            case .prompts: "text.bubble"
+            case .mcpServers: "puzzlepiece.extension"
+            }
+        }
     }
 
     var target: LibraryTarget? {
         didSet {
             instructions.target = target
             prompts.target = target
+            mcpServers.target = target
         }
     }
     var onReveal: ((URL) -> Void)? {
@@ -99,6 +112,7 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
     private let paneHost = NSView()
     let instructions = InstructionsPaneViewController()
     let prompts = PromptsPaneViewController()
+    let mcpServers = MCPServersPaneViewController()
     private(set) var section: Section = .instructions
 
     override func loadView() {
@@ -150,6 +164,7 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
         super.viewDidLoad()
         addChild(instructions)
         addChild(prompts)
+        addChild(mcpServers)
         sidebar.reloadData()
         select(.instructions)
     }
@@ -160,7 +175,12 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
         if sidebar.selectedRow != section.rawValue {
             sidebar.selectRowIndexes([section.rawValue], byExtendingSelection: false)
         }
-        let pane = section == .instructions ? instructions.view : prompts.view
+        let pane: NSView
+        switch section {
+        case .instructions: pane = instructions.view
+        case .prompts: pane = prompts.view
+        case .mcpServers: pane = mcpServers.view
+        }
         guard pane.superview !== paneHost else { return }
         paneHost.subviews.forEach { $0.removeFromSuperview() }
         pane.translatesAutoresizingMaskIntoConstraints = false
@@ -534,6 +554,206 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard prompts.indices.contains(table.selectedRow) else { return }
         show(prompts[table.selectedRow])
+    }
+}
+
+// MARK: - MCP servers
+
+/// The user's own MCP servers (L1): switched on per project, handed to outside agents with each
+/// conversation. Environment values go to the Keychain and are never shown again.
+@MainActor
+final class MCPServersPaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    var target: LibraryTarget? { didSet { reload() } }
+
+    /// Stands in for a stored value in the environment field; saving it keeps the value.
+    static let hiddenValue = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+
+    private(set) var servers: [MCPServerConfig] = []
+    private let table = NSTableView()
+    let nameField = NSTextField()
+    let commandField = NSTextField()
+    let argumentsField = NSTextField()
+    let environmentView = NSTextView()
+    let enabledCheckbox = NSButton(checkboxWithTitle: "Use in this project", target: nil, action: nil)
+    private let saveButton = NSButton(title: "Save", target: nil, action: nil)
+    private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
+    private var editing: MCPServerConfig?
+
+    override func loadView() {
+        let root = NSView()
+        let heading = NSTextField(labelWithString: "MCP Servers")
+        heading.font = DS.Text.heading()
+        let note = NSTextField(wrappingLabelWithString: "Your own tools for agents. Outside agents start the servers you switch on for a project, alongside Side's own tools and whatever their own settings add. Heron can't use MCP servers yet. Idle agents restart to pick up a change.")
+        note.font = DS.Text.caption()
+        note.textColor = .secondaryLabelColor
+
+        let tableScroll = NSScrollView()
+        tableScroll.hasVerticalScroller = true
+        table.headerView = nil
+        table.rowHeight = 38
+        table.style = .inset
+        table.addTableColumn(NSTableColumn(identifier: .init("server")))
+        table.dataSource = self
+        table.delegate = self
+        table.setAccessibilityIdentifier("library.mcpServers")
+        tableScroll.documentView = table
+        let newButton = NSButton(title: "New Server", target: self, action: #selector(newServer))
+        newButton.bezelStyle = .rounded
+
+        nameField.placeholderString = "Name, e.g. postgres"
+        commandField.placeholderString = "Command, e.g. npx"
+        argumentsField.placeholderString = "Arguments, e.g. -y @modelcontextprotocol/server-postgres"
+        let environmentLabel = NSTextField(labelWithString: "Environment, one NAME=value per line. Kept in your Keychain.")
+        environmentLabel.font = DS.Text.caption()
+        environmentLabel.textColor = .secondaryLabelColor
+        let environmentScroll = NSScrollView()
+        environmentScroll.hasVerticalScroller = true
+        environmentScroll.borderType = .bezelBorder
+        environmentView.isRichText = false
+        environmentView.font = DS.Text.code(12)
+        environmentView.autoresizingMask = [.width]
+        environmentView.isAutomaticQuoteSubstitutionEnabled = false
+        environmentView.textContainerInset = NSSize(width: DS.Spacing.xs, height: DS.Spacing.xs)
+        environmentScroll.documentView = environmentView
+        enabledCheckbox.target = self
+        enabledCheckbox.action = #selector(toggleEnabled)
+        saveButton.target = self
+        saveButton.action = #selector(save)
+        saveButton.bezelStyle = .rounded
+        deleteButton.target = self
+        deleteButton.action = #selector(deleteServer)
+        deleteButton.bezelStyle = .rounded
+        let buttons = NSStackView(views: [enabledCheckbox, NSView(), deleteButton, saveButton])
+        buttons.spacing = DS.Spacing.m
+
+        let form = NSStackView(views: [nameField, commandField, argumentsField, environmentLabel, environmentScroll])
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = DS.Spacing.m
+        for field in [nameField, commandField, argumentsField, environmentScroll] as [NSView] {
+            field.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true
+        }
+        environmentScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+
+        for view in [heading, note, tableScroll, newButton, form, buttons] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+        }
+        let inset = DS.Spacing.section
+        NSLayoutConstraint.activate([
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
+            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.m),
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - DS.Spacing.m),
+            tableScroll.widthAnchor.constraint(equalToConstant: 220),
+            newButton.topAnchor.constraint(equalTo: tableScroll.bottomAnchor, constant: DS.Spacing.m),
+            newButton.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            newButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+            form.topAnchor.constraint(equalTo: tableScroll.topAnchor),
+            form.leadingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: DS.Spacing.l),
+            form.trailingAnchor.constraint(equalTo: note.trailingAnchor),
+            buttons.topAnchor.constraint(equalTo: form.bottomAnchor, constant: DS.Spacing.m),
+            buttons.leadingAnchor.constraint(equalTo: form.leadingAnchor),
+            buttons.trailingAnchor.constraint(equalTo: form.trailingAnchor),
+            buttons.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+        ])
+        view = root
+    }
+
+    func reload() {
+        loadViewIfNeeded()
+        servers = MCPServerStore.all
+        table.reloadData()
+        if let editing, let row = servers.firstIndex(where: { $0.id == editing.id }) {
+            table.selectRowIndexes([row], byExtendingSelection: false)
+            show(servers[row])
+        } else if let first = servers.first {
+            table.selectRowIndexes([0], byExtendingSelection: false)
+            show(first)
+        } else {
+            show(nil)
+        }
+    }
+
+    private func show(_ server: MCPServerConfig?) {
+        editing = server
+        nameField.stringValue = server?.name ?? ""
+        commandField.stringValue = server?.command ?? ""
+        argumentsField.stringValue = server?.arguments.map { $0.contains(" ") ? "\"\($0)\"" : $0 }.joined(separator: " ") ?? ""
+        environmentView.string = server?.environmentNames.map { "\($0)=\(Self.hiddenValue)" }.joined(separator: "\n") ?? ""
+        enabledCheckbox.title = target.map { "Use in \($0.projectName)" } ?? "Use in this project"
+        enabledCheckbox.isEnabled = target != nil
+        enabledCheckbox.state = server.flatMap { s in target.map { s.isEnabled(forProject: $0.projectRoot.path) } } == true ? .on : .off
+        deleteButton.isHidden = server == nil
+    }
+
+    /// NAME=value lines; a hidden value keeps what's stored.
+    static func parseEnvironment(_ text: String, stored: [String: String]) -> [String: String] {
+        var result: [String: String] = [:]
+        for line in text.components(separatedBy: "\n") {
+            guard let equals = line.firstIndex(of: "=") else { continue }
+            let name = line[..<equals].trimmingCharacters(in: .whitespaces)
+            let value = String(line[line.index(after: equals)...])
+            guard !name.isEmpty else { continue }
+            result[name] = value == hiddenValue ? (stored[name] ?? "") : value
+        }
+        return result
+    }
+
+    @objc private func newServer() {
+        table.deselectAll(nil)
+        show(nil)
+        view.window?.makeFirstResponder(nameField)
+    }
+
+    @objc func save() {
+        let command = commandField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !command.isEmpty else { return NSSound.beep() }
+        var server = editing ?? MCPServerStore.newServer(name: "", command: "", arguments: [])
+        server.name = nameField.stringValue
+        server.command = command
+        server.arguments = MCPServerStore.splitArguments(argumentsField.stringValue)
+        let isNew = editing == nil
+        let environment = Self.parseEnvironment(environmentView.string, stored: editing.map { MCPServerStore.environment(for: $0.id) } ?? [:])
+        editing = MCPServerStore.save(server, environment: environment)
+        // A server made from this project's Library is for this project.
+        if isNew, let editing, let target { MCPServerStore.setEnabled(true, id: editing.id, projectPath: target.projectRoot.path) }
+        reload()
+    }
+
+    @objc func toggleEnabled() {
+        guard let editing, let target else { return }
+        MCPServerStore.setEnabled(enabledCheckbox.state == .on, id: editing.id, projectPath: target.projectRoot.path)
+        reload()
+    }
+
+    @objc private func deleteServer() {
+        guard let editing else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete \u{201C}\(editing.name)\u{201D}?"
+        alert.informativeText = "It's removed from every project, with its environment values."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        MCPServerStore.remove(id: editing.id)
+        self.editing = nil
+        reload()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { servers.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let server = servers[row]
+        let on = target.map { server.isEnabled(forProject: $0.projectRoot.path) } ?? false
+        return LibraryListCell(title: server.name, detail: "\(server.command) \u{00B7} \(on ? "On here" : "Off here")", dimmed: !on)
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard servers.indices.contains(table.selectedRow) else { return }
+        show(servers[table.selectedRow])
     }
 }
 

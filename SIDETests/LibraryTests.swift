@@ -93,4 +93,12 @@ final class LibraryTests: XCTestCase {
         XCTAssertEqual(PromptLibrary.prompt(named: "explain-this", projectRoot: root)?.body, "Explain the selected code.")
         XCTAssertTrue(ThinkWorkspaceViewController.builtInSlashNames.contains("library"))
     }
+
+    func testMCPServerFormKeepsHiddenValuesAndSplitsArguments() {
+        XCTAssertEqual(MCPServerStore.splitArguments(#"-y "@scope/server x" --flag ''"#), ["-y", "@scope/server x", "--flag", ""])
+        let hidden = MCPServersPaneViewController.hiddenValue
+        let parsed = MCPServersPaneViewController.parseEnvironment("KEEP=\(hidden)\nNEW=value=with=equals\n =skipped\nnoequals",
+                                                                   stored: ["KEEP": "secret", "GONE": "x"])
+        XCTAssertEqual(parsed, ["KEEP": "secret", "NEW": "value=with=equals"])
+    }
 }

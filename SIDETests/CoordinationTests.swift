@@ -29,6 +29,8 @@ for line in sys.stdin:
     if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1}})
     elif meth == "session/new":
         cwd = p.get("cwd", ".")
+        # What Side handed over, beside the working copy so no checkpoint takes it.
+        open(cwd.rstrip("/") + ".mcp-seen.json", "w").write(json.dumps(p.get("mcpServers", [])))
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "w"}})
     elif meth == "session/prompt":
         text = p["prompt"][0]["text"]
@@ -166,6 +168,48 @@ for line in sys.stdin:
         XCTAssertEqual(child?.parentTrackId, coordinatorTrack.id)
     }
 
+    /// Library step 2, live: Claude Code starts the user's stdio MCP server and calls its tool.
+    func testLiveClaudeCodeUsesTheUsersMCPServer() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_LIVE_ACP"] == "1", "live agent test is opt-in")
+        let saved = MCPServerStore.defaults
+        MCPServerStore.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        defer { MCPServerStore.defaults = saved }
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-\(UUID().uuidString).py")
+        try #"""
+import json, os, sys
+def send(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+for line in sys.stdin:
+    m = json.loads(line); meth = m.get("method")
+    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": m["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "vault", "version": "1"}}})
+    elif meth == "tools/list": send({"jsonrpc": "2.0", "id": m["id"], "result": {"tools": [{"name": "secret_word", "description": "Returns the secret word.", "inputSchema": {"type": "object", "properties": {}}}]}})
+    elif meth == "tools/call": send({"jsonrpc": "2.0", "id": m["id"], "result": {"content": [{"type": "text", "text": os.environ.get("VAULT_WORD", "missing")}]}})
+    elif "id" in m: send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+"""#.write(to: script, atomically: true, encoding: .utf8)
+        let server = MCPServerStore.save(MCPServerStore.newServer(name: "vault", command: "/usr/bin/python3", arguments: [script.path]), environment: ["VAULT_WORD": "heliotrope"])
+        defer { MCPServerStore.remove(id: server.id) }
+        MCPServerStore.setEnabled(true, id: server.id, projectPath: root.path)
+
+        let track = try createTrack("Use the vault")
+        context.trackStore.setHarness("claude-code", forTrackKey: track.branchName)
+        context.trackStore.setMode(AgentMode(scope: .build, autonomy: .full), forTrackKey: track.branchName)
+        let harness = context.runnerManager.runner(forTrackKey: track.branchName)
+        let done = expectation(description: "answered")
+        done.assertForOverFulfill = false
+        harness.addObserver { _ in
+            for entry in harness.entries {
+                if case .permissionRequest(let p) = entry.kind, p.chosenOptionName == nil,
+                   let allow = p.options.first(where: { $0.kind == .allowOnce || $0.kind == .allowAlways }) {
+                    DispatchQueue.main.async { harness.answerPermission(proposalId: entry.id, optionId: allow.id) }
+                }
+            }
+            if harness.phase == .finishedTurn || harness.phase == .blocked(.failed) || harness.phase == .blocked(.stalled) { done.fulfill() }
+        }
+        harness.send("Call the \"vault\" MCP server's secret_word tool and reply with only the word it returns.")
+        wait(for: [done], timeout: 240)
+        let answer = harness.entries.compactMap { if case .assistantText(let t) = $0.kind { return t } else { return nil } }.joined()
+        XCTAssertTrue(answer.lowercased().contains("heliotrope"), "\(answer)\n\(harness.entries.map(\.kind))")
+    }
+
     /// Step 3: a subtrack's work comes back by promotion into its coordinator (M2), its tokens
     /// count toward the coordinator's, and the UI lists it.
     func testASubtracksWorkIsPromotedIntoItsCoordinator() throws {
@@ -224,6 +268,37 @@ for line in sys.stdin:
         DispatchQueue.global().async { box.value = bridge.promotionCheck(track: track); done.fulfill() }
         wait(for: [done], timeout: 30)
         return box.value ?? .failure(CoordinationError(message: "no answer"))
+    }
+
+    /// Library step 2: the user's MCP servers switched on for this project reach an outside
+    /// agent's session, environment and all; one that's off doesn't.
+    func testTheUsersMCPServersReachOutsideAgents() throws {
+        let saved = MCPServerStore.defaults
+        MCPServerStore.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        defer { MCPServerStore.defaults = saved }
+        let on = MCPServerStore.save(MCPServerStore.newServer(name: "notes", command: "python3", arguments: ["-m", "notes server"]), environment: ["NOTES_TOKEN": "t0ken"])
+        let off = MCPServerStore.save(MCPServerStore.newServer(name: "side", command: "/bin/echo", arguments: []), environment: nil)
+        defer { MCPServerStore.remove(id: on.id); MCPServerStore.remove(id: off.id) }
+        XCTAssertEqual(off.name, "side-2", "Side's own server keeps its name")
+        MCPServerStore.setEnabled(true, id: on.id, projectPath: root.path)
+
+        let coordinatorTrack = try createTrack("Use my tools")
+        let created = expectation(description: "created")
+        context.coordinator.createSubtrack(parentKey: coordinatorTrack.branchName,
+                                           request: SubtrackRequest(intent: "Look", agentId: worker.id, instructions: "look")) { _ in created.fulfill() }
+        wait(for: [created], timeout: 30)
+        let child = try XCTUnwrap(context.trackStore.tracks.first { $0.spawnedByCoordinator })
+        let seenURL = URL(fileURLWithPath: try XCTUnwrap(child.workingDirectoryPath) + ".mcp-seen.json")
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: seenURL.path) { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+        let servers = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: seenURL)) as? [[String: Any]])
+        defer { try? FileManager.default.removeItem(at: seenURL) }
+        XCTAssertEqual(servers.count, 1, "\(servers)")
+        let notes = try XCTUnwrap(servers.first)
+        XCTAssertEqual(notes["name"] as? String, "notes")
+        XCTAssertTrue((notes["command"] as? String)?.hasPrefix("/") == true, "a bare command is resolved to a path")
+        XCTAssertEqual(notes["args"] as? [String], ["-m", "notes server"])
+        XCTAssertEqual((notes["env"] as? [[String: String]])?.first, ["name": "NOTES_TOKEN", "value": "t0ken"])
     }
 
     func testCapsAndDepthAreRefused() throws {

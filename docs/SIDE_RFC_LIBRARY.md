@@ -1,6 +1,6 @@
 # RFC: Library
 
-*2026-09-23. Status: **in progress**: the owner asked for a short RFC and to start building. Step 1 built; see Plan.*
+*2026-09-23. Status: **in progress**: the owner asked for a short RFC and to start building. Steps 1–2 built; see Plan.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` (Library is not a stage: a separate window, ⇧⌘L)
 and `SIDE_RFC_NAVIGATION_LEDGER.md` R6. Builds on `ProjectRules` ("Library-lite") and
 `SIDE_RFC_BYO_HARNESS.md` (outside agents).*
@@ -82,6 +82,13 @@ message. That is the whole feature; there is no separate template object.
    Prompts saves Markdown files; the palette lists them after the built-in commands, which keep
    their names. Not yet: the Preferences entry point.
 2. **MCP servers** for outside agents (`MCPServerStore`, `ACPHarness` passes them).
+   **Built 2026-09-23:** Library › MCP Servers adds, edits and deletes stdio servers and switches
+   each on per project. Environment values go to the Keychain and show as dots afterwards. A bare
+   command resolves against the agent's PATH. Enabled servers go to `session/new` and
+   `session/load` after Side's own; a change restarts idle outside agents, which resume their
+   conversation. Verified live: Claude Code started a user's server and returned its tool's
+   result. Known: in the test host, a command resolved to a pyenv shim timed out under Claude
+   Code while `/usr/bin/python3` worked; not reproduced outside the test host.
 3. **Skills and Storage.**
 4. **Templates** (Start Track from a prompt).
 

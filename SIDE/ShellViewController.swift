@@ -140,6 +140,15 @@ final class ShellViewController: NSViewController {
                 if let key = self.currentTrackKey, restarted.contains(key) { self.thinkVC.reloadForTrackSwitch(trackKey: key) }
             }
         }
+        // A changed MCP server list reaches outside agents when their idle sessions restart
+        // (Library step 2); session/load keeps the conversation.
+        NotificationCenter.default.addObserver(forName: MCPServerStore.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let context = self.projectContext else { return }
+                let restarted = ACPAgent.known.flatMap { context.runnerManager.restartAgent(id: $0.id) }
+                if let key = self.currentTrackKey, restarted.contains(key) { self.thinkVC.reloadForTrackSwitch(trackKey: key) }
+            }
+        }
         NotificationCenter.default.addObserver(forName: AgentSessionStore.checkpointsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshRunTasks() }
         }
