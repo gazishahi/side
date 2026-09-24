@@ -289,6 +289,11 @@ final class GeneralPreferencesViewController: NSViewController {
             SettingsSplitViewController.hero(.general),
             SettingsForm.section("Stages", footer: "Pinned stages appear in the stage control. Unpinned ones stay on the Navigate menu, \u{2318}\u{2325}1\u{2013}4 and the palette, and show up on their own when they need you.", stageRows),
             SettingsForm.section("Make", [SettingsForm.row("File explorer side", sidePopup)]),
+            SettingsForm.section("Updates", [
+                SettingsForm.row("Check for updates automatically", detail: "Side \(Self.versionText). Updates are signed, and verified before they install.",
+                                 SettingsForm.toggle(Updates.shared.checksAutomatically, self, #selector(autoUpdateToggled(_:)))),
+                SettingsForm.row("Check now", SettingsForm.button("Check for Updates\u{2026}", Updates.shared, #selector(Updates.checkForUpdates(_:)))),
+            ]),
             SettingsForm.section([
                 SettingsForm.row("Library", detail: "Instruction files, saved prompts and templates, MCP servers, skills, and storage for the frontmost project.",
                                  SettingsForm.button("Open Library\u{2026}", self, #selector(openLibrary))),
@@ -316,6 +321,15 @@ final class GeneralPreferencesViewController: NSViewController {
     }
 
     private var explorerPopup: NSPopUpButton?
+
+    static var versionText: String {
+        let info = Bundle.main.infoDictionary
+        return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    @objc private func autoUpdateToggled(_ sender: NSSwitch) {
+        Updates.shared.checksAutomatically = sender.state == .on
+    }
 
     @objc private func openLibrary() {
         LibraryWindowController.shared.show(for: nil)

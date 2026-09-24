@@ -8,6 +8,9 @@
 #        xcrun notarytool store-credentials side-notary --apple-id <you> --team-id <TEAM>
 #   3. export SIDE_TEAM_ID=<TEAM>  (and SIDE_NOTARY_PROFILE if not "side-notary")
 #
+#   4. Sparkle's update-signing key, once: generate_keys --account side (the private key stays in
+#      the login Keychain; the public key is SUPublicEDKey in SIDE/Info.plist).
+#
 # Usage: scripts/release.sh            full build, notarize, staple
 #        scripts/release.sh --dry-run  build and sign only; no notarization
 set -euo pipefail
@@ -20,6 +23,8 @@ DRY_RUN=0; [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 VERSION=$(xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -showBuildSettings 2>/dev/null | awk -F' = ' '/ MARKETING_VERSION /{print $2; exit}')
 BUILD=$(xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -showBuildSettings 2>/dev/null | awk -F' = ' '/ CURRENT_PROJECT_VERSION /{print $2; exit}')
 OUT="build/release/$VERSION"
+SPM="build/spm"
+RELEASES_REPO="${SIDE_RELEASES_REPO:-gazishahi/side-releases}"
 ARCHIVE="$OUT/Side.xcarchive"
 APP="$OUT/export/Side.app"
 DMG="$OUT/Side-$VERSION.dmg"
@@ -32,7 +37,7 @@ echo "Side $VERSION ($BUILD), team $TEAM"
 
 echo "==> Archive"
 xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -destination 'generic/platform=macOS' \
-  -archivePath "$ARCHIVE" archive \
+  -archivePath "$ARCHIVE" -clonedSourcePackagesDirPath "$SPM" archive \
   DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" OTHER_CODE_SIGN_FLAGS="--timestamp" \
   | grep -E " error: |warning: .*sign|ARCHIVE (SUCCEEDED|FAILED)" || true
 [[ -d "$ARCHIVE" ]] || { echo "archive failed" >&2; exit 1; }
@@ -82,4 +87,15 @@ if (( ! DRY_RUN )); then
 fi
 
 shasum -a 256 "$DMG" | tee "$DMG.sha256"
+
+echo "==> Appcast"
+# Sparkle's own tool: signs the DMG's EdDSA signature into the feed with the "side" key.
+UPDATES="$OUT/updates"; mkdir -p "$UPDATES"
+cp "$DMG" "$UPDATES/"
+"$SPM/artifacts/sparkle/Sparkle/bin/generate_appcast" --account side \
+  --download-url-prefix "https://github.com/$RELEASES_REPO/releases/download/v$VERSION/" \
+  -o "$OUT/appcast.xml" "$UPDATES"
+
 echo "Done: $DMG"
+echo "Publish (not run here; it's public):"
+echo "  gh release create v$VERSION -R $RELEASES_REPO --title \"Side $VERSION\" \"$DMG\" \"$OUT/appcast.xml\""

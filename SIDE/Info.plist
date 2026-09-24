@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged with the generated Info.plist. Sparkle's update feed (docs/SIDE_DISTRIBUTION.md, D1/D2):
+	     the latest release's appcast in the public releases repository. -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/gazishahi/side-releases/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>aUCfPPld1OyGSfBQBhzvIw27w5eKvkZE2vm/lAE8W5o=</string>
+	<key>SUEnableInstallerLauncherService</key>
+	<false/>
+</dict>
+</plist>

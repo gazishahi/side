@@ -1,15 +1,15 @@
 # Distribution
 
-*2026-09-24. Status: **in progress**: signing and packaging built; notarization, updates and the open-source packages wait on the decisions below.*
+*2026-09-24. Status: **in progress**: signing, packaging and updates built; notarization waits on the owner's credentials; the open-source packages are next.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` (Heron and Alloy are engines Side is a client of).*
 
 ## What ships
 
 | Thing | Form | License | Where |
 |---|---|---|---|
-| Side | Developer ID–signed, notarized `Side-<version>.dmg` | D4 | D2 |
-| Heron | Swift package (`Packages/Heron` today) | D3 | its own public repository |
-| Alloy | Swift package, once it exists | D3 | its own public repository |
+| Side | Developer ID–signed, notarized `Side-<version>.dmg` | private (D4) | `gazishahi/side-releases` on GitHub (D2) |
+| Heron | Swift package (`Packages/Heron` today) | Apache-2.0 (D3) | its own public repository (D5) |
+| Alloy | Swift package, once it exists | Apache-2.0 (D3) | its own public repository (D5) |
 
 ## Version
 
@@ -44,7 +44,23 @@ notarization. Verified: a dry run with the owner's Developer ID certificate prod
 **Needs the owner, once:** `xcrun notarytool store-credentials side-notary --apple-id … --team-id D3MM423T6V`
 (an app-specific password; stored in the Keychain, never in the repo). Then `SIDE_TEAM_ID=D3MM423T6V scripts/release.sh`.
 
+## Updates
+
+**Built 2026-09-24.** Sparkle 2.10 (`Updates`): Side › Check for Updates…, and Preferences ›
+General › Updates (automatic checks on or off, check now, the running version). Debug builds and
+UI-test runs never check. The feed is the latest release's `appcast.xml` in the public releases
+repository; each update is verified against `SUPublicEDKey` (Side's own key, Keychain account
+`side`, separate from any other app's) and its Developer ID signature before it installs.
+`scripts/release.sh` now writes the signed `appcast.xml` next to the DMG and prints the
+`gh release create` command; publishing is left to the owner because it's public.
+
 ## Decisions
+
+Answered by the owner 2026-09-24: **D1** Sparkle, **D2** GitHub Releases, **D3** Apache-2.0,
+**D4** Side stays private; only Heron and Alloy are open source. So releases go to a public
+repository of their own (`gazishahi/side-releases`: DMGs and appcasts, no source), since assets on
+a private repository can't be downloaded. It isn't created yet.
+
 
 - **D1: Updates.** *Recommend:* Sparkle 2 with an EdDSA-signed appcast. Sparkle is the standard
   for Developer ID apps, open source, and needs no server of ours beyond a static appcast file.
