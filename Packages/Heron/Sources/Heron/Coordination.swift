@@ -40,6 +40,36 @@ public protocol TrackCoordinating: AnyObject {
     func isSettled(parentKey: String, trackKey: String) -> Bool
     /// The agents a subtrack can run on: (id to pass, name). "heron" is Heron.
     var agentChoices: [(id: String, name: String)] { get }
+
+    /// What promoting a subtrack into its coordinator involves, for the M2 check: the branches
+    /// and working copy, and whether its newest checkpoint passed verification. Nil with a reason
+    /// when it isn't this coordinator's subtrack.
+    func promotionFacts(parentKey: String, trackKey: String) -> Result<PromotionFacts, CoordinationError>
+    /// Merges the subtrack into the coordinator's own branch (after approval).
+    func promote(parentKey: String, trackKey: String, completion: @escaping (String) -> Void)
+}
+
+public struct CoordinationError: Error, Sendable { public let message: String; public init(message: String) { self.message = message } }
+
+/// What M2 needs to know about a subtrack before it's promoted into its coordinator.
+public struct PromotionFacts: Sendable {
+    public let intent: String
+    public let branch: String
+    public let parentBranch: String
+    /// Where git runs (any checkout of the repository sees every branch).
+    public let gitDirectory: String
+    public let siblingBranches: [String]
+    public let newestCheckpointVerified: Bool
+    public let hasCheckpoints: Bool
+    public init(intent: String, branch: String, parentBranch: String, gitDirectory: String, siblingBranches: [String], newestCheckpointVerified: Bool, hasCheckpoints: Bool) {
+        self.intent = intent
+        self.branch = branch
+        self.parentBranch = parentBranch
+        self.gitDirectory = gitDirectory
+        self.siblingBranches = siblingBranches
+        self.newestCheckpointVerified = newestCheckpointVerified
+        self.hasCheckpoints = hasCheckpoints
+    }
 }
 
 /// The coordinator's tools, callable from any thread: Heron's executor and the MCP server both
@@ -76,6 +106,40 @@ public struct CoordinationBridge: @unchecked Sendable {
                 guard let coordinator = box.value else { return completion("The project was closed.") }
                 coordinator.createSubtrack(parentKey: parentKey, request: request) { completion($0) }
             }
+        }
+    }
+
+    /// Promotes after approval, from any thread.
+    public func promote(track: String, completion: @escaping @Sendable (String) -> Void) {
+        let (box, parentKey) = (self.box, self.parentKey)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                guard let coordinator = box.value else { return completion("The project was closed.") }
+                coordinator.promote(parentKey: parentKey, trackKey: track) { completion($0) }
+            }
+        }
+    }
+
+    /// M2: whether the subtrack can be promoted, and whether Full autonomy may do it without a
+    /// card (its newest checkpoint verified, no file shared with a sibling). Runs git; call off
+    /// the main thread.
+    public func promotionCheck(track: String) -> Result<(facts: PromotionFacts, fullMayApply: Bool, note: String), CoordinationError> {
+        let facts = onMain(Result<PromotionFacts, CoordinationError>.failure(.init(message: "The project was closed."))) { $0.promotionFacts(parentKey: parentKey, trackKey: track) }
+        switch facts {
+        case .failure(let error): return .failure(error)
+        case .success(let facts):
+            guard facts.hasCheckpoints else {
+                return .failure(.init(message: "\u{201C}\(facts.branch)\u{201D} has no checkpoints yet, so there's nothing to promote."))
+            }
+            let mine = TrackOverlap.changedPaths(branch: facts.branch, baseRef: facts.parentBranch, cwd: facts.gitDirectory)
+            let shared = facts.siblingBranches.flatMap { sibling -> [String] in
+                let theirs = TrackOverlap.changedPaths(branch: sibling, baseRef: facts.parentBranch, cwd: facts.gitDirectory)
+                return mine.intersection(theirs).sorted().map { "\($0) (also in \(sibling))" }
+            }
+            var notes: [String] = []
+            if !facts.newestCheckpointVerified { notes.append("its newest checkpoint hasn't passed verification") }
+            if !shared.isEmpty { notes.append("it shares files with another subtrack: \(shared.joined(separator: ", "))") }
+            return .success((facts, notes.isEmpty, notes.isEmpty ? "" : "The user decides, because " + notes.joined(separator: ", and ") + "."))
         }
     }
 
@@ -129,6 +193,11 @@ public struct CoordinationBridge: @unchecked Sendable {
             ToolSpec(
                 name: "read_track",
                 description: "Read one of this track's subtracks: whether it's working, finished, blocked or waiting on the user; its last reply; and its checkpoints with their verification (test results). Trust the verification over the subtrack's own account.",
+                inputSchema: schema(["track": .object(["type": .string("string"), "description": .string("The subtrack's branch name.")])], required: ["track"])
+            ),
+            ToolSpec(
+                name: "promote_subtrack",
+                description: "Propose merging one of this track's subtracks into this track, bringing its work back. The user approves it, except on Full autonomy when the subtrack's newest checkpoint passed verification and it shares no file with another subtrack. Promoting into main is always the user's, from Review.",
                 inputSchema: schema(["track": .object(["type": .string("string"), "description": .string("The subtrack's branch name.")])], required: ["track"])
             ),
             ToolSpec(

@@ -1,6 +1,6 @@
 # RFC: Multi-agent work across providers
 
-*2026-09-23. Status: **accepted**: the owner accepted M1–M4 as recommended the same day. Steps 1–2 built; see Plan.*
+*2026-09-23. Status: **accepted**: the owner accepted M1–M4 as recommended the same day. Steps 1–3 built; see Plan.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` (non-negotiables 1–5 and 8 are at stake),
 `SIDE_RFC_BYO_HARNESS.md` (outside agents, which this builds on) and
 `SIDE_RFC_NAVIGATION_LEDGER.md` (R3 runner ceiling, R4 track tools).*
@@ -99,6 +99,15 @@ agents run in the background with no window showing them.
    Code created a subtrack on another agent, waited for it and reported its reply.
 3. **Coordinator UI:** child status lines in Think, attention and spend rolled up to the
    umbrella row, promote-into-parent proposals as cards (M2).
+   **Built 2026-09-23:** `promote_subtrack` (Heron and MCP) proposes a card; Full applies it
+   without one only when the subtrack's newest checkpoint passed verification and it shares no
+   files with a sibling (`CoordinationBridge.promotionCheck`). `TrackCoordinator.promote` merges
+   into the coordinator's working copy, never main, and marks the subtrack completed. An outside
+   agent's own permission prompt for the same call counts as the one approval (D9). Think shows a
+   strip of subtracks (dot, intent, agent, state; click opens the track) and the tokens spent with
+   them; outside agents' usage is now recorded (`ACPHarness.recordUsage`). The Tracks row rolls up
+   its subtracks' attention and work (`Track.displayStatus` keeps an idle subtrack from reading as
+   needing you).
 
 ## Acceptance (step 1)
 

@@ -60,6 +60,11 @@ struct Track: Codable, Identifiable {
     /// its own (one level deep, M3), and counts toward its parent's cap of four.
     var spawnedByCoordinator = false
 
+    /// The status rows and dots show. A subtrack is stored as Waiting (it must never become the
+    /// active track, which is "the one you're switched to") but reads as Active: an idle
+    /// subtrack isn't waiting on you, and Waiting's dot says it is.
+    var displayStatus: TrackStatus { spawnedByCoordinator && status == .waiting ? .active : status }
+
     /// Never nil in practice — resolves the stored values, the migrated old bool, or the
     /// default, in that order.
     var mode: AgentMode {

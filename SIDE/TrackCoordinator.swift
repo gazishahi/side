@@ -132,6 +132,64 @@ final class TrackCoordinator: TrackCoordinating {
         return runner.phase != .streaming && runner.phase != .runningTools
     }
 
+    // MARK: Promotion (M2)
+
+    func promotionFacts(parentKey: String, trackKey: String) -> Result<PromotionFacts, CoordinationError> {
+        switch child(trackKey, of: parentKey) {
+        case .failure(let refusal): return .failure(CoordinationError(message: refusal.message))
+        case .success(let child):
+            guard let parent = track(parentKey) else { return .failure(CoordinationError(message: "The coordinator's track is gone.")) }
+            let checkpoints = sessionStore.checkpoints(forTrackKey: child.branchName).sorted { $0.createdAt < $1.createdAt }
+            let siblings = liveChildren(of: parent).filter { $0.id != child.id }.map(\.branchName)
+            return .success(PromotionFacts(
+                intent: child.intent, branch: child.branchName, parentBranch: parent.branchName,
+                gitDirectory: trackStore.projectRoot.path, siblingBranches: siblings,
+                newestCheckpointVerified: checkpoints.last?.verification?.passed == true, hasCheckpoints: !checkpoints.isEmpty))
+        }
+    }
+
+    /// Merges the subtrack into the coordinator's own working copy, the same merge Review's
+    /// Promote does into a stacked track's parent.
+    func promote(parentKey: String, trackKey: String, completion: @escaping (String) -> Void) {
+        guard case .success(let child) = self.child(trackKey, of: parentKey), let parent = track(parentKey) else {
+            return completion("\u{201C}\(trackKey)\u{201D} isn't one of this track's subtracks.")
+        }
+        guard let parentPath = parent.workingDirectoryPath else { return completion("This track has no working copy to promote into.") }
+        let box = CompletionBox(coordinator: self, completion: completion)
+        let (branch, base, intent) = (child.branchName, parent.branchName, child.intent)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcome = ReviewWorkspaceViewController.performMerge(branchName: branch, baseRef: base, intent: intent, cwd: parentPath)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self = box.coordinator else { return box.completion("The project was closed.") }
+                    if outcome.succeeded, let current = self.track(branch) { self.trackStore.setStatus(.completed, for: current) }
+                    let message = outcome.message.replacingOccurrences(of: "\u{26A0}\u{FE0E} ", with: "")
+                        .replacingOccurrences(of: "Your main working copy", with: "This track's working copy")
+                    box.completion(outcome.succeeded
+                        ? "Promoted \u{201C}\(intent)\u{201D} into this track. \(message)"
+                        : "Not promoted: \(message)")
+                }
+            }
+        }
+    }
+
+    // MARK: For the UI
+
+    /// A coordinator's subtracks, oldest first, including finished ones.
+    func subtracks(of trackKey: String) -> [Track] {
+        guard let parent = track(trackKey) else { return [] }
+        return trackStore.tracks.filter { $0.parentTrackId == parent.id && $0.spawnedByCoordinator && $0.status != .archived }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// One subtrack's state in a few words, for Think's strip.
+    func stateText(of trackKey: String) -> (text: String, activity: AgentActivity) {
+        let runner = runnerManager?.existingRunner(forTrackKey: trackKey)
+        let activity = runner?.activity ?? .none
+        if track(trackKey)?.status == .completed { return ("promoted", activity) }
+        return (Self.state(of: runner, queued: queued[trackKey]?.count ?? 0), activity)
+    }
+
     // MARK: Delivery and the ceiling
 
     private static func state(of runner: (any Harness)?, queued: Int) -> String {

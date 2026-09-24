@@ -32,7 +32,7 @@ public struct ToolExecutor {
     public static func coordinationSpecs(for scope: AgentToolScope, agents: [(id: String, name: String)]) -> [ToolSpec] {
         CoordinationBridge.toolSpecs(agentChoices: agents).filter { spec in
             switch spec.name {
-            case "create_subtrack", "message_track": return scope.allowsWrites
+            case "create_subtrack", "message_track", "promote_subtrack": return scope.allowsWrites
             default: return scope.allowsWrites || scope == .plan
             }
         }
@@ -462,6 +462,14 @@ extension ToolExecutor {
             case .success(let request):
                 let agentName = coordinationAgents.first { $0.id == (request.agentId ?? "heron") }?.name ?? "Heron"
                 return .commandProposal(ProposedCommand(toolUseId: toolUseId, spawning: request, agentName: agentName))
+            }
+        }
+        if name == "promote_subtrack" {
+            guard let track = input.stringValue(for: "track") else { return .completed(output: "promote_subtrack needs a track.", isError: true) }
+            switch bridge.promotionCheck(track: track) {
+            case .failure(let error): return .completed(output: error.message, isError: true)
+            case .success(let check):
+                return .commandProposal(ProposedCommand(toolUseId: toolUseId, promoting: track, intent: check.facts.intent, fullMayApply: check.fullMayApply))
             }
         }
         guard let result = bridge.run(name, input: input) else {

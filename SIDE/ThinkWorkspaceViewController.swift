@@ -71,6 +71,18 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private let emptyState = DS.EmptyState()
     /// Set by the shell, which performs empty-state actions.
     var onEmptyStateAction: ((EmptyStateAction) -> Void)?
+    /// Opens a track in this window (a subtrack, from the strip).
+    var onOpenTrack: ((String) -> Void)?
+    /// The project's coordinator (multi-agent RFC): lists a coordinator track's subtracks.
+    var coordinator: TrackCoordinator? { didSet { refreshSubtracks() } }
+    /// A coordinator's subtracks, one chip each (status · intent · agent · state), floating just
+    /// under the top row. Absent on any track that has none.
+    private let subtracksGroup = NSView()
+    private let subtracksGlass = DS.makeGlass(cornerRadius: 15)
+    private let subtracksStack = NSStackView()
+    private var subtracksIdentity = ""
+    private var managerObserverToken: UUID?
+    private var trackStoreObserverToken: UUID?
     /// The active provider can take a message. Read on attach and whenever the window becomes
     /// main again (Preferences closing is the usual reason it changed); not per keystroke — it's a
     /// Keychain read.
@@ -197,6 +209,33 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         sessionGroup.addSubview(sessionPillGlass)
         sessionGroup.addSubview(pillModeTint)
         sessionGroup.addSubview(sessionPill)
+        subtracksGroup.translatesAutoresizingMaskIntoConstraints = false
+        subtracksGroup.isHidden = true
+        subtracksGlass.translatesAutoresizingMaskIntoConstraints = false
+        subtracksStack.orientation = .horizontal
+        subtracksStack.spacing = DS.Spacing.xs
+        subtracksStack.edgeInsets = NSEdgeInsets(top: 0, left: DS.Spacing.m, bottom: 0, right: DS.Spacing.m)
+        subtracksStack.translatesAutoresizingMaskIntoConstraints = false
+        subtracksGroup.addSubview(subtracksGlass)
+        subtracksGroup.addSubview(subtracksStack)
+        subtracksGroup.setAccessibilityElement(true)
+        subtracksGroup.setAccessibilityRole(.group)
+        subtracksGroup.setAccessibilityLabel("Subtracks")
+        view.addSubview(subtracksGroup)
+        NSLayoutConstraint.activate([
+            subtracksGroup.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight + DS.Spacing.s),
+            subtracksGroup.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.xxl),
+            subtracksGroup.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
+            subtracksGroup.heightAnchor.constraint(equalToConstant: 30),
+            subtracksGlass.topAnchor.constraint(equalTo: subtracksGroup.topAnchor),
+            subtracksGlass.bottomAnchor.constraint(equalTo: subtracksGroup.bottomAnchor),
+            subtracksGlass.leadingAnchor.constraint(equalTo: subtracksGroup.leadingAnchor),
+            subtracksGlass.trailingAnchor.constraint(equalTo: subtracksGroup.trailingAnchor),
+            subtracksStack.topAnchor.constraint(equalTo: subtracksGroup.topAnchor),
+            subtracksStack.bottomAnchor.constraint(equalTo: subtracksGroup.bottomAnchor),
+            subtracksStack.leadingAnchor.constraint(equalTo: subtracksGroup.leadingAnchor),
+            subtracksStack.trailingAnchor.constraint(equalTo: subtracksGroup.trailingAnchor),
+        ])
         changesPill.glassBackdrop = changesPillGlass
         changesPill.onPress = { [weak self] in self?.showChangedFiles() }
         changesPill.toolTip = "What this conversation changed"
@@ -344,9 +383,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         super.viewDidLayout()
         transcriptScroll.automaticallyAdjustsContentInsets = false
         let overlap = composer.frame.height + (pillsDocked ? 0 : 26) /* pill row */ + composerGap + DS.Spacing.l
-        if abs(transcriptScroll.contentInsets.bottom - overlap) > 0.5 {
+        // The subtracks strip, when there is one, sits under the top row: the transcript starts
+        // below it too.
+        let top = ChromeHost.rowHeight + DS.Spacing.m + (subtracksGroup.isHidden ? 0 : 30 + DS.Spacing.s)
+        if abs(transcriptScroll.contentInsets.bottom - overlap) > 0.5 || abs(transcriptScroll.contentInsets.top - top) > 0.5 {
             // The transcript starts below the window's top row and scrolls up underneath it.
-            transcriptScroll.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight + DS.Spacing.m, left: 0, bottom: overlap, right: 0)
+            transcriptScroll.contentInsets = NSEdgeInsets(top: top, left: 0, bottom: overlap, right: 0)
             // The track runs down the window's edge beside the composer and stops above the bar,
             // as Make's does. Ending it above the composer left the thumb ~150 pt short of the
             // bottom when the chat was scrolled all the way down (owner, 2026-09-23). The
@@ -384,6 +426,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     // MARK: - Project/track wiring (ShellViewController calls these)
 
     func configure(runnerManager: AgentRunnerManager, trackStore: TrackStore, projectPath: String, trackKey: String?) {
+        if let managerObserverToken { self.runnerManager?.removeChangeObserver(managerObserverToken) }
+        if let trackStoreObserverToken { self.trackStore?.removeChangeObserver(trackStoreObserverToken) }
+        // Subtracks change state without this view's own runner hearing about it.
+        managerObserverToken = runnerManager.addChangeObserver { [weak self] in self?.refreshSubtracks() }
+        trackStoreObserverToken = trackStore.addChangeObserver { [weak self] in self?.refreshSubtracks() }
         self.runnerManager = runnerManager
         self.trackStore = trackStore
         self.projectPath = projectPath
@@ -427,6 +474,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             runner = nil
         }
         refreshModelReadiness()
+        refreshSubtracks()
         if isViewLoaded {
             renderFull()
             if view.window != nil { runner?.acknowledgeCompletion() }
@@ -1180,6 +1228,49 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     }
 
     /// "3 files +42 −7" — cumulative applied edits this conversation.
+    /// The coordinator's subtracks, one chip each; hidden on a track with none.
+    private func refreshSubtracks() {
+        guard isViewLoaded else { return }
+        let key = attachedTrackKey ?? ""
+        let children = key.isEmpty ? [] : (coordinator?.subtracks(of: key) ?? [])
+        let rows = children.map { child -> (Track, String, AgentActivity) in
+            let state = coordinator?.stateText(of: child.branchName) ?? ("", .none)
+            return (child, state.text, state.activity)
+        }
+        var tokens = 0
+        if let projectPath, !children.isEmpty {
+            for trackKey in [key] + children.map(\.branchName) { tokens += UsageStore.shared.totals(projectPath: projectPath, trackKey: trackKey).totalTokens }
+        }
+        let identity = rows.map { "\($0.0.branchName)|\($0.1)|\($0.2)|\($0.0.harnessId ?? "")" }.joined(separator: ";") + "|\(tokens / 1000)"
+        guard identity != subtracksIdentity else { return }
+        subtracksIdentity = identity
+        subtracksStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let wasHidden = subtracksGroup.isHidden
+        subtracksGroup.isHidden = rows.isEmpty
+        if wasHidden != subtracksGroup.isHidden { view.needsLayout = true }
+        guard !rows.isEmpty else { return }
+        for (child, state, activity) in rows {
+            let chip = ChipButton(symbolName: nil, accessibilityLabel: "Open subtrack \(child.intent): \(state)", height: 24)
+            let agent = ACPAgent.agent(id: child.harnessId)?.displayName ?? "Heron"
+            let label = NSMutableAttributedString(string: "\u{25CF} ", attributes: [.font: DS.Text.caption(), .foregroundColor: DS.StatusState(activity).color])
+            label.append(NSAttributedString(string: child.intent, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor]))
+            label.append(NSAttributedString(string: " \u{00B7} \(agent) \u{00B7} \(state)", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]))
+            chip.setAttributedLabel(label, identity: child.branchName + state)
+            chip.toolTip = "\(child.branchName): open this subtrack"
+            let branch = child.branchName
+            chip.onPress = { [weak self] in self?.onOpenTrack?(branch) }
+            chip.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            subtracksStack.addArrangedSubview(chip)
+        }
+        if tokens > 0 {
+            let total = NSTextField(labelWithString: "\(UsageFormatting.tokens(tokens)) tokens with subtracks")
+            total.font = DS.Text.caption()
+            total.textColor = .tertiaryLabelColor
+            total.toolTip = "This track and its subtracks, from Settings \u{203A} Usage."
+            subtracksStack.addArrangedSubview(total)
+        }
+    }
+
     private func refreshChangesPill() {
         let counts = runner?.appliedEditCounts ?? []
         let isEmpty = counts.isEmpty

@@ -90,6 +90,7 @@ final class ShellViewController: NSViewController {
         makeVC.onDirtyChanged = { [weak self] dirty in self?.isDirty = dirty; self?.applyWindowChrome() }
         makeVC.onInstruct = { [weak self] request in self?.startInstruct(request) }
         thinkVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
+        thinkVC.onOpenTrack = { [weak self] key in self?.focusTrack(key: key) }
         reviewVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
         runVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
         tracksVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
@@ -489,7 +490,7 @@ final class ShellViewController: NSViewController {
         let manager = projectContext?.runnerManager
         func state(_ track: Track) -> DS.StatusState {
             let activity = manager?.existingRunner(forTrackKey: track.branchName)?.activity ?? .none
-            return DS.StatusState(track: track.status, activity: activity)
+            return DS.StatusState(track: track.displayStatus, activity: activity)
         }
         let currentTrack = store.tracks.first { $0.branchName == currentTrackKey }
         var snapshot = TrackPill.Snapshot(
@@ -1063,6 +1064,7 @@ final class ShellViewController: NSViewController {
         thinkVC.onOpenRunRequested = { [weak self] in self?.show(.run) }
         thinkVC.onOpenCheckpointRequested = { [weak self] id in self?.presentCheckpointSheet(id) }
         LaunchSignposts.begin("thinkConfigure")
+        thinkVC.coordinator = context.coordinator
         thinkVC.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: context.projectRoot.path, trackKey: currentTrackKey)
         LaunchSignposts.end("thinkConfigure")
         LaunchSignposts.begin("reviewConfigure")

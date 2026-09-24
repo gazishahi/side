@@ -108,7 +108,8 @@ public final class AgentRunnerManager {
                                      onOptionChanged: { [weak self] id, value in self?.agentOptionChanged?(trackKey, id, value) },
                                      toolServer: .shared,
                                      trackContext: { [weak self] in self?.trackContextProvider(trackKey) ?? [] },
-                                     coordinatorProvider: { [weak self] in self?.coordinator(for: trackKey) })
+                                     coordinatorProvider: { [weak self] in self?.coordinator(for: trackKey) },
+                                     usageProjectPath: projectPath)
             harness.addObserver { [weak self] event in
                 guard case .phaseChanged = event else { return }
                 self?.scheduleChangeNotification()

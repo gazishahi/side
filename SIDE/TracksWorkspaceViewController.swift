@@ -555,12 +555,28 @@ final class TracksWorkspaceViewController: NSViewController {
             let gitBits = gitSummaryText(summary)
             if !gitBits.isEmpty { metaText += " · \(gitBits)" }
         }
+        // A coordinator's row carries its subtracks' state (multi-agent RFC, step 3): a subtrack
+        // that needs you lights its coordinator too, so the umbrella never reads as quiet while
+        // one of its children waits.
+        let children = (trackStore?.tracks ?? []).filter { $0.parentTrackId == track.id && $0.spawnedByCoordinator && ![.completed, .archived].contains($0.status) }
+        var rowActivity = activity(for: track)
+        if !children.isEmpty {
+            let activities = children.map(activity(for:))
+            let needing = activities.filter(\.wantsAttention).count
+            let working = activities.filter { $0 == .working }.count
+            var rollup = "\(children.count) subtrack\(children.count == 1 ? "" : "s")"
+            if needing > 0 { rollup += ", \(needing) need\(needing == 1 ? "s" : "") you" } else if working > 0 { rollup += ", \(working) working" }
+            metaText += " · \(rollup)"
+            if !rowActivity.wantsAttention {
+                if needing > 0 { rowActivity = .needsYou } else if rowActivity == .none, working > 0 { rowActivity = .working }
+            }
+        }
         let row = TrackRowView(
             intentText: track.intent,
             branchText: track.branchName,
             metaText: metaText,
-            activity: activity(for: track),
-            status: track.status,
+            activity: rowActivity,
+            status: track.displayStatus,
             indent: indent,
             connectorContinues: connectorContinues
         )

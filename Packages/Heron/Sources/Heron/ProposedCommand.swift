@@ -26,6 +26,10 @@ public struct ProposedCommand: Identifiable {
         case fetch(URL)
         /// A coordinator creating a subtrack (multi-agent RFC, M1): same card, same approval.
         case spawn(SubtrackRequest)
+        /// A coordinator merging one of its subtracks into itself (M2). `fullMayApply`: the
+        /// subtrack's newest checkpoint passed verification and it shares no file with a sibling,
+        /// so Full autonomy may do it without a card.
+        case promote(track: String, fullMayApply: Bool)
     }
 
     public init(toolUseId: String, command: String, taskName: String? = nil) {
@@ -53,6 +57,19 @@ public struct ProposedCommand: Identifiable {
         self.taskName = nil
         self.kind = .spawn(request)
         self.riskLevel = .normal
+    }
+
+    public init(toolUseId: String, promoting track: String, intent: String, fullMayApply: Bool) {
+        self.id = UUID()
+        self.toolUseId = toolUseId
+        self.command = "Promote subtrack \u{201C}\(intent)\u{201D} into this track"
+        self.taskName = nil
+        self.kind = .promote(track: track, fullMayApply: fullMayApply)
+        self.riskLevel = .normal
+    }
+
+    public var promotion: (track: String, fullMayApply: Bool)? {
+        if case .promote(let track, let fullMayApply) = kind { return (track, fullMayApply) } else { return nil }
     }
 
     public var fetchURL: URL? { if case .fetch(let url) = kind { return url } else { return nil } }

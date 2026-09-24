@@ -21,16 +21,24 @@ final class CoordinationTests: XCTestCase {
         // A worker agent: answers every prompt with "done:" and its first line.
         let script = FileManager.default.temporaryDirectory.appendingPathComponent("worker-\(UUID().uuidString).py")
         try #"""
-import json, sys
+import json, sys, os
 def send(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+cwd = "."
 for line in sys.stdin:
     m = json.loads(line); meth = m.get("method"); p = m.get("params", {})
     if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1}})
-    elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "w"}})
+    elif meth == "session/new":
+        cwd = p.get("cwd", ".")
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "w"}})
     elif meth == "session/prompt":
         text = p["prompt"][0]["text"]
-        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "w", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "done: " + text.splitlines()[-1]}}}})
-        send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
+        last = text.splitlines()[-1]
+        if last.startswith("write "):
+            # A direct write, like an agent with its own file tools; the turn's checkpoint takes it.
+            open(os.path.join(cwd, last[6:]), "w").write("from the worker\n")
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "w", "update": {"sessionUpdate": "tool_call", "toolCallId": "w1", "title": "Write", "kind": "edit", "status": "completed", "locations": [{"path": os.path.join(cwd, last[6:])}]}}})
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "w", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "done: " + last}}}})
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn", "usage": {"inputTokens": 100, "outputTokens": 20, "cachedReadTokens": 5}}})
 """#.write(to: script, atomically: true, encoding: .utf8)
         worker = ACPAgent.addCustom(name: "Worker", command: "worker", arguments: [script.path], apiKeyVariable: nil)
         UserDefaults.standard.set("/usr/bin/python3", forKey: "SideACPAgentPath.\(worker.id)")
@@ -158,6 +166,66 @@ for line in sys.stdin:
         XCTAssertEqual(child?.parentTrackId, coordinatorTrack.id)
     }
 
+    /// Step 3: a subtrack's work comes back by promotion into its coordinator (M2), its tokens
+    /// count toward the coordinator's, and the UI lists it.
+    func testASubtracksWorkIsPromotedIntoItsCoordinator() throws {
+        let coordinatorTrack = try createTrack("Coordinate and promote")
+        let coordinator = context.coordinator
+        let bridge = CoordinationBridge(parentKey: coordinatorTrack.branchName, coordinator: coordinator)
+        let created = expectation(description: "created")
+        coordinator.createSubtrack(parentKey: coordinatorTrack.branchName,
+                                   request: SubtrackRequest(intent: "Add notes", agentId: worker.id, instructions: "write notes.txt")) { _ in created.fulfill() }
+        wait(for: [created], timeout: 30)
+        let child = try XCTUnwrap(context.trackStore.tracks.first { $0.spawnedByCoordinator })
+        let childKey = child.branchName
+        _ = offMain { bridge.wait(tracks: [childKey], timeout: 60) }
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline, context.sessionStore.checkpoints(forTrackKey: childKey).isEmpty { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+        XCTAssertEqual(context.sessionStore.checkpoints(forTrackKey: childKey).first?.changedFilePaths, ["notes.txt"], "the worker's write became a checkpoint on its own branch")
+
+        // The strip and rollup see it; its tokens are filed under the subtrack.
+        XCTAssertEqual(coordinator.subtracks(of: coordinatorTrack.branchName).map(\.branchName), [childKey])
+        XCTAssertEqual(UsageStore.shared.totals(projectPath: root.path, trackKey: childKey).totalTokens, 125)
+
+        // M2: unverified, so the user decides even on Full.
+        guard case .success(let unverified) = offMainCheck(bridge, childKey) else { return XCTFail("check failed") }
+        XCTAssertFalse(unverified.fullMayApply)
+        XCTAssertTrue(unverified.note.contains("hasn't passed verification"), unverified.note)
+
+        // Verified and sharing nothing: Full may promote without a card.
+        _ = context.sessionStore.attachVerification(CheckpointVerification(taskName: "test", command: "t", exitCode: 0, output: ""), toLatestCheckpointFor: childKey)
+        guard case .success(let verified) = offMainCheck(bridge, childKey) else { return XCTFail("check failed") }
+        XCTAssertTrue(verified.fullMayApply, verified.note)
+
+        // A sibling that also changed notes.txt: back to the user.
+        let sibling = try createTrack("Also notes", parent: context.trackStore.tracks.first { $0.id == coordinatorTrack.id }, spawned: true)
+        let siblingPath = try XCTUnwrap(sibling.workingDirectoryPath)
+        try "sibling\n".write(toFile: siblingPath + "/notes.txt", atomically: true, encoding: .utf8)
+        _ = GitPaths.runGit(["add", "notes.txt"], cwd: siblingPath); _ = GitPaths.runGit(["commit", "-q", "-m", "sibling"], cwd: siblingPath)
+        guard case .success(let overlapping) = offMainCheck(bridge, childKey) else { return XCTFail("check failed") }
+        XCTAssertFalse(overlapping.fullMayApply)
+        XCTAssertTrue(overlapping.note.contains("shares files with another subtrack"), overlapping.note)
+
+        // Promoted: the file is in the coordinator's working copy, and the subtrack is done.
+        let promoted = expectation(description: "promoted")
+        var report = ""
+        coordinator.promote(parentKey: coordinatorTrack.branchName, trackKey: childKey) { report = $0; promoted.fulfill() }
+        wait(for: [promoted], timeout: 30)
+        XCTAssertTrue(report.hasPrefix("Promoted"), report)
+        let parentPath = try XCTUnwrap(context.trackStore.tracks.first { $0.id == coordinatorTrack.id }?.workingDirectoryPath)
+        XCTAssertEqual(try String(contentsOfFile: parentPath + "/notes.txt", encoding: .utf8), "from the worker\n")
+        XCTAssertEqual(context.trackStore.tracks.first { $0.branchName == childKey }?.status, .completed)
+        XCTAssertEqual(coordinator.stateText(of: childKey).text, "promoted")
+    }
+
+    private func offMainCheck(_ bridge: CoordinationBridge, _ track: String) -> Result<(facts: PromotionFacts, fullMayApply: Bool, note: String), CoordinationError> {
+        let done = expectation(description: "check")
+        let box = CheckBox()
+        DispatchQueue.global().async { box.value = bridge.promotionCheck(track: track); done.fulfill() }
+        wait(for: [done], timeout: 30)
+        return box.value ?? .failure(CoordinationError(message: "no answer"))
+    }
+
     func testCapsAndDepthAreRefused() throws {
         let parent = try createTrack("Coordinate")
         for index in 1...4 { _ = try createTrack("Part \(index)", parent: parent, spawned: true) }
@@ -174,7 +242,7 @@ for line in sys.stdin:
         let server = SideToolServer()
         let registration = try XCTUnwrap(server.register(.init(
             trackKey: parent.branchName, tracks: { [] }, coordination: bridge, agentChoices: context.coordinator.agentChoices,
-            authorizeSpawn: { _, _, decided in decided(false) })))
+            authorize: { _, _, _, decided in decided(false) })))
         func post(_ body: [String: Any]) async throws -> [String: Any] {
             var request = URLRequest(url: registration.url)
             request.httpMethod = "POST"
@@ -184,7 +252,7 @@ for line in sys.stdin:
         }
         let list = try await post(["jsonrpc": "2.0", "id": 1, "method": "tools/list"])
         let names = ((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
-        XCTAssertEqual(Set(names), ["list_tracks", "read_track_overlap", "create_subtrack", "message_track", "read_track", "wait_for_tracks"])
+        XCTAssertEqual(Set(names), ["list_tracks", "read_track_overlap", "create_subtrack", "message_track", "read_track", "promote_subtrack", "wait_for_tracks"])
         let call = try await post(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "create_subtrack", "arguments": ["intent": "No", "agent": "heron", "instructions": "x"]]])
         let text = (((call["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
         XCTAssertTrue(text.contains("declined"), text)
@@ -194,3 +262,4 @@ for line in sys.stdin:
 
 private final class ResultBox: @unchecked Sendable { var value = "" }
 private final class TrackBox: @unchecked Sendable { var id: UUID? }
+private final class CheckBox: @unchecked Sendable { var value: Result<(facts: PromotionFacts, fullMayApply: Bool, note: String), CoordinationError>? }

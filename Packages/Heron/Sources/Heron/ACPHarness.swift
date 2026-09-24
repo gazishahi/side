@@ -112,11 +112,14 @@ public final class ACPHarness: Harness {
     private let trackContext: @MainActor @Sendable () -> [AgentTrackSummary]
     private var toolServerRegistration: (url: URL, token: String)?
     private let coordinatorProvider: () -> (any TrackCoordinating)?
+    /// The project this conversation's tokens are filed under (Settings › Usage).
+    private let usageProjectPath: String?
     /// Side's own approval cards for a coordinator's spawns (M1), by entry id.
     private var pendingSpawnApprovals: [UUID: @Sendable (Bool) -> Void] = [:]
-    /// When the user last allowed a `create_subtrack` call on the agent's own permission card:
-    /// that approval covers Side's too (D9, one approval per action).
-    private var spawnGrantedAt: Date?
+    /// When the user last allowed a coordinator tool call (`create_subtrack`,
+    /// `promote_subtrack`) on the agent's own permission card: that approval covers Side's too
+    /// (D9, one approval per action).
+    private var coordinatorGrants: [String: Date] = [:]
     /// The agent accepts MCP servers over HTTP (`agentCapabilities.mcpCapabilities.http`).
     private var agentTakesHTTPTools = false
     /// How the agent was asked to sign in (Settings › Agents), for agents that ask.
@@ -139,7 +142,7 @@ public final class ACPHarness: Harness {
                 sessionStore: AgentSessionStore? = nil, terminalHost: @escaping () -> ACPTerminalHost? = { nil },
                 preferredOptions: @escaping () -> [String: String] = { [:] }, onOptionChanged: @escaping (String, String) -> Void = { _, _ in },
                 toolServer: SideToolServer? = nil, trackContext: @escaping @MainActor @Sendable () -> [AgentTrackSummary] = { [] },
-                coordinatorProvider: @escaping () -> (any TrackCoordinating)? = { nil }) {
+                coordinatorProvider: @escaping () -> (any TrackCoordinating)? = { nil }, usageProjectPath: String? = nil) {
         self.trackKey = trackKey
         self.agent = agent
         self.launchProvider = launchProvider
@@ -153,6 +156,7 @@ public final class ACPHarness: Harness {
         self.toolServer = toolServer
         self.trackContext = trackContext
         self.coordinatorProvider = coordinatorProvider
+        self.usageProjectPath = usageProjectPath
         agentOptions = seededOptions()
         restoreFromLog()
     }
@@ -316,11 +320,25 @@ public final class ACPHarness: Harness {
             switch result {
             case .success(let value):
                 let stopReason = (value as? [String: Any])?["stopReason"] as? String ?? "end_turn"
+                self.recordUsage((value as? [String: Any])?["usage"] as? [String: Any])
                 self.finishTurn(stopReason: stopReason)
             case .failure(let error):
                 self.fail(error.localizedDescription)
             }
         }
+    }
+
+    /// The turn's tokens, filed like Heron's so a track's (and a coordinator's) spend adds up
+    /// across agents. Model is the agent's own id for it ("opus[1m]"); Side has no price for
+    /// those, so spend shows as tokens.
+    private func recordUsage(_ usage: [String: Any]?) {
+        guard let usage, let projectPath = usageProjectPath else { return }
+        func int(_ key: String) -> Int { (usage[key] as? NSNumber)?.intValue ?? 0 }
+        let input = int("inputTokens"), output = int("outputTokens"), cached = int("cachedReadTokens")
+        guard input + output + cached > 0 else { return }
+        let model = agentOptions.first { $0.category == .model }?.current ?? agent.id
+        UsageStore.shared.record(projectPath: projectPath, trackKey: trackKey, providerId: "acp:\(agent.id)", modelId: model,
+                                 usage: TokenUsage(inputTokens: input, outputTokens: output, cachedInputTokens: cached))
     }
 
     private func finishTurn(stopReason: String) {
@@ -512,11 +530,11 @@ public final class ACPHarness: Harness {
             let box = WeakHarness(self)
             toolServerRegistration = toolServer.register(.init(
                 trackKey: trackKey, tracks: trackContext, coordination: bridge, agentChoices: coordinator?.agentChoices ?? [],
-                authorizeSpawn: { request, agentName, decided in
+                authorize: { tool, title, fullMaySkip, decided in
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
                             guard let harness = box.value else { return decided(false) }
-                            harness.authorizeSpawn(request, agentName: agentName, decided: decided)
+                            harness.authorizeCoordinatorAction(tool: tool, title: title, fullMaySkip: fullMaySkip, decided: decided)
                         }
                     }
                 }
@@ -526,19 +544,21 @@ public final class ACPHarness: Harness {
         return [["type": "http", "name": "side", "url": url.absoluteString, "headers": [Any]()]]
     }
 
-    /// M1 for an outside coordinator: Full creates without asking; a call the user just allowed
-    /// on the agent's own card needs no second card (D9); otherwise a Side card asks.
-    private func authorizeSpawn(_ request: SubtrackRequest, agentName: String, decided: @escaping @Sendable (Bool) -> Void) {
-        if modeProvider().autonomy.autoAppliesEdits { return decided(true) }
-        if let granted = spawnGrantedAt, Date().timeIntervalSince(granted) < 120 {
-            spawnGrantedAt = nil
+    /// M1 and M2 for an outside coordinator: Full skips the card when the rule allows it; a
+    /// call the user just allowed on the agent's own card needs no second card (D9); otherwise a
+    /// Side card asks.
+    private func authorizeCoordinatorAction(tool: String, title: String, fullMaySkip: Bool, decided: @escaping @Sendable (Bool) -> Void) {
+        if fullMaySkip, modeProvider().autonomy.autoAppliesEdits { return decided(true) }
+        if let granted = coordinatorGrants[tool], Date().timeIntervalSince(granted) < 120 {
+            coordinatorGrants.removeValue(forKey: tool)
             return decided(true)
         }
         streamingIndex = nil
         thinkingIndex = nil
+        let verb = tool == "promote_subtrack" ? "Promote" : "Create"
         let presentation = PermissionPresentation(
-            title: "Create subtrack \u{201C}\(request.intent)\u{201D} on \(agentName)",
-            options: [.init(id: "side-allow", name: "Create", kind: .allowOnce), .init(id: "side-reject", name: "Don't create", kind: .rejectOnce)]
+            title: title,
+            options: [.init(id: "side-allow", name: verb, kind: .allowOnce), .init(id: "side-reject", name: "Don't \(verb.lowercased())", kind: .rejectOnce)]
         )
         let index = append(.permissionRequest(presentation))
         pendingSpawnApprovals[entries[index].id] = decided
@@ -718,7 +738,8 @@ public final class ACPHarness: Harness {
     public func answerPermission(proposalId: UUID, optionId: String?) {
         if let decided = pendingSpawnApprovals.removeValue(forKey: proposalId) {
             if let index = entries.firstIndex(where: { $0.id == proposalId }), case .permissionRequest(var presentation) = entries[index].kind {
-                presentation.chosenOptionName = optionId == "side-allow" ? "Created" : "Not created"
+                let promote = presentation.title.hasPrefix("Promote")
+                presentation.chosenOptionName = optionId == "side-allow" ? (promote ? "Promoted" : "Created") : (promote ? "Not promoted" : "Not created")
                 replace(index, .permissionRequest(presentation))
             }
             decided(optionId == "side-allow")
@@ -736,7 +757,7 @@ public final class ACPHarness: Harness {
             // Allowed: the diff was on this card, so a write it leads to needs no second one.
             if chosen?.kind == .allowOnce || chosen?.kind == .allowAlways {
                 grantedPaths.formUnion(pending.paths)
-                if presentation.title.contains("create_subtrack") { spawnGrantedAt = Date() }
+                for tool in ["create_subtrack", "promote_subtrack"] where presentation.title.contains(tool) { coordinatorGrants[tool] = Date() }
             }
         } else {
             connection?.respond(id: requestId, result: ["outcome": ["outcome": "cancelled"]])

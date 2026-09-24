@@ -575,6 +575,16 @@ public final class AgentRunner {
         guard entries.indices.contains(entryIndex), case .commandProposal(let presentation) = entries[entryIndex].kind else { return }
         let toolUseId = presentation.command.toolUseId
         let commandText = presentation.command.command
+        if let promotion = presentation.command.promotion {
+            guard let coordinator = coordinatorProvider() else {
+                completeCommandResolution(entryIndex: entryIndex, toolUseId: toolUseId, resolution: .executed(output: "Side can't promote right now."), resultText: "Side can't promote right now.", isError: true)
+                return
+            }
+            coordinator.promote(parentKey: trackKey, trackKey: promotion.track) { [weak self] report in
+                self?.completeCommandResolution(entryIndex: entryIndex, toolUseId: toolUseId, resolution: .executed(output: report), resultText: report, isError: false)
+            }
+            return
+        }
         if let request = presentation.command.spawnRequest {
             guard let coordinator = coordinatorProvider() else {
                 completeCommandResolution(entryIndex: entryIndex, toolUseId: toolUseId, resolution: .executed(output: "Side can't create subtracks right now."), resultText: "Side can't create subtracks right now.", isError: true)
@@ -1550,6 +1560,12 @@ public final class AgentRunner {
                 // (multi-agent RFC, M1).
                 if command.spawnRequest != nil {
                     if modeProvider().autonomy.autoAppliesEdits { autoRunEntryIndices.append(index) }
+                    continue
+                }
+                // A promotion into this track (M2): Full, and only when the subtrack's work is
+                // verified and shares nothing with a sibling.
+                if let promotion = command.promotion {
+                    if modeProvider().autonomy.autoAppliesEdits, promotion.fullMayApply { autoRunEntryIndices.append(index) }
                     continue
                 }
                 let autoRunnable = command.fetchURL != nil

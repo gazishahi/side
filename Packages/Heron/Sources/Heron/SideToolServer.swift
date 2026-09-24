@@ -21,17 +21,18 @@ public final class SideToolServer: @unchecked Sendable {
         /// The coordinator's tools, when this track may coordinate (step 2).
         public let coordination: CoordinationBridge?
         public let agentChoices: [(id: String, name: String)]
-        /// Asks the user before a subtrack is created (M1): the conversation shows a card, unless
-        /// the track runs on Full or the user already allowed this call on the agent's own card.
-        public let authorizeSpawn: (@Sendable (SubtrackRequest, String, @escaping @Sendable (Bool) -> Void) -> Void)?
+        /// Asks the user before a coordinator action (M1, M2): (tool, card title, whether Full may
+        /// skip the card). The conversation shows a card unless Full may skip it or the user
+        /// already allowed this call on the agent's own card.
+        public let authorize: (@Sendable (String, String, Bool, @escaping @Sendable (Bool) -> Void) -> Void)?
         public init(trackKey: String, tracks: @escaping @MainActor @Sendable () -> [AgentTrackSummary], coordination: CoordinationBridge? = nil,
                     agentChoices: [(id: String, name: String)] = [],
-                    authorizeSpawn: (@Sendable (SubtrackRequest, String, @escaping @Sendable (Bool) -> Void) -> Void)? = nil) {
+                    authorize: (@Sendable (String, String, Bool, @escaping @Sendable (Bool) -> Void) -> Void)? = nil) {
             self.trackKey = trackKey
             self.tracks = tracks
             self.coordination = coordination
             self.agentChoices = agentChoices
-            self.authorizeSpawn = authorizeSpawn
+            self.authorize = authorize
         }
     }
 
@@ -160,20 +161,33 @@ public final class SideToolServer: @unchecked Sendable {
             let input = Self.jsonValue(params["arguments"] ?? [String: Any]())
             let text: @Sendable (String, Bool) -> Void = { output, isError in result(["content": [["type": "text", "text": output]], "isError": isError]) }
             DispatchQueue.global(qos: .userInitiated).async {
-                guard name == "create_subtrack" else {
-                    let outcome = bridge.run(name, input: input) ?? ("Unknown tool.", true)
-                    return text(outcome.output, outcome.isError)
-                }
-                if let refusal = bridge.refusal() { return text(refusal, true) }
-                switch bridge.request(from: input) {
-                case .failure(let error): text(error.message, true)
-                case .success(let request):
-                    let agentName = registration.agentChoices.first { $0.id == (request.agentId ?? "heron") }?.name ?? "Heron"
-                    guard let authorize = registration.authorizeSpawn else { return text("Side can't ask the user here, so no subtrack was created.", true) }
-                    authorize(request, agentName) { allowed in
-                        guard allowed else { return text("The user declined. No subtrack was created.", false) }
-                        bridge.create(request) { text($0, false) }
+                switch name {
+                case "create_subtrack":
+                    if let refusal = bridge.refusal() { return text(refusal, true) }
+                    switch bridge.request(from: input) {
+                    case .failure(let error): text(error.message, true)
+                    case .success(let request):
+                        let agentName = registration.agentChoices.first { $0.id == (request.agentId ?? "heron") }?.name ?? "Heron"
+                        guard let authorize = registration.authorize else { return text("Side can't ask the user here, so no subtrack was created.", true) }
+                        authorize(name, "Create subtrack \u{201C}\(request.intent)\u{201D} on \(agentName)", true) { allowed in
+                            guard allowed else { return text("The user declined. No subtrack was created.", false) }
+                            bridge.create(request) { text($0, false) }
+                        }
                     }
+                case "promote_subtrack":
+                    guard case .object(let object) = input, case .string(let track)? = object["track"] else { return text("promote_subtrack needs a track.", true) }
+                    switch bridge.promotionCheck(track: track) {
+                    case .failure(let error): text(error.message, true)
+                    case .success(let check):
+                        guard let authorize = registration.authorize else { return text("Side can't ask the user here, so nothing was promoted.", true) }
+                        authorize(name, "Promote subtrack \u{201C}\(check.facts.intent)\u{201D} into this track", check.fullMayApply) { allowed in
+                            guard allowed else { return text("The user declined. Nothing was promoted." + (check.note.isEmpty ? "" : " " + check.note), false) }
+                            bridge.promote(track: track) { text($0, false) }
+                        }
+                    }
+                default:
+                    let outcome = bridge.run(name, input: input) ?? ("Unknown tool.", true)
+                    text(outcome.output, outcome.isError)
                 }
             }
         case "tools/call":
