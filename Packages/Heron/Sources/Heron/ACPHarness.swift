@@ -590,6 +590,9 @@ public final class ACPHarness: Harness {
                     self.notify(.phaseChanged)
                     self.sessionReady(stored)
                 case .failure:
+                    // The agent stopped (Side closed it, or it crashed): nothing to fall back
+                    // on. A crash is reported once, with its own output, by `onExit`.
+                    guard !self.ended(connection) else { return }
                     self.storedAgentSessionId = nil
                     self.append(.meta("\(self.agent.displayName) couldn't reopen its earlier session, so it starts a new one. The conversation above stays here, but the agent won't remember it."))
                     self.openSession(on: connection)
@@ -601,6 +604,7 @@ public final class ACPHarness: Harness {
             guard let self else { return }
             switch result {
             case .failure(let error):
+                guard !self.ended(connection) else { return }
                 self.sessionFailed(Self.explain(error, agent: self.agent))
             case .success(let value):
                 guard let id = (value as? [String: Any])?["sessionId"] as? String else {
@@ -616,6 +620,15 @@ public final class ACPHarness: Harness {
                 self.sessionReady(id)
             }
         }
+    }
+
+    /// The connection a reply belongs to is gone: stopped by `teardown` (a window closing, an
+    /// agent restarting) or exited on its own. Its pending requests fail as it goes, and those
+    /// failures aren't the agent's answer, so they mustn't read as one. They used to: a reopen cut
+    /// short left "couldn't reopen its earlier session" and "The agent isn't running" in the
+    /// record, again on every launch.
+    private func ended(_ connection: ACPConnection) -> Bool {
+        self.connection !== connection || !connection.isRunning
     }
 
     /// Agents that need a login say so when a session is requested; point at the CLI's own login.

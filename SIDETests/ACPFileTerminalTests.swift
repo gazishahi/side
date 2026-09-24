@@ -411,6 +411,40 @@ for line in sys.stdin:
         XCTAssertTrue(h.archivedConversations[0].title.hasPrefix("unannounced "))
     }
 
+    /// A reopen cut short by Side itself (a window closing mid-load) isn't the agent refusing:
+    /// nothing is said, and nothing is left in the record for the next launch.
+    func testAReopenStoppedBySideLeavesNoNotice() throws {
+        let url = store.outsideLogURL(trackKey: "t", agentId: "mock")
+        OutsideSessionLog.append([.init(kind: .header, conversationId: UUID(), agentId: "mock", agentSessionId: "slow"),
+                                  .init(kind: .user, text: "earlier")], to: url)
+        var h = try harness()
+        h.prepareSession()
+        RunLoop.main.run(until: Date().addingTimeInterval(1))
+        h.teardown()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertFalse(h.entries.contains { if case .meta = $0.kind { return true }; return false }, "\(h.entries.map(\.kind))")
+        h = try harness()
+        defer { h.teardown() }
+        XCTAssertEqual(h.entries.count, 1, "the record has only the conversation: \(h.entries.map(\.kind))")
+    }
+
+    /// An agent that dies while reopening is reported once, with what it said, not as a refusal
+    /// followed by "The agent isn't running".
+    func testAnAgentThatDiesReopeningIsReportedOnce() throws {
+        let url = store.outsideLogURL(trackKey: "t", agentId: "mock")
+        OutsideSessionLog.append([.init(kind: .header, conversationId: UUID(), agentId: "mock", agentSessionId: "crash"),
+                                  .init(kind: .user, text: "earlier")], to: url)
+        let h = try harness()
+        defer { h.teardown() }
+        h.prepareSession()
+        XCTAssertTrue(waitFor { h.entries.contains { if case .meta = $0.kind { return true }; return false } })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let notes = h.entries.compactMap { if case .meta(let t) = $0.kind { return t } else { return nil } }
+        XCTAssertEqual(notes.count, 1, "\(notes)")
+        XCTAssertTrue(notes.first?.contains("session store is corrupt") == true, "\(notes)")
+        XCTAssertFalse(notes.contains { $0.contains("couldn't reopen") || $0.contains("isn't running") }, "\(notes)")
+    }
+
     /// An agent that can't reopen the session starts a new one, and says the agent won't remember.
     func testAFailedReopenStartsANewSessionAndSaysSo() throws {
         let url = store.outsideLogURL(trackKey: "t", agentId: "mock")
@@ -509,7 +543,7 @@ for line in sys.stdin:
     }
 
     private static let mockAgent = #"""
-import json, sys, os
+import json, sys, os, time
 def send(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
 def up(u): send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s", "update": u}})
 def say(t): up({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": t}})
@@ -534,7 +568,13 @@ for line in sys.stdin:
     if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}})
     elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s", "configOptions": options()}})
     elif meth == "session/load":
-        if p["sessionId"] == "s":
+        if p["sessionId"] == "slow":
+            time.sleep(3)
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"configOptions": options()}})
+        elif p["sessionId"] == "crash":
+            sys.stderr.write("fatal: the session store is corrupt\n"); sys.stderr.flush()
+            sys.exit(3)
+        elif p["sessionId"] == "s":
             # Replays history, as a real agent does; Side's record already shows it.
             up({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "REPLAYED"}})
             state["model"] = "small"
