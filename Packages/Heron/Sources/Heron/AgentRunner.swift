@@ -81,6 +81,8 @@ public final class AgentRunner {
     private let modeProvider: () -> AgentMode
     /// The project's tracks, for `list_tracks` and `read_track_overlap` — see `TrackContext.swift`.
     private let trackContextProvider: () -> [AgentTrackSummary]
+    /// The project's coordinator, when this track may coordinate (not a subtrack itself).
+    public var coordinatorProvider: () -> (any TrackCoordinating)? = { nil }
     /// The track's own model choice, resolved fresh per request — same convention as
     /// `rootProvider`, so switching model mid-conversation takes effect on the very next turn
     /// instead of needing a new runner.
@@ -573,6 +575,16 @@ public final class AgentRunner {
         guard entries.indices.contains(entryIndex), case .commandProposal(let presentation) = entries[entryIndex].kind else { return }
         let toolUseId = presentation.command.toolUseId
         let commandText = presentation.command.command
+        if let request = presentation.command.spawnRequest {
+            guard let coordinator = coordinatorProvider() else {
+                completeCommandResolution(entryIndex: entryIndex, toolUseId: toolUseId, resolution: .executed(output: "Side can't create subtracks right now."), resultText: "Side can't create subtracks right now.", isError: true)
+                return
+            }
+            coordinator.createSubtrack(parentKey: trackKey, request: request) { [weak self] report in
+                self?.completeCommandResolution(entryIndex: entryIndex, toolUseId: toolUseId, resolution: .executed(output: report), resultText: report, isError: false)
+            }
+            return
+        }
         if let url = presentation.command.fetchURL {
             Task { [weak self] in
                 let output: String
@@ -1141,7 +1153,10 @@ public final class AgentRunner {
         // One turn only. By the next one the agent has read the files and the note is noise.
         branchedAwayNote = nil
         let mode = modeProvider()
-        let tools = ToolExecutor.specs(for: mode.scope)
+        var tools = ToolExecutor.specs(for: mode.scope)
+        if let coordinator = coordinatorProvider() {
+            tools += ToolExecutor.coordinationSpecs(for: mode.scope, agents: coordinator.agentChoices)
+        }
         // Read per request, off the track's own root: editing the rules file takes effect on
         // the next message rather than the next launch.
         let systemPrompt = Self.systemPrompt(for: mode.scope, projectRules: ProjectRules.load(projectRoot: rootProvider()))
@@ -1434,6 +1449,10 @@ public final class AgentRunner {
         // main-actor state, and the tools only need a copy.
         let trackSnapshot = trackContextProvider()
         executor.trackContextProvider = { trackSnapshot }
+        if let coordinator = coordinatorProvider() {
+            executor.coordination = CoordinationBridge(parentKey: trackKey, coordinator: coordinator)
+            executor.coordinationAgents = coordinator.agentChoices
+        }
         let parsed = calls.map { (id: $0.id, name: $0.name, input: Self.parseArguments($0.partialJSON)) }
         // Read here, on the main actor, and passed in — the scope that governs a batch is the
         // one in force when its calls arrive, and the executor runs on a background queue.
@@ -1527,6 +1546,12 @@ public final class AgentRunner {
                 // CommandAutoRunPolicy. Anything unrecognized goes to the human.
                 // A fetch that passed URLFetchPolicy is the allowlist for fetches; a shell command
                 // consults CommandAutoRunPolicy. Either way Manual autonomy always asks.
+                // A spawn creates a branch and starts spending: only Full creates without asking
+                // (multi-agent RFC, M1).
+                if command.spawnRequest != nil {
+                    if modeProvider().autonomy.autoAppliesEdits { autoRunEntryIndices.append(index) }
+                    continue
+                }
                 let autoRunnable = command.fetchURL != nil
                     || CommandAutoRunPolicy.isAutoRunnable(command.command, projectRoot: rootProvider())
                 // …and never while the agent's terminal sits outside the worktree (audit D-10).

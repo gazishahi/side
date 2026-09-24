@@ -331,7 +331,9 @@ final class TrackStore {
     /// by side (see "Stacked tracks" in the constitution). Either way this gets its own linked
     /// worktree — the shared main tree is never touched, so there's nothing to guard against
     /// losing there.
-    func createTrack(intent: String, baseTrack: Track? = nil, completion: @escaping @Sendable (Result<(Track, TrackSwitchOutcome), Error>) -> Void) {
+    /// `spawnedByCoordinator`: a subtrack a coordinator's agent created (multi-agent RFC). It
+    /// doesn't become the active track, so creating it never changes what anyone is looking at.
+    func createTrack(intent: String, baseTrack: Track? = nil, spawnedByCoordinator: Bool = false, completion: @escaping @Sendable (Result<(Track, TrackSwitchOutcome), Error>) -> Void) {
         let trimmed = intent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { completion(.failure(TrackError.emptyIntent)); return }
         let branchName = uniqueBranchName(from: trimmed)
@@ -358,8 +360,13 @@ final class TrackStore {
                 case .failure(let error):
                     completion(.failure(error))
                 case .success(let worktreePath):
-                    self.demoteActiveTrack()
                     var track = Track(intent: trimmed, branchName: branchName, parentTrackId: baseTrack?.id)
+                    if spawnedByCoordinator {
+                        track.spawnedByCoordinator = true
+                        track.status = .waiting
+                    } else {
+                        self.demoteActiveTrack()
+                    }
                     track.workingDirectoryPath = worktreePath.path
                     self.tracks.append(track)
                     self.untrackedBranch = nil

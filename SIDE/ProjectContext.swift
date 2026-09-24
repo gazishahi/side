@@ -43,6 +43,14 @@ final class ProjectContext {
         return manager
     }()
 
+    /// Coordinator tracks' subtracks (multi-agent RFC, step 2). Held here; the manager points
+    /// at it weakly.
+    lazy var coordinator: TrackCoordinator = {
+        let coordinator = TrackCoordinator(trackStore: trackStore, runnerManager: runnerManager, sessionStore: sessionStore)
+        runnerManager.trackCoordinator = coordinator
+        return coordinator
+    }()
+
     /// Outside agents' terminals, as Run tabs of their own (harness RFC step 3a).
     lazy var acpTerminals = ACPTerminalBroker(terminals: terminals)
 
@@ -215,6 +223,8 @@ final class ProjectContextRegistry {
             return existing
         }
         let context = ProjectContext(projectRoot: projectRoot)
+        // Coordinator tracks' tools reach it through the runner manager, which holds it weakly.
+        _ = context.coordinator
         context.refCount = 1
         contexts[key] = context
         return context

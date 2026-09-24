@@ -15,6 +15,10 @@ public struct ToolExecutor {
     /// The project's tracks, for the two cross-track tools. Defaults to none, so an executor built
     /// without a project context (tests, previews) simply has no tracks to report.
     public var trackContextProvider: () -> [AgentTrackSummary] = { [] }
+    /// The coordinator's tools (multi-agent RFC), when this track may coordinate.
+    public var coordination: CoordinationBridge?
+    /// Snapshotted with `coordination`, so the executor never asks the main actor for them.
+    public var coordinationAgents: [(id: String, name: String)] = []
 
     private static let maxOutputCharacters = 60_000
     private static let maxListedFiles = 400
@@ -23,6 +27,17 @@ public struct ToolExecutor {
     /// The tools a given scope actually exposes. Filtering the *specs* is the enforcement point
     /// for `AgentToolScope`: a model that never sees `write_file` can't propose a write, which
     /// makes Ask/Plan a real boundary rather than an instruction it might reason past.
+    /// The coordinator's tools, for the scopes that allow them: creating and messaging subtracks
+    /// changes things (Build); reading and waiting on them doesn't (Plan too).
+    public static func coordinationSpecs(for scope: AgentToolScope, agents: [(id: String, name: String)]) -> [ToolSpec] {
+        CoordinationBridge.toolSpecs(agentChoices: agents).filter { spec in
+            switch spec.name {
+            case "create_subtrack", "message_track": return scope.allowsWrites
+            default: return scope.allowsWrites || scope == .plan
+            }
+        }
+    }
+
     public static func specs(for scope: AgentToolScope) -> [ToolSpec] {
         specs.filter { spec in
             switch spec.name {
@@ -197,6 +212,9 @@ public struct ToolExecutor {
     /// route to the same place. A boundary the caller can talk past is an instruction, not a
     /// boundary, so this is where it's enforced.
     public func execute(name: String, input: JSONValue, toolUseId: String, scope: AgentToolScope) -> Result {
+        if let coordination, Self.coordinationSpecs(for: scope, agents: coordinationAgents).contains(where: { $0.name == name }) {
+            return executeCoordination(name: name, input: input, toolUseId: toolUseId, bridge: coordination)
+        }
         guard Self.specs(for: scope).contains(where: { $0.name == name }) else {
             return .completed(
                 output: "Refused: \(name) isn't available in \(scope.displayName) mode. Tell the user what you'd need to do and let them switch modes.",
@@ -430,6 +448,26 @@ public struct ToolExecutor {
     public init(projectRoot: URL, liveBufferProvider: @escaping (URL) -> String?) {
         self.projectRoot = projectRoot
         self.liveBufferProvider = liveBufferProvider
+    }
+}
+
+extension ToolExecutor {
+    /// A spawn is a card, like a command (M1); the other coordination tools just run.
+    func executeCoordination(name: String, input: JSONValue, toolUseId: String, bridge: CoordinationBridge) -> Result {
+        if name == "create_subtrack" {
+            if let refusal = bridge.refusal() { return .completed(output: refusal, isError: true) }
+            switch bridge.request(from: input) {
+            case .failure(let error):
+                return .completed(output: error.message, isError: true)
+            case .success(let request):
+                let agentName = coordinationAgents.first { $0.id == (request.agentId ?? "heron") }?.name ?? "Heron"
+                return .commandProposal(ProposedCommand(toolUseId: toolUseId, spawning: request, agentName: agentName))
+            }
+        }
+        guard let result = bridge.run(name, input: input) else {
+            return .completed(output: "Unknown tool: \(name)", isError: true)
+        }
+        return .completed(output: result.output, isError: result.isError)
     }
 }
 

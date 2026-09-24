@@ -1,6 +1,6 @@
 # RFC: Multi-agent work across providers
 
-*2026-09-23. Status: **accepted**: the owner accepted M1–M4 as recommended the same day. Step 1 built; see Plan.*
+*2026-09-23. Status: **accepted**: the owner accepted M1–M4 as recommended the same day. Steps 1–2 built; see Plan.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` (non-negotiables 1–5 and 8 are at stake),
 `SIDE_RFC_BYO_HARNESS.md` (outside agents, which this builds on) and
 `SIDE_RFC_NAVIGATION_LEDGER.md` (R3 runner ceiling, R4 track tools).*
@@ -86,6 +86,17 @@ agents run in the background with no window showing them.
    **Built 2026-09-23:** `SideToolServer`; `ACPHarness` passes it in `mcpServers`.
 2. **Subtracks:** `create_subtrack`, `message_track`, `read_track`, `wait_for_tracks` (Heron and
    MCP), the M1 card, the caps, the R3 ceiling.
+   **Built 2026-09-23:** `TrackCoordinator` (app), `CoordinationBridge` / `TrackCoordinating` /
+   `SubtrackRequest` (Heron). Heron gets the four tools directly (create and message in Build;
+   read and wait in Plan too); outside agents get them over MCP. A spawn is the command card's
+   third kind ("Hand work to a subtrack" · Create), created without asking only under Full (M1);
+   for an outside coordinator, allowing the call on the agent's own permission card covers
+   Side's (D9). Subtracks are created without switching anyone's view (`spawnedByCoordinator`,
+   status Waiting, the coordinator stays active), capped at 4 live per coordinator and one level
+   deep (M3), messaged only by their own coordinator (M4), their messages marked "From the
+   coordinator". At most 4 agents stream at once per project; the rest's messages queue (R3).
+   `wait_for_tracks` holds up to 120 s, then reports what's still working. Verified live: Claude
+   Code created a subtrack on another agent, waited for it and reported its reply.
 3. **Coordinator UI:** child status lines in Think, attention and spend rolled up to the
    umbrella row, promote-into-parent proposals as cards (M2).
 

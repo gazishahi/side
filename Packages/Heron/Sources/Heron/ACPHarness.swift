@@ -1,5 +1,10 @@
 import Foundation
 
+private final class WeakHarness: @unchecked Sendable {
+    weak var value: ACPHarness?
+    init(_ value: ACPHarness) { self.value = value }
+}
+
 /// A track's conversation run by an outside agent over the Agent Client Protocol
 /// (`SIDE_RFC_BYO_HARNESS.md`). The agent's replies, reasoning and tool activity stream into the
 /// same transcript Heron fills; its permission prompts become cards (step 2).
@@ -25,7 +30,7 @@ public final class ACPHarness: Harness {
     public private(set) var phase: AgentRunPhase = .idle
     public private(set) var needsYouSince: Date?
     public var activity: AgentActivity { AgentActivity(phase: phase, hasUnseenCompletion: hasUnseenCompletion) }
-    public var hasCommandAwaitingApproval: Bool { !pendingPermissions.isEmpty || !pendingWrites.isEmpty }
+    public var hasCommandAwaitingApproval: Bool { !pendingPermissions.isEmpty || !pendingWrites.isEmpty || !pendingSpawnApprovals.isEmpty }
     public var appliedEditCounts: [(path: String, added: Int, removed: Int)] {
         appliedCounts.map { (path: $0.key, added: $0.value.added, removed: $0.value.removed) }.sorted { $0.path < $1.path }
     }
@@ -106,6 +111,12 @@ public final class ACPHarness: Harness {
     private let toolServer: SideToolServer?
     private let trackContext: @MainActor @Sendable () -> [AgentTrackSummary]
     private var toolServerRegistration: (url: URL, token: String)?
+    private let coordinatorProvider: () -> (any TrackCoordinating)?
+    /// Side's own approval cards for a coordinator's spawns (M1), by entry id.
+    private var pendingSpawnApprovals: [UUID: @Sendable (Bool) -> Void] = [:]
+    /// When the user last allowed a `create_subtrack` call on the agent's own permission card:
+    /// that approval covers Side's too (D9, one approval per action).
+    private var spawnGrantedAt: Date?
     /// The agent accepts MCP servers over HTTP (`agentCapabilities.mcpCapabilities.http`).
     private var agentTakesHTTPTools = false
     /// How the agent was asked to sign in (Settings › Agents), for agents that ask.
@@ -127,7 +138,8 @@ public final class ACPHarness: Harness {
                 bridgeProvider: @escaping () -> WorkspaceBridge = { .none }, modeProvider: @escaping () -> AgentMode = { .default },
                 sessionStore: AgentSessionStore? = nil, terminalHost: @escaping () -> ACPTerminalHost? = { nil },
                 preferredOptions: @escaping () -> [String: String] = { [:] }, onOptionChanged: @escaping (String, String) -> Void = { _, _ in },
-                toolServer: SideToolServer? = nil, trackContext: @escaping @MainActor @Sendable () -> [AgentTrackSummary] = { [] }) {
+                toolServer: SideToolServer? = nil, trackContext: @escaping @MainActor @Sendable () -> [AgentTrackSummary] = { [] },
+                coordinatorProvider: @escaping () -> (any TrackCoordinating)? = { nil }) {
         self.trackKey = trackKey
         self.agent = agent
         self.launchProvider = launchProvider
@@ -140,6 +152,7 @@ public final class ACPHarness: Harness {
         self.onOptionChanged = onOptionChanged
         self.toolServer = toolServer
         self.trackContext = trackContext
+        self.coordinatorProvider = coordinatorProvider
         agentOptions = seededOptions()
         restoreFromLog()
     }
@@ -494,10 +507,42 @@ public final class ACPHarness: Harness {
     private func sideToolServers() -> [Any] {
         guard agentTakesHTTPTools, let toolServer else { return [] }
         if toolServerRegistration == nil {
-            toolServerRegistration = toolServer.register(.init(trackKey: trackKey, tracks: trackContext))
+            let coordinator = coordinatorProvider()
+            let bridge = coordinator.map { CoordinationBridge(parentKey: trackKey, coordinator: $0) }
+            let box = WeakHarness(self)
+            toolServerRegistration = toolServer.register(.init(
+                trackKey: trackKey, tracks: trackContext, coordination: bridge, agentChoices: coordinator?.agentChoices ?? [],
+                authorizeSpawn: { request, agentName, decided in
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            guard let harness = box.value else { return decided(false) }
+                            harness.authorizeSpawn(request, agentName: agentName, decided: decided)
+                        }
+                    }
+                }
+            ))
         }
         guard let url = toolServerRegistration?.url else { return [] }
         return [["type": "http", "name": "side", "url": url.absoluteString, "headers": [Any]()]]
+    }
+
+    /// M1 for an outside coordinator: Full creates without asking; a call the user just allowed
+    /// on the agent's own card needs no second card (D9); otherwise a Side card asks.
+    private func authorizeSpawn(_ request: SubtrackRequest, agentName: String, decided: @escaping @Sendable (Bool) -> Void) {
+        if modeProvider().autonomy.autoAppliesEdits { return decided(true) }
+        if let granted = spawnGrantedAt, Date().timeIntervalSince(granted) < 120 {
+            spawnGrantedAt = nil
+            return decided(true)
+        }
+        streamingIndex = nil
+        thinkingIndex = nil
+        let presentation = PermissionPresentation(
+            title: "Create subtrack \u{201C}\(request.intent)\u{201D} on \(agentName)",
+            options: [.init(id: "side-allow", name: "Create", kind: .allowOnce), .init(id: "side-reject", name: "Don't create", kind: .rejectOnce)]
+        )
+        let index = append(.permissionRequest(presentation))
+        pendingSpawnApprovals[entries[index].id] = decided
+        setPhase(.awaitingApproval)
     }
 
     private func openSession(on connection: ACPConnection) {
@@ -671,6 +716,15 @@ public final class ACPHarness: Harness {
     }
 
     public func answerPermission(proposalId: UUID, optionId: String?) {
+        if let decided = pendingSpawnApprovals.removeValue(forKey: proposalId) {
+            if let index = entries.firstIndex(where: { $0.id == proposalId }), case .permissionRequest(var presentation) = entries[index].kind {
+                presentation.chosenOptionName = optionId == "side-allow" ? "Created" : "Not created"
+                replace(index, .permissionRequest(presentation))
+            }
+            decided(optionId == "side-allow")
+            resumeIfNothingPending()
+            return
+        }
         guard let pending = pendingPermissions.removeValue(forKey: proposalId),
               let index = entries.firstIndex(where: { $0.id == proposalId }),
               case .permissionRequest(var presentation) = entries[index].kind else { return }
@@ -680,7 +734,10 @@ public final class ACPHarness: Harness {
             let chosen = presentation.options.first { $0.id == optionId }
             presentation.chosenOptionName = chosen?.name ?? optionId
             // Allowed: the diff was on this card, so a write it leads to needs no second one.
-            if chosen?.kind == .allowOnce || chosen?.kind == .allowAlways { grantedPaths.formUnion(pending.paths) }
+            if chosen?.kind == .allowOnce || chosen?.kind == .allowAlways {
+                grantedPaths.formUnion(pending.paths)
+                if presentation.title.contains("create_subtrack") { spawnGrantedAt = Date() }
+            }
         } else {
             connection?.respond(id: requestId, result: ["outcome": ["outcome": "cancelled"]])
             presentation.chosenOptionName = "Cancelled"
@@ -690,11 +747,23 @@ public final class ACPHarness: Harness {
     }
 
     private func resumeIfNothingPending() {
-        if pendingPermissions.isEmpty, pendingWrites.isEmpty, phase == .awaitingApproval { setPhase(.streaming) }
+        if pendingPermissions.isEmpty, pendingWrites.isEmpty, pendingSpawnApprovals.isEmpty, phase == .awaitingApproval { setPhase(.streaming) }
+    }
+
+    private func declinePendingSpawns() {
+        for (id, decided) in pendingSpawnApprovals {
+            if let index = entries.firstIndex(where: { $0.id == id }), case .permissionRequest(var presentation) = entries[index].kind {
+                presentation.chosenOptionName = "Cancelled"
+                replace(index, .permissionRequest(presentation))
+            }
+            decided(false)
+        }
+        pendingSpawnApprovals.removeAll()
     }
 
     private func answerPendingPermissions(with optionId: String?) {
         for id in Array(pendingPermissions.keys) { answerPermission(proposalId: id, optionId: optionId) }
+        declinePendingSpawns()
     }
 
     // MARK: Other actions

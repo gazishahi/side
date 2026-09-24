@@ -39,6 +39,14 @@ public final class AgentRunnerManager {
     /// choice is recorded — so a model or mode picked once survives new conversations and relaunch.
     public var agentOptionsProvider: ((String) -> [String: String])?
     public var agentOptionChanged: ((String, String, String) -> Void)?
+    /// Multi-agent (RFC step 2): creates and reads subtracks for coordinator tracks.
+    public weak var trackCoordinator: (any TrackCoordinating)?
+
+    /// The coordinator for a track that may use it.
+    func coordinator(for trackKey: String) -> (any TrackCoordinating)? {
+        guard let trackCoordinator, trackCoordinator.canCoordinate(trackKey: trackKey) else { return nil }
+        return trackCoordinator
+    }
 
     /// Fires whenever any owned runner's phase or unseen-completion state changes, debounced so
     /// a Tracks ledger or stage badge driven by many runners doesn't relayout on every single
@@ -99,7 +107,8 @@ public final class AgentRunnerManager {
                                      preferredOptions: { [weak self] in self?.agentOptionsProvider?(trackKey) ?? [:] },
                                      onOptionChanged: { [weak self] id, value in self?.agentOptionChanged?(trackKey, id, value) },
                                      toolServer: .shared,
-                                     trackContext: { [weak self] in self?.trackContextProvider(trackKey) ?? [] })
+                                     trackContext: { [weak self] in self?.trackContextProvider(trackKey) ?? [] },
+                                     coordinatorProvider: { [weak self] in self?.coordinator(for: trackKey) })
             harness.addObserver { [weak self] event in
                 guard case .phaseChanged = event else { return }
                 self?.scheduleChangeNotification()
@@ -117,6 +126,7 @@ public final class AgentRunnerManager {
             modelSelectionProvider: { [modelSelectionProvider] in modelSelectionProvider(trackKey) },
             trackContextProvider: { [trackContextProvider] in trackContextProvider(trackKey) }
         )
+        runner.coordinatorProvider = { [weak self] in self?.coordinator(for: trackKey) }
         runner.addObserver { [weak self] event in
             guard case .phaseChanged = event else { return }
             self?.scheduleChangeNotification()

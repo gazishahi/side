@@ -24,6 +24,8 @@ public struct ProposedCommand: Identifiable {
     public enum Kind: Equatable {
         case shell
         case fetch(URL)
+        /// A coordinator creating a subtrack (multi-agent RFC, M1): same card, same approval.
+        case spawn(SubtrackRequest)
     }
 
     public init(toolUseId: String, command: String, taskName: String? = nil) {
@@ -44,7 +46,17 @@ public struct ProposedCommand: Identifiable {
         self.riskLevel = .normal
     }
 
+    public init(toolUseId: String, spawning request: SubtrackRequest, agentName: String) {
+        self.id = UUID()
+        self.toolUseId = toolUseId
+        self.command = "Create subtrack \u{201C}\(request.intent)\u{201D} on \(agentName)"
+        self.taskName = nil
+        self.kind = .spawn(request)
+        self.riskLevel = .normal
+    }
+
     public var fetchURL: URL? { if case .fetch(let url) = kind { return url } else { return nil } }
+    public var spawnRequest: SubtrackRequest? { if case .spawn(let request) = kind { return request } else { return nil } }
 }
 
 /// How long a conversation waits on a command before saying "still running" — the command

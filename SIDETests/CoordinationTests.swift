@@ -1,0 +1,196 @@
+import XCTest
+@testable import Side
+@testable import Heron
+
+/// Multi-agent RFC step 2: a coordinator track creates subtracks on any agent, messages them,
+/// waits for them and reads their results, under M1–M4 and the R3 ceiling.
+@MainActor
+final class CoordinationTests: XCTestCase {
+    private var root: URL!
+    private var context: ProjectContext!
+    private var worker: ACPAgent!
+
+    override func setUp() async throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("coord-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "T"]] { _ = GitPaths.runGit(args, cwd: root.path) }
+        try "hi\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = GitPaths.runGit(["add", "."], cwd: root.path); _ = GitPaths.runGit(["commit", "-q", "-m", "base"], cwd: root.path)
+        context = ProjectContextRegistry.shared.acquire(projectRoot: root)
+
+        // A worker agent: answers every prompt with "done:" and its first line.
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("worker-\(UUID().uuidString).py")
+        try #"""
+import json, sys
+def send(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+for line in sys.stdin:
+    m = json.loads(line); meth = m.get("method"); p = m.get("params", {})
+    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1}})
+    elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "w"}})
+    elif meth == "session/prompt":
+        text = p["prompt"][0]["text"]
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "w", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "done: " + text.splitlines()[-1]}}}})
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
+"""#.write(to: script, atomically: true, encoding: .utf8)
+        worker = ACPAgent.addCustom(name: "Worker", command: "worker", arguments: [script.path], apiKeyVariable: nil)
+        UserDefaults.standard.set("/usr/bin/python3", forKey: "SideACPAgentPath.\(worker.id)")
+    }
+
+    override func tearDown() async throws {
+        for track in context.trackStore.tracks {
+            context.runnerManager.discardRunner(forTrackKey: track.branchName)
+            if let path = track.workingDirectoryPath { _ = GitPaths.runGit(["worktree", "remove", "--force", path], cwd: root.path) }
+        }
+        ProjectContextRegistry.shared.release(projectRoot: root)
+        ACPAgent.removeCustom(id: worker.id)
+        UserDefaults.standard.removeObject(forKey: "SideACPAgentPath.\(worker.id)")
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func createTrack(_ intent: String, parent: Track? = nil, spawned: Bool = false) throws -> Track {
+        let done = expectation(description: intent)
+        let box = TrackBox()
+        context.trackStore.createTrack(intent: intent, baseTrack: parent, spawnedByCoordinator: spawned) { result in
+            if case .success(let (track, _)) = result { box.id = track.id }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 30)
+        return try XCTUnwrap(context.trackStore.tracks.first { $0.id == box.id })
+    }
+
+    private func createTrackAsync(_ intent: String) async throws -> Track {
+        let done = expectation(description: intent)
+        let box = TrackBox()
+        context.trackStore.createTrack(intent: intent) { result in
+            if case .success(let (track, _)) = result { box.id = track.id }
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: 30)
+        return try XCTUnwrap(context.trackStore.tracks.first { $0.id == box.id })
+    }
+
+    private func offMain(_ body: @escaping @Sendable () -> String) -> String {
+        let done = expectation(description: "off main")
+        let box = ResultBox()
+        DispatchQueue.global().async { box.value = body(); done.fulfill() }
+        wait(for: [done], timeout: 90)
+        return box.value
+    }
+
+    func testACoordinatorHandsWorkToASubtrackOnAnotherAgentAndReadsItBack() throws {
+        let coordinatorTrack = try createTrack("Ship the thing")
+        let coordinator = context.coordinator
+        XCTAssertTrue(coordinator.canCoordinate(trackKey: coordinatorTrack.branchName))
+        let bridge = CoordinationBridge(parentKey: coordinatorTrack.branchName, coordinator: coordinator)
+
+        // Heron's path: the spawn is a card (M1), with the worker named.
+        var executor = ToolExecutor(projectRoot: root, liveBufferProvider: { _ in nil })
+        executor.coordination = bridge
+        executor.coordinationAgents = coordinator.agentChoices
+        let input: JSONValue = .object(["intent": .string("Write the docs"), "agent": .string(worker.id), "instructions": .string("Document a.txt")])
+        guard case .commandProposal(let proposal) = executor.execute(name: "create_subtrack", input: input, toolUseId: "t1", scope: .build) else { return XCTFail("not a card") }
+        XCTAssertEqual(proposal.spawnRequest?.agentId, worker.id)
+        XCTAssertEqual(proposal.command, "Create subtrack \u{201C}Write the docs\u{201D} on Worker")
+        guard case .completed(_, let isError) = executor.execute(name: "create_subtrack", input: input, toolUseId: "t2", scope: .ask), isError else {
+            return XCTFail("Ask can't create subtracks")
+        }
+
+        // Approved: the subtrack is created, stacked, on the worker, and started.
+        let created = expectation(description: "created")
+        var report = ""
+        coordinator.createSubtrack(parentKey: coordinatorTrack.branchName, request: try XCTUnwrap(proposal.spawnRequest)) { report = $0; created.fulfill() }
+        wait(for: [created], timeout: 30)
+        XCTAssertTrue(report.contains("Created subtrack"), report)
+        let child = try XCTUnwrap(context.trackStore.tracks.first { $0.spawnedByCoordinator })
+        XCTAssertEqual(child.parentTrackId, coordinatorTrack.id)
+        XCTAssertEqual(child.harnessId, worker.id)
+        XCTAssertEqual(context.trackStore.tracks.first { $0.id == coordinatorTrack.id }?.status, .active, "creating a subtrack doesn't switch the coordinator away")
+        XCTAssertFalse(coordinator.canCoordinate(trackKey: child.branchName), "one level deep")
+
+        // Waiting and reading happen off the main thread, as the executor and MCP server do.
+        let childKey = child.branchName
+        let waited = offMain { bridge.wait(tracks: [childKey], timeout: 60) }
+        XCTAssertTrue(waited.contains("finished its turn"), waited)
+        XCTAssertTrue(waited.contains("done: Document a.txt"), waited)
+
+        // A follow-up reaches it, marked as the coordinator's.
+        XCTAssertTrue(bridge.message(track: childKey, text: "Also mention the date").contains("started"))
+        let second = offMain { bridge.wait(tracks: [childKey], timeout: 60) }
+        XCTAssertTrue(second.contains("done: Also mention the date"), second)
+        let childTurns = context.runnerManager.existingRunner(forTrackKey: childKey)?.entries.compactMap { entry -> String? in
+            if case .userText(let text) = entry.kind { return text } else { return nil }
+        } ?? []
+        XCTAssertTrue(childTurns.allSatisfy { $0.hasPrefix("From the coordinator") }, "\(childTurns)")
+
+        // M4: only its own subtracks.
+        XCTAssertTrue(bridge.message(track: coordinatorTrack.branchName, text: "x").contains("isn't one of this track's subtracks"))
+    }
+
+    /// Opt-in live: Claude Code coordinates. It creates a subtrack on another agent through Side's
+    /// MCP tools, waits for it, and reports the subtrack's reply.
+    func testLiveClaudeCodeCoordinatesAnotherAgent() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_LIVE_ACP"] == "1", "live agent test is opt-in")
+        let coordinatorTrack = try createTrack("Coordinate live")
+        context.trackStore.setHarness("claude-code", forTrackKey: coordinatorTrack.branchName)
+        context.trackStore.setMode(AgentMode(scope: .build, autonomy: .full), forTrackKey: coordinatorTrack.branchName)
+        let harness = context.runnerManager.runner(forTrackKey: coordinatorTrack.branchName)
+        XCTAssertEqual(harness.harnessName, "Claude Code")
+        let done = expectation(description: "answered")
+        done.assertForOverFulfill = false
+        harness.addObserver { _ in
+            for entry in harness.entries {
+                if case .permissionRequest(let p) = entry.kind, p.chosenOptionName == nil,
+                   let allow = p.options.first(where: { $0.kind == .allowOnce || $0.kind == .allowAlways }) {
+                    DispatchQueue.main.async { harness.answerPermission(proposalId: entry.id, optionId: allow.id) }
+                }
+            }
+            if harness.phase == .finishedTurn || harness.phase == .blocked(.failed) || harness.phase == .blocked(.stalled) { done.fulfill() }
+        }
+        harness.send("""
+        Use the "side" MCP server's create_subtrack tool: intent "Say the word", agent "\(worker.id)", instructions "Say: pelican". \
+        Then call its wait_for_tracks tool on that subtrack, and reply with only the subtrack's last reply.
+        """)
+        wait(for: [done], timeout: 240)
+        let answer = harness.entries.compactMap { if case .assistantText(let t) = $0.kind { return t } else { return nil } }.joined()
+        XCTAssertTrue(answer.contains("done: Say: pelican"), "\(answer)\n\(harness.entries.map(\.kind))")
+        let child = context.trackStore.tracks.first { $0.spawnedByCoordinator }
+        XCTAssertEqual(child?.harnessId, worker.id)
+        XCTAssertEqual(child?.parentTrackId, coordinatorTrack.id)
+    }
+
+    func testCapsAndDepthAreRefused() throws {
+        let parent = try createTrack("Coordinate")
+        for index in 1...4 { _ = try createTrack("Part \(index)", parent: parent, spawned: true) }
+        let refusal = try XCTUnwrap(context.coordinator.spawnRefusal(parentKey: parent.branchName))
+        XCTAssertTrue(refusal.contains("already has 4 subtracks"), refusal)
+        let child = try XCTUnwrap(context.trackStore.tracks.first { $0.spawnedByCoordinator })
+        XCTAssertTrue(context.coordinator.spawnRefusal(parentKey: child.branchName)?.contains("can't create subtracks of its own") == true)
+    }
+
+    /// The same tools over MCP, for an outside coordinator; a declined spawn creates nothing.
+    func testOutsideCoordinatorsGetTheToolsOverMCP() async throws {
+        let parent = try await createTrackAsync("Coordinate over MCP")
+        let bridge = CoordinationBridge(parentKey: parent.branchName, coordinator: context.coordinator)
+        let server = SideToolServer()
+        let registration = try XCTUnwrap(server.register(.init(
+            trackKey: parent.branchName, tracks: { [] }, coordination: bridge, agentChoices: context.coordinator.agentChoices,
+            authorizeSpawn: { _, _, decided in decided(false) })))
+        func post(_ body: [String: Any]) async throws -> [String: Any] {
+            var request = URLRequest(url: registration.url)
+            request.httpMethod = "POST"
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, _) = try await URLSession.shared.data(for: request)
+            return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        }
+        let list = try await post(["jsonrpc": "2.0", "id": 1, "method": "tools/list"])
+        let names = ((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
+        XCTAssertEqual(Set(names), ["list_tracks", "read_track_overlap", "create_subtrack", "message_track", "read_track", "wait_for_tracks"])
+        let call = try await post(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "create_subtrack", "arguments": ["intent": "No", "agent": "heron", "instructions": "x"]]])
+        let text = (((call["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text.contains("declined"), text)
+        XCTAssertFalse(context.trackStore.tracks.contains { $0.spawnedByCoordinator })
+    }
+}
+
+private final class ResultBox: @unchecked Sendable { var value = "" }
+private final class TrackBox: @unchecked Sendable { var id: UUID? }

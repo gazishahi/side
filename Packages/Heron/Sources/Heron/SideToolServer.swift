@@ -18,9 +18,20 @@ public final class SideToolServer: @unchecked Sendable {
     public struct Registration: Sendable {
         public let trackKey: String
         public let tracks: @MainActor @Sendable () -> [AgentTrackSummary]
-        public init(trackKey: String, tracks: @escaping @MainActor @Sendable () -> [AgentTrackSummary]) {
+        /// The coordinator's tools, when this track may coordinate (step 2).
+        public let coordination: CoordinationBridge?
+        public let agentChoices: [(id: String, name: String)]
+        /// Asks the user before a subtrack is created (M1): the conversation shows a card, unless
+        /// the track runs on Full or the user already allowed this call on the agent's own card.
+        public let authorizeSpawn: (@Sendable (SubtrackRequest, String, @escaping @Sendable (Bool) -> Void) -> Void)?
+        public init(trackKey: String, tracks: @escaping @MainActor @Sendable () -> [AgentTrackSummary], coordination: CoordinationBridge? = nil,
+                    agentChoices: [(id: String, name: String)] = [],
+                    authorizeSpawn: (@Sendable (SubtrackRequest, String, @escaping @Sendable (Bool) -> Void) -> Void)? = nil) {
             self.trackKey = trackKey
             self.tracks = tracks
+            self.coordination = coordination
+            self.agentChoices = agentChoices
+            self.authorizeSpawn = authorizeSpawn
         }
     }
 
@@ -137,7 +148,34 @@ public final class SideToolServer: @unchecked Sendable {
         case "ping":
             result([:])
         case "tools/list":
-            result(["tools": Self.tools.map { ["name": $0.name, "description": $0.description, "inputSchema": ["type": "object", "properties": [String: Any]()]] }])
+            var tools: [[String: Any]] = Self.tools.map { ["name": $0.name, "description": $0.description, "inputSchema": ["type": "object", "properties": [String: Any]()]] }
+            if registration.coordination != nil {
+                for spec in CoordinationBridge.toolSpecs(agentChoices: registration.agentChoices) {
+                    tools.append(["name": spec.name, "description": spec.description, "inputSchema": Self.plain(spec.inputSchema)])
+                }
+            }
+            result(["tools": tools])
+        case "tools/call" where registration.coordination != nil && CoordinationBridge.toolSpecs(agentChoices: []).contains(where: { $0.name == params["name"] as? String }):
+            guard let bridge = registration.coordination, let name = params["name"] as? String else { return }
+            let input = Self.jsonValue(params["arguments"] ?? [String: Any]())
+            let text: @Sendable (String, Bool) -> Void = { output, isError in result(["content": [["type": "text", "text": output]], "isError": isError]) }
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard name == "create_subtrack" else {
+                    let outcome = bridge.run(name, input: input) ?? ("Unknown tool.", true)
+                    return text(outcome.output, outcome.isError)
+                }
+                if let refusal = bridge.refusal() { return text(refusal, true) }
+                switch bridge.request(from: input) {
+                case .failure(let error): text(error.message, true)
+                case .success(let request):
+                    let agentName = registration.agentChoices.first { $0.id == (request.agentId ?? "heron") }?.name ?? "Heron"
+                    guard let authorize = registration.authorizeSpawn else { return text("Side can't ask the user here, so no subtrack was created.", true) }
+                    authorize(request, agentName) { allowed in
+                        guard allowed else { return text("The user declined. No subtrack was created.", false) }
+                        bridge.create(request) { text($0, false) }
+                    }
+                }
+            }
         case "tools/call":
             guard let name = params["name"] as? String, Self.tools.contains(where: { $0.name == name }) else {
                 return failure(-32602, "Unknown tool.")
@@ -160,6 +198,30 @@ public final class SideToolServer: @unchecked Sendable {
         ("list_tracks", "List the other tracks in this project: each one's branch, status, intent, base branch, and how many files it has changed. Read-only. Use it to understand what else is in flight before planning a change that touches shared code."),
         ("read_track_overlap", "Which other tracks in this project have changed the same files as this track, and which files. Read-only. A shared file is a merge conflict waiting to happen at promotion; check before editing files another track is in the middle of."),
     ]
+
+    /// A `JSONValue` schema as plain JSON for the wire.
+    static func plain(_ value: JSONValue) -> Any {
+        switch value {
+        case .string(let s): return s
+        case .number(let n): return n
+        case .bool(let b): return b
+        case .null: return NSNull()
+        case .array(let items): return items.map(plain)
+        case .object(let object): return object.mapValues(plain)
+        }
+    }
+
+    /// Plain JSON from the wire as a `JSONValue`, for the tools' argument parsing.
+    static func jsonValue(_ any: Any) -> JSONValue {
+        switch any {
+        case let string as String: return .string(string)
+        case let number as NSNumber:
+            return CFGetTypeID(number) == CFBooleanGetTypeID() ? .bool(number.boolValue) : .number(number.doubleValue)
+        case let array as [Any]: return .array(array.map(jsonValue))
+        case let object as [String: Any]: return .object(object.mapValues(jsonValue))
+        default: return .null
+        }
+    }
 
     static func run(_ name: String, tracks: [AgentTrackSummary]) -> String {
         switch name {

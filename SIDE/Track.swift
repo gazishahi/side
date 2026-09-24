@@ -56,6 +56,9 @@ struct Track: Codable, Identifiable {
     /// The outside agent's settings chosen on this track (option id → value: model, effort,
     /// mode), re-applied to each new session. Cleared when the track changes agent.
     var harnessOptions: [String: String]?
+    /// Created by a coordinator track's agent (multi-agent RFC): it can't create subtracks of
+    /// its own (one level deep, M3), and counts toward its parent's cap of four.
+    var spawnedByCoordinator = false
 
     /// Never nil in practice — resolves the stored values, the migrated old bool, or the
     /// default, in that order.
@@ -87,7 +90,7 @@ struct Track: Codable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands, parentTrackId
-        case providerId, modelId, effort, toolScope, autonomy, harnessId, harnessOptions
+        case providerId, modelId, effort, toolScope, autonomy, harnessId, harnessOptions, spawnedByCoordinator
     }
 
     init(from decoder: Decoder) throws {
@@ -108,5 +111,6 @@ struct Track: Codable, Identifiable {
         autonomy = try container.decodeIfPresent(AgentAutonomy.self, forKey: .autonomy)
         harnessId = try container.decodeIfPresent(String.self, forKey: .harnessId)
         harnessOptions = try container.decodeIfPresent([String: String].self, forKey: .harnessOptions)
+        spawnedByCoordinator = try container.decodeIfPresent(Bool.self, forKey: .spawnedByCoordinator) ?? false
     }
 }
