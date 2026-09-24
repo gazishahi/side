@@ -9,6 +9,8 @@ open audit finding F4.
 Companion to `SIDE_PRODUCT_CONSTITUTION.md` (non-negotiables 3, 4, 5 and 8 are the ones at
 stake) and `SIDE_DESIGN.md`.*
 
+Symbols: `Harness` `ACPHarness` `ACPConnection` `ACPAgent` `ACPTerminalHost` `ACPTerminalBroker` `HarnessOption` `OutsideSessionLog` `UserSaveLog` `AgentAvailability` `AgentsPreferencesViewController`
+
 ## The ask
 
 Heron is Side's harness, and it stays the default. But someone already living in Claude Code,
@@ -224,8 +226,8 @@ another agent).
    transcript says the agent won't remember. New Conversation files the record under
    `outside/archive/`. Retention and Delete All Conversations cover these records too. A
    checkpoint finished after its conversation was put away is still written to the ledger and
-   the record. Verified live: Claude Code remembers a word across a relaunch. Not yet built:
-   archived outside conversations in the History list.
+   the record. Verified live: Claude Code remembers a word across a relaunch. Past outside
+   conversations appear in Think's History and reopen (their agent session is reopened too).
 
 Each step is its own commit with its acceptance below.
 

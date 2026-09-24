@@ -390,6 +390,27 @@ for line in sys.stdin:
         XCTAssertEqual(users.count, 2)
     }
 
+    /// New Conversation files the old one in History; opening it brings it back and files the
+    /// current one in its place.
+    func testPastOutsideConversationsAreInHistoryAndReopen() throws {
+        let h = try harness(autonomy: .full)
+        defer { h.teardown() }
+        _ = run(h, "read")
+        h.startNewConversation()
+        XCTAssertTrue(h.entries.isEmpty)
+        _ = run(h, "unannounced")
+        let history = h.archivedConversations
+        XCTAssertEqual(history.count, 1)
+        XCTAssertTrue(history[0].title.hasPrefix("read "), history[0].title)
+
+        XCTAssertTrue(h.openArchivedConversation(id: history[0].id))
+        let users = h.entries.compactMap { if case .userText(let t) = $0.kind { return t } else { return nil } }
+        XCTAssertEqual(users.count, 1)
+        XCTAssertTrue(users[0].hasPrefix("read "))
+        XCTAssertEqual(h.archivedConversations.count, 1, "the other conversation took its place in History")
+        XCTAssertTrue(h.archivedConversations[0].title.hasPrefix("unannounced "))
+    }
+
     /// An agent that can't reopen the session starts a new one, and says the agent won't remember.
     func testAFailedReopenStartsANewSessionAndSaysSo() throws {
         let url = store.outsideLogURL(trackKey: "t", agentId: "mock")

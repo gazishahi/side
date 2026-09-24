@@ -29,7 +29,10 @@ public final class ACPHarness: Harness {
     public var appliedEditCounts: [(path: String, added: Int, removed: Int)] {
         appliedCounts.map { (path: $0.key, added: $0.value.added, removed: $0.value.removed) }.sorted { $0.path < $1.path }
     }
-    public var archivedConversations: [ArchivedConversation] { [] }
+    /// Past conversations with this agent on this track (filed by New Conversation).
+    public var archivedConversations: [ArchivedConversation] {
+        sessionStore?.outsideArchives(trackKey: trackKey, agentId: agent.id) ?? []
+    }
     public var runningUserTaskName: String? { nil }
     public var pendingUserTaskProposalId: UUID? { nil }
 
@@ -733,7 +736,29 @@ public final class ACPHarness: Harness {
         prepareSession()
     }
 
-    public func openArchivedConversation(id: UUID) -> Bool { false }
+    /// Reopens a past conversation: its record becomes current (the current one is filed away),
+    /// and the agent's own session for it is reopened on the next open, so it remembers.
+    public func openArchivedConversation(id: UUID) -> Bool {
+        guard !phase.isBusy, phase != .awaitingApproval else { return false }
+        persistNewEntries() // the current conversation is filed complete
+        guard sessionStore?.openOutsideArchive(id: id, trackKey: trackKey, agentId: agent.id) == true else { return false }
+        entries.removeAll()
+        toolEntryIndex.removeAll()
+        toolCalls.removeAll()
+        bases.removeAll()
+        appliedCounts.removeAll()
+        usage = nil
+        sessionId = nil
+        storedAgentSessionId = nil
+        persistedCount = 0
+        headerWritten = false
+        conversationId = UUID()
+        restoreFromLog()
+        notify(.reset)
+        setPhase(.idle)
+        prepareSession()
+        return true
+    }
 
     public func contextUsage() -> (usedTokens: Int, windowTokens: Int, fraction: Double, status: ContextBudget.Status) {
         guard let usage else { return (0, 0, 0, .comfortable) }

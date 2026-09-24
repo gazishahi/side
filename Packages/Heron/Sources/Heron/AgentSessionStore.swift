@@ -217,9 +217,44 @@ public final class AgentSessionStore {
         let current = outsideLogURL(trackKey: trackKey, agentId: agentId)
         guard FileManager.default.fileExists(atPath: current.path) else { return nil }
         let archived = outsideDirectory.appendingPathComponent("archive", isDirectory: true)
-            .appendingPathComponent(current.deletingPathExtension().lastPathComponent + "-\(Int(Date().timeIntervalSince1970)).jsonl")
+            .appendingPathComponent(current.deletingPathExtension().lastPathComponent + "-\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(6)).jsonl")
         try? FileManager.default.createDirectory(at: archived.deletingLastPathComponent(), withIntermediateDirectories: true)
         return (try? FileManager.default.moveItem(at: current, to: archived)) != nil ? archived : nil
+    }
+
+    private var outsideArchiveDirectory: URL { outsideDirectory.appendingPathComponent("archive", isDirectory: true) }
+
+    /// Past conversations with `agentId` on a track, newest first, for Think's History. Each is
+    /// identified by its own conversation id, from its record's header.
+    public func outsideArchives(trackKey: String, agentId: String) -> [ArchivedConversation] {
+        outsideArchiveFiles(trackKey: trackKey, agentId: agentId).compactMap { url in
+            let contents = OutsideSessionLog.read(url)
+            guard let id = contents.conversationId else { return nil }
+            let firstUser = contents.entries.lazy.compactMap { entry -> String? in
+                if case .userText(let text) = entry.kind { return text }
+                return nil
+            }.first ?? ""
+            let oneLine = firstUser.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+            let archivedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+            let turns = contents.entries.filter { if case .userText = $0.kind { return true } else { return false } }.count
+            return ArchivedConversation(id: id, trackKey: trackKey, title: oneLine.count > 70 ? String(oneLine.prefix(70)) + "…" : oneLine,
+                                        turnCount: turns, createdAt: contents.entries.first?.createdAt ?? archivedAt, archivedAt: archivedAt)
+        }.sorted { $0.archivedAt > $1.archivedAt }
+    }
+
+    /// Makes an archived conversation current again, filing the current one away first. False if
+    /// it isn't there.
+    @discardableResult
+    public func openOutsideArchive(id: UUID, trackKey: String, agentId: String) -> Bool {
+        guard let file = outsideArchiveFiles(trackKey: trackKey, agentId: agentId).first(where: { OutsideSessionLog.read($0).conversationId == id }) else { return false }
+        archiveOutsideLog(trackKey: trackKey, agentId: agentId)
+        return (try? FileManager.default.moveItem(at: file, to: outsideLogURL(trackKey: trackKey, agentId: agentId))) != nil
+    }
+
+    private func outsideArchiveFiles(trackKey: String, agentId: String) -> [URL] {
+        let prefix = outsideLogURL(trackKey: trackKey, agentId: agentId).deletingPathExtension().lastPathComponent + "-"
+        return ((try? FileManager.default.contentsOfDirectory(at: outsideArchiveDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+            .filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix(prefix) }
     }
 
     /// Every outside-agent record for a track, current and archived.
