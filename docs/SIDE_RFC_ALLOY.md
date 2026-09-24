@@ -1,6 +1,6 @@
 # RFC: Alloy, the editing engine
 
-*2026-09-24. Status: **decisions pending**: A1–A7 below. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
+*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; step 0 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` ("Alloy: powers Make"), `SIDE_DESIGN.md` (tokens,
 motion, accessibility) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -106,6 +106,17 @@ headers, inline agent ghost text.
 ## Plan
 
 0. **The seam** (A4): `EditorEngine`, implemented by today's editor. No behavior change.
+   **Built 2026-09-24:** `EditorEngine` (the view: selection, scrolling, geometry for popovers
+   and the completion panel, typed insertion, focus, gutter marks), `EditorDocument` (a tab's
+   text: replace-all, highlighting, diagnostic and bracket decorations) and
+   `EditorEngineDelegate` (text and selection changes, auto-pairing, key commands, jump to
+   definition, gutter clicks). `TextKitEditorEngine` and `TextStorageDocument` wrap today's
+   `NSTextView`; `MakeWorkspaceViewController` touches nothing else (the Markdown preview, a
+   separate read-only view, moved its link handling to `MarkdownPreviewLinks`).
+   `EditorEngineTests` drive Make's real typing path through the seam (reveal a line, auto-pair,
+   step over a closer, indent after `{`, unsaved state, decorations); Alloy must pass the same
+   tests. Checked in the app: highlighting, gutter, change marks, current-line band, bracket tint,
+   language server.
 1. **AlloyCore:** rope, edits, undo grouping, selections, indexes; unit tests and benchmarks.
 2. **AlloyRender:** Metal view, line shaping cache, glyph atlas, viewport, carets and selections,
    120 Hz scrolling.

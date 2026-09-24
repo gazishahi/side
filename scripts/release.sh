@@ -61,6 +61,14 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 codesign -dv "$APP" 2>&1 | grep -E "Authority=Developer ID Application|flags=.*runtime" >/dev/null \
   || { echo "not signed with Developer ID and the hardened runtime" >&2; exit 1; }
 
+echo "==> Check linked frameworks resolve inside the app"
+# A framework the binary links through @rpath must be in Contents/Frameworks, or the app dies at
+# launch; tests can't catch it (the test runner supplies its own framework path).
+for lib in $(otool -L "$APP/Contents/MacOS/Side" | awk '/@rpath\//{print $1}'); do
+  [[ -e "$APP/Contents/Frameworks/${lib#@rpath/}" ]] || { echo "missing from the app: $lib" >&2; exit 1; }
+done
+otool -l "$APP/Contents/MacOS/Side" | grep -q "@executable_path/../Frameworks" || { echo "no @executable_path/../Frameworks rpath" >&2; exit 1; }
+
 notarize() {
   xcrun notarytool submit "$1" --keychain-profile "$PROFILE" --wait
 }

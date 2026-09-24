@@ -51,7 +51,10 @@ General › Updates (automatic checks on or off, check now, the running version)
 UI-test runs never check. The feed is the latest release's `appcast.xml` in the public releases
 repository; each update is verified against `SUPublicEDKey` (Side's own key, Keychain account
 `side`, separate from any other app's) and its Developer ID signature before it installs.
-`scripts/release.sh` now writes the signed `appcast.xml` next to the DMG and prints the
+The app target sets `@executable_path/../Frameworks` as a runtime search path: without it
+Sparkle's framework isn't found and the app dies at launch (found 2026-09-24; tests couldn't catch
+it because the test runner supplies its own framework path), and `release.sh` now refuses a build
+whose linked frameworks don't resolve inside the app. `scripts/release.sh` now writes the signed `appcast.xml` next to the DMG and prints the
 `gh release create` command; publishing is left to the owner because it's public.
 
 ## Heron: ready to publish

@@ -27,7 +27,7 @@ private struct OpenTab {
     let id = UUID()
     var url: URL
     let kind: TabKind
-    let textStorage: NSTextStorage
+    let document: EditorDocument
     let undoManager: UndoManager
     var dirty: Bool
     var isUntitled: Bool
@@ -44,7 +44,6 @@ private struct OpenTab {
     var lastSelectedRange = NSRange(location: 0, length: 0)
     var csvRows: [[String]] = []
     var diagnostics: [LSPDiagnostic] = []
-    var renderedDiagnosticRanges: [NSRange] = []
     var isPreviewingMarkdown = false
     var cachedImage: NSImage?
     var headCache: HeadContentCache = .notFetched
@@ -66,11 +65,12 @@ struct PaletteCommand {
 /// Which list the palette is showing. `commands` is also reached by typing `>` in any mode.
 enum PaletteMode { case files, symbols, text, commands }
 
-final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSMenuDelegate {
+final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
-    private let editor = EditorTextView()
-    private let editorScroll = NSScrollView()
-    private var gutter: LineNumberGutterView!
+    /// Make's editor, behind the seam Alloy replaces (SIDE_RFC_ALLOY.md, step 0).
+    private(set) lazy var editor: EditorEngine = TextKitEditorEngine(appearance: Self.editorAppearance)
+    private var editorScroll: NSScrollView { editor.scrollView }
+    private var gutter: NSView { editor.gutterView }
     private let tabBar = TabStripView()
     /// Shown when a project is open but nothing is — the charter's empty-state rule: one quiet
     /// sentence plus the action that fixes it.
@@ -110,6 +110,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let csvTable = NSTableView()
     private let markdownPreviewScroll = NSScrollView()
     private let markdownPreviewView = NSTextView()
+    private let markdownLinks = MarkdownPreviewLinks()
     private var completionPanelStorage: CompletionPanel?
     private var completionSurface: NSView?
     private var completionPanel: CompletionPanel {
@@ -194,6 +195,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// At the editor text-size setting (Appearance), not the interface scale.
     private static var editorFont: NSFont { DS.Text.editor() }
     private static let editorTextColor = NSColor.labelColor
+    private static var editorAppearance: EditorAppearance {
+        EditorAppearance(font: editorFont, textColor: editorTextColor, background: editorBackground)
+    }
 
     override func loadView() { view = NSView() }
 
@@ -258,7 +262,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
         }
         if let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text {
-            view.window?.makeFirstResponder(editor)
+            editor.focus()
         }
         LaunchSignposts.end("makeViewDidAppear")
     }
@@ -323,38 +327,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1)
         ])
 
-        editor.isRichText = false
-        editor.allowsUndo = true
-        editor.isAutomaticQuoteSubstitutionEnabled = false
-        editor.isAutomaticDashSubstitutionEnabled = false
-        editor.isAutomaticTextCompletionEnabled = false
-        editor.usesFindBar = true
-        editor.isIncrementalSearchingEnabled = true
-        editor.font = Self.editorFont
-        editor.textColor = Self.editorTextColor
-        editor.backgroundColor = Self.editorBackground
-        editor.insertionPointColor = .controlAccentColor
-        editor.textContainerInset = NSSize(width: 16, height: 12)
         editor.delegate = self
-        editor.onDefinitionRequested = { [weak self] index in
-            guard let self, let tabIndex = self.activeTabIndex else { return }
-            self.performJumpToDefinition(at: index, tabIndex: tabIndex)
-        }
-        editor.isEditable = false
-        editorScroll.documentView = editor
-        editorScroll.hasVerticalScroller = true
-        editorScroll.autohidesScrollers = true
-        editorScroll.drawsBackground = true
-        editorScroll.backgroundColor = Self.editorBackground
         editorScroll.isHidden = true
         editorScroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(editorScroll)
-
-        gutter = LineNumberGutterView(textView: editor, scrollView: editorScroll)
         gutter.isHidden = true
         gutter.translatesAutoresizingMaskIntoConstraints = false
-        gutter.onMarkClicked = { [weak self] line, mark, event in self?.showDiffMenu(line: line, mark: mark, event: event) }
-        gutter.onDiagnosticClicked = { [weak self] line, severity, event in self?.showDiagnosticMenu(line: line, severity: severity, event: event) }
         view.addSubview(gutter)
 
         imageScroll.hasVerticalScroller = true
@@ -395,7 +373,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         markdownPreviewView.textContainer?.widthTracksTextView = true
         // For `textView(_:clickedOnLink:at:)` — in-document `#anchor` links scroll the preview
         // instead of being handed to the OS as if they were web URLs.
-        markdownPreviewView.delegate = self
+        markdownPreviewView.delegate = markdownLinks
         markdownPreviewScroll.documentView = markdownPreviewView
         markdownPreviewScroll.hasVerticalScroller = true
         markdownPreviewScroll.backgroundColor = Self.editorBackground
@@ -668,7 +646,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         explorer.onFilesChanged = { [weak self] in self?.refreshFileTreeAndReindex() }
         explorer.onHidden = { [weak self] in
             guard let self, self.view.window != nil else { return }
-            self.view.window?.makeFirstResponder(self.editor)
+            self.editor.focus()
         }
         // A moved file or folder keeps its tabs: every tab at or under the old path follows it.
         explorer.onMoved = { [weak self] from, to in
@@ -828,9 +806,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     func applyApprovedEdit(url: URL, newContent: String) -> Bool {
         guard let index = openTabs.firstIndex(where: { $0.url == url && $0.kind == .text }) else { return false }
         let tab = openTabs[index]
-        let fullRange = NSRange(location: 0, length: tab.textStorage.length)
-        tab.textStorage.replaceCharacters(in: fullRange, with: newContent)
-        SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+        tab.document.replaceAll(with: newContent)
+        tab.document.highlight(url: tab.url, appearance: Self.editorAppearance)
         openTabs[index].dirty = false
         openTabs[index].savedLength = (newContent as NSString).length
         openTabs[index].savedHash = newContent.hashValue
@@ -846,7 +823,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // HEAD content is unchanged by an edit, but the marks derived from it are stale.
         if activeTabIndex == index {
             dirty = false
-            gutter.invalidate()
+            editor.invalidateGutter()
             refreshGitDiffMarks()
         }
         rebuildTabBar()
@@ -864,7 +841,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// and reading the file directly avoids copying a whole buffer per call.
     func unsavedContent(for url: URL) -> String? {
         guard let tab = openTabs.first(where: { $0.url == url && $0.kind == .text && $0.dirty }) else { return nil }
-        return tab.textStorage.string
+        return tab.document.string
     }
 
     /// Called when a track is deleted — its remembered file has nowhere to belong anymore, so the
@@ -1127,10 +1104,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let tab = openTabs[index]
         guard let data = try? Data(contentsOf: tab.url), let decoded = TextFileCodec.decode(data) else { return false }
         let isActive = activeTabIndex == index
-        let selection = isActive ? editor.selectedRange() : tab.lastSelectedRange
+        let selection = isActive ? editor.selectedRange : tab.lastSelectedRange
         isLoadingTab = true
-        tab.textStorage.replaceCharacters(in: NSRange(location: 0, length: tab.textStorage.length), with: decoded.text)
-        SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+        tab.document.replaceAll(with: decoded.text)
+        tab.document.highlight(url: tab.url, appearance: Self.editorAppearance)
         DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
         tab.undoManager.removeAllActions()
         openTabs[index].format = decoded.format
@@ -1141,10 +1118,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         openTabs[index].knownModificationDate = modificationDate(of: tab.url)
         if isActive {
             dirty = false
-            let clamped = NSRange(location: min(selection.location, tab.textStorage.length), length: 0)
-            editor.setSelectedRange(clamped)
+            let clamped = NSRange(location: min(selection.location, tab.document.length), length: 0)
+            editor.selectedRange = clamped
             externalChangeBanner.isHidden = true
-            gutter.invalidate()
+            editor.invalidateGutter()
             refreshGitDiffMarks()
         }
         lspManager?.changed(url: tab.url, content: decoded.text)
@@ -1356,7 +1333,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                         completion?()
                         return
                     }
-                    var tab = OpenTab(url: url, kind: .image, textStorage: NSTextStorage(), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: nil)
+                    var tab = OpenTab(url: url, kind: .image, document: self.editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: nil)
                     tab.cachedImage = image
                     self.openTabs.append(tab)
                     self.activeTabIndex = self.openTabs.count - 1
@@ -1408,7 +1385,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     completion?()
                     return
                 }
-                var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, textStorage: NSTextStorage(string: source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
+                var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, document: self.editor.makeDocument(source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
                 tab.csvRows = rows
                 tab.format = decoded.format
                 tab.savedLength = (source as NSString).length
@@ -1450,7 +1427,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             self.deferredLanguageServerOpens.removeAll()
             for url in urls {
                 guard let tab = self.openTabs.first(where: { $0.url == url }), tab.kind == .text else { continue }
-                self.lspManager?.opened(url: url, content: tab.textStorage.string)
+                self.lspManager?.opened(url: url, content: tab.document.string)
             }
         }
     }
@@ -1459,7 +1436,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if paletteIsOpen { searchField.stringValue = "" }
         if let projectURL { rememberLastFile(url, forProject: projectURL) }
         hideQuickOpenPanel()
-        view.window?.makeFirstResponder(editor)
+        editor.focus()
     }
 
     private func showAlert(title: String, message: String, window: NSWindow, style: NSAlert.Style = .warning) {
@@ -1480,7 +1457,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// from whatever tab was previously loaded.
     private func captureActiveTabSelection() {
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
-        openTabs[index].lastSelectedRange = editor.selectedRange()
+        openTabs[index].lastSelectedRange = editor.selectedRange
     }
 
     private func loadActiveTabIntoEditor() {
@@ -1503,21 +1480,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             // an untouched, freshly opened file as dirty. Cleared on the *next* runloop turn
             // rather than immediately, so it still covers a notification queued this turn.
             isLoadingTab = true
-            editor.layoutManager?.replaceTextStorage(tab.textStorage)
+            tab.document.highlight(url: tab.url, appearance: Self.editorAppearance)
+            editor.attach(tab.document, undoManager: tab.undoManager)
             DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
-            editor.tabUndoManager = tab.undoManager
-            SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
-            // Replacing the text storage can leave typingAttributes pointing at whatever the
-            // previous (or default system) font/color was, especially for a brand-new empty
-            // document with no existing attribute run to inherit from — explicitly reset it so
-            // freshly typed characters are never invisible against the editor background.
-            editor.typingAttributes = [.foregroundColor: Self.editorTextColor, .font: Self.editorFont]
             editor.isEditable = true
-            let clampedLocation = min(tab.lastSelectedRange.location, tab.textStorage.length)
+            let clampedLocation = min(tab.lastSelectedRange.location, tab.document.length)
             let restoredRange = NSRange(location: clampedLocation, length: 0)
-            editor.setSelectedRange(restoredRange)
+            editor.selectedRange = restoredRange
             editor.scrollRangeToVisible(restoredRange)
-            gutter.invalidate()
+            editor.invalidateGutter()
             refreshGitDiffMarks()
             renderDiagnosticsForActiveTab()
             if showingMarkdownPreview { renderMarkdownPreview(for: tab) }
@@ -1541,11 +1512,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// not only files opened afterwards.
     @objc private func editorTextSizeChanged() {
         for tab in openTabs where tab.kind == .text {
-            SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
+            tab.document.highlight(url: tab.url, appearance: Self.editorAppearance)
         }
-        editor.font = Self.editorFont
-        editor.typingAttributes = [.foregroundColor: Self.editorTextColor, .font: Self.editorFont]
-        gutter.invalidate()
+        editor.appearance = Self.editorAppearance
     }
 
     /// The active file's language server as a caption and a dot: ready, starting (the working
@@ -1582,7 +1551,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             // the editor.
             self.lspManager?.retryAfterInstall(binaryName: entry.binaryName)
             if let currentIndex = self.activeTabIndex, self.openTabs.indices.contains(currentIndex), self.openTabs[currentIndex].url == tabURL {
-                self.lspManager?.opened(url: tabURL, content: self.openTabs[currentIndex].textStorage.string)
+                self.lspManager?.opened(url: tabURL, content: self.openTabs[currentIndex].document.string)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in self?.lspInstallPopover?.close() }
         }
@@ -1615,7 +1584,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func renderMarkdownPreview(for tab: OpenTab) {
-        let rendered = MarkdownRenderer.render(tab.textStorage.string, baseFont: Self.editorFont, textColor: Self.editorTextColor)
+        let rendered = MarkdownRenderer.render(tab.document.string, baseFont: Self.editorFont, textColor: Self.editorTextColor)
         markdownPreviewView.textStorage?.setAttributedString(rendered)
     }
 
@@ -1635,14 +1604,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func renderDiagnosticsForActiveTab() {
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { return }
         let tab = openTabs[index]
-        let storageLength = tab.textStorage.length
-        for range in tab.renderedDiagnosticRanges where NSMaxRange(range) <= storageLength {
-            tab.textStorage.removeAttribute(.underlineStyle, range: range)
-            tab.textStorage.removeAttribute(.underlineColor, range: range)
-        }
-        let ns = tab.textStorage.string as NSString
+        let ns = tab.document.string as NSString
         var lineSeverities: [Int: LSPDiagnosticSeverity] = [:]
-        var appliedRanges: [NSRange] = []
+        var marks: [(range: NSRange, color: NSColor)] = []
         for diagnostic in tab.diagnostics {
             let line = diagnostic.range.start.line + 1
             if let existing = lineSeverities[line] {
@@ -1652,12 +1616,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
             guard let range = nsRange(for: diagnostic.range, in: ns), NSMaxRange(range) <= ns.length else { continue }
             let color: NSColor = diagnostic.severity == .error ? .systemRed : (diagnostic.severity == .warning ? .systemYellow : .systemGray)
-            tab.textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue, range: range)
-            tab.textStorage.addAttribute(.underlineColor, value: color, range: range)
-            appliedRanges.append(range)
+            marks.append((range, color))
         }
-        openTabs[index].renderedDiagnosticRanges = appliedRanges
-        gutter.lineDiagnostics = lineSeverities
+        // The document clears only what it last underlined (a full strip would re-lay-out the
+        // whole file on every keystroke).
+        tab.document.setDecorations(.diagnostic, marks)
+        editor.lineDiagnostics = lineSeverities
     }
 
     private func severityRank(_ severity: LSPDiagnosticSeverity?) -> Int { severity?.rawValue ?? 5 }
@@ -1704,23 +1668,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     @objc private func jumpToDefinition() {
         guard let index = activeTabIndex else { return }
-        performJumpToDefinition(at: editor.selectedRange().location, tabIndex: index)
+        performJumpToDefinition(at: editor.selectedRange.location, tabIndex: index)
     }
 
     private func performJumpToDefinition(at characterIndex: Int, tabIndex: Int) {
         guard openTabs.indices.contains(tabIndex), openTabs[tabIndex].kind == .text, let lspManager else { return }
         let tab = openTabs[tabIndex]
-        let ns = tab.textStorage.string as NSString
+        let ns = tab.document.string as NSString
         let position = lspPosition(for: characterIndex, in: ns)
         lspManager.definition(url: tab.url, position: position) { [weak self] locations in
             guard let self, let target = locations.first, let targetURL = URL(string: target.uri) else { return }
             self.open(targetURL) { [weak self] in
                 guard let self, let targetIndex = self.openTabs.firstIndex(where: { $0.url == targetURL }), self.openTabs[targetIndex].kind == .text else { return }
-                let targetNS = self.openTabs[targetIndex].textStorage.string as NSString
+                let targetNS = self.openTabs[targetIndex].document.string as NSString
                 guard let targetRange = self.nsRange(for: target.range, in: targetNS) else { return }
-                self.editor.setSelectedRange(NSRange(location: targetRange.location, length: 0))
+                self.editor.selectedRange = NSRange(location: targetRange.location, length: 0)
                 self.editor.scrollRangeToVisible(targetRange)
-                self.view.window?.makeFirstResponder(self.editor)
+                self.editor.focus()
             }
         }
     }
@@ -1750,8 +1714,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
               !openTabs[index].isUntitled else { NSSound.beep(); return }
         let tab = openTabs[index]
-        let text = tab.textStorage.string as NSString
-        let selection = editor.selectedRange()
+        let text = tab.document.string as NSString
+        let selection = editor.selectedRange
         let startLine = text.substring(to: selection.location).components(separatedBy: "\n").count
         var endLine = text.substring(to: NSMaxRange(selection)).components(separatedBy: "\n").count
         // A selection ending just after a newline doesn't reach into the next line.
@@ -1775,19 +1739,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         popover.contentViewController = controller
         instructPopover = popover
         instructController = controller
-        popover.show(relativeTo: rect(forCharacterRange: selection.length > 0 ? selection : NSRange(location: selection.location, length: 0)), of: editor, preferredEdge: .maxY)
+        popover.show(relativeTo: rect(forCharacterRange: selection.length > 0 ? selection : NSRange(location: selection.location, length: 0)), of: editor.textView, preferredEdge: .maxY)
     }
 
     /// Where a range sits in the editor's own coordinates — the popover's anchor.
-    private func rect(forCharacterRange range: NSRange) -> NSRect {
-        guard let layoutManager = editor.layoutManager, let container = editor.textContainer else { return editor.visibleRect }
-        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-        var rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
-        rect.origin.x += editor.textContainerOrigin.x
-        rect.origin.y += editor.textContainerOrigin.y
-        if rect.width < 1 { rect.size.width = 1 }
-        return rect
-    }
+    private func rect(forCharacterRange range: NSRange) -> NSRect { editor.rect(forCharacterRange: range) }
 
     func instructWaiting() { instructController?.showWaiting() }
     func instructAnswer(_ text: String) { instructController?.showAnswer(text) }
@@ -1810,7 +1766,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         card.onApply = { [weak self] in apply(); self?.dismissInstructCard() }
         card.onReject = { [weak self] in reject(); self?.dismissInstructCard() }
         card.onOpenInThink = { [weak self] in self?.onOpenThinkRequested?() }
-        let text = openTabs[index].textStorage.string as NSString
+        let text = openTabs[index].document.string as NSString
         var location = 0
         for _ in 1..<max(1, line) {
             let next = text.range(of: "\n", range: NSRange(location: location, length: text.length - location))
@@ -1822,7 +1778,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let width = max(size.width, 320)
         card.frame = NSRect(x: max(8, editor.visibleRect.maxX - width - 16), y: max(0, lineRect.minY - size.height - 4), width: width, height: size.height)
         card.autoresizingMask = [.minXMargin]
-        editor.addSubview(card)
+        editor.textView.addSubview(card)
         instructCard = card
     }
 
@@ -1846,7 +1802,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         activeTabIndex = index
         loadActiveTabIntoEditor()
         if let projectURL { rememberLastFile(openTabs[index].url, forProject: projectURL) }
-        view.window?.makeFirstResponder(editor)
+        editor.focus()
     }
 
     @objc private func closeTabButton(_ sender: NSButton) { closeTab(at: sender.tag) }
@@ -1934,13 +1890,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         openTabs.removeAll()
         activeTabIndex = nil
         isLoadingTab = true
-        editor.layoutManager?.replaceTextStorage(NSTextStorage())
+        editor.attach(nil, undoManager: nil)
         DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
-        editor.tabUndoManager = nil
         editor.isEditable = false
         editorScroll.isHidden = true
         gutter.isHidden = true
-        gutter.lineDiffMarks = [:]
+        editor.lineDiffMarks = [:]
         imageScroll.isHidden = true
         imageView.image = nil
         csvScroll.isHidden = true
@@ -2223,14 +2178,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let focusedRoot, let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         guard !tab.isUntitled, tab.kind == .text else {
-            gutter.lineDiffMarks = [:]
+            editor.lineDiffMarks = [:]
             currentDiffHunks = []
             currentDiffHeadContent = nil
             return
         }
         gitDiffGeneration += 1
         let generation = gitDiffGeneration
-        let content = tab.textStorage.string
+        let content = tab.document.string
         let relative = relativePath(tab.url)
 
         switch tab.headCache {
@@ -2255,7 +2210,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func runDiff(headContent: String?, content: String, projectRoot: URL, tabIndex: Int, generation: Int) {
         GitDiffComputer.diff(headContent: headContent, currentContent: content, projectRoot: projectRoot) { [weak self] result in
             guard let self, self.gitDiffGeneration == generation, self.activeTabIndex == tabIndex else { return }
-            self.gutter.lineDiffMarks = result.marks
+            self.editor.lineDiffMarks = result.marks
             self.currentDiffHunks = result.hunks
             self.currentDiffHeadContent = result.headContent
         }
@@ -2285,7 +2240,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func revertHunk(_ hunk: GitHunk) {
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
-        guard editor.textStorage === tab.textStorage else { return }
+        guard editor.document === tab.document else { return }
 
         let originalLines = (currentDiffHeadContent ?? "").components(separatedBy: "\n")
         let replacementLines: [String]
@@ -2296,7 +2251,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         let replacement = replacementLines.isEmpty ? "" : replacementLines.joined(separator: "\n") + "\n"
 
-        let ns = tab.textStorage.string as NSString
+        let ns = tab.document.string as NSString
         let range: NSRange
         if hunk.newCount > 0 {
             range = lineSpanRange(in: ns, startLine: hunk.newStart, count: hunk.newCount)
@@ -2306,8 +2261,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
 
         editor.insertText(replacement, replacementRange: range)
-        SyntaxHighlighter.apply(to: tab.textStorage, url: tab.url, baseColor: Self.editorTextColor, font: Self.editorFont)
-        gutter.invalidate()
+        tab.document.highlight(url: tab.url, appearance: Self.editorAppearance)
+        editor.invalidateGutter()
         refreshGitDiffMarks()
     }
 
@@ -2396,7 +2351,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return
         }
         // Snapshot the open buffers on main; the search runs elsewhere.
-        let liveTexts: [URL: String] = Dictionary(uniqueKeysWithValues: openTabs.filter(\.dirty).map { ($0.url, $0.textStorage.string) })
+        let liveTexts: [URL: String] = Dictionary(uniqueKeysWithValues: openTabs.filter(\.dirty).map { ($0.url, $0.document.string) })
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var options = ProjectTextSearch.Options()
             options.limit = 200
@@ -2433,7 +2388,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { symbolMatches = []; applySearchResults(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let tab = openTabs[index]
-        let allSymbols = SymbolIndexer.symbols(in: tab.textStorage.string, ext: tab.url.pathExtension.lowercased())
+        let allSymbols = SymbolIndexer.symbols(in: tab.document.string, ext: tab.url.pathExtension.lowercased())
         if query.isEmpty {
             symbolMatches = Array(allSymbols.prefix(30))
         } else {
@@ -2488,7 +2443,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if let target, let window = searchField.window ?? view.window, (target as? NSView)?.window === window {
             window.makeFirstResponder(target)
         } else if view.window != nil {
-            view.window?.makeFirstResponder(editor)
+            editor.focus()
         }
     }
     private func moveSelection(_ direction: Int) {
@@ -2614,7 +2569,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var pendingLSPWorkItem: DispatchWorkItem?
     private func undoStateChanged(_ managerID: ObjectIdentifier?) {
         guard let managerID, let index = openTabs.firstIndex(where: { ObjectIdentifier($0.undoManager) == managerID }), openTabs[index].kind == .text else { return }
-        let text = openTabs[index].textStorage.string
+        let text = openTabs[index].document.string
         let matchesSaved = (text as NSString).length == openTabs[index].savedLength && text.hashValue == openTabs[index].savedHash
         guard openTabs[index].dirty == matchesSaved else { return }
         openTabs[index].dirty = !matchesSaved
@@ -2622,14 +2577,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         rebuildTabBar()
     }
 
-    func textDidChange(_ notification: Notification) {
+    func editorTextDidChange(_ engine: EditorEngine) {
         guard !isLoadingTab else { return }
         dirty = true
         if let index = activeTabIndex, !openTabs[index].dirty {
             openTabs[index].dirty = true
             rebuildTabBar()  // the tab's unsaved dot
         }
-        gutter.invalidate()
+        editor.invalidateGutter()
         scheduleHighlight()
         scheduleDiffRefresh()
         scheduleLSPDidChange()
@@ -2643,7 +2598,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let url = openTabs[index].url
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, let currentIndex = self.activeTabIndex, self.openTabs.indices.contains(currentIndex), self.openTabs[currentIndex].url == url else { return }
-            self.lspManager?.changed(url: url, content: self.openTabs[currentIndex].textStorage.string)
+            self.lspManager?.changed(url: url, content: self.openTabs[currentIndex].document.string)
         }
         pendingLSPWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
@@ -2661,7 +2616,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return
         }
         let tabID = openTabs[index].id
-        let cursor = editor.selectedRange().location
+        let cursor = editor.selectedRange.location
         completionGeneration += 1
         let generation = completionGeneration
         let workItem = DispatchWorkItem { [weak self] in
@@ -2674,7 +2629,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func performCompletionRequest(tabID: UUID, cursor: Int, generation: Int) {
         guard let index = indexForTab(id: tabID), openTabs[index].kind == .text, let lspManager else { return }
         let tab = openTabs[index]
-        let ns = tab.textStorage.string as NSString
+        let ns = tab.document.string as NSString
         guard cursor <= ns.length else { return }
         var start = cursor
         while start > 0, let scalar = UnicodeScalar(UInt32(ns.character(at: start - 1))), Self.identifierCharacters.contains(scalar) {
@@ -2695,10 +2650,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func screenRectForCaret() -> NSRect? {
-        let charRange = NSRange(location: editor.selectedRange().location, length: 0)
-        var actualRange = NSRange(location: 0, length: 0)
-        let rect = editor.firstRect(forCharacterRange: charRange, actualRange: &actualRange)
-        return rect == .zero ? nil : rect
+        editor.screenRect(forCharacterRange: NSRange(location: editor.selectedRange.location, length: 0))
     }
 
     private func showCompletionPanel() {
@@ -2735,7 +2687,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let text = item.insertText ?? item.label
         isAcceptingCompletion = true
         editor.insertText(text, replacementRange: range)
-        editor.setSelectedRange(NSRange(location: range.location + (text as NSString).length, length: 0))
+        editor.selectedRange = NSRange(location: range.location + (text as NSString).length, length: 0)
         isAcceptingCompletion = false
         hideCompletionPanel()
     }
@@ -2749,14 +2701,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     // MARK: - Bracket matching
 
-    private var bracketHighlightRanges: [NSRange] = []
     private static let bracketPairs: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
     private static let bracketPairsReversed: [Character: Character] = [")": "(", "]": "[", "}": "{"]
     private static let bracketHighlightColor = DS.Color.scrimMedium
 
-    func textViewDidChangeSelection(_ notification: Notification) {
+    func editorSelectionDidChange(_ engine: EditorEngine) {
         updateBracketHighlight()
-        editor.needsDisplay = true
+        editor.setNeedsDisplay()
         // Typing itself moves the selection, which fires this same delegate method within the
         // same call chain as textDidChange (before its just-scheduled completion request ever
         // gets to run) — only treat this as a real "user navigated away" dismissal signal when
@@ -2770,31 +2721,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func updateBracketHighlight() {
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { return }
-        let textStorage = openTabs[index].textStorage
-        for range in bracketHighlightRanges where NSMaxRange(range) <= textStorage.length {
-            textStorage.removeAttribute(.backgroundColor, range: range)
-        }
-        bracketHighlightRanges = []
-
-        let selection = editor.selectedRange()
-        guard selection.length == 0 else { return }
-        let ns = textStorage.string as NSString
-        let location = selection.location
+        let document = openTabs[index].document
+        let selection = editor.selectedRange
         var matchRanges: [NSRange] = []
-
-        if location < ns.length, let ch = character(in: ns, at: location), let close = Self.bracketPairs[ch],
-           let matchLoc = findMatchingBracket(open: ch, close: close, from: location, forward: true, in: ns) {
-            matchRanges = [NSRange(location: location, length: 1), NSRange(location: matchLoc, length: 1)]
-        } else if location > 0, let ch = character(in: ns, at: location - 1), let open = Self.bracketPairsReversed[ch],
-                  let matchLoc = findMatchingBracket(open: open, close: ch, from: location - 1, forward: false, in: ns) {
-            matchRanges = [NSRange(location: location - 1, length: 1), NSRange(location: matchLoc, length: 1)]
+        if selection.length == 0 {
+            let ns = document.string as NSString
+            let location = selection.location
+            if location < ns.length, let ch = character(in: ns, at: location), let close = Self.bracketPairs[ch],
+               let matchLoc = findMatchingBracket(open: ch, close: close, from: location, forward: true, in: ns) {
+                matchRanges = [NSRange(location: location, length: 1), NSRange(location: matchLoc, length: 1)]
+            } else if location > 0, let ch = character(in: ns, at: location - 1), let open = Self.bracketPairsReversed[ch],
+                      let matchLoc = findMatchingBracket(open: open, close: ch, from: location - 1, forward: false, in: ns) {
+                matchRanges = [NSRange(location: location - 1, length: 1), NSRange(location: matchLoc, length: 1)]
+            }
         }
-
-        guard !matchRanges.isEmpty else { return }
-        for range in matchRanges {
-            textStorage.addAttribute(.backgroundColor, value: Self.bracketHighlightColor, range: range)
-        }
-        bracketHighlightRanges = matchRanges
+        document.setDecorations(.bracketMatch, matchRanges.map { ($0, Self.bracketHighlightColor) })
     }
 
     private func character(in ns: NSString, at index: Int) -> Character? {
@@ -2839,53 +2780,27 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let autoClosePairs: [Character: Character] = ["(": ")", "[": "]", "{": "}", "\"": "\"", "'": "'"]
     private static let autoCloseClosers: Set<Character> = [")", "]", "}", "\"", "'"]
 
-    func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
-        guard textView === editor, let replacementString, replacementString.count == 1, let char = replacementString.first else { return true }
+    func editor(_ engine: EditorEngine, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        guard let replacementString, replacementString.count == 1, let char = replacementString.first else { return true }
 
         if Self.autoCloseClosers.contains(char), affectedCharRange.length == 0 {
-            let ns = textView.string as NSString
+            let ns = (engine.document?.string ?? "") as NSString
             if affectedCharRange.location < ns.length, ns.character(at: affectedCharRange.location) == char.utf16.first {
-                textView.setSelectedRange(NSRange(location: affectedCharRange.location + 1, length: 0))
+                engine.selectedRange = NSRange(location: affectedCharRange.location + 1, length: 0)
                 return false
             }
         }
 
         if let closing = Self.autoClosePairs[char], affectedCharRange.length == 0 {
-            textView.insertText("\(char)\(closing)", replacementRange: affectedCharRange)
-            textView.setSelectedRange(NSRange(location: affectedCharRange.location + 1, length: 0))
+            engine.insertText("\(char)\(closing)", replacementRange: affectedCharRange)
+            engine.selectedRange = NSRange(location: affectedCharRange.location + 1, length: 0)
             return false
         }
 
         return true
     }
 
-    /// In-document markdown anchors (`[Contents](#setup)` etc.) — `MarkdownRenderer` renders
-    /// these under its own scheme, and every rendered header carries its slug as a custom
-    /// attribute, so resolving a click is just "find the first header run with this slug and
-    /// scroll to it." Real web links return false and keep the default open-in-browser behavior.
-    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-        guard textView === markdownPreviewView,
-              let url = link as? URL, url.scheme == MarkdownRenderer.anchorScheme,
-              let storage = textView.textStorage else { return false }
-        let targetSlug = url.absoluteString.dropFirst(MarkdownRenderer.anchorScheme.count + 1)
-        var found: NSRange?
-        storage.enumerateAttribute(MarkdownRenderer.anchorSlugKey, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
-            if let slug = value as? String, slug == targetSlug {
-                found = range
-                stop.pointee = true
-            }
-        }
-        if let found {
-            textView.scrollRangeToVisible(found)
-            textView.showFindIndicator(for: found)
-        }
-        // Consumed either way — a dangling anchor (no matching header) should be a no-op, not a
-        // fallthrough into the OS trying to open our custom scheme.
-        return true
-    }
-
-    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        guard textView === editor else { return false }
+    func editor(_ engine: EditorEngine, doCommandBy commandSelector: Selector) -> Bool {
         if instructCard != nil, commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             dismissInstructCard()
             return true
@@ -2909,8 +2824,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
         }
         guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
-        let ns = textView.string as NSString
-        let selectedRange = textView.selectedRange()
+        let ns = (engine.document?.string ?? "") as NSString
+        let selectedRange = engine.selectedRange
         let lineRange = ns.lineRange(for: NSRange(location: selectedRange.location, length: 0))
         let currentLine = ns.substring(with: NSRange(location: lineRange.location, length: selectedRange.location - lineRange.location))
         let leadingWhitespace = currentLine.prefix(while: { $0 == " " || $0 == "\t" })
@@ -2918,7 +2833,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if let last = currentLine.trimmingCharacters(in: .whitespaces).last, "{[(".contains(last) {
             indent += "    "
         }
-        textView.insertText("\n" + indent, replacementRange: selectedRange)
+        engine.insertText("\n" + indent, replacementRange: selectedRange)
         return true
     }
 
@@ -2940,13 +2855,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         highlightGeneration += 1
         let generation = highlightGeneration
         let workItem = DispatchWorkItem { [weak self] in
-            let text = tab.textStorage.string
+            let text = tab.document.string
             DispatchQueue.global(qos: .userInitiated).async {
                 let runs = SyntaxHighlighter.computeRuns(text: text, url: url)
                 DispatchQueue.main.async {
                     guard let self, self.highlightGeneration == generation, self.activeTabIndex == index else { return }
-                    SyntaxHighlighter.applyRuns(runs, to: tab.textStorage, baseColor: Self.editorTextColor, font: Self.editorFont)
-                    self.gutter.invalidate()
+                    tab.document.applyHighlight(runs, appearance: Self.editorAppearance)
+                    self.editor.invalidateGutter()
                 }
             }
         }
@@ -3164,7 +3079,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
     private func scrollToLine(_ line: Int) {
-        let text = editor.string as NSString
+        let text = (editor.document?.string ?? "") as NSString
         var currentLine = 1
         var index = 0
         while currentLine < max(1, line) && index < text.length {
@@ -3175,8 +3090,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let lineStart = min(index, text.length)
         let cursorRange = NSRange(location: lineStart, length: 0)
         editor.scrollRangeToVisible(text.lineRange(for: cursorRange))
-        editor.setSelectedRange(cursorRange)
-        view.window?.makeFirstResponder(editor)
+        editor.selectedRange = cursorRange
+        editor.focus()
     }
     @objc private func save() {
         guard let index = activeTabIndex else { return }
@@ -3193,10 +3108,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Self.untitledCounter += 1
         let name = "Untitled-\(Self.untitledCounter)"
         let url = URL(string: "side-untitled:///\(name)")!
-        openTabs.append(OpenTab(url: url, kind: .text, textStorage: NSTextStorage(string: ""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: true, knownModificationDate: nil))
+        openTabs.append(OpenTab(url: url, kind: .text, document: editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: true, knownModificationDate: nil))
         activeTabIndex = openTabs.count - 1
         loadActiveTabIntoEditor()
-        view.window?.makeFirstResponder(editor)
+        editor.focus()
     }
 
     private static var untitledCounter = 0
@@ -3241,8 +3156,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     if let index = self.indexForTab(id: tabID), self.activeTabIndex == index {
                         if let projectURL = self.projectURL { self.rememberLastFile(newURL, forProject: projectURL) }
                         self.onFileOpened?(newURL)
-                        SyntaxHighlighter.apply(to: self.openTabs[index].textStorage, url: newURL, baseColor: Self.editorTextColor, font: Self.editorFont)
-                        self.gutter.invalidate()
+                        self.openTabs[index].document.highlight(url: newURL, appearance: Self.editorAppearance)
+                        self.editor.invalidateGutter()
                     }
                     self.rebuildTabBar()
                 }
@@ -3299,7 +3214,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func writeTabToDiskForced(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
         guard let index = indexForTab(id: tabID) else { completion(false); return }
-        let content = openTabs[index].textStorage.string
+        let content = openTabs[index].document.string
         let format = openTabs[index].format
         do {
             // The file's own encoding, BOM and line ending — bytes the user didn't touch stay
@@ -3355,15 +3270,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 // no undo entry, since this replaces textStorage directly. Keeping the user's
                 // keystrokes and skipping the reformat is the recoverable choice; the next save
                 // formats again.
-                let bufferUnchanged = tab.textStorage.string == contentAtSaveTime
-                if let formattedContent, bufferUnchanged, formattedContent != tab.textStorage.string {
-                    let fullRange = NSRange(location: 0, length: tab.textStorage.length)
-                    tab.textStorage.replaceCharacters(in: fullRange, with: formattedContent)
-                    SyntaxHighlighter.apply(to: tab.textStorage, url: url, baseColor: Self.editorTextColor, font: Self.editorFont)
+                let bufferUnchanged = tab.document.string == contentAtSaveTime
+                if let formattedContent, bufferUnchanged, formattedContent != tab.document.string {
+                    tab.document.replaceAll(with: formattedContent)
+                    tab.document.highlight(url: url, appearance: Self.editorAppearance)
                     // The replacement invalidates every undo registration describing the old
                     // text, so replaying them would apply edits at meaningless offsets.
                     tab.undoManager.removeAllActions()
-                    if self.activeTabIndex == index { self.gutter.invalidate() }
+                    if self.activeTabIndex == index { self.editor.invalidateGutter() }
                 }
                 // Re-read even when content didn't change: some formatters touch the file
                 // (rewriting it in place) without altering its bytes, which would otherwise
@@ -3459,11 +3373,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         open(url) { [weak self] in
             guard let self, let line, line > 0,
                   let index = self.openTabs.firstIndex(where: { $0.url == url }), self.openTabs[index].kind == .text else { return }
-            let ns = self.openTabs[index].textStorage.string as NSString
+            let ns = self.openTabs[index].document.string as NSString
             guard let range = self.nsRange(for: LSPRange(start: LSPPosition(line: line - 1, character: 0), end: LSPPosition(line: line - 1, character: 0)), in: ns) else { return }
-            self.editor.setSelectedRange(NSRange(location: range.location, length: 0))
+            self.editor.selectedRange = NSRange(location: range.location, length: 0)
             self.editor.scrollRangeToVisible(range)
-            self.view.window?.makeFirstResponder(self.editor)
+            self.editor.focus()
         }
     }
 
@@ -3483,53 +3397,31 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 }
 
-final class EditorTextView: NSTextView {
-    var tabUndoManager: UndoManager?
-    override var undoManager: UndoManager? { tabUndoManager }
-    var onDefinitionRequested: ((Int) -> Void)?
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let menu = super.menu(for: event)
-        guard onDefinitionRequested != nil else { return menu }
-        let point = convert(event.locationInWindow, from: nil)
-        let index = characterIndexForInsertion(at: point)
-        let item = NSMenuItem(title: "Jump to Definition", action: #selector(triggerJumpToDefinition(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = index
-        menu?.insertItem(item, at: 0)
-        menu?.insertItem(NSMenuItem.separator(), at: 1)
-        return menu
-    }
-
-    @objc private func triggerJumpToDefinition(_ sender: NSMenuItem) {
-        guard let index = sender.representedObject as? Int else { return }
-        onDefinitionRequested?(index)
-    }
-
-    private static let currentLineHighlightColor = DS.Color.scrimFaint
-
-    /// Real NSTextView override point for exactly this: a full-width current-line band,
-    /// matching Xcode/Cursor. Skipped whenever there's an active selection, same as both.
-    override func drawBackground(in rect: NSRect) {
-        super.drawBackground(in: rect)
-        guard selectedRange().length == 0, let layoutManager, textContainer != nil else { return }
-        var lineRect: NSRect
-        if layoutManager.numberOfGlyphs == 0 {
-            // A brand-new empty document has no glyphs at all — extraLineFragmentRect is
-            // NSLayoutManager's dedicated rect for the empty trailing line in that case.
-            lineRect = layoutManager.extraLineFragmentRect
-            guard lineRect.width > 0 || lineRect.height > 0 else { return }
-        } else {
-            let charIndex = min(selectedRange().location, (string as NSString).length)
-            let glyphIndex = min(layoutManager.glyphIndexForCharacter(at: charIndex), layoutManager.numberOfGlyphs - 1)
-            lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+/// The Markdown preview's links: in-document anchors scroll to their heading.
+@MainActor
+private final class MarkdownPreviewLinks: NSObject, NSTextViewDelegate {
+    /// In-document markdown anchors (`[Contents](#setup)` etc.) — `MarkdownRenderer` renders
+    /// these under its own scheme, and every rendered header carries its slug as a custom
+    /// attribute, so resolving a click is just "find the first header run with this slug and
+    /// scroll to it." Real web links return false and keep the default open-in-browser behavior.
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL, url.scheme == MarkdownRenderer.anchorScheme,
+              let storage = textView.textStorage else { return false }
+        let targetSlug = url.absoluteString.dropFirst(MarkdownRenderer.anchorScheme.count + 1)
+        var found: NSRange?
+        storage.enumerateAttribute(MarkdownRenderer.anchorSlugKey, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+            if let slug = value as? String, slug == targetSlug {
+                found = range
+                stop.pointee = true
+            }
         }
-        let origin = textContainerOrigin
-        lineRect.origin.x = 0
-        lineRect.origin.y += origin.y
-        lineRect.size.width = max(bounds.width, lineRect.width + origin.x)
-        Self.currentLineHighlightColor.setFill()
-        lineRect.fill()
+        if let found {
+            textView.scrollRangeToVisible(found)
+            textView.showFindIndicator(for: found)
+        }
+        // Consumed either way — a dangling anchor (no matching header) should be a no-op, not a
+        // fallthrough into the OS trying to open our custom scheme.
+        return true
     }
 }
 
@@ -3901,6 +3793,21 @@ final class QuickOpenSearchField: NSTextField {
         case 53: onCancel?()
         default: super.keyDown(with: event)
         }
+    }
+}
+
+extension MakeWorkspaceViewController: EditorEngineDelegate {
+    func editor(_ engine: EditorEngine, definitionRequestedAt characterIndex: Int) {
+        guard let tabIndex = activeTabIndex else { return }
+        performJumpToDefinition(at: characterIndex, tabIndex: tabIndex)
+    }
+
+    func editor(_ engine: EditorEngine, clickedDiffMark mark: GitDiffMark, line: Int, event: NSEvent) {
+        showDiffMenu(line: line, mark: mark, event: event)
+    }
+
+    func editor(_ engine: EditorEngine, clickedDiagnostic severity: LSPDiagnosticSeverity, line: Int, event: NSEvent) {
+        showDiagnosticMenu(line: line, severity: severity, event: event)
     }
 }
 
