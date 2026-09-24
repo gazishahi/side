@@ -1,6 +1,6 @@
 # RFC: Alloy, the editing engine
 
-*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; step 0 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
+*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–1 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` ("Alloy: powers Make"), `SIDE_DESIGN.md` (tokens,
 motion, accessibility) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -118,6 +118,17 @@ headers, inline agent ghost text.
    tests. Checked in the app: highlighting, gutter, change marks, current-line band, bracket tint,
    language server.
 1. **AlloyCore:** rope, edits, undo grouping, selections, indexes; unit tests and benchmarks.
+   **Built 2026-09-24:** `Packages/Alloy` (Apache-2.0, laid out for `gazishahi/alloy`).
+   `Rope`: a persistent B-tree of text chunks (leaves ≤ 1 KB UTF-8, 16 children), each node
+   caching UTF-8, UTF-16 and newline counts; edits never split a surrogate pair or "\r\n".
+   `TextBuffer`: multiple selections (sorted, merged), batch edits, typing and deleting grouped
+   into one undo step until a pause (1 s), a newline or a caret move; undo and redo restore
+   selections; every change reports its applied edits in order, and replaying them (undo and
+   redo included) reproduces the text exactly. 15 tests, including 4,000 random edits checked
+   against a plain UTF-16 model. `swift run -c release AlloyBenchmarks`, this machine:
+   build 33 ms (100k lines, 7 MB) and 35 ms (20 MB); a character edit anywhere ~15 µs; line
+   lookups 1–3 µs; a 60-line screenful 3 µs; an undo snapshot plus edit 11 µs at 20 MB; typing
+   with 1,000 cursors 14 ms (to batch before it matters).
 2. **AlloyRender:** Metal view, line shaping cache, glyph atlas, viewport, carets and selections,
    120 Hz scrolling.
 3. **AlloyAppKit input:** `NSTextInputClient`, key bindings, mouse, drag, pasteboard, find.
