@@ -173,12 +173,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return window
     }
 
-    enum PreferencesPane: Int { case general = 0, providers = 1, usage = 2, appearance = 3, history = 4 }
+    typealias PreferencesPane = SettingsSplitViewController.Pane
 
-    /// Opens Preferences on a given pane — "Set up a model…" lands on Providers (§6).
+    /// Opens Preferences on a given pane: "Set up a model…" lands on Providers (§6).
     func openPreferences(on pane: PreferencesPane) {
         showPreferences()
-        (preferencesWindow?.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex = pane.rawValue
+        (preferencesWindow?.contentViewController as? SettingsSplitViewController)?.select(pane)
     }
 
     /// Library for the frontmost project window (⇧⌘L).
@@ -188,15 +188,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showPreferences() {
         if preferencesWindow == nil {
-            let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            // System Settings' shape: full-height floating sidebar, no visible title bar.
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 640),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.title = "Preferences"
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.toolbar = NSToolbar(identifier: "SidePreferences")
+            window.toolbarStyle = .unified
             window.isReleasedWhenClosed = false
-            window.contentViewController = PreferencesTabViewController()
-            // The grouped form's sections sit on the canvas, as System Settings' do.
+            window.contentViewController = SettingsSplitViewController()
+            window.setContentSize(NSSize(width: 820, height: 640))
+            window.minSize = NSSize(width: 820, height: 420)
             window.backgroundColor = DS.Color.canvas
+            window.setFrameAutosaveName("SidePreferences")
             preferencesWindow = window
         }
-        preferencesWindow?.center()
+        if preferencesWindow?.isVisible != true { preferencesWindow?.center() }
         preferencesWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

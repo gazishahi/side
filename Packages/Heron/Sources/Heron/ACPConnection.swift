@@ -134,10 +134,17 @@ public final class ACPConnection {
     private func didExit(status: Int32) {
         guard !exited else { return }
         exited = true
-        let tail = stderrTail.trimmingCharacters(in: .whitespacesAndNewlines)
-        let message = "The agent exited (status \(status))" + (tail.isEmpty ? "." : ": \(String(tail.suffix(400)))")
-        failPending(message)
-        onExit?(message)
+        failPending("The agent exited (status \(status)).")
+        // The last of its error output can still be in flight when the exit is noticed (the two
+        // arrive on different threads), and it's usually the part that says why. Report once
+        // it's had a moment to land.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let tail = self.stderrTail.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.onExit?("The agent exited (status \(status))" + (tail.isEmpty ? "." : ": \(String(tail.suffix(400)))"))
+            }
+        }
     }
 
     private func failPending(_ message: String) {

@@ -23,6 +23,7 @@ final class HistoryViewController: NSViewController {
         retentionPopup.action = #selector(retentionChanged)
 
         let page = SettingsForm.page([
+            SettingsSplitViewController.hero(.history),
             SettingsForm.section("Conversations", footer: "Think conversations are stored in each project's own git directory, with the file contents and command output the agent read. That history is re-sent to the model provider with every message. Credential-shaped values are replaced before either happens.", [
                 SettingsForm.row("Keep conversations", detail: "Expired ones are removed the next time you open the project. Checkpoints are kept either way.", retentionPopup),
                 SettingsForm.row("Delete conversations", detail: "Every Think conversation in the projects open now. Tracks, checkpoints and files stay.",

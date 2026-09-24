@@ -58,7 +58,8 @@ final class AppearanceViewController: NSViewController {
         sampleCaption.textColor = .secondaryLabelColor
 
         let page = SettingsForm.page([
-            SettingsForm.section("Appearance", [
+            SettingsSplitViewController.hero(.appearance),
+            SettingsForm.section([
                 SettingsForm.row("Appearance", themePopup),
                 SettingsForm.row("Text size", detail: "Side's own interface: stage headers, transcripts, diffs, lists, and this window.", scalePopup),
             ]),

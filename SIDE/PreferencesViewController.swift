@@ -71,6 +71,7 @@ final class PreferencesViewController: NSViewController {
         let removeRow = SettingsForm.row("Remove this provider", detail: "Its saved key is deleted from your Keychain.", removeProviderButton)
         removeProviderRow = removeRow
         let page = SettingsForm.page([
+            SettingsSplitViewController.hero(.providers),
             SettingsForm.section("Model provider", footer: "Heron, Side's own agent, talks to the provider chosen here. Outside agents use their own accounts (Agents).", [
                 SettingsForm.row("Provider", providerPopup),
                 SettingsForm.row("Endpoint", urlLabel),
@@ -265,43 +266,6 @@ private final class AddProviderForm {
 /// The Preferences window's shell. Preferences was a single flat pane while providers were the
 /// only thing configurable; usage accounting is a second, unrelated concern, so the two get
 /// their own tabs rather than one scrolling wall.
-final class PreferencesTabViewController: NSTabViewController {
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        tabStyle = .toolbar
-
-        let general = NSTabViewItem(viewController: GeneralPreferencesViewController())
-        general.label = "General"
-        general.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "General")
-        addTabViewItem(general)
-
-        let providers = NSTabViewItem(viewController: PreferencesViewController())
-        providers.label = "Providers"
-        providers.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: "Providers")
-        addTabViewItem(providers)
-
-        let agents = NSTabViewItem(viewController: AgentsPreferencesViewController())
-        agents.label = "Agents"
-        agents.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: "Agents")
-        addTabViewItem(agents)
-
-        let usage = NSTabViewItem(viewController: UsageViewController())
-        usage.label = "Usage"
-        usage.image = NSImage(systemSymbolName: "chart.bar", accessibilityDescription: "Usage")
-        addTabViewItem(usage)
-
-        let appearance = NSTabViewItem(viewController: AppearanceViewController())
-        appearance.label = "Appearance"
-        appearance.image = NSImage(systemSymbolName: "textformat.size", accessibilityDescription: "Appearance")
-        addTabViewItem(appearance)
-
-        let history = NSTabViewItem(viewController: HistoryViewController())
-        history.label = "History"
-        history.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: "History")
-        addTabViewItem(history)
-    }
-}
-
 /// General → Stages: which stages the stage control shows (Direction 02 §3.1). Unpinning hides a
 /// view, never a capability — every stage stays on ⌘⌥1–4, Navigate and the palette.
 final class GeneralPreferencesViewController: NSViewController {
@@ -322,6 +286,7 @@ final class GeneralPreferencesViewController: NSViewController {
         let sidePopup = SettingsForm.popup(FileExplorer.Side.allCases.map(\.title), selected: 0, self, #selector(explorerSideChanged(_:)))
         explorerPopup = sidePopup
         let page = SettingsForm.page([
+            SettingsSplitViewController.hero(.general),
             SettingsForm.section("Stages", footer: "Pinned stages appear in the stage control. Unpinned ones stay on the Navigate menu, \u{2318}\u{2325}1\u{2013}4 and the palette, and show up on their own when they need you.", stageRows),
             SettingsForm.section("Make", [SettingsForm.row("File explorer side", sidePopup)]),
             SettingsForm.section([

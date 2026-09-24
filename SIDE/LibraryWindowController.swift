@@ -20,6 +20,8 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         // Seamless like the main window: the sidebar runs to the top under the traffic lights.
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        window.toolbar = NSToolbar(identifier: "SideLibrary")
+        window.toolbarStyle = .unified
         window.backgroundColor = DS.Color.canvas
         window.minSize = NSSize(width: 680, height: 420)
         window.isReleasedWhenClosed = false
@@ -88,9 +90,9 @@ struct LibraryTarget {
     weak var trackStore: TrackStore? = nil
 }
 
-/// Sidebar of sections, one pane each.
+/// Sidebar of sections, one pane each: the same floating sidebar as Preferences.
 @MainActor
-final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class LibraryViewController: NSSplitViewController {
     enum Section: Int, CaseIterable {
         case instructions, prompts, mcpServers, skills, storage
         var title: String {
@@ -104,13 +106,23 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
         var symbol: String {
             switch self {
-            case .instructions: "text.book.closed"
-            case .prompts: "text.bubble"
-            case .mcpServers: "puzzlepiece.extension"
+            case .instructions: "text.book.closed.fill"
+            case .prompts: "text.bubble.fill"
+            case .mcpServers: "puzzlepiece.extension.fill"
             case .skills: "wand.and.stars"
-            case .storage: "internaldrive"
+            case .storage: "internaldrive.fill"
             }
         }
+        var tint: NSColor {
+            switch self {
+            case .instructions: .systemBrown
+            case .prompts: .systemBlue
+            case .mcpServers: .systemTeal
+            case .skills: .systemPink
+            case .storage: .systemGray
+            }
+        }
+        var item: SidebarItem { SidebarItem(id: "\(rawValue)", title: title, symbol: symbol, tint: tint) }
     }
 
     var target: LibraryTarget? {
@@ -129,8 +141,8 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    private let sidebar = NSTableView()
-    private let paneHost = NSView()
+    private let sidebar = SidebarListController(items: Section.allCases.map(\.item), showsSearch: false)
+    private let host = PaneHostController()
     let instructions = InstructionsPaneViewController()
     let prompts = PromptsPaneViewController()
     let mcpServers = MCPServersPaneViewController()
@@ -138,111 +150,45 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
     let storage = StoragePaneViewController()
     private(set) var section: Section = .instructions
 
-    override func loadView() {
-        let root = NSView()
-        let sidebarScroll = NSScrollView()
-        sidebarScroll.drawsBackground = false
-        sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
-        sidebar.style = .sourceList
-        sidebar.headerView = nil
-        sidebar.rowHeight = 30
-        sidebar.addTableColumn(NSTableColumn(identifier: .init("section")))
-        sidebar.dataSource = self
-        sidebar.delegate = self
-        sidebar.setAccessibilityIdentifier("library.sections")
-        sidebarScroll.documentView = sidebar
-        let effect = NSVisualEffectView()
-        effect.material = .sidebar
-        effect.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(sidebarScroll)
-        root.addSubview(effect)
-        paneHost.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(paneHost)
-        let divider = NSBox()
-        divider.boxType = .separator
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(divider)
-        NSLayoutConstraint.activate([
-            effect.topAnchor.constraint(equalTo: root.topAnchor),
-            effect.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            effect.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            effect.widthAnchor.constraint(equalToConstant: 180),
-            sidebarScroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 44),
-            sidebarScroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-            sidebarScroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            sidebarScroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            divider.topAnchor.constraint(equalTo: root.topAnchor),
-            divider.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            divider.leadingAnchor.constraint(equalTo: effect.trailingAnchor),
-            divider.widthAnchor.constraint(equalToConstant: 1),
-            paneHost.topAnchor.constraint(equalTo: root.topAnchor),
-            paneHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            paneHost.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
-            paneHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-        ])
-        view = root
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
-        addChild(instructions)
-        addChild(prompts)
-        addChild(mcpServers)
-        addChild(skills)
-        addChild(storage)
-        sidebar.reloadData()
-        select(.instructions)
+        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
+        sidebarItem.canCollapse = false
+        sidebarItem.minimumThickness = 200
+        sidebarItem.maximumThickness = 200
+        addSplitViewItem(sidebarItem)
+        let content = NSSplitViewItem(viewController: host)
+        content.minimumThickness = 480
+        addSplitViewItem(content)
+        sidebar.onSelect = { [weak self] item in
+            guard let raw = Int(item.id), let section = Section(rawValue: raw) else { return }
+            self?.show(section)
+        }
+        sidebar.select(id: "\(Section.instructions.rawValue)")
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        sidebar.focusList()
     }
 
     func select(_ section: Section) {
         loadViewIfNeeded()
+        sidebar.select(id: "\(section.rawValue)")
+        show(section)
+    }
+
+    private func show(_ section: Section) {
         self.section = section
-        if sidebar.selectedRow != section.rawValue {
-            sidebar.selectRowIndexes([section.rawValue], byExtendingSelection: false)
-        }
-        let pane: NSView
+        let pane: NSViewController
         switch section {
-        case .instructions: pane = instructions.view
-        case .prompts: pane = prompts.view
-        case .mcpServers: pane = mcpServers.view
-        case .skills: pane = skills.view
-        case .storage: pane = storage.view
+        case .instructions: pane = instructions
+        case .prompts: pane = prompts
+        case .mcpServers: pane = mcpServers
+        case .skills: pane = skills
+        case .storage: pane = storage
         }
-        guard pane.superview !== paneHost else { return }
-        paneHost.subviews.forEach { $0.removeFromSuperview() }
-        pane.translatesAutoresizingMaskIntoConstraints = false
-        paneHost.addSubview(pane)
-        NSLayoutConstraint.activate([
-            pane.topAnchor.constraint(equalTo: paneHost.topAnchor),
-            pane.bottomAnchor.constraint(equalTo: paneHost.bottomAnchor),
-            pane.leadingAnchor.constraint(equalTo: paneHost.leadingAnchor),
-            pane.trailingAnchor.constraint(equalTo: paneHost.trailingAnchor),
-        ])
-    }
-
-    func numberOfRows(in tableView: NSTableView) -> Int { Section.allCases.count }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let section = Section.allCases[row]
-        let cell = NSTableCellView()
-        let image = NSImageView(image: NSImage(systemSymbolName: section.symbol, accessibilityDescription: nil) ?? NSImage())
-        let label = NSTextField(labelWithString: section.title)
-        label.font = DS.Text.body()
-        let stack = NSStackView(views: [image, label])
-        stack.spacing = DS.Spacing.s
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(stack)
-        cell.textField = label
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Spacing.xs),
-            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        guard let section = Section(rawValue: sidebar.selectedRow) else { return }
-        select(section)
+        host.show(pane)
     }
 }
 
@@ -1195,6 +1141,7 @@ enum LibraryStyle {
         scroll.backgroundColor = DS.Color.raised
         scroll.contentView.drawsBackground = true
         scroll.contentView.backgroundColor = DS.Color.raised
+        scroll.wantsLayer = true
         scroll.layer?.cornerRadius = DS.Radius.surface
         scroll.layer?.cornerCurve = .continuous
         scroll.layer?.masksToBounds = true

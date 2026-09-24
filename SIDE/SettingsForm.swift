@@ -35,14 +35,50 @@ enum SettingsForm {
         let height = min(maxHeight, stack.fittingSize.height)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: document.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            stack.centerXAnchor.constraint(equalTo: document.centerXAnchor),
             stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            scroll.widthAnchor.constraint(equalToConstant: width),
-            scroll.heightAnchor.constraint(equalToConstant: max(200, height)),
         ])
+        // Sizes, not rules: a split view's content side fills them, a bare window uses them.
+        for constraint in [scroll.widthAnchor.constraint(equalToConstant: width), scroll.heightAnchor.constraint(equalToConstant: max(200, height))] {
+            constraint.priority = .defaultLow
+            constraint.isActive = true
+        }
+        // The column stays centered and readable however wide the window gets.
+        stack.leadingAnchor.constraint(greaterThanOrEqualTo: document.leadingAnchor).isActive = true
         return scroll
+    }
+
+    /// A pane's title card, System Settings style: a large icon tile, the pane's name, and what
+    /// it's for, centered on a raised card.
+    static func hero(symbol: String, tint: NSColor, title: String, detail: String) -> NSView {
+        let tile = IconTile(symbol: symbol, tint: tint, size: 56)
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = DS.Text.custom(24, weight: .bold)
+        titleLabel.alignment = .center
+        let detailLabel = NSTextField(wrappingLabelWithString: detail)
+        detailLabel.font = DS.Text.body()
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .center
+        detailLabel.preferredMaxLayoutWidth = contentWidth - 80
+        let stack = NSStackView(views: [tile, titleLabel, detailLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = DS.Spacing.m
+        stack.setCustomSpacing(DS.Spacing.l, after: tile)
+        let card = NSView()
+        card.bindLayerBackground(DS.Color.raised)
+        card.layer?.cornerRadius = DS.Radius.surface
+        card.layer?.cornerCurve = .continuous
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: DS.Spacing.section + 4),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -DS.Spacing.section),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: DS.Spacing.section),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -DS.Spacing.section),
+        ])
+        return card
     }
 
     /// Puts a page in a pane's view, replacing the one before (panes that rebuild).

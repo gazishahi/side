@@ -21,9 +21,7 @@ final class AgentsPreferencesViewController: NSViewController {
 
     private func rebuild() {
         keyFields.removeAll()
-        var sections: [NSView] = [
-            SettingsForm.footnote("A track can run on Heron or on an outside agent. Outside agents use your own account: your subscription through the agent's own sign-in, or an API key you give Side. Side never sees your password."),
-        ]
+        var sections: [NSView] = [SettingsSplitViewController.hero(.agents)]
         sections += ACPAgent.known.map(section(for:))
         sections.append(SettingsForm.section(footer: "Any agent that speaks the Agent Client Protocol works: OpenCode, Qwen Code, Goose and others. Add it by the command that starts it in ACP mode.", [
             SettingsForm.row("Add another agent", SettingsForm.button("Add Agent\u{2026}", self, #selector(addAgent))),

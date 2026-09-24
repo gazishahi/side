@@ -83,7 +83,7 @@ final class UsageViewController: NSViewController {
         periodControl.selectedSegment = period.rawValue
         periodControl.setAccessibilityIdentifier("usage.period")
 
-        var sections: [NSView] = []
+        var sections: [NSView] = [SettingsSplitViewController.hero(.usage)]
         let models = modelLines()
         if models.isEmpty {
             sections.append(SettingsForm.section([SettingsForm.row("Period", detail: period == .thisMonth ? "Nothing recorded this month." : "No agent runs recorded yet. Usage appears here after the first Think conversation.", periodControl)]))
