@@ -62,6 +62,9 @@ public final class AgentSessionStore {
     /// Archived conversations, alongside the live ones rather than mixed in with them, so a
     /// directory listing still answers "what is current".
     private let archivesDirectory: URL
+    /// Side's records of conversations with outside agents (harness RFC step 5): the current one
+    /// per track and agent, and earlier ones kept under `archive/` when a new one starts.
+    private let outsideDirectory: URL
     private let indexURL: URL
     private let archivesURL: URL
     private let checkpointsURL: URL
@@ -73,6 +76,7 @@ public final class AgentSessionStore {
         let thinkDirectory = stateDirectory.appendingPathComponent("think")
         self.sessionsDirectory = thinkDirectory.appendingPathComponent("sessions")
         self.archivesDirectory = thinkDirectory.appendingPathComponent("archive")
+        self.outsideDirectory = thinkDirectory.appendingPathComponent("outside")
         self.indexURL = thinkDirectory.appendingPathComponent("index.json")
         self.archivesURL = thinkDirectory.appendingPathComponent("archives.json")
         self.checkpointsURL = thinkDirectory.appendingPathComponent("checkpoints.json")
@@ -200,6 +204,33 @@ public final class AgentSessionStore {
         NotificationCenter.default.post(name: Self.checkpointsDidChangeNotification, object: nil)
     }
 
+    // MARK: - Outside agents' conversations
+
+    /// Where the current conversation with `agentId` on a track is recorded.
+    public func outsideLogURL(trackKey: String, agentId: String) -> URL {
+        outsideDirectory.appendingPathComponent("\(Self.slug(for: trackKey)).\(Self.slug(for: agentId)).jsonl")
+    }
+
+    /// Files the current conversation away (New Conversation) and returns its archived location.
+    @discardableResult
+    public func archiveOutsideLog(trackKey: String, agentId: String) -> URL? {
+        let current = outsideLogURL(trackKey: trackKey, agentId: agentId)
+        guard FileManager.default.fileExists(atPath: current.path) else { return nil }
+        let archived = outsideDirectory.appendingPathComponent("archive", isDirectory: true)
+            .appendingPathComponent(current.deletingPathExtension().lastPathComponent + "-\(Int(Date().timeIntervalSince1970)).jsonl")
+        try? FileManager.default.createDirectory(at: archived.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return (try? FileManager.default.moveItem(at: current, to: archived)) != nil ? archived : nil
+    }
+
+    /// Every outside-agent record for a track, current and archived.
+    private func outsideLogs(trackKey: String?) -> [URL] {
+        let prefix = trackKey.map { Self.slug(for: $0) + "." }
+        return [outsideDirectory, outsideDirectory.appendingPathComponent("archive")].flatMap { directory in
+            ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+                .filter { url in url.pathExtension == "jsonl" && (prefix.map { url.lastPathComponent.hasPrefix($0) } ?? true) }
+        }
+    }
+
     /// Called when a track is deleted — its conversation and checkpoints have nowhere to belong
     /// anymore, same cleanup contract as Make's file memory and Run's terminal sessions.
     public func removeSession(forTrackKey trackKey: String) {
@@ -213,6 +244,7 @@ public final class AgentSessionStore {
         index.removeAll { $0.trackKey == trackKey }
         checkpoints.removeAll { $0.trackKey == trackKey }
         try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: trackKey))
+        for url in outsideLogs(trackKey: trackKey) { try? FileManager.default.removeItem(at: url) }
         try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
         saveIndex()
         saveCheckpoints()
@@ -366,6 +398,11 @@ public final class AgentSessionStore {
     /// deleting files for projects nobody has open is a worse trade than a slightly late one.
     private func pruneExpiredSessions() {
         guard let cutoff = HistoryRetention.current.cutoffDate() else { return }
+        // Outside agents' records hold the same kind of content; the same window applies.
+        for url in outsideLogs(trackKey: nil) {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if modified < cutoff { try? FileManager.default.removeItem(at: url) }
+        }
         let expired = index.filter { $0.lastActiveAt < cutoff }
         guard !expired.isEmpty else { return }
         for entry in expired {
@@ -385,6 +422,7 @@ public final class AgentSessionStore {
         }
         archives.removeAll()
         saveArchives()
+        for url in outsideLogs(trackKey: nil) { try? FileManager.default.removeItem(at: url) }
         loadedSessions.removeAll()
         residency.removeAll()
         for entry in index {

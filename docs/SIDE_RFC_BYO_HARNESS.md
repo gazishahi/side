@@ -1,6 +1,6 @@
 # RFC — Bring your own harness
 
-*2026-09-23. Status: **accepted** — the owner accepted D1–D8 as recommended the same day, with
+*2026-09-23. Status: **built** (plan steps 1–5; see each step). Earlier: **accepted** — the owner accepted D1–D8 as recommended the same day, with
 D1 settled explicitly: outside agents may write straight to disk ("it is the user's
 responsibility to know what the agents are up to"); those changes are reviewable and reversible
 through the turn-end checkpoint rather than pre-approved. **D9** (one approval per edit) added and
@@ -215,6 +215,17 @@ another agent).
    the development machine). Environment hiding (`ACPAgent.hiddenEnvironment`) is Claude Code
    only: an exported Gemini or OpenAI key is often the user's only credential for those agents.
 5. **Durability**: the tagged session log and `session/load`.
+   **Built 2026-09-23.** `OutsideSessionLog`: Side's record of each outside conversation, one
+   JSON line per finished entry in `think/outside/<track>.<agent>.jsonl`, appended at each send
+   and turn end (cards are written once decided; tool and failure text redacted), with the
+   agent's session id in a header line. On launch the conversation is restored from it, and the
+   agent's own session is reopened with `session/load` when the agent advertises
+   `loadSession` (its replay is not drawn twice); if that fails, a new session opens and the
+   transcript says the agent won't remember. New Conversation files the record under
+   `outside/archive/`. Retention and Delete All Conversations cover these records too. A
+   checkpoint finished after its conversation was put away is still written to the ledger and
+   the record. Verified live: Claude Code remembers a word across a relaunch. Not yet built:
+   archived outside conversations in the History list.
 
 Each step is its own commit with its acceptance below.
 

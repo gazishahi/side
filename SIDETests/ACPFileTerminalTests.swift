@@ -350,6 +350,89 @@ for line in sys.stdin:
         XCTAssertNil(ACPAgent.agent(id: added.id))
     }
 
+    /// Step 5: the conversation is Side's to keep. A relaunch shows it again, nothing twice, and
+    /// the agent's own session is reopened (so it remembers) without its replay being drawn.
+    func testTheConversationSurvivesARelaunchAndTheAgentsSessionIsReopened() throws {
+        var h = try harness(autonomy: .full)
+        _ = run(h, "unannounced")
+        let before = h.entries.compactMap { entry -> String? in
+            switch entry.kind {
+            case .userText(let t), .assistantText(let t): return t
+            default: return nil
+            }
+        }
+        XCTAssertEqual(before.count, 2)
+        XCTAssertNotNil(waitForCheckpoint(h))
+        h.teardown()
+
+        // "Relaunch": a new harness for the same track and agent.
+        h = try harness(autonomy: .full)
+        defer { h.teardown() }
+        let after = h.entries.compactMap { entry -> String? in
+            switch entry.kind {
+            case .userText(let t), .assistantText(let t): return t
+            default: return nil
+            }
+        }
+        XCTAssertEqual(after, before, "the record brings the conversation back")
+        XCTAssertTrue(h.entries.contains { if case .checkpoint = $0.kind { return true }; return false }, "with its checkpoint line")
+
+        h.prepareSession()
+        XCTAssertTrue(waitFor { h.agentOptions.first?.current == "small" }, "session/load reopened the agent's session: \(h.agentOptions)")
+        let text = h.entries.compactMap { if case .assistantText(let t) = $0.kind { return t } else { return nil } }.joined()
+        XCTAssertFalse(text.contains("REPLAYED"), "the agent's replay isn't drawn a second time")
+
+        // A second turn appends; a third launch shows both turns once.
+        _ = run(h, "unannounced")
+        h.teardown()
+        h = try harness(autonomy: .full)
+        let users = h.entries.filter { if case .userText = $0.kind { return true }; return false }
+        XCTAssertEqual(users.count, 2)
+    }
+
+    /// An agent that can't reopen the session starts a new one, and says the agent won't remember.
+    func testAFailedReopenStartsANewSessionAndSaysSo() throws {
+        let url = store.outsideLogURL(trackKey: "t", agentId: "mock")
+        OutsideSessionLog.append([.init(kind: .header, conversationId: UUID(), agentId: "mock", agentSessionId: "gone"),
+                                  .init(kind: .user, text: "earlier")], to: url)
+        let h = try harness()
+        defer { h.teardown() }
+        XCTAssertEqual(h.entries.count, 1)
+        h.prepareSession()
+        XCTAssertTrue(waitFor { h.entries.contains { if case .meta(let t) = $0.kind { return t.contains("couldn't reopen") }; return false } })
+        XCTAssertTrue(waitFor { h.agentOptions.first?.current == "big" }, "a new session opened")
+    }
+
+    /// Opt-in live: Claude Code remembers across a relaunch, through `session/load`.
+    func testLiveClaudeCodeRemembersAcrossARelaunch() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_LIVE_ACP"] == "1", "live agent test is opt-in")
+        let adapter = URL(fileURLWithPath: "/opt/homebrew/bin/claude-agent-acp")
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: adapter.path))
+        let agent = try XCTUnwrap(ACPAgent.agent(id: "claude-code"))
+        let environment = agent.launchEnvironment(from: LanguageServerRegistry.environmentForSpawning())
+        let root = self.root!
+        func make() -> ACPHarness {
+            ACPHarness(trackKey: "t", agent: agent, launchProvider: { ACPLaunch(executable: adapter, arguments: [], environment: environment) },
+                       rootProvider: { root }, sessionStore: store, terminalHost: { [unowned self] in self.broker })
+        }
+        func ask(_ h: ACPHarness, _ text: String) -> String {
+            let done = expectation(description: text)
+            done.assertForOverFulfill = false
+            let token = h.addObserver { _ in if h.phase == .finishedTurn || h.phase == .blocked(.failed) || h.phase == .blocked(.stalled) { done.fulfill() } }
+            h.send(text)
+            wait(for: [done], timeout: 120)
+            h.removeObserver(token)
+            return h.entries.compactMap { if case .assistantText(let t) = $0.kind { return t } else { return nil } }.last ?? ""
+        }
+        let first = make()
+        _ = ask(first, "Remember this word for later: pelican. Reply with just: ok")
+        first.teardown()
+        let second = make()
+        defer { second.teardown() }
+        let answer = ask(second, "What word did I ask you to remember? Reply with just the word.")
+        XCTAssertTrue(answer.lowercased().contains("pelican"), answer)
+    }
+
     /// A command tab is never where the agent's typed commands go.
     func testACommandTabIsNeverTheAgentsShell() {
         let launch = TerminalViewController.CommandLaunch(command: "/bin/sleep", arguments: ["5"], environment: [:])
@@ -394,8 +477,16 @@ def res(m, key):
     return ("ERR " + m["error"]["message"]) if "error" in m else m["result"].get(key, "ok")
 for line in sys.stdin:
     m = json.loads(line); meth = m.get("method"); p = m.get("params", {})
-    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1}})
+    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}})
     elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s", "configOptions": options()}})
+    elif meth == "session/load":
+        if p["sessionId"] == "s":
+            # Replays history, as a real agent does; Side's record already shows it.
+            up({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "REPLAYED"}})
+            state["model"] = "small"
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"configOptions": options()}})
+        else:
+            send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32002, "message": "no such session"}})
     elif meth == "session/set_config_option":
         state[p["configId"]] = p["value"]
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"configOptions": options()}})

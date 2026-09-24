@@ -1,0 +1,113 @@
+import Foundation
+
+/// Side's own record of a conversation with an outside agent (`SIDE_RFC_BYO_HARNESS.md` step 5,
+/// D5): what Think showed, one JSON line per entry, appended as the conversation goes, plus the
+/// agent's session id so the agent's own session can be reopened (`session/load`).
+///
+/// It is a record of what Side rendered, not the agent's transcript: the agent keeps that
+/// itself. Resolved cards are stored as their outcome (an approval card becomes "Allowed"), since
+/// nothing is left to decide once a turn has ended. Tool and failure text passes through
+/// `SecretRedactor`, as Heron's tool results do.
+enum OutsideSessionLog {
+    struct Record: Codable, Equatable {
+        enum Kind: String, Codable { case header, user, assistant, thinking, tool, meta, failure, checkpoint }
+        var kind: Kind
+        var text: String = ""
+        var detail: String?
+        var checkpointId: UUID?
+        /// On a header: the conversation and the agent's session it belongs to.
+        var conversationId: UUID?
+        var agentId: String?
+        var agentSessionId: String?
+        var at = Date()
+    }
+
+    struct Contents {
+        var conversationId: UUID?
+        var agentSessionId: String?
+        var entries: [RunTranscriptEntry] = []
+    }
+
+    static func read(_ url: URL) -> Contents {
+        var contents = Contents()
+        guard let data = try? Data(contentsOf: url) else { return contents }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        // Line by line: a truncated last line (a kill mid-write) costs that line, not the file.
+        for line in data.split(separator: 0x0A) where !line.isEmpty {
+            guard let record = try? decoder.decode(Record.self, from: line) else { continue }
+            switch record.kind {
+            case .header:
+                contents.conversationId = record.conversationId ?? contents.conversationId
+                contents.agentSessionId = record.agentSessionId ?? contents.agentSessionId
+            default:
+                if let kind = entryKind(record) { contents.entries.append(RunTranscriptEntry(kind: kind, createdAt: record.at)) }
+            }
+        }
+        return contents
+    }
+
+    @discardableResult
+    static func append(_ records: [Record], to url: URL) -> Bool {
+        guard !records.isEmpty else { return true }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var data = Data()
+        for record in records {
+            guard let line = try? encoder.encode(record) else { continue }
+            data.append(line)
+            data.append(0x0A)
+        }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } else {
+                try data.write(to: url, options: .atomic)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// A finished entry as a record, or nil for what isn't worth keeping (a card still open).
+    static func record(for entry: RunTranscriptEntry) -> Record? {
+        let redact = SecretRedactor.redacted
+        var record: Record
+        switch entry.kind {
+        case .userText(let text): record = Record(kind: .user, text: text)
+        case .assistantText(let text): record = Record(kind: .assistant, text: text)
+        case .thinking(let text): record = Record(kind: .thinking, text: text)
+        case .toolCall(let name, let summary): record = Record(kind: .tool, text: name, detail: redact(summary))
+        case .meta(let text): record = Record(kind: .meta, text: text)
+        case .failure(let text): record = Record(kind: .failure, text: redact(text))
+        case .checkpoint(let id, let text): record = Record(kind: .checkpoint, text: text, checkpointId: id)
+        case .permissionRequest(let presentation):
+            guard let chosen = presentation.chosenOptionName else { return nil }
+            record = Record(kind: .tool, text: presentation.title, detail: " · \(chosen)")
+        case .proposal(let presentation):
+            guard let resolution = presentation.resolution else { return nil }
+            record = Record(kind: .tool, text: "Edit \(presentation.edit.relativePath)", detail: " · \(resolution.label.text)")
+        default:
+            return nil
+        }
+        record.at = entry.createdAt
+        return record
+    }
+
+    private static func entryKind(_ record: Record) -> RunTranscriptEntry.Kind? {
+        switch record.kind {
+        case .header: return nil
+        case .user: return .userText(record.text)
+        case .assistant: return .assistantText(record.text)
+        case .thinking: return .thinking(record.text)
+        case .tool: return .toolCall(name: record.text, summary: record.detail ?? "")
+        case .meta: return .meta(record.text)
+        case .failure: return .failure(record.text)
+        case .checkpoint: return record.checkpointId.map { .checkpoint(id: $0, text: record.text) }
+        }
+    }
+}

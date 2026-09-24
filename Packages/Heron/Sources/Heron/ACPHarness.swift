@@ -88,6 +88,17 @@ public final class ACPHarness: Harness {
     /// The track's remembered choices (option id → value), re-applied to each new session.
     private let preferredOptions: () -> [String: String]
     private let onOptionChanged: (String, String) -> Void
+    // Durability (plan step 5): Side's own record, and the agent's session to reopen.
+    private var logURL: URL? { sessionStore?.outsideLogURL(trackKey: trackKey, agentId: agent.id) }
+    /// Entries already in the record; everything after is written when it's final.
+    private var persistedCount = 0
+    private var headerWritten = false
+    /// The agent's session this conversation last ran in, to reopen with `session/load`.
+    private var storedAgentSessionId: String?
+    /// The agent said it can reopen a session (`agentCapabilities.loadSession`).
+    private var agentCanLoadSession = false
+    /// While the agent replays a reopened session's history: Side's record already shows it.
+    private var replaying = false
     /// How the agent was asked to sign in (Settings › Agents), for agents that ask.
     private var signIn: ACPAgent.SignIn = .subscription
     /// Sends waiting for the session that's being opened (by a send, or by `prepareSession`).
@@ -118,6 +129,62 @@ public final class ACPHarness: Harness {
         self.preferredOptions = preferredOptions
         self.onOptionChanged = onOptionChanged
         agentOptions = seededOptions()
+        restoreFromLog()
+    }
+
+    // MARK: The record (plan step 5)
+
+    /// The conversation as Side last showed it, so a relaunch (or the track being shown again)
+    /// brings it back rather than an empty Think.
+    private func restoreFromLog() {
+        guard let url = logURL else { return }
+        let contents = OutsideSessionLog.read(url)
+        guard contents.conversationId != nil || !contents.entries.isEmpty else { return }
+        entries = contents.entries
+        persistedCount = entries.count
+        headerWritten = true
+        if let id = contents.conversationId { conversationId = id }
+        storedAgentSessionId = contents.agentSessionId
+        // The changes pill: what this conversation's checkpoints changed.
+        for checkpoint in sessionStore?.checkpoints(forTrackKey: trackKey) ?? [] where checkpoint.agentSessionId == conversationId {
+            for change in checkpoint.fileChanges {
+                let existing = appliedCounts[change.path] ?? (0, 0)
+                appliedCounts[change.path] = (existing.added + change.added, existing.removed + change.removed)
+            }
+        }
+    }
+
+    /// Appends every finished entry not yet in the record. Stops at a card still waiting for an
+    /// answer: it's written once decided.
+    private func persistNewEntries() {
+        guard let url = logURL else { return }
+        var records: [OutsideSessionLog.Record] = []
+        if !headerWritten {
+            records.append(.init(kind: .header, conversationId: conversationId, agentId: agent.id, agentSessionId: sessionId))
+            headerWritten = true
+        }
+        while persistedCount < entries.count {
+            let entry = entries[persistedCount]
+            switch entry.kind {
+            case .permissionRequest(let p) where p.chosenOptionName == nil: break
+            case .proposal(let p) where p.resolution == nil: break
+            default:
+                if let record = OutsideSessionLog.record(for: entry) { records.append(record) }
+                persistedCount += 1
+                continue
+            }
+            break
+        }
+        OutsideSessionLog.append(records, to: url)
+    }
+
+    /// The agent's session id, recorded so the next launch can reopen it.
+    private func recordAgentSession(_ id: String) {
+        guard id != storedAgentSessionId else { return }
+        storedAgentSessionId = id
+        guard let url = logURL else { return }
+        persistNewEntries() // the header first, if this is a new record
+        OutsideSessionLog.append([.init(kind: .header, conversationId: conversationId, agentSessionId: id)], to: url)
     }
 
     // MARK: Last-known settings
@@ -188,6 +255,7 @@ public final class ACPHarness: Harness {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !phase.isBusy else { return }
         append(.userText(trimmed))
+        persistNewEntries()
         streamingIndex = nil
         thinkingIndex = nil
         setPhase(.streaming)
@@ -239,6 +307,7 @@ public final class ACPHarness: Harness {
         // Whatever the turn changed is checkpointed, cancelled or not — Stop doesn't undo writes
         // that already landed, and they stay reviewable and reversible (D1).
         checkpointTurn()
+        defer { persistNewEntries() }
         switch stopReason {
         case "cancelled":
             setPhase(.idle)
@@ -260,6 +329,7 @@ public final class ACPHarness: Harness {
         settlePendingWrites(reason: "The agent stopped before this edit was decided. The file is unchanged.")
         checkpointTurn()
         append(.failure(message))
+        persistNewEntries()
         setPhase(.blocked(.failed))
     }
 
@@ -355,6 +425,8 @@ public final class ACPHarness: Harness {
                     return
                 }
                 let methods = (value as? [String: Any])?["authMethods"] as? [[String: Any]] ?? []
+                let capabilities = (value as? [String: Any])?["agentCapabilities"] as? [String: Any]
+                self.agentCanLoadSession = (capabilities?["loadSession"] as? Bool) ?? false
                 self.signInIfAsked(methods: methods, on: connection) { [weak self] in self?.openSession(on: connection) }
             }
         }
@@ -406,6 +478,31 @@ public final class ACPHarness: Harness {
     /// fresh one after "New Conversation", which reuses the process rather than starting another.
     private func openSession(on connection: ACPConnection) {
         let root = rootProvider()
+        // Reopen the agent's own session when this conversation had one and the agent can:
+        // then it remembers what was said. Its replay of that history isn't drawn again; Side's
+        // record already shows it.
+        if let stored = storedAgentSessionId, agentCanLoadSession {
+            replaying = true
+            connection.request("session/load", params: ["sessionId": stored, "cwd": root.path, "mcpServers": [Any]()]) { [weak self] result in
+                guard let self else { return }
+                self.replaying = false
+                switch result {
+                case .success(let value):
+                    self.sessionId = stored
+                    let (options, backing) = Self.options(from: value)
+                    if !options.isEmpty { (self.agentOptions, self.optionBacking) = (options, backing) }
+                    self.applyPreferredOptions()
+                    self.rememberKnownOptions()
+                    self.notify(.phaseChanged)
+                    self.sessionReady(stored)
+                case .failure:
+                    self.storedAgentSessionId = nil
+                    self.append(.meta("\(self.agent.displayName) couldn't reopen its earlier session, so it starts a new one. The conversation above stays here, but the agent won't remember it."))
+                    self.openSession(on: connection)
+                }
+            }
+            return
+        }
         connection.request("session/new", params: ["cwd": root.path, "mcpServers": [Any]()]) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -417,6 +514,7 @@ public final class ACPHarness: Harness {
                     return
                 }
                 self.sessionId = id
+                self.recordAgentSession(id)
                 (self.agentOptions, self.optionBacking) = Self.options(from: value)
                 self.applyPreferredOptions()
                 self.rememberKnownOptions()
@@ -447,6 +545,7 @@ public final class ACPHarness: Harness {
         }
         guard method == "session/update", let update = params["update"] as? [String: Any],
               let kind = update["sessionUpdate"] as? String else { return }
+        if replaying, !["config_option_update", "current_mode_update", "usage_update"].contains(kind) { return }
         switch kind {
         case "agent_message_chunk":
             guard let text = Self.text(update["content"]) else { return }
@@ -616,6 +715,10 @@ public final class ACPHarness: Harness {
     /// A fresh conversation is a fresh session: the next message opens a new one.
     public func startNewConversation() {
         guard !phase.isBusy else { return }
+        sessionStore?.archiveOutsideLog(trackKey: trackKey, agentId: agent.id)
+        persistedCount = 0
+        headerWritten = false
+        storedAgentSessionId = nil
         sessionId = nil
         entries.removeAll()
         toolEntryIndex.removeAll()
@@ -645,6 +748,7 @@ public final class ACPHarness: Harness {
     public func teardown() {
         disarmStallTimer()
         sessionWaiters.removeAll()
+        defer { persistNewEntries() }
         answerPendingPermissions(with: nil)
         settlePendingWrites(reason: "The conversation closed before this edit was decided. The file is unchanged.")
         terminalHostProvider()?.endAll(owner: ownerId, closeTabs: true)
@@ -780,26 +884,10 @@ public final class ACPHarness: Harness {
             bases[edit.url.path] = edit.proposedContent
             turnTouched.insert(edit.relativePath)
             connection?.respond(id: requestId, result: [:])
-            countLines(edit)
         } else {
             connection?.respondError(id: requestId, code: -32000, message: outcome.toolResultText)
         }
         return outcome
-    }
-
-    private func countLines(_ edit: ProposedEdit) {
-        let (base, proposed, path, root) = (edit.baseContent, edit.proposedContent, edit.relativePath, rootProvider())
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let delta = AgentRunner.lineDelta(in: GitDiffComputer.unifiedDiffText(original: base, proposed: proposed, projectRoot: root))
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    let existing = self.appliedCounts[path] ?? (0, 0)
-                    self.appliedCounts[path] = (existing.added + delta.added, existing.removed + delta.removed)
-                    self.notify(.phaseChanged)
-                }
-            }
-        }
     }
 
     private func setResolution(_ entryId: UUID, _ resolution: ProposalPresentation.Resolution) {
@@ -933,6 +1021,7 @@ public final class ACPHarness: Harness {
             let seconds = Int(self.stallInterval)
             let span = seconds >= 120 ? "\(seconds / 60) minutes" : "\(seconds) seconds"
             self.append(.failure("No response from \(self.agent.displayName) for \(span), so Side stopped waiting. Send the message again. If it keeps happening, run the agent's CLI in a terminal to check it works and is signed in."))
+            self.persistNewEntries()
             self.setPhase(.blocked(.stalled))
         }
         stallWorkItem = work
@@ -1058,6 +1147,7 @@ public final class ACPHarness: Harness {
         let intent = firstLine.count > 72 ? String(firstLine.prefix(71)) + "…" : firstLine
         let commands = turnCommands
         let (trackKey, conversationId, agent) = (self.trackKey, self.conversationId, self.agent)
+        let logURL = self.logURL
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // Only touched paths that actually differ now: a path the agent changed and changed
             // back has nothing to commit, and `git add` of a vanished untracked path would fail.
@@ -1070,12 +1160,15 @@ public final class ACPHarness: Harness {
             }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self else { return }
+                    // The ledger entry is written even if this conversation has been put away in
+                    // the meantime (the app quitting right after a turn): a commit with no
+                    // checkpoint record can't be found in Review or undone from it.
+                    var lines: [RunTranscriptEntry.Kind] = []
                     switch outcome {
                     case .none, .nothingToCommit?:
                         return
                     case .failed(let step, let message)?:
-                        self.append(.failure("Couldn't create a checkpoint: git \(step) failed\(message.isEmpty ? "" : ": \(message)").\nThe changes are still in your working copy, uncommitted."))
+                        lines.append(.failure("Couldn't create a checkpoint: git \(step) failed\(message.isEmpty ? "" : ": \(message)").\nThe changes are still in your working copy, uncommitted."))
                     case .committed(let sha, let paths)?:
                         let names = paths.map { ($0 as NSString).lastPathComponent }
                         let described = intent.isEmpty
@@ -1087,11 +1180,23 @@ public final class ACPHarness: Harness {
                             provenance: AgentProvenance(providerId: "acp:\(agent.id)", modelId: agent.displayName, instructionSourceSummary: "\(agent.displayName) conversation"),
                             gitCommitSHA: sha, fileChanges: fileChanges)
                         sessionStore.appendCheckpoint(checkpoint)
-                        self.append(.checkpoint(id: checkpoint.id, text: AgentRunner.checkpointMarker(checkpoint)))
+                        lines.append(.checkpoint(id: checkpoint.id, text: AgentRunner.checkpointMarker(checkpoint)))
                         let sharedNames = shared.sorted().map { ($0 as NSString).lastPathComponent }
                         if !sharedNames.isEmpty {
-                            self.append(.meta("Also has your own saved edits, committed with the agent's: \(sharedNames.joined(separator: ", "))."))
+                            lines.append(.meta("Also has your own saved edits, committed with the agent's: \(sharedNames.joined(separator: ", "))."))
                         }
+                        if let self {
+                            for change in fileChanges {
+                                let existing = self.appliedCounts[change.path] ?? (0, 0)
+                                self.appliedCounts[change.path] = (existing.added + change.added, existing.removed + change.removed)
+                            }
+                        }
+                    }
+                    if let self {
+                        for line in lines { self.append(line) }
+                        self.persistNewEntries()
+                    } else if let logURL {
+                        OutsideSessionLog.append(lines.compactMap { OutsideSessionLog.record(for: RunTranscriptEntry(kind: $0)) }, to: logURL)
                     }
                 }
             }
