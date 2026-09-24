@@ -19,6 +19,9 @@ public struct SavedPrompt: Equatable, Sendable {
     public let body: String
     public let url: URL
     public let scope: Scope
+    /// A template: "Start Track" creates a track named by the title and sends the body as its
+    /// first message (front matter `track: true`).
+    public let startsTrack: Bool
 }
 
 public enum PromptLibrary {
@@ -50,7 +53,7 @@ public enum PromptLibrary {
 
     /// Writes a prompt, replacing `replacing` when its name or scope changed.
     @discardableResult
-    public static func save(title: String, body: String, scope: SavedPrompt.Scope, projectRoot: URL?, replacing: SavedPrompt? = nil) throws -> SavedPrompt {
+    public static func save(title: String, body: String, scope: SavedPrompt.Scope, projectRoot: URL?, startsTrack: Bool = false, replacing: SavedPrompt? = nil) throws -> SavedPrompt {
         let directory: URL
         switch scope {
         case .user: directory = userDirectory
@@ -63,7 +66,7 @@ public enum PromptLibrary {
         guard !name.isEmpty else { throw CocoaError(.fileWriteInvalidFileName) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name + ".md")
-        let text = "# \(cleanTitle)\n\n" + body.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+        let text = (startsTrack ? "---\ntrack: true\n---\n" : "") + "# \(cleanTitle)\n\n" + body.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
         try text.write(to: url, atomically: true, encoding: .utf8)
         if let replacing, replacing.url.standardizedFileURL != url.standardizedFileURL {
             try? FileManager.default.removeItem(at: replacing.url)
@@ -94,13 +97,20 @@ public enum PromptLibrary {
     static func parse(_ text: String, url: URL, scope: SavedPrompt.Scope) -> SavedPrompt {
         let name = url.deletingPathExtension().lastPathComponent.lowercased()
         var lines = text.components(separatedBy: "\n")
+        let fields = SkillCatalog.frontMatter(text)
+        if lines.first?.trimmingCharacters(in: .whitespaces) == "---",
+           let end = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" }) {
+            lines.removeSubrange(0...end)
+            while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeFirst() }
+        }
         var title = name
         if let first = lines.first, first.hasPrefix("# ") {
             title = String(first.dropFirst(2)).trimmingCharacters(in: .whitespaces)
             lines.removeFirst()
         }
         let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return SavedPrompt(name: name, title: title, body: body, url: url, scope: scope)
+        let startsTrack = ["true", "yes"].contains(fields["track"]?.lowercased() ?? "")
+        return SavedPrompt(name: name, title: title, body: body, url: url, scope: scope, startsTrack: startsTrack)
     }
 
     private static func load(_ directory: URL, scope: SavedPrompt.Scope) -> [SavedPrompt] {

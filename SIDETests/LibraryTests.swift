@@ -94,6 +94,31 @@ final class LibraryTests: XCTestCase {
         XCTAssertTrue(ThinkWorkspaceViewController.builtInSlashNames.contains("library"))
     }
 
+    /// Step 4: a template is a prompt with `track: true`; Start Track hands over what's saved.
+    func testTemplatesAreFlaggedPromptsAndStartTrackHandsThemOver() throws {
+        let template = try PromptLibrary.save(title: "Bug bash", body: "Find and fix one bug.", scope: .project, projectRoot: root, startsTrack: true)
+        XCTAssertEqual(try String(contentsOf: template.url, encoding: .utf8), "---\ntrack: true\n---\n# Bug bash\n\nFind and fix one bug.\n")
+        let loaded = try XCTUnwrap(PromptLibrary.prompt(named: "bug-bash", projectRoot: root))
+        XCTAssertTrue(loaded.startsTrack)
+        XCTAssertEqual(loaded.title, "Bug bash")
+        XCTAssertEqual(loaded.body, "Find and fix one bug.")
+        let plain = try PromptLibrary.save(title: "Bug bash", body: "Just text.", scope: .project, projectRoot: root, replacing: loaded)
+        XCTAssertFalse(plain.startsTrack, "unchecking it saves a plain prompt")
+
+        let pane = PromptsPaneViewController()
+        pane.loadViewIfNeeded()
+        pane.target = LibraryTarget(projectName: "p", projectRoot: root, workingRoot: root)
+        pane.titleField.stringValue = "Release"
+        pane.bodyView.string = "Cut a release."
+        pane.templateCheckbox.state = .on
+        pane.save()
+        XCTAssertEqual(pane.prompts.first { $0.name == "release" }?.startsTrack, true)
+        var started: SavedPrompt?
+        pane.onStartTrack = { started = $0 }
+        pane.startTrack()
+        XCTAssertEqual(started?.body, "Cut a release.")
+    }
+
     func testMCPServerFormKeepsHiddenValuesAndSplitsArguments() {
         XCTAssertEqual(MCPServerStore.splitArguments(#"-y "@scope/server x" --flag ''"#), ["-y", "@scope/server x", "--flag", ""])
         let hidden = MCPServersPaneViewController.hiddenValue

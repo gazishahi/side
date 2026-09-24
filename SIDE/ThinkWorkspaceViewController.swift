@@ -561,6 +561,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     // MARK: - Sending
 
+    /// Sends text as if the user had typed it (a template's first message), through the same
+    /// consent and readiness checks: if it can't go yet, it waits in the composer.
+    func sendAsTyped(_ text: String) {
+        composer.clear()
+        composer.insertText(text)
+        composerActionTapped()
+    }
+
     private func composerActionTapped() {
         guard let runner else { return }
         // While the agent is working the button means Stop — but pressing Return with text in

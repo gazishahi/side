@@ -579,6 +579,32 @@ final class ShellViewController: NSViewController {
         NSWorkspace.shared.activateFileViewerSelecting([projectURL])
     }
 
+    /// A template from Library: a new track named by its title, opened in Think, with the
+    /// prompt sent as its first message.
+    func startTrack(from prompt: SavedPrompt) {
+        confirmCloseAllUnsaved { [weak self] proceed in
+            guard let self, proceed, let store = self.trackStore else { return }
+            store.createTrack(intent: prompt.title) { [weak self] result in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        switch result {
+                        case .success(let (track, _)):
+                            self.branchIsNowActive(track.branchName)
+                            self.show(.think)
+                            // After the stages have attached to the new track.
+                            DispatchQueue.main.async { self.thinkVC.sendAsTyped(prompt.body) }
+                        case .failure(let error):
+                            let alert = NSAlert(error: error)
+                            alert.messageText = "Couldn't start \u{201C}\(prompt.title)\u{201D}"
+                            alert.runModal()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// What Library shows for this window: the working copy of the track on screen.
     var libraryTarget: LibraryTarget? {
         guard let projectURL else { return nil }

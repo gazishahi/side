@@ -1,6 +1,7 @@
 # RFC: Library
 
-*2026-09-23. Status: **in progress**: the owner asked for a short RFC and to start building. Steps 1–3 built; see Plan.*
+*2026-09-23. Status: **built**: the owner asked for a short RFC and to start building. Steps 1–4 built; see Plan.*
+Symbols: `LibraryWindowController` `InstructionFiles` `PromptLibrary` `MCPServerStore` `SkillCatalog` `StoragePaneViewController` `SavedPrompt`
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` (Library is not a stage: a separate window, ⇧⌘L)
 and `SIDE_RFC_NAVIGATION_LEDGER.md` R6. Builds on `ProjectRules` ("Library-lite") and
 `SIDE_RFC_BYO_HARNESS.md` (outside agents).*
@@ -98,6 +99,10 @@ message. That is the whole feature; there is no separate template object.
    `TrackStore.removeWorkingCopy`: branches and checkpoints stay, and a copy with uncommitted
    changes is kept and named.
 4. **Templates** (Start Track from a prompt).
+   **Built 2026-09-24:** a prompt marked as a template (front matter `track: true`, a checkbox in
+   Library) shows Start Track: a track named by its title opens in Think and the saved body goes
+   through the composer's own send path, so the rules consent and model readiness checks apply
+   and an unsendable message waits in the composer. Verified in the app on a fixture project.
 
 ## Acceptance (step 1)
 

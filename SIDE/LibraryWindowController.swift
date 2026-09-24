@@ -24,6 +24,11 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         window.contentViewController = content
         window.delegate = self
         content.onReveal = { [weak self] url in self?.reveal(url) }
+        content.prompts.onStartTrack = { [weak self] prompt in
+            guard let shell = self?.shell else { return }
+            shell.view.window?.makeKeyAndOrderFront(nil)
+            shell.startTrack(from: prompt)
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(mainWindowChanged(_:)), name: NSWindow.didBecomeMainNotification, object: nil)
     }
 
@@ -400,8 +405,11 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
 @MainActor
 final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     var target: LibraryTarget? { didSet { reload() } }
+    var onStartTrack: ((SavedPrompt) -> Void)?
 
     private(set) var prompts: [SavedPrompt] = []
+    let templateCheckbox = NSButton(checkboxWithTitle: "Template: Start Track creates a track named by the title and sends this", target: nil, action: nil)
+    private let startTrackButton = NSButton(title: "Start Track", target: nil, action: nil)
     private let table = NSTableView()
     let titleField = NSTextField()
     let scopePopup = NSPopUpButton()
@@ -457,10 +465,14 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         deleteButton.target = self
         deleteButton.action = #selector(deletePrompt)
         deleteButton.bezelStyle = .rounded
-        let buttons = NSStackView(views: [hint, NSView(), deleteButton, saveButton])
+        startTrackButton.target = self
+        startTrackButton.action = #selector(startTrack)
+        startTrackButton.bezelStyle = .rounded
+        templateCheckbox.font = DS.Text.caption()
+        let buttons = NSStackView(views: [hint, NSView(), startTrackButton, deleteButton, saveButton])
         buttons.spacing = DS.Spacing.m
 
-        for view in [heading, note, tableScroll, newButton, titleField, scopePopup, bodyScroll, buttons] as [NSView] {
+        for view in [heading, note, tableScroll, newButton, titleField, scopePopup, bodyScroll, templateCheckbox, buttons] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
@@ -487,7 +499,10 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
             bodyScroll.topAnchor.constraint(equalTo: scopePopup.bottomAnchor, constant: DS.Spacing.m),
             bodyScroll.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
             bodyScroll.trailingAnchor.constraint(equalTo: titleField.trailingAnchor),
-            buttons.topAnchor.constraint(equalTo: bodyScroll.bottomAnchor, constant: DS.Spacing.m),
+            templateCheckbox.topAnchor.constraint(equalTo: bodyScroll.bottomAnchor, constant: DS.Spacing.m),
+            templateCheckbox.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            templateCheckbox.trailingAnchor.constraint(lessThanOrEqualTo: titleField.trailingAnchor),
+            buttons.topAnchor.constraint(equalTo: templateCheckbox.bottomAnchor, constant: DS.Spacing.m),
             buttons.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
             buttons.trailingAnchor.constraint(equalTo: titleField.trailingAnchor),
             buttons.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
@@ -499,8 +514,11 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         loadViewIfNeeded()
         prompts = PromptLibrary.all(projectRoot: target?.workingRoot)
         table.reloadData()
-        if let editing, let row = prompts.firstIndex(where: { $0.url == editing.url }) {
+        // By name and scope: the saved URL and the listed one can spell the same file
+        // differently (/var and /private/var).
+        if let editing, let row = prompts.firstIndex(where: { $0.name == editing.name && $0.scope == editing.scope }) {
             table.selectRowIndexes([row], byExtendingSelection: false)
+            show(prompts[row])
         } else if editing == nil, let first = prompts.first {
             table.selectRowIndexes([0], byExtendingSelection: false)
             show(first)
@@ -515,7 +533,10 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         titleField.stringValue = prompt?.title ?? ""
         bodyView.string = prompt?.body ?? ""
         scopePopup.selectItem(at: prompt?.scope == .project ? 1 : 0)
+        templateCheckbox.state = prompt?.startsTrack == true ? .on : .off
         deleteButton.isHidden = prompt == nil
+        // Only a saved template: what starts is what's on disk, not an unsaved edit.
+        startTrackButton.isHidden = prompt?.startsTrack != true || target?.trackStore == nil
         refreshHint()
     }
 
@@ -540,11 +561,16 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         let scope: SavedPrompt.Scope = scopePopup.indexOfSelectedItem == 1 ? .project : .user
         do {
             editing = try PromptLibrary.save(title: titleField.stringValue, body: bodyView.string, scope: scope,
-                                             projectRoot: target?.workingRoot, replacing: editing)
+                                             projectRoot: target?.workingRoot, startsTrack: templateCheckbox.state == .on, replacing: editing)
             reload()
         } catch {
             NSSound.beep()
         }
+    }
+
+    @objc func startTrack() {
+        guard let editing, editing.startsTrack else { return }
+        onStartTrack?(editing)
     }
 
     @objc private func deletePrompt() {
@@ -566,7 +592,8 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let prompt = prompts[row]
-        return LibraryListCell(title: prompt.title, detail: "/\(prompt.name) \u{00B7} \(prompt.scope == .project ? "This project" : "Mine")", dimmed: false)
+        let kind = prompt.startsTrack ? " \u{00B7} Template" : ""
+        return LibraryListCell(title: prompt.title, detail: "/\(prompt.name) \u{00B7} \(prompt.scope == .project ? "This project" : "Mine")\(kind)", dimmed: false)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
