@@ -83,6 +83,8 @@ Named to stay distinct from "Think," the stage that hosts it. Code lives under a
 
 #### Alloy — powers Make (name reserved; not yet designed or built)
 
+*Update 2026-09-24: the owner made Alloy a launch gate for 0.1; its design is proposed in `SIDE_RFC_ALLOY.md` (decisions pending).*
+
 Alloy is the reserved name for a GPU-accelerated editing engine intended to eventually underlie the Make stage, in the same relationship Heron has to Think: Make is the stage/UI; Alloy would be the independent engine actually doing the work of text storage, rendering, and editing — on the GPU, rather than through AppKit's `NSTextView`/`NSTextStorage`, which is what Make is built directly on today.
 
 Unlike Heron, nothing about Alloy exists yet: no architecture note, no code, no build phases. This entry is on record so the name and its intended role — "an editing engine separable from Make's own UI glue, the way Heron is separable from Think's" — are settled ahead of the design itself, not so the design can be treated as settled. Everything else about it (rendering approach, Metal directly vs. a framework on top, how it would interact with LSP diagnostics and syntax highlighting) is genuinely open and should be treated as a fresh design question when this is picked up, not inferred from Heron's shape.

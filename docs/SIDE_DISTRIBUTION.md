@@ -23,8 +23,8 @@ Heron and Alloy version on their own (SemVer from 0.1.0); Side pins the versions
 ## Launch gates
 
 1. Distribution (this document).
-2. **Alloy built.** Decided by the owner 2026-09-24: Alloy ships before Side's first release. Its
-   design is still open (`SIDE_PRODUCT_CONSTITUTION.md`), so it starts with its own RFC.
+2. **Alloy built.** Decided by the owner 2026-09-24: Alloy ships before Side's first release.
+   Proposed in `SIDE_RFC_ALLOY.md`.
 3. A fresh audit since 2026-09-01 (outside agents, multi-agent, Integration, Library landed after).
 4. Codex, Gemini CLI and Pi verified live, or labelled experimental.
 5. Dark mode, VoiceOver and text-size pass on the redesigned Preferences and Library.
@@ -64,14 +64,16 @@ only Heron moved from `SIDETests` into `Packages/Heron/Tests/HeronTests`: 140 te
 
 Left before the split (D5): an API pass (today's `public` is whatever the app needed), then
 `git subtree split --prefix=Packages/Heron` into `gazishahi/heron`, tag `0.1.0`, and point Side at
-it by version. Creating the public repository and pushing are the owner's call.
+it by version. `gazishahi/heron` exists (created 2026-09-24) with GitHub's own initial LICENSE
+commit; the split history won't descend from it, so the first push replaces it (`--force`, once,
+on a repository with nothing else in it). `gazishahi/side-releases` exists with a README.
 
 ## Decisions
 
 Answered by the owner 2026-09-24: **D1** Sparkle, **D2** GitHub Releases, **D3** Apache-2.0,
 **D4** Side stays private; only Heron and Alloy are open source. So releases go to a public
 repository of their own (`gazishahi/side-releases`: DMGs and appcasts, no source), since assets on
-a private repository can't be downloaded. It isn't created yet.
+a private repository can't be downloaded.
 
 
 - **D1: Updates.** *Recommend:* Sparkle 2 with an EdDSA-signed appcast. Sparkle is the standard
