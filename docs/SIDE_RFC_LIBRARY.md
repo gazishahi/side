@@ -1,6 +1,6 @@
 # RFC: Library
 
-*2026-09-23. Status: **in progress**: the owner asked for a short RFC and to start building. Steps 1–2 built; see Plan.*
+*2026-09-23. Status: **in progress**: the owner asked for a short RFC and to start building. Steps 1–3 built; see Plan.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` (Library is not a stage: a separate window, ⇧⌘L)
 and `SIDE_RFC_NAVIGATION_LEDGER.md` R6. Builds on `ProjectRules` ("Library-lite") and
 `SIDE_RFC_BYO_HARNESS.md` (outside agents).*
@@ -90,6 +90,13 @@ message. That is the whole feature; there is no separate template object.
    result. Known: in the test host, a command resolved to a pyenv shim timed out under Claude
    Code while `/usr/bin/python3` worked; not reproduced outside the test host.
 3. **Skills and Storage.**
+   **Built 2026-09-24:** Skills lists `SKILL.md` folders in `.claude/skills` and `.agents/skills`
+   (project and home) and `~/.codex/skills`, with the name and description from the front matter
+   and the agents that load them (`SkillCatalog`); Open in Make. Storage shows the sizes of
+   Heron conversations, outside-agent records and track working copies, the history setting
+   (the same one as Preferences), and removes archived tracks' working copies with
+   `TrackStore.removeWorkingCopy`: branches and checkpoints stay, and a copy with uncommitted
+   changes is kept and named.
 4. **Templates** (Start Track from a prompt).
 
 ## Acceptance (step 1)

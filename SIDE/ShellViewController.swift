@@ -582,7 +582,8 @@ final class ShellViewController: NSViewController {
     /// What Library shows for this window: the working copy of the track on screen.
     var libraryTarget: LibraryTarget? {
         guard let projectURL else { return nil }
-        return LibraryTarget(projectName: projectURL.lastPathComponent, projectRoot: projectURL, workingRoot: focusedRoot ?? projectURL)
+        return LibraryTarget(projectName: projectURL.lastPathComponent, projectRoot: projectURL, workingRoot: focusedRoot ?? projectURL,
+                             stateDirectory: projectContext?.stateDirectory, trackStore: trackStore)
     }
 
     /// A tab torn out of another window landing here — jump to Make and show that file.

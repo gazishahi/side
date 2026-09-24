@@ -70,22 +70,27 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
 /// The project and working copy Library describes: the frontmost window's track, since that's
 /// the copy its agent reads.
-struct LibraryTarget: Equatable {
+struct LibraryTarget {
     let projectName: String
     let projectRoot: URL
     let workingRoot: URL
+    /// Side's records for the project, for Storage.
+    var stateDirectory: URL? = nil
+    weak var trackStore: TrackStore? = nil
 }
 
 /// Sidebar of sections, one pane each.
 @MainActor
 final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     enum Section: Int, CaseIterable {
-        case instructions, prompts, mcpServers
+        case instructions, prompts, mcpServers, skills, storage
         var title: String {
             switch self {
             case .instructions: "Instructions"
             case .prompts: "Prompts"
             case .mcpServers: "MCP Servers"
+            case .skills: "Skills"
+            case .storage: "Storage"
             }
         }
         var symbol: String {
@@ -93,6 +98,8 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
             case .instructions: "text.book.closed"
             case .prompts: "text.bubble"
             case .mcpServers: "puzzlepiece.extension"
+            case .skills: "wand.and.stars"
+            case .storage: "internaldrive"
             }
         }
     }
@@ -102,10 +109,15 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
             instructions.target = target
             prompts.target = target
             mcpServers.target = target
+            skills.target = target
+            storage.target = target
         }
     }
     var onReveal: ((URL) -> Void)? {
-        didSet { instructions.onReveal = onReveal }
+        didSet {
+            instructions.onReveal = onReveal
+            skills.onReveal = onReveal
+        }
     }
 
     private let sidebar = NSTableView()
@@ -113,6 +125,8 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
     let instructions = InstructionsPaneViewController()
     let prompts = PromptsPaneViewController()
     let mcpServers = MCPServersPaneViewController()
+    let skills = SkillsPaneViewController()
+    let storage = StoragePaneViewController()
     private(set) var section: Section = .instructions
 
     override func loadView() {
@@ -165,6 +179,8 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
         addChild(instructions)
         addChild(prompts)
         addChild(mcpServers)
+        addChild(skills)
+        addChild(storage)
         sidebar.reloadData()
         select(.instructions)
     }
@@ -180,6 +196,8 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
         case .instructions: pane = instructions.view
         case .prompts: pane = prompts.view
         case .mcpServers: pane = mcpServers.view
+        case .skills: pane = skills.view
+        case .storage: pane = storage.view
         }
         guard pane.superview !== paneHost else { return }
         paneHost.subviews.forEach { $0.removeFromSuperview() }
@@ -754,6 +772,348 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard servers.indices.contains(table.selectedRow) else { return }
         show(servers[table.selectedRow])
+    }
+}
+
+// MARK: - Skills
+
+/// Skills on disk and the agents that load them. Read-only: Heron doesn't use skills yet (L3).
+@MainActor
+final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    var target: LibraryTarget? { didSet { reload() } }
+    var onReveal: ((URL) -> Void)?
+
+    private(set) var skills: [SkillEntry] = []
+    private let table = NSTableView()
+    private let descriptionLabel = NSTextField(wrappingLabelWithString: "")
+    private let pathLabel = NSTextField(labelWithString: "")
+    private let preview = NSTextView()
+    private let openButton = NSButton(title: "Open in Make", target: nil, action: nil)
+    private let emptyLabel = NSTextField(wrappingLabelWithString: "No skills found. Claude Code looks in ~/.claude/skills and this project's .claude/skills; Codex and others in .agents/skills.")
+
+    override func loadView() {
+        let root = NSView()
+        let heading = NSTextField(labelWithString: "Skills")
+        heading.font = DS.Text.heading()
+        let note = NSTextField(wrappingLabelWithString: "Instructions and scripts an agent loads when a task calls for them. Outside agents find these on their own. Heron doesn't use skills yet.")
+        note.font = DS.Text.caption()
+        note.textColor = .secondaryLabelColor
+
+        let tableScroll = NSScrollView()
+        tableScroll.hasVerticalScroller = true
+        table.headerView = nil
+        table.rowHeight = 38
+        table.style = .inset
+        table.addTableColumn(NSTableColumn(identifier: .init("skill")))
+        table.dataSource = self
+        table.delegate = self
+        table.setAccessibilityIdentifier("library.skills")
+        tableScroll.documentView = table
+
+        descriptionLabel.font = DS.Text.body()
+        pathLabel.font = DS.Text.caption()
+        pathLabel.textColor = .secondaryLabelColor
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+        let previewScroll = NSScrollView()
+        previewScroll.hasVerticalScroller = true
+        preview.isEditable = false
+        preview.isRichText = false
+        preview.font = DS.Text.code(12)
+        preview.drawsBackground = false
+        preview.autoresizingMask = [.width]
+        preview.textContainerInset = NSSize(width: DS.Spacing.m, height: DS.Spacing.m)
+        previewScroll.documentView = preview
+        previewScroll.wantsLayer = true
+        previewScroll.layer?.cornerRadius = DS.Radius.surface
+        previewScroll.layer?.backgroundColor = DS.Color.scrimFaint.cgColor
+        openButton.target = self
+        openButton.action = #selector(openTapped)
+        openButton.bezelStyle = .rounded
+        emptyLabel.font = DS.Text.caption()
+        emptyLabel.textColor = .secondaryLabelColor
+
+        for view in [heading, note, tableScroll, descriptionLabel, pathLabel, previewScroll, openButton, emptyLabel] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+        }
+        let inset = DS.Spacing.section
+        NSLayoutConstraint.activate([
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
+            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.m),
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - DS.Spacing.m),
+            tableScroll.widthAnchor.constraint(equalToConstant: 240),
+            tableScroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+            emptyLabel.topAnchor.constraint(equalTo: tableScroll.topAnchor, constant: DS.Spacing.m),
+            emptyLabel.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            emptyLabel.trailingAnchor.constraint(equalTo: note.trailingAnchor),
+            descriptionLabel.topAnchor.constraint(equalTo: tableScroll.topAnchor),
+            descriptionLabel.leadingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: DS.Spacing.l),
+            descriptionLabel.trailingAnchor.constraint(equalTo: note.trailingAnchor),
+            pathLabel.topAnchor.constraint(equalTo: descriptionLabel.bottomAnchor, constant: DS.Spacing.xs),
+            pathLabel.leadingAnchor.constraint(equalTo: descriptionLabel.leadingAnchor),
+            pathLabel.trailingAnchor.constraint(equalTo: descriptionLabel.trailingAnchor),
+            previewScroll.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: DS.Spacing.m),
+            previewScroll.leadingAnchor.constraint(equalTo: descriptionLabel.leadingAnchor),
+            previewScroll.trailingAnchor.constraint(equalTo: descriptionLabel.trailingAnchor),
+            openButton.topAnchor.constraint(equalTo: previewScroll.bottomAnchor, constant: DS.Spacing.m),
+            openButton.trailingAnchor.constraint(equalTo: descriptionLabel.trailingAnchor),
+            openButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+        ])
+        view = root
+    }
+
+    func reload() {
+        loadViewIfNeeded()
+        let selected = selectedSkill?.url
+        skills = target.map { SkillCatalog.discover(workingRoot: $0.workingRoot) } ?? []
+        table.reloadData()
+        if let row = skills.firstIndex(where: { $0.url == selected }) ?? (skills.isEmpty ? nil : 0) {
+            table.selectRowIndexes([row], byExtendingSelection: false)
+        }
+        refreshDetail()
+    }
+
+    private var selectedSkill: SkillEntry? { skills.indices.contains(table.selectedRow) ? skills[table.selectedRow] : nil }
+
+    private func refreshDetail() {
+        let skill = selectedSkill
+        emptyLabel.isHidden = !skills.isEmpty
+        for view in [descriptionLabel, pathLabel, preview.enclosingScrollView, openButton] as [NSView?] { view?.isHidden = skill == nil }
+        guard let skill else { return }
+        descriptionLabel.stringValue = skill.description.isEmpty ? "No description." : skill.description
+        pathLabel.stringValue = "\(skill.location)/\(skill.url.deletingLastPathComponent().lastPathComponent) \u{00B7} Loaded by \(skill.readers.joined(separator: ", "))"
+        preview.string = (try? String(contentsOf: skill.url, encoding: .utf8)) ?? ""
+    }
+
+    @objc private func openTapped() {
+        guard let skill = selectedSkill else { return }
+        onReveal?(skill.url)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { skills.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let skill = skills[row]
+        return LibraryListCell(title: skill.name, detail: "\(skill.readers.first ?? "") \u{00B7} \(skill.scope == .project ? "This project" : "Yours")", dimmed: false)
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) { refreshDetail() }
+}
+
+// MARK: - Storage
+
+/// What Side keeps on disk for a project, and the one thing worth trimming by hand: working
+/// copies of archived tracks. Their branches and checkpoints stay; Resume makes a new copy.
+@MainActor
+final class StoragePaneViewController: NSViewController {
+    var target: LibraryTarget? { didSet { reload() } }
+
+    /// Measured sizes, in bytes, keyed by row.
+    struct Usage: Equatable {
+        var conversations: Int64 = 0
+        var outsideRecords: Int64 = 0
+        var workingCopies: Int64 = 0
+        var workingCopyCount = 0
+        var archivedCopies: Int64 = 0
+    }
+
+    private(set) var usage = Usage()
+    private let conversationsValue = NSTextField(labelWithString: "")
+    private let outsideValue = NSTextField(labelWithString: "")
+    private let copiesValue = NSTextField(labelWithString: "")
+    private let archivedValue = NSTextField(wrappingLabelWithString: "")
+    let removeButton = NSButton(title: "Remove Working Copies\u{2026}", target: nil, action: nil)
+    let retentionPopup = NSPopUpButton()
+    private var measureGeneration = 0
+
+    override func loadView() {
+        let root = NSView()
+        let heading = NSTextField(labelWithString: "Storage")
+        heading.font = DS.Text.heading()
+        let note = NSTextField(wrappingLabelWithString: "What Side keeps on this Mac for this project. Checkpoints are git commits in the repository and aren't counted here.")
+        note.font = DS.Text.caption()
+        note.textColor = .secondaryLabelColor
+
+        for option in HistoryRetention.allCases { retentionPopup.addItem(withTitle: option.displayName) }
+        retentionPopup.target = self
+        retentionPopup.action = #selector(retentionChanged)
+        removeButton.target = self
+        removeButton.action = #selector(removeArchivedCopies)
+        removeButton.bezelStyle = .rounded
+        archivedValue.font = DS.Text.caption()
+        archivedValue.textColor = .secondaryLabelColor
+
+        let grid = NSGridView(views: [
+            [Self.label("Heron conversations"), conversationsValue],
+            [Self.label("Outside-agent records"), outsideValue],
+            [Self.label("Track working copies"), copiesValue],
+            [Self.label("Conversation history"), retentionPopup],
+        ])
+        grid.rowSpacing = DS.Spacing.l
+        grid.columnSpacing = DS.Spacing.xl
+        grid.column(at: 0).xPlacement = .trailing
+        let archivedStack = NSStackView(views: [archivedValue, removeButton])
+        archivedStack.orientation = .vertical
+        archivedStack.alignment = .leading
+        archivedStack.spacing = DS.Spacing.m
+
+        for view in [heading, note, grid, archivedStack] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+        }
+        let inset = DS.Spacing.section
+        NSLayoutConstraint.activate([
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
+            grid.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.section),
+            grid.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            archivedStack.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: DS.Spacing.section),
+            archivedStack.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            archivedStack.trailingAnchor.constraint(lessThanOrEqualTo: note.trailingAnchor),
+            archivedValue.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
+        ])
+        view = root
+    }
+
+    private static func label(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    /// Archived tracks that still have a working copy on disk.
+    var archivedWithCopies: [Track] {
+        (target?.trackStore?.tracks ?? []).filter { $0.status == .archived && $0.workingDirectoryPath != nil }
+    }
+
+    func reload() {
+        loadViewIfNeeded()
+        retentionPopup.selectItem(at: HistoryRetention.allCases.firstIndex(of: .current) ?? 0)
+        let archived = archivedWithCopies
+        let archivedPaths = archived.compactMap(\.workingDirectoryPath)
+        let copyPaths = (target?.trackStore?.tracks ?? []).compactMap(\.workingDirectoryPath)
+        let think = target?.stateDirectory?.appendingPathComponent("think")
+        let root = target?.projectRoot.standardizedFileURL.path
+        renderArchived(archived)
+        measureGeneration += 1
+        let generation = measureGeneration
+        [conversationsValue, outsideValue, copiesValue].forEach { $0.stringValue = "Measuring\u{2026}" }
+        DispatchQueue.global(qos: .utility).async {
+            var usage = Usage()
+            if let think {
+                usage.conversations = Self.size(of: think) - Self.size(of: think.appendingPathComponent("outside"))
+                usage.outsideRecords = Self.size(of: think.appendingPathComponent("outside"))
+            }
+            // A track without a worktree works in the project itself, which isn't Side's to count.
+            let separate = copyPaths.filter { URL(fileURLWithPath: $0).standardizedFileURL.path != root }
+            usage.workingCopyCount = separate.count
+            usage.workingCopies = separate.reduce(0) { $0 + Self.size(of: URL(fileURLWithPath: $1)) }
+            usage.archivedCopies = archivedPaths.reduce(0) { $0 + Self.size(of: URL(fileURLWithPath: $1)) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard generation == self.measureGeneration else { return }
+                    self.usage = usage
+                    self.render()
+                }
+            }
+        }
+    }
+
+    private func render() {
+        conversationsValue.stringValue = Self.format(usage.conversations)
+        outsideValue.stringValue = Self.format(usage.outsideRecords)
+        copiesValue.stringValue = usage.workingCopyCount == 0 ? "None" : "\(Self.format(usage.workingCopies)) in \(usage.workingCopyCount)"
+        renderArchived(archivedWithCopies)
+    }
+
+    private func renderArchived(_ archived: [Track]) {
+        removeButton.isEnabled = !archived.isEmpty
+        if archived.isEmpty {
+            archivedValue.stringValue = "No archived track has a working copy."
+        } else {
+            let size = usage.archivedCopies > 0 ? " (\(Self.format(usage.archivedCopies)))" : ""
+            archivedValue.stringValue = "\(archived.count) archived \(archived.count == 1 ? "track has" : "tracks have") a working copy\(size). Removing one keeps its branch and checkpoints; Resume makes a new copy."
+        }
+    }
+
+    static func format(_ bytes: Int64) -> String {
+        bytes == 0 ? "Nothing yet" : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    nonisolated static func size(of url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in enumerator {
+            guard let values = try? file.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]), values.isRegularFile == true else { continue }
+            total += Int64(values.totalFileAllocatedSize ?? 0)
+        }
+        return total
+    }
+
+    @objc private func retentionChanged() {
+        HistoryRetention.current = HistoryRetention.allCases[max(0, retentionPopup.indexOfSelectedItem)]
+    }
+
+    @objc private func removeArchivedCopies() {
+        let archived = archivedWithCopies
+        guard !archived.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove \(archived.count) working \(archived.count == 1 ? "copy" : "copies")?"
+        alert.informativeText = archived.prefix(8).map { "\u{2022} \($0.intent)" }.joined(separator: "\n")
+            + (archived.count > 8 ? "\n\u{2022} and \(archived.count - 8) more" : "")
+            + "\n\nBranches and checkpoints stay. A copy with uncommitted changes is kept."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        removeCopies(archived) { [weak self] kept in
+            guard let self else { return }
+            self.reload()
+            if !kept.isEmpty {
+                let note = NSAlert()
+                note.messageText = "\(kept.count) working \(kept.count == 1 ? "copy was" : "copies were") kept"
+                note.informativeText = "They have uncommitted changes: " + kept.joined(separator: ", ")
+                note.runModal()
+            }
+        }
+    }
+
+    /// Removes each copy in turn; `completion` gets the intents of the ones git refused (dirty).
+    func removeCopies(_ tracks: [Track], completion: @escaping ([String]) -> Void) {
+        guard let store = target?.trackStore else { return completion([]) }
+        removeNext(RemovalBox(remaining: tracks, completion: completion), store: store)
+    }
+
+    private func removeNext(_ box: RemovalBox, store: TrackStore) {
+        guard !box.remaining.isEmpty else { return box.completion(box.kept) }
+        let track = box.remaining.removeFirst()
+        store.removeWorkingCopy(for: track) { [weak self] result in
+            let failed = if case .failure = result { true } else { false }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if failed { box.kept.append(track.intent) }
+                    guard let self else { return box.completion(box.kept) }
+                    self.removeNext(box, store: store)
+                }
+            }
+        }
+    }
+}
+
+/// The state of a run of removals, carried across git's background completions.
+private final class RemovalBox: @unchecked Sendable {
+    var remaining: [Track]
+    var kept: [String] = []
+    let completion: ([String]) -> Void
+    init(remaining: [Track], completion: @escaping ([String]) -> Void) {
+        self.remaining = remaining
+        self.completion = completion
     }
 }
 

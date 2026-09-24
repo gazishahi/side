@@ -102,3 +102,87 @@ final class LibraryTests: XCTestCase {
         XCTAssertEqual(parsed, ["KEEP": "secret", "NEW": "value=with=equals"])
     }
 }
+
+/// Library step 3: skills on disk, and Storage's removal of archived tracks' working copies.
+@MainActor
+final class LibrarySkillsAndStorageTests: XCTestCase {
+    private var root: URL!
+    private var context: ProjectContext!
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("library-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "T"]] { _ = GitPaths.runGit(args, cwd: root.path) }
+        try "hi\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = GitPaths.runGit(["add", "."], cwd: root.path); _ = GitPaths.runGit(["commit", "-q", "-m", "base"], cwd: root.path)
+        context = ProjectContextRegistry.shared.acquire(projectRoot: root)
+    }
+
+    override func tearDownWithError() throws {
+        for track in context.trackStore.tracks {
+            if let path = track.workingDirectoryPath { _ = GitPaths.runGit(["worktree", "remove", "--force", path], cwd: root.path) }
+        }
+        ProjectContextRegistry.shared.release(projectRoot: root)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    func testSkillsAreFoundWithTheirFrontMatter() throws {
+        let home = root.appendingPathComponent("home")
+        let claudeSkill = root.appendingPathComponent(".claude/skills/release")
+        let shared = home.appendingPathComponent(".agents/skills/triage")
+        try FileManager.default.createDirectory(at: claudeSkill, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".claude/skills/not-a-skill"), withIntermediateDirectories: true)
+        try "---\nname: release-notes\ndescription: \"Writes release notes.\"\n---\n\nBody\n".write(to: claudeSkill.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+        try "---\nname: triage\ndescription: >\n  Sorts issues\n  by severity.\nlicense: MIT\n---\n".write(to: shared.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
+
+        let skills = SkillCatalog.discover(workingRoot: root, home: home)
+        XCTAssertEqual(skills.map(\.name), ["release-notes", "triage"])
+        XCTAssertEqual(skills[0].description, "Writes release notes.")
+        XCTAssertEqual(skills[0].scope, .project)
+        XCTAssertEqual(skills[0].readers, ["Claude Code"])
+        XCTAssertEqual(skills[1].description, "Sorts issues by severity.")
+        XCTAssertEqual(skills[1].location, "~/.agents/skills")
+        XCTAssertEqual(SkillCatalog.frontMatter("no front matter"), [:])
+    }
+
+    func testStorageRemovesArchivedWorkingCopiesButKeepsDirtyOnesAndBranches() throws {
+        let clean = try createTrack("Old experiment")
+        let dirty = try createTrack("Half done")
+        _ = try createTrack("Current work")
+        for track in [clean, dirty] { context.trackStore.setStatus(.archived, for: track) }
+        let dirtyPath = try XCTUnwrap(dirty.workingDirectoryPath)
+        try "unsaved\n".write(toFile: dirtyPath + "/wip.txt", atomically: true, encoding: .utf8)
+
+        let pane = StoragePaneViewController()
+        pane.target = LibraryTarget(projectName: "p", projectRoot: root, workingRoot: root,
+                                    stateDirectory: context.stateDirectory, trackStore: context.trackStore)
+        XCTAssertEqual(Set(pane.archivedWithCopies.map(\.id)), [clean.id, dirty.id])
+        XCTAssertTrue(pane.removeButton.isEnabled)
+
+        let done = expectation(description: "removed")
+        var kept: [String] = []
+        pane.removeCopies(pane.archivedWithCopies) { kept = $0; done.fulfill() }
+        wait(for: [done], timeout: 30)
+        XCTAssertEqual(kept, ["Half done"])
+        let cleanPath = try XCTUnwrap(clean.workingDirectoryPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cleanPath))
+        XCTAssertNil(context.trackStore.tracks.first { $0.id == clean.id }?.workingDirectoryPath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dirtyPath + "/wip.txt"), "uncommitted work is never discarded")
+        XCTAssertTrue(GitPaths.runGit(["rev-parse", "--verify", clean.branchName], cwd: root.path).success, "the branch stays")
+        XCTAssertEqual(pane.archivedWithCopies.map(\.id), [dirty.id])
+    }
+
+    private func createTrack(_ intent: String) throws -> Track {
+        let done = expectation(description: intent)
+        let box = LibraryTrackBox()
+        context.trackStore.createTrack(intent: intent) { result in
+            if case .success(let (track, _)) = result { box.id = track.id }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 30)
+        return try XCTUnwrap(context.trackStore.tracks.first { $0.id == box.id })
+    }
+}
+
+private final class LibraryTrackBox: @unchecked Sendable { var id: UUID? }

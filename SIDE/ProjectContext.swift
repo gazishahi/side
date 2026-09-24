@@ -12,6 +12,8 @@ final class ProjectContext {
     let projectRoot: URL
     let trackStore: TrackStore
     let sessionStore: AgentSessionStore
+    /// Where Side keeps this project's own records (conversations, tracks): inside the git dir.
+    let stateDirectory: URL
     lazy var runnerManager: AgentRunnerManager = {
         // Captured by value, not through `self` — the fallback root for when `self` has already
         // deallocated, which the closure below can't express as `self?.projectRoot` (Swift
@@ -90,6 +92,7 @@ final class ProjectContext {
         if cached == nil { GitLaunchProbe.cache(probe, projectRoot: projectRoot) }
         let stateDirectory = probe.commonGitDir.map { URL(fileURLWithPath: $0).appendingPathComponent("side") }
             ?? projectRoot.appendingPathComponent(".git/side")
+        self.stateDirectory = stateDirectory
         LaunchSignposts.begin("trackStoreInit")
         self.trackStore = TrackStore(projectRoot: projectRoot, stateDirectory: stateDirectory, probe: probe)
         LaunchSignposts.end("trackStoreInit")
