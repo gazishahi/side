@@ -67,7 +67,8 @@ echo "==> Check linked frameworks resolve inside the app"
 for lib in $(otool -L "$APP/Contents/MacOS/Side" | awk '/@rpath\//{print $1}'); do
   [[ -e "$APP/Contents/Frameworks/${lib#@rpath/}" ]] || { echo "missing from the app: $lib" >&2; exit 1; }
 done
-otool -l "$APP/Contents/MacOS/Side" | grep -q "@executable_path/../Frameworks" || { echo "no @executable_path/../Frameworks rpath" >&2; exit 1; }
+LOAD_COMMANDS=$(otool -l "$APP/Contents/MacOS/Side")  # captured: grep -q would break the pipe under pipefail
+[[ "$LOAD_COMMANDS" == *"@executable_path/../Frameworks"* ]] || { echo "no @executable_path/../Frameworks rpath" >&2; exit 1; }
 
 notarize() {
   xcrun notarytool submit "$1" --keychain-profile "$PROFILE" --wait
