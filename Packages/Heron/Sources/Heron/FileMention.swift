@@ -164,7 +164,7 @@ public enum FileMentionResolver {
         guard !mentions.isEmpty || !unresolved.isEmpty else { return nil }
         var lines: [String] = []
         if !mentions.isEmpty {
-            lines.append("The user referenced these project paths with @. Read the ones you need with read_file or list_files — their contents are not included here:")
+            lines.append("The user referenced these project paths with @. Read the ones you need with read_file or list_files; their contents are not included here:")
             for mention in mentions {
                 let range = mention.lines.map { $0.count == 1 ? " (line \($0.lowerBound))" : " (lines \($0.lowerBound)–\($0.upperBound))" } ?? ""
                 lines.append("- \(mention.relativePath)\(mention.isDirectory ? "/ (directory)" : "")\(range)")

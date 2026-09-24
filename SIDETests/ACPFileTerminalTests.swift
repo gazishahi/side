@@ -26,6 +26,8 @@ final class ACPFileTerminalTests: XCTestCase {
         broker = ACPTerminalBroker(terminals: terminals)
         store = AgentSessionStore(stateDirectory: root.appendingPathComponent(".git/side-test", isDirectory: true))
         UserSaveLog.shared.removeAll()
+        // Last-known agent settings are app-wide per agent id; tests start without any.
+        UserDefaults.standard.removeObject(forKey: "SideACPKnownOptions.mock")
     }
 
     override func tearDown() async throws {
@@ -77,7 +79,7 @@ final class ACPFileTerminalTests: XCTestCase {
         let h = try harness()
         defer { h.teardown() }
         h.prepareSession()
-        XCTAssertTrue(waitFor { !h.agentOptions.isEmpty }, "the session opened without a message")
+        XCTAssertTrue(waitFor { h.agentOptions.map(\.id) == ["model", "mode"] }, "the session opened without a message")
         XCTAssertEqual(h.phase, .idle)
         XCTAssertEqual(h.agentOptions.map(\.id), ["model", "mode"])
         XCTAssertEqual(h.agentOptions.first?.currentChoice?.name, "Big")
@@ -247,7 +249,7 @@ final class ACPFileTerminalTests: XCTestCase {
         let settings = ACPHarness.settings(from: result)
         XCTAssertEqual(settings.map(\.id), ["model", "effort", "mode"])
         XCTAssertEqual(settings.map(\.value), ["Opus 5.5", "Medium", "Auto"])
-        XCTAssertEqual(ACPAgent.agent(id: "claude-code")?.hiddenEnvironment, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"])
+        XCTAssertEqual(ACPAgent.agent(id: "claude-code")?.apiKeyVariables, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"])
     }
 
     /// Opt-in (`TEST_RUNNER_SIDE_LIVE_ACP=1`): the real Claude Code adapter, launched the way the
@@ -258,9 +260,7 @@ final class ACPFileTerminalTests: XCTestCase {
         let adapter = URL(fileURLWithPath: "/opt/homebrew/bin/claude-agent-acp")
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: adapter.path), "claude-agent-acp not installed")
         let agent = try XCTUnwrap(ACPAgent.agent(id: "claude-code"))
-        var spawnEnvironment = LanguageServerRegistry.environmentForSpawning()
-        for name in agent.hiddenEnvironment { spawnEnvironment.removeValue(forKey: name) }
-        let environment = spawnEnvironment
+        let environment = agent.launchEnvironment(from: LanguageServerRegistry.environmentForSpawning())
         let root = self.root!
         let h = ACPHarness(trackKey: "t", agent: agent, launchProvider: { ACPLaunch(executable: adapter, arguments: [], environment: environment) },
                            rootProvider: { root }, sessionStore: store, terminalHost: { [unowned self] in self.broker })
@@ -273,12 +273,81 @@ final class ACPFileTerminalTests: XCTestCase {
         XCTAssertEqual(h.phase, .finishedTurn, "\(h.entries.map(\.kind))")
         let said = h.entries.compactMap { if case .assistantText(let t) = $0.kind { return t } else { return nil } }.joined()
         XCTAssertTrue(said.lowercased().contains("ok"), said)
-        let meta = h.entries.compactMap { if case .meta(let t) = $0.kind { return t } else { return nil } }.joined(separator: "\n")
-        print("LIVE SESSION LINE: \(meta)")
-        XCTAssertTrue(meta.hasPrefix("Claude Code · "), meta)
         XCTAssertTrue(h.agentOptions.contains { $0.category == .model && !$0.choices.isEmpty }, "\(h.agentOptions)")
         XCTAssertTrue(h.agentOptions.contains { $0.category == .effort }, "\(h.agentOptions)")
         XCTAssertNotNil(h.accountLabel)
+    }
+
+    /// Subscription: every key variable removed. API key: the stored key (else one already in
+    /// the environment) in the first variable.
+    func testSignInShapesTheAgentsEnvironment() {
+        let agent = ACPAgent(id: "test-signin-\(UUID().uuidString)", displayName: "T", binary: "t", installHint: "",
+                             apiKeyVariables: ["PRIMARY_KEY", "OTHER_KEY"])
+        defer { agent.setAPIKey(nil); UserDefaults.standard.removeObject(forKey: "SideACPSignIn.\(agent.id)") }
+        let base = ["PATH": "/bin", "OTHER_KEY": "from-env"]
+        agent.signIn = .subscription
+        XCTAssertEqual(agent.launchEnvironment(from: base), ["PATH": "/bin"])
+        agent.signIn = .apiKey
+        XCTAssertEqual(agent.launchEnvironment(from: base), ["PATH": "/bin", "PRIMARY_KEY": "from-env"], "no stored key: the environment's")
+        agent.setAPIKey("stored")
+        XCTAssertEqual(agent.launchEnvironment(from: base), ["PATH": "/bin", "PRIMARY_KEY": "stored"])
+    }
+
+    /// Codex's and Gemini's real method lists (read from their packages, 2026-09-23).
+    func testTheRightSignInMethodIsChosen() {
+        let codex: [[String: Any]] = [
+            ["id": "api-key", "name": "API Key", "_meta": ["api-key": ["provider": "openai"]]],
+            ["id": "chat-gpt", "name": "ChatGPT"], ["id": "chat-gpt-device-code", "name": "ChatGPT (device code)"], ["id": "gateway", "name": "Gateway"],
+        ]
+        let gemini: [[String: Any]] = [
+            ["id": "oauth-personal", "name": "Log in with Google"], ["id": "gemini-api-key", "name": "Gemini API key", "_meta": ["api-key": ["provider": "google"]]],
+            ["id": "vertex-ai", "name": "Vertex AI"], ["id": "gateway", "name": "AI API Gateway"],
+        ]
+        XCTAssertEqual(ACPHarness.signInMethod(codex, for: .subscription)?["id"] as? String, "chat-gpt")
+        XCTAssertEqual(ACPHarness.signInMethod(codex, for: .apiKey)?["id"] as? String, "api-key")
+        XCTAssertEqual(ACPHarness.signInMethod(gemini, for: .subscription)?["id"] as? String, "oauth-personal")
+        XCTAssertEqual(ACPHarness.signInMethod(gemini, for: .apiKey)?["id"] as? String, "gemini-api-key")
+        XCTAssertNil(ACPHarness.signInMethod([], for: .subscription), "Claude Code lists none")
+    }
+
+    /// An agent that lists sign-in methods is told the chosen one before a session opens.
+    func testTheAgentIsSignedInBeforeTheSessionOpens() throws {
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: python.path))
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("mock-auth-\(UUID().uuidString).py")
+        try #"""
+import json, sys
+def send(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+authed = None
+for line in sys.stdin:
+    m = json.loads(line); meth = m.get("method")
+    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1, "authMethods": [
+        {"id": "key", "name": "Key", "_meta": {"api-key": {}}}, {"id": "login", "name": "Login"}]}})
+    elif meth == "authenticate": authed = m["params"]["methodId"]; send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+    elif meth == "session/new":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s", "configOptions": [{"id": "who", "name": "Who", "type": "select", "currentValue": str(authed), "options": [{"value": str(authed), "name": str(authed)}]}]}})
+"""#.write(to: script, atomically: true, encoding: .utf8)
+        let agent = ACPAgent(id: "mock-auth", displayName: "Mock", binary: "mock", installHint: "")
+        defer { UserDefaults.standard.removeObject(forKey: "SideACPKnownOptions.mock-auth") }
+        for (choice, expected) in [(ACPAgent.SignIn.apiKey, "key"), (.subscription, "login")] {
+            let h = ACPHarness(trackKey: "t", agent: agent,
+                               launchProvider: { ACPLaunch(executable: python, arguments: [script.path], environment: ProcessInfo.processInfo.environment, signIn: choice) },
+                               rootProvider: { FileManager.default.temporaryDirectory })
+            h.prepareSession()
+            // The pill may show last-known settings first; wait for this session's own answer.
+            XCTAssertTrue(waitFor { h.agentOptions.first { $0.id == "who" }?.current == expected }, "\(choice): \(h.agentOptions)")
+            h.teardown()
+        }
+    }
+
+    func testCustomAgentsAreAddedAndRemoved() {
+        let added = ACPAgent.addCustom(name: "OpenCode", command: "opencode", arguments: ["acp"], apiKeyVariable: " ")
+        defer { ACPAgent.removeCustom(id: added.id) }
+        XCTAssertTrue(added.isCustom)
+        XCTAssertEqual(ACPAgent.agent(id: added.id)?.arguments, ["acp"])
+        XCTAssertFalse(added.acceptsAPIKey, "a blank variable means no key")
+        ACPAgent.removeCustom(id: added.id)
+        XCTAssertNil(ACPAgent.agent(id: added.id))
     }
 
     /// A command tab is never where the agent's typed commands go.

@@ -53,9 +53,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private let changesPill = ChipButton(symbolName: nil, accessibilityLabel: "Files changed in this conversation")
     private let changesPillGlass = DS.makeGlass(cornerRadius: 14)
     /// The pending queued message, shown above the composer while a turn is running.
-    private let queuedChip = ChipButton(symbolName: "clock", accessibilityLabel: "Queued message — click to edit")
+    private let queuedChip = ChipButton(symbolName: "clock", accessibilityLabel: "Queued message. Click to edit")
     private let queuedChipGlass = DS.makeGlass(cornerRadius: 14)
-    private let editingChip = ChipButton(symbolName: "pencil", accessibilityLabel: "Editing a sent message — click to cancel")
+    private let editingChip = ChipButton(symbolName: "pencil", accessibilityLabel: "Editing a sent message. Click to cancel")
     private let editingChipGlass = DS.makeGlass(cornerRadius: 14)
     /// A soft wash rising from the pill's bottom edge in the current scope's color.
     private let pillModeTint = GradientEdgeView(cornerRadius: 14)
@@ -162,7 +162,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         composer.slashCandidates = { partial in
             Self.slashCommands
                 .filter { partial.isEmpty || $0.name.hasPrefix(partial.lowercased()) }
-                .map { "/\($0.name) — \($0.blurb)" }
+                .map { "/\($0.name) · \($0.blurb)" }
         }
         composer.onSlashCommand = { [weak self] name in self?.performSlashCommand(name) }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
@@ -450,7 +450,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             let hasTracks = trackStore?.tracks.contains { $0.status != .archived } ?? false
             emptyState.configure("Think works on a track.", action: hasTracks ? "Choose a Track…" : "New Track", handler: act(hasTracks ? .chooseTrack : .newTrack))
         } else {
-            emptyState.configure("Ask anything about this track — every change waits for your approval.", action: nil, handler: nil)
+            emptyState.configure("Ask anything about this track. Every change waits for your approval.", action: nil, handler: nil)
         }
     }
 
@@ -589,7 +589,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             refreshQueuedMessageChip()
             return
         }
-        editingChip.setLabel("Editing — sending moves the rest to a branch", tint: .secondaryLabelColor)
+        editingChip.setLabel("Editing. Sending moves the rest to a branch", tint: .secondaryLabelColor)
         editingChip.toolTip = "Escape to cancel. The replaced turns are kept as a separate conversation."
         editingChip.isHidden = false
         editingChipGlass.isHidden = false
@@ -628,7 +628,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             ? "Start a track to begin a conversation"
             : awaitingApproval
             ? "Apply or reject the proposed change above to continue…"
-            : (busy ? "Working — your next message will be sent when it finishes…" : "Ask about this project…")
+            : (busy ? "Working. Your next message will be sent when it finishes…" : "Ask about this project…")
         // A turn just ended: send whatever was typed while it was running.
         if !busy, !awaitingApproval { flushQueuedMessage() }
     }
@@ -675,7 +675,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             ? ""
             : " (+\(queued.attachments.count) image\(queued.attachments.count == 1 ? "" : "s"))"
         queuedChip.setLabel("Queued: \(preview)\(attachmentNote)", tint: .secondaryLabelColor)
-        queuedChip.toolTip = "Click to edit — puts this back in the composer"
+        queuedChip.toolTip = "Click to edit. Puts this back in the composer"
         queuedChip.isHidden = false
         queuedChipGlass.isHidden = false
         DS.Motion.appear(queuedChip)
@@ -754,7 +754,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 title: "Use \(name) as standing instructions?",
                 detail: "This project contains \(name), which tells agents how to work in it. "
                     + "Side would include it in every request for this project.\n\n"
-                    + "Files like this arrive with a cloned repository, so read it first if the project isn't yours — "
+                    + "Files like this arrive with a cloned repository, so read it first if the project isn't yours: "
                     + "it shapes what the agent does, though it can never waive your approval of edits and commands.",
                 acceptTitle: "Use These Rules", file: rules,
                 acceptedNotice: "\(name) is now included in every request for this project."
@@ -765,7 +765,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             let outcome = askToAcknowledge(
                 title: "Use this project's declared tasks?",
                 detail: "This project contains \(ProjectTasks.declarationPath), which names commands the agent can run "
-                    + "with run_task — its build, test, and verify steps.\n\n"
+                    + "with run_task: its build, test, and verify steps.\n\n"
                     + "It arrives with a cloned repository, so read it first if the project isn't yours: a task named "
                     + "\u{201C}test\u{201D} can run anything. Until you accept it, Side uses what it detects from the "
                     + "project's own manifests instead. Each task still shows an approval card unless the track auto-runs commands.",
@@ -816,7 +816,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // Written by the user, here, on purpose — asking them to acknowledge their own file
         // would be theatre.
         ProjectRules.acknowledge(url: url, contents: ProjectRules.template.trimmingCharacters(in: .whitespacesAndNewlines))
-        appendLocalNotice("Created \(ProjectRules.preferredFileName) — what you write there is included in every Think request for this project.")
+        appendLocalNotice("Created \(ProjectRules.preferredFileName). What you write there is included in every Think request for this project.")
         onRevealFileRequested?(url)
     }
 
@@ -825,7 +825,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         guard let runner else { return }
         let conversations = runner.archivedConversations
         guard !conversations.isEmpty else {
-            appendLocalNotice("No past conversations on this track yet — starting a new one files the current one here.")
+            appendLocalNotice("No past conversations on this track yet. Starting a new one files the current one here.")
             return
         }
         let picker = ConversationHistoryViewController()
@@ -965,7 +965,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case .approaching(let spent, let limit):
             budgetLine = "Budget: \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)) this month"
         case .exceeded(let spent, let limit):
-            budgetLine = "Budget reached — \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit))"
+            budgetLine = "Budget reached: \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit))"
         case .unlimited, .withinBudget:
             break
         }
@@ -1087,7 +1087,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         guard let runner, !runner.entries.isEmpty else { return }
         let alert = NSAlert()
         alert.messageText = "Start a new conversation?"
-        alert.informativeText = "This conversation is filed under History — you can reopen it any time. The agent starts fresh and won't carry anything forward; use Compact instead if it should. Checkpoints, usage history, and your files are untouched."
+        alert.informativeText = "This conversation is filed under History, and you can reopen it any time. The agent starts fresh and won't carry anything forward; use Compact instead if it should. Checkpoints, usage history, and your files are untouched."
         alert.addButton(withTitle: "Start New")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
@@ -1126,8 +1126,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             title = "\(resolvedSelectionModelName()) · \(mode.scope.displayName)"
         }
         var tint = NSColor.secondaryLabelColor
-        // Until an outside agent reports usage there's no window to be a percentage of.
-        if let runner, runner.harnessName == nil || runner.contextUsage().windowTokens > 0 {
+        // Context appears once the conversation has one: before the first message it's 0%
+        // (Heron) or unknown (an outside agent reports usage only once it answers).
+        let hasSentMessage = runner?.entries.contains { if case .userText = $0.kind { return true } else { return false } } ?? false
+        if let runner, hasSentMessage, runner.harnessName == nil || runner.contextUsage().windowTokens > 0 {
             let usage = runner.contextUsage()
             title += " · \(Int((usage.fraction * 100).rounded()))%"
             switch usage.status {
@@ -1361,8 +1363,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 // have to glide down in the same animation as the bubble's growth.
                 self.transcriptContainer.layoutSubtreeIfNeeded()
                 if wasAtBottom {
-                    let maxY = max(0, self.transcriptContainer.bounds.height - clip.bounds.height + self.transcriptScroll.contentInsets.bottom)
-                    clip.animator().setBoundsOrigin(NSPoint(x: 0, y: maxY))
+                    clip.animator().setBoundsOrigin(NSPoint(x: 0, y: self.bottomScrollOrigin()))
                 }
             }
             if wasAtBottom { transcriptScroll.reflectScrolledClipView(clip) }
@@ -1513,7 +1514,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case .executed(let output) where command.fetchURL != nil:
             // A fetched page isn't terminal output: a short preview, no terminal to open.
             let preview = output.isEmpty ? "(no content)" : String(output.prefix(300))
-            card.showResolution("Fetched — \(preview)", color: DS.Color.statusVerified)
+            card.showResolution("Fetched: \(preview)", color: DS.Color.statusVerified)
         case .executed(let output):
             // The terminal's tail, in place (§5.1): what it printed, and the way to its terminal.
             card.showResolution("Ran", color: DS.Color.statusVerified)
@@ -1650,12 +1651,19 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // covered by the composer and could not be clicked at all. The single most
             // important interaction in the app was unreachable, and no test caught it because
             // every test asserts on the model, not on what the composer happens to overlap.
-            let maxY = max(0, self.transcriptContainer.bounds.height
-                - self.transcriptScroll.contentView.bounds.height
-                + self.transcriptScroll.contentInsets.bottom)
-            self.transcriptScroll.contentView.scroll(to: NSPoint(x: 0, y: maxY))
+            self.transcriptScroll.contentView.scroll(to: NSPoint(x: 0, y: self.bottomScrollOrigin()))
             self.transcriptScroll.reflectScrolledClipView(self.transcriptScroll.contentView)
         }
+    }
+
+    /// The clip view's origin with the last block just above the composer — never above the
+    /// top inset. The transcript is inset below the window's top row, so its *top* position is
+    /// `-contentInsets.top`, not 0: clamping at 0 scrolled a short conversation (a first message,
+    /// a lone notice) up under the top row until the user scrolled it back down.
+    private func bottomScrollOrigin() -> CGFloat {
+        let insets = transcriptScroll.contentInsets
+        let bottom = transcriptContainer.bounds.height - transcriptScroll.contentView.bounds.height + insets.bottom
+        return max(-insets.top, bottom)
     }
 }
 
@@ -3210,7 +3218,7 @@ private final class SessionSettingsViewController: NSViewController {
         autonomyControl.isEnabledControl = snapshot.mode.autonomyIsMeaningful
         autonomyCaption.stringValue = snapshot.mode.autonomyIsMeaningful
             ? snapshot.mode.autonomy.displayName
-            : "Autonomy applies in Build — read-only scopes have nothing to auto-approve."
+            : "Autonomy applies in Build. Read-only scopes have nothing to auto-approve."
 
         usageLabel.stringValue = snapshot.usageLine
         spendLabel.stringValue = snapshot.spendLine ?? ""

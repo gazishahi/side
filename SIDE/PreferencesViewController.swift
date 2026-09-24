@@ -148,11 +148,11 @@ final class PreferencesViewController: NSViewController {
         // Keychain — so opening Preferences doesn't itself trigger a Keychain ACL prompt that
         // having the env var set was specifically meant to avoid.
         if provider.id == "anthropic", ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.isEmpty == false {
-            keyStatusLabel.stringValue = "No key saved — currently using ANTHROPIC_API_KEY from the environment."
+            keyStatusLabel.stringValue = "No key saved. Using ANTHROPIC_API_KEY from the environment."
         } else if KeychainStore.hasSecret(account: provider.id) {
             keyStatusLabel.stringValue = "A key is saved in your Keychain."
         } else {
-            keyStatusLabel.stringValue = "No key set — Think can't reach \(provider.displayName) without one."
+            keyStatusLabel.stringValue = "No key set. Think can't reach \(provider.displayName) without one."
         }
     }
 
@@ -167,7 +167,7 @@ final class PreferencesViewController: NSViewController {
         let form = AddProviderForm()
         let alert = NSAlert()
         alert.messageText = "Add Provider"
-        alert.informativeText = "OpenAI-compatible only — covers OpenAI itself, and local servers like Ollama or LM Studio."
+        alert.informativeText = "OpenAI-compatible only: covers OpenAI itself and local servers like Ollama or LM Studio."
         alert.accessoryView = form.view
         alert.addButton(withTitle: "Add")
         alert.addButton(withTitle: "Cancel")
@@ -291,6 +291,11 @@ final class PreferencesTabViewController: NSTabViewController {
         providers.label = "Providers"
         providers.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: "Providers")
         addTabViewItem(providers)
+
+        let agents = NSTabViewItem(viewController: AgentsPreferencesViewController())
+        agents.label = "Agents"
+        agents.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: "Agents")
+        addTabViewItem(agents)
 
         let usage = NSTabViewItem(viewController: UsageViewController())
         usage.label = "Usage"

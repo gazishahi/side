@@ -117,6 +117,25 @@ user's subscription is used by the user's CLI. Agents are detected on the login-
 same resolution the language servers use); missing adapters get an install line to copy, never
 an automatic install. *Decide:* accept; confirm no bundling of third-party adapters.
 
+**D7 addendum: subscription or API key, per agent (2026-09-23).** Every agent can run on
+the user's subscription or on an API key; Settings › Agents chooses, per agent.
+- *Subscription:* the agent's own sign-in (`claude` login, ChatGPT, Google). Every API-key
+  variable the agent reads is removed from its environment, because an exported key silently
+  wins over the login (Claude Code billed a stale `ANTHROPIC_API_KEY` and hung).
+- *API key:* stored in the Keychain and given to the agent as its variable
+  (`ANTHROPIC_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`); without a stored key, one already in
+  the environment is used.
+- Agents that list ACP `authMethods` (Codex: `chat-gpt` / `api-key`; Gemini: `oauth-personal` /
+  `gemini-api-key`) are sent `authenticate` with the matching method before a session opens; an
+  agent already signed in that way answers at once, otherwise it opens the browser itself.
+  Claude Code lists none and uses whatever `claude` is signed into.
+- Any other ACP agent (OpenCode, Qwen Code, Goose…) can be added by command, with an optional
+  API-key variable. Subscriptions are only usable through the vendor's own agent, which is why
+  hosting agents (not calling their APIs from Heron) is how Side supports them.
+- Verified live: Claude Code. Codex and Gemini: method lists and sign-in shapes read from their
+  published packages (`@agentclientprotocol/codex-acp` 1.13.1, `@google/gemini-cli` 0.61.0), not
+  yet run.
+
 **D8 — What else uses the harness.** *Recommend:* ⌘K inline instruct and Run's task chips
 follow the track's harness; a task chip's result still attaches as verification. *Decide:*
 accept, or keep those Heron-only in v1.

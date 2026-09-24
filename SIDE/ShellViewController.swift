@@ -128,6 +128,16 @@ final class ShellViewController: NSViewController {
             runner.resolve(proposalId: id, decision: run ? .apply : .reject)
             self.refreshRunTasks()
         }
+        // An agent's sign-in changed: its idle sessions restart with the new account, and Think
+        // reattaches if it was showing one.
+        NotificationCenter.default.addObserver(forName: AgentsPreferencesViewController.signInDidChangeNotification, object: nil, queue: .main) { [weak self] note in
+            let agentId = note.userInfo?["agentId"] as? String
+            MainActor.assumeIsolated {
+                guard let self, let id = agentId, let context = self.projectContext else { return }
+                let restarted = context.runnerManager.restartAgent(id: id)
+                if let key = self.currentTrackKey, restarted.contains(key) { self.thinkVC.reloadForTrackSwitch(trackKey: key) }
+            }
+        }
         NotificationCenter.default.addObserver(forName: AgentSessionStore.checkpointsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshRunTasks() }
         }
@@ -784,7 +794,7 @@ final class ShellViewController: NSViewController {
         guard let manager = projectContext?.runnerManager else { return }
         // Conversations happen on tracks (§6), and an instruct is a message in one.
         guard let trackKey = currentTrackKey, !trackKey.isEmpty else {
-            let note = "Instruct works on a track — start one first."
+            let note = "Instruct works on a track. Start one first."
             makeVC.instructProblem(note)
             reviewInstructController?.showProblem(note)
             return
@@ -834,7 +844,7 @@ final class ShellViewController: NSViewController {
                 if case .assistantText(let text) = entry.kind { return text }
                 return nil
             }.first
-            let text = answer ?? "No answer came back — the conversation in Think has the details."
+            let text = answer ?? "No answer came back. The conversation in Think has the details."
             makeVC.instructAnswer(text)
             reviewInstructController?.showAnswer(text)
             endInstruct()
@@ -1169,7 +1179,7 @@ final class ShellViewController: NSViewController {
     /// but Mission Control, the Window menu, ⌘` and VoiceOver read it.
     static func windowTitle(stage: Stage?, fileName: String?, track: String?, project: String?) -> String {
         let place = track ?? project ?? "Side"
-        if stage == .make, let fileName { return "\(fileName) — \(place)" }
+        if stage == .make, let fileName { return "\(fileName) · \(place)" }
         return place
     }
 

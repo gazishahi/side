@@ -184,7 +184,7 @@ final class StageCompositionTests: XCTestCase {
             default: return nil
             }
         }
-        XCTAssertEqual(texts, ["Looking.", "Read README.md — ✓ # Fixture", "Edit NOTES.md — ✓ Changed NOTES.md", "asked:Allow", "Done."])
+        XCTAssertEqual(texts, ["Looking.", "Read README.md · ✓ # Fixture", "Edit NOTES.md · ✓ Changed NOTES.md", "asked:Allow", "Done."])
         XCTAssertEqual(harness.contextUsage().usedTokens, 1000)
 
         // Not installed: a failure that says how to install, and the track shows it failed.

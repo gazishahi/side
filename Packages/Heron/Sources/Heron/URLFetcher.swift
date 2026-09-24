@@ -17,7 +17,7 @@ public enum URLFetchPolicy {
             switch self {
             case .notHTTPS: return "only https:// URLs can be fetched"
             case .hasCredentials: return "URLs with embedded credentials are refused"
-            case .hasQueryOrFragment: return "URLs with a query string or fragment are refused — fetch the page, not a parameterized endpoint"
+            case .hasQueryOrFragment: return "URLs with a query string or fragment are refused. Fetch the page, not a parameterized endpoint"
             case .noHost: return "the URL has no host"
             case .privateHost(let host): return "\(host) is local or on a private network"
             case .unresolvable(let host): return "\(host) could not be resolved"

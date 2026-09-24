@@ -74,7 +74,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let tabBar = TabStripView()
     /// Shown when a project is open but nothing is — the charter's empty-state rule: one quiet
     /// sentence plus the action that fixes it.
-    private let noFileLabel = NSTextField(labelWithString: "No file open — press ⌘P to find one.")
+    private let noFileLabel = NSTextField(labelWithString: "No file open. Press ⌘P to find one.")
     private let tabBarStack = NSStackView()
     private let emptyState = NSStackView()
     private let recentProjectsStack = NSStackView()

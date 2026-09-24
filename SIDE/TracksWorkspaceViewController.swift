@@ -651,7 +651,7 @@ final class TracksWorkspaceViewController: NSViewController {
     private func makeBannerCard(branchName: String) -> NSView {
         makeInfoBannerCard(
             symbolName: "info.circle",
-            text: "You're on \u{201C}\(branchName)\u{201D} — not a track yet.",
+            text: "You're on \u{201C}\(branchName)\u{201D}, which isn't a track yet.",
             buttonTitle: "Turn into a Track…",
             action: #selector(promoteBranchTapped)
         )
@@ -660,7 +660,7 @@ final class TracksWorkspaceViewController: NSViewController {
     private func makeNotAGitRepoBanner() -> NSView {
         makeInfoBannerCard(
             symbolName: "exclamationmark.circle",
-            text: "This project isn't a git repository yet — Tracks needs one to manage branches.",
+            text: "This project isn't a git repository yet. Tracks needs one to manage branches.",
             buttonTitle: "Initialize Git…",
             action: #selector(initializeGitTapped)
         )
@@ -894,7 +894,7 @@ final class TracksWorkspaceViewController: NSViewController {
             parts.append("Stashed \(stashed) uncommitted change\(stashed == 1 ? "" : "s") from the track you left")
         }
         if outcome.restoreConflicted {
-            parts.append("couldn't cleanly restore this track's stashed changes — resolve the conflict, then the stash is still there if needed")
+            parts.append("couldn't cleanly restore this track's stashed changes. Resolve the conflict; the stash is still there if you need it")
         } else if let restored = outcome.restoredFileCount {
             parts.append("restored \(restored) stashed change\(restored == 1 ? "" : "s") for this track")
         }
@@ -1091,7 +1091,7 @@ final class TracksWorkspaceViewController: NSViewController {
         guard let track = sender.representedObject as? Track, let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = "Remove Working Copy for \u{201C}\(track.intent)\u{201D}?"
-        alert.informativeText = "Frees the disk space this track's checkout uses. The \u{201C}\(track.branchName)\u{201D} branch and its history are untouched — switching back to this track re-creates the working copy."
+        alert.informativeText = "Frees the disk space this track's checkout uses. The \u{201C}\(track.branchName)\u{201D} branch and its history are untouched. Switching back to this track re-creates the working copy."
         alert.addButton(withTitle: "Remove")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -1113,7 +1113,7 @@ final class TracksWorkspaceViewController: NSViewController {
     @objc private func pullFromParentMenuItem(_ sender: NSMenuItem) {
         guard let track = sender.representedObject as? Track, let window = view.window else { return }
         if runnerManager?.existingRunner(forTrackKey: track.branchName)?.phase.isBusy == true {
-            showStatus("⚠︎ This track's agent is still running — wait for it to finish before pulling.")
+            showStatus("⚠︎ This track's agent is still running. Wait for it to finish before pulling.")
             return
         }
         trackStore?.pullFromParent(track) { [weak self] result in

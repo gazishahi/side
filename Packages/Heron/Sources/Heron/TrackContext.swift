@@ -39,7 +39,7 @@ public enum TrackContextTools {
             let count = changedPaths(track).count
             let marker = track.isCurrent ? "  ← this track" : ""
             let intent = track.intent.isEmpty ? "(no description)" : track.intent
-            return "\(track.branchName) [\(track.status)] — \(intent) · base \(track.baseRef) · \(count) changed file\(count == 1 ? "" : "s")\(marker)"
+            return "\(track.branchName) [\(track.status)] \(intent) · base \(track.baseRef) · \(count) changed file\(count == 1 ? "" : "s")\(marker)"
         }.joined(separator: "\n")
     }
 

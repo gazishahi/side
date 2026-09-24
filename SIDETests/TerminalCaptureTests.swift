@@ -102,7 +102,7 @@ final class VerificationStalenessTests: XCTestCase {
             ("nothing ever verified", [checkpoint(at: 1, verified: nil)], nil),
             ("pass three checkpoints back",
              [checkpoint(at: 1, verified: true), checkpoint(at: 2, verified: nil), checkpoint(at: 3, verified: nil), checkpoint(at: 4, verified: nil)],
-             "The last passing verification was 3 checkpoints ago — the newest changes have not been verified."),
+             "The last passing verification was 3 checkpoints ago. The newest changes have not been verified."),
             ("failure is not a pass", [checkpoint(at: 1, verified: false), checkpoint(at: 2, verified: nil)], nil),
         ]
         for c in cases {

@@ -152,8 +152,8 @@ final class TrackStore {
             case .gitBranchDeleteFailed(let detail): return "The track was removed, but its branch couldn't be deleted: \(detail)"
             case .gitInitFailed(let detail): return "Git init failed: \(detail)"
             case .gitWorktreeFailed(let detail): return "Git worktree operation failed: \(detail)"
-            case .cannotDeleteTrackWithLiveChildren: return "This track still has stacked tracks forked from it — park, complete, or archive them first."
-            case .noParentTrack: return "This track doesn't fork from another track — there's nothing to pull."
+            case .cannotDeleteTrackWithLiveChildren: return "This track still has stacked tracks forked from it. Archive them first."
+            case .noParentTrack: return "This track doesn't fork from another track, so there's nothing to pull."
             case .nothingToPull: return "Already up to date with its parent branch."
             case .worktreeHasUncommittedChanges(let count):
                 return "This track's working copy has \(count) uncommitted change\(count == 1 ? "" : "s") that would be lost."
@@ -777,7 +777,7 @@ final class TrackStore {
             return
         }
         guard let cwd = track.workingDirectoryPath else {
-            completion(.failure(TrackError.gitWorktreeFailed("This track has no working copy — resume it (Tracks) first.")))
+            completion(.failure(TrackError.gitWorktreeFailed("This track has no working copy. Resume it in Tracks first.")))
             return
         }
         let parentBranch = parent.branchName
@@ -793,7 +793,7 @@ final class TrackStore {
     nonisolated private func performPull(parentBranch: String, cwd: String) -> Result<String, Error> {
         let dirty = runGit(["status", "--porcelain"], cwd: cwd)
         guard dirty.output.isEmpty else {
-            return .failure(TrackError.gitWorktreeFailed("This track's working copy has uncommitted changes — commit or stash them first."))
+            return .failure(TrackError.gitWorktreeFailed("This track's working copy has uncommitted changes. Commit or stash them first."))
         }
         let behind = runGit(["rev-list", "--count", "HEAD..\(parentBranch)"], cwd: cwd)
         if behind.success, Int(behind.output) == 0 {
@@ -802,7 +802,7 @@ final class TrackStore {
         let mergeAttempt = runGit(["merge", "--no-ff", parentBranch], cwd: cwd)
         guard mergeAttempt.success else {
             _ = runGit(["merge", "--abort"], cwd: cwd)
-            return .failure(TrackError.gitWorktreeFailed("Merging \(parentBranch) would conflict — resolve manually (e.g. rebase) and try again."))
+            return .failure(TrackError.gitWorktreeFailed("Merging \(parentBranch) would conflict. Resolve it manually (for example, rebase) and try again."))
         }
         let sha = runGit(["rev-parse", "--short", "HEAD"], cwd: cwd)
         return .success("✓ Pulled \(parentBranch) (\(sha.success ? sha.output : "?")).")

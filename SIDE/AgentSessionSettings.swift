@@ -59,7 +59,7 @@ enum AgentPicker {
         popup.menu?.addItem(.separator())
         for agent in ACPAgent.known {
             let installed = AgentAvailability.isInstalled(agent)
-            popup.addItem(withTitle: installed == false ? "\(agent.displayName) — not installed" : agent.displayName)
+            popup.addItem(withTitle: installed == false ? "\(agent.displayName) (not installed)" : agent.displayName)
             popup.lastItem?.representedObject = agent.id
             if installed == false { popup.lastItem?.toolTip = "Install with: \(agent.installHint)" }
         }
@@ -154,7 +154,7 @@ final class AgentSessionSettingsViewController: NSViewController {
             }
             if option.actsWithoutAsking {
                 // RFC D1: the product says plainly when an agent's edits aren't pre-approved.
-                let line = note("Edits land directly — each turn is checkpointed, so you can review and undo it in Review.", color: .secondaryLabelColor)
+                let line = note("Edits land directly. Each turn is checkpointed, so you can review and undo it in Review.", color: .secondaryLabelColor)
                 stack.addArrangedSubview(line)
                 last = line
             }

@@ -26,7 +26,7 @@ enum XcodeBuildServerSetup {
             return
         }
         guard let serverBinary = LanguageServerRegistry.resolveExecutable(named: "xcode-build-server") else {
-            print("[LSP] xcode-build-server not found on PATH — Swift diagnostics will run without full build context (install via `brew install xcode-build-server`)")
+            print("[LSP] xcode-build-server not found on PATH; Swift diagnostics will run without full build context (install via `brew install xcode-build-server`)")
             DispatchQueue.main.async { completion() }
             return
         }
@@ -44,7 +44,7 @@ enum XcodeBuildServerSetup {
                 return
             }
             guard let scheme = resolveScheme(preferring: name, projectFlag: projectFlag, cwd: projectRoot) else {
-                print("[LSP] couldn't determine an Xcode scheme for \(name) — skipping build server setup")
+                print("[LSP] couldn't determine an Xcode scheme for \(name); skipping build server setup")
                 DispatchQueue.main.async { completion() }
                 return
             }

@@ -32,9 +32,10 @@ final class ProjectContext {
         manager.agentProvider = { [weak self] trackKey in self?.trackStore.harness(forTrackKey: trackKey) }
         manager.acpLaunchProvider = { agent in
             guard let executable = AgentAvailability.executable(for: agent) else { return nil }
-            var environment = LanguageServerRegistry.environmentForSpawning()
-            for name in agent.hiddenEnvironment { environment.removeValue(forKey: name) }
-            return ACPLaunch(executable: executable, arguments: agent.arguments, environment: environment)
+            // The user's subscription (every key variable removed) or the key they gave Side for
+            // this agent (Settings › Agents).
+            let environment = agent.launchEnvironment(from: LanguageServerRegistry.environmentForSpawning())
+            return ACPLaunch(executable: executable, arguments: agent.arguments, environment: environment, signIn: agent.signIn)
         }
         manager.acpTerminalHost = acpTerminals
         manager.agentOptionsProvider = { [weak self] trackKey in self?.trackStore.harnessOptions(forTrackKey: trackKey) ?? [:] }
@@ -150,7 +151,7 @@ final class ProjectContext {
             applyEditIntoOpenTab: { [weak editHost] url, content in editHost?.applyApprovedEdit(url: url, newContent: content) ?? false },
             onRevealFileRequested: { [weak editHost] url in editHost?.revealAfterApply(url) },
             runShellCommand: { [weak terminals] command, timeout, completion in
-                guard let terminals else { completion("The project was closed — nowhere to run this command."); return }
+                guard let terminals else { completion("The project was closed, so there's nowhere to run this command."); return }
                 terminals.runAgentCommand(command, trackKey: trackKey, timeout: timeout, completion: completion)
             },
             interruptShellCommand: { [weak terminals] in

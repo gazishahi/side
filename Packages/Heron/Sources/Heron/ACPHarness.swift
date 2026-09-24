@@ -88,6 +88,8 @@ public final class ACPHarness: Harness {
     /// The track's remembered choices (option id → value), re-applied to each new session.
     private let preferredOptions: () -> [String: String]
     private let onOptionChanged: (String, String) -> Void
+    /// How the agent was asked to sign in (Settings › Agents), for agents that ask.
+    private var signIn: ACPAgent.SignIn = .subscription
     /// Sends waiting for the session that's being opened (by a send, or by `prepareSession`).
     private var sessionWaiters: [(String) -> Void] = []
     /// Fires when a turn has gone silent too long (`stallInterval`).
@@ -115,6 +117,31 @@ public final class ACPHarness: Harness {
         self.terminalHostProvider = terminalHost
         self.preferredOptions = preferredOptions
         self.onOptionChanged = onOptionChanged
+        agentOptions = seededOptions()
+    }
+
+    // MARK: Last-known settings
+
+    /// The agent's settings as last seen (any track), with this track's remembered choices on
+    /// top — so the pill can say "Claude Code · Opus 5.5" the moment a track is shown, before the
+    /// agent has started. Replaced by the real list as soon as a session opens.
+    private var knownOptionsKey: String { "SideACPKnownOptions.\(agent.id)" }
+
+    private func seededOptions() -> [HarnessOption] {
+        guard let data = UserDefaults.standard.data(forKey: knownOptionsKey),
+              var options = try? JSONDecoder().decode([HarnessOption].self, from: data) else { return [] }
+        let preferred = preferredOptions()
+        for index in options.indices {
+            if let value = preferred[options[index].id], options[index].choices.contains(where: { $0.value == value }) {
+                options[index].current = value
+            }
+        }
+        return options
+    }
+
+    private func rememberKnownOptions() {
+        guard !agentOptions.isEmpty, let data = try? JSONEncoder().encode(agentOptions) else { return }
+        UserDefaults.standard.set(data, forKey: knownOptionsKey)
     }
 
     // MARK: Observation
@@ -217,8 +244,8 @@ public final class ACPHarness: Harness {
             setPhase(.idle)
             return
         case "refusal": append(.meta("\(agent.displayName) declined to continue."))
-        case "max_tokens": append(.meta("\(agent.displayName) stopped at its output limit — send another message to continue."))
-        case "max_turn_requests": append(.meta("\(agent.displayName) reached its turn limit — send another message to continue."))
+        case "max_tokens": append(.meta("\(agent.displayName) stopped at its output limit. Send another message to continue."))
+        case "max_turn_requests": append(.meta("\(agent.displayName) reached its turn limit. Send another message to continue."))
         default: break
         }
         hasUnseenCompletion = true
@@ -290,6 +317,7 @@ public final class ACPHarness: Harness {
     }
 
     private func start(_ launch: ACPLaunch) {
+        signIn = launch.signIn
         let root = rootProvider()
         let connection: ACPConnection
         do {
@@ -326,7 +354,50 @@ public final class ACPHarness: Harness {
                     connection.terminate()
                     return
                 }
-                self.openSession(on: connection)
+                let methods = (value as? [String: Any])?["authMethods"] as? [[String: Any]] ?? []
+                self.signInIfAsked(methods: methods, on: connection) { [weak self] in self?.openSession(on: connection) }
+            }
+        }
+    }
+
+    /// Agents that list sign-in methods (Codex: ChatGPT or an API key; Gemini: Google or an API
+    /// key) are told which one the user chose, before a session opens. An agent already signed in
+    /// that way answers at once; otherwise it may open a browser (ChatGPT, Google) to finish.
+    /// Claude Code lists none: it uses whatever `claude` is signed into, or the key it was given.
+    private func signInIfAsked(methods: [[String: Any]], on connection: ACPConnection, then next: @escaping () -> Void) {
+        guard let method = Self.signInMethod(methods, for: signIn), let methodId = method["id"] as? String else { return next() }
+        let how = signIn == .apiKey ? "an API key" : "your \(agent.subscriptionName)"
+        // A browser sign-in can take a while; say so only if it does.
+        let slow = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.append(.meta("Signing in to \(self.agent.displayName) with \(how). If a browser window opened, finish signing in there."))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: slow)
+        connection.request("authenticate", params: ["methodId": methodId]) { [weak self] result in
+            slow.cancel()
+            guard let self else { return }
+            switch result {
+            case .success: next()
+            case .failure(let error):
+                let fix = self.signIn == .apiKey
+                    ? "Check the key in Settings › Agents."
+                    : "Sign in with the agent's CLI in a terminal, or choose an API key in Settings › Agents."
+                self.sessionFailed("Couldn't sign in to \(self.agent.displayName) with \(how): \(error.localizedDescription). \(fix)")
+            }
+        }
+    }
+
+    /// The agent's method for a sign-in choice: one that takes an API key (`_meta["api-key"]`),
+    /// or its own account login (not a gateway, Vertex, or device-code variant).
+    static func signInMethod(_ methods: [[String: Any]], for signIn: ACPAgent.SignIn) -> [String: Any]? {
+        func takesKey(_ method: [String: Any]) -> Bool { (method["_meta"] as? [String: Any])?["api-key"] != nil }
+        switch signIn {
+        case .apiKey:
+            return methods.first(where: takesKey)
+        case .subscription:
+            return methods.first { method in
+                let id = (method["id"] as? String ?? "").lowercased()
+                return !takesKey(method) && !id.contains("gateway") && !id.contains("vertex") && !id.contains("device")
             }
         }
     }
@@ -348,7 +419,7 @@ public final class ACPHarness: Harness {
                 self.sessionId = id
                 (self.agentOptions, self.optionBacking) = Self.options(from: value)
                 self.applyPreferredOptions()
-                self.describeSession()
+                self.rememberKnownOptions()
                 self.notify(.phaseChanged)
                 self.sessionReady(id)
             }
@@ -413,10 +484,10 @@ public final class ACPHarness: Harness {
             // "Worked for…" group of its own.
             switch update["status"] as? String {
             case "completed":
-                replace(index, .toolCall(name: title, summary: locations + " — ✓ " + Self.resultSummary(update["content"])))
+                replace(index, .toolCall(name: title, summary: locations + " · ✓ " + Self.resultSummary(update["content"])))
                 if phase == .runningTools { setPhase(.streaming) }
             case "failed":
-                replace(index, .toolCall(name: title, summary: locations + " — ⚠︎ " + Self.resultSummary(update["content"])))
+                replace(index, .toolCall(name: title, summary: locations + " · ⚠︎ " + Self.resultSummary(update["content"])))
                 if phase == .runningTools { setPhase(.streaming) }
             default:
                 if title != name || locations != summary { replace(index, .toolCall(name: title, summary: locations)) }
@@ -426,6 +497,7 @@ public final class ACPHarness: Harness {
             guard !options.isEmpty else { return }
             agentOptions = options
             optionBacking = backing
+            rememberKnownOptions()
             notify(.phaseChanged)
         case "current_mode_update":
             guard let mode = update["currentModeId"] as? String,
@@ -552,9 +624,10 @@ public final class ACPHarness: Harness {
         appliedCounts.removeAll()
         conversationId = UUID()
         usage = nil
-        agentOptions = []
+        agentOptions = seededOptions()
         notify(.reset)
         setPhase(.idle)
+        prepareSession()
     }
 
     public func openArchivedConversation(id: UUID) -> Bool { false }
@@ -927,7 +1000,13 @@ public final class ACPHarness: Harness {
         if remember { onOptionChanged(id, value) }
         guard let index = agentOptions.firstIndex(where: { $0.id == id }),
               agentOptions[index].choices.contains(where: { $0.value == value }),
-              agentOptions[index].current != value, let sessionId, let connection else { return }
+              agentOptions[index].current != value else { return }
+        guard let sessionId, let connection else {
+            // No session yet: shown now, sent when one opens (`applyPreferredOptions`).
+            agentOptions[index].current = value
+            notify(.phaseChanged)
+            return
+        }
         let previous = agentOptions[index].current
         agentOptions[index].current = value
         notify(.phaseChanged)
@@ -963,19 +1042,6 @@ public final class ACPHarness: Harness {
         for (id, value) in preferredOptions() { setAgentOption(id: id, value: value, remember: false) }
     }
 
-    /// "Claude Code · Opus 5.5 · Medium effort · Auto mode · Claude Team" — a record in the
-    /// transcript of what the session started as.
-    private func describeSession() {
-        let value = { (category: HarnessOption.Category) in self.agentOptions.first { $0.category == category }?.currentChoice?.name }
-        var parts = [agent.displayName]
-        if let model = value(.model) { parts.append(model) }
-        if let effort = value(.effort) { parts.append("\(effort) effort") }
-        if let mode = value(.mode) { parts.append("\(mode) mode") }
-        if let accountLabel { parts.append(accountLabel) }
-        guard parts.count > 1 else { return }
-        append(.meta(parts.joined(separator: " · ")))
-    }
-
     // MARK: The turn's checkpoint
 
     /// Commits what the turn changed, however it was written (D1): paths the agent is known to
@@ -1009,7 +1075,7 @@ public final class ACPHarness: Harness {
                     case .none, .nothingToCommit?:
                         return
                     case .failed(let step, let message)?:
-                        self.append(.failure("Couldn't create a checkpoint — git \(step) failed\(message.isEmpty ? "" : ": \(message)").\nThe changes are still in your working copy, uncommitted."))
+                        self.append(.failure("Couldn't create a checkpoint: git \(step) failed\(message.isEmpty ? "" : ": \(message)").\nThe changes are still in your working copy, uncommitted."))
                     case .committed(let sha, let paths)?:
                         let names = paths.map { ($0 as NSString).lastPathComponent }
                         let described = intent.isEmpty

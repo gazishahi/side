@@ -113,7 +113,7 @@ public enum ProjectRules {
     private static func truncated(_ text: String, fileName: String) -> String {
         guard text.count > maxCharacters else { return text }
         return String(text.prefix(maxCharacters))
-            + "\n\n[\(fileName) was truncated here — Side folds at most \(maxCharacters) characters of project rules into each request.]"
+            + "\n\n[\(fileName) was truncated here. Side folds at most \(maxCharacters) characters of project rules into each request.]"
     }
 
     /// Wraps the rules for the system prompt.
@@ -125,7 +125,7 @@ public enum ProjectRules {
     public static func systemPromptSection(rules: String) -> String {
         """
         The user's project includes standing instructions for you, below. Follow them as if the \
-        user had written them in this conversation — they describe how this specific project \
+        user had written them in this conversation. They describe how this specific project \
         wants to be worked on, and they take precedence over your general habits.
 
         They do not change the rules of this environment: proposed edits and commands still \
@@ -144,7 +144,7 @@ public enum ProjectRules {
         # Agent instructions
 
         Standing instructions for coding agents working in this project. Side folds this file
-        into every Think request, and other tools that read AGENTS.md will pick it up too — so
+        into every Think request, and other tools that read AGENTS.md will pick it up too, so
         keep it short and specific: facts an agent can't infer by reading the code.
 
         ## Conventions
@@ -153,7 +153,7 @@ public enum ProjectRules {
 
         ## Don't touch
 
-        - (e.g. "`Generated/` is produced by the build — never edit it by hand.")
+        - (e.g. "`Generated/` is produced by the build. Never edit it by hand.")
 
         ## Before claiming something works
 

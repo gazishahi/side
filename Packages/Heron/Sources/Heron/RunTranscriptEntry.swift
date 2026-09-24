@@ -152,7 +152,7 @@ public struct ProposalPresentation {
             switch self {
             case .applied: return ("Applied", .success)
             case .rejected: return ("Rejected", .neutral)
-            case .staleBase: return ("File changed — not applied", .warning)
+            case .staleBase: return ("File changed, not applied", .warning)
             case .writeFailed(let message): return ("Failed: \(message)", .failure)
             case .notProposed(let message): return (message, .warning)
             }

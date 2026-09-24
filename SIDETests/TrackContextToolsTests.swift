@@ -69,7 +69,7 @@ final class TrackContextToolsTests: XCTestCase {
         guard case .completed(let output, _) = executor(current: "track-b").execute(name: "list_tracks", input: .object([:]), toolUseId: "t", scope: .plan) else { return XCTFail() }
         let lines = output.components(separatedBy: "\n")
         XCTAssertEqual(lines.count, 3)
-        XCTAssertTrue(lines[0].contains("track-a [active] — Refactor shared · base main · 2 changed files"), lines[0])
+        XCTAssertTrue(lines[0].contains("track-a [active] Refactor shared · base main · 2 changed files"), lines[0])
         XCTAssertTrue(lines[1].contains("1 changed file  ← this track"), lines[1])
 
         let bare = ToolExecutor(projectRoot: root, liveBufferProvider: { _ in nil })

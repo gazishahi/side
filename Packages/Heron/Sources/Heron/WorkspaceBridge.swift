@@ -35,7 +35,7 @@ public struct WorkspaceBridge: @unchecked Sendable {
         liveBufferProvider: { _ in nil },
         applyEditIntoOpenTab: { _, _ in false },
         onRevealFileRequested: { _ in },
-        runShellCommand: { _, _, completion in completion("The project was closed — nowhere to run this command.") },
+        runShellCommand: { _, _, completion in completion("The project was closed, so there's nowhere to run this command.") },
         interruptShellCommand: {}
     )
 

@@ -64,7 +64,7 @@ public enum ProposedEditOutcome {
         case .applied: return "Applied. The user approved this edit and it is written to disk."
         case .rejected: return "Rejected by the user. The file is unchanged. Ask what they'd prefer instead of retrying the same edit."
         case .staleBase: return "Not applied: the file changed after this edit was proposed. Re-read the file and propose again."
-        case .writeFailed(let message): return "Not applied — writing failed: \(message)"
+        case .writeFailed(let message): return "Not applied. Writing failed: \(message)"
         }
     }
 

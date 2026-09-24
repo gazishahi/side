@@ -129,6 +129,21 @@ public final class AgentRunnerManager {
         runners[trackKey]
     }
 
+    /// An agent's sign-in changed (Settings › Agents): its idle conversations are put away so the
+    /// next message launches it with the new account. Busy ones are left to finish. Returns the
+    /// track keys that were restarted.
+    @discardableResult
+    public func restartAgent(id: String) -> [String] {
+        var restarted: [String] = []
+        for (key, runner) in runners where agentProvider?(key)?.id == id {
+            guard !runner.phase.isBusy, runner.phase != .awaitingApproval else { continue }
+            runner.teardown()
+            runners.removeValue(forKey: key)
+            restarted.append(key)
+        }
+        return restarted
+    }
+
     /// Called when a track is deleted — its conversation has nowhere to belong anymore, same
     /// cleanup contract as Make's file memory and Run's terminal sessions.
     public func discardRunner(forTrackKey trackKey: String) {

@@ -37,7 +37,7 @@ final class HistoryViewController: NSViewController {
         retentionRow.orientation = .horizontal
         retentionRow.spacing = DS.Spacing.m
 
-        let retentionNote = NSTextField(wrappingLabelWithString: "Expired conversations are removed the next time you open that project. Checkpoints are kept either way — they're the record of what an agent actually changed, and they point at real commits.")
+        let retentionNote = NSTextField(wrappingLabelWithString: "Expired conversations are removed the next time you open that project. Checkpoints are kept either way: they're the record of what an agent actually changed, and they point at real commits.")
         retentionNote.font = DS.Text.caption()
         retentionNote.textColor = .tertiaryLabelColor
         retentionNote.translatesAutoresizingMaskIntoConstraints = false

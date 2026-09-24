@@ -31,7 +31,7 @@ public enum CommandRiskClassifier {
         (#"\bsudo\b"#, "Runs with elevated privileges", false),
         (#"\bchmod\s+.*-R\s+777\b"#, "Makes files world-writable, recursively", false),
         (#"\bchown\s+.*-R\b"#, "Recursively changes file ownership", false),
-        (#"\bdd\s+if="#, "Low-level disk copy — can overwrite an entire disk", false),
+        (#"\bdd\s+if="#, "Low-level disk copy. Can overwrite an entire disk", false),
         (#"\bkill(all)?\s+-9\b"#, "Force-kills a process, skipping its own cleanup", false),
         // Any download piped into any shell, and process-substitution variants of the same trick.
         (#"\b(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?\S*\b(sh|bash|zsh|fish|python\d?|ruby|perl|node)\b"#, "Pipes a downloaded script directly into an interpreter", false),

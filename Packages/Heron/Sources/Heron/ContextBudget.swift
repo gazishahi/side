@@ -88,7 +88,7 @@ public enum ContextBudget {
         approach.
 
         Leave out: full file contents (you can re-read them), and anything already superseded. \
-        Be specific — a path or a function name is worth more than a sentence about it. Do not \
+        Be specific: a path or a function name is worth more than a sentence about it. Do not \
         address the user or ask questions; this text replaces the conversation.
         """
 
@@ -96,7 +96,7 @@ public enum ContextBudget {
     public static func summaryTurnText(_ summary: String) -> String {
         """
         [Earlier conversation, compacted to fit the context window. Detail beyond this summary \
-        is gone — re-read files or ask rather than assuming.]
+        is gone. Re-read files or ask rather than assuming.]
 
         \(summary)
         """

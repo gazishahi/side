@@ -79,8 +79,8 @@ public final class DiagnosticsSnapshot: @unchecked Sendable {
         if errorsOnly { all = all.filter { $0.severity == "error" } }
         guard !all.isEmpty else {
             return errorsOnly
-                ? "No errors reported. (Language servers only report on files that have been opened, so this is not the same as a clean build — run the project's build or test task to be sure.)"
-                : "No diagnostics reported. (Language servers only report on files that have been opened, so this is not the same as a clean build — run the project's build or test task to be sure.)"
+                ? "No errors reported. (Language servers only report on files that have been opened, so this is not the same as a clean build. Run the project's build or test task to be sure.)"
+                : "No diagnostics reported. (Language servers only report on files that have been opened, so this is not the same as a clean build. Run the project's build or test task to be sure.)"
         }
         let shown = all.prefix(Self.maxReported).map { entry in
             let origin = entry.source.map { " [\($0)]" } ?? ""

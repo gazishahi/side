@@ -242,7 +242,7 @@ final class UsageViewController: NSViewController {
             requests: makeColumnLabel("\(totals.requestCount)", size: 12, weight: .regular, color: .secondaryLabelColor, alignment: .right, width: Self.columnWidths.requests),
             tokens: tokensLabel,
             cost: makeColumnLabel(
-                cost.map { UsageFormatting.cost($0) } ?? "—", size: 12, weight: .regular,
+                cost.map { UsageFormatting.cost($0) } ?? "–", size: 12, weight: .regular,
                 color: cost == nil ? .tertiaryLabelColor : .labelColor,
                 alignment: .right, width: Self.columnWidths.cost
             )
@@ -318,13 +318,13 @@ final class UsageViewController: NSViewController {
             : ""
         switch UsageBudget.status() {
         case .unlimited:
-            return "No budget set — nothing is blocked. \(spent) estimated so far this month.\(caveat)"
+            return "No budget set, so nothing is blocked. \(spent) estimated so far this month.\(caveat)"
         case .withinBudget(_, let limit):
             return "\(spent) of \(UsageFormatting.cost(limit)) estimated this month.\(caveat)"
         case .approaching(_, let limit):
-            return "\(spent) of \(UsageFormatting.cost(limit)) estimated this month — close to the limit.\(caveat)"
+            return "\(spent) of \(UsageFormatting.cost(limit)) estimated this month, close to the limit.\(caveat)"
         case .exceeded(_, let limit):
-            return "\(spent) of \(UsageFormatting.cost(limit)) — the budget is reached, so Think won't send until you raise or clear it.\(caveat)"
+            return "\(spent) of \(UsageFormatting.cost(limit)). The budget is reached, so Think won't send until you raise or clear it.\(caveat)"
         }
     }
 

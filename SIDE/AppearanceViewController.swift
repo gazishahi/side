@@ -67,7 +67,7 @@ final class AppearanceViewController: NSViewController {
         terminalRow.orientation = .horizontal
         terminalRow.spacing = DS.Spacing.m
 
-        let note = NSTextField(wrappingLabelWithString: "Text size applies to Side's own interface — stage headers, transcripts, diffs, lists, and this window. The editor and terminal have their own sizes.")
+        let note = NSTextField(wrappingLabelWithString: "Text size applies to Side's own interface: stage headers, transcripts, diffs, lists, and this window. The editor and terminal have their own sizes.")
         note.textColor = .tertiaryLabelColor
         note.translatesAutoresizingMaskIntoConstraints = false
         note.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true

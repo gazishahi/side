@@ -33,7 +33,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         super.viewDidLoad()
         view.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
-        messageLabel.stringValue = "\(entry.languageId.capitalized) language server (\(entry.binaryName)) isn't installed. Diagnostics and autocomplete are disabled for this file. Installing will use Homebrew system-wide — it'll also be available in your terminal and other editors, not just Side."
+        messageLabel.stringValue = "\(entry.languageId.capitalized) language server (\(entry.binaryName)) isn't installed. Diagnostics and autocomplete are disabled for this file. Installing uses Homebrew system-wide, so it'll also be available in your terminal and other editors, not just Side."
         messageLabel.font = DS.Text.body()
         messageLabel.textColor = .labelColor
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -124,7 +124,7 @@ final class LSPInstallPopoverViewController: NSViewController {
             messageLabel.stringValue = "\(entry.languageId.capitalized) language server installed and activated."
             onInstalled()
         } else {
-            messageLabel.stringValue = "Install failed (exit \(exitCode)) — see the log below."
+            messageLabel.stringValue = "Install failed (exit \(exitCode)). See the log below."
             installButton.isHidden = false
             installButton.isEnabled = true
             logScroll.isHidden = false

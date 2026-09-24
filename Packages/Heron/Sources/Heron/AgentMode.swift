@@ -41,8 +41,8 @@ public enum AgentToolScope: String, Codable, CaseIterable, Sendable {
                 """
         case .plan:
             return """
-                This track is in Plan mode: you have read-only tools. Produce a concrete plan — the \
-                files involved, the order of the changes, and what could go wrong — rather than \
+                This track is in Plan mode: you have read-only tools. Produce a concrete plan (the \
+                files involved, the order of the changes, and what could go wrong) rather than \
                 prose about the problem. Do not ask to edit anything; the user will switch the \
                 track to Build mode when the plan is right.
                 """
@@ -71,9 +71,9 @@ public enum AgentAutonomy: String, Codable, CaseIterable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .manual: return "Manual — approve everything"
-        case .guarded: return "Guarded — auto-run safe commands"
-        case .full: return "Full — auto-apply edits too"
+        case .manual: return "Manual: approve everything"
+        case .guarded: return "Guarded: auto-run safe commands"
+        case .full: return "Full: auto-apply edits too"
         }
     }
 

@@ -381,7 +381,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         // for — is pushed below the fold.
         let checkpoints = showingAllCheckpoints ? allCheckpoints : Array(allCheckpoints.prefix(Self.visibleCheckpointLimit))
         if checkpoints.isEmpty {
-            checkpointsStack.addArrangedSubview(Self.makeMetaLabel("No checkpoints yet — one is created automatically the first time an approved edit or command lands on this track."))
+            checkpointsStack.addArrangedSubview(Self.makeMetaLabel("No checkpoints yet. One is created automatically the first time an approved edit or command lands on this track."))
         } else {
             for (offset, checkpoint) in checkpoints.enumerated() {
                 if offset > 0 {
@@ -643,7 +643,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         guard let newest = newestFirst.first, newest.verification == nil,
               let verifiedIndex = newestFirst.firstIndex(where: { $0.verification?.passed == true }) else { return nil }
         let behind = verifiedIndex
-        return "The last passing verification was \(behind) checkpoint\(behind == 1 ? "" : "s") ago — the newest changes have not been verified."
+        return "The last passing verification was \(behind) checkpoint\(behind == 1 ? "" : "s") ago. The newest changes have not been verified."
     }
 
     // MARK: - Undo
@@ -670,7 +670,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         guard let track = currentTrack, let trackStore, let window = view.window else { return }
         let baseRef = Self.baseRef(for: track, trackStore: trackStore)
         guard let target = mergeTarget(for: track, trackStore: trackStore) else {
-            statusLabel.stringValue = "⚠︎ \u{201C}\(baseRef)\u{201D}'s working copy has been removed — resume it (Tracks) before promoting into it."
+            statusLabel.stringValue = "⚠︎ \u{201C}\(baseRef)\u{201D}'s working copy has been removed. Resume it in Tracks before promoting into it."
             statusLabel.textColor = DS.Color.statusNeedsYou
             return
         }
@@ -693,7 +693,7 @@ final class ReviewWorkspaceViewController: NSViewController {
                 + (failedVerification.exitCode.map { " (exit \($0))" } ?? "")
                 + ". Promoting merges it anyway."
         } else if latestVerified == nil, !checkpoints.isEmpty {
-            detail += "\n\nNothing has been verified on this track — no task has been run against these changes."
+            detail += "\n\nNothing has been verified on this track: no task has been run against these changes."
         } else if let staleness {
             detail += "\n\n" + staleness
         }
@@ -760,7 +760,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     static func performMerge(branchName: String, baseRef: String, intent: String, cwd: String) -> (succeeded: Bool, message: String) {
         let dirty = GitPaths.dirtyPaths(cwd: cwd)
         guard dirty.isEmpty else {
-            return (false, "⚠︎ Your main working copy has uncommitted changes — commit or stash them first.")
+            return (false, "⚠︎ Your main working copy has uncommitted changes. Commit or stash them first.")
         }
         // A detached HEAD is a hard refusal, not a skipped checkout. `symbolic-ref` fails when
         // HEAD points at a commit rather than a branch; the old code took that failure as "no
@@ -770,7 +770,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         // "main is canonical" exists to protect. Found by the 2026-09-01 audit.
         let currentBranch = GitPaths.runGit(["symbolic-ref", "--short", "HEAD"], cwd: cwd)
         guard currentBranch.success else {
-            return (false, "⚠︎ The checkout at \(cwd) is detached — not on any branch. Check out \(baseRef) there first, then promote.")
+            return (false, "⚠︎ The checkout at \(cwd) is detached, not on any branch. Check out \(baseRef) there first, then promote.")
         }
         if currentBranch.output != baseRef {
             let checkout = GitPaths.runGit(["checkout", baseRef], cwd: cwd)
@@ -783,12 +783,12 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
         let ahead = GitPaths.runGit(["rev-list", "--count", "\(baseRef)..\(branchName)"], cwd: cwd)
         if ahead.success, Int(ahead.output) == 0 {
-            return (false, "Nothing to promote — no commits ahead of \(baseRef).")
+            return (false, "Nothing to promote. There are no commits ahead of \(baseRef).")
         }
         let mergeAttempt = GitPaths.runGit(["merge", "--no-commit", "--no-ff", branchName], cwd: cwd)
         guard mergeAttempt.success else {
             GitPaths.runGit(["merge", "--abort"], cwd: cwd)
-            return (false, "⚠︎ Merging would conflict with \(baseRef) — resolve manually (e.g. rebase the track) and try again.")
+            return (false, "⚠︎ Merging would conflict with \(baseRef). Resolve it manually (for example, rebase the track) and try again.")
         }
         let message = intent.isEmpty ? "Merge \(branchName)" : "Merge: \(intent)"
         let commit = GitPaths.runGit(["commit", "-m", message], cwd: cwd)

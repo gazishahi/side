@@ -16,8 +16,8 @@ enum CheckpointUndo {
         // Says plainly what it does *and* what it doesn't: nothing is deleted, and the choice
         // between the two scopes is the only real decision.
         alert.informativeText = laterCount == 0
-            ? "The changes from \(intent) are reversed by a new commit. Nothing is deleted — the checkpoint stays in your history, and the undo can itself be undone."
-            : "The changes from \(intent) are reversed by a new commit. \(laterCount) later checkpoint\(laterCount == 1 ? " was" : "s were") made on top of it — you can undo just this one, or everything back to it.\n\nNothing is deleted either way, and an undo can itself be undone."
+            ? "The changes from \(intent) are reversed by a new commit. Nothing is deleted: the checkpoint stays in your history, and the undo can itself be undone."
+            : "The changes from \(intent) are reversed by a new commit. \(laterCount) later checkpoint\(laterCount == 1 ? " was" : "s were") made on top of it. You can undo just this one, or everything back to it.\n\nNothing is deleted either way, and an undo can itself be undone."
         alert.addButton(withTitle: laterCount == 0 ? "Undo" : "Undo Just This One")
         if laterCount > 0 { alert.addButton(withTitle: "Undo Everything After") }
         alert.addButton(withTitle: "Cancel")
@@ -29,13 +29,13 @@ enum CheckpointUndo {
             let message = CheckpointRestore.revertMessage(target: target, scope: scope, count: commits.count)
             switch CheckpointRestore.perform(commits: commits, message: message, worktreePath: worktreePath) {
             case .reverted(_, let count):
-                done("Undid \(count) checkpoint\(count == 1 ? "" : "s") — reversed by a new commit, nothing deleted.", .secondaryLabelColor, true)
+                done("Undid \(count) checkpoint\(count == 1 ? "" : "s"), reversed by a new commit. Nothing was deleted.", .secondaryLabelColor, true)
             case .conflicted(let paths):
-                done("⚠︎ Couldn't undo cleanly — \(paths.joined(separator: ", ")) changed since. Nothing was modified.", DS.Color.statusNeedsYou, false)
+                done("⚠︎ Couldn't undo cleanly: \(paths.joined(separator: ", ")) changed since. Nothing was modified.", DS.Color.statusNeedsYou, false)
             case .failed(let message):
                 done("⚠︎ Undo failed: \(message)", DS.Color.statusNeedsYou, false)
             case .nothingToDo:
-                done("Nothing to undo — that checkpoint changed no files.", .secondaryLabelColor, false)
+                done("Nothing to undo. That checkpoint changed no files.", .secondaryLabelColor, false)
             }
         }
     }

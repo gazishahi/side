@@ -132,7 +132,7 @@ final class TrackPill: NSView {
         setAccessibilityLabel(label)
     }
 
-    static let tornOutNote = "Torn-out window — another view of this track"
+    static let tornOutNote = "Torn-out window: another view of this track"
 
     // MARK: Interaction
 

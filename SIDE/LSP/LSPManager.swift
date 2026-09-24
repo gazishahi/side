@@ -267,7 +267,7 @@ final class LSPManager: @unchecked Sendable {
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard let executable else {
-                    print("[LSP] \(entry.binaryName) not found on PATH — diagnostics disabled for \(entry.languageId)")
+                    print("[LSP] \(entry.binaryName) not found on PATH; diagnostics disabled for \(entry.languageId)")
                     self.startingServers.remove(entry.binaryName)
                     if self.unavailableBinaries.insert(entry.binaryName).inserted { self.onAvailabilityChanged?() }
                     completion(nil)

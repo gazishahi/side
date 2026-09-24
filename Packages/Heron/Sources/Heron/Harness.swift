@@ -3,8 +3,8 @@ import Foundation
 /// One of an outside agent's own settings — its model, effort, permission mode — as the agent
 /// reports it (ACP `configOptions`, or its older `modes` / `models`). Heron has none: its model,
 /// effort, scope and autonomy are Side's own controls (RFC D6).
-public struct HarnessOption: Equatable, Sendable {
-    public struct Choice: Equatable, Sendable {
+public struct HarnessOption: Equatable, Sendable, Codable {
+    public struct Choice: Equatable, Sendable, Codable {
         public let value: String
         public let name: String
         public let detail: String?
@@ -18,7 +18,7 @@ public struct HarnessOption: Equatable, Sendable {
             self.kind = kind
         }
     }
-    public enum Category: String, Sendable { case model, effort, mode, other }
+    public enum Category: String, Sendable, Codable { case model, effort, mode, other }
     public let id: String
     public let name: String
     public let category: Category

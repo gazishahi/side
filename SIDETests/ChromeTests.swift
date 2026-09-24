@@ -49,7 +49,7 @@ final class ChromeTests: XCTestCase {
 
     func testTheWindowTitleNamesTheFileOnlyInMakeAndNeverAPath() {
         let cases: [(Stage?, String?, String?, String?, String)] = [
-            (.make, "App.swift", "Fix the race", "side", "App.swift — Fix the race"),
+            (.make, "App.swift", "Fix the race", "side", "App.swift · Fix the race"),
             (.think, "App.swift", "Fix the race", "side", "Fix the race"),
             (.make, nil, nil, "side", "side"),
             (.review, nil, nil, nil, "Side"),

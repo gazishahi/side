@@ -696,7 +696,7 @@ final class RunWorkspaceViewController: NSViewController {
         taskRow.setCustomSpacing(DS.Spacing.m, after: label)
         for (index, task) in state.tasks.enumerated() {
             let chip = TaskChip(title: task.name, running: task.name == state.runningTaskName, isVerify: false)
-            chip.toolTip = task.detail.isEmpty ? task.command : "\(task.detail) — \(task.command)"
+            chip.toolTip = task.detail.isEmpty ? task.command : "\(task.detail) · \(task.command)"
             chip.tag = index
             chip.target = self
             chip.action = #selector(taskChipClicked(_:))
@@ -705,7 +705,7 @@ final class RunWorkspaceViewController: NSViewController {
         }
         if let verify = state.verifyTask {
             let chip = TaskChip(title: "Verify", running: verify.name == state.runningTaskName, isVerify: true)
-            chip.toolTip = "Run \(verify.name) against the newest checkpoint — the result attaches to it"
+            chip.toolTip = "Run \(verify.name) against the newest checkpoint. The result attaches to it"
             chip.tag = -1
             chip.target = self
             chip.action = #selector(taskChipClicked(_:))

@@ -543,7 +543,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             // exactly that instead of the old "Still running — check Run for output," which
             // implied output was available and said nothing about the command's fate.
             self.finishPendingAgentCommand(
-                "No result after \(Int(timeout))s. The command was NOT interrupted — it is still running in this track's terminal, where its output is visible. Do not assume it succeeded or failed; ask the user what it did, or run something that inspects the result."
+                "No result after \(Int(timeout))s. The command was NOT interrupted; it is still running in this track's terminal, where its output is visible. Do not assume it succeeded or failed; ask the user what it did, or run something that inspects the result."
             )
         }
     }
@@ -607,10 +607,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// command had no way to be stopped except the user typing into the terminal themselves.
     func interruptAgentCommand() {
         guard pendingAgentCommand != nil else { return }
-        let queuedCount = cancelQueuedAgentCommands(reason: "Cancelled before it ran — the user stopped the agent while an earlier command was still running. Nothing changed.")
+        let queuedCount = cancelQueuedAgentCommands(reason: "Cancelled before it ran: the user stopped the agent while an earlier command was still running. Nothing changed.")
         // 0x03 = ETX, what Ctrl-C sends; the pty turns it into SIGINT for the foreground group.
         terminalView.send(source: terminalView, data: ArraySlice([0x03]))
-        var message = "Interrupted by the user (Ctrl-C) before it reported a result. Whether it partially completed is unknown — check before assuming."
+        var message = "Interrupted by the user (Ctrl-C) before it reported a result. Whether it partially completed is unknown. Check before assuming."
         if queuedCount > 0 {
             message += " \(queuedCount) queued command\(queuedCount == 1 ? "" : "s") were also cancelled and did not run."
         }
@@ -1058,8 +1058,8 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // the call sat until the timeout and then claimed it was "still running" — of a shell
         // that no longer existed.
         if pendingAgentCommand != nil {
-            let queuedCount = cancelQueuedAgentCommands(reason: "Did not run — the shell exited before this command's turn. Nothing changed.")
-            var message = "The shell exited before reporting a result, so this command's outcome is unknown (a command that ends the shell — `exit`, `logout` — can't report back)."
+            let queuedCount = cancelQueuedAgentCommands(reason: "Did not run: the shell exited before this command's turn. Nothing changed.")
+            var message = "The shell exited before reporting a result, so this command's outcome is unknown (a command that ends the shell, like `exit` or `logout`, can't report back)."
             if queuedCount > 0 {
                 message += " \(queuedCount) queued command\(queuedCount == 1 ? "" : "s") did not run."
             }
