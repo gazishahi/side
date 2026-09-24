@@ -91,6 +91,7 @@ final class ShellViewController: NSViewController {
         makeVC.onInstruct = { [weak self] request in self?.startInstruct(request) }
         thinkVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
         thinkVC.onOpenTrack = { [weak self] key in self?.focusTrack(key: key) }
+        thinkVC.onOpenLibrary = { [weak self] in LibraryWindowController.shared.show(for: self) }
         reviewVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
         runVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
         tracksVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
@@ -567,6 +568,12 @@ final class ShellViewController: NSViewController {
     @objc private func revealProjectInFinder() {
         guard let projectURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([projectURL])
+    }
+
+    /// What Library shows for this window: the working copy of the track on screen.
+    var libraryTarget: LibraryTarget? {
+        guard let projectURL else { return nil }
+        return LibraryTarget(projectName: projectURL.lastPathComponent, projectRoot: projectURL, workingRoot: focusedRoot ?? projectURL)
     }
 
     /// A tab torn out of another window landing here — jump to Make and show that file.

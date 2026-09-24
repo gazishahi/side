@@ -181,6 +181,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         (preferencesWindow?.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex = pane.rawValue
     }
 
+    /// Library for the frontmost project window (⇧⌘L).
+    @objc func showLibrary() {
+        LibraryWindowController.shared.show(for: nil)
+    }
+
     @objc func showPreferences() {
         if preferencesWindow == nil {
             let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)

@@ -3133,6 +3133,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(NSMenuItem.separator())
+        // Library is a window, not a stage (RFC R6): app-level, so it targets the delegate.
+        let library = windowMenu.addItem(withTitle: "Library", action: #selector(AppDelegate.showLibrary), keyEquivalent: "l")
+        library.keyEquivalentModifierMask = [.command, .shift]
+        library.target = NSApp.delegate as? AppDelegate
+        windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         windowItem.submenu = windowMenu
 

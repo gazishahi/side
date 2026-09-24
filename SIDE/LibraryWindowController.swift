@@ -1,0 +1,568 @@
+import AppKit
+import Heron
+
+/// Library (`SIDE_RFC_LIBRARY.md`): what shapes an agent's behavior, in one window (⇧⌘L). Not a
+/// stage: it follows the frontmost project window and edits nothing silently. Files open in
+/// Make; anything that changes what an agent receives says so where it's changed.
+@MainActor
+final class LibraryWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = LibraryWindowController()
+
+    /// The project window Library is showing. Weak: closing that window leaves Library on the
+    /// next one that comes forward.
+    private(set) weak var shell: ShellViewController?
+    private let content = LibraryViewController()
+
+    private init() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 560),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = "Library"
+        window.minSize = NSSize(width: 680, height: 420)
+        window.isReleasedWhenClosed = false
+        window.setFrameAutosaveName("SideLibrary")
+        super.init(window: window)
+        window.contentViewController = content
+        window.delegate = self
+        content.onReveal = { [weak self] url in self?.reveal(url) }
+        NotificationCenter.default.addObserver(self, selector: #selector(mainWindowChanged(_:)), name: NSWindow.didBecomeMainNotification, object: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    /// Opens Library on a section, for the given project window (or the frontmost one).
+    func show(for shell: ShellViewController?, section: LibraryViewController.Section? = nil) {
+        if let shell = shell ?? Self.frontmostShell() { retarget(shell) }
+        if let section { content.select(section) }
+        if window?.isVisible != true { window?.center() }
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    private static func frontmostShell() -> ShellViewController? {
+        (NSApp.mainWindow?.contentViewController as? ShellViewController)
+            ?? NSApp.orderedWindows.lazy.compactMap { $0.contentViewController as? ShellViewController }.first
+    }
+
+    private func retarget(_ shell: ShellViewController) {
+        self.shell = shell
+        let target = shell.libraryTarget
+        window?.title = target.map { "Library \u{00B7} \($0.projectName)" } ?? "Library"
+        content.target = target
+    }
+
+    @objc private func mainWindowChanged(_ notification: Notification) {
+        guard window?.isVisible == true,
+              let shell = (notification.object as? NSWindow)?.contentViewController as? ShellViewController else { return }
+        retarget(shell)
+    }
+
+    /// Coming back to Library re-reads the disk: a file edited in Make, a track switched.
+    func windowDidBecomeKey(_ notification: Notification) {
+        if let shell { retarget(shell) } else if let shell = Self.frontmostShell() { retarget(shell) }
+    }
+
+    private func reveal(_ url: URL) {
+        guard let shell else { return }
+        shell.view.window?.makeKeyAndOrderFront(nil)
+        shell.revealFile(url)
+    }
+}
+
+/// The project and working copy Library describes: the frontmost window's track, since that's
+/// the copy its agent reads.
+struct LibraryTarget: Equatable {
+    let projectName: String
+    let projectRoot: URL
+    let workingRoot: URL
+}
+
+/// Sidebar of sections, one pane each.
+@MainActor
+final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    enum Section: Int, CaseIterable {
+        case instructions, prompts
+        var title: String { self == .instructions ? "Instructions" : "Prompts" }
+        var symbol: String { self == .instructions ? "text.book.closed" : "text.bubble" }
+    }
+
+    var target: LibraryTarget? {
+        didSet {
+            instructions.target = target
+            prompts.target = target
+        }
+    }
+    var onReveal: ((URL) -> Void)? {
+        didSet { instructions.onReveal = onReveal }
+    }
+
+    private let sidebar = NSTableView()
+    private let paneHost = NSView()
+    let instructions = InstructionsPaneViewController()
+    let prompts = PromptsPaneViewController()
+    private(set) var section: Section = .instructions
+
+    override func loadView() {
+        let root = NSView()
+        let sidebarScroll = NSScrollView()
+        sidebarScroll.drawsBackground = false
+        sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.style = .sourceList
+        sidebar.headerView = nil
+        sidebar.rowHeight = 28
+        sidebar.addTableColumn(NSTableColumn(identifier: .init("section")))
+        sidebar.dataSource = self
+        sidebar.delegate = self
+        sidebar.setAccessibilityIdentifier("library.sections")
+        sidebarScroll.documentView = sidebar
+        let effect = NSVisualEffectView()
+        effect.material = .sidebar
+        effect.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(sidebarScroll)
+        root.addSubview(effect)
+        paneHost.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(paneHost)
+        let divider = NSBox()
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(divider)
+        NSLayoutConstraint.activate([
+            effect.topAnchor.constraint(equalTo: root.topAnchor),
+            effect.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            effect.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            effect.widthAnchor.constraint(equalToConstant: 180),
+            sidebarScroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: DS.Spacing.m),
+            sidebarScroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+            sidebarScroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            sidebarScroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            divider.topAnchor.constraint(equalTo: root.topAnchor),
+            divider.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            divider.leadingAnchor.constraint(equalTo: effect.trailingAnchor),
+            divider.widthAnchor.constraint(equalToConstant: 1),
+            paneHost.topAnchor.constraint(equalTo: root.topAnchor),
+            paneHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            paneHost.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
+            paneHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+        ])
+        view = root
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        addChild(instructions)
+        addChild(prompts)
+        sidebar.reloadData()
+        select(.instructions)
+    }
+
+    func select(_ section: Section) {
+        loadViewIfNeeded()
+        self.section = section
+        if sidebar.selectedRow != section.rawValue {
+            sidebar.selectRowIndexes([section.rawValue], byExtendingSelection: false)
+        }
+        let pane = section == .instructions ? instructions.view : prompts.view
+        guard pane.superview !== paneHost else { return }
+        paneHost.subviews.forEach { $0.removeFromSuperview() }
+        pane.translatesAutoresizingMaskIntoConstraints = false
+        paneHost.addSubview(pane)
+        NSLayoutConstraint.activate([
+            pane.topAnchor.constraint(equalTo: paneHost.topAnchor),
+            pane.bottomAnchor.constraint(equalTo: paneHost.bottomAnchor),
+            pane.leadingAnchor.constraint(equalTo: paneHost.leadingAnchor),
+            pane.trailingAnchor.constraint(equalTo: paneHost.trailingAnchor),
+        ])
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { Section.allCases.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let section = Section.allCases[row]
+        let cell = NSTableCellView()
+        let image = NSImageView(image: NSImage(systemSymbolName: section.symbol, accessibilityDescription: nil) ?? NSImage())
+        let label = NSTextField(labelWithString: section.title)
+        label.font = DS.Text.body()
+        let stack = NSStackView(views: [image, label])
+        stack.spacing = DS.Spacing.s
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(stack)
+        cell.textField = label
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Spacing.xs),
+            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard let section = Section(rawValue: sidebar.selectedRow) else { return }
+        select(section)
+    }
+}
+
+// MARK: - Instructions
+
+/// Every instruction file for the working copy and the user, with who reads it. Heron's file
+/// can be acknowledged here, after reading it; it's the same acknowledgement Think asks for.
+@MainActor
+final class InstructionsPaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    var target: LibraryTarget? { didSet { reload() } }
+    var onReveal: ((URL) -> Void)?
+
+    private(set) var files: [InstructionFile] = []
+    private let table = NSTableView()
+    private let preview = NSTextView()
+    private let primaryButton = NSButton(title: "Open in Make", target: nil, action: nil)
+    private let acknowledgeButton = NSButton(title: "Use for Heron", target: nil, action: nil)
+    private let stateLabel = NSTextField(wrappingLabelWithString: "")
+
+    override func loadView() {
+        let root = NSView()
+        let heading = NSTextField(labelWithString: "Instructions")
+        heading.font = DS.Text.heading()
+        let note = NSTextField(wrappingLabelWithString: "Standing instructions agents read before they work. Heron uses the first of its files that exists, once you've read and accepted it. Outside agents read their own files directly, whether or not you've accepted them here.")
+        note.font = DS.Text.caption()
+        note.textColor = .secondaryLabelColor
+
+        let tableScroll = NSScrollView()
+        tableScroll.hasVerticalScroller = true
+        tableScroll.borderType = .noBorder
+        table.headerView = nil
+        table.rowHeight = 38
+        table.style = .inset
+        table.addTableColumn(NSTableColumn(identifier: .init("file")))
+        table.dataSource = self
+        table.delegate = self
+        table.setAccessibilityIdentifier("library.instructions")
+        tableScroll.documentView = table
+
+        let previewScroll = NSScrollView()
+        previewScroll.hasVerticalScroller = true
+        previewScroll.borderType = .noBorder
+        preview.isEditable = false
+        preview.isRichText = false
+        preview.font = DS.Text.code(12)
+        preview.textContainerInset = NSSize(width: DS.Spacing.m, height: DS.Spacing.m)
+        preview.autoresizingMask = [.width]
+        preview.drawsBackground = false
+        previewScroll.documentView = preview
+        previewScroll.wantsLayer = true
+        previewScroll.layer?.cornerRadius = DS.Radius.surface
+        previewScroll.layer?.backgroundColor = DS.Color.scrimFaint.cgColor
+
+        stateLabel.font = DS.Text.caption()
+        stateLabel.textColor = .secondaryLabelColor
+        primaryButton.target = self
+        primaryButton.action = #selector(primaryTapped)
+        primaryButton.bezelStyle = .rounded
+        acknowledgeButton.target = self
+        acknowledgeButton.action = #selector(acknowledgeTapped)
+        acknowledgeButton.bezelStyle = .rounded
+        let buttons = NSStackView(views: [stateLabel, NSView(), acknowledgeButton, primaryButton])
+        buttons.spacing = DS.Spacing.m
+
+        for view in [heading, note, tableScroll, previewScroll, buttons] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+        }
+        let inset = DS.Spacing.section
+        NSLayoutConstraint.activate([
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
+            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.m),
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - DS.Spacing.m),
+            tableScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset + DS.Spacing.m),
+            tableScroll.heightAnchor.constraint(equalTo: root.heightAnchor, multiplier: 0.42),
+            previewScroll.topAnchor.constraint(equalTo: tableScroll.bottomAnchor, constant: DS.Spacing.m),
+            previewScroll.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            previewScroll.trailingAnchor.constraint(equalTo: note.trailingAnchor),
+            buttons.topAnchor.constraint(equalTo: previewScroll.bottomAnchor, constant: DS.Spacing.m),
+            buttons.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            buttons.trailingAnchor.constraint(equalTo: note.trailingAnchor),
+            buttons.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+        ])
+        view = root
+    }
+
+    func reload() {
+        loadViewIfNeeded()
+        let selected = selectedFile?.url
+        files = target.map { InstructionFiles.discover(workingRoot: $0.workingRoot) } ?? []
+        table.reloadData()
+        let row = files.firstIndex { $0.url == selected } ?? files.firstIndex { $0.exists } ?? (files.isEmpty ? -1 : 0)
+        if row >= 0 { table.selectRowIndexes([row], byExtendingSelection: false) }
+        refreshDetail()
+    }
+
+    private var selectedFile: InstructionFile? {
+        files.indices.contains(table.selectedRow) ? files[table.selectedRow] : nil
+    }
+
+    static func stateText(_ file: InstructionFile) -> String {
+        guard file.exists else { return "Not present" }
+        switch file.heron {
+        case .inUse(acknowledged: true): return "Heron uses this"
+        case .inUse(acknowledged: false): return "Heron will ask before using this"
+        case .shadowed(let winner): return "Heron uses \(winner) instead"
+        case .candidate, nil: return file.scope == .user ? "Your own, for every project" : "In this project"
+        }
+    }
+
+    private func refreshDetail() {
+        guard let file = selectedFile else {
+            preview.string = ""
+            stateLabel.stringValue = target == nil ? "Open a project to see its instructions." : ""
+            primaryButton.isHidden = true
+            acknowledgeButton.isHidden = true
+            return
+        }
+        preview.string = file.exists ? ((try? String(contentsOf: file.url, encoding: .utf8)) ?? "This file couldn't be read.") : ""
+        stateLabel.stringValue = Self.stateText(file)
+        primaryButton.isHidden = false
+        primaryButton.title = file.exists ? "Open in Make" : "Create"
+        acknowledgeButton.isHidden = file.heron != .inUse(acknowledged: false)
+    }
+
+    @objc private func primaryTapped() {
+        guard let file = selectedFile else { return }
+        if !file.exists {
+            try? FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let text = file.heron != nil ? ProjectRules.template : "# Agent instructions\n"
+            guard (try? text.write(to: file.url, atomically: true, encoding: .utf8)) != nil else { return }
+            // Written by the user, here, on purpose, as Think's /rules does.
+            if file.heron != nil { ProjectRules.acknowledge(url: file.url, contents: text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            reload()
+        }
+        onReveal?(file.url)
+    }
+
+    @objc private func acknowledgeTapped() {
+        guard let file = selectedFile, let text = try? String(contentsOf: file.url, encoding: .utf8) else { return }
+        ProjectRules.acknowledge(url: file.url, contents: text.trimmingCharacters(in: .whitespacesAndNewlines))
+        reload()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { files.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let file = files[row]
+        let readers = InstructionFiles.readerNames(file).joined(separator: ", ")
+        return LibraryListCell(title: file.displayPath, detail: readers.isEmpty ? Self.stateText(file) : "Read by \(readers)", dimmed: !file.exists)
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) { refreshDetail() }
+}
+
+// MARK: - Prompts
+
+/// Saved prompts: the user's own and the project's. `/name` in Think inserts one; it never sends
+/// by itself (L2).
+@MainActor
+final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+    var target: LibraryTarget? { didSet { reload() } }
+
+    private(set) var prompts: [SavedPrompt] = []
+    private let table = NSTableView()
+    let titleField = NSTextField()
+    let scopePopup = NSPopUpButton()
+    let bodyView = NSTextView()
+    private let hint = NSTextField(wrappingLabelWithString: "")
+    private let saveButton = NSButton(title: "Save", target: nil, action: nil)
+    private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
+    /// The prompt being edited; nil while writing a new one.
+    private var editing: SavedPrompt?
+
+    override func loadView() {
+        let root = NSView()
+        let heading = NSTextField(labelWithString: "Prompts")
+        heading.font = DS.Text.heading()
+        let note = NSTextField(wrappingLabelWithString: "Prompts you'd otherwise retype. Type /name in Think to put one in the composer. It never sends by itself.")
+        note.font = DS.Text.caption()
+        note.textColor = .secondaryLabelColor
+
+        let tableScroll = NSScrollView()
+        tableScroll.hasVerticalScroller = true
+        table.headerView = nil
+        table.rowHeight = 38
+        table.style = .inset
+        table.addTableColumn(NSTableColumn(identifier: .init("prompt")))
+        table.dataSource = self
+        table.delegate = self
+        table.setAccessibilityIdentifier("library.prompts")
+        tableScroll.documentView = table
+        let newButton = NSButton(title: "New Prompt", target: self, action: #selector(newPrompt))
+        newButton.bezelStyle = .rounded
+
+        titleField.placeholderString = "Title, e.g. Review for concurrency bugs"
+        titleField.delegate = self
+        titleField.setAccessibilityIdentifier("library.prompt.title")
+        scopePopup.addItems(withTitles: ["Mine, in every project", "This project, shared in the repo"])
+        let bodyScroll = NSScrollView()
+        bodyScroll.hasVerticalScroller = true
+        bodyScroll.borderType = .bezelBorder
+        bodyView.isRichText = false
+        bodyView.allowsUndo = true
+        bodyView.font = DS.Text.body()
+        bodyView.textContainerInset = NSSize(width: DS.Spacing.s, height: DS.Spacing.s)
+        bodyView.autoresizingMask = [.width]
+        bodyView.isAutomaticQuoteSubstitutionEnabled = false
+        bodyScroll.documentView = bodyView
+        hint.font = DS.Text.caption()
+        hint.textColor = .secondaryLabelColor
+        saveButton.target = self
+        saveButton.action = #selector(save)
+        saveButton.bezelStyle = .rounded
+        saveButton.keyEquivalent = "s"
+        saveButton.keyEquivalentModifierMask = [.command]
+        deleteButton.target = self
+        deleteButton.action = #selector(deletePrompt)
+        deleteButton.bezelStyle = .rounded
+        let buttons = NSStackView(views: [hint, NSView(), deleteButton, saveButton])
+        buttons.spacing = DS.Spacing.m
+
+        for view in [heading, note, tableScroll, newButton, titleField, scopePopup, bodyScroll, buttons] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+        }
+        let inset = DS.Spacing.section
+        NSLayoutConstraint.activate([
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
+
+            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.m),
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - DS.Spacing.m),
+            tableScroll.widthAnchor.constraint(equalToConstant: 220),
+            newButton.topAnchor.constraint(equalTo: tableScroll.bottomAnchor, constant: DS.Spacing.m),
+            newButton.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            newButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+
+            titleField.topAnchor.constraint(equalTo: tableScroll.topAnchor),
+            titleField.leadingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: DS.Spacing.l),
+            titleField.trailingAnchor.constraint(equalTo: note.trailingAnchor),
+            scopePopup.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: DS.Spacing.m),
+            scopePopup.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            bodyScroll.topAnchor.constraint(equalTo: scopePopup.bottomAnchor, constant: DS.Spacing.m),
+            bodyScroll.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            bodyScroll.trailingAnchor.constraint(equalTo: titleField.trailingAnchor),
+            buttons.topAnchor.constraint(equalTo: bodyScroll.bottomAnchor, constant: DS.Spacing.m),
+            buttons.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            buttons.trailingAnchor.constraint(equalTo: titleField.trailingAnchor),
+            buttons.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+        ])
+        view = root
+    }
+
+    func reload() {
+        loadViewIfNeeded()
+        prompts = PromptLibrary.all(projectRoot: target?.workingRoot)
+        table.reloadData()
+        if let editing, let row = prompts.firstIndex(where: { $0.url == editing.url }) {
+            table.selectRowIndexes([row], byExtendingSelection: false)
+        } else if editing == nil, let first = prompts.first {
+            table.selectRowIndexes([0], byExtendingSelection: false)
+            show(first)
+        } else {
+            show(nil)
+        }
+        scopePopup.item(at: 1)?.isEnabled = target != nil
+    }
+
+    private func show(_ prompt: SavedPrompt?) {
+        editing = prompt
+        titleField.stringValue = prompt?.title ?? ""
+        bodyView.string = prompt?.body ?? ""
+        scopePopup.selectItem(at: prompt?.scope == .project ? 1 : 0)
+        deleteButton.isHidden = prompt == nil
+        refreshHint()
+    }
+
+    /// The slash name the title will save as, and whether a built-in command already has it.
+    private func refreshHint() {
+        let name = PromptLibrary.slug(titleField.stringValue)
+        if name.isEmpty { hint.stringValue = "Give it a title to name it." }
+        else if ThinkWorkspaceViewController.builtInSlashNames.contains(name) { hint.stringValue = "/\(name) is a built-in command. Choose another title." }
+        else { hint.stringValue = "Insert with /\(name)" }
+        saveButton.isEnabled = !name.isEmpty && !ThinkWorkspaceViewController.builtInSlashNames.contains(name)
+    }
+
+    func controlTextDidChange(_ obj: Notification) { refreshHint() }
+
+    @objc private func newPrompt() {
+        table.deselectAll(nil)
+        show(nil)
+        view.window?.makeFirstResponder(titleField)
+    }
+
+    @objc func save() {
+        let scope: SavedPrompt.Scope = scopePopup.indexOfSelectedItem == 1 ? .project : .user
+        do {
+            editing = try PromptLibrary.save(title: titleField.stringValue, body: bodyView.string, scope: scope,
+                                             projectRoot: target?.workingRoot, replacing: editing)
+            reload()
+        } catch {
+            NSSound.beep()
+        }
+    }
+
+    @objc private func deletePrompt() {
+        guard let editing else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete \u{201C}\(editing.title)\u{201D}?"
+        alert.informativeText = editing.scope == .project
+            ? "It's removed from this project's .side/prompts folder. Commit the change to remove it for everyone."
+            : "It's removed from your prompts in every project."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        try? PromptLibrary.delete(editing)
+        self.editing = nil
+        reload()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { prompts.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let prompt = prompts[row]
+        return LibraryListCell(title: prompt.title, detail: "/\(prompt.name) \u{00B7} \(prompt.scope == .project ? "This project" : "Mine")", dimmed: false)
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard prompts.indices.contains(table.selectedRow) else { return }
+        show(prompts[table.selectedRow])
+    }
+}
+
+/// Two lines: a name and what it is.
+private final class LibraryListCell: NSTableCellView {
+    init(title: String, detail: String, dimmed: Bool) {
+        super.init(frame: .zero)
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = DS.Text.body(.medium)
+        titleLabel.textColor = dimmed ? .tertiaryLabelColor : .labelColor
+        titleLabel.lineBreakMode = .byTruncatingMiddle
+        let detailLabel = NSTextField(labelWithString: detail)
+        detailLabel.font = DS.Text.caption()
+        detailLabel.textColor = dimmed ? .tertiaryLabelColor : .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+        let stack = NSStackView(views: [titleLabel, detailLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 1
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        textField = titleLabel
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xs),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -DS.Spacing.xs),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        setAccessibilityLabel("\(title), \(detail)")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}

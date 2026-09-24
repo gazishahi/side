@@ -73,6 +73,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     var onEmptyStateAction: ((EmptyStateAction) -> Void)?
     /// Opens a track in this window (a subtrack, from the strip).
     var onOpenTrack: ((String) -> Void)?
+    /// Opens the Library window for this project (`/library`, the + popover).
+    var onOpenLibrary: (() -> Void)?
     /// The project's coordinator (multi-agent RFC): lists a coordinator track's subtracks.
     var coordinator: TrackCoordinator? { didSet { refreshSubtracks() } }
     /// A coordinator's subtracks, one chip each (status · intent · agent · state), floating just
@@ -171,10 +173,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         composer.mentionCandidates = { [weak self] partial in
             self?.fileIndex.matches(for: partial) ?? []
         }
-        composer.slashCandidates = { partial in
-            Self.slashCommands
-                .filter { partial.isEmpty || $0.name.hasPrefix(partial.lowercased()) }
+        composer.slashCandidates = { [weak self] partial in
+            let query = partial.lowercased()
+            let builtIn = Self.slashCommands
+                .filter { query.isEmpty || $0.name.hasPrefix(query) }
                 .map { "/\($0.name) · \($0.blurb)" }
+            // The Library's saved prompts, after the commands; a built-in name always wins.
+            let saved = PromptLibrary.all(projectRoot: self?.workingRootURL)
+                .filter { !Self.builtInSlashNames.contains($0.name) && (query.isEmpty || $0.name.hasPrefix(query)) }
+                .map { "/\($0.name) · \($0.title)" }
+            return builtIn + saved
         }
         composer.onSlashCommand = { [weak self] name in self?.performSlashCommand(name) }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
@@ -776,6 +784,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         actions.onAttach = { [weak self] in self?.insertMentionTrigger() }
         actions.onAttachImage = { [weak self] in self?.pickImageAttachment() }
         actions.onOpenRules = { [weak self] in self?.openProjectRules() }
+        actions.onOpenLibrary = { [weak self] in self?.onOpenLibrary?() }
         actions.onShowHistory = { [weak self] in self?.showConversationHistory() }
         actions.onCompact = { [weak self] in self?.compactConversation() }
         actions.onNewConversation = { [weak self] in self?.startNewConversation() }
@@ -1319,7 +1328,17 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         ("full", "auto-apply edits too"),
         ("rules", "open this project's standing instructions for the agent"),
         ("history", "reopen a past conversation on this track"),
+        ("library", "saved prompts, instruction files and more"),
     ]
+
+    /// Names a saved prompt can't take, because a command already answers to them.
+    static var builtInSlashNames: Set<String> { Set(slashCommands.map(\.name)) }
+
+    /// The working copy this track's agent reads: its worktree, else the project.
+    private var workingRootURL: URL? {
+        guard let projectPath else { return nil }
+        return URL(fileURLWithPath: trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath)
+    }
 
     private func performSlashCommand(_ name: String) {
         switch name {
@@ -1327,6 +1346,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case "new": startNewConversation()
         case "rules": openProjectRules()
         case "history": showConversationHistory()
+        case "library": onOpenLibrary?()
         case "ask", "plan", "build":
             guard let scope = AgentToolScope(rawValue: name) else { return }
             trackStore?.setMode(AgentMode(scope: scope, autonomy: currentMode().autonomy), forTrackKey: attachedTrackKey ?? "")
@@ -1336,7 +1356,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             trackStore?.setMode(AgentMode(scope: currentMode().scope, autonomy: autonomy), forTrackKey: attachedTrackKey ?? "")
             refreshSessionPill()
         default:
-            break
+            // A saved prompt goes into the composer for the user to read and send (L2).
+            if let prompt = PromptLibrary.prompt(named: name, projectRoot: workingRootURL) {
+                composer.insertText(prompt.body)
+            }
         }
     }
 
@@ -3107,6 +3130,7 @@ private final class PlusActionsViewController: NSViewController {
     var onAttach: (() -> Void)?
     var onAttachImage: (() -> Void)?
     var onOpenRules: (() -> Void)?
+    var onOpenLibrary: (() -> Void)?
     var onShowHistory: (() -> Void)?
     var onCompact: (() -> Void)?
     var onNewConversation: (() -> Void)?
@@ -3118,6 +3142,7 @@ private final class PlusActionsViewController: NSViewController {
         let rows = [
             PopoverActionRow(symbol: "photo", title: "Attach Image…") { [weak self] in self?.dismissThen(self?.onAttachImage) },
             PopoverActionRow(symbol: "text.book.closed", title: "Project Rules…") { [weak self] in self?.dismissThen(self?.onOpenRules) },
+            PopoverActionRow(symbol: "books.vertical", title: "Library…") { [weak self] in self?.dismissThen(self?.onOpenLibrary) },
             PopoverActionRow(symbol: "clock.arrow.circlepath", title: "History…") { [weak self] in self?.dismissThen(self?.onShowHistory) },
             PopoverActionRow(symbol: "at", title: "Add File Reference") { [weak self] in self?.dismissThen(self?.onAttach) },
             PopoverActionRow(symbol: "arrow.down.right.and.arrow.up.left", title: "Compact Conversation…") { [weak self] in self?.dismissThen(self?.onCompact) },
