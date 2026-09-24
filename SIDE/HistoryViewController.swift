@@ -14,15 +14,6 @@ final class HistoryViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        let title = NSTextField(labelWithString: "Conversation History")
-        title.font = DS.Text.heading(.semibold)
-
-        let explainer = NSTextField(wrappingLabelWithString: "Think conversations are stored in each project's own git directory, including the file contents and command output the agent read along the way. That history is also re-sent to your configured model provider on every message in the conversation. Credential-shaped values are replaced before either happens.")
-        explainer.font = DS.Text.caption()
-        explainer.textColor = .secondaryLabelColor
-        explainer.translatesAutoresizingMaskIntoConstraints = false
-        explainer.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true
-
         for option in HistoryRetention.allCases {
             retentionPopup.addItem(withTitle: option.displayName)
             retentionPopup.lastItem?.representedObject = option.rawValue
@@ -31,40 +22,14 @@ final class HistoryViewController: NSViewController {
         retentionPopup.target = self
         retentionPopup.action = #selector(retentionChanged)
 
-        let retentionLabel = NSTextField(labelWithString: "Keep conversations:")
-        retentionLabel.font = DS.Text.body()
-        let retentionRow = NSStackView(views: [retentionLabel, retentionPopup])
-        retentionRow.orientation = .horizontal
-        retentionRow.spacing = DS.Spacing.m
-
-        let retentionNote = NSTextField(wrappingLabelWithString: "Expired conversations are removed the next time you open that project. Checkpoints are kept either way: they're the record of what an agent actually changed, and they point at real commits.")
-        retentionNote.font = DS.Text.caption()
-        retentionNote.textColor = .tertiaryLabelColor
-        retentionNote.translatesAutoresizingMaskIntoConstraints = false
-        retentionNote.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true
-
-        let deleteButton = NSButton(title: "Delete Conversations in Open Projects…", target: self, action: #selector(deleteAll))
-        deleteButton.bezelStyle = .rounded
-        deleteButton.controlSize = .small
-
-        let stack = NSStackView(views: [title, explainer, retentionRow, retentionNote, deleteButton])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = DS.Spacing.l
-        stack.setCustomSpacing(DS.Spacing.section, after: title)
-        stack.setCustomSpacing(DS.Spacing.section, after: retentionNote)
-        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.section, left: DS.Spacing.section, bottom: DS.Spacing.section, right: DS.Spacing.section)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor),
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 520),
-            view.heightAnchor.constraint(greaterThanOrEqualToConstant: 320),
+        let page = SettingsForm.page([
+            SettingsForm.section("Conversations", footer: "Think conversations are stored in each project's own git directory, with the file contents and command output the agent read. That history is re-sent to the model provider with every message. Credential-shaped values are replaced before either happens.", [
+                SettingsForm.row("Keep conversations", detail: "Expired ones are removed the next time you open the project. Checkpoints are kept either way.", retentionPopup),
+                SettingsForm.row("Delete conversations", detail: "Every Think conversation in the projects open now. Tracks, checkpoints and files stay.",
+                                 SettingsForm.button("Delete\u{2026}", self, #selector(deleteAll), destructive: true)),
+            ]),
         ])
+        SettingsForm.install(page, in: view)
     }
 
     @objc private func retentionChanged() {

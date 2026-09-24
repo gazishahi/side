@@ -9,32 +9,9 @@ final class AgentsPreferencesViewController: NSViewController {
     /// restart so the next message uses the new account.
     static let signInDidChangeNotification = Notification.Name("SideACPSignInDidChange")
 
-    private let stack = NSStackView()
     private var keyFields: [String: NSSecureTextField] = [:]
 
-    override func loadView() {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        let document = AgentsFlippedView()
-        document.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = DS.Spacing.m
-        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.section, left: DS.Spacing.section, bottom: DS.Spacing.section, right: DS.Spacing.section)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(stack)
-        scroll.documentView = document
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: document.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
-            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-        ])
-        scroll.frame = NSRect(x: 0, y: 0, width: 520, height: 520)
-        view = scroll
-    }
+    override func loadView() { view = NSView() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -43,65 +20,56 @@ final class AgentsPreferencesViewController: NSViewController {
     }
 
     private func rebuild() {
-        for view in stack.arrangedSubviews { stack.removeArrangedSubview(view); view.removeFromSuperview() }
         keyFields.removeAll()
-        let width: CGFloat = 480
-
-        let title = NSTextField(labelWithString: "Agents")
-        title.font = DS.Text.heading()
-        stack.addArrangedSubview(title)
-        stack.addArrangedSubview(Self.wrapping("A track can run on Heron or on an outside agent. Outside agents use your own account: your subscription through the agent's own sign-in, or an API key you give Side. Side never sees your password.", width: width))
-        stack.setCustomSpacing(DS.Spacing.section, after: stack.arrangedSubviews.last!)
-
-        for agent in ACPAgent.known {
-            stack.addArrangedSubview(row(for: agent, width: width))
-            let separator = NSBox()
-            separator.boxType = .separator
-            stack.addArrangedSubview(separator)
-            separator.widthAnchor.constraint(equalToConstant: width).isActive = true
-        }
-
-        let add = NSButton(title: "Add Agent…", target: self, action: #selector(addAgent))
-        add.bezelStyle = .rounded
-        stack.addArrangedSubview(add)
-        stack.addArrangedSubview(Self.wrapping("Any agent that speaks the Agent Client Protocol works: OpenCode, Qwen Code, Goose and others. Add it by the command that starts it in ACP mode.", width: width))
+        var sections: [NSView] = [
+            SettingsForm.footnote("A track can run on Heron or on an outside agent. Outside agents use your own account: your subscription through the agent's own sign-in, or an API key you give Side. Side never sees your password."),
+        ]
+        sections += ACPAgent.known.map(section(for:))
+        sections.append(SettingsForm.section(footer: "Any agent that speaks the Agent Client Protocol works: OpenCode, Qwen Code, Goose and others. Add it by the command that starts it in ACP mode.", [
+            SettingsForm.row("Add another agent", SettingsForm.button("Add Agent\u{2026}", self, #selector(addAgent))),
+        ]))
+        SettingsForm.install(SettingsForm.page(sections), in: view)
     }
 
-    private func row(for agent: ACPAgent, width: CGFloat) -> NSView {
+    private func section(for agent: ACPAgent) -> NSView {
+        let installed = AgentAvailability.isInstalled(agent)
         let name = NSTextField(labelWithString: agent.displayName)
         name.font = DS.Text.body(.semibold)
-        let installed = AgentAvailability.isInstalled(agent)
-        let status = NSTextField(labelWithString: installed == nil ? "Checking…" : (installed! ? "Installed" : "Not installed"))
-        status.font = DS.Text.caption()
-        status.textColor = installed == true ? .secondaryLabelColor : .tertiaryLabelColor
-        let header = NSStackView(views: [name, status])
-        header.spacing = DS.Spacing.m
+        let badge = SettingsForm.badge(installed == nil ? "Checking" : (installed! ? "Installed" : "Not installed"),
+                                       color: installed == true ? DS.Color.statusVerified : .secondaryLabelColor)
+        var headerViews: [NSView] = [name, badge, NSView()]
         if agent.isCustom {
-            let remove = NSButton(title: "Remove", target: self, action: #selector(removeAgent(_:)))
-            remove.bezelStyle = .inline
+            let remove = SettingsForm.button("Remove", self, #selector(removeAgent(_:)), destructive: true)
             remove.identifier = NSUserInterfaceItemIdentifier(agent.id)
-            header.addArrangedSubview(remove)
+            headerViews.append(remove)
         }
-        var views: [NSView] = [header]
+        let header = NSStackView(views: headerViews)
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = DS.Spacing.m
+        var rows: [NSView] = [SettingsForm.content(header)]
 
         if installed == false {
+            let copy = SettingsForm.button("Copy", self, #selector(copyInstall(_:)))
+            copy.identifier = NSUserInterfaceItemIdentifier(agent.installHint)
             let command = NSTextField(labelWithString: agent.installHint)
-            command.font = DS.Text.code()
+            command.font = DS.Text.code(11.5)
             command.textColor = .secondaryLabelColor
             command.isSelectable = true
             command.lineBreakMode = .byTruncatingMiddle
-            let copy = NSButton(title: "Copy", target: self, action: #selector(copyInstall(_:)))
-            copy.bezelStyle = .inline
-            copy.identifier = NSUserInterfaceItemIdentifier(agent.installHint)
-            let line = NSStackView(views: [command, copy])
+            command.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let line = NSStackView(views: [command, NSView(), copy])
+            line.orientation = .horizontal
+            line.alignment = .centerY
             line.spacing = DS.Spacing.m
-            command.widthAnchor.constraint(lessThanOrEqualToConstant: width - 80).isActive = true
-            views.append(line)
+            let install = NSStackView(views: [Self.label("Install"), line])
+            install.orientation = .vertical
+            install.alignment = .leading
+            install.spacing = 4
+            line.widthAnchor.constraint(equalTo: install.widthAnchor).isActive = true
+            rows.append(SettingsForm.content(install))
         }
 
-        let label = NSTextField(labelWithString: "Sign in with")
-        label.font = DS.Text.caption()
-        label.textColor = .tertiaryLabelColor
         let popup = NSPopUpButton()
         popup.addItem(withTitle: agent.subscriptionName)
         popup.lastItem?.representedObject = ACPAgent.SignIn.subscription.rawValue
@@ -114,40 +82,37 @@ final class AgentsPreferencesViewController: NSViewController {
         popup.target = self
         popup.action = #selector(signInChanged(_:))
         popup.setAccessibilityLabel("\(agent.displayName) sign-in")
-        let signInLine = NSStackView(views: [label, popup])
-        signInLine.spacing = DS.Spacing.m
-        views.append(signInLine)
 
         if agent.signIn == .apiKey, agent.acceptsAPIKey {
+            rows.append(SettingsForm.row("Sign in with", popup))
             let field = NSSecureTextField()
             field.placeholderString = agent.storedAPIKey == nil ? "Paste an API key" : "Saved in your Keychain"
-            field.widthAnchor.constraint(equalToConstant: 300).isActive = true
+            field.widthAnchor.constraint(equalToConstant: 200).isActive = true
             field.setAccessibilityLabel("\(agent.displayName) API key")
             keyFields[agent.id] = field
-            let save = NSButton(title: "Save", target: self, action: #selector(saveKey(_:)))
-            save.bezelStyle = .rounded
+            let save = SettingsForm.button("Save", self, #selector(saveKey(_:)))
             save.identifier = NSUserInterfaceItemIdentifier(agent.id)
             let keyLine = NSStackView(views: [field, save])
-            keyLine.spacing = DS.Spacing.m
-            views.append(keyLine)
+            keyLine.spacing = DS.Spacing.s
             let variable = agent.apiKeyVariables.first ?? ""
             let inherited = agent.apiKeyVariables.contains { ProcessInfo.processInfo.environment[$0]?.isEmpty == false }
             let note = agent.storedAPIKey != nil
                 ? "Given to \(agent.displayName) as \(variable)."
                 : (inherited ? "No key saved. Using the \(variable) already in your environment." : "No key saved yet.")
-            views.append(Self.wrapping(note, width: width))
+            rows.append(SettingsForm.row("API key", detail: note, keyLine))
         } else {
             let note = agent.acceptsAPIKey
-                ? "\(agent.displayName) uses its own sign-in. API keys in your environment (\(agent.apiKeyVariables.joined(separator: ", "))) are not passed to it."
-                : "\(agent.displayName) uses its own sign-in."
-            views.append(Self.wrapping(note, width: width))
+                ? "Uses its own sign-in. Keys in your environment (\(agent.apiKeyVariables.joined(separator: ", "))) aren't passed to it."
+                : "Uses its own sign-in."
+            rows.append(SettingsForm.row("Sign in with", detail: note, popup))
         }
+        return SettingsForm.section(rows)
+    }
 
-        let column = NSStackView(views: views)
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = DS.Spacing.s
-        return column
+    private static func label(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = DS.Text.body()
+        return label
     }
 
     private static func wrapping(_ text: String, width: CGFloat) -> NSTextField {
@@ -226,8 +191,4 @@ final class AgentsPreferencesViewController: NSViewController {
     private func announce(_ id: String) {
         NotificationCenter.default.post(name: Self.signInDidChangeNotification, object: nil, userInfo: ["agentId": id])
     }
-}
-
-private final class AgentsFlippedView: NSView {
-    override var isFlipped: Bool { true }
 }

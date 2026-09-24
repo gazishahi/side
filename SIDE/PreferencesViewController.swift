@@ -26,78 +26,64 @@ final class PreferencesViewController: NSViewController {
 
     override func loadView() { view = NSView() }
 
+    private let urlLabel = NSTextField(labelWithString: "")
+    private var removeProviderRow: NSView?
+
     override func viewDidLoad() {
         super.viewDidLoad()
-
-        let title = NSTextField(labelWithString: "Model Providers")
-        title.font = DS.Text.heading(.semibold)
-
         providerPopup.target = self
         providerPopup.action = #selector(providerSelectionChanged)
-        let addButton = NSButton(title: "Add Provider…", target: self, action: #selector(addProvider))
-        addButton.bezelStyle = .rounded
-        addButton.controlSize = .small
-        removeProviderButton.title = "Remove"
+        removeProviderButton.title = "Remove Provider"
         removeProviderButton.bezelStyle = .rounded
-        removeProviderButton.controlSize = .small
+        removeProviderButton.hasDestructiveAction = true
         removeProviderButton.target = self
         removeProviderButton.action = #selector(removeProvider)
-        let providerRow = NSStackView(views: [providerPopup, addButton, removeProviderButton])
-        providerRow.orientation = .horizontal
-        providerRow.spacing = DS.Spacing.m
+        urlLabel.font = DS.Text.caption()
+        urlLabel.textColor = .secondaryLabelColor
+        urlLabel.lineBreakMode = .byTruncatingMiddle
+        urlLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
 
-        baseURLLabel.font = DS.Text.caption()
-        baseURLLabel.textColor = .secondaryLabelColor
-
-        keyField.placeholderString = "sk-…"
+        keyField.placeholderString = "sk-\u{2026}"
         keyField.font = DS.Text.code(12, weight: .regular)
         keyField.translatesAutoresizingMaskIntoConstraints = false
-        keyField.widthAnchor.constraint(equalToConstant: 280).isActive = true
-
-        saveKeyButton.title = "Save Key"
+        keyField.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        saveKeyButton.title = "Save"
         saveKeyButton.bezelStyle = .rounded
-        saveKeyButton.controlSize = .small
         saveKeyButton.target = self
         saveKeyButton.action = #selector(saveKey)
         removeKeyButton.title = "Remove"
         removeKeyButton.bezelStyle = .rounded
-        removeKeyButton.controlSize = .small
         removeKeyButton.target = self
         removeKeyButton.action = #selector(removeKey)
-
-        keyRow.addArrangedSubview(keyField)
-        keyRow.addArrangedSubview(saveKeyButton)
-        keyRow.addArrangedSubview(removeKeyButton)
+        keyRow.setViews([keyField, saveKeyButton, removeKeyButton], in: .leading)
         keyRow.orientation = .horizontal
-        keyRow.spacing = DS.Spacing.m
-
+        keyRow.spacing = DS.Spacing.s
         keyStatusLabel.font = DS.Text.caption()
         keyStatusLabel.textColor = .secondaryLabelColor
-
-        let modelLabel = NSTextField(labelWithString: "Default model:")
-        modelLabel.font = DS.Text.body()
+        keyStatusLabel.preferredMaxLayoutWidth = SettingsForm.contentWidth - 60
         modelPopup.target = self
         modelPopup.action = #selector(modelChanged)
-        let modelRow = NSStackView(views: [modelLabel, modelPopup])
-        modelRow.orientation = .horizontal
-        modelRow.spacing = DS.Spacing.m
 
-        let stack = NSStackView(views: [title, providerRow, baseURLLabel, keyRow, keyStatusLabel, modelRow])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = DS.Spacing.l
-        stack.setCustomSpacing(DS.Spacing.section, after: title)
-        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.section, left: DS.Spacing.section, bottom: DS.Spacing.section, right: DS.Spacing.section)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 460),
+        let keyStack = NSStackView(views: [keyRow, keyStatusLabel])
+        keyStack.orientation = .vertical
+        keyStack.alignment = .leading
+        keyStack.spacing = DS.Spacing.s
+        let removeRow = SettingsForm.row("Remove this provider", detail: "Its saved key is deleted from your Keychain.", removeProviderButton)
+        removeProviderRow = removeRow
+        let page = SettingsForm.page([
+            SettingsForm.section("Model provider", footer: "Heron, Side's own agent, talks to the provider chosen here. Outside agents use their own accounts (Agents).", [
+                SettingsForm.row("Provider", providerPopup),
+                SettingsForm.row("Endpoint", urlLabel),
+                SettingsForm.row("Default model", modelPopup),
+            ]),
+            SettingsForm.section("API key", [SettingsForm.content(keyStack)]),
+            SettingsForm.section([
+                SettingsForm.row("Add a provider", detail: "Any OpenAI-compatible endpoint: OpenAI, or a local server like Ollama or LM Studio.",
+                                 SettingsForm.button("Add Provider\u{2026}", self, #selector(addProvider))),
+                removeRow,
+            ]),
         ])
-
+        SettingsForm.install(page, in: view)
         reloadProviderPopup()
         reloadForSelectedProvider()
     }
@@ -106,7 +92,8 @@ final class PreferencesViewController: NSViewController {
         providerPopup.removeAllItems()
         for provider in registry.providers {
             let isActive = provider.id == registry.activeProviderId
-            providerPopup.addItem(withTitle: isActive ? "\(provider.displayName) (active)" : provider.displayName)
+            providerPopup.addItem(withTitle: provider.displayName)
+            _ = isActive
             providerPopup.lastItem?.representedObject = provider.id
         }
         if let index = registry.providers.firstIndex(where: { $0.id == registry.activeProviderId }) {
@@ -120,8 +107,8 @@ final class PreferencesViewController: NSViewController {
     /// removed) hides the Remove-provider button.
     private func reloadForSelectedProvider() {
         guard let provider = selectedProvider else { return }
-        removeProviderButton.isHidden = provider.id == "anthropic"
-        baseURLLabel.stringValue = provider.baseURL.absoluteString
+        (removeProviderRow?.superview ?? removeProviderRow)?.isHidden = provider.id == "anthropic"
+        urlLabel.stringValue = provider.baseURL.absoluteString
         keyRow.isHidden = !provider.requiresAPIKey
         keyField.stringValue = ""
         reloadModelPopup(for: provider)
@@ -140,8 +127,9 @@ final class PreferencesViewController: NSViewController {
     }
 
     private func refreshKeyStatus(for provider: ProviderDefinition) {
+        removeKeyButton.isHidden = !KeychainStore.hasSecret(account: provider.id)
         guard provider.requiresAPIKey else {
-            keyStatusLabel.stringValue = "No key required."
+            keyStatusLabel.stringValue = "This provider doesn't need a key."
             return
         }
         // Checked in the same order resolveAdapter actually resolves a key in — env var before
@@ -317,59 +305,31 @@ final class PreferencesTabViewController: NSTabViewController {
 /// General → Stages: which stages the stage control shows (Direction 02 §3.1). Unpinning hides a
 /// view, never a capability — every stage stays on ⌘⌥1–4, Navigate and the palette.
 final class GeneralPreferencesViewController: NSViewController {
-    private var boxes: [NSButton] = []
+    private var switches: [NSSwitch] = []
     private var observer: NSObjectProtocol?
     private var sideObserver: NSObjectProtocol?
 
     override func loadView() {
-        let title = NSTextField(labelWithString: "Stages")
-        title.font = DS.Text.heading()
-        let detail = NSTextField(wrappingLabelWithString: "Pinned stages appear in the stage control. Unpinned ones stay reachable from the Navigate menu, ⌘⌥1–4 and the palette, and show up on their own when they need you.")
-        detail.font = DS.Text.caption()
-        detail.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [title, detail])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = DS.Spacing.m
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        view = NSView()
+        var stageRows: [NSView] = []
         for stage in StagePins.pinnable {
-            let box = NSButton(checkboxWithTitle: stage.rawValue, target: self, action: #selector(toggled(_:)))
-            box.identifier = NSUserInterfaceItemIdentifier(stage.rawValue)
-            boxes.append(box)
-            stack.addArrangedSubview(box)
+            let toggle = SettingsForm.toggle(false, self, #selector(toggled(_:)))
+            toggle.identifier = NSUserInterfaceItemIdentifier(stage.rawValue)
+            toggle.setAccessibilityLabel("Pin \(stage.rawValue)")
+            switches.append(toggle)
+            stageRows.append(SettingsForm.row(stage.rawValue, toggle))
         }
-        detail.widthAnchor.constraint(equalToConstant: 420).isActive = true
-
-        let explorerTitle = NSTextField(labelWithString: "File explorer")
-        explorerTitle.font = DS.Text.heading()
-        stack.setCustomSpacing(DS.Spacing.xl, after: stack.arrangedSubviews.last!)
-        stack.addArrangedSubview(explorerTitle)
-        let sidePopup = NSPopUpButton()
-        for side in FileExplorer.Side.allCases { sidePopup.addItem(withTitle: side.title) }
-        sidePopup.selectItem(withTitle: FileExplorer.Side.preferred.title)
-        sidePopup.target = self
-        sidePopup.action = #selector(explorerSideChanged(_:))
-        let sideRow = NSStackView(views: [NSTextField(labelWithString: "Opens on the"), sidePopup, NSTextField(labelWithString: "side of the window")])
-        sideRow.orientation = .horizontal
-        sideRow.spacing = DS.Spacing.s
-        stack.addArrangedSubview(sideRow)
+        let sidePopup = SettingsForm.popup(FileExplorer.Side.allCases.map(\.title), selected: 0, self, #selector(explorerSideChanged(_:)))
         explorerPopup = sidePopup
-
-        // Library is a window, not a pane here (RFC R6); this is one of its doors.
-        let libraryTitle = NSTextField(labelWithString: "Library")
-        libraryTitle.font = DS.Text.heading()
-        stack.setCustomSpacing(DS.Spacing.xl, after: sideRow)
-        stack.addArrangedSubview(libraryTitle)
-        let libraryDetail = NSTextField(wrappingLabelWithString: "Instruction files, saved prompts and templates, MCP servers, skills, and storage for the frontmost project.")
-        libraryDetail.font = DS.Text.caption()
-        libraryDetail.textColor = .secondaryLabelColor
-        libraryDetail.widthAnchor.constraint(equalToConstant: 420).isActive = true
-        stack.addArrangedSubview(libraryDetail)
-        let openLibrary = NSButton(title: "Open Library\u{2026}", target: self, action: #selector(openLibrary))
-        openLibrary.bezelStyle = .rounded
-        openLibrary.setAccessibilityIdentifier("preferences.openLibrary")
-        stack.addArrangedSubview(openLibrary)
-        view = stack
+        let page = SettingsForm.page([
+            SettingsForm.section("Stages", footer: "Pinned stages appear in the stage control. Unpinned ones stay on the Navigate menu, \u{2318}\u{2325}1\u{2013}4 and the palette, and show up on their own when they need you.", stageRows),
+            SettingsForm.section("Make", [SettingsForm.row("File explorer side", sidePopup)]),
+            SettingsForm.section([
+                SettingsForm.row("Library", detail: "Instruction files, saved prompts and templates, MCP servers, skills, and storage for the frontmost project.",
+                                 SettingsForm.button("Open Library\u{2026}", self, #selector(openLibrary))),
+            ]),
+        ])
+        SettingsForm.install(page, in: view)
         refresh()
         observer = NotificationCenter.default.addObserver(forName: StagePins.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
@@ -382,11 +342,11 @@ final class GeneralPreferencesViewController: NSViewController {
     private func refresh() {
         explorerPopup?.selectItem(withTitle: FileExplorer.Side.preferred.title)
         let pinned = StagePins.pinned
-        for box in boxes {
-            let isPinned = pinned.contains { $0.rawValue == box.identifier?.rawValue }
-            box.state = isPinned ? .on : .off
-            // The last pinned stage can't be unpinned — the control would be empty.
-            box.isEnabled = !(isPinned && pinned.count == 1)
+        for toggle in switches {
+            let isPinned = pinned.contains { $0.rawValue == toggle.identifier?.rawValue }
+            toggle.state = isPinned ? .on : .off
+            // The last pinned stage can't be unpinned: the control would be empty.
+            toggle.isEnabled = !(isPinned && pinned.count == 1)
         }
     }
 
@@ -400,7 +360,7 @@ final class GeneralPreferencesViewController: NSViewController {
         FileExplorer.Side.preferred = FileExplorer.Side.allCases[max(0, sender.indexOfSelectedItem)]
     }
 
-    @objc private func toggled(_ sender: NSButton) {
+    @objc private func toggled(_ sender: NSSwitch) {
         guard let raw = sender.identifier?.rawValue, let stage = ShellViewController.Stage(rawValue: raw) else { return }
         StagePins.toggle(stage)
     }

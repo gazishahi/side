@@ -7,52 +7,22 @@ import Heron
 /// Reads `UsageStore.shared` and re-renders on its change signal, so a run finishing while this
 /// window is open updates the figures without reopening it.
 final class UsageViewController: NSViewController {
-    private let scrollView = NSScrollView()
-    private let contentStack = NSStackView()
     private var usageObserverToken: UUID?
     private let budgetField = NSTextField()
 
-    private static let columnWidths: (name: CGFloat, requests: CGFloat, tokens: CGFloat, cost: CGFloat) = (200, 70, 90, 80)
+    /// Which records the pane counts.
+    enum Period: Int { case thisMonth, allTime }
+    private(set) var period: Period = .thisMonth
+    /// Groups the user expanded past the first few rows.
+    private var expanded: Set<String> = []
+    static let collapsedCount = 5
 
     override func loadView() { view = NSView() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-
-        contentStack.orientation = .vertical
-        contentStack.alignment = .leading
-        contentStack.spacing = DS.Spacing.l
-        contentStack.edgeInsets = NSEdgeInsets(top: DS.Spacing.section, left: DS.Spacing.section, bottom: DS.Spacing.section, right: DS.Spacing.section)
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let documentView = FlippedView()
-        documentView.addSubview(contentStack)
-        documentView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.documentView = documentView
-        scrollView.hasVerticalScroller = true
-        scrollView.drawsBackground = false
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(scrollView)
-
-        NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
-            contentStack.topAnchor.constraint(equalTo: documentView.topAnchor),
-            contentStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
-            contentStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
-            contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 520),
-            view.heightAnchor.constraint(greaterThanOrEqualToConstant: 560),
-        ])
-
         usageObserverToken = UsageStore.shared.addChangeObserver { [weak self] in self?.render() }
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(textScaleChanged),
-            name: DS.Text.scaleDidChangeNotification, object: nil
-        )
+        NotificationCenter.default.addObserver(self, selector: #selector(textScaleChanged), name: DS.Text.scaleDidChangeNotification, object: nil)
         render()
     }
 
@@ -62,252 +32,172 @@ final class UsageViewController: NSViewController {
 
     @objc private func textScaleChanged() { render() }
 
+    // MARK: - Figures
+
+    struct Line: Equatable {
+        var title: String
+        var subtitle: String
+        var totals: UsageTotals
+        var cost: Double?
+    }
+
+    var records: [UsageRecord] {
+        let all = UsageStore.shared.records
+        guard period == .thisMonth else { return all }
+        let current = UsageRecord.periodKey(for: Date())
+        return all.filter { $0.periodKey == current }
+    }
+
+    /// Per model, most tokens first; an agent's models under the agent's own name.
+    func modelLines() -> [Line] {
+        var grouped: [String: (providerId: String, modelId: String, totals: UsageTotals)] = [:]
+        for record in records {
+            let key = record.providerId + "|" + record.modelId
+            var entry = grouped[key] ?? (record.providerId, record.modelId, UsageTotals())
+            entry.totals.add(record.totals)
+            grouped[key] = entry
+        }
+        return grouped.values.map { entry in
+            let names = UsageNames.names(providerId: entry.providerId, modelId: entry.modelId)
+            return Line(title: names.model, subtitle: names.provider, totals: entry.totals,
+                        cost: ModelPricing.estimatedCost(modelId: entry.modelId, totals: entry.totals))
+        }.sorted { $0.totals.totalTokens > $1.totals.totalTokens }
+    }
+
+    func projectLines() -> [Line] {
+        Dictionary(grouping: records, by: \.projectPath).map { path, records in
+            var totals = UsageTotals()
+            records.forEach { totals.add($0.totals) }
+            // A project that used an unpriced model shows no figure rather than an undercount.
+            let cost = records.allSatisfy { ModelPricing.isPriced(modelId: $0.modelId) }
+                ? records.reduce(0.0) { $0 + (ModelPricing.estimatedCost(modelId: $1.modelId, totals: $1.totals) ?? 0) }
+                : nil
+            return Line(title: URL(fileURLWithPath: path).lastPathComponent, subtitle: (path as NSString).abbreviatingWithTildeInPath, totals: totals, cost: cost)
+        }.sorted { $0.totals.totalTokens > $1.totals.totalTokens }
+    }
+
     // MARK: - Rendering
 
     private func render() {
-        for subview in contentStack.arrangedSubviews {
-            contentStack.removeArrangedSubview(subview)
-            subview.removeFromSuperview()
+        let periodControl = NSSegmentedControl(labels: ["This Month", "All Time"], trackingMode: .selectOne, target: self, action: #selector(periodChanged(_:)))
+        periodControl.selectedSegment = period.rawValue
+        periodControl.setAccessibilityIdentifier("usage.period")
+
+        var sections: [NSView] = []
+        let models = modelLines()
+        if models.isEmpty {
+            sections.append(SettingsForm.section([SettingsForm.row("Period", detail: period == .thisMonth ? "Nothing recorded this month." : "No agent runs recorded yet. Usage appears here after the first Think conversation.", periodControl)]))
+        } else {
+            var grand = UsageTotals()
+            records.forEach { grand.add($0.totals) }
+            let unpriced = models.contains { $0.cost == nil }
+            let spend = models.compactMap(\.cost).reduce(0, +)
+            sections.append(SettingsForm.section(footer: "Cost is an estimate from published list prices and won't match your bill exactly. A + means some models have no price here.", [
+                SettingsForm.row("Period", periodControl),
+                SettingsForm.content(summary(spend: UsageFormatting.cost(spend) + (unpriced ? "+" : ""), grand: grand)),
+            ]))
+            sections.append(group("By model", key: "models", lines: models))
+            let projects = projectLines()
+            if !projects.isEmpty { sections.append(group("By project", key: "projects", lines: projects)) }
         }
-
-        let store = UsageStore.shared
-        let grand = store.grandTotal()
-        guard grand.totalTokens > 0 else {
-            let empty = NSTextField(wrappingLabelWithString: "No agent runs recorded yet. Token usage appears here after the first Think conversation.")
-            empty.font = DS.Text.body()
-            empty.textColor = .tertiaryLabelColor
-            contentStack.addArrangedSubview(empty)
-            // A budget is worth setting *before* spending anything, so this section shows up on
-            // a fresh install rather than only once there's history to look at.
-            contentStack.setCustomSpacing(DS.Spacing.section, after: empty)
-            contentStack.addArrangedSubview(makeSectionTitle("Monthly budget"))
-            contentStack.addArrangedSubview(makeBudgetControls())
-            return
-        }
-
-        contentStack.addArrangedSubview(makeSummaryCard(grand: grand, estimate: store.estimatedCost()))
-        contentStack.setCustomSpacing(DS.Spacing.section, after: contentStack.arrangedSubviews[0])
-
-        contentStack.addArrangedSubview(makeSectionTitle("By model"))
-        contentStack.addArrangedSubview(makeHeaderRow(first: "Model"))
-        for entry in store.totalsByModel() {
-            let providerName = ProviderRegistryStore.shared.provider(for: entry.providerId)?.displayName ?? entry.providerId
-            let modelName = ProviderRegistryStore.shared
-                .provider(for: entry.providerId)?
-                .models.first { $0.id == entry.modelId }?.displayName ?? entry.modelId
-            contentStack.addArrangedSubview(makeRow(
-                title: modelName,
-                subtitle: providerName,
-                totals: entry.totals,
-                cost: ModelPricing.estimatedCost(modelId: entry.modelId, totals: entry.totals)
-            ))
-        }
-
-        let byProject = store.totalsByProject()
-        if !byProject.isEmpty {
-            contentStack.setCustomSpacing(DS.Spacing.section, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
-            contentStack.addArrangedSubview(makeSectionTitle("By project"))
-            contentStack.addArrangedSubview(makeHeaderRow(first: "Project"))
-            for entry in byProject {
-                // A project's cost is the sum of its own per-model rows, so a project that used
-                // an unpriced model shows tokens and no figure rather than an undercount.
-                let records = store.records.filter { $0.projectPath == entry.projectPath }
-                let cost = records.allSatisfy { ModelPricing.isPriced(modelId: $0.modelId) }
-                    ? records.reduce(0.0) { $0 + (ModelPricing.estimatedCost(modelId: $1.modelId, totals: $1.totals) ?? 0) }
-                    : nil
-                contentStack.addArrangedSubview(makeRow(
-                    title: URL(fileURLWithPath: entry.projectPath).lastPathComponent,
-                    subtitle: (entry.projectPath as NSString).abbreviatingWithTildeInPath,
-                    totals: entry.totals,
-                    cost: cost
-                ))
-            }
-        }
-
-        contentStack.setCustomSpacing(DS.Spacing.section, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
-        contentStack.addArrangedSubview(makeSectionTitle("Monthly budget"))
-        contentStack.addArrangedSubview(makeBudgetControls())
-
-        let reset = NSButton(title: "Reset Usage History…", target: self, action: #selector(resetUsage))
-        reset.bezelStyle = .rounded
-        reset.controlSize = .small
-        contentStack.setCustomSpacing(DS.Spacing.section, after: contentStack.arrangedSubviews[contentStack.arrangedSubviews.count - 1])
-        contentStack.addArrangedSubview(reset)
+        sections.append(SettingsForm.section("Budget", [budgetRow()]))
+        sections.append(SettingsForm.section([
+            SettingsForm.row("Reset usage history", detail: "Clears recorded token counts for every project. Conversations and your bill are unaffected.",
+                             SettingsForm.button("Reset\u{2026}", self, #selector(resetUsage), destructive: true)),
+        ]))
+        SettingsForm.install(SettingsForm.page(sections), in: view)
     }
 
-    private func makeSummaryCard(grand: UsageTotals, estimate: (total: Double, hasUnpricedModels: Bool)) -> NSView {
-        let card = NSView()
-        card.wantsLayer = true
-        card.bindLayerBackground(DS.Color.overlay)
-        card.layer?.cornerRadius = DS.Radius.surface
-        card.translatesAutoresizingMaskIntoConstraints = false
-
-        let costValue = estimate.hasUnpricedModels
-            ? "\(UsageFormatting.cost(estimate.total))+"
-            : UsageFormatting.cost(estimate.total)
-        // The trailing "+" plus the footnote below already say the figure is a floor; spelling
-        // that out in the caption wraps to three lines and throws the row of figures off.
-        let costCaption = "estimated spend"
-
+    private func summary(spend: String, grand: UsageTotals) -> NSView {
         let figures = NSStackView(views: [
-            makeFigure(value: costValue, caption: costCaption),
-            makeFigure(value: UsageFormatting.tokens(grand.totalTokens), caption: "tokens total"),
-            makeFigure(value: UsageFormatting.tokens(grand.outputTokens), caption: "output tokens"),
-            makeFigure(value: "\(grand.requestCount)", caption: grand.requestCount == 1 ? "request" : "requests"),
+            figure(spend, "estimated spend"),
+            figure(UsageFormatting.tokens(grand.totalTokens), "tokens"),
+            figure("\(grand.requestCount)", grand.requestCount == 1 ? "request" : "requests"),
         ])
         figures.orientation = .horizontal
         figures.alignment = .top
         figures.distribution = .fillEqually
         figures.spacing = DS.Spacing.section
-        figures.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(figures)
-
-        let note = NSTextField(wrappingLabelWithString: "Cost is an estimate from published list prices and won't match your bill exactly. Models with no price here contribute tokens but no cost.")
-        note.font = DS.Text.caption()
-        note.textColor = .tertiaryLabelColor
-        note.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(note)
-
-        NSLayoutConstraint.activate([
-            figures.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
-            figures.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            figures.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            note.topAnchor.constraint(equalTo: figures.bottomAnchor, constant: 12),
-            note.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            note.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            note.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14),
-            card.widthAnchor.constraint(greaterThanOrEqualToConstant: 460),
-        ])
-        return card
+        return figures
     }
 
-    private func makeFigure(value: String, caption: String) -> NSView {
+    private func figure(_ value: String, _ caption: String) -> NSView {
         let valueLabel = NSTextField(labelWithString: value)
         valueLabel.font = DS.Text.title(.semibold)
-        valueLabel.textColor = .labelColor
-        let captionLabel = NSTextField(wrappingLabelWithString: caption)
+        let captionLabel = NSTextField(labelWithString: caption)
         captionLabel.font = DS.Text.caption()
         captionLabel.textColor = .secondaryLabelColor
-
         let stack = NSStackView(views: [valueLabel, captionLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = DS.Spacing.xxs
+        stack.spacing = 2
         return stack
     }
 
-    private func makeSectionTitle(_ text: String) -> NSView {
-        let label = NSTextField(labelWithString: text)
-        label.font = DS.Text.heading(.semibold)
-        return label
+    /// The first few lines, a share bar each, and "Show all" when there are more.
+    private func group(_ title: String, key: String, lines: [Line]) -> NSView {
+        let isExpanded = expanded.contains(key)
+        let shown = isExpanded ? lines : Array(lines.prefix(Self.collapsedCount))
+        let most = max(1, lines.first?.totals.totalTokens ?? 1)
+        var rows = shown.map { line(for: $0, share: Double($0.totals.totalTokens) / Double(most)) }
+        if lines.count > Self.collapsedCount {
+            let toggle = NSButton(title: isExpanded ? "Show Fewer" : "Show All \(lines.count)", target: self, action: #selector(toggleGroup(_:)))
+            toggle.bezelStyle = .inline
+            toggle.identifier = NSUserInterfaceItemIdentifier(key)
+            rows.append(SettingsForm.row(isExpanded ? "" : "\(lines.count - Self.collapsedCount) more", toggle, titleColor: .secondaryLabelColor))
+        }
+        return SettingsForm.section(title, rows)
     }
 
-    private func makeHeaderRow(first: String) -> NSView {
-        let row = makeColumnRow(
-            first: makeColumnLabel(first, size: 10.5, weight: .medium, color: .tertiaryLabelColor, alignment: .left, width: Self.columnWidths.name),
-            requests: makeColumnLabel("Requests", size: 10.5, weight: .medium, color: .tertiaryLabelColor, alignment: .right, width: Self.columnWidths.requests),
-            tokens: makeColumnLabel("Tokens", size: 10.5, weight: .medium, color: .tertiaryLabelColor, alignment: .right, width: Self.columnWidths.tokens),
-            cost: makeColumnLabel("Est. cost", size: 10.5, weight: .medium, color: .tertiaryLabelColor, alignment: .right, width: Self.columnWidths.cost)
-        )
-        return row
+    private func line(for line: Line, share: Double) -> NSView {
+        let tokens = NSTextField(labelWithString: UsageFormatting.tokens(line.totals.totalTokens))
+        tokens.font = NSFont.monospacedDigitSystemFont(ofSize: DS.Text.body().pointSize, weight: .regular)
+        tokens.alignment = .right
+        tokens.toolTip = "\(UsageFormatting.tokens(line.totals.inputTokens)) input \u{00B7} \(UsageFormatting.tokens(line.totals.cachedInputTokens)) cached \u{00B7} \(UsageFormatting.tokens(line.totals.outputTokens)) output \u{00B7} \(line.totals.requestCount) requests"
+        let cost = NSTextField(labelWithString: line.cost.map { UsageFormatting.cost($0) } ?? "\u{2013}")
+        cost.font = NSFont.monospacedDigitSystemFont(ofSize: DS.Text.body().pointSize, weight: .regular)
+        cost.textColor = line.cost == nil ? .tertiaryLabelColor : .labelColor
+        cost.alignment = .right
+        tokens.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        cost.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        let bar = ShareBar(share: share)
+        bar.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        bar.heightAnchor.constraint(equalToConstant: 4).isActive = true
+        let figures = NSStackView(views: [bar, tokens, cost])
+        figures.orientation = .horizontal
+        figures.alignment = .centerY
+        figures.spacing = DS.Spacing.l
+        return SettingsForm.row(line.title, detail: line.subtitle, figures)
     }
 
-    private func makeRow(title: String, subtitle: String, totals: UsageTotals, cost: Double?) -> NSView {
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = DS.Text.body()
-        titleLabel.lineBreakMode = .byTruncatingTail
-        let subtitleLabel = NSTextField(labelWithString: subtitle)
-        subtitleLabel.font = DS.Text.caption()
-        subtitleLabel.textColor = .tertiaryLabelColor
-        subtitleLabel.lineBreakMode = .byTruncatingMiddle
-        subtitleLabel.toolTip = subtitle
-
-        let nameStack = NSStackView(views: [titleLabel, subtitleLabel])
-        nameStack.orientation = .vertical
-        nameStack.alignment = .leading
-        nameStack.spacing = DS.Spacing.xxs
-        nameStack.translatesAutoresizingMaskIntoConstraints = false
-        nameStack.widthAnchor.constraint(equalToConstant: Self.columnWidths.name).isActive = true
-
-        // The input/cached/output split matters for reading a bill, but only as detail — the
-        // row shows one total and puts the breakdown in the tooltip.
-        let tokensLabel = makeColumnLabel(
-            UsageFormatting.tokens(totals.totalTokens), size: 12, weight: .regular,
-            color: .labelColor, alignment: .right, width: Self.columnWidths.tokens
-        )
-        tokensLabel.toolTip = "\(UsageFormatting.tokens(totals.inputTokens)) input · \(UsageFormatting.tokens(totals.cachedInputTokens)) cached · \(UsageFormatting.tokens(totals.outputTokens)) output"
-
-        return makeColumnRow(
-            first: nameStack,
-            requests: makeColumnLabel("\(totals.requestCount)", size: 12, weight: .regular, color: .secondaryLabelColor, alignment: .right, width: Self.columnWidths.requests),
-            tokens: tokensLabel,
-            cost: makeColumnLabel(
-                cost.map { UsageFormatting.cost($0) } ?? "–", size: 12, weight: .regular,
-                color: cost == nil ? .tertiaryLabelColor : .labelColor,
-                alignment: .right, width: Self.columnWidths.cost
-            )
-        )
+    @objc private func periodChanged(_ sender: NSSegmentedControl) {
+        period = Period(rawValue: sender.selectedSegment) ?? .thisMonth
+        render()
     }
 
-    private func makeColumnRow(first: NSView, requests: NSView, tokens: NSView, cost: NSView) -> NSView {
-        let row = NSStackView(views: [first, requests, tokens, cost])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = DS.Spacing.xl
-        return row
+    @objc private func toggleGroup(_ sender: NSButton) {
+        guard let key = sender.identifier?.rawValue else { return }
+        if expanded.contains(key) { expanded.remove(key) } else { expanded.insert(key) }
+        render()
     }
 
-    private func makeColumnLabel(
-        _ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor,
-        alignment: NSTextAlignment, width: CGFloat
-    ) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = DS.Text.custom(size, weight: weight)
-        label.textColor = color
-        label.alignment = alignment
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: width).isActive = true
-        return label
-    }
-
-
-    /// The budget row: a dollar field, this month's standing against it, and a plain statement
-    /// of what it does and doesn't guarantee.
-    private func makeBudgetControls() -> NSView {
-        let label = NSTextField(labelWithString: "Stop sending above:")
-        label.font = DS.Text.body()
-
+    private func budgetRow() -> NSView {
         budgetField.placeholderString = "No limit"
-        budgetField.font = DS.Text.body()
         budgetField.alignment = .right
         budgetField.target = self
         budgetField.action = #selector(budgetChanged)
         budgetField.translatesAutoresizingMaskIntoConstraints = false
-        budgetField.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        budgetField.widthAnchor.constraint(equalToConstant: 80).isActive = true
         budgetField.stringValue = UsageBudget.monthlyLimitUSD.map { String(format: "%.2f", $0) } ?? ""
-
         let dollar = NSTextField(labelWithString: "$")
-        dollar.font = DS.Text.body()
-        let perMonth = NSTextField(labelWithString: "per month")
-        perMonth.font = DS.Text.body()
-        perMonth.textColor = .secondaryLabelColor
-
-        let row = NSStackView(views: [label, dollar, budgetField, perMonth])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = DS.Spacing.s
-
-        let statusLabel = NSTextField(wrappingLabelWithString: budgetStatusText())
-        statusLabel.font = DS.Text.caption()
-        statusLabel.textColor = budgetStatusColor()
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true
-
-        let stack = NSStackView(views: [row, statusLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = DS.Spacing.s
-        return stack
+        let field = NSStackView(views: [dollar, budgetField])
+        field.spacing = 4
+        let row = SettingsForm.row("Monthly limit", detail: budgetStatusText(), field)
+        if let detail = (row.subviews.first as? NSStackView)?.arrangedSubviews.first as? NSStackView,
+           let status = detail.arrangedSubviews.last as? NSTextField {
+            status.textColor = budgetStatusColor()
+        }
+        return row
     }
 
     private func budgetStatusText() -> String {
@@ -330,7 +220,7 @@ final class UsageViewController: NSViewController {
 
     private func budgetStatusColor() -> NSColor {
         switch UsageBudget.status() {
-        case .unlimited, .withinBudget: return .tertiaryLabelColor
+        case .unlimited, .withinBudget: return .secondaryLabelColor
         case .approaching: return .systemOrange
         case .exceeded: return .systemRed
         }
@@ -358,8 +248,42 @@ final class UsageViewController: NSViewController {
     }
 }
 
-/// Top-down stacking inside the scroll view — an unflipped document view pins sparse content to
-/// the bottom, the same trap Think's transcript hit.
-private final class FlippedView: NSView {
-    override var isFlipped: Bool { true }
+/// How much of the group's largest line this one is.
+private final class ShareBar: NSView {
+    private let share: Double
+    init(share: Double) {
+        self.share = max(0.02, min(1, share))
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+        DS.Color.scrimMedium.setFill()
+        track.fill()
+        var filled = bounds
+        filled.size.width = bounds.width * share
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: filled, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+    }
+}
+
+/// Names people recognize for a usage line: "Claude Code" rather than "acp:claude-code", and
+/// the agent's own name for its model when Side has seen it.
+enum UsageNames {
+    static func names(providerId: String, modelId: String) -> (model: String, provider: String) {
+        if providerId.hasPrefix("acp:") {
+            let agentId = String(providerId.dropFirst(4))
+            let agent = ACPAgent.agent(id: agentId)?.displayName ?? agentId
+            return (agentModelName(agentId: agentId, value: modelId) ?? modelId, agent)
+        }
+        let provider = ProviderRegistryStore.shared.provider(for: providerId)
+        return (provider?.models.first { $0.id == modelId }?.displayName ?? modelId, provider?.displayName ?? providerId)
+    }
+
+    private static func agentModelName(agentId: String, value: String) -> String? {
+        guard let data = UserDefaults.standard.data(forKey: "SideACPKnownOptions.\(agentId)"),
+              let options = try? JSONDecoder().decode([HarnessOption].self, from: data) else { return nil }
+        return options.first { $0.category == .model }?.choices.first { $0.value == value }?.name
+    }
 }

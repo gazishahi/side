@@ -192,6 +192,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.title = "Preferences"
             window.isReleasedWhenClosed = false
             window.contentViewController = PreferencesTabViewController()
+            // The grouped form's sections sit on the canvas, as System Settings' do.
+            window.backgroundColor = DS.Color.canvas
             preferencesWindow = window
         }
         preferencesWindow?.center()

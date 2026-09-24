@@ -91,7 +91,13 @@ public struct UsageRecord: Codable, Equatable {
 /// Marked unchecked-Sendable because it's deliberately only ever touched from the main thread —
 /// same convention (and same reason) as `ProviderRegistryStore`.
 public final class UsageStore: @unchecked Sendable {
-    public static let shared = UsageStore()
+    /// Under XCTest, a private file: tests record real-looking runs, and they used to land in the
+    /// user's own usage (dozens of "custom-…" agents from mock projects).
+    public static let shared = UsageStore(storeURL: isTesting
+        ? FileManager.default.temporaryDirectory.appendingPathComponent("side-usage-tests-\(ProcessInfo.processInfo.processIdentifier).json")
+        : nil)
+
+    static var isTesting: Bool { ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil || NSClassFromString("XCTestCase") != nil }
 
     public private(set) var records: [UsageRecord] = []
     private let storeURL: URL
@@ -234,6 +240,19 @@ public final class UsageStore: @unchecked Sendable {
 
     private func load() {
         records = JSONStore.read([UsageRecord].self, from: storeURL)?.payload ?? []
+        // Runs in the temporary directory are test projects (see `shared`), never the user's:
+        // drop what earlier test runs left behind.
+        let kept = records.filter { !Self.isTemporary($0.projectPath) }
+        if kept.count != records.count, !Self.isTesting {
+            records = kept
+            save()
+        }
+    }
+
+    static func isTemporary(_ path: String) -> Bool {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        let temp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().path
+        return resolved.hasPrefix(temp) || resolved.hasPrefix("/private/var/folders/") || resolved.hasPrefix("/private/tmp/")
     }
 
     private func save() {

@@ -15,8 +15,12 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     private init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 560),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Library"
+        // Seamless like the main window: the sidebar runs to the top under the traffic lights.
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.backgroundColor = DS.Color.canvas
         window.minSize = NSSize(width: 680, height: 420)
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("SideLibrary")
@@ -141,7 +145,7 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
         sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
         sidebar.style = .sourceList
         sidebar.headerView = nil
-        sidebar.rowHeight = 28
+        sidebar.rowHeight = 30
         sidebar.addTableColumn(NSTableColumn(identifier: .init("section")))
         sidebar.dataSource = self
         sidebar.delegate = self
@@ -163,7 +167,7 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
             effect.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             effect.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             effect.widthAnchor.constraint(equalToConstant: 180),
-            sidebarScroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: DS.Spacing.m),
+            sidebarScroll.topAnchor.constraint(equalTo: effect.topAnchor, constant: 44),
             sidebarScroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
             sidebarScroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
             sidebarScroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
@@ -261,7 +265,7 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
     override func loadView() {
         let root = NSView()
         let heading = NSTextField(labelWithString: "Instructions")
-        heading.font = DS.Text.heading()
+        heading.font = DS.Text.title(.bold)
         let note = NSTextField(wrappingLabelWithString: "Standing instructions agents read before they work. Heron uses the first of its files that exists, once you've read and accepted it. Outside agents read their own files directly, whether or not you've accepted them here.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
@@ -277,6 +281,8 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
         table.delegate = self
         table.setAccessibilityIdentifier("library.instructions")
         tableScroll.documentView = table
+        table.backgroundColor = .clear
+        LibraryStyle.card(tableScroll)
 
         let previewScroll = NSScrollView()
         previewScroll.hasVerticalScroller = true
@@ -288,9 +294,7 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
         preview.autoresizingMask = [.width]
         preview.drawsBackground = false
         previewScroll.documentView = preview
-        previewScroll.wantsLayer = true
-        previewScroll.layer?.cornerRadius = DS.Radius.surface
-        previewScroll.layer?.backgroundColor = DS.Color.scrimFaint.cgColor
+        LibraryStyle.card(previewScroll)
 
         stateLabel.font = DS.Text.caption()
         stateLabel.textColor = .secondaryLabelColor
@@ -309,14 +313,14 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
         }
         let inset = DS.Spacing.section
         NSLayoutConstraint.activate([
-            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset + 18),
             heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
-            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.s),
             note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
             note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
-            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.m),
-            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - DS.Spacing.m),
-            tableScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset + DS.Spacing.m),
+            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.xl),
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
+            tableScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
             tableScroll.heightAnchor.constraint(equalTo: root.heightAnchor, multiplier: 0.42),
             previewScroll.topAnchor.constraint(equalTo: tableScroll.bottomAnchor, constant: DS.Spacing.m),
             previewScroll.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
@@ -423,7 +427,7 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
     override func loadView() {
         let root = NSView()
         let heading = NSTextField(labelWithString: "Prompts")
-        heading.font = DS.Text.heading()
+        heading.font = DS.Text.title(.bold)
         let note = NSTextField(wrappingLabelWithString: "Prompts you'd otherwise retype. Type /name in Think to put one in the composer. It never sends by itself.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
@@ -438,6 +442,8 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         table.delegate = self
         table.setAccessibilityIdentifier("library.prompts")
         tableScroll.documentView = table
+        table.backgroundColor = .clear
+        LibraryStyle.card(tableScroll)
         let newButton = NSButton(title: "New Prompt", target: self, action: #selector(newPrompt))
         newButton.bezelStyle = .rounded
 
@@ -447,7 +453,8 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         scopePopup.addItems(withTitles: ["Mine, in every project", "This project, shared in the repo"])
         let bodyScroll = NSScrollView()
         bodyScroll.hasVerticalScroller = true
-        bodyScroll.borderType = .bezelBorder
+        bodyScroll.borderType = .noBorder
+        LibraryStyle.card(bodyScroll)
         bodyView.isRichText = false
         bodyView.allowsUndo = true
         bodyView.font = DS.Text.body()
@@ -465,6 +472,7 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         deleteButton.target = self
         deleteButton.action = #selector(deletePrompt)
         deleteButton.bezelStyle = .rounded
+        deleteButton.hasDestructiveAction = true
         startTrackButton.target = self
         startTrackButton.action = #selector(startTrack)
         startTrackButton.bezelStyle = .rounded
@@ -478,14 +486,14 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         }
         let inset = DS.Spacing.section
         NSLayoutConstraint.activate([
-            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset + 18),
             heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
-            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.s),
             note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
             note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
 
-            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.m),
-            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - DS.Spacing.m),
+            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.xl),
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
             tableScroll.widthAnchor.constraint(equalToConstant: 220),
             newButton.topAnchor.constraint(equalTo: tableScroll.bottomAnchor, constant: DS.Spacing.m),
             newButton.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
@@ -623,11 +631,12 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
     private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
     private var editing: MCPServerConfig?
+    private let emptyLabel = NSTextField(wrappingLabelWithString: "No servers yet. Fill in the form to add one.")
 
     override func loadView() {
         let root = NSView()
         let heading = NSTextField(labelWithString: "MCP Servers")
-        heading.font = DS.Text.heading()
+        heading.font = DS.Text.title(.bold)
         let note = NSTextField(wrappingLabelWithString: "Your own tools for agents. Outside agents start the servers you switch on for a project, alongside Side's own tools and whatever their own settings add. Heron can't use MCP servers yet. Idle agents restart to pick up a change.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
@@ -642,6 +651,8 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
         table.delegate = self
         table.setAccessibilityIdentifier("library.mcpServers")
         tableScroll.documentView = table
+        table.backgroundColor = .clear
+        LibraryStyle.card(tableScroll)
         let newButton = NSButton(title: "New Server", target: self, action: #selector(newServer))
         newButton.bezelStyle = .rounded
 
@@ -653,7 +664,8 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
         environmentLabel.textColor = .secondaryLabelColor
         let environmentScroll = NSScrollView()
         environmentScroll.hasVerticalScroller = true
-        environmentScroll.borderType = .bezelBorder
+        environmentScroll.borderType = .noBorder
+        LibraryStyle.card(environmentScroll)
         environmentView.isRichText = false
         environmentView.font = DS.Text.code(12)
         environmentView.autoresizingMask = [.width]
@@ -668,6 +680,7 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
         deleteButton.target = self
         deleteButton.action = #selector(deleteServer)
         deleteButton.bezelStyle = .rounded
+        deleteButton.hasDestructiveAction = true
         let buttons = NSStackView(views: [enabledCheckbox, NSView(), deleteButton, saveButton])
         buttons.spacing = DS.Spacing.m
 
@@ -680,23 +693,29 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
         }
         environmentScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
 
-        for view in [heading, note, tableScroll, newButton, form, buttons] as [NSView] {
+        emptyLabel.font = DS.Text.caption()
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.alignment = .center
+        for view in [heading, note, tableScroll, newButton, form, buttons, emptyLabel] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
         let inset = DS.Spacing.section
         NSLayoutConstraint.activate([
-            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset + 18),
             heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
-            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.s),
             note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
             note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
-            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.m),
-            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - DS.Spacing.m),
+            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.xl),
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
             tableScroll.widthAnchor.constraint(equalToConstant: 220),
             newButton.topAnchor.constraint(equalTo: tableScroll.bottomAnchor, constant: DS.Spacing.m),
             newButton.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
             newButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
+            emptyLabel.centerYAnchor.constraint(equalTo: tableScroll.centerYAnchor),
+            emptyLabel.leadingAnchor.constraint(equalTo: tableScroll.leadingAnchor, constant: DS.Spacing.xl),
+            emptyLabel.trailingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: -DS.Spacing.xl),
             form.topAnchor.constraint(equalTo: tableScroll.topAnchor),
             form.leadingAnchor.constraint(equalTo: tableScroll.trailingAnchor, constant: DS.Spacing.l),
             form.trailingAnchor.constraint(equalTo: note.trailingAnchor),
@@ -712,6 +731,7 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
         loadViewIfNeeded()
         servers = MCPServerStore.all
         table.reloadData()
+        emptyLabel.isHidden = !servers.isEmpty
         if let editing, let row = servers.firstIndex(where: { $0.id == editing.id }) {
             table.selectRowIndexes([row], byExtendingSelection: false)
             show(servers[row])
@@ -821,7 +841,7 @@ final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, N
     override func loadView() {
         let root = NSView()
         let heading = NSTextField(labelWithString: "Skills")
-        heading.font = DS.Text.heading()
+        heading.font = DS.Text.title(.bold)
         let note = NSTextField(wrappingLabelWithString: "Instructions and scripts an agent loads when a task calls for them. Outside agents find these on their own. Heron doesn't use skills yet.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
@@ -836,6 +856,8 @@ final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, N
         table.delegate = self
         table.setAccessibilityIdentifier("library.skills")
         tableScroll.documentView = table
+        table.backgroundColor = .clear
+        LibraryStyle.card(tableScroll)
 
         descriptionLabel.font = DS.Text.body()
         pathLabel.font = DS.Text.caption()
@@ -850,9 +872,7 @@ final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, N
         preview.autoresizingMask = [.width]
         preview.textContainerInset = NSSize(width: DS.Spacing.m, height: DS.Spacing.m)
         previewScroll.documentView = preview
-        previewScroll.wantsLayer = true
-        previewScroll.layer?.cornerRadius = DS.Radius.surface
-        previewScroll.layer?.backgroundColor = DS.Color.scrimFaint.cgColor
+        LibraryStyle.card(previewScroll)
         openButton.target = self
         openButton.action = #selector(openTapped)
         openButton.bezelStyle = .rounded
@@ -865,13 +885,13 @@ final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, N
         }
         let inset = DS.Spacing.section
         NSLayoutConstraint.activate([
-            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset + 18),
             heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
-            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.s),
             note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
             note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
-            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.m),
-            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset - DS.Spacing.m),
+            tableScroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.xl),
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
             tableScroll.widthAnchor.constraint(equalToConstant: 240),
             tableScroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset),
             emptyLabel.topAnchor.constraint(equalTo: tableScroll.topAnchor, constant: DS.Spacing.m),
@@ -963,7 +983,7 @@ final class StoragePaneViewController: NSViewController {
     override func loadView() {
         let root = NSView()
         let heading = NSTextField(labelWithString: "Storage")
-        heading.font = DS.Text.heading()
+        heading.font = DS.Text.title(.bold)
         let note = NSTextField(wrappingLabelWithString: "What Side keeps on this Mac for this project. Checkpoints are git commits in the repository and aren't counted here.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
@@ -977,38 +997,55 @@ final class StoragePaneViewController: NSViewController {
         archivedValue.font = DS.Text.caption()
         archivedValue.textColor = .secondaryLabelColor
 
-        let grid = NSGridView(views: [
-            [Self.label("Heron conversations"), conversationsValue],
-            [Self.label("Outside-agent records"), outsideValue],
-            [Self.label("Track working copies"), copiesValue],
-            [Self.label("Conversation history"), retentionPopup],
-        ])
-        grid.rowSpacing = DS.Spacing.l
-        grid.columnSpacing = DS.Spacing.xl
-        grid.column(at: 0).xPlacement = .trailing
-        let archivedStack = NSStackView(views: [archivedValue, removeButton])
-        archivedStack.orientation = .vertical
-        archivedStack.alignment = .leading
-        archivedStack.spacing = DS.Spacing.m
+        for value in [conversationsValue, outsideValue, copiesValue] {
+            value.textColor = .secondaryLabelColor
+            value.font = NSFont.monospacedDigitSystemFont(ofSize: DS.Text.body().pointSize, weight: .regular)
+        }
+        archivedValue.preferredMaxLayoutWidth = 360
+        archivedValue.font = DS.Text.caption()
+        let archivedTitle = NSTextField(labelWithString: "Working copies of archived tracks")
+        archivedTitle.font = DS.Text.body()
+        let archivedText = NSStackView(views: [archivedTitle, archivedValue])
+        archivedText.orientation = .vertical
+        archivedText.alignment = .leading
+        archivedText.spacing = 2
+        archivedText.setHuggingPriority(.defaultLow, for: .horizontal)
+        let archivedLine = NSStackView(views: [archivedText, removeButton])
+        archivedLine.orientation = .horizontal
+        archivedLine.alignment = .centerY
+        archivedLine.spacing = DS.Spacing.xl
+        removeButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        for view in [heading, note, grid, archivedStack] as [NSView] {
+        let sections = NSStackView(views: [
+            SettingsForm.section("On this Mac", [
+                SettingsForm.row("Heron conversations", conversationsValue),
+                SettingsForm.row("Outside-agent records", outsideValue),
+                SettingsForm.row("Track working copies", copiesValue),
+            ]),
+            SettingsForm.section("History", footer: "The same setting as Preferences \u{203A} History.", [
+                SettingsForm.row("Keep conversations", retentionPopup),
+            ]),
+            SettingsForm.section("Archived tracks", [SettingsForm.content(archivedLine)]),
+        ])
+        sections.orientation = .vertical
+        sections.alignment = .leading
+        sections.spacing = DS.Spacing.section
+        for view in [heading, note, sections] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
         let inset = DS.Spacing.section
         NSLayoutConstraint.activate([
-            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset),
+            heading.topAnchor.constraint(equalTo: root.topAnchor, constant: inset + 18),
             heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset),
-            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.xs),
+            note.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: DS.Spacing.s),
             note.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
             note.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
-            grid.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.section),
-            grid.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
-            archivedStack.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: DS.Spacing.section),
-            archivedStack.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
-            archivedStack.trailingAnchor.constraint(lessThanOrEqualTo: note.trailingAnchor),
-            archivedValue.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
+            sections.topAnchor.constraint(equalTo: note.bottomAnchor, constant: DS.Spacing.xl),
+            sections.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            sections.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset),
         ])
+        for section in sections.arrangedSubviews { section.widthAnchor.constraint(equalTo: sections.widthAnchor).isActive = true }
         view = root
     }
 
@@ -1144,6 +1181,24 @@ private final class RemovalBox: @unchecked Sendable {
     init(remaining: [Track], completion: @escaping ([String]) -> Void) {
         self.remaining = remaining
         self.completion = completion
+    }
+}
+
+/// Library's surfaces, in the grouped-form language Preferences uses.
+@MainActor
+enum LibraryStyle {
+    /// A rounded, raised card around a list or a text area.
+    static func card(_ scroll: NSScrollView) {
+        // Drawn by the scroll view itself: a table repaints its scroll view's background over
+        // any layer color, so a layer background alone never showed behind a list.
+        scroll.drawsBackground = true
+        scroll.backgroundColor = DS.Color.raised
+        scroll.contentView.drawsBackground = true
+        scroll.contentView.backgroundColor = DS.Color.raised
+        scroll.layer?.cornerRadius = DS.Radius.surface
+        scroll.layer?.cornerCurve = .continuous
+        scroll.layer?.masksToBounds = true
+        (scroll.documentView as? NSTextView)?.drawsBackground = false
     }
 }
 
