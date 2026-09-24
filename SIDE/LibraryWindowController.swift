@@ -912,7 +912,9 @@ final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, N
         for view in [descriptionLabel, pathLabel, preview.enclosingScrollView, openButton] as [NSView?] { view?.isHidden = skill == nil }
         guard let skill else { return }
         descriptionLabel.stringValue = skill.description.isEmpty ? "No description." : skill.description
-        pathLabel.stringValue = "\(skill.location)/\(skill.url.deletingLastPathComponent().lastPathComponent) \u{00B7} Loaded by \(skill.readers.joined(separator: ", "))"
+        let linked = skill.alsoIn.isEmpty ? "" : " \u{00B7} Also linked from \(skill.alsoIn.joined(separator: ", "))"
+        pathLabel.stringValue = "\(skill.location)/\(skill.url.deletingLastPathComponent().lastPathComponent) \u{00B7} Loaded by \(skill.readers.joined(separator: ", "))\(linked)"
+        pathLabel.toolTip = pathLabel.stringValue
         preview.string = (try? String(contentsOf: skill.url, encoding: .utf8)) ?? ""
     }
 
@@ -925,7 +927,8 @@ final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, N
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let skill = skills[row]
-        return LibraryListCell(title: skill.name, detail: "\(skill.readers.first ?? "") \u{00B7} \(skill.scope == .project ? "This project" : "Yours")", dimmed: false)
+        let agents = skill.readers.filter { !$0.hasPrefix("other agents") }.joined(separator: ", ")
+        return LibraryListCell(title: skill.name, detail: "\(agents) \u{00B7} \(skill.scope == .project ? "This project" : "Yours")", dimmed: false)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) { refreshDetail() }

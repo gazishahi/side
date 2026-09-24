@@ -169,6 +169,16 @@ final class LibrarySkillsAndStorageTests: XCTestCase {
         XCTAssertEqual(skills[1].description, "Sorts issues by severity.")
         XCTAssertEqual(skills[1].location, "~/.agents/skills")
         XCTAssertEqual(SkillCatalog.frontMatter("no front matter"), [:])
+
+        // An installer's usual layout: one copy in ~/.agents/skills, linked from ~/.claude/skills.
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".claude/skills"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: home.appendingPathComponent(".claude/skills/triage"), withDestinationURL: shared)
+        let linked = SkillCatalog.discover(workingRoot: root, home: home)
+        XCTAssertEqual(linked.map(\.name), ["release-notes", "triage"], "listed once")
+        let triage = try XCTUnwrap(linked.last)
+        XCTAssertEqual(triage.location, "~/.agents/skills", "where it really lives")
+        XCTAssertEqual(triage.alsoIn, ["~/.claude/skills"])
+        XCTAssertEqual(Set(triage.readers), ["Claude Code", "Codex", "other agents that read .agents/skills"])
     }
 
     func testStorageRemovesArchivedWorkingCopiesButKeepsDirtyOnesAndBranches() throws {

@@ -104,6 +104,10 @@ message. That is the whole feature; there is no separate template object.
    through the composer's own send path, so the rules consent and model readiness checks apply
    and an unsendable message waits in the composer. Verified in the app on a fixture project.
 
+**Follow-ups, 2026-09-24:** Preferences › General has "Open Library…". A skill reached through a
+symlink (installers link `~/.claude/skills/x` to `~/.agents/skills/x`) is listed once, where it
+lives, with every agent that reaches it and where else it's linked from.
+
 ## Acceptance (step 1)
 
 - ⇧⌘L opens Library for the frontmost project; it updates when another project window comes

@@ -354,6 +354,21 @@ final class GeneralPreferencesViewController: NSViewController {
         sideRow.spacing = DS.Spacing.s
         stack.addArrangedSubview(sideRow)
         explorerPopup = sidePopup
+
+        // Library is a window, not a pane here (RFC R6); this is one of its doors.
+        let libraryTitle = NSTextField(labelWithString: "Library")
+        libraryTitle.font = DS.Text.heading()
+        stack.setCustomSpacing(DS.Spacing.xl, after: sideRow)
+        stack.addArrangedSubview(libraryTitle)
+        let libraryDetail = NSTextField(wrappingLabelWithString: "Instruction files, saved prompts and templates, MCP servers, skills, and storage for the frontmost project.")
+        libraryDetail.font = DS.Text.caption()
+        libraryDetail.textColor = .secondaryLabelColor
+        libraryDetail.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        stack.addArrangedSubview(libraryDetail)
+        let openLibrary = NSButton(title: "Open Library\u{2026}", target: self, action: #selector(openLibrary))
+        openLibrary.bezelStyle = .rounded
+        openLibrary.setAccessibilityIdentifier("preferences.openLibrary")
+        stack.addArrangedSubview(openLibrary)
         view = stack
         refresh()
         observer = NotificationCenter.default.addObserver(forName: StagePins.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -376,6 +391,10 @@ final class GeneralPreferencesViewController: NSViewController {
     }
 
     private var explorerPopup: NSPopUpButton?
+
+    @objc private func openLibrary() {
+        LibraryWindowController.shared.show(for: nil)
+    }
 
     @objc private func explorerSideChanged(_ sender: NSPopUpButton) {
         FileExplorer.Side.preferred = FileExplorer.Side.allCases[max(0, sender.indexOfSelectedItem)]
