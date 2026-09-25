@@ -84,7 +84,11 @@ public final class AlloyEditorView: NSView {
         setNeedsRender()
     }
 
+    /// Every change to the buffer, as it happens (syntax highlighting follows these).
+    public var onTextChange: ((TextChange) -> Void)?
+
     private func textChanged(_ change: TextChange) {
+        onTextChange?(change)
         documentLayout.update(buffer.text, edits: change.edits)
         updateDocumentHeight()
         restartBlink()

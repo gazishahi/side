@@ -1,6 +1,7 @@
 import AlloyAppKit
 import AlloyCore
 import AlloyRender
+import AlloySyntax
 import AppKit
 import CoreText
 
@@ -13,6 +14,7 @@ import CoreText
 final class Playground: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var editor: AlloyEditorView!
+    var highlighter: SyntaxHighlighter?
     let arguments = CommandLine.arguments
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -22,6 +24,13 @@ final class Playground: NSObject, NSApplicationDelegate {
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular) as CTFont
         editor = try! AlloyEditorView(buffer: TextBuffer(text), font: font)
         if arguments.contains("--dark") { editor.theme = .dark }
+        if let path, let highlighter = SyntaxHighlighter(fileExtension: (path as NSString).pathExtension, text: editor.buffer.text,
+                                                         theme: .side(dark: arguments.contains("--dark"))) {
+            self.highlighter = highlighter
+            editor.styles = { [unowned highlighter] line in highlighter.spans(forLine: line) }
+            editor.onTextChange = { [unowned self, unowned highlighter] change in highlighter.apply(change.edits, newText: self.editor.buffer.text) }
+            highlighter.onInvalidate = { [unowned self] in self.editor.setNeedsRender() }
+        }
         if !arguments.contains("--no-selection") { editor.buffer.setSelections([Selection(anchor: 30, head: 120), Selection(caret: 200)]) }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Alloy \u{00B7} " + (path.map { ($0 as NSString).lastPathComponent } ?? "empty")

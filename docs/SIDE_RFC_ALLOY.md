@@ -1,6 +1,6 @@
 # RFC: Alloy, the editing engine
 
-*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–3 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
+*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–4 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` ("Alloy: powers Make"), `SIDE_DESIGN.md` (tokens,
 motion, accessibility) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -165,6 +165,25 @@ headers, inline agent ghost text.
    playground with real keystrokes. Not yet exercised with a real input method or dictation
    (the protocol path is tested; a live IME pass belongs to step 6).
 4. **Syntax:** tree-sitter highlighting (A3).
+   **Built 2026-09-24:** `AlloySyntax`: SwiftTreeSitter and tree-sitter 0.25 with grammars for
+   the thirteen languages Side's regex highlighter covered (JavaScript, Python and Lua pinned to
+   releases whose manifests include their scanners; Swift's pinned to its generated-files tag).
+   Highlight queries are vendored (`Queries/`, TypeScript on JavaScript and C++ on C) with the
+   grammars' MIT notices (`THIRD_PARTY_NOTICES.md`). Input is the rope as UTF-16, the unit Alloy
+   already uses. Captures paint as tree-sitter's own highlighter does (inner over outer, later
+   pattern over earlier); colors are cached per line, shifted with edits and invalidated from the
+   tree's changed ranges. **Found and fixed on the way:** Swift's grammar reuses little on an edit
+   deep in a long body (a keystroke cost 110 ms at 20,000 lines), so the tree now follows each edit
+   at once (tree-sitter's `edit`, keeping colors on their text) and reparses on a background queue
+   unless the file is under ~1,000 lines and parses in under 4 ms; and a query limited to a line
+   still stepped over every sibling before it (84 ms a line in a 40,000-member body), so each line
+   is queried from the node that holds it, climbing a few levels for context, with container-rooted
+   patterns (3 of all the queries' patterns) rewritten to run from the container's children.
+   Measured on a 40,000-line Swift file: a keystroke costs 0.1 ms on the main thread (budget 8 ms),
+   re-coloring its line 0.02 ms (budget 2 ms), the background reparse ~280 ms. 38 package tests,
+   including incremental-versus-fresh-parse equality across random edits and a line-by-line match
+   between the fast query path and a root query on real files. Known gap: in a Lua table with more
+   than 512 entries, the braces lose their constructor color.
 5. **Make parity** on the seam, feature by feature, each with a test.
 6. **Accessibility and polish:** VoiceOver, text sizes, tokens, Reduce Motion.
 7. **Switch:** Make on Alloy; remove the `NSTextView` path; measure against the budgets.
