@@ -9,7 +9,7 @@
 |---|---|---|---|
 | Side | Developer ID–signed, notarized `Side-<version>.dmg` | private (D4) | `gazishahi/side-releases` on GitHub (D2) |
 | Heron | Swift package (`Packages/Heron` today) | Apache-2.0 (D3) | its own public repository (D5) |
-| Alloy | Swift package, once it exists | Apache-2.0 (D3) | its own public repository (D5) |
+| Alloy | Swift package (github.com/gazishahi/alloy, 0.1.1) | Apache-2.0 (D3) | its own public repository (D5) |
 
 ## Version
 

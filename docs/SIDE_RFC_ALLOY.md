@@ -1,6 +1,6 @@
 # RFC: Alloy, the editing engine
 
-*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–7 built (Make runs on Alloy only). A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
+*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–8 built (Make runs on Alloy only; published as `gazishahi/alloy`). A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` ("Alloy: powers Make"), `SIDE_DESIGN.md` (tokens,
 motion, accessibility) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -255,6 +255,15 @@ headers, inline agent ghost text.
    or more in the same run, and frame CPU is p99 3.4 ms of the 8.3 ms frame. The first open of a
    session includes one-time setup (Make's panels, the first drawables).
 8. **Publish:** `gazishahi/alloy`, Apache-2.0.
+   **Built 2026-09-25:** public at https://github.com/gazishahi/alloy, tagged 0.1.0 and 0.1.1,
+   CI green on GitHub's macOS runner. Published as a clean snapshot, without Side's private
+   history. The Swift grammar is vendored (`TreeSitterSwiftGrammar`, symbols renamed) because it
+   published its generated parser only on a non-version tag, and a package pinned to a commit
+   can't be depended on by version; a consumer package depending on `from: "0.1.0"` resolves,
+   builds and highlights. Alloy has its own README and `docs/DESIGN.md` (the public part of this
+   RFC). CI caught what this Mac's Swift 6.2 didn't: Swift 6.1 infers Metal's callbacks written
+   in main-actor code as main-actor isolated, and traps when Metal calls them (0.1.1 fixes it).
+   Changes are made here in `Packages/Alloy` and synced to the public repo as snapshot commits.
 
 ## Risks, plainly
 
