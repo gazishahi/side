@@ -47,6 +47,45 @@ enum OutsideSessionLog {
         return contents
     }
 
+    /// The last record of a kind, reading the file from its end (a window at a time), so a
+    /// long conversation isn't read whole to find its latest answer.
+    static func lastRecord(of kind: Record.Kind, in url: URL, window: Int = 64 * 1024) -> Record? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd(), size > 0 else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var end = size
+        var carry = Data()
+        while end > 0 {
+            let start = end > UInt64(window) ? end - UInt64(window) : 0
+            try? handle.seek(toOffset: start)
+            guard var chunk = try? handle.read(upToCount: Int(end - start)) else { return nil }
+            chunk.append(carry)
+            var lines = chunk.split(separator: 0x0A, omittingEmptySubsequences: false)
+            // The first line may be cut off by the window; it's read whole with the next one.
+            carry = start > 0 ? Data(lines.removeFirst()) : Data()
+            for line in lines.reversed() where !line.isEmpty {
+                // A cheap check before decoding: most lines are other kinds.
+                guard line.range(of: Data("\"\(kind.rawValue)\"".utf8)) != nil,
+                      let record = try? decoder.decode(Record.self, from: line), record.kind == kind else { continue }
+                return record
+            }
+            end = start
+        }
+        return nil
+    }
+
+    /// The agent a record belongs to, from its header (the first line).
+    static func agentId(in url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 4096), let line = data.split(separator: 0x0A).first else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode(Record.self, from: line))?.agentId
+    }
+
     @discardableResult
     static func append(_ records: [Record], to url: URL) -> Bool {
         guard !records.isEmpty else { return true }

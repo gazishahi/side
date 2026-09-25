@@ -29,6 +29,11 @@ final class DiffDocumentView: NSView {
 
     /// "Instruct…" on a file's header: its path, the new-side lines it touches, the anchor.
     var onInstruct: ((String, ClosedRange<Int>, NSView) -> Void)?
+    /// The file at the top of the view changed (scrolling): Review's file list follows it.
+    var onTopFileChange: ((Int) -> Void)?
+    /// A file was folded or opened from its header.
+    var onFoldChange: ((Int, Bool) -> Void)?
+    private var topFile: Int?
 
     private(set) var diff = UnifiedDiff()
     private var folded: Set<Int> = []
@@ -90,10 +95,12 @@ final class DiffDocumentView: NSView {
 
     func renderLoading() { show(message: "Loading diff…") }
 
-    func render(diffText: String) {
+    /// `folding` picks the files that start folded (Review folds the ones marked viewed).
+    func render(diffText: String, emptyMessage: String = "No changes against this base.", folding: ((UnifiedDiff) -> Set<Int>)? = nil) {
         diff = UnifiedDiff.parse(diffText)
-        folded = []
-        guard !diff.files.isEmpty else { show(message: "No changes against this base."); return }
+        folded = folding?(diff) ?? []
+        topFile = nil
+        guard !diff.files.isEmpty else { show(message: emptyMessage); return }
         message?.removeFromSuperview()
         message = nil
         rebuild(keepingPosition: false)
@@ -107,7 +114,10 @@ final class DiffDocumentView: NSView {
         label.textColor = .tertiaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
-        NSLayoutConstraint.activate([label.topAnchor.constraint(equalTo: topAnchor), label.leadingAnchor.constraint(equalTo: leadingAnchor)])
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.section),
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+        ])
         message = label
         layer?.backgroundColor = nil
     }
@@ -118,8 +128,7 @@ final class DiffDocumentView: NSView {
         let top = first.editor.scrollY
         let row = first.editor.documentLayout.line(atY: top).line
         guard first.rows.indices.contains(row) else { return nil }
-        let file = fileIndex(of: first.rows[row])
-        guard let headerRow = first.headerRow[file] else { return nil }
+        guard let file = file(atRow: row, in: first), let headerRow = first.headerRow[file] else { return nil }
         return (file, top - first.editor.documentLayout.caretRect(at: first.editor.buffer.text.offset(ofLine: headerRow)).minY)
     }
 
@@ -201,6 +210,9 @@ final class DiffDocumentView: NSView {
         guard let editor = try? AlloyEditorView(buffer: TextBuffer(text), font: font as CTFont) else { return nil }
         editor.isEditable = false
         editor.wrapsLines = false
+        // No band above the first file: its header starts at the top edge, as each later one
+        // starts at its own row.
+        editor.documentLayout.insets = CGSize(width: 12, height: 0)
         editor.accessibilityName = side == nil ? "Diff" : (side == .left ? "Diff, before" : "Diff, after")
         var column = Column(editor: editor, rows: rows, fileText: fileText, side: side)
         column.localIndex = localIndex
@@ -393,26 +405,44 @@ final class DiffDocumentView: NSView {
         let layoutModel = editor.documentLayout
         let visible = editor.viewport
         let topRow = layoutModel.line(atY: max(0, visible.minY - layoutModel.lineHeight * 2)).line
-        let bottomRow = layoutModel.line(atY: visible.maxY).line
+        // To the bottom of what's drawn, the part under the bar included.
+        let bottomRow = layoutModel.line(atY: editor.drawingRect.maxY).line
         var wanted: Set<Int> = []
         if topRow <= bottomRow {
             for row in topRow...min(bottomRow, first.rows.count - 1) {
                 if case .fileTop(let file) = first.rows[row] { wanted.insert(file) }
             }
         }
+        // The file at the top keeps its header in view while its lines scroll under it, until
+        // the next file's header pushes it up.
+        let current = file(atRow: layoutModel.line(atY: visible.minY).line, in: first)
+        if let current { wanted.insert(current) }
         for (file, view) in headers where !wanted.contains(file) {
             view.removeFromSuperview()
             headers[file] = nil
         }
         let height = layoutModel.lineHeight * 2
+        let clipTop = editor.scrollView.contentView.bounds.minY
+        func top(of file: Int) -> CGFloat? {
+            first.headerRow[file].map { layoutModel.caretRect(at: editor.buffer.text.offset(ofLine: $0)).minY }
+        }
         for file in wanted {
-            guard let row = first.headerRow[file] else { continue }
+            guard let rowTop = top(of: file) else { continue }
             let header = headers[file] ?? makeHeader(file)
             headers[file] = header
-            let rowTop = layoutModel.caretRect(at: editor.buffer.text.offset(ofLine: row)).minY
             // Document y → this view (flipped header layer): the clip view's top edge is ours.
-            let y = rowTop - editor.scrollView.contentView.bounds.minY
+            var y = rowTop - clipTop
+            let pinned = file == current && y < 0
+            if file == current {
+                y = max(y, 0)
+                if let next = top(of: file + 1) { y = min(y, next - clipTop - height - layoutModel.lineHeight) }
+            }
             header.frame = NSRect(x: 0, y: y, width: bounds.width, height: height)
+            header.isPinned = pinned
+        }
+        if let current, current != topFile {
+            topFile = current
+            onTopFileChange?(current)
         }
     }
 
@@ -428,8 +458,40 @@ final class DiffDocumentView: NSView {
     }
 
     private func toggleFold(_ index: Int) {
-        if folded.contains(index) { folded.remove(index) } else { folded.insert(index) }
+        let folding = !folded.contains(index)
+        setFolded(index, folding)
+        onFoldChange?(index, folding)
+    }
+
+    /// Folds or opens a file, keeping what's on screen where it is. A file folded while it's
+    /// the one at the top keeps its header there, so the next file comes up under it.
+    func setFolded(_ index: Int, _ fold: Bool) {
+        guard diff.files.indices.contains(index), folded.contains(index) != fold else { return }
+        if fold { folded.insert(index) } else { folded.remove(index) }
+        let pinned = topFile == index
         rebuild(keepingPosition: true)
+        if pinned { scrollToFile(index) }
+    }
+
+    func isFolded(_ index: Int) -> Bool { folded.contains(index) }
+
+    /// Brings a file's header to the top.
+    func scrollToFile(_ index: Int) {
+        guard let first = columns.first, let row = first.headerRow[index] else { return }
+        first.editor.layoutSubtreeIfNeeded()
+        let y = first.editor.documentLayout.caretRect(at: first.editor.buffer.text.offset(ofLine: row)).minY
+        let limit = max(0, first.editor.documentLayout.contentHeight + first.editor.scrollView.contentInsets.bottom - first.editor.scrollView.contentView.bounds.height)
+        for column in columns { column.editor.scrollY = min(y, limit) }
+        refreshHeaders()
+    }
+
+    /// The file a row belongs to; the gap before a file belongs to the one above it.
+    private func file(atRow row: Int, in column: Column) -> Int? {
+        guard column.rows.indices.contains(row) else { return nil }
+        if case .gap = column.rows[row] {
+            return column.rows.indices.contains(row + 1) ? max(0, fileIndex(of: column.rows[row + 1]) - 1) : nil
+        }
+        return fileIndex(of: column.rows[row])
     }
 
     private func fileIndex(of row: Row) -> Int {
@@ -451,6 +513,8 @@ final class DiffDocumentView: NSView {
     var rowCount: Int { columns.first?.rows.count ?? 0 }
     var visibleHeaderCount: Int { headers.count }
     var editors: [AlloyEditorView] { columns.map(\.editor) }
+    /// Where each header sits in this view, by file.
+    var headerFramesForTesting: [Int: NSRect] { headers.mapValues(\.frame) }
     func toggleFoldForTesting(_ file: Int) { toggleFold(file) }
 }
 
@@ -468,6 +532,9 @@ private final class HeaderLayerView: NSView {
 @MainActor
 final class DiffFileHeader: NSView {
     var onToggle: (() -> Void)?
+    /// Held at the top while its file's lines scroll under it: a hairline marks the edge.
+    var isPinned = false { didSet { if isPinned != oldValue { hairline.isHidden = !isPinned } } }
+    private let hairline = NSBox()
     var onInstruct: ((NSView) -> Void)? { didSet { instructButton.isHidden = onInstruct == nil } }
     private let instructButton = NSButton(title: "", target: nil, action: nil)
     private let folded: Bool
@@ -522,10 +589,20 @@ final class DiffFileHeader: NSView {
         row.spacing = DS.Spacing.m
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
+        hairline.boxType = .custom
+        hairline.borderType = .noBorder
+        hairline.fillColor = DS.Color.hairline
+        hairline.isHidden = true
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hairline)
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.l),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            hairline.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hairline.trailingAnchor.constraint(equalTo: trailingAnchor),
+            hairline.bottomAnchor.constraint(equalTo: bottomAnchor),
+            hairline.heightAnchor.constraint(equalToConstant: 1),
         ])
     }
 

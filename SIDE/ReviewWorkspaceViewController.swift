@@ -1,23 +1,15 @@
 import AppKit
 import Heron
 
-/// Flipped scroll-document container — same arrangement Think's transcript uses. Review used to
-/// hand its content stack directly to the scroll view with only a width constraint, which left
-/// the document's height ambiguous on the *first* layout pass: the stage rendered completely
-/// blank after a fresh launch until a second stage switch forced a new pass.
-private final class ReviewDocumentView: NSView {
-    override var isFlipped: Bool { true }
-}
-
-
 /// The Review stage: "checkpoints, diffs, rationale, test evidence, and promotion decisions"
 /// per the constitution's stage table — the surface where a track's accumulated work (its
 /// checkpoints, and the cumulative diff they produced against the project's base branch) gets
-/// looked at as a whole and, when ready, promoted into `main`. Deliberately narrow for v1: it
-/// folds in only the one piece of Integration's fuller "action surface" vision that the
-/// constitution's own "First alpha" scenario actually requires — a single safe promote action —
-/// rather than building out Integration's full base/checkpoint/verification/integration
-/// four-concern model before real usage has shown what that needs to look like.
+/// looked at as a whole and, when ready, promoted into `main`.
+///
+/// Laid out changes first (SIDE_RFC_FIND_REVIEW_TRACKS.md, R1): the track and its two actions,
+/// Publish and Promote, in the window's top row; a summary card (what the agent last said about
+/// the work, verification and risks, and the checkpoints as a timeline to pick a range from);
+/// then the changed files beside their diffs, each with a check to mark it viewed.
 final class ReviewWorkspaceViewController: NSViewController {
     private weak var trackStore: TrackStore?
     private weak var sessionStore: AgentSessionStore?
@@ -28,33 +20,11 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// One sentence and the one action that fixes it (§6).
     private let emptyState = DS.EmptyState()
     var onEmptyStateAction: ((EmptyStateAction) -> Void)?
-    private let contentStack = NSStackView()
-    private let scrollView = NSScrollView()
+
+    // The top row: the track's intent, `branch → base · N ahead`, then Publish and Promote.
     private let titleLabel = NSTextField(labelWithString: "")
-    private let subtitleRow = NSStackView()
     private let headerRow = NSStackView()
-    /// `branch → target · N checkpoints ahead`, in code type beside the intent (§4.2).
     private let headerDetail = NSTextField(labelWithString: "")
-    /// The decision block's status lines: verification recency, then sibling overlap. Hidden
-    /// when there is nothing to say — a line that's always present is a line nobody reads.
-    private let verificationLine = DS.StatusLabel(state: .idle, text: "")
-    private let overlapLine = DS.StatusLabel(state: .needsYou, text: "")
-    private let decisionStack = NSStackView()
-    private let checkpointsHeader = NSTextField(labelWithString: "Checkpoints")
-    private let checkpointsStack = NSStackView()
-    private let diffHeader = NSTextField(labelWithString: "")
-    private let diffHeaderRow = NSStackView()
-    /// Unified / Split. A segmented control rather than a checkbox because the two are peers, not
-    /// an option and its absence; persisted, because a layout choice is a habit, not a mood.
-    private let diffLayoutControl = NSSegmentedControl(labels: ["Unified", "Split"], trackingMode: .selectOne, target: nil, action: nil)
-    /// Every file's changes in one Alloy document below the summary (SIDE_RFC_FIND_REVIEW_TRACKS.md, R2).
-    private let diffViewer = DiffDocumentView()
-    /// The summary and checkpoints above the diff: as tall as they are, up to half the stage.
-    private var topHeight: NSLayoutConstraint?
-    /// "Instruct…" on a file: (relative path, lines, anchor). The shell owns the conversation.
-    var onInstructRequested: ((String, ClosedRange<Int>, NSView) -> Void)? {
-        didSet { diffViewer.onInstruct = onInstructRequested }
-    }
     // Real label set per-track in refresh() — "to main" isn't right for a stacked track, whose
     // actual base is its parent's branch.
     private let promoteButton = ChipButton(symbolName: nil, accessibilityLabel: "Promote this track's changes to its base branch", height: ReviewWorkspaceViewController.promoteHeight)
@@ -62,11 +32,61 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// beside Promote, which stays the one primary action.
     private let publishButton = ChipButton(symbolName: nil, accessibilityLabel: "Publish this track: push its branch or open a pull request", height: ReviewWorkspaceViewController.promoteHeight)
     private let publishHost = NSView()
-    private let statusLabel = NSTextField(labelWithString: "")
-    /// The glass capsule Promote sits on, plus the status line beneath it. Floats over the
-    /// scrolling content in the stage's top-right corner rather than living in a bar of its own.
-    private let promoteOverlay = NSStackView()
     private let promoteHost = NSView()
+
+    // The summary card.
+    private let summaryCard = NSView()
+    private let summaryStack = NSStackView()
+    /// Who last spoke about the work and when; the text is what they said.
+    private let accountMeta = NSTextField(labelWithString: "")
+    private let accountText = NSTextField(wrappingLabelWithString: "")
+    private let accountMore = NSButton(title: "", target: nil, action: nil)
+    private let accountRow = NSStackView()
+    private var accountExpanded = false
+    /// The decision lines: verification recency, sibling overlap, and what Publish or Promote
+    /// last said. Hidden when there is nothing to say — a line that's always present is a line
+    /// nobody reads.
+    private let verificationLine = DS.StatusLabel(state: .idle, text: "")
+    private let overlapLine = DS.StatusLabel(state: .needsYou, text: "")
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let summaryHairline = NSBox()
+    private let timelineView = CheckpointTimelineView()
+    private let noCheckpoints = NSTextField(wrappingLabelWithString: "No checkpoints yet. One is created automatically the first time an approved edit or command lands on this track.")
+    /// Under the timeline: what the range is, and the chosen checkpoint's details and actions.
+    private let rangeLabel = NSTextField(labelWithString: "")
+    private let rangeMeta = NSTextField(labelWithString: "")
+    private let copyButton = ReviewWorkspaceViewController.textAction("Copy SHA")
+    private let undoButton = ReviewWorkspaceViewController.textAction("Undo\u{2026}")
+    private let everythingButton = ReviewWorkspaceViewController.textAction("All changes")
+    private let rangeRow = NSStackView()
+    private let timelineRow = NSStackView()
+    private var timelineWidth: NSLayoutConstraint?
+
+    // The changes.
+    private let diffTitle = NSTextField(labelWithString: "")
+    private let diffTotals = NSTextField(labelWithString: "")
+    /// Unified / Split. A segmented control rather than a checkbox because the two are peers, not
+    /// an option and its absence; persisted, because a layout choice is a habit, not a mood.
+    private let diffLayoutControl = NSSegmentedControl(labels: ["Unified", "Split"], trackingMode: .selectOne, target: nil, action: nil)
+    private let diffToolbar = NSStackView()
+    private let rail = ReviewFileRail()
+    private var railWidth: NSLayoutConstraint?
+    private var diffLeading: NSLayoutConstraint?
+    private var cardTop: NSLayoutConstraint?
+    /// Every file's changes in one Alloy document (SIDE_RFC_FIND_REVIEW_TRACKS.md, R2).
+    private let diffViewer = DiffDocumentView()
+    /// "Instruct…" on a file: (relative path, lines, anchor). The shell owns the conversation.
+    var onInstructRequested: ((String, ClosedRange<Int>, NSView) -> Void)? {
+        didSet { diffViewer.onInstruct = onInstructRequested }
+    }
+
+    /// The checkpoints, newest first, and the timeline over those on the branch.
+    private var allCheckpoints: [Checkpoint] = []
+    private var timeline = CheckpointTimeline(nodes: [])
+    private var currentBaseRef = "main"
+    /// Bumped per diff load, so a slow one for an old range doesn't land over a newer one.
+    private var diffGeneration = 0
+    private let viewedStore = ReviewViewedStore.shared
 
     override func loadView() { view = NSView() }
 
@@ -74,223 +94,254 @@ final class ReviewWorkspaceViewController: NSViewController {
         super.viewDidLoad()
         view.wantsLayer = true
         view.bindLayerBackground(DS.Color.canvas)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(textScaleChanged),
-            name: DS.Text.scaleDidChangeNotification, object: nil
-        )
-        // Review used to refresh only on entry, so a checkpoint created while the user was
-        // already looking at this stage appeared only after leaving and coming back.
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(checkpointsChanged),
-            name: AgentSessionStore.checkpointsDidChangeNotification, object: nil
-        )
+        NotificationCenter.default.addObserver(self, selector: #selector(textScaleChanged), name: DS.Text.scaleDidChangeNotification, object: nil)
+        // A checkpoint created, renamed or verified while the stage is on screen shows at once.
+        NotificationCenter.default.addObserver(self, selector: #selector(checkpointsChanged), name: AgentSessionStore.checkpointsDidChangeNotification, object: nil)
 
+        buildTopRow()
+        buildSummaryCard()
+        buildChanges()
 
-        // The track's intent heads the window's top row (Direction 02 §3.2), with the
-        // `branch → target` line beside it.
+        view.addSubview(summaryCard)
+        view.addSubview(diffToolbar)
+        view.addSubview(rail)
+        view.addSubview(diffViewer)
+        view.addSubview(emptyState)
+        let top = summaryCard.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight + DS.Spacing.m)
+        cardTop = top
+        let width = rail.widthAnchor.constraint(equalToConstant: ReviewFileRail.width)
+        railWidth = width
+        let leading = diffViewer.leadingAnchor.constraint(equalTo: rail.trailingAnchor, constant: DS.Spacing.m)
+        diffLeading = leading
+        NSLayoutConstraint.activate([
+            top,
+            summaryCard.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: Self.margin),
+            summaryCard.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -Self.margin),
+            // The card is as tall as it needs, up to about half the stage (the text inside it
+            // truncates first).
+            summaryCard.heightAnchor.constraint(lessThanOrEqualTo: view.heightAnchor, multiplier: 0.5),
+
+            rail.topAnchor.constraint(equalTo: summaryCard.bottomAnchor, constant: DS.Spacing.xl),
+            rail.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: Self.margin - DS.Spacing.l),
+            width,
+            rail.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            diffToolbar.topAnchor.constraint(equalTo: rail.topAnchor),
+            diffToolbar.heightAnchor.constraint(equalToConstant: ReviewFileRail.headerHeight),
+            diffToolbar.leadingAnchor.constraint(equalTo: diffViewer.leadingAnchor, constant: DS.Spacing.xs),
+            diffToolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -Self.margin),
+
+            diffViewer.topAnchor.constraint(equalTo: diffToolbar.bottomAnchor, constant: DS.Spacing.s),
+            leading,
+            diffViewer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -Self.margin),
+            diffViewer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+        ])
+        // Not just `showEmptyState(true)` — `reloadForTrackSwitch` can (and typically does, on
+        // a restored window) run before this view ever loads, since it's only added as a child
+        // and given a chance to load when the Review segment is first actually clicked.
+        refresh()
+    }
+
+    private func buildTopRow() {
         titleLabel.font = DS.Text.heading()
-
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         headerDetail.font = DS.Text.code(11.5, weight: .regular)
         headerDetail.textColor = .secondaryLabelColor
-        headerDetail.lineBreakMode = .byTruncatingMiddle
-        headerDetail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        subtitleRow.orientation = .horizontal
-        subtitleRow.alignment = .firstBaseline
-        subtitleRow.addArrangedSubview(headerDetail)
-        subtitleRow.translatesAutoresizingMaskIntoConstraints = false
+        headerDetail.lineBreakMode = .byTruncatingTail
+        headerDetail.setContentCompressionResistancePriority(.init(200), for: .horizontal)
 
-        decisionStack.orientation = .vertical
-        decisionStack.alignment = .leading
-        decisionStack.spacing = DS.Spacing.s
-        decisionStack.addArrangedSubview(verificationLine)
-        decisionStack.addArrangedSubview(overlapLine)
+        // ChipButtons on glass capsules, the composer's controls: the capsule is the chrome, and
+        // `glassBackdrop` makes button and capsule press as one object.
+        promoteButton.onPress = { [weak self] in self?.promoteTapped() }
+        promoteButton.settlesOnRelease = true
+        publishButton.onPress = { [weak self] in self?.publishTapped() }
+        publishButton.settlesOnRelease = true
+        publishButton.contentTintColor = .secondaryLabelColor
+        publishButton.setAttributedLabel(
+            NSAttributedString(string: "Publish\u{2026}", attributes: [.font: DS.Text.body(.medium), .foregroundColor: NSColor.secondaryLabelColor]),
+            identity: "publish"
+        )
+        for (host, button) in [(publishHost, publishButton), (promoteHost, promoteButton)] {
+            // Pill-shaped: radius exactly half the height.
+            let glass = DS.makeGlass(cornerRadius: Self.promoteHeight / 2)
+            button.glassBackdrop = glass
+            host.translatesAutoresizingMaskIntoConstraints = false
+            host.addSubview(glass)
+            host.addSubview(button)
+            host.setContentCompressionResistancePriority(.required, for: .horizontal)
+            NSLayoutConstraint.activate([
+                glass.topAnchor.constraint(equalTo: host.topAnchor),
+                glass.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                glass.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                glass.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+                button.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+                button.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: DS.Spacing.xl),
+                button.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -DS.Spacing.xl),
+                host.heightAnchor.constraint(equalToConstant: Self.promoteHeight),
+            ])
+        }
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = DS.Spacing.l
+        headerRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        for view in [titleLabel, headerDetail, spacer, publishHost, promoteHost] as [NSView] { headerRow.addArrangedSubview(view) }
+        headerRow.setCustomSpacing(DS.Spacing.m, after: publishHost)
+    }
+
+    private func buildSummaryCard() {
+        summaryCard.translatesAutoresizingMaskIntoConstraints = false
+        summaryCard.wantsLayer = true
+        summaryCard.bindLayerBackground(DS.Color.raised)
+        summaryCard.layer?.cornerRadius = DS.Radius.surface
+
+        accountMeta.font = DS.Text.caption(.medium)
+        accountMeta.textColor = .secondaryLabelColor
+        accountMore.isBordered = false
+        accountMore.target = self
+        accountMore.action = #selector(toggleAccount)
+        accountMore.setContentHuggingPriority(.required, for: .horizontal)
+        let metaSpacer = NSView()
+        metaSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        accountRow.orientation = .horizontal
+        accountRow.alignment = .firstBaseline
+        accountRow.spacing = DS.Spacing.m
+        for view in [accountMeta, metaSpacer, accountMore] as [NSView] { accountRow.addArrangedSubview(view) }
+        accountText.font = DS.Text.body()
+        accountText.textColor = .labelColor
+        // Wrapping, with the last visible line truncated: a truncating line break mode would
+        // make the field a single line.
+        accountText.lineBreakMode = .byWordWrapping
+        accountText.cell?.truncatesLastVisibleLine = true
+        accountText.maximumNumberOfLines = Self.accountLines
+        accountText.isSelectable = true
+        accountText.setContentCompressionResistancePriority(.init(250), for: .vertical)
+
+        statusLabel.font = DS.Text.caption()
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byWordWrapping
+        statusLabel.maximumNumberOfLines = 2
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        summaryHairline.boxType = .custom
+        summaryHairline.borderType = .noBorder
+        summaryHairline.fillColor = DS.Color.hairline
+        summaryHairline.translatesAutoresizingMaskIntoConstraints = false
+        summaryHairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
+
+        timelineView.translatesAutoresizingMaskIntoConstraints = false
+        timelineView.onChange = { [weak self] timeline in self?.rangeChanged(timeline) }
+        noCheckpoints.font = DS.Text.caption()
+        noCheckpoints.textColor = .tertiaryLabelColor
+
+        rangeLabel.font = DS.Text.body(.semibold)
+        rangeLabel.lineBreakMode = .byTruncatingTail
+        rangeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        rangeMeta.lineBreakMode = .byTruncatingTail
+        rangeMeta.setContentCompressionResistancePriority(.init(240), for: .horizontal)
+        copyButton.target = self
+        copyButton.action = #selector(copySHATapped)
+        undoButton.target = self
+        undoButton.action = #selector(undoCheckpointTapped)
+        everythingButton.target = self
+        everythingButton.action = #selector(showEverythingTapped)
+        let rangeSpacer = NSView()
+        rangeSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        rangeRow.orientation = .horizontal
+        rangeRow.alignment = .firstBaseline
+        rangeRow.spacing = DS.Spacing.m
+        for view in [rangeLabel, rangeMeta, rangeSpacer, everythingButton, copyButton, undoButton] as [NSView] { rangeRow.addArrangedSubview(view) }
+        rangeRow.setCustomSpacing(DS.Spacing.l, after: everythingButton)
+        rangeRow.setCustomSpacing(DS.Spacing.l, after: copyButton)
+
+        summaryStack.orientation = .vertical
+        summaryStack.alignment = .leading
+        summaryStack.spacing = DS.Spacing.s
+        summaryStack.edgeInsets = NSEdgeInsets(top: DS.Spacing.xl, left: DS.Spacing.section, bottom: DS.Spacing.s, right: DS.Spacing.section)
+        summaryStack.translatesAutoresizingMaskIntoConstraints = false
+        // The timeline and what it's showing share a row: the card is a summary, and each line
+        // of it is a line less of diff.
+        timelineRow.orientation = .horizontal
+        timelineRow.alignment = .top
+        timelineRow.spacing = DS.Spacing.section
+        timelineRow.addArrangedSubview(timelineView)
+        timelineRow.addArrangedSubview(rangeRow)
+        let width = timelineView.widthAnchor.constraint(equalToConstant: 120)
+        timelineWidth = width
+        width.isActive = true
+        rangeRow.topAnchor.constraint(equalTo: timelineView.topAnchor, constant: 2).isActive = true
+        let rows: [NSView] = [accountRow, accountText, verificationLine, overlapLine, statusLabel, summaryHairline, timelineRow, noCheckpoints]
+        for row in rows { summaryStack.addArrangedSubview(row) }
+        summaryStack.setCustomSpacing(DS.Spacing.xs, after: accountRow)
+        summaryStack.setCustomSpacing(DS.Spacing.l, after: accountText)
+        summaryStack.setCustomSpacing(DS.Spacing.l, after: statusLabel)
+        summaryStack.setCustomSpacing(DS.Spacing.l, after: summaryHairline)
+        summaryCard.addSubview(summaryStack)
+        NSLayoutConstraint.activate([
+            summaryStack.topAnchor.constraint(equalTo: summaryCard.topAnchor),
+            summaryStack.leadingAnchor.constraint(equalTo: summaryCard.leadingAnchor),
+            summaryStack.trailingAnchor.constraint(equalTo: summaryCard.trailingAnchor),
+            summaryStack.bottomAnchor.constraint(equalTo: summaryCard.bottomAnchor),
+        ])
+        // Full width inside the card: a wrapping label or the timeline otherwise takes only the
+        // width its content needs.
+        let inset = -DS.Spacing.section * 2
+        for row in rows where row !== verificationLine && row !== overlapLine && row !== noCheckpoints {
+            row.widthAnchor.constraint(equalTo: summaryStack.widthAnchor, constant: inset).isActive = true
+        }
+        verificationLine.widthAnchor.constraint(lessThanOrEqualTo: summaryStack.widthAnchor, constant: inset).isActive = true
+        overlapLine.widthAnchor.constraint(lessThanOrEqualTo: summaryStack.widthAnchor, constant: inset).isActive = true
         overlapLine.isHidden = true
+        statusLabel.isHidden = true
+        // One line each; the whole list of shared paths is in the tooltip.
+        for line in [verificationLine, overlapLine] {
+            line.subviews.compactMap { $0 as? NSTextField }.forEach { $0.lineBreakMode = .byTruncatingTail; $0.maximumNumberOfLines = 1; $0.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        }
+    }
 
-        // Uppercase only for 11 pt section labels (§4 shared rules).
-        checkpointsHeader.stringValue = "CHECKPOINTS"
-        checkpointsHeader.font = DS.Text.custom(11, weight: .semibold)
-        checkpointsHeader.textColor = .secondaryLabelColor
-        checkpointsStack.orientation = .vertical
-        checkpointsStack.alignment = .leading
-        // Sections separated by hairlines, not cards (§4.2) — the hairlines carry the spacing.
-        checkpointsStack.spacing = 0
-        checkpointsStack.translatesAutoresizingMaskIntoConstraints = false
-
-        diffHeader.font = DS.Text.custom(11, weight: .semibold)
-        diffHeader.textColor = .secondaryLabelColor
+    private func buildChanges() {
+        diffTitle.font = DS.Text.body(.semibold)
+        diffTitle.lineBreakMode = .byTruncatingTail
+        diffTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        diffTotals.lineBreakMode = .byTruncatingTail
+        diffTotals.setContentCompressionResistancePriority(.init(240), for: .horizontal)
         diffLayoutControl.controlSize = .small
         diffLayoutControl.font = DS.Text.caption()
         diffLayoutControl.selectedSegment = DiffLayout.preferred == .unified ? 0 : 1
         diffLayoutControl.target = self
         diffLayoutControl.action = #selector(diffLayoutChanged)
         diffLayoutControl.setAccessibilityLabel("Diff layout")
-        diffHeaderRow.orientation = .horizontal
-        diffHeaderRow.alignment = .centerY
-        diffHeaderRow.addArrangedSubview(diffHeader)
-        diffHeaderRow.addArrangedSubview(NSView())
-        diffHeaderRow.addArrangedSubview(diffLayoutControl)
-        diffHeaderRow.translatesAutoresizingMaskIntoConstraints = false
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        diffToolbar.orientation = .horizontal
+        diffToolbar.alignment = .centerY
+        diffToolbar.spacing = DS.Spacing.l
+        diffToolbar.translatesAutoresizingMaskIntoConstraints = false
+        for view in [diffTitle, diffTotals, spacer, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
 
-
-        // A ChipButton, the same control the composer's row is built from: borderless, because
-        // the glass capsule behind it *is* its chrome and a bezel inside a glass pill reads as two
-        // nested buttons — and it inherits the press, which is the point. `glassBackdrop` below is
-        // what makes the button and its capsule dip and spring as one object rather than the glyph
-        // sliding around inside a static pill.
-        promoteButton.onPress = { [weak self] in self?.promoteTapped() }
-        promoteButton.settlesOnRelease = true
-        statusLabel.font = DS.Text.caption()
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.alignment = .right
-        statusLabel.lineBreakMode = .byWordWrapping
-        statusLabel.maximumNumberOfLines = 2
-
-        // Pill-shaped: radius is exactly half the height, so the capsule's ends are true
-        // semicircles. A card radius on a 30pt-tall control is a rounded rectangle, which is the
-        // one shape Liquid Glass never is.
-        let promoteGlass = DS.makeGlass(cornerRadius: Self.promoteHeight / 2)
-        promoteButton.glassBackdrop = promoteGlass
-        promoteHost.translatesAutoresizingMaskIntoConstraints = false
-        promoteHost.addSubview(promoteGlass)
-        promoteHost.addSubview(promoteButton)
-        NSLayoutConstraint.activate([
-            promoteGlass.topAnchor.constraint(equalTo: promoteHost.topAnchor),
-            promoteGlass.leadingAnchor.constraint(equalTo: promoteHost.leadingAnchor),
-            promoteGlass.trailingAnchor.constraint(equalTo: promoteHost.trailingAnchor),
-            promoteGlass.bottomAnchor.constraint(equalTo: promoteHost.bottomAnchor),
-            promoteButton.centerYAnchor.constraint(equalTo: promoteHost.centerYAnchor),
-            promoteButton.leadingAnchor.constraint(equalTo: promoteHost.leadingAnchor, constant: DS.Spacing.xl),
-            promoteButton.trailingAnchor.constraint(equalTo: promoteHost.trailingAnchor, constant: -DS.Spacing.xl),
-            promoteHost.heightAnchor.constraint(equalToConstant: Self.promoteHeight),
-        ])
-
-        publishButton.onPress = { [weak self] in self?.publishTapped() }
-        publishButton.settlesOnRelease = true
-        let publishGlass = DS.makeGlass(cornerRadius: Self.promoteHeight / 2)
-        publishButton.glassBackdrop = publishGlass
-        publishButton.contentTintColor = .secondaryLabelColor
-        publishButton.setAttributedLabel(
-            NSAttributedString(string: "Publish\u{2026}", attributes: [.font: DS.Text.body(.medium), .foregroundColor: NSColor.secondaryLabelColor]),
-            identity: "publish"
-        )
-        publishHost.translatesAutoresizingMaskIntoConstraints = false
-        publishHost.addSubview(publishGlass)
-        publishHost.addSubview(publishButton)
-        NSLayoutConstraint.activate([
-            publishGlass.topAnchor.constraint(equalTo: publishHost.topAnchor),
-            publishGlass.leadingAnchor.constraint(equalTo: publishHost.leadingAnchor),
-            publishGlass.trailingAnchor.constraint(equalTo: publishHost.trailingAnchor),
-            publishGlass.bottomAnchor.constraint(equalTo: publishHost.bottomAnchor),
-            publishButton.centerYAnchor.constraint(equalTo: publishHost.centerYAnchor),
-            publishButton.leadingAnchor.constraint(equalTo: publishHost.leadingAnchor, constant: DS.Spacing.xl),
-            publishButton.trailingAnchor.constraint(equalTo: publishHost.trailingAnchor, constant: -DS.Spacing.xl),
-            publishHost.heightAnchor.constraint(equalToConstant: Self.promoteHeight),
-        ])
-        let actions = NSStackView(views: [publishHost, promoteHost])
-        actions.orientation = .horizontal
-        actions.spacing = DS.Spacing.m
-
-        promoteOverlay.orientation = .vertical
-        promoteOverlay.alignment = .trailing
-        promoteOverlay.spacing = DS.Spacing.s
-        promoteOverlay.addArrangedSubview(actions)
-        promoteOverlay.addArrangedSubview(statusLabel)
-        promoteOverlay.translatesAutoresizingMaskIntoConstraints = false
-
-        contentStack.orientation = .vertical
-        contentStack.alignment = .leading
-        contentStack.spacing = DS.Spacing.xl
-        contentStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        headerRow.orientation = .horizontal
-        headerRow.alignment = .centerY
-        headerRow.spacing = DS.Spacing.l
-        headerRow.addArrangedSubview(titleLabel)
-        headerRow.addArrangedSubview(subtitleRow)
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for view in [decisionStack, checkpointsHeader, checkpointsStack, diffHeaderRow] {
-            contentStack.addArrangedSubview(view)
-            // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
-            // width by default — without this, a wrapping label or the diff card would collapse
-            // to whatever width its content happens to need instead of spanning the stage, same
-            // reasoning as Think's transcript `addBlock`.
-            //
-            // The title is the exception: the floating Promote capsule occupies the top-right, so
-            // a full-width title would slide underneath it. `<=` lets the label take the width it
-            // needs and truncate short of the button instead.
-            // The decision lines are the first thing under the floating Promote capsule, so they
-            // stop short of it rather than sliding underneath.
-            let gutter: CGFloat = view === decisionStack ? -32 - Self.promoteGutter : -32
-            view.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: gutter).isActive = true
-        }
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.maximumNumberOfLines = 1
-        contentStack.setCustomSpacing(DS.Spacing.section, after: checkpointsStack)
-        contentStack.setCustomSpacing(DS.Spacing.section, after: decisionStack)
-
-        let documentView = ReviewDocumentView()
-        documentView.translatesAutoresizingMaskIntoConstraints = false
-        documentView.addSubview(contentStack)
-        scrollView.documentView = documentView
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-
-        // Promote floats in the stage's top-right corner, opposite the track name and branch
-        // chips, rather than sitting at the end of the scrolling content or in a bar of its own.
-        //
-        // At the end of the content it was reachable only by scrolling past every checkpoint and
-        // every file's diff — so the more a track had actually changed, the harder its one
-        // decisive action became to find, and on a tall display it sat a screen and a half down.
-        // The action a page exists to offer should not recede as the page fills up. A pinned
-        // bottom bar fixed the reachability but spent a full strip of chrome plus a divider on one
-        // button; a glass capsule in the header costs no layout and pairs the action with the
-        // identity of the thing being acted on.
-        view.addSubview(scrollView)
-        view.addSubview(diffViewer)
-        view.addSubview(promoteOverlay)
-        view.addSubview(emptyState)
-        NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            diffViewer.topAnchor.constraint(equalTo: scrollView.bottomAnchor),
-            diffViewer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            diffViewer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            diffViewer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            promoteOverlay.topAnchor.constraint(equalTo: view.topAnchor, constant: 14 + ChromeHost.rowHeight),
-            promoteOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
-            // Wide enough to matter, never wide enough to crowd the title: "Promote to
-            // origin/some-long-default" is a real label.
-            promoteOverlay.widthAnchor.constraint(lessThanOrEqualToConstant: 320),
-            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
-            contentStack.topAnchor.constraint(equalTo: documentView.topAnchor),
-            contentStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
-            contentStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
-            contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
-            emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
-        ])
-        let height = scrollView.heightAnchor.constraint(equalToConstant: 200)
-        height.isActive = true
-        topHeight = height
-        // Not just `showEmptyState(true)` — `reloadForTrackSwitch` can (and typically does, on
-        // a restored window) run before this view ever loads, since it's only added as a child
-        // and given a chance to load when the Review segment is first actually clicked. Without
-        // reflecting whatever `currentTrack` was already set to, a track switch that happened
-        // while this stage was never visited would get silently dropped on the floor the first
-        // time it's opened.
-        refresh()
+        rail.onSelect = { [weak self] index in self?.diffViewer.scrollToFile(index) }
+        rail.onToggleViewed = { [weak self] index, viewed in self?.setViewed(index, viewed) }
+        diffViewer.onTopFileChange = { [weak self] index in self?.rail.follow(index) }
     }
 
-    /// The top area is as tall as its content, up to half the stage; the diff takes the rest.
+    /// Narrow windows give the diff the whole width; the list comes back when there's room.
     override func viewDidLayout() {
         super.viewDidLayout()
-        guard let documentView = scrollView.documentView else { return }
-        let wanted = documentView.fittingSize.height + scrollView.contentInsets.top
-        let height = min(wanted, max(160, view.bounds.height * 0.5))
-        if abs((topHeight?.constant ?? 0) - height) > 0.5 { topHeight?.constant = height }
+        let showRail = view.bounds.width >= Self.railMinimumStageWidth && !rail.items.isEmpty
+        rail.isHidden = !showRail
+        let width = showRail ? ReviewFileRail.width : 0
+        if railWidth?.constant != width {
+            railWidth?.constant = width
+            diffLeading?.constant = showRail ? DS.Spacing.m : DS.Spacing.l
+        }
     }
 
     // MARK: - Wiring
@@ -303,7 +354,12 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     func reloadForTrackSwitch(trackKey: String?, workingDirectory: URL) {
         currentWorkingDirectory = workingDirectory
-        currentTrack = trackKey.flatMap { key in trackStore?.tracks.first { $0.branchName == key } }
+        let next = trackKey.flatMap { key in trackStore?.tracks.first { $0.branchName == key } }
+        if next?.branchName != currentTrack?.branchName {
+            timeline = CheckpointTimeline(nodes: [])
+            accountExpanded = false
+        }
+        currentTrack = next
         refresh()
     }
 
@@ -316,19 +372,19 @@ final class ReviewWorkspaceViewController: NSViewController {
             emptyState.configure(message ?? Self.defaultEmptyStateText, action: action?.title, handler: action.map { action in { [weak self] in self?.onEmptyStateAction?(action.kind) } })
         }
         emptyState.isHidden = !empty
-        scrollView.isHidden = empty
-        diffViewer.isHidden = empty
-        // Nothing to promote when there's nothing to review.
-        promoteOverlay.isHidden = empty
-        // No track means no title or branch → base to show; empty chips read as broken.
+        for view in [summaryCard, diffToolbar, rail, diffViewer] as [NSView] { view.isHidden = empty }
+        // No track means no title, branch or actions to show; empty chips read as broken.
         headerRow.isHidden = empty
+        if !empty { view.needsLayout = true }
     }
 
     private static let defaultEmptyStateText = "Review shows what a track has changed."
-
-    /// Horizontal room the floating Promote capsule needs; the title truncates short of it.
-    private static let promoteGutter: CGFloat = 360
-    private static let promoteHeight: CGFloat = 30
+    private static let promoteHeight: CGFloat = 26
+    private static let margin: CGFloat = 16
+    private static let accountLines = 3
+    private static let accountExpandedLines = 14
+    /// Below this the file list gives its width to the diff.
+    private static let railMinimumStageWidth: CGFloat = 820
 
     /// A borderless NSButton draws its title in the default label colour and ignores
     /// `contentTintColor`, so the accent has to come from an attributed title — same reason the
@@ -349,31 +405,12 @@ final class ReviewWorkspaceViewController: NSViewController {
     private func applyPromoteTitle() {
         let color: NSColor = promoteButton.isEnabled ? .controlAccentColor : .tertiaryLabelColor
         // Both, and both are needed: a borderless NSButton tints its title with
-        // `contentTintColor` on top of whatever an attributed title asks for, so setting only the
-        // attributed colour left the button permanently grey in ChipButton's default tint.
+        // `contentTintColor` on top of whatever an attributed title asks for.
         promoteButton.contentTintColor = color
         promoteButton.setAttributedLabel(
-            NSAttributedString(
-                string: promoteTitleText,
-                attributes: [.font: DS.Text.body(.semibold), .foregroundColor: color]
-            ),
+            NSAttributedString(string: promoteTitleText, attributes: [.font: DS.Text.body(.semibold), .foregroundColor: color]),
             identity: "\(promoteTitleText)|\(promoteButton.isEnabled)"
         )
-    }
-
-    /// How many checkpoints show before the rest are folded away. Small on purpose: Review's
-    /// subject is the *current* diff, and the checkpoint list is provenance for it.
-    private static let visibleCheckpointLimit = 4
-    private var showingAllCheckpoints = false
-
-    @objc private func showAllCheckpointsTapped() {
-        showingAllCheckpoints = true
-        refresh()
-    }
-
-    @objc private func showFewerCheckpointsTapped() {
-        showingAllCheckpoints = false
-        refresh()
     }
 
     @objc private func textScaleChanged() { refresh() }
@@ -381,7 +418,6 @@ final class ReviewWorkspaceViewController: NSViewController {
     @objc private func diffLayoutChanged() {
         DiffLayout.preferred = diffLayoutControl.selectedSegment == 0 ? .unified : .sideBySide
         diffViewer.diffLayout = DiffLayout.preferred
-        refresh()
     }
 
     /// A checkpoint was created, renamed, or verified while this stage was on screen.
@@ -390,11 +426,28 @@ final class ReviewWorkspaceViewController: NSViewController {
         refresh()
     }
 
+    @objc private func toggleAccount() {
+        accountExpanded.toggle()
+        applyAccountExpansion()
+    }
+
+    private func applyAccountExpansion() {
+        accountText.maximumNumberOfLines = accountExpanded ? Self.accountExpandedLines : Self.accountLines
+        // Collapsed, the paragraphs run together so three lines hold three lines of words, not
+        // a sentence and two blank lines.
+        accountText.stringValue = accountExpanded ? accountFull : accountFull.split(separator: "\n").joined(separator: " ")
+        accountMore.attributedTitle = NSAttributedString(string: accountExpanded ? "Show less" : "Show more", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.secondaryLabelColor])
+        accountMore.isHidden = !accountTextIsLong
+        view.needsLayout = true
+    }
+
+    private var accountTextIsLong = false
+    private var accountFull = ""
+
     private func refresh() {
         guard isViewLoaded else { return }
         // Review never consulted repoState, so a plain folder got "Switch to a track to review
-        // its work" — advice the user cannot follow, since tracks require a repo. Tracks says
-        // this plainly; Review used to never mention git at all.
+        // its work" — advice the user cannot follow, since tracks require a repo.
         if trackStore == nil {
             showEmptyState(true, message: "Open a project to review its work.", action: ("Open Project…", .openProject))
             return
@@ -409,15 +462,16 @@ final class ReviewWorkspaceViewController: NSViewController {
             return
         }
         showEmptyState(false)
-        statusLabel.stringValue = ""
+        setStatus("")
 
-        let baseRef = Self.baseRef(for: track, trackStore: trackStore)
+        currentBaseRef = Self.baseRef(for: track, trackStore: trackStore)
+        let baseRef = currentBaseRef
         titleLabel.stringValue = track.intent.isEmpty ? track.branchName : track.intent
         headerDetail.stringValue = "\(track.branchName) \u{2192} \(baseRef)"
         setPromoteTitle("Promote to \(baseRef)\u{2026}")
+        setPromoteEnabled(false)
 
-        checkpointsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let allCheckpoints = (sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []).sorted { $0.createdAt > $1.createdAt }
+        allCheckpoints = (sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []).sorted { $0.createdAt > $1.createdAt }
         // Verification recency, stated before anyone reaches for Promote (§4.2, audit H14).
         if let summary = Self.verificationSummary(checkpoints: allCheckpoints) {
             verificationLine.set(state: summary.state, text: summary.text)
@@ -425,56 +479,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         } else {
             verificationLine.isHidden = true
         }
-        // Newest few, with the rest behind a disclosure. An unbounded list is the wrong default
-        // for something that grows once per approved batch forever: after a week of real use the
-        // page is mostly history nobody is reading, and the diff — the thing Review is actually
-        // for — is pushed below the fold.
-        let checkpoints = showingAllCheckpoints ? allCheckpoints : Array(allCheckpoints.prefix(Self.visibleCheckpointLimit))
-        if checkpoints.isEmpty {
-            checkpointsStack.addArrangedSubview(Self.makeMetaLabel("No checkpoints yet. One is created automatically the first time an approved edit or command lands on this track."))
-        } else {
-            for (offset, checkpoint) in checkpoints.enumerated() {
-                if offset > 0 {
-                    let hairline = Self.makeHairline()
-                    checkpointsStack.addArrangedSubview(hairline)
-                    hairline.widthAnchor.constraint(equalTo: checkpointsStack.widthAnchor).isActive = true
-                }
-                let number = allCheckpoints.count - (allCheckpoints.firstIndex { $0.id == checkpoint.id } ?? 0)
-                let section = makeCheckpointSection(checkpoint, number: number)
-                checkpointsStack.addArrangedSubview(section)
-                // Only after the section is in the stack's hierarchy — activating this inside the
-                // factory (before addArrangedSubview) threw NSGenericException, which AppKit
-                // swallowed mid-viewDidLoad and left the whole stage blank on first visit. That
-                // was the "Review renders blank after a fresh launch" bug: it only fired for
-                // tracks that actually had a checkpoint to build a card for.
-                section.widthAnchor.constraint(equalTo: checkpointsStack.widthAnchor).isActive = true
-            }
-        }
-
-        overlapLine.isHidden = true
-        // The "show the rest" affordance, and the count, so the page says how much it is hiding
-        // rather than silently truncating.
-        if allCheckpoints.count > checkpoints.count {
-            let remaining = allCheckpoints.count - checkpoints.count
-            let button = NSButton(
-                title: "Show \(remaining) older checkpoint\(remaining == 1 ? "" : "s")",
-                target: self, action: #selector(showAllCheckpointsTapped)
-            )
-            button.bezelStyle = .inline
-            button.controlSize = .small
-            button.font = DS.Text.caption()
-            checkpointsStack.addArrangedSubview(button)
-        } else if showingAllCheckpoints, allCheckpoints.count > Self.visibleCheckpointLimit {
-            let button = NSButton(title: "Show fewer", target: self, action: #selector(showFewerCheckpointsTapped))
-            button.bezelStyle = .inline
-            button.controlSize = .small
-            button.font = DS.Text.caption()
-            checkpointsStack.addArrangedSubview(button)
-        }
-
-        diffHeader.stringValue = "CHANGES VS \(baseRef.uppercased())"
-        diffViewer.renderLoading()
-        setPromoteEnabled(false)
+        showAccount(sessionStore?.latestAgentAccount(forTrackKey: track.branchName))
 
         guard let canonicalRoot else { return }
         let cwd = canonicalRoot.path
@@ -484,121 +489,190 @@ final class ReviewWorkspaceViewController: NSViewController {
         let siblingTracks = trackStore.tracks.filter {
             $0.branchName != branchName && $0.status != .archived && $0.status != .completed
         }
-        let baseRefsByBranch = Dictionary(
-            uniqueKeysWithValues: siblingTracks.map { ($0.branchName, Self.baseRef(for: $0, trackStore: trackStore)) }
-        )
+        let baseRefsByBranch = Dictionary(uniqueKeysWithValues: siblingTracks.map { ($0.branchName, Self.baseRef(for: $0, trackStore: trackStore)) })
         let intentsByBranch = Dictionary(uniqueKeysWithValues: siblingTracks.map { ($0.branchName, $0.intent) })
-        let checkpointSHAs = Set(allCheckpoints.compactMap(\.gitCommitSHA))
+        let chronological = Array(allCheckpoints.reversed().enumerated()).map { (checkpoint: $0.element, number: $0.offset + 1) }
         // Where Promote would merge, and whether it can: resolved here (main-actor state), and
         // checked for a dirty base off-main, so a disabled Promote says why before the click.
         let target = mergeTarget(for: track, trackStore: trackStore)
+        let previous = timeline
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let diffText = GitDiffComputer.refDiff(fromRef: baseRef, toRef: branchName, cwd: cwd)
             // One spawn: every commit on the branch not yet in its base; checkpoints are ahead
-            // when their commit is among them.
+            // when their commit is among them, and only those are on the timeline.
             let aheadList = GitPaths.runGit(["rev-list", "\(baseRef)..\(branchName)"], cwd: cwd)
-            let aheadSHAs = aheadList.success ? Set(aheadList.output.split(separator: "\n").map(String.init)) : []
-            let checkpointsAhead = checkpointSHAs.filter { sha in aheadSHAs.contains { $0.hasPrefix(sha) || sha.hasPrefix($0) } }.count
+            let aheadSHAs = aheadList.success ? aheadList.output.split(separator: "\n").map(String.init) : []
+            func ahead(_ sha: String) -> Bool { aheadSHAs.contains { $0.hasPrefix(sha) || sha.hasPrefix($0) } }
+            let onBranch = chronological.filter { $0.checkpoint.gitCommitSHA.map(ahead) ?? false }
+            var built = CheckpointTimeline.build(baseRef: baseRef, branch: branchName, checkpoints: onBranch, tipSHA: aheadSHAs.first)
+            built.keepSelection(of: previous)
             let blockedReason: String? = {
-                guard let target else { return "\u{201C}\(baseRef)\u{201D}\u{2019}s working copy has been removed \u{2014} resume it in Tracks to promote into it." }
-                return GitPaths.dirtyPaths(cwd: target.root.path).isEmpty ? nil : "\(target.isParent ? "\u{201C}\(baseRef)\u{201D}" : "Your main working copy") has uncommitted changes \u{2014} commit or stash them first."
+                guard let target else { return "\u{201C}\(baseRef)\u{201D}\u{2019}s working copy has been removed. Resume it in Tracks to promote into it." }
+                return GitPaths.dirtyPaths(cwd: target.root.path).isEmpty ? nil : "\(target.isParent ? "\u{201C}\(baseRef)\u{201D}" : "Your main working copy") has uncommitted changes. Commit or stash them first."
             }()
+            let hasChanges = !aheadSHAs.isEmpty || !GitDiffComputer.refDiff(fromRef: baseRef, toRef: branchName, cwd: cwd, contextLines: 0).isEmpty
             // One `git diff --name-only` per track — cheap, and it costs the model nothing:
             // this is awareness for the human, not context for the agent.
             var changedPathsByBranch = [branchName: TrackOverlap.changedPaths(branch: branchName, baseRef: baseRef, cwd: cwd)]
             for (branch, base) in baseRefsByBranch {
                 changedPathsByBranch[branch] = TrackOverlap.changedPaths(branch: branch, baseRef: base, cwd: cwd)
             }
-            let siblings = TrackOverlap.siblings(
-                of: branchName, changedPathsByBranch: changedPathsByBranch, intentsByBranch: intentsByBranch
-            )
+            let siblings = TrackOverlap.siblings(of: branchName, changedPathsByBranch: changedPathsByBranch, intentsByBranch: intentsByBranch)
             DispatchQueue.main.async {
                 guard let self, self.currentTrack?.branchName == branchName else { return }
-                self.diffViewer.render(diffText: diffText)
-                self.headerDetail.stringValue = "\(branchName) \u{2192} \(baseRef) \u{00B7} \(checkpointsAhead) checkpoint\(checkpointsAhead == 1 ? "" : "s") ahead"
-                self.setPromoteEnabled(!diffText.isEmpty && blockedReason == nil)
-                if let blockedReason, !diffText.isEmpty {
-                    self.statusLabel.stringValue = blockedReason
-                    self.statusLabel.textColor = .secondaryLabelColor
-                }
+                let ahead = built.nodes.filter { if case .checkpoint = $0.kind { return true } else { return false } }.count
+                self.headerDetail.stringValue = "\(branchName) \u{2192} \(baseRef) \u{00B7} \(ahead) checkpoint\(ahead == 1 ? "" : "s") ahead"
+                self.setPromoteEnabled(hasChanges && blockedReason == nil)
+                if let blockedReason, hasChanges { self.setStatus(blockedReason) }
                 if let headline = TrackOverlap.headline(for: siblings) {
-                    self.overlapLine.set(state: .needsYou, text: "\(headline) \u{2014} \(TrackOverlap.sharedPathsSummary(for: siblings))")
+                    let paths = TrackOverlap.sharedPathsSummary(for: siblings)
+                    self.overlapLine.set(state: .needsYou, text: "\(headline). \(paths)")
+                    self.overlapLine.toolTip = paths
                     self.overlapLine.isHidden = false
                 } else {
                     self.overlapLine.isHidden = true
                 }
+                self.showTimeline(built)
             }
         }
     }
 
-    /// One checkpoint as a hairline-separated section (§4.2): intent as the heading with
-    /// `n · sha` trailing, one meta caption, and the row's actions revealed on hover.
-    private func makeCheckpointSection(_ checkpoint: Checkpoint, number: Int) -> NSView {
-        let section = CheckpointSectionView()
-        section.translatesAutoresizingMaskIntoConstraints = false
+    /// What the agent last said about this work, a few lines of it; the rest behind Show more.
+    private func showAccount(_ account: AgentAccount?) {
+        let text = account.map { Self.plainText(fromMarkdown: $0.text) } ?? ""
+        accountRow.isHidden = text.isEmpty
+        accountText.isHidden = text.isEmpty
+        guard let account, !text.isEmpty else { return }
+        let who = account.agentId.flatMap { ACPAgent.agent(id: $0)?.displayName } ?? "Agent"
+        accountMeta.stringValue = "\(who) \u{00B7} \(Self.relativeTime(account.at))"
+        accountFull = text
+        accountTextIsLong = text.count > 280 || text.filter { $0 == "\n" }.count >= Self.accountLines
+        applyAccountExpansion()
+    }
 
-        let intentLabel = NSTextField(wrappingLabelWithString: checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)
-        intentLabel.font = DS.Text.heading()
-        intentLabel.translatesAutoresizingMaskIntoConstraints = false
-        intentLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let shaText = checkpoint.gitCommitSHA.map { "\(number) \u{00B7} \($0.prefix(7))" } ?? "\(number)"
-        let shaLabel = NSTextField(labelWithString: shaText)
-        shaLabel.font = DS.Text.code(11, weight: .regular)
-        shaLabel.textColor = .tertiaryLabelColor
-        shaLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let metaLabel = NSTextField(wrappingLabelWithString: "")
-        metaLabel.attributedStringValue = Self.checkpointMeta(checkpoint)
-        metaLabel.translatesAutoresizingMaskIntoConstraints = false
-        if let verification = checkpoint.verification, !verification.passed {
-            // The failing output is what the user actually needs; the section stays one line.
-            metaLabel.toolTip = verification.outputExcerpt
+    /// An agent's Markdown as the words it says: emphasis and code marks dropped, headings and
+    /// list markers kept as plain lines. The card is a summary, not a rendering.
+    static func plainText(fromMarkdown markdown: String) -> String {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        // Code fences go; the code inside stays, as lines.
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).filter { !$0.hasPrefix("```") }.map { line -> String in
+            var line = String(line)
+            while line.hasPrefix("#") { line.removeFirst() }
+            let text = (try? AttributedString(markdown: line.trimmingCharacters(in: .whitespaces), options: options)).map { String($0.characters) } ?? line
+            return text
         }
-
-        // Text actions on hover (§4.2): Undo… opens a sheet; Copy SHA copies.
-        var actions: [NSButton] = []
-        if checkpoint.gitCommitSHA != nil {
-            // Only a checkpoint that produced a commit can be undone — a command-only one
-            // changed no files, so there is nothing to reverse.
-            let undo = Self.textAction("Undo\u{2026}", target: self, action: #selector(undoCheckpointTapped(_:)))
-            undo.identifier = NSUserInterfaceItemIdentifier(checkpoint.id.uuidString)
-            let copy = Self.textAction("Copy SHA", target: self, action: #selector(copySHATapped(_:)))
-            copy.identifier = NSUserInterfaceItemIdentifier(checkpoint.gitCommitSHA ?? "")
-            actions = [copy, undo]
+        var result: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty, result.last?.isEmpty ?? true { continue }
+            result.append(trimmed)
         }
-        let actionsStack = NSStackView(views: actions)
-        actionsStack.orientation = .horizontal
-        actionsStack.spacing = DS.Spacing.l
-        actionsStack.translatesAutoresizingMaskIntoConstraints = false
-        section.hoverActions = actionsStack
-        section.setAccessibilityElement(true)
-        section.setAccessibilityRole(.group)
-        section.setAccessibilityLabel("Checkpoint \(number): \(intentLabel.stringValue). \(metaLabel.stringValue)")
-        section.setAccessibilityCustomActions(actions.map { button in
-            NSAccessibilityCustomAction(name: button.title) { [weak button] in
-                guard let button else { return false }
-                button.performClick(nil)
-                return true
+        return result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func showTimeline(_ built: CheckpointTimeline) {
+        let changed = built != timeline || diffViewer.diff.files.isEmpty
+        timeline = built
+        let hasCheckpoints = built.nodes.count > 2 || built.nodes.contains { if case .checkpoint = $0.kind { return true } else { return false } }
+        timelineRow.isHidden = !hasCheckpoints
+        noCheckpoints.isHidden = hasCheckpoints || !allCheckpoints.isEmpty
+        summaryStack.setCustomSpacing(hasCheckpoints || !noCheckpoints.isHidden ? DS.Spacing.l : 0, after: summaryHairline)
+        summaryHairline.isHidden = !hasCheckpoints && noCheckpoints.isHidden
+        // As wide as its nodes want, up to a third of the card; the label takes the rest.
+        timelineWidth?.constant = min(CGFloat(built.nodes.count - 1) * 56 + 40, max(160, summaryCard.bounds.width / 3))
+        timelineView.timeline = built
+        updateRangeRow()
+        if changed { loadDiff() }
+    }
+
+    private func rangeChanged(_ next: CheckpointTimeline) {
+        timeline = next
+        updateRangeRow()
+        loadDiff()
+    }
+
+    @objc private func showEverythingTapped() {
+        var next = timeline
+        next.selectEverything()
+        timelineView.timeline = next
+        rangeChanged(next)
+    }
+
+    private var selectedCheckpoint: Checkpoint? {
+        guard let node = timeline.single, case .checkpoint(let id, _) = node.kind else { return nil }
+        return allCheckpoints.first { $0.id == id }
+    }
+
+    /// "All changes", "3 · Add a login form" with its details, or "Checkpoints 2 to 4".
+    private func updateRangeRow() {
+        let checkpoint = selectedCheckpoint
+        copyButton.isHidden = checkpoint?.gitCommitSHA == nil
+        undoButton.isHidden = checkpoint?.gitCommitSHA == nil
+        everythingButton.isHidden = timeline.isEverything || timeline.nodes.count < 2
+        rangeRow.isHidden = timelineRow.isHidden
+        if let checkpoint, case .checkpoint(_, let number)? = timeline.single?.kind {
+            rangeLabel.stringValue = "\(number) \u{00B7} \(checkpoint.declaredIntent.isEmpty ? "No description" : checkpoint.declaredIntent)"
+            rangeMeta.attributedStringValue = Self.checkpointMeta(checkpoint)
+            rangeMeta.toolTip = checkpoint.verification.flatMap { $0.passed ? nil : $0.outputExcerpt }
+        } else {
+            rangeLabel.stringValue = CheckpointTimelineView.describe(timeline)
+            let count = timeline.nodes.filter { if case .checkpoint = $0.kind { return true } else { return false } }.count
+            rangeMeta.attributedStringValue = NSAttributedString(
+                string: timeline.isEverything ? "\(count) checkpoint\(count == 1 ? "" : "s") ahead of \(currentBaseRef)" : "",
+                attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]
+            )
+            rangeMeta.toolTip = nil
+        }
+        diffTitle.stringValue = timeline.isEverything || timeline.nodes.count < 2 ? "Changes vs \(currentBaseRef)" : CheckpointTimelineView.describe(timeline)
+    }
+
+    /// The diff for the range: base to tip by default, or between two checkpoints.
+    private func loadDiff() {
+        guard let track = currentTrack, let canonicalRoot else { return }
+        diffGeneration += 1
+        let generation = diffGeneration
+        let refs = timeline.nodes.count > 1 ? timeline.refs : (currentBaseRef, track.branchName)
+        let everything = timeline.isEverything || timeline.nodes.count < 2
+        let branchName = track.branchName
+        let cwd = canonicalRoot.path
+        if diffViewer.diff.files.isEmpty { diffViewer.renderLoading() }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let text = GitDiffComputer.refDiff(fromRef: refs.0, toRef: refs.1, cwd: cwd)
+            DispatchQueue.main.async {
+                guard let self, self.diffGeneration == generation, self.currentTrack?.branchName == branchName else { return }
+                self.showDiff(text, everything: everything)
             }
-        })
+        }
+    }
 
-        for view in [intentLabel, shaLabel, metaLabel, actionsStack] as [NSView] { section.addSubview(view) }
-        NSLayoutConstraint.activate([
-            intentLabel.topAnchor.constraint(equalTo: section.topAnchor, constant: 12),
-            intentLabel.leadingAnchor.constraint(equalTo: section.leadingAnchor),
-            intentLabel.trailingAnchor.constraint(lessThanOrEqualTo: shaLabel.leadingAnchor, constant: -DS.Spacing.l),
-            shaLabel.firstBaselineAnchor.constraint(equalTo: intentLabel.firstBaselineAnchor),
-            shaLabel.trailingAnchor.constraint(equalTo: section.trailingAnchor),
-            metaLabel.topAnchor.constraint(equalTo: intentLabel.bottomAnchor, constant: 4),
-            metaLabel.leadingAnchor.constraint(equalTo: section.leadingAnchor),
-            metaLabel.trailingAnchor.constraint(lessThanOrEqualTo: actionsStack.leadingAnchor, constant: -DS.Spacing.l),
-            metaLabel.bottomAnchor.constraint(equalTo: section.bottomAnchor, constant: -12),
-            actionsStack.trailingAnchor.constraint(equalTo: section.trailingAnchor),
-            actionsStack.centerYAnchor.constraint(equalTo: metaLabel.centerYAnchor),
-        ])
-        return section
+    private func showDiff(_ text: String, everything: Bool) {
+        guard let track = currentTrack else { return }
+        let trackKey = track.branchName
+        let store = viewedStore
+        diffViewer.render(diffText: text, emptyMessage: everything ? "No changes against \(currentBaseRef)." : "No changes in this range.") { diff in
+            Set(diff.files.indices.filter { store.isViewed(diff.files[$0], track: trackKey) })
+        }
+        let files = diffViewer.diff.files
+        rail.items = files.map { file in
+            ReviewFileRail.Item(path: file.path, added: file.addedCount, removed: file.removedCount,
+                                isNew: file.isNew, isDeleted: file.isDeleted, viewed: store.isViewed(file, track: trackKey))
+        }
+        let added = files.reduce(0) { $0 + $1.addedCount }, removed = files.reduce(0) { $0 + $1.removedCount }
+        let totals = NSMutableAttributedString(string: "\(files.count) file\(files.count == 1 ? "" : "s")  ", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor])
+        totals.append(NSAttributedString(string: "+\(added)", attributes: [.font: DS.Text.code(11, weight: .medium), .foregroundColor: DiffBody.addedText]))
+        totals.append(NSAttributedString(string: " \u{2212}\(removed)", attributes: [.font: DS.Text.code(11, weight: .medium), .foregroundColor: DiffBody.removedText]))
+        diffTotals.attributedStringValue = files.isEmpty ? NSAttributedString() : totals
+        diffTotals.setAccessibilityLabel("\(files.count) files, \(added) lines added, \(removed) removed")
+        view.needsLayout = true
+        if let first = files.indices.first { rail.follow(first) }
+    }
+
+    /// A check flipped in the list: remember it, and fold (or open) the file in the diff.
+    private func setViewed(_ index: Int, _ viewed: Bool) {
+        guard let track = currentTrack, diffViewer.diff.files.indices.contains(index), rail.items.indices.contains(index) else { return }
+        viewedStore.set(viewed, diffViewer.diff.files[index], track: track.branchName)
+        rail.items[index].viewed = viewed
+        diffViewer.setFolded(index, viewed)
     }
 
     /// `model · time · +a −r · N files · N commands · <verification word>` — the word coloured
@@ -637,29 +711,20 @@ final class ReviewWorkspaceViewController: NSViewController {
         return result
     }
 
-    private static func textAction(_ title: String, target: AnyObject, action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: target, action: action)
+    private static func textAction(_ title: String) -> NSButton {
+        let button = NSButton(title: title, target: nil, action: nil)
         button.isBordered = false
         button.attributedTitle = NSAttributedString(string: title, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
         return button
     }
 
-    private static func makeHairline() -> NSView {
-        let hairline = NSBox()
-        hairline.boxType = .custom
-        hairline.borderType = .noBorder
-        hairline.fillColor = DS.Color.hairline
-        hairline.translatesAutoresizingMaskIntoConstraints = false
-        hairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        return hairline
-    }
-
-    @objc private func copySHATapped(_ sender: NSButton) {
-        guard let sha = sender.identifier?.rawValue, !sha.isEmpty else { return }
+    @objc private func copySHATapped() {
+        guard let sha = selectedCheckpoint?.gitCommitSHA, !sha.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(sha, forType: .string)
-        statusLabel.stringValue = "Copied \(sha.prefix(7))."
-        statusLabel.textColor = .secondaryLabelColor
+        setStatus("Copied \(sha.prefix(7)).")
     }
 
     /// The decision header's verification line (§4.2) — time, and where the newest result sits
@@ -700,19 +765,26 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     /// Reverses a checkpoint's changes — as a *new commit*, never by rewriting history. See
     /// `CheckpointRestore` for why that's the only defensible choice here.
-    @objc private func undoCheckpointTapped(_ sender: NSButton) {
-        guard let id = sender.identifier.flatMap({ UUID(uuidString: $0.rawValue) }),
+    @objc private func undoCheckpointTapped() {
+        guard let target = selectedCheckpoint,
               let track = currentTrack,
               let checkpoints = sessionStore?.checkpoints(forTrackKey: track.branchName),
-              let target = checkpoints.first(where: { $0.id == id }),
               let worktreePath = track.workingDirectoryPath ?? canonicalRoot?.path,
               let window = view.window else { return }
         CheckpointUndo.present(target: target, checkpoints: checkpoints, worktreePath: worktreePath, window: window) { [weak self] message, color, changed in
-            self?.statusLabel.stringValue = message
-            self?.statusLabel.textColor = color
+            self?.setStatus(message, color)
             if changed { self?.refresh() }
         }
     }
+
+    // MARK: Tests
+
+    var railForTesting: ReviewFileRail { rail }
+    var diffForTesting: DiffDocumentView { diffViewer }
+    var timelineForTesting: CheckpointTimelineView { timelineView }
+    var summaryTextForTesting: String? { accountText.isHidden ? nil : accountText.stringValue }
+    func setViewedForTesting(_ index: Int, _ viewed: Bool) { setViewed(index, viewed) }
+    func selectRangeForTesting(_ next: CheckpointTimeline) { timelineView.timeline = next; rangeChanged(next) }
 
     // MARK: - Publish (the Integration half of Review)
 
@@ -723,6 +795,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private func setStatus(_ text: String, _ color: NSColor = .secondaryLabelColor) {
         statusLabel.stringValue = text
         statusLabel.textColor = color
+        statusLabel.isHidden = text.isEmpty
     }
 
     /// Reads the remote state (and any pull request) off the main thread, then shows the menu.
@@ -900,8 +973,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         guard let track = currentTrack, let trackStore, let window = view.window else { return }
         let baseRef = Self.baseRef(for: track, trackStore: trackStore)
         guard let target = mergeTarget(for: track, trackStore: trackStore) else {
-            statusLabel.stringValue = "⚠︎ \u{201C}\(baseRef)\u{201D}'s working copy has been removed. Resume it in Tracks before promoting into it."
-            statusLabel.textColor = DS.Color.statusNeedsYou
+            setStatus("\u{201C}\(baseRef)\u{201D}'s working copy has been removed. Resume it in Tracks before promoting into it.", DS.Color.statusNeedsYou)
             return
         }
         // Verification is the point of recording it: promoting known-broken work should take a
@@ -968,15 +1040,14 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// than leaving other windows/stages looking at a half-merged base.
     private func promote(track: Track, baseRef: String, mergeRoot: URL, trackStore: TrackStore) {
         setPromoteEnabled(false)
-        statusLabel.stringValue = "Promoting…"
+        setStatus("Promoting\u{2026}")
         let cwd = mergeRoot.path
         let branchName = track.branchName
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = Self.performMerge(branchName: branchName, baseRef: baseRef, intent: track.intent, cwd: cwd)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.statusLabel.stringValue = outcome.message
-                self.statusLabel.textColor = outcome.succeeded ? DS.Color.statusVerified : DS.Color.statusNeedsYou
+                self.setStatus(outcome.message, outcome.succeeded ? DS.Color.statusVerified : DS.Color.statusNeedsYou)
                 self.setPromoteEnabled(true)
                 if outcome.succeeded {
                     trackStore.setStatus(.completed, for: track)
@@ -1048,42 +1119,23 @@ final class ReviewWorkspaceViewController: NSViewController {
 }
 
 extension ReviewWorkspaceViewController: StageChromeProviding {
-    var scrollViewUnderTopRow: NSScrollView? { loadViewIfNeeded(); return scrollView }
+    /// Nothing scrolls under the top row: the summary card starts below it.
+    var scrollViewUnderTopRow: NSScrollView? { nil }
     var topRowContent: NSView? { loadViewIfNeeded(); return headerRow }
 
     func setBottomObstruction(_ height: CGFloat) {
         loadViewIfNeeded()
-        scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight, left: 0, bottom: 0, right: 0)
-        // The diff runs to the bottom edge and scrolls under the bar.
-        diffViewer.bottomInset = height > 0 ? height + DS.Spacing.l : 0
+        // The diff and the file list run to the bottom edge and scroll under the bar.
+        let inset = height > 0 ? height + DS.Spacing.l : 0
+        diffViewer.bottomInset = inset
+        rail.bottomInset = inset
     }
 
     func setTopObstruction(_ height: CGFloat) {
         loadViewIfNeeded()
-        scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets.top = height
+        cardTop?.constant = height + DS.Spacing.m
     }
 }
-
-/// A checkpoint section: its text actions (Undo…, Copy SHA) appear while the pointer is over it,
-/// and are reachable without one as AX custom actions.
-private final class CheckpointSectionView: NSView {
-    weak var hoverActions: NSView? { didSet { hoverActions?.alphaValue = 0 } }
-    private var trackingArea: NSTrackingArea?
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) { hoverActions?.animator().alphaValue = 1 }
-    override func mouseExited(with event: NSEvent) { hoverActions?.animator().alphaValue = 0 }
-}
-
 
 /// A menu item that runs a closure: Publish's items carry their action with them.
 private final class PublishMenuItem: NSMenuItem {

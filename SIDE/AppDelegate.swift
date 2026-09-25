@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("find ") { shell.findForTesting(String(command.dropFirst(5))) }
                     if command.hasPrefix("think-track ") { shell.thinkTrackForTesting(agentId: String(command.dropFirst(12))) }
                     if command.hasPrefix("think-send ") { shell.thinkSendForTesting(String(command.dropFirst(11))) }
+                    if command.hasPrefix("stage ") { shell.showStageForTesting(String(command.dropFirst(6))) }
                 }
             }
             if let fixture = UserDefaults.standard.string(forKey: "SideUITestingProject") {

@@ -635,6 +635,12 @@ final class ShellViewController: NSViewController {
         }
     }
 
+    /// UI testing: a stage brought forward by name ("make", "think", "review", "run").
+    func showStageForTesting(_ name: String) {
+        guard let stage = Stage.allCases.first(where: { "\($0)".lowercased() == name.lowercased() }) else { return }
+        show(stage)
+    }
+
     /// UI testing: a message sent in Think, as typed.
     func thinkSendForTesting(_ text: String) { thinkVC.sendAsTyped(text) }
 

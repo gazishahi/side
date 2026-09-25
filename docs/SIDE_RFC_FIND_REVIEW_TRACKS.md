@@ -2,7 +2,7 @@
 
 *2026-09-25. Status: **accepted**: the owner chose the directions on 2026-09-25 (Find as one
 search surface; Review "changes first" with a summary on top; Tracks as a switcher on the track
-pill plus a list to manage them). Build order below. Steps 1–3 built.*
+pill plus a list to manage them). Build order below. Steps 1–4 built.*
 *Companion to `SIDE_DESIGN.md` (tokens, glass), `SIDE_RFC_ALLOY.md` (the renderer Review's diffs
 move to) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -132,5 +132,20 @@ while you're typing it stays warm, so keys never pay the 37 ms.
    drain an autorelease pool per step, as the app's event loop does, or released views appear to
    leak.
 4. **Review's layout** (R1).
+   **Built 2026-09-25:** the track's intent and `branch → base · N ahead` in the window's top
+   row, with Publish and Promote beside them. Below, a summary card: what the agent last said
+   about the work (Heron's `AgentSessionStore.latestAgentAccount`, read from the end of the
+   conversation's record, three lines with Show more), the verification and overlap lines, and
+   the checkpoints as a timeline (`CheckpointTimeline`, `CheckpointTimelineView`): base, each
+   checkpoint with a commit on the branch (its ring green or red when verified or failed), and
+   Now when the branch has moved past the newest. Clicking a checkpoint shows what it alone
+   changed; Shift-click or a drag picks a range; the base, Escape or All changes goes back to
+   everything; ← and → step. Copy SHA and Undo… act on the chosen checkpoint. Under the card,
+   the changed files (`ReviewFileRail`: name, folder, +/−, a viewed check; Space toggles it)
+   beside the diff, which follows the list and is followed by it. A viewed file folds, and
+   stays viewed until its diff changes (`ReviewViewedStore` keeps a fingerprint of what was
+   seen). The file at the top of the diff keeps its header pinned while its lines scroll under
+   it; headers are made under the bottom bar too. Below 820 pt the list gives its width to the
+   diff. `ReviewLayoutTests` covers the timeline, viewed marks, folding, pinning and the list.
 5. **Tracks** (T1).
 6. **Budgets in one place**: the budget tests run together against the table above.

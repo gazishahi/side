@@ -204,6 +204,30 @@ public final class AgentSessionStore {
         NotificationCenter.default.post(name: Self.checkpointsDidChangeNotification, object: nil)
     }
 
+    // MARK: - The agent's account (Review's summary)
+
+    /// The newest thing an agent said on a track, for Review's summary: the last assistant text
+    /// of the current conversation with any agent, Heron's own or an outside one. Reads only the
+    /// end of each record, so a long conversation costs what its last few entries do.
+    public func latestAgentAccount(forTrackKey trackKey: String) -> AgentAccount? {
+        var best: AgentAccount?
+        if let session = loadedSessions[trackKey] ?? loadedSession(forTrackKey: trackKey),
+           let turn = session.turns.last(where: { $0.role == .assistant && $0.content.contains { if case .text(let t) = $0 { return !t.isEmpty } else { return false } } }) {
+            let text = turn.content.compactMap { block -> String? in if case .text(let t) = block { return t } else { return nil } }.joined(separator: "\n\n")
+            best = AgentAccount(text: text, at: turn.createdAt, agentId: nil)
+        }
+        let prefix = Self.slug(for: trackKey) + "."
+        let current = ((try? FileManager.default.contentsOfDirectory(at: outsideDirectory, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix(prefix) }
+        for url in current {
+            guard let record = OutsideSessionLog.lastRecord(of: .assistant, in: url), !record.text.isEmpty else { continue }
+            if best == nil || record.at > best!.at {
+                best = AgentAccount(text: record.text, at: record.at, agentId: OutsideSessionLog.agentId(in: url))
+            }
+        }
+        return best
+    }
+
     // MARK: - Outside agents' conversations
 
     /// Where the current conversation with `agentId` on a track is recorded.
@@ -665,6 +689,14 @@ public final class AgentSessionStore {
     private func saveSession(_ session: AgentSession) {
         SessionLog.write(session, to: sessionFileURL(forTrackKey: session.trackKey))
     }
+}
+
+/// What an agent last said on a track, and when (`AgentSessionStore.latestAgentAccount`).
+public struct AgentAccount: Equatable, Sendable {
+    public let text: String
+    public let at: Date
+    /// The outside agent that said it; nil for Heron's own.
+    public let agentId: String?
 }
 
 /// The old `think.json` shape — read only during one-time migration in `migrateLegacyStateIfPresent`.
