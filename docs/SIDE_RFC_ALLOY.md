@@ -202,6 +202,23 @@ headers, inline agent ghost text.
    Checked in Side on Alloy with real keys. Left for step 7: Make still runs its regex highlighter
    after typing (discarded on Alloy).
 6. **Accessibility and polish:** VoiceOver, text sizes, tokens, Reduce Motion.
+   **Built 2026-09-24:** `AlloyTextView` is an accessibility text area
+   (`AlloyTextView+Accessibility.swift`): its value, character count, selection (read and set,
+   including several ranges), selected text (setting it types), insertion-point line, visible
+   range, line for index and range for line (logical lines, with their newline, as NSTextView
+   reports them), string and attributed string for a range, bounds for a range, the character
+   under a point, and composed-character ranges. It posts value-changed and selected-text-changed,
+   so VoiceOver follows edits and the caret. Assistive edits go through the buffer and undo, and a
+   read-only editor refuses them. The attributed string carries its font in the AX form, since an
+   NSFont doesn't cross to another process. Checked live from outside Side through the AX API:
+   every query above answers and both notifications arrive when a key is typed. The same checks run
+   on both engines in `EditorParityTests.testVoiceOverReadsTheText`, and Alloy matches NSTextView
+   where they could differ (no insertion-point line while a range is selected). The caret blinks
+   by the `NSTextInsertionPointBlinkPeriodOn`/`Off` defaults NSTextView reads, so a caret set not
+   to blink doesn't. Alloy has no other motion; colors, fonts and the text-size setting come from
+   `DS` through `AlloyEditorEngine`, and the gutter uses the same `DS.Text.code(11)` as TextKit's.
+   Input methods: the marked-text protocol is tested (step 3); this Mac has only U.S. and
+   press-and-hold enabled, so a live CJK pass and dictation are left as manual checks before release.
 7. **Switch:** Make on Alloy; remove the `NSTextView` path; measure against the budgets.
 8. **Publish:** `gazishahi/alloy`, Apache-2.0.
 

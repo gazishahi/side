@@ -70,11 +70,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Make's editor, behind the seam Alloy replaces (SIDE_RFC_ALLOY.md, step 0).
     private(set) lazy var editor: EditorEngine = Self.makeEditorEngine()
 
+    /// Tests pick the engine here: defaults are shared by the test processes running in parallel.
+    static var engineOverride: String?
+
     /// Alloy or TextKit (SIDE_RFC_ALLOY.md): `SideEditorEngine` in defaults, or the
     /// `SIDE_EDITOR_ENGINE` environment variable, set to "alloy" picks Alloy. TextKit until
     /// Alloy passes parity (step 7 makes Alloy the only one).
     static func makeEditorEngine() -> EditorEngine {
-        let choice = ProcessInfo.processInfo.environment["SIDE_EDITOR_ENGINE"] ?? UserDefaults.standard.string(forKey: "SideEditorEngine")
+        let choice = engineOverride ?? ProcessInfo.processInfo.environment["SIDE_EDITOR_ENGINE"] ?? UserDefaults.standard.string(forKey: "SideEditorEngine")
         return choice == "alloy" ? AlloyEditorEngine(appearance: editorAppearance) : TextKitEditorEngine(appearance: editorAppearance)
     }
     private var editorScroll: NSScrollView { editor.scrollView }

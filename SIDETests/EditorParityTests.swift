@@ -18,10 +18,10 @@ class EditorParityTests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("parity-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        UserDefaults.standard.set(Self.engine, forKey: "SideEditorEngine")
+        MakeWorkspaceViewController.engineOverride = Self.engine
         make = MakeWorkspaceViewController()
         make.loadViewIfNeeded()
-        UserDefaults.standard.removeObject(forKey: "SideEditorEngine")
+        MakeWorkspaceViewController.engineOverride = nil
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
         window.contentView = container
@@ -196,6 +196,23 @@ class EditorParityTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let after = make.editor.rect(forCharacterRange: NSRange(location: 9, length: 0)).minY
         XCTAssertGreaterThan(after, before + 5, "the second line moved down with the bigger text")
+    }
+
+    /// VoiceOver reads either editor as a text area: its text, the selection, and lines.
+    func testVoiceOverReadsTheText() throws {
+        let editor = try open("ax.swift", "let a = 1\nlet b = 2\n")
+        editor.selectedRange = NSRange(location: 14, length: 1)
+        let view = editor.textView
+        XCTAssertEqual(view.accessibilityRole(), .textArea)
+        XCTAssertEqual(view.accessibilityValue() as? String, "let a = 1\nlet b = 2\n")
+        XCTAssertEqual(view.accessibilityNumberOfCharacters(), 20)
+        XCTAssertEqual(view.accessibilitySelectedTextRange(), NSRange(location: 14, length: 1))
+        XCTAssertEqual(view.accessibilitySelectedText(), "b")
+        editor.selectedRange = NSRange(location: 14, length: 0)
+        XCTAssertEqual(view.accessibilityInsertionPointLineNumber(), 1)
+        XCTAssertEqual(view.accessibilityRange(forLine: 1), NSRange(location: 10, length: 10))
+        XCTAssertEqual(view.accessibilityString(for: NSRange(location: 10, length: 3)), "let")
+        XCTAssertGreaterThan(view.accessibilityFrame(for: NSRange(location: 14, length: 1)).width, 1)
     }
 
     func testAReadOnlyEditorTakesNoTyping() throws {

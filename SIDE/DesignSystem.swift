@@ -200,12 +200,17 @@ enum DS {
                 get { stored(terminalKey) }
                 set { store(newValue, terminalKey) }
             }
+            /// Under XCTest, a store of this process's own: test classes run in parallel
+            /// processes, and a size one sets mid-test must reach neither the other nor the
+            /// person's real setting.
+            private nonisolated(unsafe) static let defaults: UserDefaults = NSClassFromString("XCTestCase") == nil
+                ? .standard : UserDefaults(suiteName: "side.tests.code-size.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard
             private static func stored(_ key: String) -> CGFloat {
-                let value = UserDefaults.standard.double(forKey: key)
+                let value = defaults.double(forKey: key)
                 return value > 0 ? CGFloat(value) : standard
             }
             private static func store(_ value: CGFloat, _ key: String) {
-                UserDefaults.standard.set(Double(value), forKey: key)
+                defaults.set(Double(value), forKey: key)
                 NotificationCenter.default.post(name: didChangeNotification, object: nil)
             }
         }

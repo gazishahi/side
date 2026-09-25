@@ -33,6 +33,8 @@ public final class AlloyEditorView: NSView {
     public var isEditable = true
     /// After an undo (false) or redo (true) through the Edit menu or ⌘Z.
     public var onUndoRedo: ((Bool) -> Void)?
+    /// What VoiceOver calls the editor ("Editor", or the file's name).
+    public var accessibilityName: String? = nil
 
     private let documentView = AlloyTextView()
     private var isFocused = false
@@ -103,6 +105,7 @@ public final class AlloyEditorView: NSView {
         restartBlink()
         setNeedsRender()
         gutter.needsDisplay = true
+        documentView.postAccessibilityChange(value: true)
         delegate?.editorTextDidChange(self)
         delegate?.editorSelectionDidChange(self)
     }
@@ -116,6 +119,7 @@ public final class AlloyEditorView: NSView {
     func selectionChanged() {
         restartBlink()
         setNeedsRender()
+        documentView.postAccessibilityChange(value: false)
         delegate?.editorSelectionDidChange(self)
     }
 
@@ -133,17 +137,36 @@ public final class AlloyEditorView: NSView {
     }
 
     /// The caret shows solid while typing and blinks when idle, and only in the focused editor.
+    /// Blinking follows the same defaults NSTextView reads (`NSTextInsertionPointBlinkPeriodOn`
+    /// and `...Off`, in milliseconds), so a person who has turned blinking off, or slowed it,
+    /// gets that here too.
     private func restartBlink() {
         caretOn = true
         blinkTimer?.invalidate()
-        guard isFocused else { blinkTimer = nil; return }
-        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
+        blinkTimer = nil
+        guard isFocused, let (on, off) = Self.blinkPeriods else { return }
+        scheduleBlink(after: on, then: off)
+    }
+
+    private func scheduleBlink(after interval: TimeInterval, then next: TimeInterval) {
+        blinkTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.caretOn.toggle()
                 self.setNeedsRender()
+                self.scheduleBlink(after: next, then: interval)
             }
         }
+    }
+
+    /// Seconds on and off, or nil for a caret that doesn't blink.
+    static var blinkPeriods: (on: TimeInterval, off: TimeInterval)? {
+        let defaults = UserDefaults.standard
+        let on = defaults.object(forKey: "NSTextInsertionPointBlinkPeriodOn") as? Double ?? 530
+        let off = defaults.object(forKey: "NSTextInsertionPointBlinkPeriodOff") as? Double ?? 530
+        // A zero off period, or an on period of a minute or more, is how blinking is turned off.
+        guard off > 0, on > 0, on < 60_000 else { return nil }
+        return (on / 1000, off / 1000)
     }
 
     /// The document point range a UTF-16 range covers (its first row), for popovers and panels.

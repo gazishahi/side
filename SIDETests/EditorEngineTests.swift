@@ -17,11 +17,11 @@ class EditorEngineTests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("editor-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        UserDefaults.standard.set(Self.engine, forKey: "SideEditorEngine")
+        MakeWorkspaceViewController.engineOverride = Self.engine
         make = MakeWorkspaceViewController()
         // The editor is made when the view loads: keep the choice set until it has.
         make.loadViewIfNeeded()
-        UserDefaults.standard.removeObject(forKey: "SideEditorEngine")
+        MakeWorkspaceViewController.engineOverride = nil
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         // As the shell hosts it: Make's view, and its tab strip in the window's top row.
         let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
