@@ -50,30 +50,60 @@ enum OutsideSessionLog {
     /// The last record of a kind, reading the file from its end (a window at a time), so a
     /// long conversation isn't read whole to find its latest answer.
     static func lastRecord(of kind: Record.Kind, in url: URL, window: Int = 64 * 1024) -> Record? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        var found: Record?
+        scanBackwards(url, window: window, cheapFilter: "\"\(kind.rawValue)\"") { record in
+            guard record.kind == kind else { return false }
+            found = record
+            return true
+        }
+        return found
+    }
+
+    /// What the agent said in the turn that made a checkpoint: the last assistant text before
+    /// the checkpoint's record, within that turn (it stops at the turn's prompt).
+    static func account(forCheckpoint id: UUID, in url: URL, window: Int = 64 * 1024) -> Record? {
+        var seenCheckpoint = false
+        var found: Record?
+        scanBackwards(url, window: window, cheapFilter: nil) { record in
+            if !seenCheckpoint {
+                seenCheckpoint = record.kind == .checkpoint && record.checkpointId == id
+                return false
+            }
+            switch record.kind {
+            case .assistant where !record.text.isEmpty: found = record; return true
+            case .user, .checkpoint, .header: return true
+            default: return false
+            }
+        }
+        return found
+    }
+
+    /// Records from the end of the file back, until `visit` says stop. `cheapFilter` skips
+    /// lines without that text before decoding them.
+    private static func scanBackwards(_ url: URL, window: Int, cheapFilter: String?, visit: (Record) -> Bool) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? handle.close() }
-        guard let size = try? handle.seekToEnd(), size > 0 else { return nil }
+        guard let size = try? handle.seekToEnd(), size > 0 else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        let filter = cheapFilter.map { Data($0.utf8) }
         var end = size
         var carry = Data()
         while end > 0 {
             let start = end > UInt64(window) ? end - UInt64(window) : 0
             try? handle.seek(toOffset: start)
-            guard var chunk = try? handle.read(upToCount: Int(end - start)) else { return nil }
+            guard var chunk = try? handle.read(upToCount: Int(end - start)) else { return }
             chunk.append(carry)
             var lines = chunk.split(separator: 0x0A, omittingEmptySubsequences: false)
             // The first line may be cut off by the window; it's read whole with the next one.
             carry = start > 0 ? Data(lines.removeFirst()) : Data()
             for line in lines.reversed() where !line.isEmpty {
-                // A cheap check before decoding: most lines are other kinds.
-                guard line.range(of: Data("\"\(kind.rawValue)\"".utf8)) != nil,
-                      let record = try? decoder.decode(Record.self, from: line), record.kind == kind else { continue }
-                return record
+                if let filter, line.range(of: filter) == nil { continue }
+                guard let record = try? decoder.decode(Record.self, from: line) else { continue }
+                if visit(record) { return }
             }
             end = start
         }
-        return nil
     }
 
     /// The agent a record belongs to, from its header (the first line).

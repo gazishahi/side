@@ -569,20 +569,29 @@ final class TabStripView: NSView {
     static let trackHeight: CGFloat = 30
     func installGlassTrack(behind scroll: NSScrollView, hugging stack: NSStackView) {
         let glass = DS.makeGlass(cornerRadius: Self.trackHeight / 2)
-        glass.translatesAutoresizingMaskIntoConstraints = false
         glass.isHidden = true
+        // Placed by hand in `layout()`, as wide as the tabs up to the strip's width. As a
+        // constraint, its pull toward the tabs' full width either outranked the top row's edge
+        // (the strip grew past the window and never scrolled) or lost to everything else.
+        glass.translatesAutoresizingMaskIntoConstraints = true
         addSubview(glass, positioned: .below, relativeTo: scroll)
-        let hug = glass.widthAnchor.constraint(equalTo: stack.widthAnchor)
-        hug.priority = .defaultHigh
-        NSLayoutConstraint.activate([
-            glass.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            glass.centerYAnchor.constraint(equalTo: centerYAnchor),
-            glass.heightAnchor.constraint(equalToConstant: Self.trackHeight),
-            glass.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor),
-            hug,
-        ])
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 3, bottom: 0, right: 3)
         glassTrack = glass
+        trackScroll = scroll
+        trackStack = stack
+        stack.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(tabsResized), name: NSView.frameDidChangeNotification, object: stack)
+    }
+    private weak var trackScroll: NSScrollView?
+    private weak var trackStack: NSStackView?
+
+    @objc private func tabsResized() { needsLayout = true }
+
+    override func layout() {
+        super.layout()
+        guard let glass = glassTrack, let scroll = trackScroll, let stack = trackStack else { return }
+        let width = min(stack.frame.width, scroll.frame.width)
+        glass.frame = NSRect(x: scroll.frame.minX, y: (bounds.height - Self.trackHeight) / 2, width: width, height: Self.trackHeight)
     }
     var accessibilityGroupLabel: String = "Tabs"
 
@@ -601,6 +610,22 @@ final class TabStripView: NSView {
 /// instead of the tab. Empty strip space still drags: the top row's own mouse handling does it.
 final class TabStripScrollView: NSScrollView {
     override var mouseDownCanMoveWindow: Bool { false }
+
+    /// A mouse wheel (or an up-and-down swipe) moves the strip sideways: it only scrolls one way,
+    /// and a wheel has no sideways motion to give it.
+    override func scrollWheel(with event: NSEvent) {
+        guard abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX), let document = documentView else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let limit = max(0, document.frame.width - contentView.bounds.width)
+        guard limit > 0 else { return }
+        let step = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 12
+        var origin = contentView.bounds.origin
+        origin.x = min(max(0, origin.x - step), limit)
+        contentView.setBoundsOrigin(origin)
+        reflectScrolledClipView(contentView)
+    }
 }
 
 // MARK: - Appearance

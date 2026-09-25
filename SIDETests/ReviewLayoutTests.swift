@@ -174,7 +174,7 @@ final class ReviewLayoutTests: XCTestCase {
         XCTAssertTrue(view.isFolded(1))
         let rows = view.rowCount
         view.setFolded(1, false)
-        XCTAssertEqual(view.rowCount, rows + 31, "a hunk row and 30 lines back")
+        XCTAssertEqual(view.rowCount, rows + 32, "a hunk row, 30 lines and the gap after them back")
         view.scrollToFile(2)
         settle(window)
         view.setFolded(2, true)

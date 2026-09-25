@@ -64,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("think-track ") { shell.thinkTrackForTesting(agentId: String(command.dropFirst(12))) }
                     if command.hasPrefix("think-send ") { shell.thinkSendForTesting(String(command.dropFirst(11))) }
                     if command.hasPrefix("stage ") { shell.showStageForTesting(String(command.dropFirst(6))) }
+                    if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
+                    if command.hasPrefix("project ") { shell.openProject(at: URL(fileURLWithPath: String(command.dropFirst(8))), focusingTrackKey: nil) }
+                    if command.hasPrefix("scroll ") { shell.scrollForTesting(pages: Int(command.dropFirst(7)) ?? 1) }
                 }
             }
             if let fixture = UserDefaults.standard.string(forKey: "SideUITestingProject") {

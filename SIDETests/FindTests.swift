@@ -108,6 +108,31 @@ final class FindTests: XCTestCase {
         XCTAssertEqual(make.editor.document?.string, "let count = 1\nprint(count)\nlet other = count + 1\n", "Replace All is one undo step")
     }
 
+    func testFindWorksInAMarkdownPreviewWithoutReplace() throws {
+        let url = root.appendingPathComponent("notes.md")
+        try "# Launch plan\n\nBefore **launch**, check the list.\n".write(to: url, atomically: true, encoding: .utf8)
+        make.revealFile(url, line: nil)
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, make.editor.document?.string.isEmpty ?? true { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        make.toggleMarkdownPreviewForTesting()
+        let preview = make.markdownPreviewForTesting
+        while Date() < deadline, preview.string.isEmpty { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        preview.setSelectedRange(NSRange(location: 0, length: 0))
+        make.presentFind(replace: true)
+        XCTAssertFalse(make.findReplaceShownForTesting, "a preview is the rendering: nothing to replace in it")
+        type("launch")
+        let text = preview.string as NSString
+        let first = text.range(of: "Launch")
+        XCTAssertEqual(preview.selectedRange(), first, "the rendered text's first match, case-insensitive")
+        var effective = NSRange()
+        let mark = preview.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: text.range(of: "launch").location, effectiveRange: &effective)
+        XCTAssertNotNil(mark, "every match is marked in the preview")
+        make.findNext(forward: true)
+        XCTAssertEqual(preview.selectedRange(), text.range(of: "launch"))
+        make.perform(Selector(("dismissQuickOpen")))
+        XCTAssertNil(preview.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: first.location, effectiveRange: &effective))
+    }
+
     /// `SIDE_FIND_SNAPSHOT=<png>`: a picture of the window with Find and Replace open.
     func testSnapshot() throws {
         guard let path = ProcessInfo.processInfo.environment["SIDE_FIND_SNAPSHOT"] else { throw XCTSkip("snapshot not asked for") }

@@ -95,6 +95,15 @@ final class DiffDocumentView: NSView {
 
     func renderLoading() { show(message: "Loading diff…") }
 
+    /// Lets go of the document and the parsed diff (Review, away for a while).
+    func releaseDocument() {
+        tearDownColumns()
+        columnsGeneration += 1
+        diff = UnifiedDiff()
+        folded = []
+        topFile = nil
+    }
+
     /// `folding` picks the files that start folded (Review folds the ones marked viewed).
     func render(diffText: String, emptyMessage: String = "No changes against this base.", folding: ((UnifiedDiff) -> Set<Int>)? = nil) {
         diff = UnifiedDiff.parse(diffText)
@@ -173,7 +182,8 @@ final class DiffDocumentView: NSView {
         var rows: [Row] = []
         var fileText: [Int: (firstRow: Int, rows: [Int])] = [:]
         for (index, file) in diff.files.enumerated() {
-            if index > 0 { rows.append(.gap) }
+            // Space after a file's lines; a folded file is only its header, so none.
+            if index > 0, !folded.contains(index - 1) { rows.append(.gap) }
             rows.append(.fileTop(index))
             rows.append(.fileBottom(index))
             guard !folded.contains(index) else { continue }
@@ -196,7 +206,9 @@ final class DiffDocumentView: NSView {
         }
         let texts = rows.map { row -> String in
             switch row {
-            case .fileTop(let file): return diff.files[file].path
+            // Empty: the header view draws the path. Text here showed through wherever the
+            // header wasn't (a split column mid-bounce).
+            case .fileTop: return ""
             case .fileBottom, .gap: return ""
             case .hunk(_, let header): return header
             case .line(_, let line): return line?.text ?? ""
@@ -282,10 +294,11 @@ final class DiffDocumentView: NSView {
         editor.gutter.numberColor = .quaternaryLabelColor
         editor.gutter.backgroundColor = DS.Color.raised
         // What the eye gets from color, in words.
+        let paths = diff.files.map(\.path)
         editor.accessibilityLinePrefix = { row in
             guard rows.indices.contains(row) else { return nil }
             switch rows[row] {
-            case .fileTop: return "file, "
+            case .fileTop(let file): return "file, \(paths[file])"
             case .hunk: return "section, "
             case .line(_, let line):
                 switch line?.kind {
@@ -385,7 +398,13 @@ final class DiffDocumentView: NSView {
         // Split: the other column follows, row for row.
         if columns.count == 2, !syncingScroll, let moved = columns.first(where: { $0.editor.scrollView.contentView === clip }) {
             syncingScroll = true
-            for column in columns where column.editor !== moved.editor { column.editor.scrollY = moved.editor.scrollY }
+            // The clip's own origin, not `scrollY` (which clamps): a rubber-band past either end
+            // is mirrored too, so the rows never slip apart.
+            let origin = moved.editor.scrollView.contentView.bounds.origin
+            for column in columns where column.editor !== moved.editor {
+                column.editor.scrollView.contentView.setBoundsOrigin(NSPoint(x: column.editor.scrollView.contentView.bounds.origin.x, y: origin.y))
+                column.editor.scrollView.reflectScrolledClipView(column.editor.scrollView.contentView)
+            }
             syncingScroll = false
         }
         refreshHeaders()
@@ -435,10 +454,16 @@ final class DiffDocumentView: NSView {
             let pinned = file == current && y < 0
             if file == current {
                 y = max(y, 0)
-                if let next = top(of: file + 1) { y = min(y, next - clipTop - height - layoutModel.lineHeight) }
+                // Pushed up by the next header, and the gap row before it (a folded file has none).
+                let gap = folded.contains(file) ? 0 : layoutModel.lineHeight
+                if let next = top(of: file + 1) { y = min(y, next - clipTop - height - gap) }
             }
             header.frame = NSRect(x: 0, y: y, width: bounds.width, height: height)
             header.isPinned = pinned
+        }
+        if let window {
+            let pointer = headerLayer.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            for header in headers.values { header.setHovered(header.frame.contains(pointer), animated: false) }
         }
         if let current, current != topFile {
             topFile = current
@@ -450,6 +475,7 @@ final class DiffDocumentView: NSView {
         let file = diff.files[index]
         let header = DiffFileHeader(file: file, folded: folded.contains(index))
         header.onToggle = { [weak self] in self?.toggleFold(index) }
+        header.showsTopRule = index > 0
         if let onInstruct, !file.isDeleted, let span = file.changedNewLines {
             header.onInstruct = { anchor in onInstruct(file.path, span, anchor) }
         }
@@ -535,6 +561,9 @@ final class DiffFileHeader: NSView {
     /// Held at the top while its file's lines scroll under it: a hairline marks the edge.
     var isPinned = false { didSet { if isPinned != oldValue { hairline.isHidden = !isPinned } } }
     private let hairline = NSBox()
+    /// A rule above every file but the first, so files stay apart without bands of color.
+    var showsTopRule = false { didSet { topRule.isHidden = !showsTopRule } }
+    private let topRule = NSBox()
     var onInstruct: ((NSView) -> Void)? { didSet { instructButton.isHidden = onInstruct == nil } }
     private let instructButton = NSButton(title: "", target: nil, action: nil)
     private let folded: Bool
@@ -550,7 +579,8 @@ final class DiffFileHeader: NSView {
         describedAs = parts.joined(separator: ", ")
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = DS.Color.canvas.cgColor
+        // The document's own color: a band of another shade between files read as a gap.
+        bindLayerBackground(DS.Color.raised)
 
         let chevron = NSImageView(image: NSImage(systemSymbolName: folded ? "chevron.right" : "chevron.down", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)) ?? NSImage())
@@ -595,6 +625,18 @@ final class DiffFileHeader: NSView {
         hairline.isHidden = true
         hairline.translatesAutoresizingMaskIntoConstraints = false
         addSubview(hairline)
+        topRule.boxType = .custom
+        topRule.borderType = .noBorder
+        topRule.fillColor = DS.Color.hairline
+        topRule.isHidden = true
+        topRule.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(topRule)
+        NSLayoutConstraint.activate([
+            topRule.leadingAnchor.constraint(equalTo: leadingAnchor),
+            topRule.trailingAnchor.constraint(equalTo: trailingAnchor),
+            topRule.topAnchor.constraint(equalTo: topAnchor),
+            topRule.heightAnchor.constraint(equalToConstant: 1),
+        ])
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.l),
@@ -618,8 +660,16 @@ final class DiffFileHeader: NSView {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
     }
-    override func mouseEntered(with event: NSEvent) { instructButton.animator().alphaValue = 1 }
-    override func mouseExited(with event: NSEvent) { instructButton.animator().alphaValue = 0 }
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+
+    /// Whether the pointer is over it. Set from the diff while it scrolls too: a header that
+    /// moves out from under a still pointer gets no exit event.
+    func setHovered(_ hovered: Bool, animated: Bool = true) {
+        let alpha: CGFloat = hovered ? 1 : 0
+        guard instructButton.alphaValue != alpha else { return }
+        if animated { instructButton.animator().alphaValue = alpha } else { instructButton.alphaValue = alpha }
+    }
     @objc private func instructTapped() { onInstruct?(instructButton) }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 

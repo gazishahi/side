@@ -206,26 +206,33 @@ public final class AgentSessionStore {
 
     // MARK: - The agent's account (Review's summary)
 
-    /// The newest thing an agent said on a track, for Review's summary: the last assistant text
-    /// of the current conversation with any agent, Heron's own or an outside one. Reads only the
-    /// end of each record, so a long conversation costs what its last few entries do.
-    public func latestAgentAccount(forTrackKey trackKey: String) -> AgentAccount? {
-        var best: AgentAccount?
-        if let session = loadedSessions[trackKey] ?? loadedSession(forTrackKey: trackKey),
-           let turn = session.turns.last(where: { $0.role == .assistant && $0.content.contains { if case .text(let t) = $0 { return !t.isEmpty } else { return false } } }) {
-            let text = turn.content.compactMap { block -> String? in if case .text(let t) = block { return t } else { return nil } }.joined(separator: "\n\n")
-            best = AgentAccount(text: text, at: turn.createdAt, agentId: nil)
-        }
-        let prefix = Self.slug(for: trackKey) + "."
+    /// What the agent said in the turn that made a checkpoint, for Review's summary: its words
+    /// about that work, not whatever it said last (a question, a greeting). Outside agents'
+    /// records mark the checkpoint, so it's the last answer before that mark; for Heron's own
+    /// conversation, the last answer at or before the checkpoint was made. Reads only the end of
+    /// each record, so a long conversation costs what its last few entries do.
+    public func agentAccount(for checkpoint: Checkpoint) -> AgentAccount? {
+        let prefix = Self.slug(for: checkpoint.trackKey) + "."
         let current = ((try? FileManager.default.contentsOfDirectory(at: outsideDirectory, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix(prefix) }
         for url in current {
-            guard let record = OutsideSessionLog.lastRecord(of: .assistant, in: url), !record.text.isEmpty else { continue }
-            if best == nil || record.at > best!.at {
-                best = AgentAccount(text: record.text, at: record.at, agentId: OutsideSessionLog.agentId(in: url))
+            if let record = OutsideSessionLog.account(forCheckpoint: checkpoint.id, in: url) {
+                return AgentAccount(text: record.text, at: record.at, agentId: OutsideSessionLog.agentId(in: url))
             }
         }
-        return best
+        guard !checkpoint.provenance.providerId.hasPrefix("acp:"),
+              let session = loadedSessions[checkpoint.trackKey] ?? loadedSession(forTrackKey: checkpoint.trackKey) else { return nil }
+        let made = checkpoint.createdAt.addingTimeInterval(1)
+        // Within the turn: an answer after the last prompt before the checkpoint.
+        let turns = session.turns.filter { $0.createdAt <= made }
+        guard let lastPrompt = turns.lastIndex(where: { $0.role == .user && $0.content.contains { if case .text = $0 { return true } else { return false } } }) else { return nil }
+        for turn in turns[lastPrompt...].reversed() where turn.role == .assistant {
+            let text = turn.content.compactMap { block -> String? in if case .text(let t) = block { return t } else { return nil } }.joined(separator: "\n\n")
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return AgentAccount(text: text, at: turn.createdAt, agentId: nil)
+            }
+        }
+        return nil
     }
 
     // MARK: - Outside agents' conversations

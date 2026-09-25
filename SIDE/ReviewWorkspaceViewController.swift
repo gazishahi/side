@@ -344,6 +344,35 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
     }
 
+    // MARK: - Letting go while away
+
+    /// Review's diff can be most of what Side holds (a 500-file change set is tens of MB of
+    /// parsed lines). Away from Review for a while, it goes; coming back loads it again, which
+    /// is quick (git's diff and a document of rows), at the file that was on top.
+    private static let releaseAfter: TimeInterval = 30
+    private var releaseWork: DispatchWorkItem?
+    private var releasedAtFile: Int?
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        releaseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.view.window == nil, !self.diffViewer.diff.files.isEmpty else { return }
+            self.releasedAtFile = self.rail.selectedIndex ?? 0
+            self.diffViewer.releaseDocument()
+            self.rail.items = []
+        }
+        releaseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.releaseAfter, execute: work)
+    }
+
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        releaseWork?.cancel()
+        releaseWork = nil
+        if releasedAtFile != nil, currentTrack != nil { loadDiff() }
+    }
+
     // MARK: - Wiring
 
     func configure(trackStore: TrackStore, sessionStore: AgentSessionStore, canonicalRoot: URL) {
@@ -479,7 +508,6 @@ final class ReviewWorkspaceViewController: NSViewController {
         } else {
             verificationLine.isHidden = true
         }
-        showAccount(sessionStore?.latestAgentAccount(forTrackKey: track.branchName))
 
         guard let canonicalRoot else { return }
         let cwd = canonicalRoot.path
@@ -537,14 +565,18 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
     }
 
-    /// What the agent last said about this work, a few lines of it; the rest behind Show more.
-    private func showAccount(_ account: AgentAccount?) {
+    /// What the agent said about the checkpoint the range ends at (the newest, unless one is
+    /// chosen): its own account of that work, a few lines of it, the rest behind Show more. It's
+    /// there to read; nothing in the card asks for an answer. A checkpoint with no account hides it.
+    private func showAccount(for checkpoint: Checkpoint?, number: Int?) {
+        let account = checkpoint.flatMap { sessionStore?.agentAccount(for: $0) }
         let text = account.map { Self.plainText(fromMarkdown: $0.text) } ?? ""
         accountRow.isHidden = text.isEmpty
         accountText.isHidden = text.isEmpty
-        guard let account, !text.isEmpty else { return }
-        let who = account.agentId.flatMap { ACPAgent.agent(id: $0)?.displayName } ?? "Agent"
-        accountMeta.stringValue = "\(who) \u{00B7} \(Self.relativeTime(account.at))"
+        guard let account, let checkpoint, !text.isEmpty else { return }
+        let who = account.agentId.flatMap { ACPAgent.agent(id: $0)?.displayName }
+            ?? (checkpoint.provenance.modelId.isEmpty ? "The agent" : checkpoint.provenance.modelId)
+        accountMeta.stringValue = "\(who), about checkpoint \(number.map(String.init) ?? "") \u{00B7} \(Self.relativeTime(account.at))"
         accountFull = text
         accountTextIsLong = text.count > 280 || text.filter { $0 == "\n" }.count >= Self.accountLines
         applyAccountExpansion()
@@ -605,6 +637,14 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     /// "All changes", "3 · Add a login form" with its details, or "Checkpoints 2 to 4".
     private func updateRangeRow() {
+        // The account of the range's last checkpoint.
+        let end = timeline.nodes.indices.contains(timeline.hi) ? timeline.nodes[timeline.hi] : nil
+        let last = timeline.nodes.last { if case .checkpoint = $0.kind { return true } else { return false } }
+        if case .checkpoint(let id, let number)? = (end?.kind == .now ? last?.kind : end?.kind) {
+            showAccount(for: allCheckpoints.first { $0.id == id }, number: number)
+        } else {
+            showAccount(for: nil, number: nil)
+        }
         let checkpoint = selectedCheckpoint
         copyButton.isHidden = checkpoint?.gitCommitSHA == nil
         undoButton.isHidden = checkpoint?.gitCommitSHA == nil
@@ -664,7 +704,13 @@ final class ReviewWorkspaceViewController: NSViewController {
         diffTotals.attributedStringValue = files.isEmpty ? NSAttributedString() : totals
         diffTotals.setAccessibilityLabel("\(files.count) files, \(added) lines added, \(removed) removed")
         view.needsLayout = true
-        if let first = files.indices.first { rail.follow(first) }
+        if let file = releasedAtFile, files.indices.contains(file) {
+            diffViewer.scrollToFile(file)
+            rail.follow(file)
+        } else if let first = files.indices.first {
+            rail.follow(first)
+        }
+        releasedAtFile = nil
     }
 
     /// A check flipped in the list: remember it, and fold (or open) the file in the diff.

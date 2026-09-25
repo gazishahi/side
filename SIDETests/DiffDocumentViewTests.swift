@@ -76,7 +76,7 @@ final class DiffDocumentViewTests: XCTestCase {
         let rows = view.rowCount
         view.toggleFoldForTesting(0)
         settle()
-        XCTAssertEqual(view.rowCount, rows - 5, "the hunk and its four lines go; the header stays")
+        XCTAssertEqual(view.rowCount, rows - 6, "the hunk, its four lines and the gap after them go; the header stays")
         view.toggleFoldForTesting(0)
         settle()
         XCTAssertEqual(view.rowCount, rows)

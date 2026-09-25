@@ -165,6 +165,9 @@ final class PreferencesViewController: NSViewController {
             guard let self, response == .alertFirstButtonReturn, let definition = form.makeDefinition() else { return }
             self.registry.addOrUpdate(definition)
             if !form.apiKey.isEmpty { KeychainStore.set(secret: form.apiKey, account: definition.id) }
+            self.registry.refreshModels(providerId: definition.id, apiKey: form.apiKey.isEmpty ? nil : form.apiKey, force: true) { [weak self] changed in
+                if changed { self?.reloadForSelectedProvider() }
+            }
             self.registry.setActiveProvider(definition.id)
             self.reloadProviderPopup()
             self.reloadForSelectedProvider()
@@ -185,6 +188,10 @@ final class PreferencesViewController: NSViewController {
         guard !secret.isEmpty else { return }
         if KeychainStore.set(secret: secret, account: provider.id) {
             keyField.stringValue = ""
+            // A new key: ask the provider for its current models now.
+            registry.refreshModels(providerId: provider.id, apiKey: secret, force: true) { [weak self] changed in
+                if changed { self?.reloadForSelectedProvider() }
+            }
         } else {
             keyStatusLabel.stringValue = "Couldn't write to the Keychain."
         }

@@ -33,24 +33,41 @@ final class AgentAccountTests: XCTestCase {
         XCTAssertEqual(OutsideSessionLog.agentId(in: url), "claude")
     }
 
-    func testNewestAccountAcrossHeronAndOutsideAgents() throws {
-        let store = AgentSessionStore(stateDirectory: directory)
-        XCTAssertNil(store.latestAgentAccount(forTrackKey: "feature"))
-        _ = store.appendTurn(AgentTurn(role: .assistant, content: [.text("Heron's summary")]), trackKey: "feature", providerId: "p", modelId: "m")
-        XCTAssertEqual(store.latestAgentAccount(forTrackKey: "feature")?.text, "Heron's summary")
-        XCTAssertNil(store.latestAgentAccount(forTrackKey: "feature")?.agentId)
+    private func checkpoint(track: String, provider: String) -> Checkpoint {
+        Checkpoint(trackKey: track, agentSessionId: UUID(), declaredIntent: "x", changedFilePaths: [], commandsRun: [],
+                   provenance: AgentProvenance(providerId: provider, modelId: "m", instructionSourceSummary: ""), gitCommitSHA: "abc")
+    }
 
+    func testAnOutsideAgentsAccountIsWhatItSaidInTheCheckpointsTurn() throws {
+        let store = AgentSessionStore(stateDirectory: directory)
+        let made = checkpoint(track: "feature", provider: "acp:codex")
         let url = store.outsideLogURL(trackKey: "feature", agentId: "codex")
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         OutsideSessionLog.append([
             .init(kind: .header, agentId: "codex"),
-            .init(kind: .assistant, text: "Codex's summary", at: Date().addingTimeInterval(60)),
+            .init(kind: .user, text: "Add the index"),
+            .init(kind: .assistant, text: "Looking."),
             .init(kind: .tool, text: "edit"),
+            .init(kind: .assistant, text: "Added LineIndex and its tests."),
+            .init(kind: .checkpoint, text: "1", checkpointId: made.id),
+            .init(kind: .user, text: "thanks"),
+            .init(kind: .assistant, text: "Anything else you'd like to look at?"),
         ], to: url)
-        let account = store.latestAgentAccount(forTrackKey: "feature")
-        XCTAssertEqual(account?.text, "Codex's summary")
+        let account = store.agentAccount(for: made)
+        XCTAssertEqual(account?.text, "Added LineIndex and its tests.", "not the later question")
         XCTAssertEqual(account?.agentId, "codex")
-        // Another track's record isn't this one's.
-        XCTAssertNil(store.latestAgentAccount(forTrackKey: "other"))
+        XCTAssertNil(store.agentAccount(for: checkpoint(track: "feature", provider: "acp:codex")), "a checkpoint with no mark has no account")
+    }
+
+    func testHeronsAccountIsTheAnswerBeforeTheCheckpoint() {
+        let store = AgentSessionStore(stateDirectory: directory)
+        _ = store.appendTurn(AgentTurn(role: .user, content: [.text("Rename it")]), trackKey: "feature", providerId: "p", modelId: "m")
+        _ = store.appendTurn(AgentTurn(role: .assistant, content: [.text("Renamed compute to calculate.")]), trackKey: "feature", providerId: "p", modelId: "m")
+        let made = checkpoint(track: "feature", provider: "anthropic")
+        Thread.sleep(forTimeInterval: 1.2)
+        _ = store.appendTurn(AgentTurn(role: .user, content: [.text("hi")]), trackKey: "feature", providerId: "p", modelId: "m")
+        _ = store.appendTurn(AgentTurn(role: .assistant, content: [.text("What next?")]), trackKey: "feature", providerId: "p", modelId: "m")
+        XCTAssertEqual(store.agentAccount(for: made)?.text, "Renamed compute to calculate.")
+        XCTAssertNil(store.agentAccount(for: made)?.agentId)
     }
 }

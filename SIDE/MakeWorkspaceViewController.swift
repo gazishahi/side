@@ -144,6 +144,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let findListLimit = 1_000
     /// The editor's bottom inset before Find raised it above the palette.
     private var insetBeforeFind: CGFloat?
+    private weak var insetScroll: NSScrollView?
     private let resultsTable = NSTableView()
     /// The file explorer (`FileExplorer`): its own component; Make only hosts it.
     private let explorer = FileExplorer()
@@ -749,7 +750,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs[index].kind == .text else { return }
         if let selected = selectedEditorText(), let query = InFileFind.query(fromSelection: selected) { find.query = query }
         presentPalette(.find)
-        setReplaceRowShown(replace || findShowsReplace)
+        // A preview finds but doesn't replace: it's the rendering, not the file.
+        let replace = replace && !findingInPreview
+        findReplaceToggle.isHidden = findingInPreview
+        setReplaceRowShown((replace || findShowsReplace) && !findingInPreview)
         if replace { searchField.window?.makeFirstResponder(find.query.isEmpty ? searchField : replaceField) }
     }
 
@@ -768,7 +772,26 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if paletteIsOpen, searchMode == .find { searchField.stringValue = find.query; performFindSearch() }
     }
 
+    /// Find runs over the Markdown preview's text while the preview is what's showing.
+    private var findingInPreview: Bool {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return false }
+        return openTabs[index].kind == .text && openTabs[index].isPreviewingMarkdown
+    }
+
+    /// Where Find starts and what it selects: the editor's selection, or the preview's.
+    private var findSelection: NSRange {
+        get { findingInPreview ? markdownPreviewView.selectedRange() : editor.selectedRange }
+        set {
+            if findingInPreview { markdownPreviewView.setSelectedRange(newValue) } else { editor.selectedRange = newValue }
+        }
+    }
+
     private func selectedEditorText() -> String? {
+        if findingInPreview {
+            let range = markdownPreviewView.selectedRange()
+            let text = markdownPreviewView.string as NSString
+            return range.length > 0 && NSMaxRange(range) <= text.length ? text.substring(with: range) : nil
+        }
         let range = editor.selectedRange
         guard range.length > 0, let text = editor.document?.text, NSMaxRange(range) <= text.length else { return nil }
         return text.substring(with: range)
@@ -802,7 +825,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         findCaseButton.state = find.options.caseSensitive ? .on : .off
         findWordButton.state = find.options.wholeWord ? .on : .off
         findRegexButton.state = find.options.regularExpression ? .on : .off
-        findText = openTabs[index].document.string as NSString
+        findText = findingInPreview ? (markdownPreviewView.string as NSString) : (openTabs[index].document.string as NSString)
         let result = find.matches(in: findText)
         findMatches = result.ranges
         findTruncated = result.truncated
@@ -813,7 +836,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             if findRows.last?.line != line { findRows.append((index, line)) }
             findRowOfMatch.append(findRows.count - 1)
         }
-        findCurrent = InFileFind.index(of: findMatches, from: editor.selectedRange.location, forward: true)
+        findCurrent = InFileFind.index(of: findMatches, from: findSelection.location, forward: true)
         markFindMatches()
         updateFindCount()
         guard paletteIsOpen, searchMode == .find else { return }
@@ -840,14 +863,26 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func markFindMatches() {
-        guard let document = editor.document else { return }
         let all = NSColor.controlAccentColor.withAlphaComponent(0.2)
+        if findingInPreview, let layout = markdownPreviewView.layoutManager {
+            let whole = NSRange(location: 0, length: (markdownPreviewView.string as NSString).length)
+            layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: whole)
+            for range in findMatches where NSMaxRange(range) <= whole.length { layout.addTemporaryAttribute(.backgroundColor, value: all, forCharacterRange: range) }
+            if let current = findCurrent, findMatches.indices.contains(current), NSMaxRange(findMatches[current]) <= whole.length {
+                layout.addTemporaryAttribute(.backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.7), forCharacterRange: findMatches[current])
+            }
+            return
+        }
+        guard let document = editor.document else { return }
         document.setDecorations(.findMatch, findMatches.map { ($0, all) })
         let current = findCurrent.flatMap { findMatches.indices.contains($0) ? findMatches[$0] : nil }
         document.setDecorations(.findCurrent, current.map { [($0, NSColor.findHighlightColor.withAlphaComponent(0.7))] } ?? [])
     }
 
     private func clearFindMarks() {
+        if let layout = markdownPreviewView.layoutManager {
+            layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: (markdownPreviewView.string as NSString).length))
+        }
         editor.document?.setDecorations(.findMatch, [])
         editor.document?.setDecorations(.findCurrent, [])
     }
@@ -855,10 +890,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func findStep(forward: Bool) {
         guard !findMatches.isEmpty else { return }
         let from: Int
-        if let current = findCurrent, editor.selectedRange == findMatches[current] {
+        let selection = findSelection
+        if let current = findCurrent, selection == findMatches[current] {
             from = forward ? NSMaxRange(findMatches[current]) : findMatches[current].location
         } else {
-            from = forward ? editor.selectedRange.location : editor.selectedRange.location
+            from = selection.location
         }
         guard let next = InFileFind.index(of: findMatches, from: from, forward: forward) else { return }
         showFindMatch(next)
@@ -875,6 +911,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func revealFindMatch(_ index: Int) {
         let range = findMatches[index]
+        if findingInPreview {
+            guard NSMaxRange(range) <= (markdownPreviewView.string as NSString).length else { return }
+            markdownPreviewView.setSelectedRange(range)
+            markdownPreviewView.scrollRangeToVisible(range)
+            return
+        }
         editor.selectedRange = range
         editor.scrollRangeToVisible(range)
     }
@@ -936,6 +978,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     /// Replaces the match Find is on and moves to the next.
     @objc private func replaceCurrent() {
+        guard !findingInPreview else { return }
         guard let current = findCurrent, findMatches.indices.contains(current) else { findStep(forward: true); return }
         let range = findMatches[current]
         let replacement = find.replacement(for: range, in: findText, template: replaceField.stringValue)
@@ -947,6 +990,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     /// Every match, one undo step.
     @objc private func replaceAll() {
+        guard !findingInPreview else { return }
         let edits = find.replaceAllEdits(in: findText, template: replaceField.stringValue)
         guard !edits.isEmpty else { return }
         editor.applyEdits(edits)
@@ -957,16 +1001,26 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// While Find is open, the editor scrolls as if its bottom were the palette's top, so the
     /// match it's on is never under it.
     private func raiseEditorAbovePalette(_ paletteHeight: CGFloat) {
-        let scroll = editorScroll
-        if insetBeforeFind == nil { insetBeforeFind = scroll.contentInsets.bottom }
+        let scroll = findingInPreview ? markdownPreviewScroll : editorScroll
+        if insetBeforeFind == nil || insetScroll !== scroll {
+            restoreFindInset()
+            insetBeforeFind = scroll.contentInsets.bottom
+            insetScroll = scroll
+        }
         // The palette sits above whatever already covered the bottom (the stage bar).
         scroll.contentInsets.bottom = (insetBeforeFind ?? 0) + paletteHeight + DS.Spacing.l
     }
 
+    private func restoreFindInset() {
+        if let inset = insetBeforeFind { (insetScroll ?? editorScroll).contentInsets.bottom = inset }
+        insetBeforeFind = nil
+        insetScroll = nil
+    }
+
     private func endFind() {
         clearFindMarks()
-        if let inset = insetBeforeFind { editorScroll.contentInsets.bottom = inset }
-        insetBeforeFind = nil
+        restoreFindInset()
+        findReplaceToggle.isHidden = false
         findAccessory.isHidden = true
         setReplaceRowShown(false)
     }
@@ -1815,7 +1869,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         gutter.isHidden = tab.kind != .text || showingMarkdownPreview
         imageScroll.isHidden = tab.kind != .image
         csvScroll.isHidden = tab.kind != .csv
-        markdownPreviewScroll.isHidden = !showingMarkdownPreview
+        if markdownPreviewScroll.isHidden == showingMarkdownPreview {
+            markdownPreviewScroll.isHidden = !showingMarkdownPreview
+            onScrollUnderTopRowChange?()
+        }
 
         switch tab.kind {
         case .text:
@@ -1921,11 +1978,25 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     // MARK: - Markdown preview
 
+    func toggleMarkdownPreviewForTesting() { toggleMarkdownPreview() }
+    var markdownPreviewForTesting: NSTextView { markdownPreviewView }
+    var findReplaceShownForTesting: Bool { findShowsReplace && !findReplaceToggle.isHidden }
+
+    /// What scrolls under the top row changed (the preview came or went): the shell re-watches.
+    var onScrollUnderTopRowChange: (() -> Void)?
+
     @objc private func toggleMarkdownPreview() {
         guard let index = activeTabIndex, openTabs.indices.contains(index),
               openTabs[index].kind == .text, openTabs[index].url.pathExtension.lowercased() == "md" else { return }
         openTabs[index].isPreviewingMarkdown.toggle()
         loadActiveTabIntoEditor()
+        // Find follows to what's showing: the preview's text or the file's.
+        if paletteIsOpen, searchMode == .find {
+            clearFindMarks()
+            findReplaceToggle.isHidden = findingInPreview
+            if findingInPreview { setReplaceRowShown(false) }
+            performFindSearch()
+        }
         // Focus goes to what's now showing. Hiding the focused editor left the window itself
         // focused, outside Make, so ⇧⌘V (resolved through the responder chain) did nothing
         // until a click.
@@ -2269,7 +2340,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         imageScroll.isHidden = true
         imageView.image = nil
         csvScroll.isHidden = true
-        markdownPreviewScroll.isHidden = true
+        if !markdownPreviewScroll.isHidden {
+            markdownPreviewScroll.isHidden = true
+            onScrollUnderTopRowChange?()
+        }
         dirty = false
         onFileOpened?(nil)
         rebuildTabBar()
@@ -3833,7 +3907,29 @@ final class TabChipView: NSView, NSDraggingSource {
     /// appear). Left nil by owners whose tabs can't become windows (Run's terminal sessions).
     var onTearOut: ((NSPoint) -> Void)?
     var title: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
-    var isActive: Bool = false { didSet { needsDisplay = true; updateCloseVisibility() } }
+    var isActive: Bool = false {
+        didSet {
+            needsDisplay = true
+            updateCloseVisibility()
+            if isActive { revealWhenLaidOut() }
+        }
+    }
+
+    /// The active tab is always in view: in an overflowing strip it's scrolled to, after
+    /// layout has placed it (a new chip has no frame yet).
+    private func revealWhenLaidOut() {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.isActive, self.window != nil else { return }
+                self.scrollToVisible(self.bounds.insetBy(dx: -16, dy: 0))
+            }
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if isActive { revealWhenLaidOut() }
+    }
     /// Used by Run's terminal tabs (unused by Make's file tabs, which never set these) to show
     /// an exited-process state and an unseen-output dot without needing a separate chip type.
     var isDead: Bool = false { didSet { needsDisplay = true } }
@@ -4188,7 +4284,8 @@ extension MakeWorkspaceViewController: EditorEngineDelegate {
 }
 
 extension MakeWorkspaceViewController: StageChromeProviding {
-    var scrollViewUnderTopRow: NSScrollView? { loadViewIfNeeded(); return editorScroll }
+    /// The preview while it's showing: it scrolls under the top row just as the editor does.
+    var scrollViewUnderTopRow: NSScrollView? { loadViewIfNeeded(); return markdownPreviewScroll.isHidden ? editorScroll : markdownPreviewScroll }
     /// The file tabs (with the language-server indicator trailing) live in the window's top row.
     var topRowContent: NSView? { loadViewIfNeeded(); return tabBar }
 

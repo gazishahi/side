@@ -93,6 +93,9 @@ final class RunWorkspaceViewController: NSViewController {
         guard isViewLoaded else { return }
         rebuildTabBar()
         clearContainer()
+        // A project opened while Run is on screen: show (or start) its terminal now. Only a
+        // visit to Run did that before, so the new project's Run stayed blank until then.
+        if view.window != nil, !view.isHiddenOrHasHiddenAncestor { activateActiveSession() }
     }
 
     /// Something changed that this view didn't cause: an agent opened a session, a shell exited,

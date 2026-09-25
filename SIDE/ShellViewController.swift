@@ -94,6 +94,10 @@ final class ShellViewController: NSViewController {
         thinkVC.onOpenLibrary = { [weak self] in LibraryWindowController.shared.show(for: self) }
         reviewVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
         runVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
+        makeVC.onScrollUnderTopRowChange = { [weak self] in
+            guard let self, self.current == .make else { return }
+            self.chrome.watchScrollBeneathTopRow(self.makeVC.scrollViewUnderTopRow)
+        }
         tracksVC.onEmptyStateAction = { [weak self] action in self?.performEmptyStateAction(action) }
         reviewVC.onInstructRequested = { [weak self] path, lines, anchor in self?.presentReviewInstruct(path: path, lines: lines, anchor: anchor) }
         makeVC.onOpenThinkRequested = { [weak self] in self?.show(.think) }
@@ -633,6 +637,28 @@ final class ShellViewController: NSViewController {
                 }
             }
         }
+    }
+
+    /// UI testing: ⇧⌘V in Make.
+    func toggleMarkdownPreviewForTesting() { makeVC.toggleMarkdownPreviewForTesting() }
+
+    /// UI testing: the scroll view under the window's centre moves down a page at a time,
+    /// one page per frame, as a fast scroll would.
+    func scrollForTesting(pages: Int) {
+        guard let window = view.window, let content = window.contentView else { return }
+        let centre = NSPoint(x: content.bounds.midX, y: content.bounds.midY)
+        guard let scroll = content.hitTest(centre)?.enclosingScrollView else { return }
+        var remaining = pages * 8
+        func step() {
+            guard remaining > 0 else { return }
+            remaining -= 1
+            let clip = scroll.contentView
+            let limit = max(0, (scroll.documentView?.frame.height ?? 0) - clip.bounds.height)
+            clip.scroll(to: NSPoint(x: clip.bounds.minX, y: min(limit, clip.bounds.minY + clip.bounds.height / 8)))
+            scroll.reflectScrolledClipView(clip)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { step() }
+        }
+        step()
     }
 
     /// UI testing: a stage brought forward by name ("make", "think", "review", "run").
@@ -1270,11 +1296,20 @@ final class ShellViewController: NSViewController {
     private func applyWindowChrome() {
         trackPill.refresh()
         guard let window = view.window else { return }
-        window.representedURL = currentFileURL
-        window.isDocumentEdited = isDirty
         let track = trackStore?.tracks.first { $0.branchName == currentTrackKey }
-        window.title = Self.windowTitle(stage: current, fileName: currentFileURL?.lastPathComponent,
-                                        track: track.map { $0.intent.isEmpty ? $0.branchName : $0.intent }, project: projectURL?.lastPathComponent)
+        let title = Self.windowTitle(stage: current, fileName: currentFileURL?.lastPathComponent,
+                                     track: track.map { $0.intent.isEmpty ? $0.branchName : $0.intent }, project: projectURL?.lastPathComponent)
+        // Each of these makes AppKit lay out the title bar again, lights included; the lights
+        // were put back on the next turn of the run loop, a frame late, so switching files made
+        // them jump. Only what changed is set, and the lights go back in the same pass.
+        var changed = false
+        if window.representedURL != currentFileURL { window.representedURL = currentFileURL; changed = true }
+        if window.isDocumentEdited != isDirty { window.isDocumentEdited = isDirty; changed = true }
+        if window.title != title { window.title = title; changed = true }
+        if changed {
+            window.standardWindowButton(.closeButton)?.superview?.layoutSubtreeIfNeeded()
+            chrome.positionTrafficLights(in: window)
+        }
     }
 
     /// A project-relative path for the pill's header, never an absolute one. The old naive

@@ -37,7 +37,93 @@ public final class ProviderRegistryStore: @unchecked Sendable {
             providers = Self.builtInSeeds
             save()
         }
+        mergeSeedModels()
         migrateLegacyDevKeyIfNeeded()
+    }
+
+    // MARK: - Keeping the model list current
+
+    /// A built-in provider saved by an older build gains the models its seed has added since:
+    /// the list was written once, on first launch, and never looked at again.
+    private func mergeSeedModels() {
+        var changed = false
+        for seed in Self.builtInSeeds {
+            guard let index = providers.firstIndex(where: { $0.id == seed.id }) else { continue }
+            let merged = Self.merge(providers[index].models, adding: seed.models)
+            if merged != providers[index].models { providers[index].models = merged; changed = true }
+        }
+        if changed { save() }
+    }
+
+    /// `adding` first, in its order (a provider lists newest first), then the ones only in
+    /// `existing` (a model the person added, or one the provider has stopped listing but a
+    /// track may still name). Names come from `adding`; context windows the person set stay.
+    public static func merge(_ existing: [ProviderModel], adding fresh: [ProviderModel]) -> [ProviderModel] {
+        var result: [ProviderModel] = fresh.map { model in
+            guard let old = existing.first(where: { $0.id == model.id }) else { return model }
+            return ProviderModel(id: model.id, displayName: model.displayName, contextWindowTokens: old.contextWindowTokens)
+        }
+        let freshIds = Set(fresh.map(\.id))
+        result.append(contentsOf: existing.filter { !freshIds.contains($0.id) })
+        return result
+    }
+
+    /// How often a provider's list is asked for, at most.
+    public static let modelRefreshInterval: TimeInterval = 24 * 60 * 60
+    private static func refreshedKey(_ id: String) -> String { "SideProviderModelsRefreshed.\(id)" }
+
+    /// Asks the provider which models it offers now (Anthropic's `/v1/models`; a local
+    /// server's `/v1/models`) and merges them in, so a new model shows without an update to
+    /// Side. At most once a day unless `force` (a key was just saved). Needs the key the caller
+    /// already has: this never reads the Keychain itself.
+    public func refreshModels(providerId: String, apiKey: String?, force: Bool = false, session: URLSession = .shared, completion: ((Bool) -> Void)? = nil) {
+        guard let definition = provider(for: providerId),
+              definition.id == "anthropic" || definition.kind == .local else { completion?(false); return }
+        let key = Self.refreshedKey(providerId)
+        if !force, let last = UserDefaults.standard.object(forKey: key) as? Date, Date().timeIntervalSince(last) < Self.modelRefreshInterval {
+            completion?(false)
+            return
+        }
+        UserDefaults.standard.set(Date(), forKey: key)
+        var request = URLRequest(url: definition.baseURL.appendingPathComponent("v1/models").appending(queryItems: [URLQueryItem(name: "limit", value: "100")]))
+        request.timeoutInterval = 15
+        if definition.id == "anthropic" {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        } else if let apiKey, !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        session.dataTask(with: request) { [weak self] data, response, _ in
+            let fetched = (response as? HTTPURLResponse)?.statusCode == 200 ? data.flatMap(Self.parseModels) : nil
+            DispatchQueue.main.async {
+                guard let self, let fetched, !fetched.isEmpty, var current = self.provider(for: providerId) else {
+                    // A failed ask is tried again next time rather than a day later.
+                    if fetched == nil { UserDefaults.standard.removeObject(forKey: key) }
+                    completion?(false)
+                    return
+                }
+                let merged = Self.merge(current.models, adding: fetched)
+                guard merged != current.models else { completion?(false); return }
+                current.models = merged
+                self.addOrUpdate(current)
+                NotificationCenter.default.post(name: Self.modelsDidChangeNotification, object: self, userInfo: ["providerId": providerId])
+                completion?(true)
+            }
+        }.resume()
+    }
+
+    public static let modelsDidChangeNotification = Notification.Name("SideProviderModelsDidChange")
+
+    /// `{"data": [{"id", "display_name"?}]}`: Anthropic's shape and OpenAI's (whose entries
+    /// have only an id).
+    static func parseModels(_ data: Data) -> [ProviderModel]? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = object["data"] as? [[String: Any]] else { return nil }
+        return entries.compactMap { entry in
+            guard let id = entry["id"] as? String, !id.isEmpty else { return nil }
+            let window = (entry["max_input_tokens"] as? Int) ?? (entry["context_window"] as? Int) ?? 200_000
+            return ProviderModel(id: id, displayName: (entry["display_name"] as? String) ?? id, contextWindowTokens: window)
+        }
     }
 
     public static let builtInSeeds: [ProviderDefinition] = [
@@ -49,6 +135,8 @@ public final class ProviderRegistryStore: @unchecked Sendable {
             requiresAPIKey: true,
             models: [
                 ProviderModel(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", contextWindowTokens: 200_000),
+                ProviderModel(id: "claude-opus-5-5", displayName: "Claude Opus 5.5", contextWindowTokens: 200_000),
+                ProviderModel(id: "claude-fable-5-1", displayName: "Claude Fable 5.1", contextWindowTokens: 200_000),
                 ProviderModel(id: "claude-opus-5", displayName: "Claude Opus 5", contextWindowTokens: 200_000),
                 ProviderModel(id: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", contextWindowTokens: 200_000),
             ],
@@ -123,6 +211,7 @@ public final class ProviderRegistryStore: @unchecked Sendable {
         }
         switch definition.kind {
         case .builtIn where definition.id == "anthropic":
+            refreshModels(providerId: definition.id, apiKey: apiKey)
             return .ready(
                 AnthropicMessagesProvider(apiKey: apiKey ?? "", modelId: model.id, baseURL: definition.baseURL, effort: effort),
                 definition, model
