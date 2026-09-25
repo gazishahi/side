@@ -52,6 +52,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             GitLaunchProbe.defaults = volatile
             ProjectRules.defaults = volatile
             DispatchQueue.main.async { (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded() }
+            // Measurement scripts drive Make directly (opening through the UI with synthetic
+            // events proved unreliable): "open <path>" and "close-all", UI testing only.
+            DistributedNotificationCenter.default().addObserver(forName: Notification.Name("side.uitesting.command"), object: nil, queue: .main) { note in
+                guard let command = note.object as? String else { return }
+                MainActor.assumeIsolated {
+                    guard let shell = window.contentViewController as? ShellViewController else { return }
+                    if command.hasPrefix("open ") { shell.revealFile(URL(fileURLWithPath: String(command.dropFirst(5)))) }
+                    if command == "close-all" { shell.closeAllMakeTabsForTesting() }
+                }
+            }
             if let fixture = UserDefaults.standard.string(forKey: "SideUITestingProject") {
                 DispatchQueue.main.async {
                     (window.contentViewController as? ShellViewController)?.openProject(at: URL(fileURLWithPath: fixture), focusingTrackKey: nil)

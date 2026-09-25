@@ -1929,6 +1929,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
+    func closeAllTabsForTesting() { closeAllTabsImmediately() }
+
     private func closeAllTabsImmediately() {
         for tab in openTabs where tab.kind == .text { lspManager?.closed(url: tab.url) }
         openTabs.removeAll()

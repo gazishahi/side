@@ -1,0 +1,162 @@
+import XCTest
+@testable import Heron
+@testable import Side
+
+/// Think with a long, realistic conversation: memory and CPU, with the transcript on screen and
+/// without. A fake ACP agent streams each turn as real ones do: thinking and text in small
+/// chunks, file reads with large outputs, an edit. Opt-in (`SIDE_BUDGETS=1`, optimized).
+@MainActor
+final class ThinkBudgetTests: XCTestCase {
+    private var root: URL!
+    private var context: ProjectContext!
+    private var agent: ACPAgent!
+
+    override func setUp() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_BUDGETS"] == "1", "set SIDE_BUDGETS=1 to measure")
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("thinkbudget-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "T"]] { _ = GitPaths.runGit(args, cwd: root.path) }
+        try "hi\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = GitPaths.runGit(["add", "."], cwd: root.path); _ = GitPaths.runGit(["commit", "-q", "-m", "base"], cwd: root.path)
+        context = ProjectContextRegistry.shared.acquire(projectRoot: root)
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("chatty-\(UUID().uuidString).py")
+        try #"""
+import json, sys
+def send(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+def up(u): send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "c", "update": u}})
+answer = ("Here's what I found. The **store** keeps a cache keyed by path, and `refresh()` walks it.\n\n"
+          "```swift\nfunc refresh() {\n    for (path, entry) in cache where entry.isStale {\n        cache[path] = load(path)\n    }\n}\n```\n\n"
+          "- First, the cache is filled on open.\n- Then each save marks an entry stale.\n- Finally refresh reloads it.\n\n") * 6
+source = "".join("let value%d = compute(%d) // a line of the file being read\n" % (i, i) for i in range(700))
+turn = 0
+for line in sys.stdin:
+    m = json.loads(line); meth = m.get("method")
+    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1}})
+    elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "c"}})
+    elif meth == "session/prompt":
+        turn += 1
+        for i in range(0, 1600, 16): up({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": ("Considering the store and its cache. " * 50)[i:i+16]}})
+        for k in range(4):
+            tid = "t%d-%d" % (turn, k)
+            up({"sessionUpdate": "tool_call", "toolCallId": tid, "title": "Read Sources/File%d.swift" % k, "kind": "read", "status": "in_progress", "locations": [{"path": "Sources/File%d.swift" % k}]})
+            up({"sessionUpdate": "tool_call_update", "toolCallId": tid, "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": source}}]})
+        for i in range(0, len(answer), 12): up({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": answer[i:i+12]}})
+        up({"sessionUpdate": "tool_call", "toolCallId": "e%d" % turn, "title": "Edit Store.swift", "kind": "edit", "status": "completed", "content": [{"type": "diff", "path": "Store.swift", "oldText": source[:4000], "newText": source[:4000].replace("compute", "calculate")}]})
+        up({"sessionUpdate": "usage_update", "used": 20000 * turn, "size": 200000})
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn", "usage": {"inputTokens": 1000, "outputTokens": 400}}})
+"""#.write(to: script, atomically: true, encoding: .utf8)
+        agent = ACPAgent.addCustom(name: "Chatty", command: "chatty", arguments: [script.path], apiKeyVariable: nil)
+        UserDefaults.standard.set("/usr/bin/python3", forKey: "SideACPAgentPath.\(agent.id)")
+    }
+
+    override func tearDown() async throws {
+        guard let context else { return }
+        for track in context.trackStore.tracks { context.runnerManager.discardRunner(forTrackKey: track.branchName) }
+        ProjectContextRegistry.shared.release(projectRoot: root)
+        if let agent { ACPAgent.removeCustom(id: agent.id); UserDefaults.standard.removeObject(forKey: "SideACPAgentPath.\(agent.id)") }
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func footprintMB() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        return result == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : 0
+    }
+
+    /// CPU seconds this process has used, all threads.
+    private func cpuSeconds() -> Double {
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6
+    }
+
+    private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    }
+
+    private func makeTrack() throws -> Track {
+        final class Box: @unchecked Sendable { var id: UUID? }
+        let box = Box()
+        let created = expectation(description: "track")
+        context.trackStore.createTrack(intent: "Long conversation") { result in
+            if case .success(let (track, _)) = result { box.id = track.id }
+            created.fulfill()
+        }
+        wait(for: [created], timeout: 30)
+        return try XCTUnwrap(context.trackStore.tracks.first { $0.id == box.id })
+    }
+
+    private func run(turns: Int, onScreen: Bool) throws -> [String] {
+        let track = try makeTrack()
+        context.trackStore.setHarness(agent.id, forTrackKey: track.branchName)
+        var window: NSWindow?
+        var think: ThinkWorkspaceViewController?
+        weak var released: ThinkWorkspaceViewController?
+        if onScreen { autoreleasepool {
+            let vc = ThinkWorkspaceViewController()
+            vc.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: root.path, trackKey: track.branchName)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
+            w.isReleasedWhenClosed = false
+            w.contentViewController = vc
+            w.orderFront(nil)
+            window = w; think = vc; released = vc
+        } }
+        let harness = context.runnerManager.runner(forTrackKey: track.branchName)
+        let before = footprintMB()
+        var lines: [String] = []
+        let cpuStart = cpuSeconds(), wallStart = CACurrentMediaTime()
+        for turn in 1...turns {
+            let started = CACurrentMediaTime()
+            harness.send("Tell me about the store, turn \(turn)")
+            waitUntil(60) { harness.phase == .finishedTurn || harness.phase == .idle && CACurrentMediaTime() - started > 0.5 }
+            if turn % 5 == 0 {
+                lines.append(String(format: "%@ turn %d: +%.0f MB, %d entries, last turn %.0f ms", onScreen ? "on screen" : "off screen", turn, footprintMB() - before, harness.entries.count, (CACurrentMediaTime() - started) * 1000))
+            }
+        }
+        let cpu = cpuSeconds() - cpuStart, wall = CACurrentMediaTime() - wallStart
+        lines.append(String(format: "%@: %.1f CPU s over %.1f s (%.0f%% of a core)", onScreen ? "on screen" : "off screen", cpu, wall, cpu / wall * 100))
+        autoreleasepool {
+            if let window {
+                window.contentViewController = nil
+                window.close()
+            }
+            think = nil
+            window = nil
+        }
+        for _ in 0..<20 { autoreleasepool { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) } }
+        if onScreen { lines.append("on screen: the Think view " + (released == nil ? "was freed" : "is still alive (leaked)")) }
+        if onScreen, let alive = released, ProcessInfo.processInfo.environment["SIDE_TRACE_LEAK"] == "1" {
+            print("TRACE address \(String(format: "0x%lx", unsafeBitCast(alive, to: Int.self))) pid \(getpid())")
+            fflush(stdout)
+            waitUntil(40) { false }
+        }
+        lines.append(String(format: "%@: +%.0f MB after the view is gone", onScreen ? "on screen" : "off screen", footprintMB() - before))
+        malloc_zone_pressure_relief(nil, 0)
+        lines.append(String(format: "%@: +%.0f MB after malloc gives free pages back", onScreen ? "on screen" : "off screen", footprintMB() - before))
+        return lines
+    }
+
+    private func categories() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/footprint")
+        process.arguments = ["\(getpid())"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try? process.run()
+        process.waitUntilExit()
+        let text = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return text.split(separator: "\n").dropFirst(4).prefix(9).map { "  " + $0 }.joined(separator: "\n")
+    }
+
+    func testALongConversation() throws {
+        let off = try run(turns: 20, onScreen: false)
+        print("CATEGORIES before on screen\n" + categories())
+        let on = try run(turns: 20, onScreen: true)
+        print("CATEGORIES after on screen\n" + categories())
+        for line in off + on { print("BUDGET think " + line) }
+    }
+}

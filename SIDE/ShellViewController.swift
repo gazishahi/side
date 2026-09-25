@@ -612,6 +612,9 @@ final class ShellViewController: NSViewController {
                              stateDirectory: projectContext?.stateDirectory, trackStore: trackStore)
     }
 
+    /// UI testing's measurement scripts: close every Make tab without asking.
+    func closeAllMakeTabsForTesting() { makeVC.closeAllTabsForTesting() }
+
     /// A tab torn out of another window landing here — jump to Make and show that file.
     func revealFile(_ url: URL) {
         show(.make)
