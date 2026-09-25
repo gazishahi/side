@@ -47,7 +47,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// Unified / Split. A segmented control rather than a checkbox because the two are peers, not
     /// an option and its absence; persisted, because a layout choice is a habit, not a mood.
     private let diffLayoutControl = NSSegmentedControl(labels: ["Unified", "Split"], trackingMode: .selectOne, target: nil, action: nil)
-    private let diffViewer = DiffViewer()
+    /// Every file's changes in one Alloy document below the summary (SIDE_RFC_FIND_REVIEW_TRACKS.md, R2).
+    private let diffViewer = DiffDocumentView()
+    /// The summary and checkpoints above the diff: as tall as they are, up to half the stage.
+    private var topHeight: NSLayoutConstraint?
     /// "Instruct…" on a file: (relative path, lines, anchor). The shell owns the conversation.
     var onInstructRequested: ((String, ClosedRange<Int>, NSView) -> Void)? {
         didSet { diffViewer.onInstruct = onInstructRequested }
@@ -205,7 +208,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         headerRow.addArrangedSubview(titleLabel)
         headerRow.addArrangedSubview(subtitleRow)
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for view in [decisionStack, checkpointsHeader, checkpointsStack, diffHeaderRow, diffViewer] {
+        for view in [decisionStack, checkpointsHeader, checkpointsStack, diffHeaderRow] {
             contentStack.addArrangedSubview(view)
             // `contentStack.alignment = .leading` means arranged subviews use their intrinsic
             // width by default — without this, a wrapping label or the diff card would collapse
@@ -244,13 +247,17 @@ final class ReviewWorkspaceViewController: NSViewController {
         // button; a glass capsule in the header costs no layout and pairs the action with the
         // identity of the thing being acted on.
         view.addSubview(scrollView)
+        view.addSubview(diffViewer)
         view.addSubview(promoteOverlay)
         view.addSubview(emptyState)
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            diffViewer.topAnchor.constraint(equalTo: scrollView.bottomAnchor),
+            diffViewer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            diffViewer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            diffViewer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             promoteOverlay.topAnchor.constraint(equalTo: view.topAnchor, constant: 14 + ChromeHost.rowHeight),
             promoteOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
             // Wide enough to matter, never wide enough to crowd the title: "Promote to
@@ -265,6 +272,9 @@ final class ReviewWorkspaceViewController: NSViewController {
             emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
         ])
+        let height = scrollView.heightAnchor.constraint(equalToConstant: 200)
+        height.isActive = true
+        topHeight = height
         // Not just `showEmptyState(true)` — `reloadForTrackSwitch` can (and typically does, on
         // a restored window) run before this view ever loads, since it's only added as a child
         // and given a chance to load when the Review segment is first actually clicked. Without
@@ -272,6 +282,15 @@ final class ReviewWorkspaceViewController: NSViewController {
         // while this stage was never visited would get silently dropped on the floor the first
         // time it's opened.
         refresh()
+    }
+
+    /// The top area is as tall as its content, up to half the stage; the diff takes the rest.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard let documentView = scrollView.documentView else { return }
+        let wanted = documentView.fittingSize.height + scrollView.contentInsets.top
+        let height = min(wanted, max(160, view.bounds.height * 0.5))
+        if abs((topHeight?.constant ?? 0) - height) > 0.5 { topHeight?.constant = height }
     }
 
     // MARK: - Wiring
@@ -298,6 +317,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
         emptyState.isHidden = !empty
         scrollView.isHidden = empty
+        diffViewer.isHidden = empty
         // Nothing to promote when there's nothing to review.
         promoteOverlay.isHidden = empty
         // No track means no title or branch → base to show; empty chips read as broken.
@@ -360,7 +380,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     @objc private func diffLayoutChanged() {
         DiffLayout.preferred = diffLayoutControl.selectedSegment == 0 ? .unified : .sideBySide
-        diffViewer.layout = DiffLayout.preferred
+        diffViewer.diffLayout = DiffLayout.preferred
         refresh()
     }
 
@@ -1034,7 +1054,9 @@ extension ReviewWorkspaceViewController: StageChromeProviding {
     func setBottomObstruction(_ height: CGFloat) {
         loadViewIfNeeded()
         scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight, left: 0, bottom: height > 0 ? height + DS.Spacing.l : 0, right: 0)
+        scrollView.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight, left: 0, bottom: 0, right: 0)
+        // The diff runs to the bottom edge and scrolls under the bar.
+        diffViewer.bottomInset = height > 0 ? height + DS.Spacing.l : 0
     }
 
     func setTopObstruction(_ height: CGFloat) {

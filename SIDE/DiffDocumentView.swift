@@ -1,0 +1,563 @@
+import AlloyAppKit
+import AlloyCore
+import AlloyRender
+import AlloySyntax
+import AppKit
+import Heron
+
+/// Review's diff (SIDE_RFC_FIND_REVIEW_TRACKS.md, R2): every file in one read-only Alloy
+/// document, so a change set of any size costs what's on screen. Alloy lays out and draws only
+/// the visible lines; file headers are views over their rows, made only for the files in view.
+///
+/// Each file is two header rows (its path, hidden under the header view, then a blank row),
+/// then, unless folded, its hunks: a `@@` row and the lines. Split is two documents with the
+/// same rows, scrolled together. Lines are tinted edge to edge, colored by the file's language
+/// where Alloy knows it, numbered old and new in the gutter, and read to VoiceOver as
+/// "added, …" and "removed, …".
+@MainActor
+final class DiffDocumentView: NSView {
+    var diffLayout: DiffLayout = .preferred { didSet { if diffLayout != oldValue { rebuild(keepingPosition: true) } } }
+    /// How much of the bottom something floats over (the stage bar): the text scrolls under it.
+    var bottomInset: CGFloat = 0 { didSet { applyInsets() } }
+
+    private func applyInsets() {
+        for column in columns {
+            column.editor.scrollView.automaticallyAdjustsContentInsets = false
+            column.editor.scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: bottomInset, right: 0)
+        }
+    }
+
+    /// "Instruct…" on a file's header: its path, the new-side lines it touches, the anchor.
+    var onInstruct: ((String, ClosedRange<Int>, NSView) -> Void)?
+
+    private(set) var diff = UnifiedDiff()
+    private var folded: Set<Int> = []
+    private var message: NSTextField?
+
+    /// One row of a column. Both columns of a split share the kinds, so they line up.
+    private enum Row {
+        case fileTop(Int), fileBottom(Int), gap
+        case hunk(file: Int, header: String)
+        case line(file: Int, UnifiedDiff.Line?)
+    }
+
+    private struct Column {
+        let editor: AlloyEditorView
+        var rows: [Row] = []
+        /// Per file: its rows' text in this column, for syntax colors, and where its lines start.
+        var fileText: [Int: (firstRow: Int, rows: [Int])] = [:]
+        var highlighters: [Int: SyntaxHighlighter?] = [:]
+        /// Files by when they were last colored; past `highlighterLimit`, the oldest lets go.
+        var highlighterOrder: [Int] = []
+        /// Per row: its index among its file's line rows (-1 for other rows), and its length.
+        var localIndex: [Int] = []
+        var lengths: [Int] = []
+        /// Each file's header row.
+        var headerRow: [Int: Int] = [:]
+        let side: DiffBody.Side?
+    }
+
+    private var columns: [Column] = []
+    /// Bumped on every rebuild, so work started for old columns doesn't land in new ones.
+    private var columnsGeneration = 0
+    private let divider = NSBox()
+    /// The file headers over their rows, in this view's coordinates; only those in view exist.
+    private let headerLayer = HeaderLayerView()
+    private var headers: [Int: DiffFileHeader] = [:]
+    private var syncingScroll = false
+
+    /// Syntax trees kept at once: a screen shows a few files; scrolling through hundreds
+    /// shouldn't keep a tree for each.
+    private static let highlighterLimit = 12
+    private static let gutterWidthUnified: CGFloat = 86
+    private static let gutterWidthSplit: CGFloat = 52
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = DS.Radius.surface
+        layer?.masksToBounds = true
+        divider.boxType = .custom
+        divider.borderType = .noBorder
+        divider.fillColor = DS.Color.hairline
+        headerLayer.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // MARK: Showing a diff
+
+    func renderLoading() { show(message: "Loading diff…") }
+
+    func render(diffText: String) {
+        diff = UnifiedDiff.parse(diffText)
+        folded = []
+        guard !diff.files.isEmpty else { show(message: "No changes against this base."); return }
+        message?.removeFromSuperview()
+        message = nil
+        rebuild(keepingPosition: false)
+    }
+
+    private func show(message text: String) {
+        tearDownColumns()
+        message?.removeFromSuperview()
+        let label = NSTextField(labelWithString: text)
+        label.font = DS.Text.body()
+        label.textColor = .tertiaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([label.topAnchor.constraint(equalTo: topAnchor), label.leadingAnchor.constraint(equalTo: leadingAnchor)])
+        message = label
+        layer?.backgroundColor = nil
+    }
+
+    /// The files' row where the first visible line is, to keep the view there across a rebuild.
+    private func anchor() -> (file: Int, offset: CGFloat)? {
+        guard let first = columns.first else { return nil }
+        let top = first.editor.scrollY
+        let row = first.editor.documentLayout.line(atY: top).line
+        guard first.rows.indices.contains(row) else { return nil }
+        let file = fileIndex(of: first.rows[row])
+        guard let headerRow = first.headerRow[file] else { return nil }
+        return (file, top - first.editor.documentLayout.caretRect(at: first.editor.buffer.text.offset(ofLine: headerRow)).minY)
+    }
+
+    private func rebuild(keepingPosition: Bool) {
+        guard !diff.files.isEmpty else { return }
+        let keep = keepingPosition ? anchor() : nil
+        tearDownColumns()
+        columnsGeneration += 1
+        layer?.backgroundColor = DS.Color.raised.cgColor
+        let sides: [DiffBody.Side?] = diffLayout == .sideBySide ? [.left, .right] : [nil]
+        for side in sides {
+            guard let column = makeColumn(side: side) else { return }
+            columns.append(column)
+        }
+        layoutColumns()
+        applyInsets()
+        if let keep, let first = columns.first, let headerRow = first.headerRow[keep.file] {
+            first.editor.layoutSubtreeIfNeeded()
+            let y = first.editor.documentLayout.caretRect(at: first.editor.buffer.text.offset(ofLine: headerRow)).minY + keep.offset
+            for column in columns { column.editor.scrollY = y }
+        }
+        refreshHeaders()
+    }
+
+    private func tearDownColumns() {
+        for column in columns {
+            NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: column.editor.scrollView.contentView)
+            NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: column.editor.scrollView.contentView)
+            column.editor.gutter.removeFromSuperview()
+            column.editor.removeFromSuperview()
+        }
+        columns = []
+        divider.removeFromSuperview()
+        headerLayer.removeFromSuperview()
+        headers.values.forEach { $0.removeFromSuperview() }
+        headers = [:]
+    }
+
+    // MARK: Columns
+
+    private func makeColumn(side: DiffBody.Side?) -> Column? {
+        var rows: [Row] = []
+        var fileText: [Int: (firstRow: Int, rows: [Int])] = [:]
+        for (index, file) in diff.files.enumerated() {
+            if index > 0 { rows.append(.gap) }
+            rows.append(.fileTop(index))
+            rows.append(.fileBottom(index))
+            guard !folded.contains(index) else { continue }
+            var own: [Int] = []
+            for hunk in file.hunks {
+                rows.append(.hunk(file: index, header: hunk.header))
+                if let side {
+                    for pair in SideBySideRows.build(hunk) where !pair.isHeader {
+                        own.append(rows.count)
+                        rows.append(.line(file: index, side == .left ? pair.left : pair.right))
+                    }
+                } else {
+                    for line in hunk.lines {
+                        own.append(rows.count)
+                        rows.append(.line(file: index, line))
+                    }
+                }
+            }
+            fileText[index] = (own.first ?? rows.count, own)
+        }
+        let texts = rows.map { row -> String in
+            switch row {
+            case .fileTop(let file): return diff.files[file].path
+            case .fileBottom, .gap: return ""
+            case .hunk(_, let header): return header
+            case .line(_, let line): return line?.text ?? ""
+            }
+        }
+        let text = texts.joined(separator: "\n")
+        var localIndex = [Int](repeating: -1, count: rows.count)
+        for (_, own) in fileText { for (i, row) in own.rows.enumerated() { localIndex[row] = i } }
+        let lengths = texts.map { ($0 as NSString).length }
+        let font = DS.Text.Fonts.font(.editor, size: 12)
+        guard let editor = try? AlloyEditorView(buffer: TextBuffer(text), font: font as CTFont) else { return nil }
+        editor.isEditable = false
+        editor.wrapsLines = false
+        editor.accessibilityName = side == nil ? "Diff" : (side == .left ? "Diff, before" : "Diff, after")
+        var column = Column(editor: editor, rows: rows, fileText: fileText, side: side)
+        column.localIndex = localIndex
+        column.lengths = lengths
+        for (row, kind) in rows.enumerated() { if case .fileTop(let file) = kind { column.headerRow[file] = row } }
+        configure(&column)
+        return column
+    }
+
+    private func configure(_ column: inout Column) {
+        let editor = column.editor
+        let rows = column.rows
+        let side = column.side
+        let lengths = column.lengths
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        func tint(_ color: NSColor) -> SIMD4<Float> {
+            var resolved = color
+            effectiveAppearance.performAsCurrentDrawingAppearance { resolved = color.usingColorSpace(.sRGB) ?? color }
+            return [Float(resolved.redComponent), Float(resolved.greenComponent), Float(resolved.blueComponent), Float(resolved.alphaComponent)]
+        }
+        editor.theme = RenderTheme(background: tint(DS.Color.raised), text: tint(.labelColor), selection: tint(.selectedTextBackgroundColor),
+                                   caret: [0, 0, 0, 0], currentLine: [0, 0, 0, 0])
+        let added = tint(DiffBody.addedFill), removed = tint(DiffBody.removedFill), blank = tint(DS.Color.scrimFaint)
+        editor.lineBackground = { row in
+            guard rows.indices.contains(row), case .line(_, let line) = rows[row] else { return nil }
+            switch line?.kind {
+            case .added?: return added
+            case .removed?: return removed
+            case nil: return blank
+            case .context?: return nil
+            }
+        }
+        let hunkColor = tint(DiffBody.hunkColor), addedText = tint(DiffBody.addedText), removedText = tint(DiffBody.removedText)
+        let secondary = tint(.secondaryLabelColor)
+        editor.styles = { [weak self] row in
+            guard let self, rows.indices.contains(row) else { return [] }
+            let length = lengths[row]
+            switch rows[row] {
+            case .hunk: return [StyleSpan(range: 0..<length, color: hunkColor)]
+            case .line(let file, let line):
+                if let spans = self.syntaxSpans(file: file, row: row, dark: dark, columnSide: side), !spans.isEmpty { return spans }
+                let color: SIMD4<Float>
+                switch line?.kind {
+                case .added?: color = addedText
+                case .removed?: color = removedText
+                default: color = secondary
+                }
+                return [StyleSpan(range: 0..<length, color: color)]
+            default: return []
+            }
+        }
+        // Old and new numbers in the gutter; nothing beside headers.
+        func pad(_ number: Int?) -> String {
+            guard let number else { return "     " }
+            let text = "\(number)"
+            return String(repeating: " ", count: max(0, 5 - text.count)) + text
+        }
+        editor.gutter.label = { row in
+            guard rows.indices.contains(row), case .line(_, let line) = rows[row], let line else { return nil }
+            switch side {
+            case .left?: return pad(line.oldNumber)
+            case .right?: return pad(line.newNumber)
+            case nil: return pad(line.oldNumber) + " " + pad(line.newNumber)
+            }
+        }
+        editor.gutter.font = DS.Text.code(11, weight: .regular)
+        editor.gutter.numberColor = .quaternaryLabelColor
+        editor.gutter.backgroundColor = DS.Color.raised
+        // What the eye gets from color, in words.
+        editor.accessibilityLinePrefix = { row in
+            guard rows.indices.contains(row) else { return nil }
+            switch rows[row] {
+            case .fileTop: return "file, "
+            case .hunk: return "section, "
+            case .line(_, let line):
+                switch line?.kind {
+                case .added?: return "added, "
+                case .removed?: return "removed, "
+                default: return nil
+                }
+            default: return nil
+            }
+        }
+        editor.scrollView.contentView.postsBoundsChangedNotifications = true
+        editor.scrollView.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(columnScrolled(_:)), name: NSView.boundsDidChangeNotification, object: editor.scrollView.contentView)
+        // Resized (first layout included): which headers are in view changes too.
+        NotificationCenter.default.addObserver(self, selector: #selector(columnResized), name: NSView.frameDidChangeNotification, object: editor.scrollView.contentView)
+    }
+
+    /// Syntax colors for a row from its file's highlighter (built the first time the file is on
+    /// screen, from that file's rows in this column), or nil for a language Alloy doesn't know.
+    private func syntaxSpans(file: Int, row: Int, dark: Bool, columnSide: DiffBody.Side?) -> [StyleSpan]? {
+        guard let index = columns.firstIndex(where: { $0.side == columnSide }) else { return nil }
+        if columns[index].highlighters[file] == nil {
+            // Nothing yet: build it off the main thread (its text, its first parse), and draw
+            // the file plain until it lands. Building it here cost a frame on every new file.
+            columns[index].highlighters[file] = .some(nil)
+            columns[index].highlighterOrder.append(file)
+            if columns[index].highlighterOrder.count > Self.highlighterLimit {
+                let oldest = columns[index].highlighterOrder.removeFirst()
+                columns[index].highlighters[oldest] = nil
+            }
+            let ext = (diff.files[file].path as NSString).pathExtension
+            guard SyntaxLanguage.supports(ext), let own = columns[index].fileText[file] else { return nil }
+            let buffer = columns[index].editor.buffer.text
+            let rowsOfFile = own.rows
+            let generation = columnsGeneration
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let text = Rope(rowsOfFile.map { buffer.substring(buffer.range(ofLine: $0)) }.joined(separator: "\n"))
+                await MainActor.run { [weak self] in
+                    guard let self, self.columnsGeneration == generation,
+                          let i = self.columns.firstIndex(where: { $0.side == columnSide }),
+                          self.columns[i].highlighterOrder.contains(file) else { return }
+                    let built = SyntaxHighlighter(fileExtension: ext, text: text, theme: .side(dark: dark), parseInBackground: true)
+                    built?.onInvalidate = { [weak self] in self?.columns.forEach { $0.editor.setNeedsRender() } }
+                    self.columns[i].highlighters[file] = .some(built)
+                }
+            }
+            return nil
+        }
+        guard let highlighter = columns[index].highlighters[file] ?? nil, columns[index].localIndex.indices.contains(row) else { return nil }
+        let local = columns[index].localIndex[row]
+        return local >= 0 ? highlighter.spans(forLine: local) : nil
+    }
+
+    private func layoutColumns() {
+        let gutterWidth = diffLayout == .sideBySide ? Self.gutterWidthSplit : Self.gutterWidthUnified
+        var previous: NSView?
+        for (index, column) in columns.enumerated() {
+            let gutter = column.editor.gutter
+            for view in [gutter, column.editor as NSView] {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(view)
+            }
+            let leading = previous?.trailingAnchor ?? leadingAnchor
+            NSLayoutConstraint.activate([
+                gutter.topAnchor.constraint(equalTo: topAnchor), gutter.bottomAnchor.constraint(equalTo: bottomAnchor),
+                gutter.leadingAnchor.constraint(equalTo: leading), gutter.widthAnchor.constraint(equalToConstant: gutterWidth),
+                column.editor.topAnchor.constraint(equalTo: topAnchor), column.editor.bottomAnchor.constraint(equalTo: bottomAnchor),
+                column.editor.leadingAnchor.constraint(equalTo: gutter.trailingAnchor),
+            ])
+            if index == 0, columns.count > 1 {
+                divider.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(divider)
+                NSLayoutConstraint.activate([
+                    divider.topAnchor.constraint(equalTo: topAnchor), divider.bottomAnchor.constraint(equalTo: bottomAnchor),
+                    divider.leadingAnchor.constraint(equalTo: column.editor.trailingAnchor), divider.widthAnchor.constraint(equalToConstant: 1),
+                ])
+                previous = divider
+            } else {
+                previous = column.editor
+            }
+        }
+        if let last = columns.last { last.editor.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true }
+        if columns.count == 2 {
+            columns[0].editor.widthAnchor.constraint(equalTo: columns[1].editor.widthAnchor).isActive = true
+        }
+        addSubview(headerLayer)
+        NSLayoutConstraint.activate([
+            headerLayer.topAnchor.constraint(equalTo: topAnchor), headerLayer.bottomAnchor.constraint(equalTo: bottomAnchor),
+            headerLayer.leadingAnchor.constraint(equalTo: leadingAnchor), headerLayer.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+
+    // MARK: Scrolling
+
+    @objc private func columnScrolled(_ note: Notification) {
+        guard let clip = note.object as? NSClipView else { return }
+        // Split: the other column follows, row for row.
+        if columns.count == 2, !syncingScroll, let moved = columns.first(where: { $0.editor.scrollView.contentView === clip }) {
+            syncingScroll = true
+            for column in columns where column.editor !== moved.editor { column.editor.scrollY = moved.editor.scrollY }
+            syncingScroll = false
+        }
+        refreshHeaders()
+    }
+
+    @objc private func columnResized() { refreshHeaders() }
+
+    override func layout() {
+        super.layout()
+        refreshHeaders()
+    }
+
+    /// Headers for the files whose header rows are in view, placed over them; the rest go.
+    private func refreshHeaders() {
+        guard let first = columns.first else { return }
+        let editor = first.editor
+        let layoutModel = editor.documentLayout
+        let visible = editor.viewport
+        let topRow = layoutModel.line(atY: max(0, visible.minY - layoutModel.lineHeight * 2)).line
+        let bottomRow = layoutModel.line(atY: visible.maxY).line
+        var wanted: Set<Int> = []
+        if topRow <= bottomRow {
+            for row in topRow...min(bottomRow, first.rows.count - 1) {
+                if case .fileTop(let file) = first.rows[row] { wanted.insert(file) }
+            }
+        }
+        for (file, view) in headers where !wanted.contains(file) {
+            view.removeFromSuperview()
+            headers[file] = nil
+        }
+        let height = layoutModel.lineHeight * 2
+        for file in wanted {
+            guard let row = first.headerRow[file] else { continue }
+            let header = headers[file] ?? makeHeader(file)
+            headers[file] = header
+            let rowTop = layoutModel.caretRect(at: editor.buffer.text.offset(ofLine: row)).minY
+            // Document y → this view (flipped header layer): the clip view's top edge is ours.
+            let y = rowTop - editor.scrollView.contentView.bounds.minY
+            header.frame = NSRect(x: 0, y: y, width: bounds.width, height: height)
+        }
+    }
+
+    private func makeHeader(_ index: Int) -> DiffFileHeader {
+        let file = diff.files[index]
+        let header = DiffFileHeader(file: file, folded: folded.contains(index))
+        header.onToggle = { [weak self] in self?.toggleFold(index) }
+        if let onInstruct, !file.isDeleted, let span = file.changedNewLines {
+            header.onInstruct = { anchor in onInstruct(file.path, span, anchor) }
+        }
+        headerLayer.addSubview(header)
+        return header
+    }
+
+    private func toggleFold(_ index: Int) {
+        if folded.contains(index) { folded.remove(index) } else { folded.insert(index) }
+        rebuild(keepingPosition: true)
+    }
+
+    private func fileIndex(of row: Row) -> Int {
+        switch row {
+        case .fileTop(let f), .fileBottom(let f): return f
+        case .hunk(let f, _), .line(let f, _): return f
+        case .gap: return 0
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        guard !diff.files.isEmpty, message == nil else { return }
+        rebuild(keepingPosition: true)
+    }
+
+    // MARK: Tests
+
+    var rowCount: Int { columns.first?.rows.count ?? 0 }
+    var visibleHeaderCount: Int { headers.count }
+    var editors: [AlloyEditorView] { columns.map(\.editor) }
+    func toggleFoldForTesting(_ file: Int) { toggleFold(file) }
+}
+
+/// The file headers' layer: flipped, and transparent to clicks except on a header.
+private final class HeaderLayerView: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+}
+
+/// One file's header over its rows: chevron, path, NEW / DELETED, "Instruct…" on hover, the
+/// +/− counts. Clicking it folds the file.
+@MainActor
+final class DiffFileHeader: NSView {
+    var onToggle: (() -> Void)?
+    var onInstruct: ((NSView) -> Void)? { didSet { instructButton.isHidden = onInstruct == nil } }
+    private let instructButton = NSButton(title: "", target: nil, action: nil)
+    private let folded: Bool
+    private let describedAs: String
+
+    init(file: UnifiedDiff.File, folded: Bool) {
+        self.folded = folded
+        var parts = [file.path]
+        parts.append(file.addedCount == 1 ? "1 line added" : "\(file.addedCount) lines added")
+        parts.append(file.removedCount == 1 ? "1 line removed" : "\(file.removedCount) lines removed")
+        if file.isNew { parts.append("new file") }
+        if file.isDeleted { parts.append("deleted file") }
+        describedAs = parts.joined(separator: ", ")
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = DS.Color.canvas.cgColor
+
+        let chevron = NSImageView(image: NSImage(systemSymbolName: folded ? "chevron.right" : "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)) ?? NSImage())
+        chevron.contentTintColor = .secondaryLabelColor
+        let path = NSTextField(labelWithString: file.path)
+        path.font = DS.Text.code(12, weight: .medium)
+        path.textColor = folded ? .secondaryLabelColor : .labelColor
+        path.lineBreakMode = .byTruncatingMiddle
+        path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let counts = NSTextField(labelWithString: "")
+        let text = NSMutableAttributedString(string: "+\(file.addedCount)", attributes: [.font: DS.Text.code(11, weight: .semibold), .foregroundColor: DiffBody.addedText])
+        text.append(NSAttributedString(string: "  −\(file.removedCount)", attributes: [.font: DS.Text.code(11, weight: .semibold), .foregroundColor: DiffBody.removedText]))
+        counts.attributedStringValue = text
+        var views: [NSView] = [chevron, path]
+        if file.isNew || file.isDeleted {
+            let badge = NSTextField(labelWithString: file.isNew ? "NEW" : "DELETED")
+            badge.font = DS.Text.caption(.bold)
+            badge.textColor = file.isNew ? DiffBody.addedText : DiffBody.removedText
+            views.append(badge)
+        }
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        views.append(spacer)
+        instructButton.isBordered = false
+        instructButton.attributedTitle = NSAttributedString(string: "Instruct\u{2026}", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+        instructButton.target = self
+        instructButton.action = #selector(instructTapped)
+        instructButton.alphaValue = 0
+        instructButton.isHidden = true
+        instructButton.setAccessibilityLabel("Instruct about \(file.path)")
+        views.append(instructButton)
+        views.append(counts)
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = DS.Spacing.m
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.l),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func mouseDown(with event: NSEvent) { onToggle?() }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        return hit is NSButton ? hit : self
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { instructButton.animator().alphaValue = 1 }
+    override func mouseExited(with event: NSEvent) { instructButton.animator().alphaValue = 0 }
+    @objc private func instructTapped() { onInstruct?(instructButton) }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    // A disclosure, as the card header was: its file, its counts, and whether it's open.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .disclosureTriangle }
+    override func accessibilityLabel() -> String? { describedAs }
+    override func accessibilityValue() -> Any? { folded ? "collapsed" : "expanded" }
+    override func isAccessibilityExpanded() -> Bool { !folded }
+    override func accessibilityActionDescription(_ action: NSAccessibility.Action) -> String? {
+        action == .press ? (folded ? "Expand" : "Collapse") : nil
+    }
+    override func accessibilityPerformPress() -> Bool { onToggle?(); return true }
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        guard onInstruct != nil else { return nil }
+        return [NSAccessibilityCustomAction(name: "Instruct…") { [weak self] in self?.instructTapped(); return true }]
+    }
+}

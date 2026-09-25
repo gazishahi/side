@@ -2,7 +2,7 @@
 
 *2026-09-25. Status: **accepted**: the owner chose the directions on 2026-09-25 (Find as one
 search surface; Review "changes first" with a summary on top; Tracks as a switcher on the track
-pill plus a list to manage them). Build order below. Steps 1–2 built.*
+pill plus a list to manage them). Build order below. Steps 1–3 built.*
 *Companion to `SIDE_DESIGN.md` (tokens, glass), `SIDE_RFC_ALLOY.md` (the renderer Review's diffs
 move to) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -106,6 +106,31 @@ while you're typing it stays warm, so keys never pay the 37 ms.
    what VoiceOver reads for released blocks. In-process budget numbers need a drained autorelease
    pool per run-loop turn (`ThinkBudgetTests.waitUntil`), as the app's event loop gives.
 3. **Review's diff view on Alloy** (R2), measured by `ReviewBudgetTests`.
+   **Built 2026-09-25:** `DiffDocumentView`: every file in one read-only Alloy document (split is
+   two, scrolled together, row for row). A file is two header rows under a `DiffFileHeader` view
+   (chevron, path, NEW/DELETED, Instruct…, counts; a disclosure to VoiceOver), then its hunks;
+   folding a file removes its lines. Headers exist only for files in view. Lines are tinted edge
+   to edge (Alloy's new `lineBackground`), numbered old and new in the gutter (`AlloyGutterView.label`),
+   colored by the file's language (each file's highlighter built off the main thread the first time
+   it's on screen, the last twelve kept), and read to VoiceOver as "added, …", "removed, …",
+   "section, …", "file, …" (Alloy's `accessibilityLinePrefix`, with every accessibility query
+   mapped to that text). Review's page is now the summary and checkpoints on top (as tall as they
+   are, up to half the stage) and the diff filling the rest, under the bar; the checkpoint sheet
+   uses the same view. `DiffViewer` (a text view per file, built up front) is gone.
+   Measured, optimized build, a real 200-file change set and a 500-file one made from it:
+
+   | | Before (200 files) | After (200) | After (500) |
+   |---|---|---|---|
+   | Open | 36 s | 32 ms | 66 ms |
+   | Scroll at 45 pt a frame, p99 | — | 7.7 ms | 7.7 ms |
+   | A screen at a time, slowest | — | 16 ms | 14 ms |
+   | Memory | +325 MB | ~30 MB for the diff | ~30 MB |
+
+   Beyond the diff itself: the graphics driver's render memory (~95 MB, the first time anything in
+   the process draws; freed a few seconds after drawing stops) and two window-sized drawables
+   (~17 MB each at 2x, per column). The first run also showed the in-process measurements have to
+   drain an autorelease pool per step, as the app's event loop does, or released views appear to
+   leak.
 4. **Review's layout** (R1).
 5. **Tracks** (T1).
 6. **Budgets in one place**: the budget tests run together against the table above.

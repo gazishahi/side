@@ -48,7 +48,8 @@ final class CheckpointSheetController: NSViewController {
     private let checkpoint: Checkpoint
     private let checkpoints: [Checkpoint]
     private let worktreePath: String
-    private let diffViewer = DiffViewer()
+    /// Review's diff view: one Alloy document, so a large checkpoint opens as fast as a small one.
+    private let diffViewer = DiffDocumentView()
     private let statusLabel = NSTextField(labelWithString: "")
     var onOpenInReview: (() -> Void)?
     var onClose: (() -> Void)?
@@ -73,14 +74,8 @@ final class CheckpointSheetController: NSViewController {
         let meta = NSTextField(wrappingLabelWithString: "")
         meta.attributedStringValue = ReviewWorkspaceViewController.checkpointMeta(checkpoint)
 
-        let document = NSView()
-        document.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(diffViewer)
-        let scroll = NSScrollView()
-        scroll.documentView = FlippedDocument(wrapping: document)
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
+        diffViewer.diffLayout = .unified
+        diffViewer.setContentHuggingPriority(.defaultLow, for: .vertical)
 
         statusLabel.font = DS.Text.caption()
         statusLabel.textColor = .secondaryLabelColor
@@ -97,7 +92,7 @@ final class CheckpointSheetController: NSViewController {
         buttons.orientation = .horizontal
         buttons.spacing = DS.Spacing.m
 
-        let stack = NSStackView(views: [heading, meta, scroll, buttons])
+        let stack = NSStackView(views: [heading, meta, diffViewer, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = DS.Spacing.m
@@ -108,14 +103,10 @@ final class CheckpointSheetController: NSViewController {
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: root.topAnchor), stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor), stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
+            diffViewer.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
+            diffViewer.heightAnchor.constraint(greaterThanOrEqualToConstant: 280),
             buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
             heading.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -40),
-            diffViewer.topAnchor.constraint(equalTo: document.topAnchor),
-            diffViewer.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            diffViewer.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            diffViewer.bottomAnchor.constraint(equalTo: document.bottomAnchor),
-            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             root.widthAnchor.constraint(greaterThanOrEqualToConstant: 640),
             root.heightAnchor.constraint(greaterThanOrEqualToConstant: 420),
         ])
@@ -154,19 +145,4 @@ final class CheckpointSheetController: NSViewController {
 final class DismissableSheetWindow: NSWindow {
     var onCancel: (() -> Void)?
     override func cancelOperation(_ sender: Any?) { onCancel?() }
-}
-
-/// A flipped scroll document that sizes to what it wraps — content reads from the top.
-private final class FlippedDocument: NSView {
-    override var isFlipped: Bool { true }
-    init(wrapping content: NSView) {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        addSubview(content)
-        NSLayoutConstraint.activate([
-            content.topAnchor.constraint(equalTo: topAnchor), content.bottomAnchor.constraint(equalTo: bottomAnchor),
-            content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

@@ -139,10 +139,9 @@ struct UnifiedDiff {
     }
 }
 
-/// The diff viewer: one collapsible card per file — filename header with +/− counts, line
-/// numbers in a gutter, full-line tints for added/removed — instead of raw `git diff` text.
-/// The design charter's flagship component; Review uses it today, Make's hunk review and
-/// Heron's proposal cards are meant to adopt it.
+/// A file's diff as a card (`DiffFileCardView`) and the shared hunk renderer (`DiffBody`), for
+/// Think's proposal cards, which show one small diff each. Review and the checkpoint sheet show
+/// whole change sets with `DiffDocumentView` (Alloy), which costs what's on screen.
 /// How a file's hunks are laid out. Unified is the shape every diff tool shares and the one that
 /// fits Think's 620pt proposal cards; split needs two gutters and two code columns, which only
 /// Review has the width for — so Think stays unified regardless of this setting.
@@ -198,62 +197,6 @@ enum SideBySideRows {
         }
         flush()
         return rows
-    }
-}
-
-final class DiffViewer: NSStackView {
-    var layout: DiffLayout = .preferred
-    /// Set by Review: "Instruct…" on a file's header — its path, the new-side lines the diff
-    /// touches, and the control to anchor the popover to (Direction 02 §5.3).
-    var onInstruct: ((String, ClosedRange<Int>, NSView) -> Void)?
-
-    init() {
-        super.init(frame: .zero)
-        orientation = .vertical
-        alignment = .leading
-        // Files are rows separated by hairlines (§4.2); the hairlines carry the spacing.
-        spacing = 0
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func renderLoading() {
-        arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let loading = NSTextField(labelWithString: "Loading diff…")
-        loading.font = DS.Text.body()
-        loading.textColor = .tertiaryLabelColor
-        addArrangedSubview(loading)
-    }
-
-    func render(diffText: String) {
-        arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let diff = UnifiedDiff.parse(diffText)
-        guard !diff.files.isEmpty else {
-            let empty = NSTextField(labelWithString: "No changes against this base.")
-            empty.font = DS.Text.body()
-            empty.textColor = .tertiaryLabelColor
-            addArrangedSubview(empty)
-            return
-        }
-        for (index, file) in diff.files.enumerated() {
-            if index > 0 {
-                let hairline = NSBox()
-                hairline.boxType = .custom
-                hairline.borderType = .noBorder
-                hairline.fillColor = DS.Color.hairline
-                hairline.translatesAutoresizingMaskIntoConstraints = false
-                hairline.heightAnchor.constraint(equalToConstant: 1).isActive = true
-                addArrangedSubview(hairline)
-                hairline.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-            }
-            let card = DiffFileCardView(file: file, layout: layout)
-            if let onInstruct, !file.isDeleted, let span = file.changedNewLines {
-                card.onInstruct = { anchor in onInstruct(file.path, span, anchor) }
-            }
-            addArrangedSubview(card)
-            card.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        }
     }
 }
 
