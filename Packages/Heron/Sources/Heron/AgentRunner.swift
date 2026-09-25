@@ -145,7 +145,7 @@ public final class AgentRunner {
     /// Cancelled and re-armed on every stream event — fires only if `.streaming` goes quiet for
     /// `stallTimeout`, since a hung SSE connection is otherwise indistinguishable from a working
     /// agent (`SSEHTTPClient`'s own request timeout is the transport-level backstop under this).
-    private var stallWatchdog: DispatchWorkItem?
+    private lazy var stallWatchdog = Watchdog(interval: { Self.stallTimeout }, fire: { [weak self] in self?.handleStall() })
     /// Whether this turn's stream delivered a well-formed terminator, and with what stop reason.
     /// A stream that just *stops* — truncated response, a socket closed after malformed events —
     /// produces no `messageEnd`, which is the only way to tell "the model had nothing to say"
@@ -242,17 +242,9 @@ public final class AgentRunner {
         notify(.phaseChanged)
     }
 
-    private func armStallWatchdog() {
-        stallWatchdog?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in self?.handleStall() }
-        stallWatchdog = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.stallTimeout, execute: workItem)
-    }
+    private func armStallWatchdog() { stallWatchdog.feed() }
 
-    private func stopStallWatchdog() {
-        stallWatchdog?.cancel()
-        stallWatchdog = nil
-    }
+    private func stopStallWatchdog() { stallWatchdog.stop() }
 
     private func handleStall() {
         guard phase == .streaming else { return }

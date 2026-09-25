@@ -620,6 +620,24 @@ final class ShellViewController: NSViewController {
 
     /// UI testing's measurement scripts: close every Make tab without asking.
     func closeAllMakeTabsForTesting() { makeVC.closeAllTabsForTesting() }
+    /// UI testing: a new track on the given agent, shown in Think.
+    func thinkTrackForTesting(agentId: String) {
+        guard let store = trackStore else { return }
+        store.createTrack(intent: "Measurement") { [weak self] result in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, case .success(let (track, _)) = result else { return }
+                    store.setHarness(agentId, forTrackKey: track.branchName)
+                    self.branchIsNowActive(track.branchName)
+                    self.show(.think)
+                }
+            }
+        }
+    }
+
+    /// UI testing: a message sent in Think, as typed.
+    func thinkSendForTesting(_ text: String) { thinkVC.sendAsTyped(text) }
+
     /// UI testing: Find and Replace open with a query typed, as ⌥⌘F and typing would.
     func findForTesting(_ query: String) {
         makeVC.presentFind(replace: true)

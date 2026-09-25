@@ -61,6 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("open ") { shell.revealFile(URL(fileURLWithPath: String(command.dropFirst(5)))) }
                     if command == "close-all" { shell.closeAllMakeTabsForTesting() }
                     if command.hasPrefix("find ") { shell.findForTesting(String(command.dropFirst(5))) }
+                    if command.hasPrefix("think-track ") { shell.thinkTrackForTesting(agentId: String(command.dropFirst(12))) }
+                    if command.hasPrefix("think-send ") { shell.thinkSendForTesting(String(command.dropFirst(11))) }
                 }
             }
             if let fixture = UserDefaults.standard.string(forKey: "SideUITestingProject") {

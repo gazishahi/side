@@ -2,7 +2,7 @@
 
 *2026-09-25. Status: **accepted**: the owner chose the directions on 2026-09-25 (Find as one
 search surface; Review "changes first" with a summary on top; Tracks as a switcher on the track
-pill plus a list to manage them). Build order below. Step 1 built.*
+pill plus a list to manage them). Build order below. Steps 1–2 built.*
 *Companion to `SIDE_DESIGN.md` (tokens, glass), `SIDE_RFC_ALLOY.md` (the renderer Review's diffs
 move to) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -82,6 +82,29 @@ while you're typing it stays warm, so keys never pay the 37 ms.
    target the shell; AppKit's find bar is no longer used. `FindTests` covers the model and the
    mode in Make; checked in Side on a real file.
 2. **Efficiency: Think's transcript** (E1), measured by `ThinkBudgetTests`.
+   **Built 2026-09-25:** the transcript is blocks in slots (`ThinkWorkspaceViewController`'s
+   `TranscriptBlock`, `TranscriptSlot`): blocks within two screens of the viewport hold views,
+   those beyond four keep only their measured height (blocks never built use an estimate), and a
+   block rebuilt above the viewport moves the scroll position by its change in height so nothing
+   on screen jumps. Released blocks still read to VoiceOver (their text, or "Worked, N lines").
+   A reattach builds views for the last three screens only. `WorkGroupView` builds its lines only
+   while open (`addLine(building:released:)`) and lets them go when it closes: a collapsed group of
+   40 KB file reads was most of what a long conversation held. Thinking and tool updates now flush
+   with streamed text (one update per ~35 ms, not per chunk), and a scroll to the bottom runs once
+   per run-loop turn. Heron's stall watchdogs (`Watchdog`) keep one timer and move its deadline;
+   re-arming a delayed work item per streamed update had left thousands of 180 s timers pending.
+   Measured in Side with a fake agent streaming at a real agent's pace (thinking, four 28 KB file
+   reads, a long answer and an edit a turn), optimized build:
+
+   | 60 turns | Before | After |
+   |---|---|---|
+   | Memory at turn 60 | 156 MB (+119) | 68 MB (+25) |
+   | Per turn | ~2 MB, rising | ~0.4 MB (mostly the conversation's own data) |
+   | CPU for the session | 85 s, rising each turn | 50 s, flat (~18% of a core while streaming) |
+
+   `ThinkTranscriptTests` covers realization, rebuilding on scroll, a group coming back open, and
+   what VoiceOver reads for released blocks. In-process budget numbers need a drained autorelease
+   pool per run-loop turn (`ThinkBudgetTests.waitUntil`), as the app's event loop gives.
 3. **Review's diff view on Alloy** (R2), measured by `ReviewBudgetTests`.
 4. **Review's layout** (R1).
 5. **Tracks** (T1).

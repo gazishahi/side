@@ -73,9 +73,12 @@ for line in sys.stdin:
         return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6
     }
 
+    /// Each turn of the run loop in its own autorelease pool, as the app's event loop does: a
+    /// bare `RunLoop.run` never drains, and what the transcript autoreleases then piles up in
+    /// the test's pool (it read as a hundred megabytes of Think that the app never holds).
     private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) {
         let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        while !condition(), Date() < deadline { autoreleasepool { _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) } }
     }
 
     private func makeTrack() throws -> Track {
@@ -113,12 +116,37 @@ for line in sys.stdin:
             let started = CACurrentMediaTime()
             harness.send("Tell me about the store, turn \(turn)")
             waitUntil(60) { harness.phase == .finishedTurn || harness.phase == .idle && CACurrentMediaTime() - started > 0.5 }
-            if turn % 5 == 0 {
+            if turn % 20 == 0 {
                 lines.append(String(format: "%@ turn %d: +%.0f MB, %d entries, last turn %.0f ms", onScreen ? "on screen" : "off screen", turn, footprintMB() - before, harness.entries.count, (CACurrentMediaTime() - started) * 1000))
             }
         }
         let cpu = cpuSeconds() - cpuStart, wall = CACurrentMediaTime() - wallStart
         lines.append(String(format: "%@: %.1f CPU s over %.1f s (%.0f%% of a core)", onScreen ? "on screen" : "off screen", cpu, wall, cpu / wall * 100))
+        if onScreen, let vc = think {
+            let scroll = vc.transcriptScrollView
+            lines.append("on screen: blocks \(vc.transcriptStats)")
+            // Through the whole conversation, top to bottom, a screen at a time.
+            let clip = scroll.contentView
+            let height = scroll.documentView?.frame.height ?? 0
+            var peak = footprintMB()
+            var y: CGFloat = 0
+            clip.scroll(to: .zero); scroll.reflectScrolledClipView(clip)
+            var steps = 0
+            while y < height, steps < 400 {
+                steps += 1
+                y += clip.bounds.height
+                clip.scroll(to: NSPoint(x: 0, y: y)); scroll.reflectScrolledClipView(clip)
+                waitUntil(0.03) { false }
+                peak = max(peak, footprintMB())
+            }
+            lines.append(String(format: "on screen: scrolled %.0f pt top to bottom, peak +%.0f MB", height, peak - before))
+            lines.append("on screen: after scrolling, blocks \(vc.transcriptStats)")
+            // Leaving the track and coming back: the whole history rebuilt.
+            let start = CACurrentMediaTime()
+            vc.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: root.path, trackKey: track.branchName)
+            vc.view.layoutSubtreeIfNeeded()
+            lines.append(String(format: "on screen: reattached to %d entries in %.0f ms", harness.entries.count, (CACurrentMediaTime() - start) * 1000))
+        }
         autoreleasepool {
             if let window {
                 window.contentViewController = nil
@@ -137,6 +165,10 @@ for line in sys.stdin:
         lines.append(String(format: "%@: +%.0f MB after the view is gone", onScreen ? "on screen" : "off screen", footprintMB() - before))
         malloc_zone_pressure_relief(nil, 0)
         lines.append(String(format: "%@: +%.0f MB after malloc gives free pages back", onScreen ? "on screen" : "off screen", footprintMB() - before))
+        if onScreen, ProcessInfo.processInfo.environment["SIDE_HEAP_WAIT"] == "1" {
+            print("HEAPWAIT pid \(getpid())"); fflush(stdout)
+            waitUntil(150) { false }
+        }
         return lines
     }
 
@@ -153,10 +185,17 @@ for line in sys.stdin:
     }
 
     func testALongConversation() throws {
-        let off = try run(turns: 20, onScreen: false)
+        let turns = Int(ProcessInfo.processInfo.environment["SIDE_THINK_TURNS"] ?? "60") ?? 60
+        let off = try run(turns: turns, onScreen: false)
         print("CATEGORIES before on screen\n" + categories())
-        let on = try run(turns: 20, onScreen: true)
+        let on = try run(turns: turns, onScreen: true)
         print("CATEGORIES after on screen\n" + categories())
         for line in off + on { print("BUDGET think " + line) }
+    }
+}
+
+private extension NSView {
+    func descendants<T: NSView>(of type: T.Type) -> [T] {
+        subviews.flatMap { ($0 as? T).map { [$0] } ?? [] } + subviews.flatMap { $0.descendants(of: type) }
     }
 }

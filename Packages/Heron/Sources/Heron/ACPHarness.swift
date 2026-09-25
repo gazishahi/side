@@ -129,7 +129,7 @@ public final class ACPHarness: Harness {
     /// Sends waiting for the session that's being opened (by a send, or by `prepareSession`).
     private var sessionWaiters: [(String) -> Void] = []
     /// Fires when a turn has gone silent too long (`stallInterval`).
-    private var stallWorkItem: DispatchWorkItem?
+    private lazy var stallWatchdog = Watchdog(interval: { [weak self] in self?.stallInterval ?? 180 }, fire: { [weak self] in self?.stallFired() })
     /// `terminal/wait_for_exit` calls still waiting on a command — silence then is a command
     /// running, not a hang.
     private var waitingOnTerminals = 0
@@ -1164,30 +1164,27 @@ public final class ACPHarness: Harness {
     /// A turn that goes silent for `stallInterval` says so, instead of looking busy forever —
     /// the same promise Heron's watchdog keeps (constitution: attention is explicit).
     private func armStallTimer() {
-        stallWorkItem?.cancel()
-        guard waitingOnTerminals == 0 else { stallWorkItem = nil; return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.phase == .streaming || self.phase == .runningTools, self.waitingOnTerminals == 0 else { return }
-            if let sessionId = self.sessionId { self.connection?.notify("session/cancel", params: ["sessionId": sessionId]) }
-            self.streamingIndex = nil
-            self.thinkingIndex = nil
-            self.answerPendingPermissions(with: nil)
-            self.settlePendingWrites(reason: "The turn stalled before this edit was decided. The file is unchanged.")
-            self.checkpointTurn()
-            let seconds = Int(self.stallInterval)
-            let span = seconds >= 120 ? "\(seconds / 60) minutes" : "\(seconds) seconds"
-            self.append(.failure("No response from \(self.agent.displayName) for \(span), so Side stopped waiting. Send the message again. If it keeps happening, run the agent's CLI in a terminal to check it works and is signed in."))
-            self.persistNewEntries()
-            self.setPhase(.blocked(.stalled))
-        }
-        stallWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + stallInterval, execute: work)
+        guard waitingOnTerminals == 0 else { stallWatchdog.stop(); return }
+        stallWatchdog.feed()
     }
 
-    private func disarmStallTimer() {
-        stallWorkItem?.cancel()
-        stallWorkItem = nil
+    /// The turn went silent for `stallInterval`.
+    private func stallFired() {
+        guard phase == .streaming || phase == .runningTools, waitingOnTerminals == 0 else { return }
+        if let sessionId { connection?.notify("session/cancel", params: ["sessionId": sessionId]) }
+        streamingIndex = nil
+        thinkingIndex = nil
+        answerPendingPermissions(with: nil)
+        settlePendingWrites(reason: "The turn stalled before this edit was decided. The file is unchanged.")
+        checkpointTurn()
+        let seconds = Int(stallInterval)
+        let span = seconds >= 120 ? "\(seconds / 60) minutes" : "\(seconds) seconds"
+        append(.failure("No response from \(agent.displayName) for \(span), so Side stopped waiting. Send the message again. If it keeps happening, run the agent's CLI in a terminal to check it works and is signed in."))
+        persistNewEntries()
+        setPhase(.blocked(.stalled))
     }
+
+    private func disarmStallTimer() { stallWatchdog.stop() }
 
     // MARK: The agent's own settings (plan step 4, D6)
 

@@ -123,7 +123,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Parallel to `runner.entries` — the view currently rendering each entry, so a streamed
     /// delta or a proposal resolution can update one block in place instead of rebuilding the
     /// whole transcript on every token.
-    private var entryViews: [NSView] = []
+    /// Nil for an entry whose block is out of range (released) or a line inside a closed group.
+    private var entryViews: [NSView?] = []
+    /// The transcript as blocks (SIDE_RFC_FIND_REVIEW_TRACKS.md, E1): one per top-level view (a
+    /// message, a card, a "Worked…" group of tool lines). Only blocks near the viewport hold
+    /// views; the rest keep their measured height in a slot, so a conversation of any length
+    /// costs about a screenful of views.
+    private var blocks: [TranscriptBlock] = []
+    private var realizationScheduled = false
     /// The open "Worked…" group collecting consecutive tool lines; closed by any non-tool
     /// entry or by the run finishing.
     private weak var currentWorkGroup: WorkGroupView?
@@ -131,6 +138,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// arrive far faster than a resize animation can play; applying each one restarted the
     /// animation every few milliseconds, which *is* the jitter — nothing ever finished moving.
     private var pendingStreamIndices: Set<Int> = []
+    private var pendingOtherUpdates: Set<Int> = []
+    private var scrollToBottomScheduled = false
     private var streamFlushScheduled = false
     /// Every entry that streamed since the last phase change — finalized (one markdown render)
     /// when streaming ends, because mid-stream the bubble shows plain appended text.
@@ -164,6 +173,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // asking every visible subview to redraw as it moves.
         transcriptContainer.wantsLayer = true
         transcriptScroll.documentView = transcriptContainer
+        transcriptScroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(transcriptScrolled), name: NSView.boundsDidChangeNotification, object: transcriptScroll.contentView)
         transcriptScroll.hasVerticalScroller = true
         transcriptScroll.drawsBackground = false
         transcriptScroll.translatesAutoresizingMaskIntoConstraints = false
@@ -538,13 +549,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 activeStreamIndices.insert(index)
                 scheduleStreamFlush()
             } else {
-                updateEntryView(at: index)
+                // Reasoning and tool output stream too: one update per flush tick, not per chunk.
+                pendingOtherUpdates.insert(index)
+                scheduleStreamFlush()
             }
         case .phaseChanged:
             refreshEditAffordances()
             if runner?.phase.isBusy != true {
                 currentWorkGroup?.finish()
                 currentWorkGroup = nil
+                if let open = blocks.last, open.isGroup { open.finished = true }
             }
             finalizeStreamedBubbles()
             updateSendButton()
@@ -1373,6 +1387,186 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     // MARK: - Transcript rendering
 
+    // MARK: - Blocks near the viewport
+
+    @MainActor private final class TranscriptBlock {
+        var entries: [Int]
+        let isGroup: Bool
+        var finished = false
+        var expanded = false
+        let slot = TranscriptSlot()
+        init(entries: [Int], isGroup: Bool) { self.entries = entries; self.isGroup = isGroup }
+    }
+
+    /// The view for a block, from the entries as they stand now.
+    private func buildBlock(_ block: TranscriptBlock) -> NSView {
+        guard let entries = runner?.entries else { return NSView() }
+        if !block.isGroup, let index = block.entries.first, entries.indices.contains(index) {
+            let view = makeEntryView(entries[index])
+            setEntryView(view, at: index)
+            (view as? BubbleRowView)?.editEnabled = runner?.phase.isBusy != true
+            return view
+        }
+        let first = block.entries.first.flatMap { entries.indices.contains($0) ? entries[$0] : nil }
+        let group = WorkGroupView(startedAt: first?.createdAt ?? Date())
+        for index in block.entries where entries.indices.contains(index) {
+            addLazyLine(entries[index], index: index, to: group)
+        }
+        if block.finished { group.finish() } else { currentWorkGroup = group }
+        group.setExpandedWithoutAnimation(block.expanded)
+        group.onToggle = { [weak block] open in block?.expanded = open }
+        return group
+    }
+
+    private func addLazyLine(_ entry: RunTranscriptEntry, index: Int, to group: WorkGroupView) {
+        var isStep = false, isThinking = false
+        if case .toolCall = entry.kind { isStep = true }
+        // Reasoning isn't a step: counting it would inflate "3 steps" into "4" for a turn that
+        // called three tools, and the count is how someone judges how much the agent did.
+        if case .thinking = entry.kind { isThinking = true }
+        group.addLine(building: { [weak self] in
+            guard let self, let entries = self.runner?.entries, entries.indices.contains(index) else { return NSView() }
+            let view = self.makeEntryView(entries[index])
+            self.setEntryView(view, at: index)
+            return view
+        }, released: { [weak self] in self?.setEntryView(nil, at: index) }, isStep: isStep, isThinking: isThinking, at: entry.createdAt)
+    }
+
+    private func setEntryView(_ view: NSView?, at index: Int) {
+        while entryViews.count <= index { entryViews.append(nil) }
+        entryViews[index] = view
+    }
+
+    /// A block's likely height before it has ever been laid out, so the scroller is roughly right.
+    private func estimatedHeight(of block: TranscriptBlock) -> CGFloat {
+        guard let entries = runner?.entries, let index = block.entries.first, entries.indices.contains(index) else { return 24 }
+        if block.isGroup { return 22 }
+        switch entries[index].kind {
+        case .assistantText(let text), .userText(let text), .failure(let text):
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: false).reduce(0) { $0 + max(1, $1.count / 80 + 1) }
+            return CGFloat(min(lines, 400)) * 20 + 24
+        case .proposal, .commandProposal, .permissionRequest: return 160
+        case .userImage: return 200
+        default: return 24
+        }
+    }
+
+    /// Holds a block's views, or only its height while it's far from the viewport.
+    private final class TranscriptSlot: NSView {
+        private(set) var content: NSView?
+        private lazy var height = heightAnchor.constraint(equalToConstant: 0)
+        var isRealized: Bool { content != nil }
+
+        init() {
+            super.init(frame: .zero)
+            translatesAutoresizingMaskIntoConstraints = false
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        func fill(_ view: NSView) {
+            content?.removeFromSuperview()
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: topAnchor), view.bottomAnchor.constraint(equalTo: bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: leadingAnchor), view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ])
+            height.isActive = false
+            content = view
+        }
+
+        func empty(keepingHeight value: CGFloat) {
+            content?.removeFromSuperview()
+            content = nil
+            height.constant = value
+            height.isActive = true
+        }
+
+        /// What an empty slot says to VoiceOver, so the conversation still reads end to end.
+        func describe(_ text: String?) {
+            setAccessibilityElement(text != nil)
+            setAccessibilityRole(.staticText)
+            setAccessibilityLabel(text)
+        }
+    }
+
+    private func realize(_ block: TranscriptBlock) {
+        guard !block.slot.isRealized else { return }
+        block.slot.fill(buildBlock(block))
+        block.slot.describe(nil)
+    }
+
+    /// Lets a block's views go, keeping its height. Never the open group, a streaming message,
+    /// or the message being edited.
+    private func release(_ block: TranscriptBlock) {
+        guard block.slot.isRealized, block.isGroup ? block.finished : true else { return }
+        if block.entries.contains(where: activeStreamIndices.contains) { return }
+        if let editingRow, editingRow.isDescendant(of: block.slot) { return }
+        let height = block.slot.frame.height
+        for index in block.entries { setEntryView(nil, at: index) }
+        block.slot.empty(keepingHeight: height)
+        block.slot.describe(accessibilityText(for: block))
+    }
+
+    private func accessibilityText(for block: TranscriptBlock) -> String? {
+        guard let entries = runner?.entries, let index = block.entries.first, entries.indices.contains(index) else { return nil }
+        if block.isGroup { return "Worked, \(block.entries.count) lines" }
+        switch entries[index].kind {
+        case .userText(let text): return "You: " + String(text.prefix(500))
+        case .assistantText(let text): return String(text.prefix(500))
+        default: return nil
+        }
+    }
+
+    private func scheduleRealization() {
+        guard !realizationScheduled else { return }
+        realizationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.realizationScheduled = false
+            self.updateRealization()
+        }
+    }
+
+    /// Builds the blocks within two screens of the viewport and lets go of those beyond four.
+    /// A block that grows or shrinks as it's built above the viewport moves the scroll position
+    /// by as much, so what's on screen stays still.
+    private func updateRealization() {
+        guard !blocks.isEmpty else { return }
+        let clip = transcriptScroll.contentView
+        let visible = clip.bounds
+        let screen = max(visible.height, 200)
+        let near = visible.insetBy(dx: 0, dy: -2 * screen)
+        let far = visible.insetBy(dx: 0, dy: -4 * screen)
+        var shift: CGFloat = 0
+        for block in blocks {
+            let frame = block.slot.convert(block.slot.bounds, to: transcriptContainer)
+            if block.slot.isRealized {
+                if !frame.intersects(far) { release(block) }
+            } else if frame.intersects(near) {
+                let before = frame.height
+                realize(block)
+                block.slot.layoutSubtreeIfNeeded()
+                let after = block.slot.fittingSize.height
+                if frame.maxY <= visible.minY { shift += after - before }
+            }
+        }
+        if shift != 0 {
+            transcriptContainer.layoutSubtreeIfNeeded()
+            clip.scroll(to: NSPoint(x: 0, y: clip.bounds.minY + shift))
+            transcriptScroll.reflectScrolledClipView(clip)
+        }
+    }
+
+    @objc private func transcriptScrolled() { scheduleRealization() }
+
+    /// Tests: blocks in the conversation, how many hold views, and live entry views.
+    var transcriptStats: (blocks: Int, realized: Int, entryViews: Int) {
+        (blocks.count, blocks.filter { $0.slot.isRealized }.count, entryViews.compactMap { $0 }.count)
+    }
+    /// Tests: the transcript's scroll view.
+    var transcriptScrollView: NSScrollView { transcriptScroll }
+
     private func renderFull() {
         // A message queued against the conversation being replaced has nowhere to go.
         queuedMessage = nil
@@ -1382,18 +1576,35 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // different conversation's entries — stripping markdown, code blocks, and file links
         // off an unrelated finished message.
         pendingStreamIndices = []
+        pendingOtherUpdates = []
         activeStreamIndices = []
         transcriptStack.arrangedSubviews.forEach {
             transcriptStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
         entryViews.removeAll()
+        blocks.removeAll()
         currentWorkGroup = nil
-        for (index, entry) in (runner?.entries ?? []).enumerated() {
-            appendRendered(entry, isFirst: index == 0)
+        // Blocks for the whole conversation, views only for its end (about three screens): the
+        // rest are built as they're scrolled to. A long history used to be built entire.
+        let entries = runner?.entries ?? []
+        for (index, entry) in entries.enumerated() {
+            appendRendered(entry, index: index, realize: false)
         }
-        // Finished at the last entry's own timestamp, not now — this is the rehydration path.
-        currentWorkGroup?.finish()
+        // The last group finished at its own last line: this is the rehydration path.
+        if let last = blocks.last, last.isGroup { last.finished = true }
+        let budget = max(transcriptScroll.contentView.bounds.height, 400) * 3
+        var built: CGFloat = 0
+        for block in blocks.reversed() {
+            if built < budget {
+                realize(block)
+                block.slot.layoutSubtreeIfNeeded()
+                built += block.slot.fittingSize.height
+            } else {
+                block.slot.empty(keepingHeight: estimatedHeight(of: block))
+                block.slot.describe(accessibilityText(for: block))
+            }
+        }
         currentWorkGroup = nil
         refreshEmptyState()
         updateSendButton()
@@ -1402,28 +1613,27 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private func appendEntryView(at index: Int) {
         guard let entries = runner?.entries, entries.indices.contains(index) else { return }
-        guard entryViews.count == index else {
+        guard blocks.last.map({ ($0.entries.last ?? -1) + 1 == index }) ?? (index == 0) else {
             // Out of sync with the runner (shouldn't happen outside a bug) — safest recovery is
             // a full rebuild rather than rendering into the wrong position.
             renderFull()
             return
         }
         let entry = entries[index]
-        let view = appendRendered(entry, isFirst: index == 0)
+        let startedBlock = appendRendered(entry, index: index, realize: true)
         emptyState.isHidden = true
         // Only live appends animate — `renderFull` (reattach, track switch) lays the whole
         // history out instantly rather than replaying every arrival. A line that joined an
         // existing group animates the group's header count, not itself.
-        if view.superview === transcriptStack { animateIn(view) }
+        if let startedBlock { animateIn(startedBlock.slot) }
+        scheduleRealization()
     }
 
-    /// One entry → one view, placed either directly in the transcript or — for tool lines —
-    /// inside the current "Worked…" group, ChatGPT-style: the underlying activity is collapsed
-    /// behind a header that counts steps and time, expandable whenever.
+    /// One entry into its block: tool lines, results and reasoning join the open "Worked…"
+    /// group (ChatGPT-style: the activity collapsed behind a header counting steps and time);
+    /// anything else closes it and starts a block of its own. Returns the block if one started.
     @discardableResult
-    private func appendRendered(_ entry: RunTranscriptEntry, isFirst: Bool) -> NSView {
-        let view = makeEntryView(entry)
-        entryViews.append(view)
+    private func appendRendered(_ entry: RunTranscriptEntry, index: Int, realize shouldRealize: Bool) -> TranscriptBlock? {
         let isToolLine: Bool
         switch entry.kind {
         // Reasoning belongs in the group for the same reason tool lines do: it is the underlying
@@ -1431,29 +1641,22 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case .toolCall, .toolResult, .thinking: isToolLine = true
         default: isToolLine = false
         }
-        if isToolLine {
-            let group: WorkGroupView
-            if let open = currentWorkGroup, open === transcriptStack.arrangedSubviews.last {
-                group = open
-            } else {
-                group = WorkGroupView(startedAt: entry.createdAt)
-                addBlock(group, topSpacing: isFirst ? 0 : Self.spacing(before: entry.kind))
-                currentWorkGroup = group
-            }
-            var isStep = false
-            var isThinking = false
-            if case .toolCall = entry.kind { isStep = true }
-            // Reasoning is not a step. Counting it would inflate "3 steps" into "4 steps" for a
-            // turn that called three tools, and the step count is how someone judges how much the
-            // agent actually did.
-            if case .thinking = entry.kind { isThinking = true }
-            group.addLine(view, isStep: isStep, isThinking: isThinking, at: entry.createdAt)
-        } else {
-            currentWorkGroup?.finish()
-            currentWorkGroup = nil
-            addBlock(view, topSpacing: isFirst ? 0 : Self.spacing(before: entry.kind))
+        setEntryView(nil, at: index)
+        if isToolLine, let open = blocks.last, open.isGroup, !open.finished {
+            open.entries.append(index)
+            if open.slot.isRealized, let group = open.slot.content as? WorkGroupView { addLazyLine(entry, index: index, to: group) }
+            return nil
         }
-        return view
+        if let open = blocks.last, open.isGroup, !open.finished {
+            open.finished = true
+            (open.slot.content as? WorkGroupView)?.finish()
+            currentWorkGroup = nil
+        }
+        let block = TranscriptBlock(entries: [index], isGroup: isToolLine)
+        blocks.append(block)
+        addBlock(block.slot, topSpacing: index == 0 ? 0 : Self.spacing(before: entry.kind))
+        if shouldRealize { realize(block) }
+        return block
     }
 
     /// The standard arrival (see `DS.Motion`) over the block's settled Auto Layout position.
@@ -1736,8 +1939,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             guard let self else { return }
             self.streamFlushScheduled = false
             guard self.runner === scheduledFor else { return }
-            let indices = self.pendingStreamIndices
+            let indices = self.pendingStreamIndices.union(self.pendingOtherUpdates)
             self.pendingStreamIndices = []
+            self.pendingOtherUpdates = []
             for index in indices.sorted() { self.updateEntryView(at: index) }
         }
     }
@@ -1761,9 +1965,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private func scrollToBottom() {
         // After the next layout pass, so the newly added block's height is already accounted
-        // for — scrolling before layout lands short of the real bottom.
+        // for — scrolling before layout lands short of the real bottom. Once per turn of the run
+        // loop however many updates asked for it: each one lays out the transcript.
+        guard !scrollToBottomScheduled else { return }
+        scrollToBottomScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.scrollToBottomScheduled = false
             self.transcriptContainer.layoutSubtreeIfNeeded()
             // `+ contentInsets.bottom` is load-bearing, and its absence was a shipping bug: the
             // composer floats *over* the transcript, so the real bottom is the content height
@@ -2368,10 +2576,47 @@ final class WorkGroupView: NSView {
 
     func addLine(_ view: NSView, isStep: Bool, isThinking: Bool = false, at date: Date) {
         content.addArrangedSubview(view)
+        count(isStep: isStep, isThinking: isThinking, at: date)
+    }
+
+    /// A line made only while the group is open, and let go when it closes. A collapsed group
+    /// shows only its header, so building its lines (a file read can be 40 KB of text) was most
+    /// of what a long conversation held in memory.
+    func addLine(building build: @escaping () -> NSView, released release: @escaping () -> Void, isStep: Bool, isThinking: Bool = false, at date: Date) {
+        lazyLines.append((build, release))
+        if expanded { content.addArrangedSubview(build()) }
+        count(isStep: isStep, isThinking: isThinking, at: date)
+    }
+
+    private var lazyLines: [(build: () -> NSView, release: () -> Void)] = []
+    /// Told when the group opens or closes (the transcript remembers it for a rebuilt group).
+    var onToggle: ((Bool) -> Void)?
+
+    private func count(isStep: Bool, isThinking: Bool, at date: Date) {
         lastLineAt = max(lastLineAt, date)
         if isStep { stepCount += 1 }
         if isThinking { hasThinking = true }
         refreshHeader()
+    }
+
+    /// Opens a rebuilt group as it was, without animating.
+    func setExpandedWithoutAnimation(_ open: Bool) {
+        guard open != expanded else { return }
+        expanded = open
+        buildOrReleaseLazyLines()
+        chevron.layer?.transform = CATransform3DMakeRotation(expanded ? -.pi / 2 : 0, 0, 0, 1)
+        content.isHidden = !expanded
+    }
+
+    private func buildOrReleaseLazyLines() {
+        guard !lazyLines.isEmpty else { return }
+        if expanded {
+            for line in lazyLines { content.addArrangedSubview(line.build()) }
+        } else {
+            let eager = content.arrangedSubviews.count - lazyLines.count
+            for view in content.arrangedSubviews.suffix(from: max(0, eager)) { content.removeArrangedSubview(view); view.removeFromSuperview() }
+            for line in lazyLines { line.release() }
+        }
     }
 
     /// Finishes at the group's own last line, which is what the header claims to measure: the
@@ -2417,6 +2662,8 @@ final class WorkGroupView: NSView {
 
     @objc func toggle() {
         expanded.toggle()
+        if expanded { buildOrReleaseLazyLines() }
+        onToggle?(expanded)
         NSAccessibility.post(element: headerRow, notification: .valueChanged)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = DS.Motion.duration(0.2)
@@ -2428,6 +2675,12 @@ final class WorkGroupView: NSView {
             chevron.layer?.transform = CATransform3DMakeRotation(expanded ? -.pi / 2 : 0, 0, 0, 1)
             content.isHidden = !expanded
             enclosingScrollView?.documentView?.layoutSubtreeIfNeeded()
+        } completionHandler: { [weak self] in
+            // Closed: its lines go once they're out of sight.
+            MainActor.assumeIsolated {
+                guard let self, !self.expanded else { return }
+                self.buildOrReleaseLazyLines()
+            }
         }
     }
 }
