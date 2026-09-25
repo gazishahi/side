@@ -134,3 +134,57 @@ final class TextBufferTests: XCTestCase {
         XCTAssertEqual(b.selections, [Selection(caret: 9)], "a caret inside a deletion lands at its end")
     }
 }
+
+final class ReplaceAllTests: XCTestCase {
+    func testReplacesOnlyWhatDiffers() {
+        let buffer = TextBuffer("func a() {}\nfunc b() {}\nfunc c() {}\n")
+        buffer.setSelections([Selection(caret: 30)])
+        var changes: [TextChange] = []
+        buffer.onChange = { changes.append($0) }
+        buffer.insert("x")
+        let edit = buffer.replaceAll(with: "func a() {}\nfunc bee() { 1 }\nfunc c() {}\n")
+        XCTAssertEqual(buffer.string, "func a() {}\nfunc bee() { 1 }\nfunc c() {}\n")
+        XCTAssertEqual(edit?.range.lowerBound, 18, "the common start is kept")
+        XCTAssertEqual(changes.last?.reason, .replace)
+        XCTAssertFalse(buffer.canUndo, "outside undo: the history described the old text")
+        XCTAssertNil(buffer.replaceAll(with: buffer.string), "no change, no edit")
+    }
+
+    func testNeverSplitsASurrogatePair() {
+        let buffer = TextBuffer("a👍b")
+        // 👍 (D83D DC4D) and 👎 (D83D DC4E) share their lead surrogate.
+        let edit = buffer.replaceAll(with: "a👎b")
+        XCTAssertEqual(buffer.string, "a👎b")
+        XCTAssertEqual(edit?.range, 1..<3)
+        XCTAssertEqual(edit?.newText, "👎")
+    }
+
+    func testSelectionsFollowTheEdit() {
+        let buffer = TextBuffer("one two three")
+        buffer.setSelections([Selection(caret: 11)])
+        buffer.replaceAll(with: "one 2 three")
+        XCTAssertEqual(buffer.selections.first?.head, 9, "the caret moves with the text after the edit")
+    }
+}
+
+final class ReplaceAllRandomTests: XCTestCase {
+    /// Against the plain answer, over many leaves and multi-byte text: random replacements at
+    /// random places, including at the very start and end.
+    func testMatchesTheNewTextExactly() {
+        let pieces = ["a", "é", "👍🏽", "\n", "中", "ab\ncd", "", "🇺🇸"]
+        var generator = SystemRandomNumberGenerator()
+        var current = (0..<4_000).map { _ in pieces.randomElement(using: &generator)! }.joined()
+        let buffer = TextBuffer(current)
+        for _ in 0..<300 {
+            var scalars = Array(current.unicodeScalars)
+            let at = Int.random(in: 0...scalars.count, using: &generator)
+            let length = Int.random(in: 0...min(20, scalars.count - at), using: &generator)
+            let insert = (0..<Int.random(in: 0...5, using: &generator)).map { _ in pieces.randomElement(using: &generator)! }.joined()
+            scalars.replaceSubrange(at..<(at + length), with: insert.unicodeScalars)
+            current = String(String.UnicodeScalarView(scalars))
+            buffer.replaceAll(with: current)
+            XCTAssertEqual(buffer.string, current)
+            if buffer.string != current { return }
+        }
+    }
+}

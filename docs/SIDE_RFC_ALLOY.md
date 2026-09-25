@@ -1,6 +1,6 @@
 # RFC: Alloy, the editing engine
 
-*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–5 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
+*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–7 built (Make runs on Alloy only). A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` ("Alloy: powers Make"), `SIDE_DESIGN.md` (tokens,
 motion, accessibility) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -220,6 +220,40 @@ headers, inline agent ghost text.
    Input methods: the marked-text protocol is tested (step 3); this Mac has only U.S. and
    press-and-hold enabled, so a live CJK pass and dictation are left as manual checks before release.
 7. **Switch:** Make on Alloy; remove the `NSTextView` path; measure against the budgets.
+   **Built 2026-09-24:** Alloy is Make's only editor. Removed: `TextKitEditorEngine`,
+   `TextStorageDocument`, `EditorTextView`, the TextKit gutter (`LineNumberRulerView.swift`), Side's
+   regex highlighter (`SyntaxHighlighter.swift`) and the run of it after every edit, and the
+   engine switch (`SideEditorEngine`, `SIDE_EDITOR_ENGINE`). The `EditorEngine` seam stays, with
+   `AlloyEditorEngine` its one implementation, so Make's code stays free of Alloy's types.
+   Measured in Make itself by `AlloyBudgetTests` (opt-in, optimized; the command is in the file),
+   on this machine:
+
+   | Measure | Budget | Measured |
+   |---|---|---|
+   | Keystroke to frame, main thread, p99 | ≤ 8 ms | 3.2–3.8 ms (key 1.1, frame 2.4) |
+   | Open to first paint, 100k-line Swift | ≤ 50 ms | 19–24 ms; 48 ms as the session's first open |
+   | Open to first paint, 20 MB log | ≤ 150 ms | 64–86 ms |
+   | Scrolling at 120 Hz | none dropped | 2–6 of ~605 missed; the draw-nothing control, same session, 2–24 |
+   | Re-color the edited line, p99 | ≤ 2 ms | 0.21 ms |
+   | Memory, 20 MB log | ≤ 3× plus the atlas | 1.2–1.6× |
+   | Agent edits (approved, whole-file), p99 | 60/s (16.7 ms) | 1.6 ms (2,000 lines), 12.8 ms (100k lines) |
+
+   What getting there took. `EditorDocument.text`: an `NSString` over the rope (`RopeString`) for
+   Make's reads around the caret (bracket match, auto-close, indent, completion), which had joined
+   the whole rope into a `String` on every key. `TextBuffer.replaceAll(with:)`: an approved edit or
+   a reload is applied as one edit over the bytes that differ, so layout, colors and selections
+   update incrementally instead of starting over (and the file no longer shows uncolored while it
+   reparses). `TextFileCodec` counts line endings in one byte pass (it had split the file into
+   lines: 110 ms on 100k lines, 470 ms on 20 MB). The saved-state stamp is a hash of the UTF-8
+   bytes (`ContentStamp`), computed off the main thread. A language's grammar and queries are
+   built off the main thread the first time; the text paints first and its colors follow. From
+   idle, the editor draws at the end of the run-loop turn instead of waiting for a display link
+   that an idle ProMotion display has slowed (30–100 ms on a first open). The gutter's numbers are
+   shaped once (`CTLine`) instead of measured and drawn as strings every frame (~1.5 ms a frame
+   while scrolling). Make opens files up to 50 MB (was 10).
+   The scroll misses are the system's: the control that draws only the background misses as many
+   or more in the same run, and frame CPU is p99 3.4 ms of the 8.3 ms frame. The first open of a
+   session includes one-time setup (Make's panels, the first drawables).
 8. **Publish:** `gazishahi/alloy`, Apache-2.0.
 
 ## Risks, plainly

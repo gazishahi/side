@@ -82,13 +82,27 @@ public enum TextFileCodec {
         }
         // The dominant line ending is the file's; the buffer itself is normalised to `\n` so a
         // typed return can't introduce a second convention.
-        let crlfCount = text.components(separatedBy: "\r\n").count - 1
+        let (crlfCount, loneLF) = lineEndings(text)
         if crlfCount > 0 {
-            let loneLF = text.components(separatedBy: "\n").count - 1 - crlfCount
             if crlfCount >= loneLF { format.lineEnding = .crlf }
             text = text.replacingOccurrences(of: "\r\n", with: "\n")
         }
         return Decoded(text: text, format: format)
+    }
+
+    /// "\r\n" and lone "\n" counts, in one pass over the UTF-8 bytes. (Splitting the text into
+    /// lines to count them cost ~100 ms on a 100,000-line file and ~450 ms on 20 MB.)
+    static func lineEndings(_ text: String) -> (crlf: Int, lf: Int) {
+        var text = text
+        return text.withUTF8 { bytes in
+            var crlf = 0, lf = 0
+            var previous: UInt8 = 0
+            for byte in bytes {
+                if byte == 0x0A { if previous == 0x0D { crlf += 1 } else { lf += 1 } }
+                previous = byte
+            }
+            return (crlf, lf)
+        }
     }
 
     /// The inverse of `decode`. Nil when the buffer holds a character the file's encoding cannot

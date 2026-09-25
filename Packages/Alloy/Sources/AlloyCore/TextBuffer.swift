@@ -55,7 +55,9 @@ public enum EditKind: Sendable {
 }
 
 public struct TextChange: Sendable {
-    public enum Reason: Sendable { case edit, undo, redo }
+    /// `replace`: the owner replaced the text (an approved agent edit, a reload); not the
+    /// person's edit, and outside undo.
+    public enum Reason: Sendable { case edit, undo, redo, replace }
     public let edits: [AppliedEdit]
     public let reason: Reason
 }
@@ -280,6 +282,65 @@ public final class TextBuffer {
         undoStack.append(group)
         onChange?(TextChange(edits: group.edits, reason: .redo))
         return true
+    }
+
+    /// Replaces the whole text with `string`, outside undo, as one edit over the span that
+    /// differs (the common start and end are kept). So what follows edits (syntax, layout,
+    /// selections) updates incrementally instead of starting over: an agent's change to one
+    /// function re-lays and re-colors that function, not the file.
+    @discardableResult
+    public func replaceAll(with string: String) -> AppliedEdit? {
+        var string = string
+        let chunks = text.chunks
+        let oldCount = text.utf8Count
+        // Compared as UTF-8 bytes, a chunk at a time: no copy of either text.
+        let (prefix, suffix, replacement): (Int, Int, String) = string.withUTF8 { new in
+            let limit = min(oldCount, new.count)
+            var prefix = 0
+            for chunk in chunks where prefix < limit {
+                var chunk = chunk
+                let matched = chunk.withUTF8 { bytes in
+                    var i = 0
+                    let n = min(bytes.count, limit - prefix)
+                    while i < n, bytes[i] == new[prefix + i] { i += 1 }
+                    return i
+                }
+                prefix += matched
+                if matched < chunk.utf8.count { break }
+            }
+            var suffix = 0
+            for chunk in chunks.reversed() where prefix + suffix < limit {
+                var chunk = chunk
+                let matched = chunk.withUTF8 { bytes in
+                    var i = 0
+                    let n = min(bytes.count, limit - prefix - suffix)
+                    while i < n, bytes[bytes.count - 1 - i] == new[new.count - 1 - suffix - i] { i += 1 }
+                    return i
+                }
+                suffix += matched
+                if matched < chunk.utf8.count { break }
+            }
+            // Both ends on character boundaries (never inside a scalar, so never inside a
+            // surrogate pair). Before `prefix` the texts agree; at it, check each.
+            func continues(_ byte: UInt8) -> Bool { byte & 0xC0 == 0x80 }
+            if prefix > 0, (prefix < new.count && continues(new[prefix])) || text.utf8Offset(ofUTF16: text.utf16Offset(ofUTF8: prefix)) != prefix {
+                prefix -= 1
+                while prefix > 0, continues(new[prefix]) { prefix -= 1 }
+            }
+            while suffix > 0, continues(new[new.count - suffix]) { suffix -= 1 }
+            return (prefix, suffix, String(decoding: UnsafeBufferPointer(rebasing: new[prefix..<(new.count - suffix)]), as: UTF8.self))
+        }
+        let range = text.utf16Offset(ofUTF8: prefix)..<text.utf16Offset(ofUTF8: oldCount - suffix)
+        guard !range.isEmpty || !replacement.isEmpty else { return nil }
+        let oldText = text.substring(range)
+        text.replace(range, with: replacement)
+        let edit = TextEdit(range: range, text: replacement)
+        selections = normalize(selections.map { Selection(anchor: Self.map($0.anchor, through: [edit]), head: Self.map($0.head, through: [edit])) })
+        undoStack.removeAll()
+        redoStack.removeAll()
+        let applied = AppliedEdit(range: range, oldText: oldText, newText: replacement)
+        onChange?(TextChange(edits: [applied], reason: .replace))
+        return applied
     }
 
     /// Replaces the whole text outside undo (loading a file, reloading it from disk).

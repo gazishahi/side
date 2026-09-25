@@ -5,9 +5,7 @@ import AlloySyntax
 import AppKit
 import Heron
 
-/// Make's editor on Alloy (SIDE_RFC_ALLOY.md, step 5): the same `EditorEngine` seam the
-/// TextKit editor implements, so Make works unchanged on either. Chosen by
-/// `MakeWorkspaceViewController.makeEditorEngine()`.
+/// Make's editor (SIDE_RFC_ALLOY.md): Alloy behind the `EditorEngine` seam.
 @MainActor
 final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     weak var delegate: EditorEngineDelegate?
@@ -32,7 +30,8 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         view.delegate = self
         view.isEditable = false
         view.onTextChange = { [weak self] change in
-            guard let self, let document = self.document as? AlloyEditorDocument else { return }
+            // A replacement updates its document's highlighter itself (shown or not).
+            guard let self, change.reason != .replace, let document = self.document as? AlloyEditorDocument else { return }
             document.highlighter?.apply(change.edits, newText: document.buffer.text)
         }
         // Make tracks "back to what's saved" from its tab's undo manager; Alloy keeps its own
@@ -78,13 +77,13 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
             guard let self, let document, self.document === document else { return }
             self.refreshDecorations()
         }
-        document.onReset = { [weak self, weak document] in
-            guard let self, let document, self.document === document else { return }
-            self.view.reloadText()
-        }
         document.onColorsChange = { [weak self, weak document] in
             guard let self, let document, self.document === document else { return }
             self.view.setNeedsRender()
+        }
+        document.onHighlighterChange = { [weak self, weak document] in
+            guard let self, let document, self.document === document else { return }
+            document.highlighter?.theme = .side(dark: self.isDark)
         }
         document.isDarkProvider = { [weak self] in self?.isDark ?? false }
         return document
@@ -175,7 +174,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         view.gutter.marks = marks
     }
 
-    /// As in the TextKit gutter: a diagnostic on the line wins over a change mark.
+    /// A diagnostic on the line wins over a change mark.
     private func gutterClicked(line: Int, event: NSEvent) {
         if let severity = lineDiagnostics[line] {
             delegate?.editor(self, clickedDiagnostic: severity, line: line, event: event)
@@ -221,43 +220,58 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
 @MainActor
 final class AlloyEditorDocument: EditorDocument {
     let buffer: TextBuffer
-    /// Alloy's (tree-sitter), not Side's regex `SyntaxHighlighter` of the same name.
-    private(set) var highlighter: AlloySyntax.SyntaxHighlighter?
+    private(set) var highlighter: SyntaxHighlighter?
     private var highlightedExtension: String?
     private(set) var decorations: [EditorDecoration: [(range: NSRange, color: NSColor)]] = [:]
     var onDecorationsChange: (() -> Void)?
-    var onReset: (() -> Void)?
     var onColorsChange: (() -> Void)?
+    /// A highlighter arrived after the document was shown (its language was still building).
+    var onHighlighterChange: (() -> Void)?
     var isDarkProvider: () -> Bool = { false }
 
     init(_ text: String) { buffer = TextBuffer(text) }
 
     var string: String { buffer.string }
+    var text: NSString { RopeString.make(buffer.text) }
     var length: Int { buffer.text.utf16Count }
 
-    /// Outside undo, as TextKit's storage replacement is: the history describes the old text.
+    /// Outside undo: the history describes the old text. Applied as one edit over what differs,
+    /// so an agent's change to one function keeps the rest of the file's layout and colors.
     func replaceAll(with text: String) {
-        buffer.reset(text)
-        highlighter?.reset(buffer.text)
+        guard let edit = buffer.replaceAll(with: text) else { return }
+        highlighter?.apply([edit], newText: buffer.text)
         decorations = [:]
-        onReset?()
         onDecorationsChange?()
     }
 
     /// Tree-sitter for the file's language; it follows edits itself, so this only (re)creates it
-    /// when the file's extension changes (a tab saved under a new name).
+    /// when the file's extension changes (a tab saved under a new name). A language not built yet
+    /// is built off the main thread first: the text paints now and its colors follow.
     func highlight(url: URL, appearance: EditorAppearance) {
         let ext = url.pathExtension.lowercased()
         guard ext != highlightedExtension else { return }
         highlightedExtension = ext
-        highlighter = AlloySyntax.SyntaxHighlighter(fileExtension: ext, text: buffer.text, theme: .side(dark: isDarkProvider()))
-        highlighter?.onInvalidate = { [weak self] in self?.onColorsChange?() }
-        onColorsChange?()
+        guard SyntaxLanguage.supports(ext) else { highlighter = nil; onColorsChange?(); return }
+        guard SyntaxLanguage.loaded(forExtension: ext) != nil else {
+            highlighter = nil
+            Task.detached(priority: .userInitiated) {
+                _ = SyntaxLanguage.forExtension(ext)
+                await MainActor.run { [weak self] in
+                    guard let self, self.highlightedExtension == ext, self.highlighter == nil else { return }
+                    self.makeHighlighter(ext)
+                }
+            }
+            return
+        }
+        makeHighlighter(ext)
     }
 
-    /// Make's regex highlighter runs after typing; on Alloy tree-sitter already has, so there's
-    /// nothing to apply.
-    func applyHighlight(_ runs: [SyntaxHighlighter.ColorRun], appearance: EditorAppearance) {}
+    private func makeHighlighter(_ ext: String) {
+        highlighter = SyntaxHighlighter(fileExtension: ext, text: buffer.text, theme: .side(dark: isDarkProvider()))
+        highlighter?.onInvalidate = { [weak self] in self?.onColorsChange?() }
+        onHighlighterChange?()
+        onColorsChange?()
+    }
 
     func setDecorations(_ kind: EditorDecoration, _ marks: [(range: NSRange, color: NSColor)]) {
         decorations[kind] = marks

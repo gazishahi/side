@@ -1,7 +1,22 @@
+import AlloyAppKit
 import AppKit
 import Heron
 
 private enum TabKind { case text, image, csv }
+
+/// A text's size and a hash of its bytes: enough to tell "back to what's saved" from an edit.
+/// Hashes the UTF-8 bytes directly (`String.hashValue` normalizes first, ~8 ms on 3 MB).
+struct ContentStamp: Equatable, Sendable {
+    let count: Int
+    let hash: Int
+    init(_ text: String) {
+        var text = text
+        var hasher = Hasher()
+        count = text.utf8.count
+        text.withUTF8 { hasher.combine(bytes: UnsafeRawBufferPointer($0)) }
+        hash = hasher.finalize()
+    }
+}
 
 private final class CenteringClipView: NSClipView {
     override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
@@ -37,10 +52,9 @@ private struct OpenTab {
     /// Set when the file changed on disk while this tab had unsaved edits; cleared by Reload or
     /// Keep. A clean tab is simply reloaded instead.
     var hasExternalChange = false
-    /// The content as last loaded or saved, as a length and a hash — so undoing back to it
-    /// clears the unsaved state instead of leaving a file "edited" that matches disk.
-    var savedLength = 0
-    var savedHash = 0
+    /// The content as last loaded or saved — so undoing back to it clears the unsaved state
+    /// instead of leaving a file "edited" that matches disk.
+    var savedStamp = ContentStamp("")
     var lastSelectedRange = NSRange(location: 0, length: 0)
     var csvRows: [[String]] = []
     var diagnostics: [LSPDiagnostic] = []
@@ -67,22 +81,10 @@ enum PaletteMode { case files, symbols, text, commands }
 
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
-    /// Make's editor, behind the seam Alloy replaces (SIDE_RFC_ALLOY.md, step 0).
-    private(set) lazy var editor: EditorEngine = Self.makeEditorEngine()
-
-    /// Tests pick the engine here: defaults are shared by the test processes running in parallel.
-    static var engineOverride: String?
-
-    /// Alloy or TextKit (SIDE_RFC_ALLOY.md): `SideEditorEngine` in defaults, or the
-    /// `SIDE_EDITOR_ENGINE` environment variable, set to "alloy" picks Alloy. TextKit until
-    /// Alloy passes parity (step 7 makes Alloy the only one).
-    static func makeEditorEngine() -> EditorEngine {
-        let choice = engineOverride ?? ProcessInfo.processInfo.environment["SIDE_EDITOR_ENGINE"] ?? UserDefaults.standard.string(forKey: "SideEditorEngine")
-        return choice == "alloy" ? AlloyEditorEngine(appearance: editorAppearance) : TextKitEditorEngine(appearance: editorAppearance)
-    }
+    /// Make's editor: Alloy (SIDE_RFC_ALLOY.md), behind the `EditorEngine` seam.
+    private(set) lazy var editor: EditorEngine = AlloyEditorEngine(appearance: Self.editorAppearance)
     private var editorScroll: NSScrollView { editor.scrollView }
-    /// What Make lays out and hides: the scroll view itself for TextKit, Alloy's editor view
-    /// (which holds its scroll view) for Alloy.
+    /// What Make lays out and hides: Alloy's editor view, which holds its scroll view.
     private var editorContainer: NSView { editor.containerView }
     private var gutter: NSView { editor.gutterView }
     private let tabBar = TabStripView()
@@ -209,7 +211,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// At the editor text-size setting (Appearance), not the interface scale.
     private static var editorFont: NSFont { DS.Text.editor() }
     private static let editorTextColor = NSColor.labelColor
-    private static var editorAppearance: EditorAppearance {
+    static var editorAppearance: EditorAppearance {
         EditorAppearance(font: editorFont, textColor: editorTextColor, background: editorBackground)
     }
 
@@ -424,7 +426,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(emptyState)
 
         NSLayoutConstraint.activate([
-            gutter.topAnchor.constraint(equalTo: view.topAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: LineNumberGutterView.width),
+            gutter.topAnchor.constraint(equalTo: view.topAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: AlloyGutterView.width),
             editorContainer.topAnchor.constraint(equalTo: view.topAnchor), editorContainer.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             imageScroll.topAnchor.constraint(equalTo: view.topAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             csvScroll.topAnchor.constraint(equalTo: view.topAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -823,8 +825,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tab.document.replaceAll(with: newContent)
         tab.document.highlight(url: tab.url, appearance: Self.editorAppearance)
         openTabs[index].dirty = false
-        openTabs[index].savedLength = (newContent as NSString).length
-        openTabs[index].savedHash = newContent.hashValue
+        openTabs[index].savedStamp = ContentStamp(newContent)
         // The applier just wrote this file, so the stamp used for external-change detection has
         // to move with it — otherwise the next save or focus-in reports "changed on disk" about
         // Side's own write.
@@ -1125,8 +1126,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
         tab.undoManager.removeAllActions()
         openTabs[index].format = decoded.format
-        openTabs[index].savedLength = (decoded.text as NSString).length
-        openTabs[index].savedHash = decoded.text.hashValue
+        openTabs[index].savedStamp = ContentStamp(decoded.text)
         openTabs[index].dirty = false
         openTabs[index].hasExternalChange = false
         openTabs[index].knownModificationDate = modificationDate(of: tab.url)
@@ -1297,7 +1297,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     // MARK: - Tabs
 
-    private static let maxOpenableFileSize = 10_000_000
+    /// Alloy's budgets are set on a 20 MB file (SIDE_RFC_ALLOY.md); past this, a file is a log to
+    /// search, not text to edit.
+    static let maxOpenableFileSize = 50_000_000
     private static let maxOpenableImageSize = 50_000_000
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "webp"]
 
@@ -1363,7 +1365,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             if size > Self.maxOpenableFileSize {
                 DispatchQueue.main.async {
-                    self?.showAlert(title: "File too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over Side's current 10 MB limit for opening in the editor.", window: window)
+                    self?.showAlert(title: "File too large", message: "\(url.lastPathComponent) is \(size / 1_000_000) MB, over the \(Self.maxOpenableFileSize / 1_000_000) MB Side opens in the editor.", window: window)
                     completion?()
                 }
                 return
@@ -1386,6 +1388,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
             let isCSV = ext == "csv"
             let rows = isCSV ? CSVParser.parse(source) : []
+            // Whole-file work, here rather than on the main thread.
+            let savedStamp = ContentStamp(source)
             DispatchQueue.main.async {
                 guard let self else { completion?(); return }
                 // Re-check now that we're back on main: two near-simultaneous opens of the same
@@ -1402,8 +1406,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, document: self.editor.makeDocument(source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
                 tab.csvRows = rows
                 tab.format = decoded.format
-                tab.savedLength = (source as NSString).length
-                tab.savedHash = source.hashValue
+                tab.savedStamp = savedStamp
                 self.openTabs.append(tab)
                 self.activeTabIndex = self.openTabs.count - 1
                 self.loadActiveTabIntoEditor()
@@ -1618,7 +1621,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func renderDiagnosticsForActiveTab() {
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { return }
         let tab = openTabs[index]
-        let ns = tab.document.string as NSString
+        let ns = tab.document.text
         var lineSeverities: [Int: LSPDiagnosticSeverity] = [:]
         var marks: [(range: NSRange, color: NSColor)] = []
         for diagnostic in tab.diagnostics {
@@ -1688,13 +1691,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func performJumpToDefinition(at characterIndex: Int, tabIndex: Int) {
         guard openTabs.indices.contains(tabIndex), openTabs[tabIndex].kind == .text, let lspManager else { return }
         let tab = openTabs[tabIndex]
-        let ns = tab.document.string as NSString
+        let ns = tab.document.text
         let position = lspPosition(for: characterIndex, in: ns)
         lspManager.definition(url: tab.url, position: position) { [weak self] locations in
             guard let self, let target = locations.first, let targetURL = URL(string: target.uri) else { return }
             self.open(targetURL) { [weak self] in
                 guard let self, let targetIndex = self.openTabs.firstIndex(where: { $0.url == targetURL }), self.openTabs[targetIndex].kind == .text else { return }
-                let targetNS = self.openTabs[targetIndex].document.string as NSString
+                let targetNS = self.openTabs[targetIndex].document.text
                 guard let targetRange = self.nsRange(for: target.range, in: targetNS) else { return }
                 self.editor.selectedRange = NSRange(location: targetRange.location, length: 0)
                 self.editor.scrollRangeToVisible(targetRange)
@@ -1728,7 +1731,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
               !openTabs[index].isUntitled else { NSSound.beep(); return }
         let tab = openTabs[index]
-        let text = tab.document.string as NSString
+        let text = tab.document.text
         let selection = editor.selectedRange
         let startLine = text.substring(to: selection.location).components(separatedBy: "\n").count
         var endLine = text.substring(to: NSMaxRange(selection)).components(separatedBy: "\n").count
@@ -1780,7 +1783,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         card.onApply = { [weak self] in apply(); self?.dismissInstructCard() }
         card.onReject = { [weak self] in reject(); self?.dismissInstructCard() }
         card.onOpenInThink = { [weak self] in self?.onOpenThinkRequested?() }
-        let text = openTabs[index].document.string as NSString
+        let text = openTabs[index].document.text
         var location = 0
         for _ in 1..<max(1, line) {
             let next = text.range(of: "\n", range: NSRange(location: location, length: text.length - location))
@@ -2265,7 +2268,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         let replacement = replacementLines.isEmpty ? "" : replacementLines.joined(separator: "\n") + "\n"
 
-        let ns = tab.document.string as NSString
+        let ns = tab.document.text
         let range: NSRange
         if hunk.newCount > 0 {
             range = lineSpanRange(in: ns, startLine: hunk.newStart, count: hunk.newCount)
@@ -2576,15 +2579,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return false
         }
     }
-    private var pendingHighlightWorkItem: DispatchWorkItem?
-    private var highlightGeneration = 0
     private var isLoadingTab = false
     private var pendingDiffWorkItem: DispatchWorkItem?
     private var pendingLSPWorkItem: DispatchWorkItem?
     private func undoStateChanged(_ managerID: ObjectIdentifier?) {
         guard let managerID, let index = openTabs.firstIndex(where: { ObjectIdentifier($0.undoManager) == managerID }), openTabs[index].kind == .text else { return }
         let text = openTabs[index].document.string
-        let matchesSaved = (text as NSString).length == openTabs[index].savedLength && text.hashValue == openTabs[index].savedHash
+        let matchesSaved = ContentStamp(text) == openTabs[index].savedStamp
         guard openTabs[index].dirty == matchesSaved else { return }
         openTabs[index].dirty = !matchesSaved
         if activeTabIndex == index { dirty = !matchesSaved }
@@ -2599,7 +2600,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             rebuildTabBar()  // the tab's unsaved dot
         }
         editor.invalidateGutter()
-        scheduleHighlight()
         scheduleDiffRefresh()
         scheduleLSPDidChange()
         scheduleCompletionRequest()
@@ -2643,7 +2643,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func performCompletionRequest(tabID: UUID, cursor: Int, generation: Int) {
         guard let index = indexForTab(id: tabID), openTabs[index].kind == .text, let lspManager else { return }
         let tab = openTabs[index]
-        let ns = tab.document.string as NSString
+        let ns = tab.document.text
         guard cursor <= ns.length else { return }
         var start = cursor
         while start > 0, let scalar = UnicodeScalar(UInt32(ns.character(at: start - 1))), Self.identifierCharacters.contains(scalar) {
@@ -2739,7 +2739,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let selection = editor.selectedRange
         var matchRanges: [NSRange] = []
         if selection.length == 0 {
-            let ns = document.string as NSString
+            let ns = document.text
             let location = selection.location
             if location < ns.length, let ch = character(in: ns, at: location), let close = Self.bracketPairs[ch],
                let matchLoc = findMatchingBracket(open: ch, close: close, from: location, forward: true, in: ns) {
@@ -2798,7 +2798,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let replacementString, replacementString.count == 1, let char = replacementString.first else { return true }
 
         if Self.autoCloseClosers.contains(char), affectedCharRange.length == 0 {
-            let ns = (engine.document?.string ?? "") as NSString
+            let ns = engine.document?.text ?? ""
             if affectedCharRange.location < ns.length, ns.character(at: affectedCharRange.location) == char.utf16.first {
                 engine.selectedRange = NSRange(location: affectedCharRange.location + 1, length: 0)
                 return false
@@ -2838,7 +2838,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
         }
         guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
-        let ns = (engine.document?.string ?? "") as NSString
+        let ns = engine.document?.text ?? ""
         let selectedRange = engine.selectedRange
         let lineRange = ns.lineRange(for: NSRange(location: selectedRange.location, length: 0))
         let currentLine = ns.substring(with: NSRange(location: lineRange.location, length: selectedRange.location - lineRange.location))
@@ -2861,27 +2861,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
     }
 
-    private func scheduleHighlight() {
-        pendingHighlightWorkItem?.cancel()
-        guard let index = activeTabIndex, openTabs[index].kind == .text else { return }
-        let tab = openTabs[index]
-        let url = tab.url
-        highlightGeneration += 1
-        let generation = highlightGeneration
-        let workItem = DispatchWorkItem { [weak self] in
-            let text = tab.document.string
-            DispatchQueue.global(qos: .userInitiated).async {
-                let runs = SyntaxHighlighter.computeRuns(text: text, url: url)
-                DispatchQueue.main.async {
-                    guard let self, self.highlightGeneration == generation, self.activeTabIndex == index else { return }
-                    tab.document.applyHighlight(runs, appearance: Self.editorAppearance)
-                    self.editor.invalidateGutter()
-                }
-            }
-        }
-        pendingHighlightWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
-    }
 
     // Menu items below deliberately leave `target` unset (nil): AppKit dispatches nil-target
     // actions through the responder chain of whichever window is currently key, which is what
@@ -3093,7 +3072,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
     private func scrollToLine(_ line: Int) {
-        let text = (editor.document?.string ?? "") as NSString
+        let text = editor.document?.text ?? ""
         var currentLine = 1
         var index = 0
         while currentLine < max(1, line) && index < text.length {
@@ -3240,8 +3219,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             // The user's own save — a checkpoint being written right now mustn't claim it
             // as the agent's (`UserSaveLog`, audit F4).
             UserSaveLog.shared.record(url)
-            openTabs[index].savedLength = (content as NSString).length
-            openTabs[index].savedHash = content.hashValue
+            openTabs[index].savedStamp = ContentStamp(content)
             openTabs[index].knownModificationDate = modificationDate(of: url)
             openTabs[index].hasExternalChange = false
             if activeTabIndex == index { externalChangeBanner.isHidden = true }
@@ -3387,7 +3365,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         open(url) { [weak self] in
             guard let self, let line, line > 0,
                   let index = self.openTabs.firstIndex(where: { $0.url == url }), self.openTabs[index].kind == .text else { return }
-            let ns = self.openTabs[index].document.string as NSString
+            let ns = self.openTabs[index].document.text
             guard let range = self.nsRange(for: LSPRange(start: LSPPosition(line: line - 1, character: 0), end: LSPPosition(line: line - 1, character: 0)), in: ns) else { return }
             self.editor.selectedRange = NSRange(location: range.location, length: 0)
             self.editor.scrollRangeToVisible(range)

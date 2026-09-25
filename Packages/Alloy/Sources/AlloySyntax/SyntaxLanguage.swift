@@ -53,7 +53,19 @@ public final class SyntaxLanguage: @unchecked Sendable {
         return language
     }
 
-    /// The same extensions Side's regex highlighter covers.
+    /// The language for an extension if it's already built, without building it (building takes
+    /// ~100 ms for the larger grammars, so a caller on the main thread builds it elsewhere).
+    public static func loaded(forExtension ext: String) -> SyntaxLanguage? {
+        guard let key = extensions[ext.lowercased()] else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return cache[key]
+    }
+
+    /// Whether Alloy highlights this extension at all.
+    public static func supports(_ ext: String) -> Bool { extensions[ext.lowercased()] != nil }
+
+    /// The extensions Alloy highlights.
     static let extensions: [String: String] = [
         "swift": "swift",
         "ts": "typescript", "mts": "typescript", "cts": "typescript",

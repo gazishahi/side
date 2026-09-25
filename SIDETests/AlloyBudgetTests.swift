@@ -1,0 +1,287 @@
+import AlloyAppKit
+import AlloyCore
+import AlloyRender
+import XCTest
+@testable import Side
+@testable import Heron
+
+/// SIDE_RFC_ALLOY.md's performance budgets, measured in Make itself (step 7). Slow and
+/// machine-dependent, so they run only when asked, optimized:
+///
+///     TEST_RUNNER_SIDE_BUDGETS=1 xcodebuild test -configuration Release ENABLE_TESTABILITY=YES \
+///       -only-testing:SIDETests/AlloyBudgetTests ...
+///
+/// Each prints its numbers and fails past its budget.
+@MainActor
+final class AlloyBudgetTests: XCTestCase {
+    private var root: URL!
+    private var make: MakeWorkspaceViewController!
+    private var window: NSWindow!
+    private var alloy: AlloyEditorEngine { make.editor as! AlloyEditorEngine }
+    private var view: AlloyEditorView { alloy.view }
+
+    override func setUpWithError() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_BUDGETS"] == "1", "set SIDE_BUDGETS=1 to measure")
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("budgets-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        // As the shell hosts it: Make's view, and its tab strip in the window's top row.
+        let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = container
+        let tabs = try XCTUnwrap(make.topRowContent)
+        for child in [make.view, tabs] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(child)
+        }
+        NSLayoutConstraint.activate([
+            tabs.topAnchor.constraint(equalTo: container.topAnchor), tabs.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            tabs.trailingAnchor.constraint(equalTo: container.trailingAnchor), tabs.heightAnchor.constraint(equalToConstant: 30),
+            make.view.topAnchor.constraint(equalTo: container.topAnchor), make.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            make.view.leadingAnchor.constraint(equalTo: container.leadingAnchor), make.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// XCTest keeps every test's instance until the suite ends: let go of the window and Make,
+    /// or each finished test's editor keeps its display link ticking under the next one's numbers.
+    override func tearDownWithError() throws {
+        window?.contentView = nil
+        window?.close()
+        window = nil
+        make = nil
+        if let root { try? FileManager.default.removeItem(at: root) }
+    }
+
+    // MARK: Files
+
+    /// 100,000 lines of real Swift: Alloy's own editor view, repeated.
+    private func swiftFile() throws -> URL {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Packages/Alloy/Sources/AlloyAppKit/AlloyEditorView.swift"), encoding: .utf8)
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        var out: [Substring] = []
+        out.reserveCapacity(100_000)
+        while out.count < 100_000 { out.append(contentsOf: lines.prefix(100_000 - out.count)) }
+        let url = root.appendingPathComponent("Big.swift")
+        try out.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    private func logFile() throws -> URL {
+        let line = "2026-09-24T12:00:00.000Z INFO  request id=abc123 path=/api/v1/items status=200 took=12ms user=42\n"
+        let url = root.appendingPathComponent("server.log")
+        try String(repeating: line, count: 20_000_000 / line.utf8.count).write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    // MARK: Measuring
+
+    private func now() -> Double { CACurrentMediaTime() * 1000 }
+
+    private func waitUntil(_ timeout: TimeInterval = 20, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.001)) }
+    }
+
+    private func percentile(_ values: [Double], _ p: Double) -> Double {
+        let sorted = values.sorted()
+        return sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))]
+    }
+
+    private func footprintMB() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        return result == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : 0
+    }
+
+    /// Open to first paint: from asking Make to open the file until Alloy has drawn it.
+    private func open(_ url: URL) -> Double {
+        let length = ((try? String(contentsOf: url, encoding: .utf8)) as NSString?)?.length ?? 0
+        let framesBefore = view.framesDrawn
+        let start = now()
+        make.revealFile(url, line: nil)
+        waitUntil { make.editor.document?.length == length && view.framesDrawn > framesBefore }
+        let elapsed = now() - start
+        XCTAssertEqual(make.editor.document?.length, length, "opened \(url.lastPathComponent)")
+        return elapsed
+    }
+
+    private func report(_ name: String, _ value: String, budget: String) {
+        print("BUDGET \(name.padding(toLength: 40, withPad: " ", startingAt: 0)) \(value.padding(toLength: 28, withPad: " ", startingAt: 0)) budget \(budget)")
+    }
+
+    // MARK: Budgets
+
+    /// Each file opened three times (as three files, so each open is a real one), once Side has
+    /// settled after launch; the first open also builds its language's grammar, off the main
+    /// thread, which the first paint doesn't wait for.
+    func testOpenToFirstPaint() throws {
+        let swift = try swiftFile(), log = try logFile()
+        waitUntil(1) { false }
+        var results: [String: [Double]] = [:]
+        for (name, source) in [("100k-line Swift", swift), ("20 MB log", log)] {
+            let text = try String(contentsOf: source, encoding: .utf8)
+            for i in 0..<3 {
+                let url = root.appendingPathComponent("\(i)-" + source.lastPathComponent)
+                try ("// copy \(i)\n" + text).write(to: url, atomically: true, encoding: .utf8)
+                results[name, default: []].append(open(url))
+                waitUntil(0.3) { false }
+            }
+        }
+        let swiftMS = results["100k-line Swift"]!, logMS = results["20 MB log"]!
+        report("open 100k-line Swift", String(format: "%.0f, %.0f, %.0f ms", swiftMS[0], swiftMS[1], swiftMS[2]), budget: "≤ 50 ms")
+        report("open 20 MB log", String(format: "%.0f, %.0f, %.0f ms", logMS[0], logMS[1], logMS[2]), budget: "≤ 150 ms")
+        XCTAssertLessThanOrEqual(swiftMS.max()!, 50)
+        XCTAssertLessThanOrEqual(logMS.max()!, 150)
+    }
+
+    /// Typing at the display's rate: a key on every other frame, drawn by the editor's own
+    /// display link, as a person's keys are. Main-thread time per key is the key's handling (Make's
+    /// and Alloy's) plus the frame that shows it, less any wait for a free drawable (that's the GPU
+    /// pacing us, not work).
+    func testKeystrokeToPixels() throws {
+        _ = open(try swiftFile())
+        window.makeFirstResponder(view.textView)
+        (alloy.document as? AlloyEditorDocument)?.highlighter?.waitForParse()
+        var generator = SystemRandomNumberGenerator()
+        let lines = view.buffer.text.lineCount
+        var keyWork: [Double] = [], perKey: [Double] = [], frameWork: [Double] = []
+        var frame = 0, keys = 0
+        view.onFrame = { [weak self] _ in
+            guard let self else { return }
+            frame += 1
+            if keys % 30 == 0, frame % 2 == 1 {
+                // Somewhere new (lines to lay out and color), on a frame of its own.
+                let offset = self.view.buffer.text.offset(ofLine: Int.random(in: 0..<lines - 50, using: &generator))
+                self.view.setSelections([Selection(caret: offset)])
+                self.make.editor.scrollRangeToVisible(NSRange(location: offset, length: 0))
+                keys += 1
+                return
+            }
+            guard frame % 2 == 0, keys < 330 else { return }
+            let start = CACurrentMediaTime()
+            self.view.textView.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+            let typed = CACurrentMediaTime()
+            // The frame this tick would draw anyway, drawn here so it can be timed with its key.
+            self.view.render()
+            let wait = self.view.drawableWaitMilliseconds.last ?? 0
+            keyWork.append((typed - start) * 1000)
+            perKey.append((CACurrentMediaTime() - start) * 1000 - wait)
+            frameWork.append(self.view.lastFrameStats.cpuMilliseconds)
+            keys += 1
+        }
+        view.resetFrameCounters()
+        waitUntil(30) { keys >= 330 }
+        waitUntil(0.2) { false }
+        view.onFrame = nil
+        let p99 = percentile(frameWork, 0.99)
+        report("keystroke: key handling", String(format: "p50 %.2f, p99 %.2f ms", percentile(keyWork, 0.5), percentile(keyWork, 0.99)), budget: "")
+        report("keystroke: its frame (CPU)", String(format: "p50 %.2f, p99 %.2f ms", percentile(frameWork, 0.5), p99), budget: "")
+        report("keystroke to frame (main thread)", String(format: "p50 %.2f, p99 %.2f ms", percentile(perKey, 0.5), percentile(perKey, 0.99)), budget: "p99 ≤ 8 ms")
+        XCTAssertGreaterThan(keyWork.count, 250)
+        XCTAssertLessThanOrEqual(percentile(perKey, 0.99), 8)
+    }
+
+    func testReHighlightAfterAnEdit() throws {
+        _ = open(try swiftFile())
+        let document = try XCTUnwrap(alloy.document as? AlloyEditorDocument)
+        let highlighter = try XCTUnwrap(document.highlighter)
+        highlighter.waitForParse()
+        var line: [Double] = [], reparse: [Double] = []
+        for i in 0..<20 {
+            let target = 1_000 + i * 4_000
+            view.setSelections([Selection(caret: view.buffer.text.offset(ofLine: target))])
+            view.textView.insertText("let q = 1; ", replacementRange: NSRange(location: NSNotFound, length: 0))
+            let start = now()
+            _ = highlighter.spans(forLine: target)
+            line.append(now() - start)
+            let parseStart = now()
+            highlighter.waitForParse()
+            reparse.append(now() - parseStart)
+        }
+        report("recolor the edited line", String(format: "p99 %.3f ms", percentile(line, 0.99)), budget: "≤ 2 ms")
+        report("background reparse (off main)", String(format: "median %.0f ms", percentile(reparse, 0.5)), budget: "(not budgeted)")
+        XCTAssertLessThanOrEqual(percentile(line, 0.99), 2)
+    }
+
+    /// Five seconds of steady scrolling, a new stretch of the file every frame, beside the same
+    /// five seconds drawing nothing but the background: misses the control has too are the
+    /// system's (other apps, the compositor), not the editor's.
+    func testScrollingDropsNoFrames() throws {
+        _ = open(try swiftFile())
+        (alloy.document as? AlloyEditorDocument)?.highlighter?.waitForParse()
+        // Settle first: what launch and opening start in the background (the test host's own
+        // startup, git) shows up as misses that aren't scrolling's.
+        waitUntil(3) { false }
+        func scroll(controlOnly: Bool) -> (presented: Int, missed: Int, late: Int, cpu: [Double]) {
+            TextRenderer.clearOnly = controlOnly
+            defer { TextRenderer.clearOnly = false }
+            view.onFrame = { [weak self] _ in self?.view.scrollY += 45 }
+            waitUntil(0.3) { false }
+            view.resetFrameCounters()
+            waitUntil(5) { false }
+            view.onFrame = nil
+            waitUntil(0.2) { false }
+            let (presented, missed) = view.presentedFrameCounts()
+            return (presented, missed, view.framesDropped, view.frameMilliseconds)
+        }
+        let control = scroll(controlOnly: true)
+        let real = scroll(controlOnly: false)
+        let hz = Int((1 / view.displayInterval).rounded())
+        report("scrolling at \(hz) Hz", "\(real.missed) of \(real.presented + real.missed) missed", budget: "none dropped")
+        report("  control (draws nothing)", "\(control.missed) of \(control.presented + control.missed) missed", budget: "")
+        report("  frame CPU", String(format: "median %.2f, p99 %.2f ms", percentile(real.cpu, 0.5), percentile(real.cpu, 0.99)), budget: String(format: "%.1f ms a frame", view.displayInterval * 1000))
+        XCTAssertGreaterThan(real.presented, 0)
+        XCTAssertLessThanOrEqual(percentile(real.cpu, 0.99), view.displayInterval * 1000 / 2, "a frame's work fits in half a frame")
+        XCTAssertLessThanOrEqual(real.missed, control.missed + real.presented / 200, "no more misses than drawing nothing, within 0.5%")
+    }
+
+    func testMemory() throws {
+        let log = try logFile()
+        let size = Double((try FileManager.default.attributesOfItem(atPath: log.path)[.size] as? Int) ?? 0) / 1_048_576
+        // The window's drawables and the glyph atlas come with the first frame, whatever the
+        // file: open a small one first so the difference is the file's.
+        let small = root.appendingPathComponent("small.log")
+        try String(repeating: "2026-09-24T12:00:00.000Z INFO  warm up\n", count: 200).write(to: small, atomically: true, encoding: .utf8)
+        let empty = footprintMB()
+        _ = open(small)
+        waitUntil(1) { false }
+        let before = footprintMB()
+        report("  the editor's first frame (drawables, atlas)", String(format: "+%.0f MB", before - empty), budget: "(once per window)")
+        _ = open(log)
+        waitUntil(1) { false }
+        let after = footprintMB()
+        report("memory for a 20 MB log", String(format: "+%.0f MB (%.1f× the file)", after - before, (after - before) / size), budget: "≤ 3× plus the atlas")
+        XCTAssertLessThanOrEqual(after - before, size * 3 + 32)
+    }
+
+    /// An agent's approved edit reaches the open tab as a whole-file replacement
+    /// (`applyApprovedEdit`); 60 a second, each drawn.
+    func testAgentEdits() throws {
+        for (name, lines) in [("a 2,000-line file", 2_000), ("the 100k-line file", 100_000)] {
+            let url = root.appendingPathComponent("Edit\(lines).swift")
+            var text = try String(contentsOf: try swiftFile(), encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false).prefix(lines).joined(separator: "\n")
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            _ = open(url)
+            var times: [Double] = []
+            for i in 0..<60 {
+                text = "// edit \(i)\n" + text
+                let start = now()
+                _ = make.applyApprovedEdit(url: url, newContent: text)
+                view.render()
+                // Less any wait for a free drawable: sixty frames back to back outrun the display.
+                times.append(now() - start - (view.drawableWaitMilliseconds.last ?? 0))
+                RunLoop.main.run(until: Date().addingTimeInterval(0.004))
+            }
+            let total = times.reduce(0, +)
+            report("agent edits, \(name)", String(format: "%.1f ms each, p99 %.1f", total / 60, percentile(times, 0.99)), budget: "60/s (≤ 16.7 ms)")
+            XCTAssertLessThanOrEqual(percentile(times, 0.99), 16.7)
+        }
+    }
+}

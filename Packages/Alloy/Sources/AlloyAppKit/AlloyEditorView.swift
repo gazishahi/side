@@ -106,6 +106,8 @@ public final class AlloyEditorView: NSView {
         setNeedsRender()
         gutter.needsDisplay = true
         documentView.postAccessibilityChange(value: true)
+        // A replacement is the owner's own doing, not an edit to report back to it.
+        guard change.reason != .replace else { return }
         delegate?.editorTextDidChange(self)
         delegate?.editorSelectionDidChange(self)
     }
@@ -176,7 +178,27 @@ public final class AlloyEditorView: NSView {
         return CGRect(x: start.minX, y: start.minY, width: max(1, end.minY == start.minY ? end.minX - start.minX : 1), height: start.height)
     }
 
-    public func setNeedsRender() { needsRender = true }
+    /// Asks for a frame. Mid-motion the display link draws it on the next vsync. From idle it's
+    /// drawn as soon as this turn of the run loop ends: an idle ProMotion display drops to its
+    /// lowest refresh rate and the display link with it, so waiting for the next tick put the first
+    /// frame after a pause (a file opened, the first key) 30–100 ms late.
+    public func setNeedsRender() {
+        needsRender = true
+        guard !immediateRenderScheduled, CACurrentMediaTime() - lastRenderTime > displayInterval * 1.5 else { return }
+        immediateRenderScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.immediateRenderScheduled = false
+                guard self.needsRender, self.window != nil, !self.isHiddenOrHasHiddenAncestor else { return }
+                // The frame is drawn before AppKit's own layout pass would run: bring sizes current.
+                self.window?.layoutIfNeeded()
+                self.render()
+            }
+        }
+    }
+    private var immediateRenderScheduled = false
+    private var lastRenderTime: CFTimeInterval = 0
 
     public override func layout() {
         super.layout()
@@ -369,6 +391,7 @@ public final class AlloyEditorView: NSView {
         drawable.addPresentedHandler { presented.append($0.presentedTime) }
         renderer.draw(frame, layout: documentLayout, into: drawable.texture, drawable: drawable)
         framesDrawn += 1
+        lastRenderTime = CACurrentMediaTime()
         worstFrameMilliseconds = max(worstFrameMilliseconds, renderer.lastStats.cpuMilliseconds)
         frameMilliseconds.append(renderer.lastStats.cpuMilliseconds)
         // The document height can change while drawing (wrapped lines got measured).

@@ -2,14 +2,10 @@ import XCTest
 @testable import Side
 @testable import Heron
 
-/// Alloy RFC step 0: Make reaches its editor only through `EditorEngine`, and today's TextKit
-/// editor behaves as it did. These drive Make's real typing path, so the same tests will hold
-/// Alloy to the same behavior when it implements the seam.
+/// Make reaches its editor only through `EditorEngine` (SIDE_RFC_ALLOY.md). These drive Make's
+/// real typing path; they held TextKit and then Alloy to the same behavior across the switch.
 @MainActor
-class EditorEngineTests: XCTestCase {
-    /// The engine under test; the Alloy subclass overrides it.
-    class var engine: String { "textkit" }
-
+final class EditorEngineTests: XCTestCase {
     private var root: URL!
     private var make: MakeWorkspaceViewController!
     private var window: NSWindow!
@@ -17,11 +13,8 @@ class EditorEngineTests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("editor-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        MakeWorkspaceViewController.engineOverride = Self.engine
         make = MakeWorkspaceViewController()
-        // The editor is made when the view loads: keep the choice set until it has.
         make.loadViewIfNeeded()
-        MakeWorkspaceViewController.engineOverride = nil
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         // As the shell hosts it: Make's view, and its tab strip in the window's top row.
         let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
@@ -70,8 +63,8 @@ class EditorEngineTests: XCTestCase {
         input.insertText(text, replacementRange: engine.selectedRange)
     }
 
-    func testTheEngineIsTheOneAskedFor() {
-        XCTAssertEqual(make.editor is AlloyEditorEngine, Self.engine == "alloy")
+    func testMakeEditsOnAlloy() {
+        XCTAssertTrue(make.editor is AlloyEditorEngine)
     }
 
     func testOpeningRevealsTheLineAndTheDocumentIsTheTabs() throws {
@@ -100,20 +93,14 @@ class EditorEngineTests: XCTestCase {
     }
 
     func testDecorationsReplaceOnlyTheirOwnKind() {
-        let document = TextStorageDocument("(a) b")
+        let document = AlloyEditorDocument("(a) b")
         document.setDecorations(.bracketMatch, [(NSRange(location: 0, length: 1), .red), (NSRange(location: 2, length: 1), .red)])
         document.setDecorations(.diagnostic, [(NSRange(location: 4, length: 1), .systemYellow)])
         document.setDecorations(.bracketMatch, [])
-        XCTAssertNil(document.storage.attribute(.backgroundColor, at: 0, effectiveRange: nil), "the old bracket tint is gone")
-        XCTAssertNotNil(document.storage.attribute(.underlineStyle, at: 4, effectiveRange: nil), "the diagnostic stays")
+        XCTAssertEqual(document.decorations[.bracketMatch]?.count ?? 0, 0, "the old bracket tint is gone")
+        XCTAssertEqual(document.decorations[.diagnostic]?.count, 1, "the diagnostic stays")
         document.replaceAll(with: "x")
         XCTAssertEqual(document.string, "x")
-        document.setDecorations(.diagnostic, [(NSRange(location: 4, length: 1), .red)])
-        XCTAssertEqual(document.length, 1, "a mark past the end is skipped, not a crash")
+        XCTAssertTrue(document.decorations.isEmpty, "a new text starts without marks")
     }
-}
-
-/// The same tests, on Alloy (SIDE_RFC_ALLOY.md, step 5).
-final class AlloyEditorEngineTests: EditorEngineTests {
-    override class var engine: String { "alloy" }
 }

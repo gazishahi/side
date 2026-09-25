@@ -4,24 +4,20 @@ import AlloyRender
 @testable import Side
 @testable import Heron
 
-/// Alloy RFC step 5, the parity bar: what Make does with its editor, on each engine. Make's
-/// own entry points throughout; where the engines keep state differently (attributes vs.
-/// decorations), each is checked in its own terms.
+/// Alloy RFC step 5, the parity bar: what Make does with its editor, through Make's own entry
+/// points. These ran on TextKit and Alloy both until step 7 made Alloy the only editor.
 @MainActor
-class EditorParityTests: XCTestCase {
-    class var engine: String { "textkit" }
+final class EditorParityTests: XCTestCase {
     private var root: URL!
     private var make: MakeWorkspaceViewController!
     private var window: NSWindow!
-    private var isAlloy: Bool { make.editor is AlloyEditorEngine }
+    private var alloy: AlloyEditorEngine { make.editor as! AlloyEditorEngine }
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("parity-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        MakeWorkspaceViewController.engineOverride = Self.engine
         make = MakeWorkspaceViewController()
         make.loadViewIfNeeded()
-        MakeWorkspaceViewController.engineOverride = nil
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
         window.contentView = container
@@ -37,7 +33,6 @@ class EditorParityTests: XCTestCase {
             make.view.leadingAnchor.constraint(equalTo: container.leadingAnchor), make.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         ])
         window.orderFront(nil)
-        XCTAssertEqual(isAlloy, Self.engine == "alloy")
     }
 
     override func tearDownWithError() throws {
@@ -64,35 +59,24 @@ class EditorParityTests: XCTestCase {
     }
 
     private func undo() {
-        if let alloy = make.editor.textView as? AlloyTextView { alloy.undo(nil) } else { make.editor.textView.undoManager?.undo() }
+        alloy.view.textView.undo(nil)
     }
 
     func testSyntaxColorsTheKeywords() throws {
-        let engine = try open("colors.swift", "struct A {\n    let x = \"s\" // c\n}\n")
-        if let alloy = engine as? AlloyEditorEngine {
-            let spans = try XCTUnwrap(alloy.view.styles?(0))
-            XCTAssertTrue(spans.contains { $0.range.contains(0) }, "struct is colored")
-            XCTAssertTrue(try XCTUnwrap(alloy.view.styles?(1)).contains { $0.range.contains(14) }, "the string is colored")
-        } else {
-            let storage = try XCTUnwrap((engine.document as? TextStorageDocument)?.storage)
-            let keyword = storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
-            XCTAssertNotEqual(keyword, NSColor.labelColor, "struct is colored")
-        }
+        try open("colors.swift", "struct A {\n    let x = \"s\" // c\n}\n")
+        let spans = try XCTUnwrap(alloy.view.styles?(0))
+        XCTAssertTrue(spans.contains { $0.range.contains(0) }, "struct is colored")
+        XCTAssertTrue(try XCTUnwrap(alloy.view.styles?(1)).contains { $0.range.contains(14) }, "the string is colored")
     }
 
     func testDiagnosticsUnderlineAndMarkTheGutter() throws {
         let engine = try open("diag.swift", "let a = 1\nlet b = oops\n")
         engine.document?.setDecorations(.diagnostic, [(NSRange(location: 18, length: 4), .systemRed)])
         engine.lineDiagnostics = [2: .error]
-        if let alloy = engine as? AlloyEditorEngine {
-            XCTAssertTrue(alloy.view.decorations.contains { $0.range == 18..<22 && $0.style == .dottedUnderline })
-            XCTAssertEqual(alloy.view.gutter.marks[2]?.first?.style, .dot)
-        } else {
-            let storage = try XCTUnwrap((engine.document as? TextStorageDocument)?.storage)
-            XCTAssertNotNil(storage.attribute(.underlineStyle, at: 19, effectiveRange: nil))
-        }
+        XCTAssertTrue(alloy.view.decorations.contains { $0.range == 18..<22 && $0.style == .dottedUnderline })
+        XCTAssertEqual(alloy.view.gutter.marks[2]?.first?.style, .dot)
         engine.document?.setDecorations(.diagnostic, [])
-        if let alloy = engine as? AlloyEditorEngine { XCTAssertTrue(alloy.view.decorations.isEmpty, "cleared") }
+        XCTAssertTrue(alloy.view.decorations.isEmpty, "cleared")
     }
 
     func testGutterClicksReachTheDelegate() throws {
@@ -222,8 +206,4 @@ class EditorParityTests: XCTestCase {
         XCTAssertEqual(make.editor.document?.string, "fixed\n")
         make.editor.isEditable = true
     }
-}
-
-final class AlloyEditorParityTests: EditorParityTests {
-    override class var engine: String { "alloy" }
 }

@@ -34,7 +34,20 @@ final class Playground: NSObject, NSApplicationDelegate {
         if !arguments.contains("--no-selection") { editor.buffer.setSelections([Selection(anchor: 30, head: 120), Selection(caret: 200)]) }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Alloy \u{00B7} " + (path.map { ($0 as NSString).lastPathComponent } ?? "empty")
-        window.contentView = editor
+        // As Make lays it out: the gutter beside the editor.
+        let container = NSView()
+        for view in [editor.gutter, editor as NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            editor.gutter.leadingAnchor.constraint(equalTo: container.leadingAnchor), editor.gutter.widthAnchor.constraint(equalToConstant: AlloyGutterView.width),
+            editor.gutter.topAnchor.constraint(equalTo: container.topAnchor), editor.gutter.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            editor.leadingAnchor.constraint(equalTo: editor.gutter.trailingAnchor), editor.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            editor.topAnchor.constraint(equalTo: container.topAnchor), editor.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        if arguments.contains("--dark") { editor.gutter.backgroundColor = NSColor(srgbRed: 0.1, green: 0.1, blue: 0.11, alpha: 1); window.appearance = NSAppearance(named: .darkAqua) }
+        window.contentView = container
         window.center()
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(editor.textView)

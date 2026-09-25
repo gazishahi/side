@@ -135,12 +135,15 @@ public final class TextRenderer {
     public enum RenderError: Error { case noDevice }
 
     /// Encodes a frame into `target` and commits it; presents `drawable` if given.
+    /// Draw nothing but the background: a control for measurements (a frame's cost without the
+    /// text). `ALLOY_CLEAR_ONLY=1` sets it at launch.
+    public nonisolated(unsafe) static var clearOnly = ProcessInfo.processInfo.environment["ALLOY_CLEAR_ONLY"] == "1"
+
     @discardableResult
     public func draw(_ frame: RenderFrame, layout: DocumentLayout, into target: MTLTexture, drawable: CAMetalDrawable? = nil,
                      completion: (@Sendable (MTLCommandBuffer) -> Void)? = nil) -> MTLCommandBuffer? {
         let start = CACurrentMediaTime()
-        // ALLOY_CLEAR_ONLY=1: draw nothing but the background (a control for measurements).
-        var quads = ProcessInfo.processInfo.environment["ALLOY_CLEAR_ONLY"] == "1" ? [] : buildQuads(frame, layout: layout)
+        var quads = Self.clearOnly ? [] : buildQuads(frame, layout: layout)
         // An atlas that filled mid-frame dropped entries this frame already used: build again.
         if atlasRestarted { atlasRestarted = false; quads = buildQuads(frame, layout: layout) }
 

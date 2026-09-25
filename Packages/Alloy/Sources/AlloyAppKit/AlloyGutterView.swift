@@ -20,7 +20,7 @@ public struct GutterMark: Equatable {
 public final class AlloyGutterView: NSView {
     public static let width: CGFloat = 44
     weak var editor: AlloyEditorView?
-    public var font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular) { didSet { needsDisplay = true } }
+    public var font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular) { didSet { numbers.removeAll(); needsDisplay = true } }
     public var numberColor = NSColor.tertiaryLabelColor { didSet { needsDisplay = true } }
     public var backgroundColor = NSColor.textBackgroundColor { didSet { needsDisplay = true } }
     /// Marks by one-based line.
@@ -30,6 +30,21 @@ public final class AlloyGutterView: NSView {
 
     public override var isFlipped: Bool { true }
 
+    /// Each line number, shaped once: drawing them as strings (measure, then draw) cost ~1.5 ms
+    /// a frame while scrolling, more than the text itself.
+    private var numbers: [Int: (line: CTLine, width: CGFloat)] = [:]
+
+    private func number(_ value: Int) -> (line: CTLine, width: CGFloat) {
+        if let cached = numbers[value] { return cached }
+        if numbers.count > 4_000 { numbers.removeAll() }
+        // The color comes from the context, so an appearance change needs no reshaping.
+        let string = NSAttributedString(string: "\(value)", attributes: [.font: font, NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true])
+        let line = CTLineCreateWithAttributedString(string)
+        let entry = (line, CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
+        numbers[value] = entry
+        return entry
+    }
+
     public override func draw(_ dirtyRect: NSRect) {
         backgroundColor.setFill()
         bounds.fill()
@@ -38,17 +53,18 @@ public final class AlloyGutterView: NSView {
         let viewport = editor.viewport
         // The gutter's top edge sits where the viewport's does.
         let top = editor.scrollView.convert(editor.scrollView.contentView.frame.origin, to: self).y + editor.scrollView.contentView.contentInsets.top
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: numberColor]
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        context.setFillColor(numberColor.cgColor)
         for (line, y, laid) in layout.visibleLines(from: viewport.minY, to: viewport.maxY) {
             let rowTop = top + (y - viewport.minY)
             let lineHeight = layout.lineHeight
             let height = CGFloat(laid.rows.count) * lineHeight
-            let number = "\(line + 1)" as NSString
-            let size = number.size(withAttributes: attributes)
-            // On the text's baseline (row top + the text font's ascent), right-aligned. `draw(at:)`
-            // places the string's top, and its baseline falls the number font's ascent below.
-            let top = rowTop + layout.ascent - font.ascender
-            number.draw(at: CGPoint(x: Self.width - size.width - 8, y: top), withAttributes: attributes)
+            // On the text's baseline (row top + the text font's ascent), right-aligned.
+            let (shaped, width) = number(line + 1)
+            context.textPosition = CGPoint(x: Self.width - width - 8, y: rowTop + layout.ascent)
+            CTLineDraw(shaped, context)
             for mark in marks[line + 1] ?? [] {
                 mark.color.setFill()
                 switch mark.style {
@@ -59,7 +75,9 @@ public final class AlloyGutterView: NSView {
                     NSBezierPath(ovalIn: NSRect(x: 7, y: rowTop + (lineHeight - size) / 2, width: size, height: size)).fill()
                 }
             }
+            context.setFillColor(numberColor.cgColor)
         }
+        context.restoreGState()
     }
 
     /// The one-based line under a point in the gutter.

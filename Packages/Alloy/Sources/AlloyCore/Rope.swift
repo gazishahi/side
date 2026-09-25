@@ -330,6 +330,22 @@ public struct Rope: Sendable, Equatable {
         }
     }
 
+    /// The leaf holding a UTF-16 offset (the last leaf for the end), and where it starts.
+    func leaf(containing offset: Int) -> (text: String, start: Int) {
+        var node = root
+        var start = 0
+        var remaining = max(0, min(offset, utf16Count))
+        while node.height > 0 {
+            let children = node.children
+            for (index, child) in children.enumerated() {
+                if remaining < child.summary.utf16 || index == children.count - 1 { node = child; break }
+                remaining -= child.summary.utf16
+                start += child.summary.utf16
+            }
+        }
+        return (node.text, start)
+    }
+
     private static func collect(_ node: RopeNode, _ body: (RopeNode) -> Void) {
         if node.height == 0 { body(node); return }
         for child in node.children { collect(child, body) }
