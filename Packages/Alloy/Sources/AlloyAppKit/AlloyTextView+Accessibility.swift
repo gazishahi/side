@@ -2,7 +2,7 @@ import AlloyCore
 import AlloyRender
 import AppKit
 
-/// VoiceOver and every other assistive client (SIDE_RFC_ALLOY.md guardrail: accessibility is not
+/// VoiceOver and every other assistive client (docs/DESIGN.md: accessibility is not
 /// optional). A custom text view says nothing unless it implements the text-area protocol
 /// itself; this is that protocol: role, value, selection, and the parameterized queries clients
 /// use to read by character, word and line, and to find where text is on screen.

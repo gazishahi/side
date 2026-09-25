@@ -53,7 +53,7 @@ final class RopeNode: @unchecked Sendable {
     }
 }
 
-/// Text as a balanced tree of chunks (SIDE_RFC_ALLOY.md, A2). Value semantics: copying a rope
+/// Text as a balanced tree of chunks (docs/DESIGN.md, A2). Value semantics: copying a rope
 /// is free and the copy never changes, which is what undo snapshots and background highlighting
 /// rely on. Offsets are UTF-16 code units, matching AppKit and LSP.
 public struct Rope: Sendable, Equatable {

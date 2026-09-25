@@ -1,5 +1,5 @@
 {
-  "originHash" : "9f99d6cd570d67f3941b020d4af0824bdec0ded776eb69b3f9a3907c31985aea",
+  "originHash" : "f1a19a302676414ac32f009943ac1a1a1be530c6c8c0c1829236d38aa5c18841",
   "pins" : [
     {
       "identity" : "swifttreesitter",
@@ -107,14 +107,6 @@
       "state" : {
         "revision" : "77a3747266f4d621d0757825e6b11edcbf991ca5",
         "version" : "0.24.2"
-      }
-    },
-    {
-      "identity" : "tree-sitter-swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/alex-pinkus/tree-sitter-swift",
-      "state" : {
-        "revision" : "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5"
       }
     },
     {

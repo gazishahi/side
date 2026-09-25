@@ -5,7 +5,7 @@ import CoreText
 import Metal
 import QuartzCore
 
-/// The editor Make embeds (SIDE_RFC_ALLOY.md): a `TextBuffer`, drawn by `TextRenderer` on the
+/// The editor Make embeds (docs/DESIGN.md): a `TextBuffer`, drawn by `TextRenderer` on the
 /// display link, edited through `AlloyTextView` (the first responder).
 ///
 /// Scrolling is AppKit's own: an `NSScrollView` over a document view as tall as the text, so

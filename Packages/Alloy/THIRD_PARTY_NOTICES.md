@@ -64,6 +64,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## tree-sitter-swift
 
+Its generated parser (`parser.c`, `scanner.c` and headers, from the `0.7.3-with-generated-files`
+tag) is vendored in `Sources/TreeSitterSwiftGrammar`, with its symbols renamed; its highlight
+query is in `Sources/AlloySyntax/Queries/swift.scm`.
+
 ```
 MIT License
 

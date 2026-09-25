@@ -85,7 +85,7 @@ public struct FrameStats: Sendable {
     public var atlasGlyphs = 0
 }
 
-/// Draws a document's viewport with Metal (SIDE_RFC_ALLOY.md, A1): CoreText has shaped each
+/// Draws a document's viewport with Metal (docs/DESIGN.md, A1): CoreText has shaped each
 /// line; this places glyphs from the atlas and rectangles for the current line, selections and
 /// carets, all as instanced quads in one draw call.
 @MainActor

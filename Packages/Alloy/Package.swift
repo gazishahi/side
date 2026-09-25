@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-/// Alloy: Side's editing engine (docs/SIDE_RFC_ALLOY.md). AlloyCore is the document (no AppKit),
+/// Alloy: Side's editing engine (docs/DESIGN.md). AlloyCore is the document (no AppKit),
 /// AlloyRender draws it with Metal, AlloyAppKit is the view.
 let package = Package(
     name: "Alloy",
@@ -14,8 +14,6 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ChimeHQ/SwiftTreeSitter", from: "0.25.0"),
-        // Swift's grammar ships its generated parser only on these tags; pinned by commit.
-        .package(url: "https://github.com/alex-pinkus/tree-sitter-swift", revision: "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5"),  // 0.7.3-with-generated-files
         .package(url: "https://github.com/tree-sitter/tree-sitter-typescript", exact: "0.23.2"),
         // JavaScript, Python and Lua: the last releases whose manifests list their scanners
         // outright. Later ones check `FileManager.fileExists("src/scanner.c")`, a path relative to
@@ -36,10 +34,25 @@ let package = Package(
         .target(name: "AlloyCore", path: "Sources/AlloyCore"),
         .target(name: "AlloyRender", dependencies: ["AlloyCore"], path: "Sources/AlloyRender"),
         .target(name: "AlloyAppKit", dependencies: ["AlloyCore", "AlloyRender"], path: "Sources/AlloyAppKit"),
+        // Swift's grammar, vendored: it publishes its generated parser only on tags that aren't
+        // versions (`0.7.3-with-generated-files`), and a package pinned to a commit can't be
+        // depended on by version. Symbols renamed so an app linking tree-sitter-swift too is fine.
+        .target(name: "TreeSitterSwiftGrammar", path: "Sources/TreeSitterSwiftGrammar",
+                exclude: ["LICENSE"], sources: ["src/parser.c", "src/scanner.c"],
+                cSettings: [
+                    .headerSearchPath("src"),
+                .define("tree_sitter_swift", to: "alloy_tree_sitter_swift"),
+                .define("tree_sitter_swift_external_scanner_create", to: "alloy_tree_sitter_swift_external_scanner_create"),
+                .define("tree_sitter_swift_external_scanner_deserialize", to: "alloy_tree_sitter_swift_external_scanner_deserialize"),
+                .define("tree_sitter_swift_external_scanner_destroy", to: "alloy_tree_sitter_swift_external_scanner_destroy"),
+                .define("tree_sitter_swift_external_scanner_reset", to: "alloy_tree_sitter_swift_external_scanner_reset"),
+                .define("tree_sitter_swift_external_scanner_scan", to: "alloy_tree_sitter_swift_external_scanner_scan"),
+                .define("tree_sitter_swift_external_scanner_serialize", to: "alloy_tree_sitter_swift_external_scanner_serialize"),
+                ]),
         .target(name: "AlloySyntax", dependencies: [
             "AlloyCore", "AlloyRender",
             .product(name: "SwiftTreeSitter", package: "SwiftTreeSitter"),
-            .product(name: "TreeSitterSwift", package: "tree-sitter-swift"),
+            "TreeSitterSwiftGrammar",
             .product(name: "TreeSitterTypeScript", package: "tree-sitter-typescript"),
             .product(name: "TreeSitterJavaScript", package: "tree-sitter-javascript"),
             .product(name: "TreeSitterPython", package: "tree-sitter-python"),

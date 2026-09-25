@@ -80,6 +80,7 @@ final class DocumentLayoutTests: XCTestCase {
 @MainActor
 final class TextRendererTests: XCTestCase {
     func testPixelsLandWhereTheLayoutSays() throws {
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device (a CI runner without a GPU)")
         let renderer = try TextRenderer()
         let font = CTFontCreateUIFontForLanguage(.userFixedPitch, 14, nil)!
         let text = Rope("MMMM selected\nsecond line 😀\n")

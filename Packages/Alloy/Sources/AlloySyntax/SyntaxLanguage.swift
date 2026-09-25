@@ -10,12 +10,12 @@ import TreeSitterMarkdown
 import TreeSitterPython
 import TreeSitterRuby
 import TreeSitterRust
-import TreeSitterSwift
+import TreeSitterSwiftGrammar
 import TreeSitterTSX
 import TreeSitterTypeScript
 
 /// A language Alloy highlights: its tree-sitter grammar and its highlight query
-/// (SIDE_RFC_ALLOY.md, A3). The queries are the grammars' own, kept in `Queries/` so they load
+/// (docs/DESIGN.md, A3). The queries are the grammars' own, kept in `Queries/` so they load
 /// the same way in a package build and in Side's app bundle; TypeScript's and C++'s are layered
 /// on JavaScript's and C's, as their authors intend.
 public final class SyntaxLanguage: @unchecked Sendable {
@@ -88,7 +88,7 @@ public final class SyntaxLanguage: @unchecked Sendable {
     }
 
     private static let specs: [String: Spec] = [
-        "swift": Spec(language: { tree_sitter_swift() }, query: "swift"),
+        "swift": Spec(language: { alloy_tree_sitter_swift() }, query: "swift"),
         "typescript": Spec(language: { tree_sitter_typescript() }, query: "typescript"),
         "tsx": Spec(language: { tree_sitter_tsx() }, query: "tsx"),
         "javascript": Spec(language: { tree_sitter_javascript() }, query: "javascript"),

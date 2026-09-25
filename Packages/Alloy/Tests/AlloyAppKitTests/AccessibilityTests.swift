@@ -1,5 +1,6 @@
 import AlloyCore
 import AppKit
+import Metal
 import XCTest
 @testable import AlloyAppKit
 
@@ -11,6 +12,7 @@ final class AccessibilityTests: XCTestCase {
     private var view: AlloyTextView { editor.textView }
 
     private func open(_ string: String) throws {
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device (a CI runner without a GPU)")
         editor = try AlloyEditorView(buffer: TextBuffer(string), font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular) as CTFont)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = editor

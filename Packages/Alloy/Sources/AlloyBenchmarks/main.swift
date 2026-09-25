@@ -1,7 +1,7 @@
 import AlloyCore
 import Foundation
 
-// AlloyCore's numbers against SIDE_RFC_ALLOY.md's budgets. Run optimized:
+// AlloyCore's numbers against the budgets in README.md. Run optimized:
 //   swift run -c release AlloyBenchmarks
 
 func measure(_ name: String, iterations: Int = 1, _ body: () -> Void) -> Double {
