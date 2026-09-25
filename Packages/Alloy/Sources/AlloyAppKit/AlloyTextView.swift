@@ -12,9 +12,12 @@ public protocol AlloyEditorDelegate: AnyObject {
     func editor(_ editor: AlloyEditorView, doCommandBy selector: Selector) -> Bool
     func editorTextDidChange(_ editor: AlloyEditorView)
     func editorSelectionDidChange(_ editor: AlloyEditorView)
+    /// The context menu for a right-click at a UTF-16 offset: add to it or replace it.
+    func editor(_ editor: AlloyEditorView, menu: NSMenu, forCharacterAt offset: Int) -> NSMenu
 }
 
 public extension AlloyEditorDelegate {
+    func editor(_ editor: AlloyEditorView, menu: NSMenu, forCharacterAt offset: Int) -> NSMenu { menu }
     func editor(_ editor: AlloyEditorView, shouldChangeTextIn range: Range<Int>, replacementString: String) -> Bool { true }
     func editor(_ editor: AlloyEditorView, doCommandBy selector: Selector) -> Bool { false }
     func editorTextDidChange(_ editor: AlloyEditorView) {}
@@ -298,15 +301,17 @@ public final class AlloyTextView: NSView, @preconcurrency NSTextInputClient, NSM
 
     /// Every typed change passes the delegate's check first, so Make's auto-pairing and
     /// auto-indent decide as they do today.
+    private var canEdit: Bool { editor?.isEditable ?? false }
+
     private func apply(_ edits: [TextEdit], kind: EditKind, selectionsAfter: [Selection]? = nil) {
-        guard let editor, !edits.isEmpty else { return }
+        guard let editor, !edits.isEmpty, canEdit else { return }
         if let delegate = editor.delegate, edits.count == 1, !delegate.editor(editor, shouldChangeTextIn: edits[0].range, replacementString: edits[0].text) { return }
         buffer.apply(edits, selectionsAfter: selectionsAfter ?? carets(after: edits), kind: kind)
         editor.revealCarets()
     }
 
     private func guardedEdit(_ body: () -> Void) {
-        guard let editor else { return }
+        guard let editor, canEdit else { return }
         if let delegate = editor.delegate, buffer.selections.count == 1 {
             let s = buffer.selections[0]
             let range = s.isCaret ? buffer.previousBoundary(before: s.head)..<s.head : s.range
@@ -335,6 +340,7 @@ public final class AlloyTextView: NSView, @preconcurrency NSTextInputClient, NSM
     // MARK: NSTextInputClient
 
     public func insertText(_ string: Any, replacementRange: NSRange) {
+        guard canEdit else { return }
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
         goalX = nil
         if let marked = composingRange {
@@ -354,6 +360,7 @@ public final class AlloyTextView: NSView, @preconcurrency NSTextInputClient, NSM
     }
 
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        guard canEdit else { return }
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
         goalX = nil
         // Composition happens at one caret: the first.
@@ -517,17 +524,31 @@ public final class AlloyTextView: NSView, @preconcurrency NSTextInputClient, NSM
     }
 
     @objc public func undo(_ sender: Any?) {
-        if buffer.undo() { editor?.textInputChanged(); editor?.revealCarets() }
+        guard canEdit else { return }
+        if buffer.undo() { editor?.textInputChanged(); editor?.revealCarets(); editor?.onUndoRedo?(false) }
     }
 
     @objc public func redo(_ sender: Any?) {
-        if buffer.redo() { editor?.textInputChanged(); editor?.revealCarets() }
+        guard canEdit else { return }
+        if buffer.redo() { editor?.textInputChanged(); editor?.revealCarets(); editor?.onUndoRedo?(true) }
+    }
+
+    /// Right-click: Cut, Copy, Paste, and whatever the owner adds (Make: Jump to Definition).
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Cut", action: #selector(cut(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+        let offset = layout.offset(at: convert(event.locationInWindow, from: nil))
+        guard let editor, let delegate = editor.delegate else { return menu }
+        return delegate.editor(editor, menu: menu, forCharacterAt: offset)
     }
 
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
-        case #selector(copy(_:)), #selector(cut(_:)): return buffer.selections.contains { !$0.isCaret }
-        case #selector(paste(_:)): return pasteboard.string(forType: .string) != nil
+        case #selector(copy(_:)): return buffer.selections.contains { !$0.isCaret }
+        case #selector(paste(_:)): return canEdit && pasteboard.string(forType: .string) != nil
+        case #selector(cut(_:)): return canEdit && buffer.selections.contains { !$0.isCaret }
         case #selector(undo(_:)): return buffer.canUndo
         case #selector(redo(_:)): return buffer.canRedo
         case #selector(performFindPanelAction(_:)), #selector(performTextFinderAction(_:)):

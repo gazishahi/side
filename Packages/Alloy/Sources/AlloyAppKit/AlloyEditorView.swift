@@ -27,6 +27,12 @@ public final class AlloyEditorView: NSView {
     /// The view that takes focus, reports its geometry in document points, and hosts overlays
     /// that scroll with the text.
     public var textView: AlloyTextView { documentView }
+    /// Line numbers and marks; the owner places it beside the editor.
+    public let gutter = AlloyGutterView()
+    /// False: the text can be read and selected but not changed.
+    public var isEditable = true
+    /// After an undo (false) or redo (true) through the Edit menu or ⌘Z.
+    public var onUndoRedo: ((Bool) -> Void)?
 
     private let documentView = AlloyTextView()
     private var isFocused = false
@@ -51,6 +57,7 @@ public final class AlloyEditorView: NSView {
         renderer = try TextRenderer()
         super.init(frame: .zero)
         documentView.editor = self
+        gutter.editor = self
         canvas.metalLayer.device = renderer.device
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
@@ -65,9 +72,11 @@ public final class AlloyEditorView: NSView {
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
-        // Over the clip view, positioned each frame on the document view's visible part (see
-        // `viewport`), so insets (the Find bar, floating chrome) never shift the text.
-        scrollView.addSubview(canvas, positioned: .above, relativeTo: scrollView.contentView)
+        // Beneath the clip view (which, like the document view, draws nothing), positioned each
+        // frame on the visible part of the document (see `viewport`), so insets (the Find bar,
+        // floating chrome) never shift the text, and views the owner adds to the text view (Make's
+        // proposal cards) draw on top of it and scroll with it.
+        scrollView.addSubview(canvas, positioned: .below, relativeTo: scrollView.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
         buffer.onChange = { [weak self] change in self?.textChanged(change) }
     }
@@ -93,6 +102,7 @@ public final class AlloyEditorView: NSView {
         updateDocumentHeight()
         restartBlink()
         setNeedsRender()
+        gutter.needsDisplay = true
         delegate?.editorTextDidChange(self)
         delegate?.editorSelectionDidChange(self)
     }
@@ -184,7 +194,45 @@ public final class AlloyEditorView: NSView {
         }
     }
 
-    @objc private func scrolled() { setNeedsRender() }
+    @objc private func scrolled() {
+        setNeedsRender()
+        gutter.needsDisplay = true
+    }
+
+    /// Selects, as the user would (the delegate hears about it); doesn't scroll.
+    public func setSelections(_ selections: [Selection]) {
+        buffer.setSelections(selections)
+        selectionChanged()
+    }
+
+    /// The buffer's text was replaced outside the edit path (`TextBuffer.reset`): lay it out again.
+    public func reloadText() {
+        documentLayout.reset(buffer.text)
+        updateDocumentHeight()
+        gutter.needsDisplay = true
+        setNeedsRender()
+    }
+
+    /// Light or dark changed: colors that depend on it need resolving again.
+    public var onEffectiveAppearanceChange: (() -> Void)?
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onEffectiveAppearanceChange?()
+        gutter.needsDisplay = true
+        setNeedsRender()
+    }
+
+    /// Lays the text out in another font (the editor text size changed).
+    public func setFont(_ font: CTFont) {
+        let insets = documentLayout.insets
+        documentLayout = DocumentLayout(text: buffer.text, font: font)
+        documentLayout.insets = insets
+        updateWrapWidth()
+        updateDocumentHeight()
+        gutter.needsDisplay = true
+        setNeedsRender()
+    }
 
     /// Scrolls so a UTF-16 offset is on screen.
     public func scrollToVisible(offset: Int) {

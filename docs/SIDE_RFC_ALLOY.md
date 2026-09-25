@@ -1,6 +1,6 @@
 # RFC: Alloy, the editing engine
 
-*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–4 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
+*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–5 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` ("Alloy: powers Make"), `SIDE_DESIGN.md` (tokens,
 motion, accessibility) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -185,6 +185,22 @@ headers, inline agent ghost text.
    between the fast query path and a root query on real files. Known gap: in a Lua table with more
    than 512 entries, the braces lose their constructor color.
 5. **Make parity** on the seam, feature by feature, each with a test.
+   **Built 2026-09-24:** Alloy is a local package of the app. `AlloyEditorEngine` and
+   `AlloyEditorDocument` (Side) implement the seam on `AlloyEditorView`: a tab's `TextBuffer` and
+   tree-sitter highlighter; Make's diagnostic and bracket marks become decorations; Alloy's own
+   undo announces itself as `NSUndoManagerDidUndoChange` on the tab's manager, so "back to saved
+   clears the dot" works unchanged; Jump to Definition joins the context menu. New in Alloy for
+   parity: `AlloyGutterView` (numbers, change bars, removal notches, diagnostic dots, clicks), a
+   context-menu hook, `isEditable`, font changes, and the drawing moved beneath the clip view so
+   views Make adds to the text (proposal cards) sit on top. The seam gained `containerView` (Alloy's
+   editor is a view that holds its scroll view). `SideEditorEngine` / `SIDE_EDITOR_ENGINE=alloy`
+   selects Alloy; TextKit stays the default until step 7. Parity is tested on both engines through
+   Make's own entry points (`EditorEngineTests`, `EditorParityTests` and their Alloy subclasses):
+   typing through the seam, reveal, syntax colors, diagnostics underline and gutter dot, gutter
+   clicks, ⌘K and completion anchors, Jump to Definition, per-tab undo and the unsaved dot, an
+   approved agent edit (text replaced, undo cleared), the text-size setting, read-only tabs.
+   Checked in Side on Alloy with real keys. Left for step 7: Make still runs its regex highlighter
+   after typing (discarded on Alloy).
 6. **Accessibility and polish:** VoiceOver, text sizes, tokens, Reduce Motion.
 7. **Switch:** Make on Alloy; remove the `NSTextView` path; measure against the budgets.
 8. **Publish:** `gazishahi/alloy`, Apache-2.0.

@@ -12,7 +12,9 @@ import Heron
 protocol EditorEngine: AnyObject, Sendable {
     var delegate: EditorEngineDelegate? { get set }
 
-    /// What Make lays out: the scrolling text, and the line-number gutter beside it.
+    /// What Make lays out and hides (the editor's outermost view), the scroll view inside it
+    /// (for content insets and the window's top-row chrome), and the gutter beside it.
+    var containerView: NSView { get }
     var scrollView: NSScrollView { get }
     var gutterView: NSView { get }
     /// The view that takes focus, anchors popovers and hosts overlays that scroll with the text.
@@ -103,6 +105,7 @@ final class TextKitEditorEngine: NSObject, EditorEngine, NSTextViewDelegate {
 
     var gutterView: NSView { gutter }
     var textView: NSView { editor }
+    var containerView: NSView { scrollView }
 
     var appearance: EditorAppearance {
         didSet { applyAppearance() }

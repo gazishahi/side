@@ -6,7 +6,10 @@ import XCTest
 /// editor behaves as it did. These drive Make's real typing path, so the same tests will hold
 /// Alloy to the same behavior when it implements the seam.
 @MainActor
-final class EditorEngineTests: XCTestCase {
+class EditorEngineTests: XCTestCase {
+    /// The engine under test; the Alloy subclass overrides it.
+    class var engine: String { "textkit" }
+
     private var root: URL!
     private var make: MakeWorkspaceViewController!
     private var window: NSWindow!
@@ -14,7 +17,11 @@ final class EditorEngineTests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("editor-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        UserDefaults.standard.set(Self.engine, forKey: "SideEditorEngine")
         make = MakeWorkspaceViewController()
+        // The editor is made when the view loads: keep the choice set until it has.
+        make.loadViewIfNeeded()
+        UserDefaults.standard.removeObject(forKey: "SideEditorEngine")
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         // As the shell hosts it: Make's view, and its tab strip in the window's top row.
         let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
@@ -58,9 +65,13 @@ final class EditorEngineTests: XCTestCase {
     /// Typing as a person does: through the text view's input path, so the delegate's
     /// shouldChangeText and key commands run.
     private func type(_ text: String, into engine: EditorEngine) {
-        let view = try! XCTUnwrap(engine.textView as? NSTextView)
-        window.makeFirstResponder(view)
-        view.insertText(text, replacementRange: engine.selectedRange)
+        window.makeFirstResponder(engine.textView)
+        let input = engine.textView as! NSTextInputClient
+        input.insertText(text, replacementRange: engine.selectedRange)
+    }
+
+    func testTheEngineIsTheOneAskedFor() {
+        XCTAssertEqual(make.editor is AlloyEditorEngine, Self.engine == "alloy")
     }
 
     func testOpeningRevealsTheLineAndTheDocumentIsTheTabs() throws {
@@ -83,8 +94,7 @@ final class EditorEngineTests: XCTestCase {
         XCTAssertEqual(engine.selectedRange.location, 11)
 
         engine.selectedRange = NSRange(location: 10, length: 0)
-        let view = try XCTUnwrap(engine.textView as? NSTextView)
-        view.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        engine.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
         XCTAssertEqual(engine.document?.string, "func f() {\n    }\n", "a newline after { indents")
         XCTAssertTrue(make.hasUnsavedChanges, "and the tab is unsaved")
     }
@@ -101,4 +111,9 @@ final class EditorEngineTests: XCTestCase {
         document.setDecorations(.diagnostic, [(NSRange(location: 4, length: 1), .red)])
         XCTAssertEqual(document.length, 1, "a mark past the end is skipped, not a crash")
     }
+}
+
+/// The same tests, on Alloy (SIDE_RFC_ALLOY.md, step 5).
+final class AlloyEditorEngineTests: EditorEngineTests {
+    override class var engine: String { "alloy" }
 }

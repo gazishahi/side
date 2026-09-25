@@ -206,6 +206,16 @@ final class InputTests: XCTestCase {
         XCTAssertEqual(editor.scrollY, 100, accuracy: 0.5)
     }
 
+    /// Views added to the text view (Make's proposal cards) sit above the drawing.
+    func testOverlaysDrawAboveTheText() throws {
+        try open("text\n")
+        let subviews = editor.scrollView.subviews
+        let canvas = try XCTUnwrap(subviews.firstIndex { $0.frame == editor.canvasFrame && !($0 is NSClipView) && !($0 is NSScroller) })
+        let clip = try XCTUnwrap(subviews.firstIndex { $0 === editor.scrollView.contentView })
+        XCTAssertLessThan(canvas, clip, "the canvas is beneath the clip view and the document view's own subviews")
+        XCTAssertFalse(editor.scrollView.contentView.drawsBackground, "and the clip view lets it show through")
+    }
+
     func testFindClient() throws {
         try open("find me\nand find me again")
         XCTAssertEqual(view.string, "find me\nand find me again")

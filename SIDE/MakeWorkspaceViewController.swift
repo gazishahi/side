@@ -68,8 +68,19 @@ enum PaletteMode { case files, symbols, text, commands }
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
     /// Make's editor, behind the seam Alloy replaces (SIDE_RFC_ALLOY.md, step 0).
-    private(set) lazy var editor: EditorEngine = TextKitEditorEngine(appearance: Self.editorAppearance)
+    private(set) lazy var editor: EditorEngine = Self.makeEditorEngine()
+
+    /// Alloy or TextKit (SIDE_RFC_ALLOY.md): `SideEditorEngine` in defaults, or the
+    /// `SIDE_EDITOR_ENGINE` environment variable, set to "alloy" picks Alloy. TextKit until
+    /// Alloy passes parity (step 7 makes Alloy the only one).
+    static func makeEditorEngine() -> EditorEngine {
+        let choice = ProcessInfo.processInfo.environment["SIDE_EDITOR_ENGINE"] ?? UserDefaults.standard.string(forKey: "SideEditorEngine")
+        return choice == "alloy" ? AlloyEditorEngine(appearance: editorAppearance) : TextKitEditorEngine(appearance: editorAppearance)
+    }
     private var editorScroll: NSScrollView { editor.scrollView }
+    /// What Make lays out and hides: the scroll view itself for TextKit, Alloy's editor view
+    /// (which holds its scroll view) for Alloy.
+    private var editorContainer: NSView { editor.containerView }
     private var gutter: NSView { editor.gutterView }
     private let tabBar = TabStripView()
     /// Shown when a project is open but nothing is — the charter's empty-state rule: one quiet
@@ -328,9 +339,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         ])
 
         editor.delegate = self
-        editorScroll.isHidden = true
-        editorScroll.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(editorScroll)
+        editorContainer.isHidden = true
+        editorContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(editorContainer)
         gutter.isHidden = true
         gutter.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(gutter)
@@ -411,7 +422,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         NSLayoutConstraint.activate([
             gutter.topAnchor.constraint(equalTo: view.topAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: LineNumberGutterView.width),
-            editorScroll.topAnchor.constraint(equalTo: view.topAnchor), editorScroll.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            editorContainer.topAnchor.constraint(equalTo: view.topAnchor), editorContainer.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             imageScroll.topAnchor.constraint(equalTo: view.topAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             csvScroll.topAnchor.constraint(equalTo: view.topAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             markdownPreviewScroll.topAnchor.constraint(equalTo: view.topAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -1467,7 +1478,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if tab.hasExternalChange { showExternalChangeBanner(for: tab.url) } else { externalChangeBanner.isHidden = true }
 
         let showingMarkdownPreview = tab.kind == .text && tab.isPreviewingMarkdown
-        editorScroll.isHidden = tab.kind != .text || showingMarkdownPreview
+        editorContainer.isHidden = tab.kind != .text || showingMarkdownPreview
         gutter.isHidden = tab.kind != .text || showingMarkdownPreview
         imageScroll.isHidden = tab.kind != .image
         csvScroll.isHidden = tab.kind != .csv
@@ -1893,7 +1904,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.attach(nil, undoManager: nil)
         DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
         editor.isEditable = false
-        editorScroll.isHidden = true
+        editorContainer.isHidden = true
         gutter.isHidden = true
         editor.lineDiffMarks = [:]
         imageScroll.isHidden = true
