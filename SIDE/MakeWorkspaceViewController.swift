@@ -77,7 +77,7 @@ struct PaletteCommand {
 }
 
 /// Which list the palette is showing. `commands` is also reached by typing `>` in any mode.
-enum PaletteMode { case files, symbols, text, commands }
+enum PaletteMode { case files, symbols, text, commands, find }
 
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
@@ -117,6 +117,33 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var paletteIsOpen = false
     private weak var paletteReturnResponder: NSResponder?
     private var commandMatches: [PaletteCommand] = []
+
+    // Find in this file (SIDE_RFC_FIND_REVIEW_TRACKS.md, F1): a mode of the palette.
+    private var find = InFileFind(query: "", options: .init())
+    private var findMatches: [NSRange] = []
+    private var findTruncated = false
+    private var findCurrent: Int?
+    private var findShowsReplace = false
+    /// The text the matches were found in, and the tab: a step or a replace uses these.
+    private var findText: NSString = ""
+    /// The list: one row per line with matches (the index of its first match, and the line,
+    /// one-based), and each match's row, counted once per search.
+    private var findRows: [(firstMatch: Int, line: Int)] = []
+    private var findRowOfMatch: [Int] = []
+    private let findAccessory = NSStackView()
+    private let findCountLabel = NSTextField(labelWithString: "")
+    private let findCaseButton = NSButton()
+    private let findWordButton = NSButton()
+    private let findRegexButton = NSButton()
+    private let findReplaceToggle = NSButton()
+    private let replaceRow = NSStackView()
+    let replaceField = NSTextField()
+    private var replaceRowHeight: NSLayoutConstraint?
+    private static let replaceRowHeightValue: CGFloat = 46
+    /// Rows listed at most (every match is still marked in the editor and stepped through).
+    private static let findListLimit = 1_000
+    /// The editor's bottom inset before Find raised it above the palette.
+    private var insetBeforeFind: CGFloat?
     private let resultsTable = NSTableView()
     /// The file explorer (`FileExplorer`): its own component; Make only hosts it.
     private let explorer = FileExplorer()
@@ -179,7 +206,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var textSearchTruncated = false
     private var searchMode: SearchMode = .files
     /// Typing `>` switches any mode to commands, the way every palette does.
-    private var effectiveMode: SearchMode { searchField.stringValue.hasPrefix(">") ? .commands : searchMode }
+    private var effectiveMode: SearchMode { searchMode != .find && searchField.stringValue.hasPrefix(">") ? .commands : searchMode }
     private var symbolMatches: [CodeSymbol] = []
     private var openTabs: [OpenTab] = []
     private var activeTabIndex: Int?
@@ -498,14 +525,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         paletteDivider.translatesAutoresizingMaskIntoConstraints = false
         let body = NSView()
         body.translatesAutoresizingMaskIntoConstraints = false
-        for view in [glyph, searchField, paletteDivider, scroll] as [NSView] { body.addSubview(view) }
+        configureFindControls()
+        for view in [glyph, searchField, findAccessory, replaceRow, paletteDivider, scroll] as [NSView] { body.addSubview(view) }
+        let replaceHeight = replaceRow.heightAnchor.constraint(equalToConstant: 0)
+        replaceRowHeight = replaceHeight
         NSLayoutConstraint.activate([
             glyph.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 18),
             glyph.centerYAnchor.constraint(equalTo: body.topAnchor, constant: Self.paletteHeaderHeight / 2),
             searchField.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 10),
-            searchField.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -18),
+            searchField.trailingAnchor.constraint(equalTo: findAccessory.leadingAnchor, constant: -10),
             searchField.centerYAnchor.constraint(equalTo: glyph.centerYAnchor),
-            paletteDivider.topAnchor.constraint(equalTo: body.topAnchor, constant: Self.paletteHeaderHeight),
+            findAccessory.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -14),
+            findAccessory.centerYAnchor.constraint(equalTo: glyph.centerYAnchor),
+            replaceRow.topAnchor.constraint(equalTo: body.topAnchor, constant: Self.paletteHeaderHeight),
+            replaceRow.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 18),
+            replaceRow.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -14),
+            replaceHeight,
+            paletteDivider.topAnchor.constraint(equalTo: replaceRow.bottomAnchor),
             paletteDivider.leadingAnchor.constraint(equalTo: body.leadingAnchor),
             paletteDivider.trailingAnchor.constraint(equalTo: body.trailingAnchor),
             paletteDivider.heightAnchor.constraint(equalToConstant: 1),
@@ -585,10 +621,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func showQuickOpenPanel() {
         guard paletteIsOpen else { return }
-        let rows = min(quickOpenMaxVisibleRows, resultCount)
+        // Find keeps the editor in view: fewer rows.
+        let rows = min(searchMode == .find ? 5 : quickOpenMaxVisibleRows, resultCount)
         paletteDivider.isHidden = rows == 0
         let list = rows == 0 ? 0 : 1 + Self.paletteListPadding * 2 + CGFloat(rows) * quickOpenRowHeight
-        let height = Self.paletteHeaderHeight + list
+        let replace = searchMode == .find && findShowsReplace ? Self.replaceRowHeightValue : 0
+        let height = Self.paletteHeaderHeight + replace + list
+        if searchMode == .find { raiseEditorAbovePalette(height) }
         onPaletteShow?(NSSize(width: Self.paletteWidth, height: height))
         installQuickOpenDismissMonitors()
     }
@@ -597,6 +636,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         removeQuickOpenDismissMonitors()
         guard paletteIsOpen else { return }
         paletteIsOpen = false
+        if searchMode == .find { endFind() }
         onPaletteHide?()
     }
 
@@ -628,17 +668,22 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if mode == .symbols && activeTabIndex == nil { return }
         if mode == .text && projectURL == nil { return }
         let window = view.window ?? NSApp.keyWindow
+        if mode == .find && (activeTabIndex == nil || openTabs[activeTabIndex!].kind != .text) { return }
         if !paletteIsOpen { paletteReturnResponder = window?.firstResponder }
+        if paletteIsOpen, searchMode == .find, mode != .find { endFind() }
         paletteIsOpen = true
         searchMode = mode == .commands ? .files : mode
+        findAccessory.isHidden = mode != .find
+        if mode != .find { setReplaceRowShown(false) }
         let project = projectURL?.lastPathComponent
         switch mode {
         case .files: searchField.placeholderString = project.map { "Find a file in \($0)   ·   > for commands" } ?? "Type > for commands"
         case .text: searchField.placeholderString = project.map { "Search text in \($0)" } ?? "Search text"
         case .symbols: searchField.placeholderString = "Go to symbol"
         case .commands: searchField.placeholderString = "Run a command"
+        case .find: searchField.placeholderString = activeTabIndex.map { "Find in \(openTabs[$0].url.lastPathComponent)" } ?? "Find"
         }
-        searchField.stringValue = mode == .commands ? ">" : ""
+        searchField.stringValue = mode == .commands ? ">" : (mode == .find ? find.query : "")
         showQuickOpenPanel()
         searchField.window?.makeFirstResponder(searchField)
         (searchField.currentEditor() as? NSTextView)?.moveToEndOfDocument(nil)
@@ -646,6 +691,285 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     var isPaletteOpen: Bool { paletteIsOpen }
+
+    // MARK: - Find in this file
+
+    private func configureFindControls() {
+        findCountLabel.font = DS.Text.caption()
+        findCountLabel.textColor = .secondaryLabelColor
+        findCountLabel.alignment = .right
+        for (button, title, tip) in [(findCaseButton, "Aa", "Match Case"), (findWordButton, "W", "Whole Words"), (findRegexButton, ".*", "Regular Expression")] {
+            button.title = title
+            button.setButtonType(.pushOnPushOff)
+            button.bezelStyle = .accessoryBarAction
+            button.font = DS.Text.code(12, weight: .medium)
+            button.toolTip = tip
+            button.setAccessibilityLabel(tip)
+            button.target = self
+            button.action = #selector(findOptionChanged)
+        }
+        findReplaceToggle.image = NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: "Replace")
+        findReplaceToggle.setButtonType(.pushOnPushOff)
+        findReplaceToggle.bezelStyle = .accessoryBarAction
+        findReplaceToggle.toolTip = "Replace (⌥⌘F)"
+        findReplaceToggle.target = self
+        findReplaceToggle.action = #selector(toggleReplaceRow)
+        for view in [findCountLabel, findCaseButton, findWordButton, findRegexButton, findReplaceToggle] { findAccessory.addArrangedSubview(view) }
+        findAccessory.orientation = .horizontal
+        findAccessory.spacing = 4
+        findAccessory.setCustomSpacing(10, after: findCountLabel)
+        findAccessory.isHidden = true
+        findAccessory.translatesAutoresizingMaskIntoConstraints = false
+        findAccessory.setContentHuggingPriority(.required, for: .horizontal)
+
+        replaceField.placeholderString = "Replace with"
+        replaceField.isBordered = false
+        replaceField.isBezeled = false
+        replaceField.drawsBackground = false
+        replaceField.focusRingType = .none
+        replaceField.font = DS.Text.custom(15)
+        replaceField.delegate = self
+        replaceField.setAccessibilityLabel("Replace with")
+        let one = NSButton(title: "Replace", target: self, action: #selector(replaceCurrent))
+        let all = NSButton(title: "All", target: self, action: #selector(replaceAll))
+        for button in [one, all] { button.bezelStyle = .accessoryBarAction; button.font = DS.Text.body() }
+        all.toolTip = "Replace All (⌥Return)"
+        replaceRow.orientation = .horizontal
+        replaceRow.spacing = 6
+        replaceRow.alignment = .centerY
+        for view in [replaceField, one, all] as [NSView] { replaceRow.addArrangedSubview(view) }
+        replaceField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        replaceRow.isHidden = true
+        replaceRow.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    /// ⌘F, or ⌥⌘F with the replace row: find in the file on screen, starting from the
+    /// selection when it's a short piece of one line.
+    func presentFind(replace: Bool) {
+        guard let index = activeTabIndex, openTabs[index].kind == .text else { return }
+        if let selected = selectedEditorText(), let query = InFileFind.query(fromSelection: selected) { find.query = query }
+        presentPalette(.find)
+        setReplaceRowShown(replace || findShowsReplace)
+        if replace { searchField.window?.makeFirstResponder(find.query.isEmpty ? searchField : replaceField) }
+    }
+
+    /// ⌘G / ⇧⌘G: the next or previous match, with the palette open or not.
+    func findNext(forward: Bool) {
+        guard !find.query.isEmpty, let index = activeTabIndex, openTabs[index].kind == .text else { presentFind(replace: false); return }
+        if !(paletteIsOpen && searchMode == .find) { performFindSearch(select: false) }
+        findStep(forward: forward)
+        if !(paletteIsOpen && searchMode == .find) { clearFindMarks() }
+    }
+
+    /// ⌘E: the selection becomes what ⌘G looks for.
+    func useSelectionForFind() {
+        guard let selected = selectedEditorText(), !selected.isEmpty else { return }
+        find.query = String(selected.prefix(200))
+        if paletteIsOpen, searchMode == .find { searchField.stringValue = find.query; performFindSearch() }
+    }
+
+    private func selectedEditorText() -> String? {
+        let range = editor.selectedRange
+        guard range.length > 0, let text = editor.document?.text, NSMaxRange(range) <= text.length else { return nil }
+        return text.substring(with: range)
+    }
+
+    @objc private func findOptionChanged() {
+        find.options.caseSensitive = findCaseButton.state == .on
+        find.options.wholeWord = findWordButton.state == .on
+        find.options.regularExpression = findRegexButton.state == .on
+        performFindSearch()
+        searchField.window?.makeFirstResponder(searchField)
+    }
+
+    @objc private func toggleReplaceRow() {
+        setReplaceRowShown(!findShowsReplace)
+        if findShowsReplace { searchField.window?.makeFirstResponder(replaceField) }
+    }
+
+    private func setReplaceRowShown(_ shown: Bool) {
+        findShowsReplace = shown
+        findReplaceToggle.state = shown ? .on : .off
+        replaceRow.isHidden = !shown
+        replaceRowHeight?.constant = shown ? Self.replaceRowHeightValue : 0
+        if paletteIsOpen { showQuickOpenPanel() }
+    }
+
+    /// Every match, marked in the editor and listed; the one at or after the caret is current.
+    private func performFindSearch(select: Bool = true) {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { return }
+        if paletteIsOpen, searchMode == .find { find.query = searchField.stringValue }
+        findCaseButton.state = find.options.caseSensitive ? .on : .off
+        findWordButton.state = find.options.wholeWord ? .on : .off
+        findRegexButton.state = find.options.regularExpression ? .on : .off
+        findText = openTabs[index].document.string as NSString
+        let result = find.matches(in: findText)
+        findMatches = result.ranges
+        findTruncated = result.truncated
+        let lines = Self.lineNumbers(of: findMatches[...], in: findText)
+        findRows = []
+        findRowOfMatch = []
+        for (index, line) in lines.enumerated() {
+            if findRows.last?.line != line { findRows.append((index, line)) }
+            findRowOfMatch.append(findRows.count - 1)
+        }
+        findCurrent = InFileFind.index(of: findMatches, from: editor.selectedRange.location, forward: true)
+        markFindMatches()
+        updateFindCount()
+        guard paletteIsOpen, searchMode == .find else { return }
+        resultsTable.reloadData()
+        // Sized (and the editor raised above it) before revealing, so the match lands above it.
+        showQuickOpenPanel()
+        if let current = findCurrent, select {
+            selectFindRow(forMatch: current)
+            revealFindMatch(current)
+        }
+    }
+
+    private func updateFindCount() {
+        if let error = find.expressionError() {
+            findCountLabel.stringValue = error
+        } else if find.query.isEmpty {
+            findCountLabel.stringValue = ""
+        } else if findMatches.isEmpty {
+            findCountLabel.stringValue = "No matches"
+        } else {
+            let total = findTruncated ? "\(InFileFind.matchLimit.formatted())+" : findMatches.count.formatted()
+            findCountLabel.stringValue = findCurrent.map { "\(($0 + 1).formatted()) of \(total)" } ?? total
+        }
+    }
+
+    private func markFindMatches() {
+        guard let document = editor.document else { return }
+        let all = NSColor.controlAccentColor.withAlphaComponent(0.2)
+        document.setDecorations(.findMatch, findMatches.map { ($0, all) })
+        let current = findCurrent.flatMap { findMatches.indices.contains($0) ? findMatches[$0] : nil }
+        document.setDecorations(.findCurrent, current.map { [($0, NSColor.findHighlightColor.withAlphaComponent(0.7))] } ?? [])
+    }
+
+    private func clearFindMarks() {
+        editor.document?.setDecorations(.findMatch, [])
+        editor.document?.setDecorations(.findCurrent, [])
+    }
+
+    private func findStep(forward: Bool) {
+        guard !findMatches.isEmpty else { return }
+        let from: Int
+        if let current = findCurrent, editor.selectedRange == findMatches[current] {
+            from = forward ? NSMaxRange(findMatches[current]) : findMatches[current].location
+        } else {
+            from = forward ? editor.selectedRange.location : editor.selectedRange.location
+        }
+        guard let next = InFileFind.index(of: findMatches, from: from, forward: forward) else { return }
+        showFindMatch(next)
+        selectFindRow(forMatch: next)
+    }
+
+    private func showFindMatch(_ index: Int) {
+        guard findMatches.indices.contains(index) else { return }
+        findCurrent = index
+        markFindMatches()
+        updateFindCount()
+        revealFindMatch(index)
+    }
+
+    private func revealFindMatch(_ index: Int) {
+        let range = findMatches[index]
+        editor.selectedRange = range
+        editor.scrollRangeToVisible(range)
+    }
+
+    /// A listed line: its number (one-based) and its text, trimmed.
+    private func findLine(at row: Int) -> (Int, String) {
+        let range = findMatches[findRows[row].firstMatch]
+        let line = findText.lineRange(for: NSRange(location: range.location, length: 0))
+        let text = findText.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (findRows[row].line, String(text.prefix(200)))
+    }
+
+    /// Selects the row of a match's line in the list.
+    private func selectFindRow(forMatch index: Int) {
+        guard paletteIsOpen, searchMode == .find, findRowOfMatch.indices.contains(index) else { return }
+        let row = findRowOfMatch[index]
+        guard row < resultCount else { return }
+        resultsTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        resultsTable.scrollRowToVisible(row)
+    }
+
+    /// Line numbers for sorted ranges, in one pass over the text up to the last of them.
+    static func lineNumbers(of ranges: ArraySlice<NSRange>, in text: NSString) -> [Int] {
+        var numbers: [Int] = []
+        numbers.reserveCapacity(ranges.count)
+        var line = 1, position = 0
+        var buffer = [unichar](repeating: 0, count: 4096)
+        for range in ranges {
+            while position < range.location {
+                let count = min(buffer.count, range.location - position)
+                text.getCharacters(&buffer, range: NSRange(location: position, length: count))
+                for i in 0..<count where buffer[i] == 10 { line += 1 }
+                position += count
+            }
+            numbers.append(line)
+        }
+        return numbers
+    }
+
+    private func replaceFieldCommand(_ selector: Selector, textView: NSTextView) -> Bool {
+        if textView.hasMarkedText() { return false }
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            if NSApp.currentEvent?.modifierFlags.contains(.option) == true { replaceAll() } else { replaceCurrent() }
+            return true
+        case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
+            replaceAll()
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            dismissQuickOpen()
+            return true
+        case #selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertBacktab(_:)):
+            searchField.window?.makeFirstResponder(searchField)
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Replaces the match Find is on and moves to the next.
+    @objc private func replaceCurrent() {
+        guard let current = findCurrent, findMatches.indices.contains(current) else { findStep(forward: true); return }
+        let range = findMatches[current]
+        let replacement = find.replacement(for: range, in: findText, template: replaceField.stringValue)
+        editor.applyEdits([(range, replacement)])
+        editor.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
+        performFindSearch(select: false)
+        findStep(forward: true)
+    }
+
+    /// Every match, one undo step.
+    @objc private func replaceAll() {
+        let edits = find.replaceAllEdits(in: findText, template: replaceField.stringValue)
+        guard !edits.isEmpty else { return }
+        editor.applyEdits(edits)
+        performFindSearch(select: false)
+        findCountLabel.stringValue = "Replaced \(edits.count.formatted())"
+    }
+
+    /// While Find is open, the editor scrolls as if its bottom were the palette's top, so the
+    /// match it's on is never under it.
+    private func raiseEditorAbovePalette(_ paletteHeight: CGFloat) {
+        let scroll = editorScroll
+        if insetBeforeFind == nil { insetBeforeFind = scroll.contentInsets.bottom }
+        // The palette sits above whatever already covered the bottom (the stage bar).
+        scroll.contentInsets.bottom = (insetBeforeFind ?? 0) + paletteHeight + DS.Spacing.l
+    }
+
+    private func endFind() {
+        clearFindMarks()
+        if let inset = insetBeforeFind { editorScroll.contentInsets.bottom = inset }
+        insetBeforeFind = nil
+        findAccessory.isHidden = true
+        setReplaceRowShown(false)
+    }
 
     // MARK: - File explorer
 
@@ -2334,7 +2658,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     // MARK: - Search
 
     func controlTextDidBeginEditing(_ obj: Notification) { scheduleRefreshMatches() }
-    func controlTextDidChange(_ obj: Notification) { scheduleRefreshMatches() }
+    func controlTextDidChange(_ obj: Notification) {
+        if (obj.object as? NSTextField) === replaceField { return }
+        scheduleRefreshMatches()
+    }
 
     private func scheduleRefreshMatches() {
         pendingSearchWorkItem?.cancel()
@@ -2344,6 +2671,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func performSearch() {
+        if searchMode == .find {
+            performFindSearch()
+            return
+        }
         if effectiveMode == .commands {
             performCommandSearch()
             return
@@ -2418,6 +2749,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .symbols: return symbolMatches.count
         case .text: return textMatches.count
         case .commands: return commandMatches.count
+        case .find: return min(findRows.count, Self.findListLimit)
         }
     }
 
@@ -2479,11 +2811,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             hideQuickOpenPanel()
             onPaletteNavigated?()
             revealFile(match.url, line: match.line)
+        case .find:
+            // Return steps to the next match (⇧Return the previous); the palette stays.
+            findStep(forward: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
         }
     }
     @objc private func openSelectedResult() { confirmSearch() }
     /// Escape: close and give focus back to whatever had it before the palette opened.
-    private func dismissQuickOpen() {
+    @objc private func dismissQuickOpen() {
         let target = paletteReturnResponder
         hideQuickOpenPanel()
         if let target, let window = searchField.window ?? view.window, (target as? NSView)?.window === window {
@@ -2498,6 +2833,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let next = max(0, min(count - 1, resultsTable.selectedRow + direction))
         resultsTable.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
         resultsTable.scrollRowToVisible(next)
+        if searchMode == .find, findRows.indices.contains(next) { showFindMatch(findRows[next].firstMatch) }
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === resultsTable { return resultCount }
@@ -2576,6 +2912,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .text:
             let match = textMatches[row]
             cell.configure(icon: NSWorkspace.shared.icon(forFile: match.url.path), title: match.text, detail: nil, trailing: "\(match.relativePath):\(match.line)")
+        case .find:
+            let (line, text) = findLine(at: row)
+            cell.configure(icon: Self.paletteSymbol("text.magnifyingglass"), title: text, detail: nil, trailing: "line \(line)")
         }
         return cell
     }
@@ -2588,9 +2927,25 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if control === replaceField { return replaceFieldCommand(commandSelector, textView: textView) }
         guard control === searchField else { return false }
         // IME: Return and Escape belong to the input method while a composition is open.
         if textView.hasMarkedText() { return false }
+        // Tab carries the query between This File and the project.
+        if commandSelector == #selector(NSResponder.insertTab(_:)) || commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+            if searchMode == .find, projectURL != nil {
+                let query = searchField.stringValue
+                presentPalette(.text)
+                searchField.stringValue = query
+                performSearch()
+                return true
+            }
+            if searchMode == .text, activeTabIndex != nil {
+                find.query = searchField.stringValue
+                presentPalette(.find)
+                return true
+            }
+        }
         switch commandSelector {
         case #selector(NSResponder.insertNewline(_:)):
             confirmSearch()
@@ -2629,6 +2984,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             rebuildTabBar()  // the tab's unsaved dot
         }
         editor.invalidateGutter()
+        if paletteIsOpen, searchMode == .find { scheduleRefreshMatches() }
         scheduleDiffRefresh()
         scheduleLSPDidChange()
         scheduleCompletionRequest()
@@ -2965,16 +3321,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // Direction 02 §5.3 — a Make action, so it's live only while Make is on screen.
         editMenu.addItem(withTitle: "Instruct…", action: #selector(instructAtSelection), keyEquivalent: "k")
         editMenu.addItem(NSMenuItem.separator())
-        let find = editMenu.addItem(withTitle: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
-        find.tag = NSTextFinder.Action.showFindInterface.rawValue
-        let findReplace = editMenu.addItem(withTitle: "Find and Replace…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+        // Find is a mode of the palette (SIDE_RFC_FIND_REVIEW_TRACKS.md, F1); the items target
+        // the shell, which is in the responder chain whether the editor or the palette has focus.
+        editMenu.addItem(withTitle: "Find…", action: #selector(ShellViewController.showFind(_:)), keyEquivalent: "f")
+        let findReplace = editMenu.addItem(withTitle: "Find and Replace…", action: #selector(ShellViewController.showFindAndReplace(_:)), keyEquivalent: "f")
         findReplace.keyEquivalentModifierMask = [.command, .option]
-        findReplace.tag = NSTextFinder.Action.showReplaceInterface.rawValue
-        let findNext = editMenu.addItem(withTitle: "Find Next", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
-        findNext.tag = NSTextFinder.Action.nextMatch.rawValue
-        let findPrevious = editMenu.addItem(withTitle: "Find Previous", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
+        editMenu.addItem(withTitle: "Find Next", action: #selector(ShellViewController.findNext(_:)), keyEquivalent: "g")
+        let findPrevious = editMenu.addItem(withTitle: "Find Previous", action: #selector(ShellViewController.findPrevious(_:)), keyEquivalent: "g")
         findPrevious.keyEquivalentModifierMask = [.command, .shift]
-        findPrevious.tag = NSTextFinder.Action.previousMatch.rawValue
+        editMenu.addItem(withTitle: "Use Selection for Find", action: #selector(ShellViewController.useSelectionForFind(_:)), keyEquivalent: "e")
         editItem.submenu = editMenu
 
         // What the user actually toggles about the *presentation* of the workspace, as its own

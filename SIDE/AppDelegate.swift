@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     guard let shell = window.contentViewController as? ShellViewController else { return }
                     if command.hasPrefix("open ") { shell.revealFile(URL(fileURLWithPath: String(command.dropFirst(5)))) }
                     if command == "close-all" { shell.closeAllMakeTabsForTesting() }
+                    if command.hasPrefix("find ") { shell.findForTesting(String(command.dropFirst(5))) }
                 }
             }
             if let fixture = UserDefaults.standard.string(forKey: "SideUITestingProject") {

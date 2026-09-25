@@ -107,8 +107,10 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     private func refreshDecorations() {
         guard let document = document as? AlloyEditorDocument else { view.decorations = []; return }
         var decorations: [Decoration] = []
-        for (kind, marks) in document.decorations {
-            for mark in marks {
+        // Drawn in this order, so the match Find is on sits over the others.
+        let order: [EditorDecoration] = [.bracketMatch, .findMatch, .findCurrent, .diagnostic]
+        for kind in order {
+            for mark in document.decorations[kind] ?? [] {
                 decorations.append(Decoration(range: mark.range.location..<(mark.range.location + mark.range.length), color: components(mark.color),
                                               style: kind == .diagnostic ? .dottedUnderline : .background))
             }
@@ -146,6 +148,11 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
 
     func insertText(_ text: String, replacementRange: NSRange) {
         view.textView.insertText(text, replacementRange: replacementRange)
+    }
+
+    func applyEdits(_ edits: [(range: NSRange, text: String)]) {
+        guard !edits.isEmpty else { return }
+        view.buffer.apply(edits.map { TextEdit(range: $0.range.location..<($0.range.location + $0.range.length), text: $0.text) }, kind: .other)
     }
 
     func focus() { view.window?.makeFirstResponder(view.textView) }

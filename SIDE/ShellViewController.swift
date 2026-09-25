@@ -401,6 +401,12 @@ final class ShellViewController: NSViewController {
     @objc func showQuickOpen(_ sender: Any?) { makeVC.presentPalette(.files) }
     @objc func showCommandPalette(_ sender: Any?) { makeVC.presentPalette(.commands) }
     @objc func showFindInProject(_ sender: Any?) { makeVC.presentPalette(.text) }
+    // Find in the file on screen: Make's, from Make.
+    @objc func showFind(_ sender: Any?) { if current == .make { makeVC.presentFind(replace: false) } }
+    @objc func showFindAndReplace(_ sender: Any?) { if current == .make { makeVC.presentFind(replace: true) } }
+    @objc func findNext(_ sender: Any?) { if current == .make { makeVC.findNext(forward: true) } }
+    @objc func findPrevious(_ sender: Any?) { if current == .make { makeVC.findNext(forward: false) } }
+    @objc func useSelectionForFind(_ sender: Any?) { if current == .make { makeVC.useSelectionForFind() } }
     @objc func showGoToSymbol(_ sender: Any?) { makeVC.presentPalette(.symbols) }
     @objc func toggleTrackPopover(_ sender: Any?) { trackPill.togglePopover() }
     @objc func selectNextTab(_ sender: Any?) { adjacentTab(1) }
@@ -614,6 +620,12 @@ final class ShellViewController: NSViewController {
 
     /// UI testing's measurement scripts: close every Make tab without asking.
     func closeAllMakeTabsForTesting() { makeVC.closeAllTabsForTesting() }
+    /// UI testing: Find and Replace open with a query typed, as ⌥⌘F and typing would.
+    func findForTesting(_ query: String) {
+        makeVC.presentFind(replace: true)
+        makeVC.searchField.stringValue = query
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: makeVC.searchField)
+    }
 
     /// A tab torn out of another window landing here — jump to Make and show that file.
     func revealFile(_ url: URL) {

@@ -38,6 +38,8 @@ protocol EditorEngine: AnyObject, Sendable {
     func screenRect(forCharacterRange range: NSRange) -> NSRect?
     /// Inserts as if typed: undoable, and reported to the delegate like any other edit.
     func insertText(_ text: String, replacementRange: NSRange)
+    /// Replaces several ranges as one undoable step (Find's Replace All), reported like an edit.
+    func applyEdits(_ edits: [(range: NSRange, text: String)])
     func focus()
 
     // The gutter's marks, keyed by one-based line.
@@ -73,6 +75,9 @@ enum EditorDecoration {
     case diagnostic
     /// A background tint on a matched bracket pair.
     case bracketMatch
+    /// Every match of the palette's Find, and the one it's on.
+    case findMatch
+    case findCurrent
 }
 
 struct EditorAppearance {
