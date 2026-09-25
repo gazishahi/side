@@ -37,6 +37,20 @@ public struct StyleSpan: Sendable {
     }
 }
 
+/// A mark over a document range: an underline (diagnostics, text being composed) or a
+/// background tint (a matched bracket).
+public struct Decoration: Sendable {
+    public enum Style: Sendable { case underline, dottedUnderline, background }
+    public var range: Range<Int>
+    public var color: SIMD4<Float>
+    public var style: Style
+    public init(range: Range<Int>, color: SIMD4<Float>, style: Style) {
+        self.range = range
+        self.color = color
+        self.style = style
+    }
+}
+
 /// What one frame shows.
 public struct RenderFrame {
     /// The top of the viewport in document points.
@@ -49,6 +63,7 @@ public struct RenderFrame {
     public var theme: RenderTheme
     /// Colors for a line, relative to its start; nil draws it in the text color.
     public var styles: ((Int) -> [StyleSpan])?
+    public var decorations: [Decoration] = []
 
     public init(scrollY: CGFloat, size: CGSize, scale: CGFloat, selections: [Selection], caretVisible: Bool = true,
                 theme: RenderTheme, styles: ((Int) -> [StyleSpan])? = nil) {
@@ -189,6 +204,7 @@ public final class TextRenderer {
         var solids: [Quad] = []
         var glyphs: [Quad] = []
         var carets: [Quad] = []
+        var underlines: [Quad] = []
         let lines = layout.visibleLines(from: frame.scrollY, to: frame.scrollY + frame.size.height)
         lastStats.visibleLines = lines.count
         let text = layout.text
@@ -230,6 +246,33 @@ public final class TextRenderer {
                 }
             }
 
+            // Decorations: a band or a line under each row they touch.
+            for decoration in frame.decorations {
+                let range = decoration.range
+                guard range.lowerBound <= lineRange.upperBound, range.upperBound >= lineRange.lowerBound, !range.isEmpty else { continue }
+                for (index, row) in laid.rows.enumerated() {
+                    let rowRange = (lineStart + row.range.lowerBound)..<(lineStart + row.range.upperBound)
+                    let lower = max(range.lowerBound, rowRange.lowerBound)
+                    let upper = min(range.upperBound, rowRange.upperBound)
+                    guard lower < upper else { continue }
+                    let x0 = laid.caretX(at: lower - lineStart).x
+                    let x1 = laid.caretX(at: upper - lineStart).x
+                    let rowTop = top + CGFloat(index) * lineHeight
+                    switch decoration.style {
+                    case .background:
+                        solids.append(Quad(rect: rect(layout.insets.width + x0, rowTop, max(1, x1 - x0), lineHeight), uv: .zero, color: decoration.color, kind: 0))
+                    case .underline:
+                        underlines.append(Quad(rect: rect(layout.insets.width + x0, rowTop + lineHeight - 2, max(1, x1 - x0), 1), uv: .zero, color: decoration.color, kind: 0))
+                    case .dottedUnderline:
+                        var x = x0
+                        while x < x1 {
+                            underlines.append(Quad(rect: rect(layout.insets.width + x, rowTop + lineHeight - 2, min(2, x1 - x), 1), uv: .zero, color: decoration.color, kind: 0))
+                            x += 4
+                        }
+                    }
+                }
+            }
+
             // Glyphs.
             var spanIndex = 0
             for (index, row) in laid.rows.enumerated() {
@@ -267,7 +310,7 @@ public final class TextRenderer {
             }
         }
         if atlas.generation != generation { atlasRestarted = true }
-        return solids + glyphs + carets
+        return solids + glyphs + underlines + carets
     }
 
     static let shaders = """

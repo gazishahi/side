@@ -5,8 +5,8 @@ import CoreText
 import Metal
 import QuartzCore
 
-/// The editor Make embeds (SIDE_RFC_ALLOY.md). Step 2: it shows a `TextBuffer` and scrolls it,
-/// drawn by `TextRenderer` on the display link. Input arrives in step 3.
+/// The editor Make embeds (SIDE_RFC_ALLOY.md): a `TextBuffer`, drawn by `TextRenderer` on the
+/// display link, edited through `AlloyTextView` (the first responder).
 ///
 /// Scrolling is AppKit's own: an `NSScrollView` over a document view as tall as the text, so
 /// momentum, rubber-banding, scroll bars and accessibility of the scroll position all behave as
@@ -21,8 +21,17 @@ public final class AlloyEditorView: NSView {
     public var styles: ((Int) -> [StyleSpan])? { didSet { setNeedsRender() } }
     /// Wrap to the view's width (Make's default), or not.
     public var wrapsLines = true { didSet { updateWrapWidth() } }
+    public weak var delegate: AlloyEditorDelegate?
+    /// Marks to draw (diagnostics, a matched bracket).
+    public var decorations: [Decoration] = [] { didSet { setNeedsRender() } }
+    /// The view that takes focus, reports its geometry in document points, and hosts overlays
+    /// that scroll with the text.
+    public var textView: AlloyTextView { documentView }
 
-    private let documentView = FlippedDocumentView()
+    private let documentView = AlloyTextView()
+    private var isFocused = false
+    private var caretOn = true
+    private var blinkTimer: Timer?
     private let canvas = MetalCanvas()
     private let renderer: TextRenderer
     private var displayLink: CADisplayLink?
@@ -41,6 +50,7 @@ public final class AlloyEditorView: NSView {
         documentLayout = DocumentLayout(text: buffer.text, font: font)
         renderer = try TextRenderer()
         super.init(frame: .zero)
+        documentView.editor = self
         canvas.metalLayer.device = renderer.device
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
@@ -55,7 +65,9 @@ public final class AlloyEditorView: NSView {
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
-        scrollView.addFloatingSubview(canvas, for: .vertical)
+        // Over the clip view, positioned each frame on the document view's visible part (see
+        // `viewport`), so insets (the Find bar, floating chrome) never shift the text.
+        scrollView.addSubview(canvas, positioned: .above, relativeTo: scrollView.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
         buffer.onChange = { [weak self] change in self?.textChanged(change) }
     }
@@ -75,14 +87,62 @@ public final class AlloyEditorView: NSView {
     private func textChanged(_ change: TextChange) {
         documentLayout.update(buffer.text, edits: change.edits)
         updateDocumentHeight()
+        restartBlink()
         setNeedsRender()
+        delegate?.editorTextDidChange(self)
+        delegate?.editorSelectionDidChange(self)
+    }
+
+    /// After undo, redo, or a composition step: the text view has already changed the buffer.
+    func textInputChanged() {
+        restartBlink()
+        setNeedsRender()
+    }
+
+    func selectionChanged() {
+        restartBlink()
+        setNeedsRender()
+        delegate?.editorSelectionDidChange(self)
+    }
+
+    /// Keeps the first caret on screen after a move or an edit.
+    func revealCarets() {
+        guard let head = buffer.selections.last?.head else { return }
+        let rect = documentLayout.caretRect(at: head).insetBy(dx: -4, dy: 0)
+        if !documentView.visibleRect.contains(rect) { documentView.scrollToVisible(rect) }
+    }
+
+    func focusChanged(_ focused: Bool) {
+        isFocused = focused
+        restartBlink()
+        setNeedsRender()
+    }
+
+    /// The caret shows solid while typing and blinks when idle, and only in the focused editor.
+    private func restartBlink() {
+        caretOn = true
+        blinkTimer?.invalidate()
+        guard isFocused else { blinkTimer = nil; return }
+        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.caretOn.toggle()
+                self.setNeedsRender()
+            }
+        }
+    }
+
+    /// The document point range a UTF-16 range covers (its first row), for popovers and panels.
+    public func rect(forCharacterRange range: Range<Int>) -> CGRect {
+        let start = documentLayout.caretRect(at: range.lowerBound)
+        let end = documentLayout.caretRect(at: range.upperBound)
+        return CGRect(x: start.minX, y: start.minY, width: max(1, end.minY == start.minY ? end.minX - start.minX : 1), height: start.height)
     }
 
     public func setNeedsRender() { needsRender = true }
 
     public override func layout() {
         super.layout()
-        canvas.frame = scrollView.contentView.bounds
         updateWrapWidth()
         updateDocumentHeight()
         setNeedsRender()
@@ -112,7 +172,8 @@ public final class AlloyEditorView: NSView {
     }
 
     private func updateDocumentHeight() {
-        let height = max(documentLayout.contentHeight, scrollView.contentView.bounds.height)
+        let insets = scrollView.contentView.contentInsets
+        let height = max(documentLayout.contentHeight, scrollView.contentView.bounds.height - insets.top - insets.bottom)
         let width = scrollView.contentView.bounds.width
         if documentView.frame.size != CGSize(width: width, height: height) {
             documentView.frame = CGRect(x: 0, y: 0, width: width, height: height)
@@ -128,11 +189,25 @@ public final class AlloyEditorView: NSView {
         setNeedsRender()
     }
 
+    /// The part of the document on screen and not under an inset (the Find bar, floating
+    /// chrome), in document points: what's drawn. The document view sits at the clip view's
+    /// origin, so clip coordinates are document coordinates.
+    var viewport: CGRect {
+        let clip = scrollView.contentView
+        let insets = clip.contentInsets
+        let bounds = clip.bounds
+        return CGRect(x: bounds.minX, y: bounds.minY + insets.top, width: bounds.width,
+                      height: max(0, bounds.height - insets.top - insets.bottom))
+    }
+
     /// The document y at the top of the viewport.
     public var scrollY: CGFloat {
-        get { scrollView.contentView.bounds.origin.y }
+        get { viewport.minY }
         set {
-            scrollView.contentView.scroll(to: CGPoint(x: 0, y: max(0, min(newValue, documentView.frame.height - scrollView.contentView.bounds.height))))
+            let insets = scrollView.contentView.contentInsets
+            let visible = scrollView.contentView.bounds.height - insets.top - insets.bottom
+            let y = max(0, min(newValue, documentView.frame.height - visible))
+            scrollView.contentView.scroll(to: CGPoint(x: 0, y: y - insets.top))
             scrollView.reflectScrolledClipView(scrollView.contentView)
         }
     }
@@ -194,12 +269,14 @@ public final class AlloyEditorView: NSView {
     /// Draws now.
     public func render() {
         needsRender = false
-        let size = scrollView.contentView.bounds.size
+        let visible = viewport
+        let size = visible.size
         guard size.width > 0, size.height > 0 else { return }
         let scale = canvas.metalLayer.contentsScale
         // Only when they change: setting a Metal layer's drawable size, even to the same
         // value, can make Core Animation reallocate its drawables and stall the next frame.
-        let frameRect = scrollView.contentView.frame
+        let clip = scrollView.contentView
+        let frameRect = clip.convert(visible, to: scrollView)
         if canvas.frame != frameRect { canvas.frame = frameRect }
         let drawableSize = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
         if canvas.metalLayer.drawableSize != drawableSize { canvas.metalLayer.drawableSize = drawableSize }
@@ -207,8 +284,12 @@ public final class AlloyEditorView: NSView {
         let waitStart = CACurrentMediaTime()
         guard let drawable = canvas.metalLayer.nextDrawable() else { needsRender = true; return }
         drawableWaitMilliseconds.append((CACurrentMediaTime() - waitStart) * 1000)
-        let frame = RenderFrame(scrollY: scrollY, size: size, scale: scale, selections: buffer.selections,
-                                caretVisible: window?.firstResponder === self || window == nil || true, theme: theme, styles: styles)
+        var frame = RenderFrame(scrollY: scrollY, size: size, scale: scale, selections: buffer.selections,
+                                caretVisible: isFocused && caretOn, theme: theme, styles: styles)
+        frame.decorations = decorations
+        if let marked = documentView.composingRange {
+            frame.decorations.append(Decoration(range: marked, color: theme.text, style: .underline))
+        }
         let presented = self.presented
         drawable.addPresentedHandler { presented.append($0.presentedTime) }
         renderer.draw(frame, layout: documentLayout, into: drawable.texture, drawable: drawable)
@@ -220,6 +301,8 @@ public final class AlloyEditorView: NSView {
     }
 
     public var lastFrameStats: FrameStats { renderer.lastStats }
+    /// Where the drawing surface sits in the scroll view (tests).
+    var canvasFrame: CGRect { canvas.frame }
 
     public func resetFrameCounters() {
         framesDrawn = 0
@@ -233,10 +316,6 @@ public final class AlloyEditorView: NSView {
         drawableWaitMilliseconds = []
         countersStart = CACurrentMediaTime()
     }
-}
-
-private final class FlippedDocumentView: NSView {
-    override var isFlipped: Bool { true }
 }
 
 /// A view backed by a CAMetalLayer that the editor draws into.

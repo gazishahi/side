@@ -22,17 +22,20 @@ final class Playground: NSObject, NSApplicationDelegate {
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular) as CTFont
         editor = try! AlloyEditorView(buffer: TextBuffer(text), font: font)
         if arguments.contains("--dark") { editor.theme = .dark }
-        editor.buffer.setSelections([Selection(anchor: 30, head: 120), Selection(caret: 200)])
+        if !arguments.contains("--no-selection") { editor.buffer.setSelections([Selection(anchor: 30, head: 120), Selection(caret: 200)]) }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Alloy \u{00B7} " + (path.map { ($0 as NSString).lastPathComponent } ?? "empty")
         window.contentView = editor
         window.center()
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(editor.textView)
         NSApp.activate(ignoringOtherApps: true)
+        NSApp.mainMenu = Self.menu()
         if arguments.contains("--scroll-test") { scrollTest() }
         if let index = arguments.firstIndex(of: "--screenshot"), index + 1 < arguments.count {
             let out = arguments[index + 1]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            let delay = Double(arguments.firstIndex(of: "--delay").map { arguments[$0 + 1] } ?? "1.5") ?? 1.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 let task = Process()
                 task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
                 task.arguments = ["-x", "-l", "\(self.window.windowNumber)", out]
@@ -41,6 +44,26 @@ final class Playground: NSObject, NSApplicationDelegate {
                 NSApp.terminate(nil)
             }
         }
+    }
+
+    /// Enough of a menu bar for the standard shortcuts (copy, paste, undo, find) to reach the editor.
+    static func menu() -> NSMenu {
+        let main = NSMenu()
+        let appItem = NSMenuItem(); let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        let editItem = NSMenuItem(); let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let find = edit.addItem(withTitle: "Find", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+        find.tag = NSTextFinder.Action.showFindInterface.rawValue
+        editItem.submenu = edit
+        main.addItem(appItem); main.addItem(editItem)
+        return main
     }
 
     func scrollTest() {

@@ -1,6 +1,6 @@
 # RFC: Alloy, the editing engine
 
-*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–2 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
+*2026-09-24. Status: **accepted**: the owner accepted A1–A7 as recommended the same day; steps 0–3 built. A launch gate (`SIDE_DISTRIBUTION.md`): Alloy ships in Side 0.1.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` ("Alloy: powers Make"), `SIDE_DESIGN.md` (tokens,
 motion, accessibility) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -148,6 +148,22 @@ headers, inline agent ghost text.
    compositor, not Alloy's drawing. "No dropped frames" is to be re-measured on an idle machine;
    drawing off the main thread, so a late drawable can't hold up input, is a candidate for step 3.
 3. **AlloyAppKit input:** `NSTextInputClient`, key bindings, mouse, drag, pasteboard, find.
+   **Built 2026-09-24:** `AlloyTextView` is the document view and first responder.
+   `NSTextInputClient`: marked text is composed in place, underlined, and commits as one undo
+   step (`EditKind.composing`); the candidate window is placed from `firstRect`. Key bindings
+   through `interpretKeyEvents`: character, word, visual-row, paragraph and document movement
+   with their selecting variants, a goal column for up and down, page up and down, word and line
+   deletes. Multiple cursors: ⌥-click, ⌥⌘↑/↓, Escape back to one. Mouse: click, drag with
+   autoscroll, ⇧-click, double-click word, triple-click line. Copy, cut, paste (one line per
+   cursor when the counts match), undo and redo with menu validation. `NSTextFinderClient` for
+   the Find bar. Blinking caret; I-beam. `AlloyEditorDelegate` carries Make's hooks
+   (shouldChangeText, doCommand, text and selection changed). The renderer gained decorations
+   (underline, dotted underline, background). Found and fixed: content insets (the Find bar)
+   shifted the drawing below the document, so the find indicator missed its match; the viewport
+   is now the clip bounds less its insets. 31 package tests (10 for input, through the calls
+   AppKit makes, with synthesized mouse events and a private pasteboard); checked in the
+   playground with real keystrokes. Not yet exercised with a real input method or dictation
+   (the protocol path is tested; a live IME pass belongs to step 6).
 4. **Syntax:** tree-sitter highlighting (A3).
 5. **Make parity** on the seam, feature by feature, each with a test.
 6. **Accessibility and polish:** VoiceOver, text sizes, tokens, Reduce Motion.

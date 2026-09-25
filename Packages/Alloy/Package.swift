@@ -19,6 +19,7 @@ let package = Package(
         .executableTarget(name: "AlloyBenchmarks", dependencies: ["AlloyCore"], path: "Sources/AlloyBenchmarks"),
         .testTarget(name: "AlloyCoreTests", dependencies: ["AlloyCore"], path: "Tests/AlloyCoreTests"),
         .testTarget(name: "AlloyRenderTests", dependencies: ["AlloyCore", "AlloyRender"], path: "Tests/AlloyRenderTests"),
+        .testTarget(name: "AlloyAppKitTests", dependencies: ["AlloyCore", "AlloyRender", "AlloyAppKit"], path: "Tests/AlloyAppKitTests"),
     ],
     swiftLanguageModes: [.v6]
 )

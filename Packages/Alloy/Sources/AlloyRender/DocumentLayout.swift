@@ -90,13 +90,13 @@ public final class LaidOutLine {
 
     /// The row holding a UTF-16 offset within the line (the end of a wrapped row belongs to
     /// the next one, except at the very end).
-    func row(containing offset: Int) -> Int {
+    public func row(containing offset: Int) -> Int {
         for (index, row) in rows.enumerated() where offset < row.range.upperBound { return index }
         return rows.count - 1
     }
 
     /// The x of a caret before the UTF-16 offset, within its row.
-    func caretX(at offset: Int) -> (row: Int, x: CGFloat) {
+    public func caretX(at offset: Int) -> (row: Int, x: CGFloat) {
         let row = row(containing: offset)
         let layout = rows[row]
         let start = CTLineGetOffsetForStringIndex(layout.line, layout.range.lowerBound, nil)
@@ -104,7 +104,7 @@ public final class LaidOutLine {
     }
 
     /// The UTF-16 offset nearest an x in a row.
-    func offset(row: Int, x: CGFloat) -> Int {
+    public func offset(row: Int, x: CGFloat) -> Int {
         let layout = rows[max(0, min(row, rows.count - 1))]
         let start = CTLineGetOffsetForStringIndex(layout.line, layout.range.lowerBound, nil)
         let index = CTLineGetStringIndexForPosition(layout.line, CGPoint(x: x + start, y: 0))

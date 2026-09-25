@@ -47,6 +47,9 @@ public enum EditKind: Sendable {
     case typing
     /// Backspace and forward delete: consecutive deleting is one undo step.
     case deleting
+    /// Text an input method is composing (marked text) and its commit: the whole composition
+    /// is one step, however long it takes.
+    case composing
     /// Everything else (paste, completion, an agent's edit) is its own step.
     case other
 }
@@ -234,9 +237,14 @@ public final class TextBuffer {
         redoStack.removeAll()
         let after = Snapshot(text: text, selections: selections)
         let time = now()
-        if kind != .other, var last = undoStack.last, last.open, last.kind == kind,
-           time.timeIntervalSince(last.lastEdit) < coalescingInterval,
-           last.after.selections == before.selections {
+        let continues: Bool
+        if let last = undoStack.last, last.open, last.kind == kind {
+            continues = kind == .composing
+                || (kind != .other && time.timeIntervalSince(last.lastEdit) < coalescingInterval && last.after.selections == before.selections)
+        } else {
+            continues = false
+        }
+        if continues, var last = undoStack.last {
             last.after = after
             last.edits += edits
             last.lastEdit = time
