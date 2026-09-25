@@ -273,11 +273,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     override func loadView() { view = NSView() }
 
-    /// The terminal text size setting (Appearance). The Nerd Font stays — themed prompts draw
-    /// their segments with its glyphs — with the system monospace as the fallback.
+    /// The terminal font and size settings (Appearance). By default the Nerd Font (themed
+    /// prompts draw their segments with its glyphs), with the system monospace as the fallback.
     @objc private func applyTextSize() {
-        let size = DS.Text.CodeSize.terminal
-        terminalView.font = NSFont(name: "MesloLGS-NF-Regular", size: size) ?? DS.Text.code(size)
+        terminalView.font = DS.Text.Fonts.font(.terminal, size: DS.Text.CodeSize.terminal)
     }
 
     override func viewDidLoad() {

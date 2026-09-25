@@ -1,8 +1,7 @@
 import AppKit
 import Heron
 
-/// The Appearance pane of Preferences — currently one setting, and the reason `DS.Text` exists:
-/// text size.
+/// The Appearance pane of Preferences: light or dark, text sizes, and typefaces.
 ///
 /// macOS has no app-wide Dynamic Type, so an app built on hardcoded point sizes offers someone
 /// who needs bigger text nothing at all. This is that recourse.
@@ -14,6 +13,7 @@ final class AppearanceViewController: NSViewController {
     private let sampleCode = NSTextField(labelWithString: "let sample = \"code and diffs\"")
     private let editorSizePopup = NSPopUpButton()
     private let terminalSizePopup = NSPopUpButton()
+    private var fontPopups: [DS.Text.Fonts.Role: NSPopUpButton] = [:]
 
     override func loadView() { view = NSView() }
 
@@ -51,6 +51,34 @@ final class AppearanceViewController: NSViewController {
             popup.action = action
         }
 
+        // Typefaces: code families for the editor and the terminal, any family for reading.
+        for role in DS.Text.Fonts.Role.allCases {
+            let popup = NSPopUpButton()
+            let defaultName: String
+            switch role {
+            case .editor: defaultName = "SF Mono"
+            case .terminal: defaultName = NSFont(name: "MesloLGS-NF-Regular", size: 12) != nil ? "Meslo Nerd Font" : "SF Mono"
+            case .reading: defaultName = "New York"
+            }
+            popup.addItem(withTitle: "Default (\(defaultName))")
+            popup.menu?.addItem(.separator())
+            var families = role == .reading ? DS.Text.Fonts.allFamilies() : DS.Text.Fonts.monospacedFamilies()
+            if role == .reading { families.insert(contentsOf: ["SF Pro"].filter { !families.contains($0) }, at: 0) }
+            for family in families {
+                popup.addItem(withTitle: family)
+                popup.lastItem?.representedObject = family
+            }
+            if let chosen = DS.Text.Fonts.family(role), let item = popup.itemArray.first(where: { $0.representedObject as? String == chosen }) {
+                popup.select(item)
+            } else {
+                popup.selectItem(at: 0)
+            }
+            popup.target = self
+            popup.action = #selector(fontChanged(_:))
+            popup.tag = DS.Text.Fonts.Role.allCases.firstIndex(of: role)!
+            fontPopups[role] = popup
+        }
+
         let samples = NSStackView(views: [sampleLabel, sampleCaption, sampleCode])
         samples.orientation = .vertical
         samples.alignment = .leading
@@ -66,6 +94,11 @@ final class AppearanceViewController: NSViewController {
             SettingsForm.section("Code", [
                 SettingsForm.row("Editor text", editorSizePopup),
                 SettingsForm.row("Terminal text", terminalSizePopup),
+            ]),
+            SettingsForm.section("Fonts", [
+                SettingsForm.row("Editor", fontPopups[.editor]!),
+                SettingsForm.row("Terminal", fontPopups[.terminal]!),
+                SettingsForm.row("Reading", detail: "Markdown previews.", fontPopups[.reading]!),
             ]),
             SettingsForm.section("Preview", [SettingsForm.content(samples)]),
         ])
@@ -83,8 +116,14 @@ final class AppearanceViewController: NSViewController {
     @objc private func applyFonts() {
         sampleLabel.font = DS.Text.body()
         sampleCaption.font = DS.Text.caption()
-        sampleCode.font = DS.Text.code()
+        sampleCode.font = DS.Text.Fonts.font(.editor, size: DS.Text.code().pointSize)
         view.layoutSubtreeIfNeeded()
+    }
+
+    @objc private func fontChanged(_ sender: NSPopUpButton) {
+        let role = DS.Text.Fonts.Role.allCases[sender.tag]
+        DS.Text.Fonts.setFamily(sender.selectedItem?.representedObject as? String, for: role)
+        applyFonts()
     }
 
     @objc private func editorSizeChanged() {

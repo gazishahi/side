@@ -203,7 +203,7 @@ enum DS {
             /// Under XCTest, a store of this process's own: test classes run in parallel
             /// processes, and a size one sets mid-test must reach neither the other nor the
             /// person's real setting.
-            private nonisolated(unsafe) static let defaults: UserDefaults = NSClassFromString("XCTestCase") == nil
+            nonisolated(unsafe) static let defaults: UserDefaults = NSClassFromString("XCTestCase") == nil
                 ? .standard : UserDefaults(suiteName: "side.tests.code-size.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard
             private static func stored(_ key: String) -> CGFloat {
                 let value = defaults.double(forKey: key)
@@ -215,8 +215,56 @@ enum DS {
             }
         }
 
+        /// The typefaces people choose (Appearance): one each for the editor, the terminal and
+        /// reading (the Markdown preview). Nil is Side's default for the role. A change posts
+        /// `CodeSize.didChangeNotification`, which everything that renders these already follows.
+        enum Fonts {
+            enum Role: String, CaseIterable { case editor, terminal, reading }
+
+            private static func key(_ role: Role) -> String { "side.font-family.\(role.rawValue)" }
+            static func family(_ role: Role) -> String? {
+                guard let name = CodeSize.defaults.string(forKey: key(role)), !name.isEmpty else { return nil }
+                return name
+            }
+            static func setFamily(_ family: String?, for role: Role) {
+                CodeSize.defaults.set(family, forKey: key(role))
+                NotificationCenter.default.post(name: CodeSize.didChangeNotification, object: nil)
+            }
+
+            /// Installed families whose regular face is fixed-pitch: the choices for code.
+            static func monospacedFamilies() -> [String] {
+                let names = Set(NSFontManager.shared.availableFontNames(with: .fixedPitchFontMask) ?? [])
+                return NSFontManager.shared.availableFontFamilies.filter { family in
+                    (NSFontManager.shared.availableMembers(ofFontFamily: family) ?? []).contains { ($0.first as? String).map(names.contains) ?? false }
+                }.filter { !$0.hasPrefix(".") }
+            }
+            static func allFamilies() -> [String] { NSFontManager.shared.availableFontFamilies.filter { !$0.hasPrefix(".") } }
+
+            /// The role's font at a size: the chosen family if it's installed, else the default
+            /// (SF Mono for code, the Meslo Nerd Font for the terminal when present, since themed
+            /// prompts draw with its glyphs, and New York for reading).
+            static func font(_ role: Role, size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+                if family(role) == "SF Pro" { return .systemFont(ofSize: size, weight: weight) }
+                if let family = family(role),
+                   let chosen = NSFontManager.shared.font(withFamily: family, traits: weight >= .semibold ? .boldFontMask : [], weight: 5, size: size) {
+                    return chosen
+                }
+                switch role {
+                case .editor: return .monospacedSystemFont(ofSize: size, weight: weight)
+                case .terminal: return NSFont(name: "MesloLGS-NF-Regular", size: size) ?? .monospacedSystemFont(ofSize: size, weight: weight)
+                case .reading: return serif(size, weight: weight)
+                }
+            }
+
+            /// The system serif (New York).
+            static func serif(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+                let base = NSFont.systemFont(ofSize: size, weight: weight)
+                return base.fontDescriptor.withDesign(.serif).flatMap { NSFont(descriptor: $0, size: size) } ?? base
+            }
+        }
+
         /// Make's editor font, at the editor size setting.
-        static func editor(_ weight: NSFont.Weight = .regular) -> NSFont { .monospacedSystemFont(ofSize: CodeSize.editor, weight: weight) }
+        static func editor(_ weight: NSFont.Weight = .regular) -> NSFont { Fonts.font(.editor, size: CodeSize.editor, weight: weight) }
 
         private static func scaled(_ size: CGFloat) -> CGFloat {
             (size * Scale.current.rawValue).rounded(.toNearestOrEven)

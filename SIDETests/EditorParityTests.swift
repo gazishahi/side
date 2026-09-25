@@ -199,6 +199,53 @@ final class EditorParityTests: XCTestCase {
         XCTAssertGreaterThan(view.accessibilityFrame(for: NSRange(location: 14, length: 1)).width, 1)
     }
 
+    /// Code scrolls on under the tab strip and the bottom bar, as the Markdown preview does: the
+    /// editor draws its whole clip view, not just the part inside Make's content insets.
+    func testCodeFlowsUnderTheFloatingChrome() throws {
+        try open("flow.swift", String(repeating: "let line = 1\n", count: 400))
+        // As the shell does: the top row and the bottom bar float over the editor.
+        make.setBottomObstruction(56)
+        make.view.layoutSubtreeIfNeeded()
+        let insets = alloy.view.scrollView.contentView.contentInsets
+        XCTAssertGreaterThan(insets.top + insets.bottom, 0, "Make insets the editor for its chrome")
+        alloy.view.render()
+        XCTAssertEqual(alloy.view.canvasFrame, alloy.view.scrollView.contentView.frame, "drawn under the insets too")
+    }
+
+    /// Editor ⇄ preview on a long document: each switch is immediate, and the editor keeps its
+    /// place.
+    func testMarkdownPreviewSwitchesQuickly() throws {
+        let doc = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("docs/SIDE_PRODUCT_CONSTITUTION.md"), encoding: .utf8)
+        try open("long.md", doc)
+        var times: [Double] = []
+        for _ in 0..<6 {
+            let start = CACurrentMediaTime()
+            make.perform(Selector(("toggleMarkdownPreview")))
+            make.view.layoutSubtreeIfNeeded()
+            times.append((CACurrentMediaTime() - start) * 1000)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        // The first switch to the preview renders and lays it out; after that the unchanged
+        // document is reused, so every switch is immediate.
+        XCTAssertLessThan(times[0], 250, "first preview")
+        XCTAssertLessThan(times.dropFirst().max()!, 30, "switches after that: \(times)")
+    }
+
+    /// ⇧⌘V works again straight away: the view shown takes focus, so the menu item still finds
+    /// Make in the responder chain (hiding the focused editor used to leave the window focused,
+    /// and the shortcut did nothing until a click).
+    func testMarkdownPreviewKeepsTheShortcutReachable() throws {
+        try open("focus.md", "# Title\n\nSome text.\n")
+        window.makeKey()
+        make.editor.focus()
+        for _ in 0..<4 {
+            make.perform(Selector(("toggleMarkdownPreview")))
+            let responder = try XCTUnwrap(window.firstResponder as? NSView, "focus is on a view, not the window")
+            XCTAssertTrue(responder.isDescendant(of: make.view), "inside Make, so its menu actions resolve")
+            XCTAssertFalse(responder.isHiddenOrHasHiddenAncestor, "and it's the one showing")
+        }
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

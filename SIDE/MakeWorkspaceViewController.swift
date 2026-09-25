@@ -125,7 +125,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let csvScroll = NSScrollView()
     private let csvTable = NSTableView()
     private let markdownPreviewScroll = NSScrollView()
-    private let markdownPreviewView = NSTextView()
+    private let markdownPreviewView = MarkdownPreviewTextView.make()
+    /// What the preview shows now (tab, text, style), so switching back to an unchanged document
+    /// neither renders nor lays it out again, and keeps its scroll position.
+    private var markdownPreviewShown: (tab: UUID, stamp: ContentStamp, generation: Int)?
+    private var markdownPreviewGeneration = 0
     private let markdownLinks = MarkdownPreviewLinks()
     private var completionPanelStorage: CompletionPanel?
     private var completionSurface: NSView?
@@ -385,8 +389,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         markdownPreviewView.isSelectable = true
         markdownPreviewView.drawsBackground = true
         markdownPreviewView.backgroundColor = Self.editorBackground
-        markdownPreviewView.textContainerInset = NSSize(width: 20, height: 16)
-        markdownPreviewView.textContainer?.widthTracksTextView = true
+        markdownPreviewView.onAppearanceChange = { [weak self] in self?.restyleMarkdownPreview() }
         // For `textView(_:clickedOnLink:at:)` — in-document `#anchor` links scroll the preview
         // instead of being handed to the OS as if they were web URLs.
         markdownPreviewView.delegate = markdownLinks
@@ -1532,6 +1535,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             tab.document.highlight(url: tab.url, appearance: Self.editorAppearance)
         }
         editor.appearance = Self.editorAppearance
+        restyleMarkdownPreview()
     }
 
     /// The active file's language server as a caption and a dot: ready, starting (the working
@@ -1598,11 +1602,34 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
               openTabs[index].kind == .text, openTabs[index].url.pathExtension.lowercased() == "md" else { return }
         openTabs[index].isPreviewingMarkdown.toggle()
         loadActiveTabIntoEditor()
+        // Focus goes to what's now showing. Hiding the focused editor left the window itself
+        // focused, outside Make, so ⇧⌘V (resolved through the responder chain) did nothing
+        // until a click.
+        if openTabs[index].isPreviewingMarkdown {
+            view.window?.makeFirstResponder(markdownPreviewView)
+        } else {
+            editor.focus()
+        }
     }
 
     private func renderMarkdownPreview(for tab: OpenTab) {
-        let rendered = MarkdownRenderer.render(tab.document.string, baseFont: Self.editorFont, textColor: Self.editorTextColor)
-        markdownPreviewView.textStorage?.setAttributedString(rendered)
+        let text = tab.document.string
+        let stamp = ContentStamp(text)
+        if let shown = markdownPreviewShown, shown.tab == tab.id, shown.stamp == stamp, shown.generation == markdownPreviewGeneration { return }
+        let dark = markdownPreviewView.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let style = MarkdownPreview.Style.current(dark: dark)
+        markdownPreviewView.columnWidth = style.columnWidth
+        markdownPreviewView.textStorage?.setAttributedString(MarkdownPreview.render(text, style: style))
+        markdownPreviewShown = (tab.id, stamp, markdownPreviewGeneration)
+        // Code blocks in a language not built yet render plain; they color when it's ready.
+        MarkdownPreview.prepareLanguages { [weak self] in self?.restyleMarkdownPreview() }
+    }
+
+    /// Fonts, sizes or light/dark changed: the preview renders again if it's showing.
+    private func restyleMarkdownPreview() {
+        markdownPreviewGeneration += 1
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].isPreviewingMarkdown else { return }
+        renderMarkdownPreview(for: openTabs[index])
     }
 
     // MARK: - Diagnostics
