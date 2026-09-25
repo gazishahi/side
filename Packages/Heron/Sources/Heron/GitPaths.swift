@@ -49,10 +49,17 @@ public enum GitPaths {
     /// survives the user renaming or moving the repo folder.
     public static func worktreesRootDirectory(for projectRoot: URL) -> URL? {
         guard let identity = projectIdentity(for: projectRoot) else { return nil }
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        return support.appendingPathComponent("Side/Worktrees/\(projectRoot.lastPathComponent)-\(stableHash(identity))")
+        return worktreesSupportDirectory.appendingPathComponent("Side/Worktrees/\(projectRoot.lastPathComponent)-\(stableHash(identity))")
     }
+
+    /// Where worktrees go: Application Support, except under tests. Test runs (XCTest, and the
+    /// app launched for UI testing, which sets this) create tracks by the hundred, and they used
+    /// to leave a folder each in the person's own Application Support.
+    public nonisolated(unsafe) static var worktreesSupportDirectory: URL = {
+        if UsageStore.isTesting { return FileManager.default.temporaryDirectory.appendingPathComponent("SideTests", isDirectory: true) }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+    }()
 
     public static func worktreePath(forBranchSlug slug: String, projectRoot: URL) -> URL? {
         worktreesRootDirectory(for: projectRoot)?.appendingPathComponent(slug)

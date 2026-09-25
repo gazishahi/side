@@ -44,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             LaunchSignposts.reportProcessStart()
             // A test that needs a project passes its own throwaway one — without it the stages
             // are empty shells, and "the terminal is in the AX tree" is unfalsifiable.
+            // Tracks a UI test creates put their worktrees somewhere temporary, not in the
+            // person's Application Support.
+            GitPaths.worktreesSupportDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("SideUITests", isDirectory: true)
             let volatile = UserDefaults(suiteName: "side.uitesting.volatile") ?? .standard
             volatile.removePersistentDomain(forName: "side.uitesting.volatile")
             GitLaunchProbe.defaults = volatile
