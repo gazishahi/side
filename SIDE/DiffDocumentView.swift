@@ -95,6 +95,7 @@ final class DiffDocumentView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        NotificationCenter.default.addObserver(self, selector: #selector(editorThemeChanged), name: EditorThemes.didChangeNotification, object: nil)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = DS.Radius.surface
@@ -264,8 +265,15 @@ final class DiffDocumentView: NSView {
             effectiveAppearance.performAsCurrentDrawingAppearance { resolved = color.usingColorSpace(.sRGB) ?? color }
             return [Float(resolved.redComponent), Float(resolved.greenComponent), Float(resolved.blueComponent), Float(resolved.alphaComponent)]
         }
-        editor.theme = RenderTheme(background: tint(DS.Color.raised), text: tint(.labelColor), selection: tint(.selectedTextBackgroundColor),
-                                   caret: [0, 0, 0, 0], currentLine: [0, 0, 0, 0])
+        if let theme = EditorThemes.current(dark: dark) {
+            editor.theme = RenderTheme(background: theme.background.simd, text: theme.text.simd, selection: theme.selection.simd,
+                                       caret: [0, 0, 0, 0], currentLine: [0, 0, 0, 0])
+            editor.gutter.backgroundColor = theme.background.nsColor
+            editor.gutter.numberColor = theme.lineNumbers.nsColor
+        } else {
+            editor.theme = RenderTheme(background: tint(DS.Color.raised), text: tint(.labelColor), selection: tint(.selectedTextBackgroundColor),
+                                       caret: [0, 0, 0, 0], currentLine: [0, 0, 0, 0])
+        }
         let added = tint(DiffBody.addedFill), removed = tint(DiffBody.removedFill), blank = tint(DS.Color.scrimFaint)
         editor.lineBackground = { row in
             guard rows.indices.contains(row), case .line(_, let line) = rows[row] else { return nil }
@@ -359,7 +367,7 @@ final class DiffDocumentView: NSView {
                     guard let self, self.columnsGeneration == generation,
                           let i = self.columns.firstIndex(where: { $0.side == columnSide }),
                           self.columns[i].highlighterOrder.contains(file) else { return }
-                    let built = SyntaxHighlighter(fileExtension: ext, text: text, theme: .side(dark: dark), parseInBackground: true)
+                    let built = SyntaxHighlighter(fileExtension: ext, text: text, theme: EditorThemes.syntax(dark: dark), parseInBackground: true)
                     built?.onInvalidate = { [weak self] in self?.columns.forEach { $0.editor.setNeedsRender() } }
                     self.columns[i].highlighters[file] = .some(built)
                 }
@@ -550,6 +558,13 @@ final class DiffDocumentView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         guard !diff.files.isEmpty, message == nil else { return }
+        rebuild(keepingPosition: true)
+    }
+
+    /// Another editor theme: the diff is drawn in it too.
+    @objc private func editorThemeChanged() {
+        guard !diff.files.isEmpty, message == nil else { return }
+        columns.indices.forEach { columns[$0].highlighters = [:] }
         rebuild(keepingPosition: true)
     }
 

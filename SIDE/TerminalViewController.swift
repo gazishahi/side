@@ -290,6 +290,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // Run apart.
         applyTerminalTheme()
         NotificationCenter.default.addObserver(self, selector: #selector(appearanceChanged), name: DS.Appearance.didChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appearanceChanged), name: EditorThemes.didChangeNotification, object: nil)
         terminalView.processDelegate = self
         // Side genuinely handles OSC 133 (the semantic-prompt marks it asks the shell to emit),
         // but detection scans the raw PTY stream in handleAgentCommandData — SwiftTerm's parser
@@ -894,11 +895,15 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// about light mode; this is what makes Run follow the rest of the app.
     private func applyTerminalTheme() {
         let dark = DS.Appearance.isDark
-        terminalView.terminal.foregroundColor = Self.terminalColor(NSColor.labelColor)
-        terminalView.terminal.backgroundColor = Self.terminalColor(DS.Color.raised)
-        terminalView.terminal.installPalette(colors: Self.ansiPalette(dark: dark))
-        terminalView.nativeForegroundColor = Self.resolved(NSColor.labelColor)
-        terminalView.nativeBackgroundColor = Self.resolved(DS.Color.raised)
+        // The editor theme's terminal colors when it has them (Settings → Appearance).
+        let theme = EditorThemes.current(dark: dark)
+        let foreground = theme?.terminalText?.nsColor ?? NSColor.labelColor
+        let background = theme?.terminalBackground?.nsColor ?? DS.Color.raised
+        terminalView.terminal.foregroundColor = Self.terminalColor(foreground)
+        terminalView.terminal.backgroundColor = Self.terminalColor(background)
+        terminalView.terminal.installPalette(colors: theme?.ansi.map { $0.map { Self.terminalColor($0.nsColor) } } ?? Self.ansiPalette(dark: dark))
+        terminalView.nativeForegroundColor = Self.resolved(foreground)
+        terminalView.nativeBackgroundColor = Self.resolved(background)
         terminalView.needsDisplay = true
     }
 

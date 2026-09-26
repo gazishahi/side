@@ -14,6 +14,10 @@ final class AppearanceViewController: NSViewController {
     private let editorSizePopup = NSPopUpButton()
     private let terminalSizePopup = NSPopUpButton()
     private var fontPopups: [DS.Text.Fonts.Role: NSPopUpButton] = [:]
+    /// The editor theme for light and for dark appearance, and removing an imported one.
+    private let lightThemePopup = NSPopUpButton()
+    private let darkThemePopup = NSPopUpButton()
+    private let removeThemePopup = NSPopUpButton()
 
     override func loadView() { view = NSView() }
 
@@ -95,6 +99,12 @@ final class AppearanceViewController: NSViewController {
                 SettingsForm.row("Editor text", editorSizePopup),
                 SettingsForm.row("Terminal text", terminalSizePopup),
             ]),
+            SettingsForm.section("Editor theme", footer: "Colors the editor, Review's diffs and the terminal. Import a VS Code theme's .json (from an extension, or a theme's repository); its token colors are matched to Side's syntax.", [
+                SettingsForm.row("In light appearance", lightThemePopup),
+                SettingsForm.row("In dark appearance", darkThemePopup),
+                SettingsForm.row("Import a VS Code theme", SettingsForm.button("Import\u{2026}", self, #selector(importTheme))),
+                SettingsForm.row("Remove an imported theme", removeThemePopup),
+            ]),
             SettingsForm.section("Fonts", [
                 SettingsForm.row("Editor", fontPopups[.editor]!),
                 SettingsForm.row("Terminal", fontPopups[.terminal]!),
@@ -104,6 +114,8 @@ final class AppearanceViewController: NSViewController {
         ])
         SettingsForm.install(page, in: view)
 
+        fillThemePopups()
+        NotificationCenter.default.addObserver(self, selector: #selector(fillThemePopups), name: EditorThemes.didChangeNotification, object: nil)
         applyFonts()
         NotificationCenter.default.addObserver(
             self, selector: #selector(applyFonts),
@@ -118,6 +130,67 @@ final class AppearanceViewController: NSViewController {
         sampleCaption.font = DS.Text.caption()
         sampleCode.font = DS.Text.Fonts.font(.editor, size: DS.Text.code().pointSize)
         view.layoutSubtreeIfNeeded()
+    }
+
+    // MARK: Editor theme
+
+    @objc private func fillThemePopups() {
+        for (popup, current, action) in [(lightThemePopup, EditorThemes.lightThemeID, #selector(lightThemeChosen(_:))),
+                                         (darkThemePopup, EditorThemes.darkThemeID, #selector(darkThemeChosen(_:)))] {
+            popup.removeAllItems()
+            popup.addItem(withTitle: "Side")
+            popup.lastItem?.representedObject = EditorThemes.sideID
+            popup.menu?.addItem(.separator())
+            for theme in EditorThemes.all {
+                popup.addItem(withTitle: theme.name + (theme.isDark ? " (dark)" : " (light)"))
+                popup.lastItem?.representedObject = theme.id
+            }
+            popup.select(popup.itemArray.first { $0.representedObject as? String == current } ?? popup.item(at: 0))
+            popup.target = self
+            popup.action = action
+        }
+        removeThemePopup.removeAllItems()
+        removeThemePopup.addItem(withTitle: EditorThemes.imported.isEmpty ? "None imported" : "Choose\u{2026}")
+        for theme in EditorThemes.imported {
+            removeThemePopup.addItem(withTitle: theme.name)
+            removeThemePopup.lastItem?.representedObject = theme.id
+        }
+        removeThemePopup.isEnabled = !EditorThemes.imported.isEmpty
+        removeThemePopup.target = self
+        removeThemePopup.action = #selector(removeTheme(_:))
+    }
+
+    @objc private func lightThemeChosen(_ sender: NSPopUpButton) {
+        if let id = sender.selectedItem?.representedObject as? String { EditorThemes.lightThemeID = id }
+    }
+
+    @objc private func darkThemeChosen(_ sender: NSPopUpButton) {
+        if let id = sender.selectedItem?.representedObject as? String { EditorThemes.darkThemeID = id }
+    }
+
+    @objc private func removeTheme(_ sender: NSPopUpButton) {
+        guard let id = sender.selectedItem?.representedObject as? String else { return }
+        EditorThemes.remove(id)
+    }
+
+    /// A VS Code theme's .json, imported and chosen for its own appearance.
+    @objc private func importTheme() {
+        guard let window = view.window else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.message = "Choose a VS Code color theme (.json)"
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let theme = try EditorThemes.importVSCodeTheme(Data(contentsOf: url), fallbackName: url.deletingPathExtension().lastPathComponent)
+                if theme.isDark { EditorThemes.darkThemeID = theme.id } else { EditorThemes.lightThemeID = theme.id }
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Couldn't import \u{201C}\(url.lastPathComponent)\u{201D}"
+                alert.informativeText = error.localizedDescription
+                alert.beginSheetModal(for: window)
+            }
+        }
     }
 
     @objc private func fontChanged(_ sender: NSPopUpButton) {

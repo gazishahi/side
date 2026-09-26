@@ -664,3 +664,74 @@ final class LanguageServerStartTests: XCTestCase {
         XCTAssertFalse(tried.isEmpty)
     }
 }
+
+/// Step 8: editor themes, and VS Code themes imported into them.
+@MainActor
+final class EditorThemeTests: XCTestCase {
+    private let theme = #"""
+    // A VS Code theme: JSON with comments and trailing commas.
+    {
+      "name": "Sample Night",
+      "type": "dark",
+      "colors": {
+        "editor.background": "#1a1b26", "editor.foreground": "#a9b1d6",
+        "editor.selectionBackground": "#515c7e4d", /* translucent */
+        "editorCursor.foreground": "#c0caf5",
+        "terminal.ansiBlack": "#15161e", "terminal.ansiRed": "#f7768e", "terminal.ansiGreen": "#9ece6a", "terminal.ansiYellow": "#e0af68",
+        "terminal.ansiBlue": "#7aa2f7", "terminal.ansiMagenta": "#bb9af7", "terminal.ansiCyan": "#7dcfff", "terminal.ansiWhite": "#a9b1d6",
+        "terminal.ansiBrightBlack": "#414868", "terminal.ansiBrightRed": "#f7768e", "terminal.ansiBrightGreen": "#9ece6a", "terminal.ansiBrightYellow": "#e0af68",
+        "terminal.ansiBrightBlue": "#7aa2f7", "terminal.ansiBrightMagenta": "#bb9af7", "terminal.ansiBrightCyan": "#7dcfff", "terminal.ansiBrightWhite": "#c0caf5",
+      },
+      "tokenColors": [
+        { "scope": "comment", "settings": { "foreground": "#565f89", "fontStyle": "italic" } },
+        { "scope": ["keyword", "storage.type"], "settings": { "foreground": "#9d7cd8" } },
+        { "scope": "keyword.control", "settings": { "foreground": "#bb9af7" } },
+        { "scope": "string, string.quoted", "settings": { "foreground": "#9ece6a" } },
+        { "scope": "entity.name.function", "settings": { "foreground": "#7aa2f7" } },
+        { "scope": "meta.class entity.name.type", "settings": { "foreground": "#ff0000" } },
+        { "scope": "entity.name.type", "settings": { "foreground": "#2ac3de" } },
+      ],
+    }
+    """#
+
+    func testAVSCodeThemeComesInWithItsColors() throws {
+        let imported = try VSCodeTheme.parse(Data(theme.utf8), fallbackName: "x")
+        XCTAssertEqual(imported.name, "Sample Night")
+        XCTAssertTrue(imported.isDark)
+        XCTAssertEqual(imported.background, ThemeColor(hex: "#1a1b26"))
+        XCTAssertEqual(imported.selection.a, Float(0x4d) / 255, accuracy: 0.001, "its translucency kept")
+        XCTAssertEqual(imported.syntax["comment"], ThemeColor(hex: "#565f89"))
+        XCTAssertEqual(imported.syntax["keyword"], ThemeColor(hex: "#bb9af7"), "keyword.control is more specific than keyword")
+        XCTAssertEqual(imported.syntax["function"], ThemeColor(hex: "#7aa2f7"))
+        XCTAssertEqual(imported.syntax["type"], ThemeColor(hex: "#2ac3de"), "a descendant selector doesn't count")
+        XCTAssertEqual(imported.syntax["string"], ThemeColor(hex: "#9ece6a"))
+        XCTAssertEqual(imported.ansi?.count, 16)
+        XCTAssertNil(imported.syntax["tag"], "what the theme doesn't color stays plain")
+    }
+
+    func testNotAThemeIsRefused() {
+        XCTAssertThrowsError(try VSCodeTheme.parse(Data("{\"name\": \"x\"}".utf8), fallbackName: "x"))
+        XCTAssertThrowsError(try VSCodeTheme.parse(Data("not json".utf8), fallbackName: "x"))
+    }
+
+    func testChosenThemesAreRememberedAndImportsKeptAndRemoved() throws {
+        EditorThemes.lightThemeID = "github-light"
+        XCTAssertEqual(EditorThemes.current(dark: false)?.name, "GitHub Light")
+        XCTAssertNil(EditorThemes.current(dark: true), "Side's own until chosen")
+        let imported = try EditorThemes.importVSCodeTheme(Data(theme.utf8), fallbackName: "x")
+        XCTAssertTrue(EditorThemes.all.contains { $0.id == imported.id })
+        EditorThemes.darkThemeID = imported.id
+        EditorThemes.remove(imported.id)
+        XCTAssertEqual(EditorThemes.darkThemeID, EditorThemes.sideID, "back to Side's when its theme goes")
+        EditorThemes.lightThemeID = EditorThemes.sideID
+    }
+
+    func testEveryBuiltInThemeColorsTheCommonCaptures() {
+        for theme in EditorThemes.builtIn {
+            for capture in ["keyword", "string", "comment", "number", "type", "function", "property"] {
+                XCTAssertNotNil(theme.syntax[capture], "\(theme.name): \(capture)")
+            }
+            XCTAssertEqual(theme.ansi?.count, 16, theme.name)
+        }
+    }
+}

@@ -60,11 +60,12 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
             return self.delegate?.editor(self, commandClickedAt: offset) ?? false
         }
         applyAppearance(fontChanged: false)
+        NotificationCenter.default.addObserver(self, selector: #selector(editorThemeChanged), name: EditorThemes.didChangeNotification, object: nil)
     }
 
-    private var isDark: Bool {
-        view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    }
+    /// The system's appearance: what picks the editor theme (Make's own view may take the
+    /// theme's appearance for its chrome, which mustn't pick the other one).
+    private var isDark: Bool { DS.Appearance.isDark }
 
     /// Resolves an NSColor for the view's light or dark appearance.
     private func components(_ color: NSColor) -> SIMD4<Float> {
@@ -77,14 +78,26 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
 
     private func applyAppearance(fontChanged: Bool) {
         if fontChanged { view.setFont(appearance.font as CTFont) }
-        view.theme = RenderTheme(background: components(appearance.background), text: components(appearance.textColor),
-                                 selection: components(.selectedTextBackgroundColor), caret: components(.controlAccentColor),
-                                 currentLine: components(DS.Color.scrimFaint))
-        view.gutter.backgroundColor = DS.Color.canvas
+        // The chosen editor theme for this appearance (Settings → Appearance), or Side's own.
+        if let theme = EditorThemes.current(dark: isDark) {
+            view.theme = theme.renderTheme
+            view.gutter.backgroundColor = theme.background.nsColor
+            view.gutter.numberColor = theme.lineNumbers.nsColor
+            view.minimap.backgroundColor = theme.background.nsColor
+        } else {
+            view.theme = RenderTheme(background: components(appearance.background), text: components(appearance.textColor),
+                                     selection: components(.selectedTextBackgroundColor), caret: components(.controlAccentColor),
+                                     currentLine: components(DS.Color.scrimFaint))
+            view.gutter.backgroundColor = DS.Color.canvas
+            view.gutter.numberColor = .tertiaryLabelColor
+            view.minimap.backgroundColor = DS.Color.canvas
+        }
         view.gutter.font = DS.Text.code(11, weight: .regular)
-        (document as? AlloyEditorDocument)?.highlighter?.theme = .side(dark: isDark)
+        (document as? AlloyEditorDocument)?.highlighter?.theme = EditorThemes.syntax(dark: isDark)
         refreshDecorations()
     }
+
+    @objc private func editorThemeChanged() { applyAppearance(fontChanged: false) }
 
     // MARK: Documents
 
@@ -100,7 +113,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         }
         document.onHighlighterChange = { [weak self, weak document] in
             guard let self, let document, self.document === document else { return }
-            document.highlighter?.theme = .side(dark: self.isDark)
+            document.highlighter?.theme = EditorThemes.syntax(dark: self.isDark)
         }
         document.isDarkProvider = { [weak self] in self?.isDark ?? false }
         return document
@@ -117,7 +130,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         }
         view.setBuffer(document.buffer)
         view.styles = { [weak document] line in document?.highlighter?.spans(forLine: line) ?? [] }
-        document.highlighter?.theme = .side(dark: isDark)
+        document.highlighter?.theme = EditorThemes.syntax(dark: isDark)
         refreshDecorations()
     }
 
@@ -318,7 +331,7 @@ final class AlloyEditorDocument: EditorDocument {
     }
 
     private func makeHighlighter(_ ext: String) {
-        highlighter = SyntaxHighlighter(fileExtension: ext, text: buffer.text, theme: .side(dark: isDarkProvider()))
+        highlighter = SyntaxHighlighter(fileExtension: ext, text: buffer.text, theme: EditorThemes.syntax(dark: isDarkProvider()))
         highlighter?.onInvalidate = { [weak self] in self?.onColorsChange?() }
         onHighlighterChange?()
         onColorsChange?()

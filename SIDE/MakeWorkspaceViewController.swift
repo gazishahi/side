@@ -312,6 +312,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // Undo and redo can land the buffer back on what's saved; typing never can, so only
         // these two re-check (a hash of the buffer, never on every keystroke).
         NotificationCenter.default.addObserver(self, selector: #selector(languageSettingsChanged), name: LanguageSettings.didChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(matchChromeToEditorTheme), name: EditorThemes.didChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(matchChromeToEditorTheme), name: DS.Appearance.didChangeNotification, object: nil)
+        DispatchQueue.main.async { [weak self] in self?.matchChromeToEditorTheme() }
         for name in [Notification.Name.NSUndoManagerDidUndoChange, Notification.Name.NSUndoManagerDidRedoChange] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 let managerID = (note.object as AnyObject?).map(ObjectIdentifier.init)
@@ -1535,6 +1538,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         explorer.setRoot(root)
         searchField.placeholderString = "Indexing \(root.lastPathComponent)…"
         projectWatcher = ProjectWatcher(root: root) { [weak self] urls in self?.filesChangedOnDisk(urls) }
+    }
+
+    /// A dark editor theme in light appearance (or the other way round): Make's own chrome over
+    /// the editor (the tab strip, Ln/Col, the language chip) takes the theme's appearance, so its
+    /// labels stay legible on the theme's background.
+    @objc private func matchChromeToEditorTheme() {
+        let systemDark = DS.Appearance.isDark
+        let theme = EditorThemes.current(dark: systemDark)
+        let appearance = theme.flatMap { $0.isDark == systemDark ? nil : NSAppearance(named: $0.isDark ? .darkAqua : .aqua) }
+        view.appearance = appearance
+        topRowContent?.appearance = appearance
     }
 
     /// Settings → Languages changed: the servers start again as now chosen, and every open

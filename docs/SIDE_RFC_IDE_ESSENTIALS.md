@@ -487,6 +487,33 @@ Tests:
     keymap keeps the person's own changes.
 - Vim mode builds on these actions, in its own RFC.
 
+**Step 8, 2026-09-26.** No Alloy change: its render and syntax themes were already open.
+
+- **The theme** (`EditorTheme`): the editor's background, text, selection, caret, current line
+  and line numbers; the syntax colors by capture; and, optionally, the terminal's colors and
+  sixteen ANSI colors.
+- **Built in:** Side (the design tokens, as before), GitHub Light, GitHub Dark and One Dark.
+- **Settings → Appearance** picks one theme for light appearance and one for dark, imports a
+  VS Code theme, and removes an imported one. Imports are kept in Application Support.
+- **VS Code import** (`VSCodeTheme`):
+  - The file is JSON with comments and trailing commas.
+  - Its `colors` give the editor's and terminal's colors, and the 16 ANSI colors.
+  - Its `tokenColors` map onto captures through one table (capture → TextMate scopes, most
+    fitting first). For each scope the most specific rule that covers it wins, and a later one
+    wins a tie, as in VS Code. Descendant selectors are skipped as too contextual.
+  - Tokyo Night and Night Owl come through with their own palettes (keywords, strings,
+    functions, numbers, types, properties, tags, all 16 ANSI colors).
+- **Where it applies:** Make's editor (with its gutter and minimap), Review's diffs, and Run's
+  terminal. The rest of Side's chrome stays Side's, except that a dark theme in light
+  appearance (or the other way round) gives Make's own chrome over the editor the theme's
+  appearance, so its labels stay legible. The theme is picked by the system's appearance, not
+  that view's.
+- Checked in Side: the same file in GitHub Light, One Dark and an imported Tokyo Night, and the
+  terminal in One Dark.
+- Tests: `EditorThemeTests` covers the import (colors, translucency, specificity, descendant
+  selectors, ANSI), refusing a non-theme, choices remembered and cleared when a theme is
+  removed, and built-ins that color the common captures.
+
 ## Progress
 
 - [x] 1 LSP foundation and completion (below)
@@ -496,5 +523,5 @@ Tests:
 - [x] 5 Settings → Languages (below)
 - [x] 6 More grammars (below; Kotlin and C# held back)
 - [x] 7 Keymaps (below)
-- [ ] 8 Themes
+- [x] 8 Themes (below)
 - [ ] 9 Budgets
