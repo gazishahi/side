@@ -32,6 +32,9 @@ enum Budgets {
         Row(id: "editor.minimap", area: "Make", measure: "Drawing the minimap while scrolling, p99", limit: 4, unit: "ms"),
         Row(id: "completion.filter", area: "Make", measure: "Completion: re-ranking 6,000 items for a keystroke, p99", limit: 8, unit: "ms"),
         Row(id: "completion.sync", area: "Make", measure: "A keystroke's edit to the language server, 100k-line file, p99", limit: 1, unit: "ms"),
+        Row(id: "hover.show", area: "Make", measure: "Hover: a large doc and two problems, shown, p99 (card made)", limit: 5, unit: "ms"),
+        Row(id: "signature.show", area: "Make", measure: "Signature help: two signatures, shown, p99", limit: 5, unit: "ms"),
+        Row(id: "problems.open", area: "Make", measure: "Show Problems with 5,000 problems in 250 files", limit: 50, unit: "ms"),
         Row(id: "find.matches", area: "Make", measure: "Find: every match in a 100k-line file", limit: 50, unit: "ms"),
         Row(id: "find.next", area: "Make", measure: "Find: to the next match, p99", limit: 8, unit: "ms"),
         // Review.

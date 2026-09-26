@@ -697,6 +697,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         installQuickOpenDismissMonitors()
     }
 
+    func dismissPaletteForTesting() { hideQuickOpenPanel() }
+
     private func hideQuickOpenPanel() {
         removeQuickOpenDismissMonitors()
         guard paletteIsOpen else { return }
@@ -754,7 +756,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .references: searchField.placeholderString = "References to \(referenceSymbol) \u{00B7} \(referenceResults.count)"
         }
         searchField.stringValue = mode == .commands ? ">" : (mode == .find ? find.query : "")
-        if mode == .problems { rebuildProblemRows() }
         if mode == .symbols { outlineSymbols = []; loadOutline() }
         showQuickOpenPanel()
         searchField.window?.makeFirstResponder(searchField)
@@ -3430,8 +3431,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let window = view.window, let caretRect = screenRectForCaret(), !items.isEmpty,
               !(items.count == 1 && (items[0].insertText ?? items[0].label) == session.query) else {
             completionPopup.hide()
-        signatureCard.hide()
-        hoverCard.hide()
+        signatureCard.detach()
+        hoverCard.detach()
             return
         }
         completionPopup.onSelect = { [weak self] row in self?.resolveCompletion(row: row) }
@@ -3512,8 +3513,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     // MARK: - Problems, references, rename, quick fixes (SIDE_RFC_IDE_ESSENTIALS.md, L3)
 
+    /// Tests and budgets: problems as a server would report them.
+    func recordProblemsForTesting(_ diagnostics: [LSPDiagnostic], for url: URL) { recordProblems(diagnostics, for: url) }
+    var problemRowCountForTesting: Int { problemRows.count }
+
     private func recordProblems(_ diagnostics: [LSPDiagnostic], for url: URL) {
         allDiagnostics[url] = diagnostics.isEmpty ? nil : diagnostics
+        sortedProblems = nil
         updateProblemsButton()
         if paletteIsOpen, searchMode == .problems {
             rebuildProblemRows()
@@ -3563,18 +3569,29 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         problemsButton.isHidden = false
     }
 
+    /// Every problem in order (errors first, then by file and line), with each file's relative
+    /// path, sorted once when the problems change rather than each time the list opens or filters.
+    private var sortedProblems: [(url: URL, path: String, diagnostic: LSPDiagnostic)]?
+
     private func rebuildProblemRows() {
-        func rank(_ severity: LSPDiagnosticSeverity?) -> Int { severity.map { $0.rawValue } ?? 3 }
-        let all = allDiagnostics.flatMap { url, diagnostics in diagnostics.map { (url: url, diagnostic: $0) } }
-            .sorted { a, b in
-                if rank(a.diagnostic.severity) != rank(b.diagnostic.severity) { return rank(a.diagnostic.severity) < rank(b.diagnostic.severity) }
-                if a.url.path != b.url.path { return a.url.path < b.url.path }
+        if sortedProblems == nil {
+            func rank(_ severity: LSPDiagnosticSeverity?) -> Int { severity.map { $0.rawValue } ?? 3 }
+            sortedProblems = allDiagnostics.flatMap { url, diagnostics in
+                let path = relativePath(url)
+                return diagnostics.map { (url: url, path: path, diagnostic: $0) }
+            }.sorted { a, b in
+                let ra = rank(a.diagnostic.severity), rb = rank(b.diagnostic.severity)
+                if ra != rb { return ra < rb }
+                if a.path != b.path { return a.path < b.path }
                 return a.diagnostic.range.start.line < b.diagnostic.range.start.line
             }
-        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
-        problemRows = query.isEmpty ? all : all.filter { row in
-            row.diagnostic.message.localizedCaseInsensitiveContains(query) || relativePath(row.url).localizedCaseInsensitiveContains(query)
         }
+        let all = sortedProblems ?? []
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
+        let rows = query.isEmpty ? all : all.filter { row in
+            row.diagnostic.message.localizedCaseInsensitiveContains(query) || row.path.localizedCaseInsensitiveContains(query)
+        }
+        problemRows = rows.map { (url: $0.url, diagnostic: $0.diagnostic) }
     }
 
     /// Problems and references filter what's already there as you type.

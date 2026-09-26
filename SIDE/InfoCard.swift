@@ -33,11 +33,18 @@ final class InfoCard {
     }
 
     /// Shows `content` next to `anchor` (a screen rect): above it if there's room, else below.
+    /// The size `content` needs, measured once per content (a hover shown again, signature help
+    /// re-asked with the same answer, costs no layout).
+    private var measured: NSSize = .zero
+
     func show(_ content: NSAttributedString, near anchor: NSRect, in window: NSWindow, preferAbove: Bool = true) {
-        self.content = content
-        label.attributedStringValue = content
-        label.preferredMaxLayoutWidth = Self.maxWidth - 2 * DS.Spacing.m
-        let fitting = label.sizeThatFits(NSSize(width: Self.maxWidth - 2 * DS.Spacing.m, height: .greatestFiniteMagnitude))
+        if !content.isEqual(to: self.content) || measured == .zero {
+            self.content = content
+            label.attributedStringValue = content
+            label.preferredMaxLayoutWidth = Self.maxWidth - 2 * DS.Spacing.m
+            measured = label.sizeThatFits(NSSize(width: Self.maxWidth - 2 * DS.Spacing.m, height: .greatestFiniteMagnitude))
+        }
+        let fitting = measured
         let width = min(Self.maxWidth, ceil(fitting.width) + 2 * DS.Spacing.m + 2)
         let height = min(Self.maxHeight, ceil(fitting.height) + 16)
         let screen = window.screen?.visibleFrame ?? window.frame
@@ -51,14 +58,28 @@ final class InfoCard {
         else if below >= bottom { y = below }
         else if above + height <= screen.maxY { y = above }
         else { y = max(screen.minY, below) }
-        panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
-        if panel.parent == nil { window.addChildWindow(panel, ordered: .above) }
-        panel.orderFront(nil)
-        NSAccessibility.post(element: panel, notification: .layoutChanged)
+        let frame = NSRect(x: x, y: y, width: width, height: height)
+        // Drawn with the next display pass, not forced now.
+        if panel.frame != frame { panel.setFrame(frame, display: false) }
+        // Attached once and left attached: adding and removing a child window each time is
+        // window-server work (most of what showing a card cost).
+        if panel.parent !== window {
+            panel.parent?.removeChildWindow(panel)
+            window.addChildWindow(panel, ordered: .above)
+        }
+        if !panel.isVisible {
+            panel.orderFront(nil)
+            NSAccessibility.post(element: panel, notification: .layoutChanged)
+        }
     }
 
     func hide() {
-        guard panel.isVisible || panel.parent != nil else { return }
+        guard panel.isVisible else { return }
+        panel.orderOut(nil)
+    }
+
+    /// Before its window closes.
+    func detach() {
         panel.parent?.removeChildWindow(panel)
         panel.orderOut(nil)
     }

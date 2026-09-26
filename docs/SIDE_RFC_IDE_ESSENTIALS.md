@@ -1,8 +1,9 @@
 # RFC: IDE essentials — language features, languages, keymaps and themes
 
-*2026-09-26. Status: **accepted**: the owner agreed to the direction on 2026-09-26 ("Let's do it").
-Defaults chosen where the owner didn't pick are marked (default); say so and they change.
-Build order below. Step 1 built.*
+*2026-09-26. Status: **built**: the owner agreed to the direction on 2026-09-26 ("Let's do it"), and all
+nine steps are built. Defaults chosen where the owner didn't pick are marked (default).
+Later: the themes need reworking (the owner, 2026-09-26), Kotlin and C# grammars, a vim mode.*
+Symbols: `LSPClient`, `LSPManager`, `CompletionSession`, `CompletionPopup`, `InfoCard`, `Outline`, `LanguageSettings`, `LanguagesViewController`, `EditorThemes`, `VSCodeTheme`, `LineComments`.
 *Companion to `SIDE_RFC_ALLOY.md` (the editor), `SIDE_PLAN_EDITOR_SHORTCUTS.md` (the shortcuts table
 this extends) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures). Later RFCs, not this one: a
 debugger (DAP), a tests panel, git depth, profiling, remote development with the mobile rollout,
@@ -514,6 +515,29 @@ Tests:
   selectors, ANSI), refusing a non-theme, choices remembered and cleared when a theme is
   removed, and built-ins that color the common captures.
 
+**Step 9, 2026-09-26.** Every budget above is a row of `Budgets.table`, measured by
+`scripts/budgets.sh` in an optimized build:
+
+| Measure | Budget | Measured |
+|---|---|---|
+| A keystroke's edit to the server, 100k-line file, p99 | ≤ 1 ms | 0.03 ms |
+| Completion re-ranking 6,000 items per keystroke, p99 | ≤ 8 ms | 0.30 ms |
+| Hover card with a large doc and two problems, p99 | ≤ 5 ms | 1.1 ms (the session's first, which makes the card: 14 ms) |
+| Signature help, p99 | ≤ 5 ms | 1.1 ms |
+| Show Problems, 5,000 problems in 250 files | ≤ 50 ms | 25 ms the first time (it sorts), 1.2 ms after |
+| Grammars added in step 6 | ≤ 12 MB | ~6 MB of objects |
+| Idle in the background with files open | ≤ 80 MB, ≤ 0.5% CPU, ≤ 2 wakeups/s | 58 MB, 0.01%, 0/s |
+| Through every stage and a Markdown preview, peak / 40 s later | ≤ 300 / 120 MB | 199 / 89 MB |
+
+Measuring found two things over budget, both fixed:
+
+- **Show Problems took 153 ms.** It sorted on `URL.path` (recomputed per comparison) and built
+  its rows twice on opening. It now sorts once, on paths kept alongside, when the problems
+  change.
+- **A hover card took 6.8 ms at p50.** Adding and removing it as a child window each time, and
+  forcing a draw, were window-server work. The card now stays attached (shown and hidden),
+  measures only new content, and draws with the next display pass.
+
 ## Progress
 
 - [x] 1 LSP foundation and completion (below)
@@ -524,4 +548,4 @@ Tests:
 - [x] 6 More grammars (below; Kotlin and C# held back)
 - [x] 7 Keymaps (below)
 - [x] 8 Themes (below)
-- [ ] 9 Budgets
+- [x] 9 Budgets (below)
