@@ -1,7 +1,9 @@
 # RFC: The debugger
 
-*2026-09-26. Status: **decisions pending**: five questions for the owner below, each with a
-recommendation. Once they're answered, the build order is the plan below.*
+*2026-09-26. Status: **accepted**: the owner answered on 2026-09-26. The debugger lives in Make;
+a breakpoint is a click on the line number; a project's `.vscode/launch.json` is read, with
+consent; agents get read-only access first. Q4, the first languages, took the recommendation
+(default). The build order is the plan below.*
 *Companion to `SIDE_RFC_IDE_ESSENTIALS.md` (the language-server client this mirrors, and
 Settings → Languages, which gains a debugger per language) and `SIDE_RFC_ALLOY.md` (the gutter
 and line tints the debugger draws with).*
@@ -43,7 +45,7 @@ Side can write, check, navigate and run code, but it can't pause it. Today:
    output does.
 5. Stop ends it. Breakpoints are kept per project.
 
-## Decisions pending
+## Decisions (the owner's answers, 2026-09-26; each recommendation was chosen)
 
 - **Q1. Where the debug UI lives.**
   - **Recommended:** in Make, since you debug while looking at code. The debug bar sits over
