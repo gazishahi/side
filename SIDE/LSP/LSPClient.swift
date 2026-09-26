@@ -115,6 +115,14 @@ actor LSPClient {
             guard capabilities.formats else { return reply(nil) }
             let params: LSPValue = ["textDocument": ["uri": .string(uri)], "options": ["tabSize": .int(tabSize), "insertSpaces": .bool(insertSpaces)]]
             await sendRequest(method: "textDocument/formatting", params: params) { reply(try? $0.get()) }
+        case .signatureHelp(let uri, let position, let context, let token, let reply):
+            guard capabilities.signatureHelp != nil else { return reply(nil) }
+            let params: LSPValue = ["textDocument": ["uri": .string(uri)], "position": ["line": .int(position.line), "character": .int(position.character)], "context": context]
+            await sendRequest(method: "textDocument/signatureHelp", params: params, token: token) { reply(try? $0.get()) }
+        case .hover(let uri, let position, let token, let reply):
+            guard capabilities.hovers else { return reply(nil) }
+            let params: LSPValue = ["textDocument": ["uri": .string(uri)], "position": ["line": .int(position.line), "character": .int(position.character)]]
+            await sendRequest(method: "textDocument/hover", params: params, token: token) { reply(try? $0.get()) }
         case .cancel(let token, _):
             guard let id = token.id, let reply = pendingRequests.removeValue(forKey: id) else { return }
             reply(.failure(ClientError.notRunning))

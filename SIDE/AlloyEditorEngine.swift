@@ -43,6 +43,18 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         }
         view.onEffectiveAppearanceChange = { [weak self] in self?.applyAppearance(fontChanged: false) }
         view.gutter.onClick = { [weak self] line, event in self?.gutterClicked(line: line, event: event) }
+        view.onPointerMove = { [weak self] offset, modifiers in
+            guard let self else { return }
+            self.delegate?.editor(self, pointerAt: offset, modifiers: modifiers)
+        }
+        view.onPointerExit = { [weak self] in
+            guard let self else { return }
+            self.delegate?.editorPointerExited(self)
+        }
+        view.onCommandClick = { [weak self] offset in
+            guard let self else { return false }
+            return self.delegate?.editor(self, commandClickedAt: offset) ?? false
+        }
         applyAppearance(fontChanged: false)
     }
 
@@ -109,7 +121,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         guard let document = document as? AlloyEditorDocument else { view.decorations = []; return }
         var decorations: [Decoration] = []
         // Drawn in this order, so the match Find is on sits over the others.
-        let order: [EditorDecoration] = [.bracketMatch, .findMatch, .findCurrent, .diagnostic]
+        let order: [EditorDecoration] = [.bracketMatch, .findMatch, .findCurrent, .diagnostic, .link]
         // Marks of a kind mostly share a color: converted once, not once per mark.
         var converted: [ObjectIdentifier: SIMD4<Float>] = [:]
         for kind in order {
@@ -118,7 +130,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
                 let color = converted[key] ?? components(mark.color)
                 converted[key] = color
                 decorations.append(Decoration(range: mark.range.location..<(mark.range.location + mark.range.length), color: color,
-                                              style: kind == .diagnostic ? .dottedUnderline : .background))
+                                              style: kind == .diagnostic ? .dottedUnderline : (kind == .link ? .underline : .background)))
             }
         }
         view.decorations = decorations
@@ -143,6 +155,14 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
 
     func scrollRangeToVisible(_ range: NSRange) { view.scrollToVisible(offset: range.location) }
 
+    func centerRange(_ range: NSRange) {
+        let line = view.rect(forCharacterRange: range.location..<range.location)
+        let viewport = view.viewport
+        // Already comfortably on screen: leave the view where it is.
+        if line.minY >= viewport.minY + viewport.height * 0.15, line.maxY <= viewport.maxY - viewport.height * 0.15 { return }
+        view.scrollY = line.midY - viewport.height / 2
+    }
+
     func rect(forCharacterRange range: NSRange) -> NSRect {
         view.rect(forCharacterRange: range.location..<(range.location + range.length))
     }
@@ -154,6 +174,11 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
 
     func insertText(_ text: String, replacementRange: NSRange) {
         view.textView.insertText(text, replacementRange: replacementRange)
+    }
+
+    func insertSnippet(_ snippet: Snippet, replacing range: NSRange, alsoApplying extra: [(range: NSRange, text: String)]) {
+        view.insert(snippet, replacing: range.location..<NSMaxRange(range),
+                    alsoApplying: extra.map { TextEdit(range: $0.range.location..<NSMaxRange($0.range), text: $0.text) })
     }
 
     func applyEdits(_ edits: [(range: NSRange, text: String)]) {

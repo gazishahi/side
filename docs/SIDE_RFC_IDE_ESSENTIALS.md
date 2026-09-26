@@ -100,8 +100,9 @@ These are rows of `Budgets.table`, measured in an optimized build (step 9).
 ### L3: understanding and changing code
 
 - **Hover (Quick Help).** Resting the pointer on a symbol for 0.5 s shows its type and docs on a
-  glass card (default). ⌥-click shows it at once (Xcode's key), and it's in the shortcuts table.
-  Diagnostics under the pointer show on the same card.
+  glass card (default). Show Quick Help (⌃⌘I) shows it for the symbol at the caret. ⌥-click
+  stays "add a caret", as Alloy already had it, instead of Xcode's Quick Help. Diagnostics under
+  the pointer show on the same card.
 - **Definition:** ⌘-click, as well as ⌃⌘J. More than one location opens a picker.
 - **Surfaces reuse Side's palette** (the one search surface of F1):
   - **References** (⇧⌘R, default) are a list in the palette, like Find in Project.
@@ -277,10 +278,53 @@ Tests:
 - `LSPOutboundQueueTests`: a cancelled request is never sent.
 - Budgets `completion.filter` and `completion.sync`.
 
+**Step 2, 2026-09-26.**
+
+- **Alloy (0.3.0, not yet published):**
+  - `Snippet` parses LSP/VS Code snippet syntax: stops, defaults, choices, mirrors, variables
+    and escapes.
+  - `AlloyEditorView.insert(_:replacing:alsoApplying:)` inserts one as a single undo step and
+    selects its first stop. Tab and ⇧Tab move between stops, and mirrors are typed once.
+  - `SnippetStops` follows the edits typed after insertion. Escape, undo, or moving the caret
+    away ends the snippet; so does reaching `$0`. The stops still ahead are faintly boxed.
+  - Pointer hooks: `onPointerMove` gives the character under the pointer and the keys held,
+    `onPointerExit` fires on leaving or scrolling, and `onCommandClick` handles ⌘-click.
+  - `characterOffset(at:)` gives the character under a point.
+- **Side, completion:** snippets are advertised and inserted with their stops (a Swift `min`
+  becomes `min(x, y)`, and Tab moves between the two).
+  - An item's range on the request line is anchored to the caret (Return) or the end of the
+    word (Tab). sourcekit-lsp answers against text newer than the request, and its ranges
+    could run past the end of the document.
+- **Signature help** (`LSPSignatureHelp`, `InfoCard`) appears above the caret on a server's
+  trigger characters. It re-asks on each edit while it's up, with the current parameter in bold
+  and its documentation below. It goes away when the call closes, on Escape, or when the caret
+  moves off. Auto-pairing's caret move no longer dismisses it.
+- **Hover** (`LSPHover`, `MarkdownLite`):
+  - Resting 0.5 s on a symbol shows its type and docs, with any problems there listed first.
+    Code is shown in the editor's font.
+  - The card stays inside the window where it fits.
+  - Show Quick Help (⌃⌘I) does the same at the caret.
+- **⌘-click:** holding ⌘ underlines the symbol under the pointer, and a click goes to its
+  definition.
+  - Several definitions open a picker (file:line, with its folder).
+  - The target line is centered (`EditorEngine.centerRange`, used by Go to Line too).
+  - Paths through symlinks (pnpm's and deno's `node_modules`) now find their tab. Before, the
+    file opened but the caret stayed at line 1.
+- Checked in Side on Khidma (typescript-language-server) and a Swift file (sourcekit-lsp):
+  - `setTimeout(` gives its signatures with `timeout` in bold after the `,`.
+  - Hovering `useState` shows its type and docs.
+  - ⌘-click on `useState` picks between its two overloads and lands on line 1883 of React's
+    `index.d.ts`.
+  - `min` completes as a snippet, and Tab moves through it.
+- Tests:
+  - Alloy: `SnippetTests`, `SnippetViewTests`.
+  - Side: `SignatureAndHoverTests`, and `CompletionApplyTests` for a server that counted newer
+    text.
+
 ## Progress
 
 - [x] 1 LSP foundation and completion (below)
-- [ ] 2 Snippets, signature help, hover, ⌘-click
+- [x] 2 Snippets, signature help, hover, ⌘-click (below)
 - [ ] 3 Problems, references, rename, quick fixes
 - [ ] 4 Outline, symbols, formatting
 - [ ] 5 Settings → Languages

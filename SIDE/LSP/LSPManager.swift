@@ -212,6 +212,46 @@ final class LSPManager: @unchecked Sendable {
         return token
     }
 
+    /// The characters that open (and update) signature help for this file's server.
+    func signatureTriggers(forExtension ext: String) -> (triggers: Set<String>, retriggers: Set<String>)? {
+        guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return nil }
+        return serverCapabilities[entry.binaryName]?.signatureHelp
+    }
+
+    func hovers(forExtension ext: String) -> Bool {
+        guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return false }
+        return serverCapabilities[entry.binaryName]?.hovers ?? false
+    }
+
+    /// Signature help at `position`: nil if there's none (the caret left the call).
+    @discardableResult
+    func signatureHelp(url: URL, position: LSPPosition, context: LSPValue, completion: @escaping @Sendable (LSPSignatureHelp?) -> Void) -> LSPRequestToken {
+        let token = LSPRequestToken()
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return token }
+        flush(url: url)
+        onQueue(for: entry) {
+            $0.enqueue(.signatureHelp(uri: url.absoluteString, position: position, context: context, token: token) { result in
+                let help = LSPSignatureHelp(result)
+                DispatchQueue.main.async { if !token.isCancelled { completion(help) } }
+            })
+        }
+        return token
+    }
+
+    @discardableResult
+    func hover(url: URL, position: LSPPosition, completion: @escaping @Sendable (LSPHover?) -> Void) -> LSPRequestToken {
+        let token = LSPRequestToken()
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return token }
+        flush(url: url)
+        onQueue(for: entry) {
+            $0.enqueue(.hover(uri: url.absoluteString, position: position, token: token) { result in
+                let hover = LSPHover(result)
+                DispatchQueue.main.async { if !token.isCancelled { completion(hover) } }
+            })
+        }
+        return token
+    }
+
     /// Whether this file's running server formats documents.
     func formats(forExtension ext: String) -> Bool {
         guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return false }

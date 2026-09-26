@@ -33,6 +33,8 @@ protocol EditorEngine: AnyObject, Sendable {
     var visibleRect: NSRect { get }
 
     func scrollRangeToVisible(_ range: NSRange)
+    /// Scrolls so the range's line sits in the middle (arriving at a definition, a line).
+    func centerRange(_ range: NSRange)
     /// Where a range sits in `textView`'s coordinates.
     func rect(forCharacterRange range: NSRange) -> NSRect
     /// Where a range sits on screen (the completion panel's anchor), or nil if it isn't laid out.
@@ -41,6 +43,9 @@ protocol EditorEngine: AnyObject, Sendable {
     func insertText(_ text: String, replacementRange: NSRange)
     /// Replaces several ranges as one undoable step (Find's Replace All), reported like an edit.
     func applyEdits(_ edits: [(range: NSRange, text: String)])
+    /// Text with tab stops over `range` (a completion), with `extra` edits elsewhere (its
+    /// import), as one undo step; its first stop is selected and Tab moves through the rest.
+    func insertSnippet(_ snippet: Snippet, replacing range: NSRange, alsoApplying extra: [(range: NSRange, text: String)])
     func focus()
 
     // The gutter's marks, keyed by one-based line.
@@ -85,6 +90,8 @@ enum EditorDecoration {
     /// Every match of the palette's Find, and the one it's on.
     case findMatch
     case findCurrent
+    /// ⌘ over a symbol: an underline that says a click goes to its definition.
+    case link
 }
 
 struct EditorAppearance {
@@ -105,4 +112,16 @@ protocol EditorEngineDelegate: AnyObject {
     func editor(_ engine: EditorEngine, definitionRequestedAt characterIndex: Int)
     func editor(_ engine: EditorEngine, clickedDiffMark mark: GitDiffMark, line: Int, event: NSEvent)
     func editor(_ engine: EditorEngine, clickedDiagnostic severity: LSPDiagnosticSeverity, line: Int, event: NSEvent)
+    /// The pointer over the text: the character under it (nil if none) and the keys held.
+    func editor(_ engine: EditorEngine, pointerAt characterIndex: Int?, modifiers: NSEvent.ModifierFlags)
+    /// The pointer left the text, or the text scrolled under it.
+    func editorPointerExited(_ engine: EditorEngine)
+    /// ⌘-click on a character; true if handled (the caret then stays where it was).
+    func editor(_ engine: EditorEngine, commandClickedAt characterIndex: Int) -> Bool
+}
+
+extension EditorEngineDelegate {
+    func editor(_ engine: EditorEngine, pointerAt characterIndex: Int?, modifiers: NSEvent.ModifierFlags) {}
+    func editorPointerExited(_ engine: EditorEngine) {}
+    func editor(_ engine: EditorEngine, commandClickedAt characterIndex: Int) -> Bool { false }
 }

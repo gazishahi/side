@@ -90,7 +90,7 @@ struct InitializeParams<Options: Encodable>: Encodable {
     }
 
     /// What Side reads, so a server sends it: incremental sync with saves, completion with
-    /// snippets off until Alloy has placeholders (step 2), `resolve` for documentation and
+    /// snippets (Alloy's tab stops), `resolve` for documentation and
     /// edits, markdown or plain documentation, diagnostics, definition, UTF-16 positions
     /// (Alloy's own unit), and the workspace requests Side answers.
     static var clientCapabilities: LSPValue {
@@ -100,7 +100,7 @@ struct InitializeParams<Options: Encodable>: Encodable {
                 "synchronization": ["didSave": true, "dynamicRegistration": false],
                 "completion": [
                     "completionItem": [
-                        "snippetSupport": false,
+                        "snippetSupport": true,
                         "insertReplaceSupport": true,
                         "labelDetailsSupport": true,
                         "documentationFormat": ["markdown", "plaintext"],
@@ -111,6 +111,15 @@ struct InitializeParams<Options: Encodable>: Encodable {
                 ],
                 "definition": ["linkSupport": true],
                 "formatting": ["dynamicRegistration": false],
+                "hover": ["contentFormat": ["markdown", "plaintext"]],
+                "signatureHelp": [
+                    "signatureInformation": [
+                        "documentationFormat": ["markdown", "plaintext"],
+                        "parameterInformation": ["labelOffsetSupport": true],
+                        "activeParameterSupport": true,
+                    ],
+                    "contextSupport": true,
+                ],
                 "publishDiagnostics": ["relatedInformation": false],
             ],
             "workspace": [
@@ -130,8 +139,17 @@ struct LSPServerCapabilities: Sendable, Equatable {
     var completionTriggers: Set<String> = []
     var completionResolves = false
     var formats = false
+    var hovers = false
+    /// The characters that open signature help, and those that update it while it's up.
+    var signatureHelp: (triggers: Set<String>, retriggers: Set<String>)?
 
     init() {}
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.syncKind == b.syncKind && a.completionTriggers == b.completionTriggers && a.completionResolves == b.completionResolves
+            && a.formats == b.formats && a.hovers == b.hovers
+            && a.signatureHelp?.triggers == b.signatureHelp?.triggers && a.signatureHelp?.retriggers == b.signatureHelp?.retriggers
+    }
 
     init(initializeResult result: LSPResult?) {
         guard let capabilities = result?.object?["capabilities"] as? [String: Any] else { return }
@@ -141,6 +159,10 @@ struct LSPServerCapabilities: Sendable, Equatable {
             syncKind = sync["change"] as? Int ?? 0
         }
         formats = capabilities["documentFormattingProvider"] is [String: Any] || capabilities["documentFormattingProvider"] as? Bool == true
+        hovers = capabilities["hoverProvider"] is [String: Any] || capabilities["hoverProvider"] as? Bool == true
+        if let signature = capabilities["signatureHelpProvider"] as? [String: Any] {
+            signatureHelp = (Set(signature["triggerCharacters"] as? [String] ?? []), Set(signature["retriggerCharacters"] as? [String] ?? []))
+        }
         if let completion = capabilities["completionProvider"] as? [String: Any] {
             completionTriggers = Set(completion["triggerCharacters"] as? [String] ?? [])
             completionResolves = completion["resolveProvider"] as? Bool ?? false
@@ -326,4 +348,83 @@ struct LSPCompletionList: Sendable {
             self.init(items: [], isIncomplete: false)
         }
     }
+}
+
+/// Documentation as a server sends it (MarkupContent, a MarkedString, or a list of them), as
+/// Markdown.
+enum LSPMarkup {
+    static func markdown(_ value: Any?) -> String? {
+        switch value {
+        case let string as String: return string.isEmpty ? nil : string
+        case let object as [String: Any]:
+            if let language = object["language"] as? String, let code = object["value"] as? String {
+                return code.isEmpty ? nil : "```\(language)\n\(code)\n```"
+            }
+            return (object["value"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        case let array as [Any]:
+            let parts = array.compactMap { markdown($0) }
+            return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+        default: return nil
+        }
+    }
+}
+
+/// A hover's contents, as Markdown.
+struct LSPHover: Sendable {
+    let markdown: String
+
+    init?(_ result: LSPResult?) {
+        guard let markdown = LSPMarkup.markdown(result?.object?["contents"]) else { return nil }
+        self.markdown = markdown
+    }
+}
+
+/// The signatures that fit the call being typed, and which parameter the caret is on.
+struct LSPSignatureHelp: Sendable, Equatable {
+    struct Parameter: Sendable, Equatable {
+        /// Where it is in its signature's label (UTF-16).
+        var range: Range<Int>?
+        var documentation: String?
+    }
+    struct Signature: Sendable, Equatable {
+        var label: String
+        var documentation: String?
+        var parameters: [Parameter]
+        var activeParameter: Int?
+    }
+    var signatures: [Signature]
+    var activeSignature: Int
+    var activeParameter: Int
+
+    init(signatures: [Signature], activeSignature: Int, activeParameter: Int) {
+        self.signatures = signatures
+        self.activeSignature = activeSignature
+        self.activeParameter = activeParameter
+    }
+
+    init?(_ result: LSPResult?) {
+        guard let object = result?.object, let list = object["signatures"] as? [[String: Any]], !list.isEmpty else { return nil }
+        signatures = list.compactMap { signature in
+            guard let label = signature["label"] as? String else { return nil }
+            let parameters = (signature["parameters"] as? [[String: Any]] ?? []).map { parameter -> Parameter in
+                var range: Range<Int>?
+                if let offsets = parameter["label"] as? [Int], offsets.count == 2, offsets[0] <= offsets[1] {
+                    range = offsets[0]..<offsets[1]
+                } else if let text = parameter["label"] as? String {
+                    let found = (label as NSString).range(of: text)
+                    if found.location != NSNotFound { range = found.location..<NSMaxRange(found) }
+                }
+                return Parameter(range: range, documentation: LSPMarkup.markdown(parameter["documentation"]))
+            }
+            return Signature(label: label, documentation: LSPMarkup.markdown(signature["documentation"]),
+                             parameters: parameters, activeParameter: signature["activeParameter"] as? Int)
+        }
+        guard !signatures.isEmpty else { return nil }
+        activeSignature = min(max(0, object["activeSignature"] as? Int ?? 0), signatures.count - 1)
+        activeParameter = object["activeParameter"] as? Int ?? 0
+    }
+
+    var current: Signature { signatures[activeSignature] }
+    /// The parameter the caret is on: the signature's own say first, then the reply's.
+    var currentParameter: Int { current.activeParameter ?? activeParameter }
 }

@@ -18,7 +18,10 @@ agents that edit alongside you, drawn with Metal.
 Editing: multiple cursors (⌥-click, ⌥⌘↑/↓), column selection (⌥-drag), code folding (the gutter,
 or `foldAtCaret`, `unfoldAtCaret`, `foldAll`, `unfoldAll`; a folded region reads as one line, `header { … }`, and
 clicking the `… }` opens it; a selection that lands inside opens it too; each document keeps
-its folds when the editor switches between them), and a minimap (`editor.minimap`, placed by the owner).
+its folds when the editor switches between them), snippets (`insert(_:replacing:)` with a `Snippet`
+parsed from LSP/VS Code syntax: Tab and ⇧Tab move between stops, mirrors are typed once),
+pointer hooks for hover cards and ⌘-click (`onPointerMove`, `onPointerExit`, `onCommandClick`),
+and a minimap (`editor.minimap`, placed by the owner).
 
 Offsets are UTF-16 throughout, the unit AppKit and LSP use; UTF-8 conversions are there for
 tree-sitter.

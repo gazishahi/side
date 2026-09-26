@@ -201,6 +201,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var acceptAfterResolve: (row: Int, replacing: Bool)?
     /// What was just typed, from `shouldChangeTextIn`: a list opens on typing, not on deleting.
     private var lastTypedText: String?
+    /// Signature help above the caret while a call's arguments are typed (L2).
+    private let signatureCard = InfoCard()
+    private var signatureToken: LSPRequestToken?
+    private var signatureHelp: LSPSignatureHelp?
+    /// Hover (Quick Help): the word under a resting pointer, and its card (L3).
+    private let hoverCard = InfoCard()
+    private var hoverTimer: DispatchWorkItem?
+    private var hoverToken: LSPRequestToken?
+    private var hoverRange: NSRange?
+    /// The symbol under the pointer while ⌘ is held: underlined, a click away from its definition.
+    private var linkRange: NSRange?
     private var isAcceptingCompletion = false
     private var suppressNextSelectionDismiss = false
     private var quickOpenLocalMonitor: Any?
@@ -1913,6 +1924,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         endCompletion()
+        hideSignatureHelp()
+        endHover()
         DispatchQueue.main.async { [weak self] in self?.updateCaretPosition() }
         if tab.hasExternalChange { showExternalChangeBanner(for: tab.url) } else { externalChangeBanner.isHidden = true }
 
@@ -2176,15 +2189,46 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let point = tab.document.rope.position(of: characterIndex)
         let position = LSPPosition(line: point.line, character: point.column)
         lspManager.definition(url: tab.url, position: position) { [weak self] locations in
-            guard let self, let target = locations.first, let targetURL = URL(string: target.uri) else { return }
-            self.open(targetURL) { [weak self] in
-                guard let self, let targetIndex = self.openTabs.firstIndex(where: { $0.url == targetURL }), self.openTabs[targetIndex].kind == .text else { return }
-                let targetNS = self.openTabs[targetIndex].document.text
-                guard let targetRange = self.nsRange(for: target.range, in: targetNS) else { return }
-                self.editor.selectedRange = NSRange(location: targetRange.location, length: 0)
-                self.editor.scrollRangeToVisible(targetRange)
-                self.editor.focus()
+            guard let self, !locations.isEmpty else { NSSound.beep(); return }
+            guard locations.count > 1 else { return self.goTo(locations[0]) }
+            // Several (an overload, a declaration and its implementation): pick one.
+            let menu = NSMenu()
+            for location in locations.prefix(20) {
+                guard let url = URL(string: location.uri) else { continue }
+                let folder = url.deletingLastPathComponent().pathComponents.suffix(2).joined(separator: "/")
+                let item = NSMenuItem(title: "\(url.lastPathComponent):\(location.range.start.line + 1)", action: #selector(self.goToDefinitionItem(_:)), keyEquivalent: "")
+                let title = NSMutableAttributedString(string: item.title, attributes: [.font: DS.Text.code(12, weight: .regular)])
+                title.append(NSAttributedString(string: "  \(folder)", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]))
+                item.attributedTitle = title
+                item.toolTip = url.path
+                item.target = self
+                item.representedObject = [location.uri, location.range.start.line, location.range.start.character, location.range.end.line, location.range.end.character] as [Any]
+                menu.addItem(item)
             }
+            let caret = self.editor.rect(forCharacterRange: NSRange(location: characterIndex, length: 0))
+            menu.popUp(positioning: nil, at: NSPoint(x: caret.minX, y: caret.maxY + 2), in: self.editor.textView)
+        }
+    }
+
+    @objc private func goToDefinitionItem(_ sender: NSMenuItem) {
+        guard let parts = sender.representedObject as? [Any], parts.count == 5, let uri = parts[0] as? String,
+              let values = Array(parts.dropFirst()) as? [Int] else { return }
+        goTo(LSPLocation(uri: uri, range: LSPRange(start: LSPPosition(line: values[0], character: values[1]), end: LSPPosition(line: values[2], character: values[3]))))
+    }
+
+    private func goTo(_ target: LSPLocation) {
+        guard let targetURL = URL(string: target.uri) else { return }
+        open(targetURL) { [weak self] in
+            // A server's path can run through symlinks (pnpm's and deno's node_modules) that the
+            // tab's own URL doesn't.
+            let resolved = targetURL.resolvingSymlinksInPath().standardizedFileURL
+            guard let self, let targetIndex = self.openTabs.firstIndex(where: { $0.url == targetURL || $0.url.resolvingSymlinksInPath().standardizedFileURL == resolved }),
+                  self.openTabs[targetIndex].kind == .text else { return }
+            let targetNS = self.openTabs[targetIndex].document.text
+            guard let targetRange = self.nsRange(for: target.range, in: targetNS) else { return }
+            self.editor.selectedRange = NSRange(location: targetRange.location, length: 0)
+            self.editor.centerRange(targetRange)
+            self.editor.focus()
         }
     }
 
@@ -3115,7 +3159,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.invalidateGutter()
         if paletteIsOpen, searchMode == .find { scheduleRefreshMatches() }
         scheduleDiffRefresh()
+        let typed = lastTypedText
         updateCompletion()
+        updateSignatureHelp(typed: typed)
+        endHover()
         suppressNextSelectionDismiss = true
     }
 
@@ -3222,6 +3269,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let window = view.window, let caretRect = screenRectForCaret(), !items.isEmpty,
               !(items.count == 1 && (items[0].insertText ?? items[0].label) == session.query) else {
             completionPopup.hide()
+        signatureCard.hide()
+        hoverCard.hide()
             return
         }
         completionPopup.onSelect = { [weak self] row in self?.resolveCompletion(row: row) }
@@ -3291,14 +3340,224 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let caret = editor.selectedRange.location
         guard let edits = CompletionEdits.edits(for: item, session: session, caret: caret, text: rope, replacing: replacing) else { return endCompletion() }
         isAcceptingCompletion = true
-        editor.applyEdits(edits.all)
-        editor.selectedRange = NSRange(location: edits.caretAfter, length: 0)
+        editor.insertSnippet(edits.snippet, replacing: edits.all[0].range, alsoApplying: edits.extras)
         isAcceptingCompletion = false
         endCompletion()
     }
 
     @objc func showCompletions(_ sender: Any?) {
         updateCompletion(explicit: true)
+    }
+
+    // MARK: - Signature help (SIDE_RFC_IDE_ESSENTIALS.md, L2)
+
+    /// After an edit: a server's trigger character (`(`, `,`) asks; while the card is up, every
+    /// edit asks again, so it follows the argument being typed and goes when the call closes.
+    private func updateSignatureHelp(typed: String?) {
+        guard let index = activeTabIndex, openTabs[index].kind == .text, editor.selectedRange.length == 0, let lspManager,
+              let triggers = lspManager.signatureTriggers(forExtension: openTabs[index].url.pathExtension) else { return hideSignatureHelp() }
+        let last = typed.flatMap { $0.last.map(String.init) }
+        var context: LSPValue
+        if let last, triggers.triggers.contains(last) {
+            context = ["triggerKind": 2, "triggerCharacter": .string(last), "isRetrigger": .bool(signatureHelp != nil)]
+        } else if signatureHelp != nil {
+            if let last, triggers.retriggers.contains(last) {
+                context = ["triggerKind": 2, "triggerCharacter": .string(last), "isRetrigger": true]
+            } else {
+                context = ["triggerKind": 3, "isRetrigger": true]
+            }
+        } else {
+            return
+        }
+        if case .object(var fields) = context, let current = signatureHelp {
+            fields["activeSignatureHelp"] = ["activeSignature": .int(current.activeSignature), "activeParameter": .int(current.activeParameter),
+                                             "signatures": .array(current.signatures.map { ["label": .string($0.label)] })]
+            context = .object(fields)
+        }
+        requestSignatureHelp(tab: openTabs[index], context: context)
+    }
+
+    private func requestSignatureHelp(tab: OpenTab, context: LSPValue) {
+        guard let lspManager else { return }
+        if let signatureToken { lspManager.cancel(signatureToken, url: tab.url) }
+        let point = tab.document.rope.position(of: editor.selectedRange.location)
+        let tabID = tab.id
+        signatureToken = lspManager.signatureHelp(url: tab.url, position: LSPPosition(line: point.line, character: point.column), context: context) { [weak self] help in
+            guard let self, let index = self.activeTabIndex, self.openTabs[index].id == tabID else { return }
+            self.signatureToken = nil
+            guard let help else { return self.hideSignatureHelp() }
+            self.signatureHelp = help
+            guard let window = self.view.window, let caret = self.screenRectForCaret() else { return }
+            MainActor.assumeIsolated { self.signatureCard.show(Self.render(help), near: caret, in: window, preferAbove: true) }
+        }
+    }
+
+    private func hideSignatureHelp() {
+        if let signatureToken, let index = activeTabIndex, openTabs.indices.contains(index) { lspManager?.cancel(signatureToken, url: openTabs[index].url) }
+        signatureToken = nil
+        signatureHelp = nil
+        signatureCard.hide()
+    }
+
+    /// The signature with the parameter being typed in bold, then that parameter's own
+    /// documentation (or the signature's).
+    static func render(_ help: LSPSignatureHelp) -> NSAttributedString {
+        let signature = help.current
+        let code = DS.Text.code(12, weight: .regular), bold = DS.Text.code(12, weight: .bold)
+        let text = NSMutableAttributedString()
+        if help.signatures.count > 1 {
+            text.append(NSAttributedString(string: "\(help.activeSignature + 1)/\(help.signatures.count)  ", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        let label = NSMutableAttributedString(string: signature.label, attributes: [.font: code, .foregroundColor: NSColor.secondaryLabelColor])
+        let active = help.currentParameter
+        if signature.parameters.indices.contains(active), let range = signature.parameters[active].range,
+           range.upperBound <= (signature.label as NSString).length {
+            label.addAttributes([.font: bold, .foregroundColor: NSColor.labelColor], range: NSRange(location: range.lowerBound, length: range.count))
+        }
+        text.append(label)
+        let doc = signature.parameters.indices.contains(active) ? (signature.parameters[active].documentation ?? signature.documentation) : signature.documentation
+        if let doc, !doc.isEmpty {
+            text.append(NSAttributedString(string: "\n"))
+            text.append(MarkdownLite.attributed(doc, size: 11.5, color: .secondaryLabelColor))
+        }
+        return text
+    }
+
+    // MARK: - Hover and ⌘-click (SIDE_RFC_IDE_ESSENTIALS.md, L3)
+
+    /// The pointer rested on a word: after half a second, its type and docs (and any problem
+    /// there). ⌘ held underlines it: a click goes to its definition.
+    func editor(_ engine: EditorEngine, pointerAt characterIndex: Int?, modifiers: NSEvent.ModifierFlags) {
+        updateLinkUnderline(at: characterIndex, modifiers: modifiers)
+        guard let characterIndex, view.window?.isKeyWindow == true, !completionPopup.isVisible else { return endHover() }
+        if let hoverRange, NSLocationInRange(characterIndex, hoverRange) { return }
+        endHover()
+        guard let range = hoverWordRange(at: characterIndex) else { return }
+        hoverRange = range
+        let work = DispatchWorkItem { [weak self] in self?.showHover(for: range) }
+        hoverTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    func editorPointerExited(_ engine: EditorEngine) {
+        endHover()
+        clearLinkUnderline()
+    }
+
+    func editor(_ engine: EditorEngine, commandClickedAt characterIndex: Int) -> Bool {
+        guard let index = activeTabIndex, openTabs[index].kind == .text, lspManager != nil,
+              LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension) != nil else { return false }
+        clearLinkUnderline()
+        endHover()
+        editor.selectedRange = NSRange(location: characterIndex, length: 0)
+        performJumpToDefinition(at: characterIndex, tabIndex: index)
+        return true
+    }
+
+    /// Quick Help for the symbol at the caret, now.
+    @objc func showQuickHelp(_ sender: Any?) {
+        guard let range = hoverWordRange(at: editor.selectedRange.location) ?? hoverWordRange(at: max(0, editor.selectedRange.location - 1)) else { return NSSound.beep() }
+        endHover()
+        hoverRange = range
+        showHover(for: range, atCaret: true)
+    }
+
+    /// The identifier around a character, or the character itself (a problem can sit on `;`).
+    private func hoverWordRange(at characterIndex: Int) -> NSRange? {
+        guard let index = activeTabIndex, openTabs[index].kind == .text else { return nil }
+        let text = openTabs[index].document.text
+        guard characterIndex < text.length else { return nil }
+        let unit = text.character(at: characterIndex)
+        guard unit != 0x0A, unit != 0x20, unit != 0x09 else { return nil }
+        guard CompletionText.isWordUnit(unit) else { return NSRange(location: characterIndex, length: 1) }
+        var start = characterIndex, end = characterIndex + 1
+        while start > 0, CompletionText.isWordUnit(text.character(at: start - 1)) { start -= 1 }
+        while end < text.length, CompletionText.isWordUnit(text.character(at: end)) { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
+    private func showHover(for range: NSRange, atCaret: Bool = false) {
+        hoverTimer = nil
+        guard let index = activeTabIndex, openTabs[index].kind == .text else { return }
+        let tab = openTabs[index]
+        let problems = diagnostics(overlapping: range, in: tab)
+        let present: (String?) -> Void = { [weak self] markdown in
+            guard let self, self.hoverRange == range, let window = self.view.window,
+                  let anchor = self.editor.screenRect(forCharacterRange: range) else { return }
+            let content = Self.hoverContent(problems: problems, markdown: markdown)
+            guard content.length > 0 else { return self.hoverCard.hide() }
+            self.hoverCard.show(content, near: anchor, in: window, preferAbove: true)
+        }
+        if !problems.isEmpty { present(nil) }
+        guard let lspManager, lspManager.hovers(forExtension: tab.url.pathExtension) else {
+            if problems.isEmpty, atCaret { NSSound.beep() }
+            return
+        }
+        let point = tab.document.rope.position(of: range.location)
+        hoverToken = lspManager.hover(url: tab.url, position: LSPPosition(line: point.line, character: point.column)) { [weak self] hover in
+            self?.hoverToken = nil
+            if hover == nil, problems.isEmpty { return }
+            present(hover?.markdown)
+        }
+    }
+
+    /// Problems whose range touches the word.
+    private func diagnostics(overlapping range: NSRange, in tab: OpenTab) -> [LSPDiagnostic] {
+        let rope = tab.document.rope
+        let line = rope.position(of: range.location).line
+        return tab.diagnostics.filter { diagnostic in
+            guard diagnostic.range.start.line <= line, diagnostic.range.end.line >= line else { return false }
+            let a = rope.offset(line: diagnostic.range.start.line, column: diagnostic.range.start.character)
+            let b = rope.offset(line: diagnostic.range.end.line, column: diagnostic.range.end.character)
+            return a < NSMaxRange(range) && (b > range.location || (a == b && a == range.location))
+        }
+    }
+
+    static func hoverContent(problems: [LSPDiagnostic], markdown: String?) -> NSAttributedString {
+        let text = NSMutableAttributedString()
+        for problem in problems {
+            if text.length > 0 { text.append(NSAttributedString(string: "\n")) }
+            let color: NSColor = problem.severity == .error ? .systemRed : (problem.severity == .warning ? .systemOrange : .secondaryLabelColor)
+            text.append(NSAttributedString(string: "\u{25CF} ", attributes: [.font: DS.Text.caption(), .foregroundColor: color]))
+            text.append(NSAttributedString(string: problem.message, attributes: [.font: DS.Text.body(), .foregroundColor: NSColor.labelColor]))
+            if let source = problem.source {
+                text.append(NSAttributedString(string: "  \(source)", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.tertiaryLabelColor]))
+            }
+        }
+        if let markdown, !markdown.isEmpty {
+            if text.length > 0 { text.append(NSAttributedString(string: "\n\n")) }
+            text.append(MarkdownLite.attributed(markdown))
+        }
+        return text
+    }
+
+    private func endHover() {
+        hoverTimer?.cancel()
+        hoverTimer = nil
+        if let hoverToken, let index = activeTabIndex, openTabs.indices.contains(index) { lspManager?.cancel(hoverToken, url: openTabs[index].url) }
+        hoverToken = nil
+        hoverRange = nil
+        hoverCard.hide()
+    }
+
+    private func updateLinkUnderline(at characterIndex: Int?, modifiers: NSEvent.ModifierFlags) {
+        guard modifiers.intersection([.command, .option, .shift, .control]) == .command, let characterIndex,
+              let index = activeTabIndex, openTabs[index].kind == .text,
+              LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension) != nil,
+              let range = hoverWordRange(at: characterIndex), range.length > 1 || CompletionText.isWordUnit(openTabs[index].document.text.character(at: range.location)) else {
+            return clearLinkUnderline()
+        }
+        guard range != linkRange else { return }
+        linkRange = range
+        openTabs[index].document.setDecorations(.link, [(range, .linkColor)])
+    }
+
+    private func clearLinkUnderline() {
+        guard linkRange != nil else { return }
+        linkRange = nil
+        if let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text {
+            openTabs[index].document.setDecorations(.link, [])
+        }
     }
 
     // MARK: - Bracket matching
@@ -3320,6 +3579,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return
         }
         endCompletion()
+        hideSignatureHelp()
+        endHover()
     }
 
     private func updateBracketHighlight() {
@@ -3390,7 +3651,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if Self.autoCloseClosers.contains(char), affectedCharRange.length == 0 {
             let ns = engine.document?.text ?? ""
             if affectedCharRange.location < ns.length, ns.character(at: affectedCharRange.location) == char.utf16.first {
+                // Stepping over the closer is typing it: lists and cards follow, not dismiss.
+                suppressNextSelectionDismiss = true
                 engine.selectedRange = NSRange(location: affectedCharRange.location + 1, length: 0)
+                updateSignatureHelp(typed: String(char))
                 return false
             }
         }
@@ -3402,6 +3666,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         if let closing = Self.autoClosePairs[char], affectedCharRange.length == 0 {
             engine.insertText("\(char)\(closing)", replacementRange: affectedCharRange)
+            suppressNextSelectionDismiss = true
             engine.selectedRange = NSRange(location: affectedCharRange.location + 1, length: 0)
             return false
         }
@@ -3440,6 +3705,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             default:
                 break
             }
+        }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)), signatureCard.isVisible || hoverCard.isVisible {
+            hideSignatureHelp()
+            endHover()
+            return true
         }
         if commandSelector == #selector(NSResponder.complete(_:)) {
             updateCompletion(explicit: true)
@@ -3617,6 +3887,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editMenu.addItem(NSMenuItem.separator())
         Shortcuts.bind(editMenu.addItem(withTitle: "Show Completions", action: #selector(showCompletions(_:)), keyEquivalent: ""), "editor.complete")
         Shortcuts.bind(editMenu.addItem(withTitle: "Format Document", action: #selector(formatDocument(_:)), keyEquivalent: ""), "editor.format")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Show Quick Help", action: #selector(showQuickHelp(_:)), keyEquivalent: ""), "editor.quickHelp")
         editItem.submenu = editMenu
 
         // What the user actually toggles about the *presentation* of the workspace, as its own
@@ -4154,7 +4425,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let ns = self.openTabs[index].document.text
             guard let range = self.nsRange(for: LSPRange(start: LSPPosition(line: line - 1, character: 0), end: LSPPosition(line: line - 1, character: 0)), in: ns) else { return }
             self.editor.selectedRange = NSRange(location: range.location, length: 0)
-            self.editor.scrollRangeToVisible(range)
+            self.editor.centerRange(range)
             self.editor.focus()
         }
     }

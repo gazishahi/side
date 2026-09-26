@@ -31,13 +31,15 @@ enum LSPOutboundOp: Sendable {
     case resolve(item: LSPValue, uri: String, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
     case definition(uri: String, position: LSPPosition, reply: @Sendable (LSPResult?) -> Void)
     case formatting(uri: String, tabSize: Int, insertSpaces: Bool, reply: @Sendable (LSPResult?) -> Void)
+    case signatureHelp(uri: String, position: LSPPosition, context: LSPValue, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
+    case hover(uri: String, position: LSPPosition, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
     case cancel(LSPRequestToken, uri: String)
 
     /// The document this op is about, for deciding what a replay supersedes.
     var uri: String {
         switch self {
         case .didOpen(let uri, _, _, _), .didChange(let uri, _, _, _), .didSave(let uri), .didClose(let uri),
-             .completion(let uri, _, _, _, _), .resolve(_, let uri, _, _), .definition(let uri, _, _), .formatting(let uri, _, _, _), .cancel(_, let uri):
+             .completion(let uri, _, _, _, _), .resolve(_, let uri, _, _), .definition(let uri, _, _), .formatting(let uri, _, _, _), .signatureHelp(let uri, _, _, _, _), .hover(let uri, _, _, _), .cancel(_, let uri):
             return uri
         }
     }
@@ -47,14 +49,14 @@ enum LSPOutboundOp: Sendable {
     var isDocumentSync: Bool {
         switch self {
         case .didOpen, .didChange, .didSave, .didClose, .cancel: return true
-        case .completion, .resolve, .definition, .formatting: return false
+        case .completion, .resolve, .definition, .formatting, .signatureHelp, .hover: return false
         }
     }
 
     /// A request its caller no longer wants.
     var isCancelled: Bool {
         switch self {
-        case .completion(_, _, _, let token, _), .resolve(_, _, let token, _): return token.isCancelled
+        case .completion(_, _, _, let token, _), .resolve(_, _, let token, _), .signatureHelp(_, _, _, let token, _), .hover(_, _, let token, _): return token.isCancelled
         default: return false
         }
     }
@@ -62,7 +64,8 @@ enum LSPOutboundOp: Sendable {
     /// Answers a request that will never reach a server.
     func fail() {
         switch self {
-        case .completion(_, _, _, _, let reply), .resolve(_, _, _, let reply), .definition(_, _, let reply), .formatting(_, _, _, let reply): reply(nil)
+        case .completion(_, _, _, _, let reply), .resolve(_, _, _, let reply), .definition(_, _, let reply), .formatting(_, _, _, let reply),
+             .signatureHelp(_, _, _, _, let reply), .hover(_, _, _, let reply): reply(nil)
         case .didOpen, .didChange, .didSave, .didClose, .cancel: break
         }
     }

@@ -301,6 +301,19 @@ final class CompletionApplyTests: XCTestCase {
         XCTAssertEqual(result.all.first?.range, NSRange(location: 9, length: 5))
     }
 
+    func testAServerThatCountedNewerTextStillLandsOnTheWord() throws {
+        // sourcekit-lsp: asked after "m" (col 9), answered with a range to col 10, the "i" typed
+        // since already in it. The edit ends at the caret, not past the text.
+        let text = Rope("let m = mi")
+        var item = LSPCompletionItem(label: "min")
+        item.insertTextFormat = 2
+        item.textEdit = LSPTextEdit(range: LSPRange(start: LSPPosition(line: 0, character: 8), end: LSPPosition(line: 0, character: 10)), newText: "min(${1:x}, ${2:y})")
+        let result = try XCTUnwrap(CompletionEdits.edits(for: item, session: session(wordStart: 8, requestCaret: 9), caret: 10, text: text, replacing: false))
+        XCTAssertEqual(result.all.first?.range, NSRange(location: 8, length: 2))
+        XCTAssertEqual(result.snippet.text, "min(x, y)")
+        XCTAssertEqual(result.snippet.stops.first, [4..<5])
+    }
+
     func testReturnInsertsTabReplacesTheRestOfTheWord() throws {
         let text = Rope("fo|obar\n".replacingOccurrences(of: "|", with: ""))
         var item = LSPCompletionItem(label: "format")
@@ -410,5 +423,47 @@ final class EditorIndentTests: XCTestCase {
         XCTAssertEqual(outdent?.text, "}")
         XCTAssertEqual(outdent?.range, NSRange(location: 26, length: 8))
         XCTAssertNil(MakeWorkspaceViewController.outdentedCloser("}", in: "x = {a" as NSString, at: 6), "not on a line with code")
+    }
+}
+
+/// Step 2: what signature help and hover read from a server, and how they're shown.
+@MainActor
+final class SignatureAndHoverTests: XCTestCase {
+    func testSignatureHelpFindsTheParameterByOffsetsOrByItsText() throws {
+        let help = try XCTUnwrap(LSPSignatureHelp(LSPResult(value: [
+            "signatures": [
+                ["label": "setTimeout(handler: TimerHandler, timeout?: number): number",
+                 "parameters": [["label": [11, 32]], ["label": "timeout?: number", "documentation": ["kind": "markdown", "value": "The delay in **ms**."]]]],
+                ["label": "setTimeout(handler: string): number", "parameters": [["label": "handler: string"]]],
+            ],
+            "activeSignature": 0, "activeParameter": 1,
+        ] as [String: Any])))
+        XCTAssertEqual(help.signatures.count, 2)
+        XCTAssertEqual(help.current.parameters[0].range, 11..<32)
+        XCTAssertEqual(help.current.parameters[1].range, 34..<50)
+        XCTAssertEqual(help.currentParameter, 1)
+        let shown = MakeWorkspaceViewController.render(help).string
+        XCTAssertTrue(shown.hasPrefix("1/2  setTimeout("), shown)
+        XCTAssertTrue(shown.hasSuffix("The delay in ms."), shown)
+        XCTAssertNil(LSPSignatureHelp(LSPResult(value: NSNull())), "no call: no card")
+    }
+
+    func testHoverContentsInEachShapeAServerSends() {
+        XCTAssertEqual(LSPHover(LSPResult(value: ["contents": ["kind": "markdown", "value": "**x**"]]))?.markdown, "**x**")
+        XCTAssertEqual(LSPHover(LSPResult(value: ["contents": ["language": "swift", "value": "let x: Int"]]))?.markdown, "```swift\nlet x: Int\n```")
+        XCTAssertEqual(LSPHover(LSPResult(value: ["contents": ["plain", ["language": "ts", "value": "a"]]] as [String: Any]))?.markdown, "plain\n\n```ts\na\n```")
+        XCTAssertNil(LSPHover(LSPResult(value: ["contents": ""])))
+    }
+
+    func testMarkdownKeepsCodeAndIdentifiersAndDropsMarks() {
+        let shown = MarkdownLite.attributed("```ts\nfunction f(): void\n```\n\nCalls `snake_case_name` — see [the docs](https://x.y) and *this*.").string
+        XCTAssertEqual(shown, "function f(): void\n\nCalls snake_case_name — see the docs and this.")
+        XCTAssertEqual(MarkdownLite.attributed("a_b_c and _d_").string, "a_b_c and d")
+    }
+
+    func testAProblemComesBeforeTheDocs() {
+        let problem = LSPDiagnostic(range: LSPRange(start: LSPPosition(line: 0, character: 0), end: LSPPosition(line: 0, character: 1)), severity: .error, message: "Cannot find name 'x'.", source: "ts")
+        let shown = MakeWorkspaceViewController.hoverContent(problems: [problem], markdown: "let x").string
+        XCTAssertEqual(shown, "\u{25CF} Cannot find name 'x'.  ts\n\nlet x")
     }
 }

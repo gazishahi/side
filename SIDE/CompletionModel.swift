@@ -241,9 +241,25 @@ enum CompletionText {
 
 /// What accepting an item changes, in the text as it is now.
 enum CompletionEdits {
+    /// Where the word the caret is in ends.
+    static func wordEnd(after caret: Int, in text: Rope) -> Int {
+        let end = min(text.utf16Count, caret + 256)
+        guard caret < end else { return caret }
+        var offset = caret
+        for unit in text.substring(caret..<end).utf16 {
+            guard CompletionText.isWordUnit(unit) else { break }
+            offset += 1
+        }
+        return offset
+    }
+
     struct Result {
+        /// The item's own edit first, then its extra ones.
         var all: [(range: NSRange, text: String)]
         var caretAfter: Int
+        /// What goes over the first range: the item's snippet (its stops), or plain text.
+        var snippet: Snippet
+        var extras: [(range: NSRange, text: String)] { Array(all.dropFirst()) }
     }
 
     /// The item's replacement over the word (its server's range if it gave one, stretched over
@@ -270,16 +286,19 @@ enum CompletionEdits {
             let range = (replacing ? nil : item.insertRange) ?? edit.range
             start = offset(range.start)
             end = offset(range.end)
-            if range.end.line == requestLine, range.end.character == requestColumn { end = caret }
+            // On the request's line, from its caret on, the server may have counted against
+            // newer text than it was asked about (sourcekit-lsp answers concurrently with the
+            // edits after it): inserting ends at the caret, replacing at the end of the word.
+            if range.end.line == requestLine, range.end.character >= requestColumn {
+                end = replacing ? wordEnd(after: caret, in: text) : caret
+            }
+            if range.start.line == requestLine, range.start.character > requestColumn { start = session.wordStart }
             newText = edit.newText
         }
         guard start <= end, start <= caret, end <= text.utf16Count else { return nil }
-        var caretInText = (newText as NSString).length
-        if item.insertTextFormat == 2 {
-            let plain = CompletionText.plain(snippet: newText)
-            newText = plain.text
-            caretInText = plain.caret
-        }
+        let snippet = item.insertTextFormat == 2 ? Snippet(parsing: newText) : Snippet(plain: newText)
+        newText = snippet.text
+        let caretInText = snippet.stops[0].first?.lowerBound ?? (newText as NSString).length
         let main = (range: NSRange(location: start, length: end - start), text: newText)
         var all = [main]
         var shift = 0
@@ -291,7 +310,7 @@ enum CompletionEdits {
             all.append((NSRange(location: a, length: b - a), extra.newText))
             if b <= start { shift += (extra.newText as NSString).length - (b - a) }
         }
-        return Result(all: all, caretAfter: start + shift + caretInText)
+        return Result(all: all, caretAfter: start + shift + caretInText, snippet: snippet)
     }
 }
 
