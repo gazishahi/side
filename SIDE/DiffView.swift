@@ -8,9 +8,26 @@ struct UnifiedDiff {
     struct Line: Equatable {
         enum Kind { case added, removed, context }
         let kind: Kind
-        let oldNumber: Int?
-        let newNumber: Int?
-        let text: String
+        /// Numbers as 32 bits, -1 for none: a big diff has a hundred thousand of these.
+        private let old: Int32
+        private let new: Int32
+        var oldNumber: Int? { old >= 0 ? Int(old) : nil }
+        var newNumber: Int? { new >= 0 ? Int(new) : nil }
+        /// The line's text, a slice of the diff it came from: a change set of 100,000 lines
+        /// used to be as many strings of their own.
+        let slice: Substring
+        var text: String { String(slice) }
+
+        init(kind: Kind, oldNumber: Int?, newNumber: Int?, text: String) {
+            self.init(kind: kind, oldNumber: oldNumber, newNumber: newNumber, slice: Substring(text))
+        }
+
+        init(kind: Kind, oldNumber: Int?, newNumber: Int?, slice: Substring) {
+            self.kind = kind
+            old = oldNumber.map(Int32.init) ?? -1
+            new = newNumber.map(Int32.init) ?? -1
+            self.slice = slice
+        }
     }
 
     struct Hunk {
@@ -68,11 +85,11 @@ struct UnifiedDiff {
             currentFile = nil
         }
 
-        for line in text.components(separatedBy: "\n") {
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("diff --git ") {
                 closeFile()
                 // `diff --git a/path b/path` — take the b/ side (the file's current name).
-                let bPath = line.range(of: " b/").map { String(line[$0.upperBound...]) } ?? line
+                let bPath = line.range(of: " b/").map { String(line[$0.upperBound...]) } ?? String(line)
                 currentFile = File(path: bPath, isNew: false, isDeleted: false)
                 continue
             }
@@ -97,7 +114,7 @@ struct UnifiedDiff {
             }
             if line.hasPrefix("@@") {
                 closeHunk()
-                currentHunk = Hunk(header: line)
+                currentHunk = Hunk(header: String(line))
                 // "@@ -oldStart,oldCount +newStart,newCount @@ …"
                 let parts = line.split(separator: " ")
                 if parts.count >= 3 {
@@ -115,13 +132,13 @@ struct UnifiedDiff {
                 currentHunk?.lines.append(
                     Line(
                         kind: .added, oldNumber: nil, newNumber: newLine,
-                        text: String(line.dropFirst())))
+                        slice: line.dropFirst()))
                 newLine += 1
             } else if line.hasPrefix("-") {
                 currentHunk?.lines.append(
                     Line(
                         kind: .removed, oldNumber: oldLine, newNumber: nil,
-                        text: String(line.dropFirst())))
+                        slice: line.dropFirst()))
                 oldLine += 1
             } else if line.hasPrefix("\\") {
                 continue  // "\ No newline at end of file" — metadata, not content.
@@ -129,7 +146,7 @@ struct UnifiedDiff {
                 currentHunk?.lines.append(
                     Line(
                         kind: .context, oldNumber: oldLine, newNumber: newLine,
-                        text: String(line.dropFirst(line.isEmpty ? 0 : 1))))
+                        slice: line.dropFirst(line.isEmpty ? 0 : 1)))
                 oldLine += 1
                 newLine += 1
             }

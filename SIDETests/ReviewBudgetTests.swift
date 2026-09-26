@@ -90,6 +90,26 @@ final class ReviewBudgetTests: XCTestCase {
                 }
                 _ = first
             }
+            // Then the whole change set, top to bottom, as someone reading every file would.
+            if layout == .unified, let first = viewer.editors.first {
+                let end = first.documentLayout.contentHeight
+                let cpuStart = Budgets.cpuSeconds(), wallStart = CACurrentMediaTime()
+                var y: CGFloat = 0, allFrames: [Double] = []
+                while y < end {
+                    y += 90
+                    autoreleasepool {
+                        let start = CACurrentMediaTime()
+                        var waited = 0.0
+                        for editor in viewer.editors { editor.scrollY = y; editor.render(); waited += editor.drawableWaitMilliseconds.last ?? 0 }
+                        allFrames.append((CACurrentMediaTime() - start) * 1000 - waited)
+                        _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.001))
+                    }
+                    if allFrames.count % 20 == 0 { peak = max(peak, Budgets.footprintMB()) }
+                }
+                let wall = CACurrentMediaTime() - wallStart
+                print(String(format: "REVIEWALL %d frames over %.0f pt in %.1f s, CPU %.0f%%, frame p50 %.2f p99 %.2f ms, peak +%.0f MB", allFrames.count, end, wall,
+                             (Budgets.cpuSeconds() - cpuStart) / wall * 100, Budgets.percentile(allFrames, 0.5), Budgets.percentile(allFrames, 0.99), peak - before))
+            }
             let p99 = Budgets.percentile(frames, 0.99)
             // The window-sized drawing buffers are the window's cost, not the change set's.
             let drawables = Double(viewer.editors.map(\.drawableMemoryBytes).reduce(0, +)) / 1_048_576

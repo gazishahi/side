@@ -43,7 +43,23 @@ final class DiffDocumentView: NSView {
     private enum Row {
         case fileTop(Int), fileBottom(Int), gap
         case hunk(file: Int, header: String)
-        case line(file: Int, UnifiedDiff.Line?)
+        case line(file: Int, LineInfo)
+    }
+
+    /// What a row needs of its line once the column's text is built: its kind and numbers.
+    /// The line itself (its text) was copied into every row, most of a big diff's memory.
+    private struct LineInfo {
+        /// nil: the blank opposite an added or removed line in a split.
+        let kind: UnifiedDiff.Line.Kind?
+        let old: Int32
+        let new: Int32
+        init(_ line: UnifiedDiff.Line?) {
+            kind = line?.kind
+            old = line?.oldNumber.map(Int32.init) ?? -1
+            new = line?.newNumber.map(Int32.init) ?? -1
+        }
+        var oldNumber: Int? { old >= 0 ? Int(old) : nil }
+        var newNumber: Int? { new >= 0 ? Int(new) : nil }
     }
 
     private struct Column {
@@ -113,6 +129,9 @@ final class DiffDocumentView: NSView {
         message?.removeFromSuperview()
         message = nil
         rebuild(keepingPosition: false)
+        // Parsing and building let go of a lot at once; the pages go back to the system rather
+        // than sitting in the allocator as free space counted against Side.
+        DispatchQueue.main.async { malloc_zone_pressure_relief(nil, 0) }
     }
 
     private func show(message text: String) {
@@ -181,43 +200,41 @@ final class DiffDocumentView: NSView {
     private func makeColumn(side: DiffBody.Side?) -> Column? {
         var rows: [Row] = []
         var fileText: [Int: (firstRow: Int, rows: [Int])] = [:]
+        // The column's text built with its rows, straight from the diff's slices.
+        var text = ""
+        var lengths = [Int]()
+        func add(_ row: Row, _ slice: Substring? = nil) {
+            if !rows.isEmpty { text.append("\n") }
+            if let slice { text.append(contentsOf: slice) }
+            lengths.append(slice?.utf16.count ?? 0)
+            rows.append(row)
+        }
         for (index, file) in diff.files.enumerated() {
             // Space after a file's lines; a folded file is only its header, so none.
-            if index > 0, !folded.contains(index - 1) { rows.append(.gap) }
-            rows.append(.fileTop(index))
-            rows.append(.fileBottom(index))
+            if index > 0, !folded.contains(index - 1) { add(.gap) }
+            add(.fileTop(index))
+            add(.fileBottom(index))
             guard !folded.contains(index) else { continue }
             var own: [Int] = []
             for hunk in file.hunks {
-                rows.append(.hunk(file: index, header: hunk.header))
+                add(.hunk(file: index, header: hunk.header), Substring(hunk.header))
                 if let side {
                     for pair in SideBySideRows.build(hunk) where !pair.isHeader {
                         own.append(rows.count)
-                        rows.append(.line(file: index, side == .left ? pair.left : pair.right))
+                        let line = side == .left ? pair.left : pair.right
+                        add(.line(file: index, LineInfo(line)), line?.slice)
                     }
                 } else {
                     for line in hunk.lines {
                         own.append(rows.count)
-                        rows.append(.line(file: index, line))
+                        add(.line(file: index, LineInfo(line)), line.slice)
                     }
                 }
             }
             fileText[index] = (own.first ?? rows.count, own)
         }
-        let texts = rows.map { row -> String in
-            switch row {
-            // Empty: the header view draws the path. Text here showed through wherever the
-            // header wasn't (a split column mid-bounce).
-            case .fileTop: return ""
-            case .fileBottom, .gap: return ""
-            case .hunk(_, let header): return header
-            case .line(_, let line): return line?.text ?? ""
-            }
-        }
-        let text = texts.joined(separator: "\n")
         var localIndex = [Int](repeating: -1, count: rows.count)
         for (_, own) in fileText { for (i, row) in own.rows.enumerated() { localIndex[row] = i } }
-        let lengths = texts.map { ($0 as NSString).length }
         let font = DS.Text.Fonts.font(.editor, size: 12)
         guard let editor = try? AlloyEditorView(buffer: TextBuffer(text), font: font as CTFont) else { return nil }
         editor.isEditable = false
@@ -250,7 +267,7 @@ final class DiffDocumentView: NSView {
         let added = tint(DiffBody.addedFill), removed = tint(DiffBody.removedFill), blank = tint(DS.Color.scrimFaint)
         editor.lineBackground = { row in
             guard rows.indices.contains(row), case .line(_, let line) = rows[row] else { return nil }
-            switch line?.kind {
+            switch line.kind {
             case .added?: return added
             case .removed?: return removed
             case nil: return blank
@@ -267,7 +284,7 @@ final class DiffDocumentView: NSView {
             case .line(let file, let line):
                 if let spans = self.syntaxSpans(file: file, row: row, dark: dark, columnSide: side), !spans.isEmpty { return spans }
                 let color: SIMD4<Float>
-                switch line?.kind {
+                switch line.kind {
                 case .added?: color = addedText
                 case .removed?: color = removedText
                 default: color = secondary
@@ -283,7 +300,7 @@ final class DiffDocumentView: NSView {
             return String(repeating: " ", count: max(0, 5 - text.count)) + text
         }
         editor.gutter.label = { row in
-            guard rows.indices.contains(row), case .line(_, let line) = rows[row], let line else { return nil }
+            guard rows.indices.contains(row), case .line(_, let line) = rows[row], line.kind != nil else { return nil }
             switch side {
             case .left?: return pad(line.oldNumber)
             case .right?: return pad(line.newNumber)
@@ -301,7 +318,7 @@ final class DiffDocumentView: NSView {
             case .fileTop(let file): return "file, \(paths[file])"
             case .hunk: return "section, "
             case .line(_, let line):
-                switch line?.kind {
+                switch line.kind {
                 case .added?: return "added, "
                 case .removed?: return "removed, "
                 default: return nil
