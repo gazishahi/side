@@ -172,6 +172,15 @@ enum LanguageServerRegistry {
             cacheLock.withLock { resolutionCache[binaryName] = .found(url) }
             return url
         }
+        // Where `go install` and `dotnet tool install -g` put binaries, often not on PATH.
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        for folder in ["go/bin", ".dotnet/tools"] {
+            let candidate = home.appendingPathComponent(folder).appendingPathComponent(binaryName)
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                cacheLock.withLock { resolutionCache[binaryName] = .found(candidate) }
+                return candidate
+            }
+        }
         if let formula = installFormula, let prefix = runShell("brew --prefix \(formula)") {
             let candidate = URL(fileURLWithPath: prefix).appendingPathComponent("bin/\(binaryName)")
             if FileManager.default.isExecutableFile(atPath: candidate.path) {

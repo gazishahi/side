@@ -6,6 +6,8 @@ enum LanguageInstall: Sendable, Equatable {
     case npm(String)
     case gem(String)
     case dotnet(String)
+    /// A Go module, `go install`ed (the binary lands in `$(go env GOPATH)/bin`).
+    case go(String)
 
     /// What runs in a login shell (so the person's PATH, nvm and rbenv apply).
     var command: String {
@@ -14,6 +16,7 @@ enum LanguageInstall: Sendable, Equatable {
         case .npm(let name): return "npm install -g \(name)"
         case .gem(let name): return "gem install \(name)"
         case .dotnet(let name): return "dotnet tool install -g \(name)"
+        case .go(let module): return "go install \(module)@latest"
         }
     }
 
@@ -24,6 +27,18 @@ enum LanguageInstall: Sendable, Equatable {
         case .npm: return "npm"
         case .gem: return "RubyGems"
         case .dotnet: return ".NET"
+        case .go: return "Go"
+        }
+    }
+
+    /// The installer's own command, which must be there first, and where to get it.
+    var requirement: (binary: String, hint: String) {
+        switch self {
+        case .brew: return ("brew", "Homebrew, from brew.sh")
+        case .npm: return ("npm", "Node.js (brew install node)")
+        case .gem: return ("gem", "Ruby (it comes with macOS; or brew install ruby)")
+        case .dotnet: return ("dotnet", "the .NET SDK (brew install --cask dotnet-sdk)")
+        case .go: return ("go", "Go (brew install go)")
         }
     }
 
@@ -210,7 +225,8 @@ final class LanguageSettings: @unchecked Sendable {
                        extensions: [("c", "c"), ("h", "c"), ("cpp", "cpp"), ("cc", "cpp"), ("cxx", "cpp"), ("hpp", "cpp"), ("hh", "cpp"), ("m", "objective-c"), ("mm", "objective-cpp")],
                        servers: [s("clangd", "clangd", "clangd", [], .brew("llvm"))], asksToInstall: true),
         LanguagePreset(id: "sql", name: "SQL", extensions: [("sql", "sql")],
-                       servers: [s("sqls", "sqls", "sqls", [], .brew("sqls"))], asksToInstall: false),
+                       servers: [s("sql-language-server", "SQL Language Server", "sql-language-server", ["up", "--method", "stdio"], .npm("sql-language-server")),
+                                 s("sqls", "sqls", "sqls", [], .go("github.com/sqls-server/sqls"))], asksToInstall: false),
         LanguagePreset(id: "yaml", name: "YAML", extensions: [("yaml", "yaml"), ("yml", "yaml")],
                        servers: [s("yaml-language-server", "YAML Language Server", "yaml-language-server", ["--stdio"], .brew("yaml-language-server"))], asksToInstall: false),
         LanguagePreset(id: "toml", name: "TOML", extensions: [("toml", "toml")],

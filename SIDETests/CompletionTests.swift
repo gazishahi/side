@@ -539,7 +539,7 @@ final class LanguageSettingsTests: XCTestCase {
     func testPresetsAlternativesOwnCommandsAndOff() {
         XCTAssertEqual(settings.entry(forExtension: "tsx")?.binaryName, "typescript-language-server")
         XCTAssertEqual(settings.entry(forExtension: "tsx")?.languageId, "typescriptreact")
-        XCTAssertEqual(settings.entry(forExtension: "sql")?.binaryName, "sqls", "SQL has a server now")
+        XCTAssertEqual(settings.entry(forExtension: "sql")?.binaryName, "sql-language-server", "SQL has a server now")
         XCTAssertEqual(settings.entry(forExtension: "sql")?.asksToInstall, false, "new languages don't nag until chosen")
 
         settings.setChoice(LanguageChoice(serverID: "vtsls"), for: "typescript")
@@ -578,5 +578,58 @@ final class LanguageSettingsTests: XCTestCase {
         XCTAssertNil(settings.formatOnSave(forExtension: "ts"))
         settings.setChoice(LanguageChoice(formatOnSave: false), for: "typescript")
         XCTAssertEqual(settings.formatOnSave(forExtension: "tsx"), false)
+    }
+}
+
+/// Every language preset is well-formed, and (opt-in, it goes to the network) every install
+/// names something its registry has, which installs the command Side runs. `sqls` once named a
+/// Homebrew formula that doesn't exist.
+final class LanguagePresetTests: XCTestCase {
+    func testEachExtensionBelongsToOneLanguageAndEachLanguageHasAServer() {
+        var seen: [String: String] = [:]
+        for language in LanguageSettings.presets {
+            XCTAssertFalse(language.servers.isEmpty, language.name)
+            for (ext, _) in language.extensions {
+                XCTAssertNil(seen[ext], ".\(ext) is in both \(seen[ext] ?? "") and \(language.name)")
+                seen[ext] = language.name
+            }
+            XCTAssertEqual(Set(language.servers.map(\.id)).count, language.servers.count, "\(language.name): server ids are unique")
+        }
+    }
+
+    private func shell(_ command: String) -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", command]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    func testEveryInstallNamesARealPackageWithTheCommand() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_NETWORK_TESTS"] == "1", "set SIDE_NETWORK_TESTS=1 (TEST_RUNNER_SIDE_NETWORK_TESTS=1) to ask the registries")
+        for language in LanguageSettings.presets {
+            for server in language.servers {
+                guard let install = server.install else { continue }
+                let label = "\(language.name): \(server.name)"
+                switch install {
+                case .brew(let formula):
+                    XCTAssertEqual(shell("brew info --json=v2 --formula \(formula) >/dev/null").status, 0, "\(label): no Homebrew formula \(formula)")
+                case .npm(let package):
+                    let bins = shell("npm view \(package) bin --json").output
+                    XCTAssertTrue(bins.contains("\"\(server.binary)\""), "\(label): npm \(package) doesn't install \(server.binary): \(bins)")
+                case .gem(let name):
+                    XCTAssertTrue(shell("gem search -r '^\(name)$'").output.contains("\(name) ("), "\(label): no gem \(name)")
+                case .dotnet(let tool):
+                    XCTAssertTrue(shell("curl -s 'https://azuresearch-usnc.nuget.org/query?q=packageid:\(tool)&packageType=DotnetTool'").output.contains("\"totalHits\":1"), "\(label): no .NET tool \(tool)")
+                case .go(let module):
+                    XCTAssertTrue(shell("curl -s https://proxy.golang.org/\(module)/@latest").output.contains("\"Version\""), "\(label): no Go module \(module)")
+                }
+            }
+        }
     }
 }

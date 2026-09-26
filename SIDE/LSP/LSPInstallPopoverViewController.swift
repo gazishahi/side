@@ -86,6 +86,27 @@ final class LSPInstallPopoverViewController: NSViewController {
         guard let install = entry.install, task == nil else { return }
         installButton.isHidden = true
         spinner.startAnimation(nil)
+        messageLabel.stringValue = "Checking for \(install.tool)…"
+        // The installer has to be there first: say what's missing rather than run a command
+        // that can only fail.
+        let requirement = install.requirement
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let present = LanguageServerRegistry.resolveExecutable(named: requirement.binary) != nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard present else {
+                    LanguageServerRegistry.invalidateResolution(for: requirement.binary)
+                    self.spinner.stopAnimation(nil)
+                    self.messageLabel.stringValue = "Installing \(self.entry.binaryName) needs \(requirement.hint). Install that, then try again."
+                    self.installButton.isHidden = false
+                    return
+                }
+                self.runInstall(install)
+            }
+        }
+    }
+
+    private func runInstall(_ install: LanguageInstall) {
         messageLabel.stringValue = "Installing \(entry.binaryName) with \(install.tool)…"
 
         let process = Process()
