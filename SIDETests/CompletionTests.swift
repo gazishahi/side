@@ -539,7 +539,7 @@ final class LanguageSettingsTests: XCTestCase {
     func testPresetsAlternativesOwnCommandsAndOff() {
         XCTAssertEqual(settings.entry(forExtension: "tsx")?.binaryName, "typescript-language-server")
         XCTAssertEqual(settings.entry(forExtension: "tsx")?.languageId, "typescriptreact")
-        XCTAssertEqual(settings.entry(forExtension: "sql")?.binaryName, "sql-language-server", "SQL has a server now")
+        XCTAssertEqual(settings.entry(forExtension: "sql")?.binaryName, "sqls", "SQL has a server now")
         XCTAssertEqual(settings.entry(forExtension: "sql")?.asksToInstall, false, "new languages don't nag until chosen")
 
         settings.setChoice(LanguageChoice(serverID: "vtsls"), for: "typescript")
@@ -631,5 +631,36 @@ final class LanguagePresetTests: XCTestCase {
                 }
             }
         }
+    }
+}
+
+/// Every preset server that's installed here starts and answers `initialize`. A package can
+/// exist and still not run: sql-language-server exits at once on current Node versions.
+final class LanguageServerStartTests: XCTestCase {
+    func testEachInstalledServerStartsAndAnswers() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_SERVER_TESTS"] == "1", "set SIDE_SERVER_TESTS=1 (TEST_RUNNER_SIDE_SERVER_TESTS=1) to start the installed servers")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("side-servers-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var tried: [String] = []
+        for language in LanguageSettings.presets {
+            for server in language.servers {
+                guard let executable = LanguageServerRegistry.resolveExecutable(named: server.binary, installFormula: server.install?.brewFormula) else { continue }
+                tried.append(server.binary)
+                let client = LSPClient(executableURL: executable, arguments: server.arguments,
+                                       environment: LanguageServerRegistry.environmentForSpawning(), currentDirectory: root)
+                let answered = expectation(description: server.binary)
+                let failure = LockedBox<String?>(nil)
+                Task {
+                    do { _ = try await client.start(rootURI: root.absoluteString) } catch { failure.value = "\(error)" }
+                    answered.fulfill()
+                }
+                await fulfillment(of: [answered], timeout: 60)
+                XCTAssertNil(failure.value, "\(language.name): \(server.binary) didn't answer initialize: \(failure.value ?? "")")
+                await client.stop()
+            }
+        }
+        print("SERVERS started: \(tried.joined(separator: ", "))")
+        XCTAssertFalse(tried.isEmpty)
     }
 }

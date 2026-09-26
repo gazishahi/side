@@ -2066,11 +2066,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             lspStatusButton.isHidden = true
             return
         }
-        let language = LSPStatusChip.languageName(entry.languageId)
+        let language = LanguageSettings.preset(forExtension: openTabs[index].url.pathExtension)?.name.components(separatedBy: " and ").first
+            ?? LSPStatusChip.languageName(entry.languageId)
         switch state {
         case .running: lspStatusButton.set(state: .verified, text: language, clickable: false, tip: "\(language) language server running")
         case .starting: lspStatusButton.set(state: .working, text: "\(language) \u{00B7} starting", clickable: false, tip: "Starting the \(language) language server")
         case .stopped: lspStatusButton.set(state: .failed, text: "\(language) \u{00B7} stopped", clickable: false, tip: "The \(language) language server stopped \u{2014} it restarts on the next edit")
+        case .failed: lspStatusButton.set(state: .failed, text: "\(language) \u{00B7} didn't start", clickable: false,
+                                          tip: "\(entry.binaryName) exited as it started. Try it in Terminal, or choose another server in Settings \u{2192} Languages.")
         case .unavailable: lspStatusButton.set(state: .needsYou, text: "\(language) \u{00B7} not installed", clickable: true, tip: "\(language) language server not installed \u{2014} click to install")
         case .none: break
         }

@@ -31,6 +31,9 @@ final class LSPManager: @unchecked Sendable {
     private var queues: [String: LSPOutboundQueue] = [:]
     /// Binaries whose server died since it was last spawned; the next spawn replays `didOpen`.
     private var crashedBinaries: Set<String> = []
+    /// Binaries that exited or errored while starting: not started again (each edit would
+    /// otherwise spawn it anew) until settings change or it's reinstalled.
+    private(set) var failedBinaries: Set<String> = [] { didSet { announceStateChange() } }
     private var buildServerSetup: BuildServerSetupState = .notStarted
     /// Binaries that failed to resolve on PATH at least once this session — drives the Make
     /// stage's missing-LSP indicator. Cleared for a binary once `retryAfterInstall` succeeds.
@@ -48,12 +51,13 @@ final class LSPManager: @unchecked Sendable {
     var onAvailabilityChanged: (() -> Void)?
 
     /// What Make's tab-strip indicator says about the active file's server (§4.5).
-    enum ServerState: Equatable { case none, starting, running, unavailable, stopped }
+    enum ServerState: Equatable { case none, starting, running, unavailable, stopped, failed }
 
     func serverState(forExtension ext: String) -> ServerState {
         guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return .none }
         let binary = entry.binaryName
         if unavailableBinaries.contains(binary) { return .unavailable }
+        if failedBinaries.contains(binary) { return .failed }
         if clients[binary] != nil { return .running }
         if startingServers.contains(binary) { return .starting }
         if crashedBinaries.contains(binary) { return .stopped }
@@ -82,6 +86,7 @@ final class LSPManager: @unchecked Sendable {
     /// unavailable flag so the next `opened(url:content:)` for that language spawns for real.
     func retryAfterInstall(binaryName: String) {
         LanguageServerRegistry.invalidateResolution(for: binaryName)
+        if failedBinaries.remove(binaryName) != nil { MainActor.assumeIsolated { queues[binaryName] = nil } }
         guard unavailableBinaries.remove(binaryName) != nil else { return }
         onAvailabilityChanged?()
     }
@@ -382,7 +387,7 @@ final class LSPManager: @unchecked Sendable {
 
     /// Spawns the server if it isn't running or starting, and resumes its queue once it is.
     private func ensureClient(for entry: LanguageServerRegistry.Entry) {
-        guard clients[entry.binaryName] == nil, !startingServers.contains(entry.binaryName) else { return }
+        guard clients[entry.binaryName] == nil, !startingServers.contains(entry.binaryName), !failedBinaries.contains(entry.binaryName) else { return }
         withClient(for: entry) { _ in }
     }
 
@@ -561,6 +566,10 @@ final class LSPManager: @unchecked Sendable {
             } catch {
                 print("[LSP] failed to start \(entry.binaryName): \(error)")
                 self?.startingServers.remove(entry.binaryName)
+                self?.failedBinaries.insert(entry.binaryName)
+                // Closed, it answers what's sent to it with nothing at once, instead of holding
+                // edits for a server that isn't coming.
+                self?.queues[entry.binaryName]?.close()
                 completion(nil)
             }
         }

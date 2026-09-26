@@ -33,7 +33,8 @@ final class LSPInstallPopoverViewController: NSViewController {
         super.viewDidLoad()
         view.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
-        messageLabel.stringValue = "\(entry.languageId.capitalized) language server (\(entry.binaryName)) isn't installed. Diagnostics and autocomplete are disabled for this file. \(entry.install.map { "Installing runs \u{201C}\($0.command)\u{201D}, so it'll also be available in your terminal and other editors, not just Side." } ?? "Install it, then reopen the file.")"
+        let language = LanguageSettings.presets.first { $0.id == entry.languageKey }?.name ?? entry.languageId.capitalized
+        messageLabel.stringValue = "\(language)'s language server (\(entry.binaryName)) isn't installed, so completion and problems are off for it. \(entry.install.map { "Installing runs \u{201C}\($0.command)\u{201D}, so it'll also be available in your terminal and other editors, not just Side." } ?? "Install it, then reopen the file.")"
         messageLabel.font = DS.Text.body()
         messageLabel.textColor = .labelColor
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -142,7 +143,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         task = nil
         spinner.stopAnimation(nil)
         if exitCode == 0 {
-            messageLabel.stringValue = "\(entry.languageId.capitalized) language server installed and activated."
+            messageLabel.stringValue = "\(entry.binaryName) is installed and running."
             onInstalled()
         } else {
             messageLabel.stringValue = "Install failed (exit \(exitCode)). See the log below."

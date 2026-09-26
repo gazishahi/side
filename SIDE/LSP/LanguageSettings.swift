@@ -225,8 +225,8 @@ final class LanguageSettings: @unchecked Sendable {
                        extensions: [("c", "c"), ("h", "c"), ("cpp", "cpp"), ("cc", "cpp"), ("cxx", "cpp"), ("hpp", "cpp"), ("hh", "cpp"), ("m", "objective-c"), ("mm", "objective-cpp")],
                        servers: [s("clangd", "clangd", "clangd", [], .brew("llvm"))], asksToInstall: true),
         LanguagePreset(id: "sql", name: "SQL", extensions: [("sql", "sql")],
-                       servers: [s("sql-language-server", "SQL Language Server", "sql-language-server", ["up", "--method", "stdio"], .npm("sql-language-server")),
-                                 s("sqls", "sqls", "sqls", [], .go("github.com/sqls-server/sqls"))], asksToInstall: false),
+                       // sql-language-server (npm) exits on current Node versions; sqls is maintained.
+                       servers: [s("sqls", "sqls", "sqls", [], .go("github.com/sqls-server/sqls"))], asksToInstall: false),
         LanguagePreset(id: "yaml", name: "YAML", extensions: [("yaml", "yaml"), ("yml", "yaml")],
                        servers: [s("yaml-language-server", "YAML Language Server", "yaml-language-server", ["--stdio"], .brew("yaml-language-server"))], asksToInstall: false),
         LanguagePreset(id: "toml", name: "TOML", extensions: [("toml", "toml")],
