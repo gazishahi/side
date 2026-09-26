@@ -273,6 +273,7 @@ final class AlloyEditorDocument: EditorDocument {
     var text: NSString { RopeString.make(buffer.text) }
     var length: Int { buffer.text.utf16Count }
     var rope: Rope { buffer.text }
+    var syntaxSymbols: SyntaxSymbolSource? { highlighter?.symbolSource() }
     var onEdits: (([AppliedEdit]) -> Void)?
 
     /// Outside undo: the history describes the old text. Applied as one edit over what differs,

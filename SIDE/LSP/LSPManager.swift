@@ -283,6 +283,17 @@ final class LSPManager: @unchecked Sendable {
              decode: { $0?.decode([LSPLocation].self) }, completion: completion)
     }
 
+    func documentSymbols(url: URL, completion: @escaping @Sendable ([LSPDocumentSymbol]?) -> Void) {
+        send("textDocument/documentSymbol", url: url, params: ["textDocument": ["uri": .string(url.absoluteString)]],
+             decode: { LSPDocumentSymbol.list($0) }, completion: completion)
+    }
+
+    func formatRange(url: URL, range: LSPRange, tabSize: Int, insertSpaces: Bool, completion: @escaping @Sendable ([LSPTextEdit]?) -> Void) {
+        send("textDocument/rangeFormatting", url: url, params: ["textDocument": ["uri": .string(url.absoluteString)], "range": Self.range(range),
+                                                              "options": ["tabSize": .int(tabSize), "insertSpaces": .bool(insertSpaces)]],
+             decode: { $0?.array?.compactMap { LSPTextEdit($0) } }, completion: completion)
+    }
+
     /// Whether the symbol at `position` can be renamed, and the range of its name: nil if not.
     /// A server that doesn't prepare says yes, with no range.
     func prepareRename(url: URL, position: LSPPosition, completion: @escaping @Sendable (Result<LSPRange?, LSPRenameRefusal>) -> Void) {

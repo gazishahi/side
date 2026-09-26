@@ -358,12 +358,40 @@ Tests:
 - Tests: `WorkspaceEditTests`, and in `EditorEngineTests` a rename across a shown tab, a tab
   behind it and a closed file (one undo per file), plus refusing overlapping edits.
 
+**Step 4, 2026-09-26.**
+
+- **Alloy (0.4.0, not yet published):** `SyntaxSymbolSource.symbols()` builds an outline from
+  the syntax tree.
+  - It covers all thirteen languages: declarations nested in what contains them, the locals
+    inside functions left out.
+  - Swift's struct, enum, extension and actor are read from the keyword.
+  - It walks a copy of the tree, so it runs off the main thread. 20,000 functions take well
+    under the test's two-second bound in a debug build.
+- **Go to Symbol (⇧⌘O) is the file's outline:**
+  - The symbols come from the server's `documentSymbol` (nested or flat), or from the syntax
+    tree where there's no server or it returns none.
+  - With nothing typed, it lists them in order and indented. Typing ranks the matches, each
+    with what it's in.
+  - Each row has a kind icon; Return selects the name and centers it.
+  - The regex `SymbolIndexer` is gone.
+- **Format Selection:** ⌃⇧I with a selection formats just those lines, through the server's
+  `rangeFormatting` or prettier's `--range-start/--range-end`; otherwise the whole document.
+  Format on save is unchanged until step 5's per-language setting.
+- Checked in Side:
+  - `EventRegistration.tsx` from typescript-language-server, where `hand` finds
+    `handleSubmit`, `handleCancel` and the rest in `EventRegistration`.
+  - `PRODUCT_ROADMAP.md`'s headings from the tree.
+- Tests:
+  - Alloy: `SyntaxSymbolsTests`, covering Swift, TypeScript, Python, Rust, Go, C, Ruby,
+    Markdown, JSON and a 20,000-function file.
+  - Side: `OutlineTests`.
+
 ## Progress
 
 - [x] 1 LSP foundation and completion (below)
 - [x] 2 Snippets, signature help, hover, ⌘-click (below)
 - [x] 3 Problems, references, rename, quick fixes (below)
-- [ ] 4 Outline, symbols, formatting
+- [x] 4 Outline, symbols, formatting (below)
 - [ ] 5 Settings → Languages
 - [ ] 6 More grammars
 - [ ] 7 Keymaps

@@ -495,3 +495,34 @@ final class WorkspaceEditTests: XCTestCase {
         XCTAssertEqual(disabled.disabledReason, "Select an expression")
     }
 }
+
+/// Step 4: a file's outline, from its server or its syntax tree.
+final class OutlineTests: XCTestCase {
+    private func range(_ line: Int, _ a: Int, _ b: Int) -> [String: Any] {
+        ["start": ["line": line, "character": a], "end": ["line": line, "character": b]]
+    }
+
+    func testNestedSymbolsFlattenInOrderWithTheirDepth() throws {
+        let rope = Rope("class A {\n  run() {}\n}\nfunction b() {}\n")
+        let symbols = try XCTUnwrap(LSPDocumentSymbol.list(LSPResult(value: [
+            ["name": "b", "kind": 12, "range": range(3, 0, 15), "selectionRange": range(3, 9, 10)],
+            ["name": "A", "kind": 5, "range": range(0, 0, 1), "selectionRange": range(0, 6, 7),
+             "children": [["name": "run", "kind": 6, "detail": "(): void", "range": range(1, 2, 10), "selectionRange": range(1, 2, 5)]]],
+        ])))
+        let outline = Outline.from(symbols, rope: rope)
+        XCTAssertEqual(outline.map(\.name), ["A", "run", "b"], "in document order")
+        XCTAssertEqual(outline.map(\.depth), [0, 1, 0])
+        XCTAssertEqual(outline[1].container, "A")
+        XCTAssertEqual(outline[1].nameRange, NSRange(location: 12, length: 3))
+        XCTAssertEqual(outline[1].kind, .method)
+    }
+
+    func testFlatSymbolInformationKeepsItsContainer() throws {
+        let symbols = try XCTUnwrap(LSPDocumentSymbol.list(LSPResult(value: [
+            ["name": "go", "kind": 12, "containerName": "Main", "location": ["uri": "file:///a.go", "range": range(0, 5, 7)]],
+        ])))
+        let outline = Outline.from(symbols, rope: Rope("func go() {}\n"))
+        XCTAssertEqual(outline.first?.container, "Main")
+        XCTAssertEqual(outline.first?.kind, .function)
+    }
+}

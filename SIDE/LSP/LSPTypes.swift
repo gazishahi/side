@@ -113,6 +113,8 @@ struct InitializeParams<Options: Encodable>: Encodable {
                 "formatting": ["dynamicRegistration": false],
                 "hover": ["contentFormat": ["markdown", "plaintext"]],
                 "references": ["dynamicRegistration": false],
+                "documentSymbol": ["hierarchicalDocumentSymbolSupport": true, "symbolKind": ["valueSet": .array((1...26).map { .int($0) })]],
+                "rangeFormatting": ["dynamicRegistration": false],
                 "rename": ["prepareSupport": true],
                 "codeAction": [
                     "codeActionLiteralSupport": ["codeActionKind": ["valueSet": ["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports", "source.fixAll"]]],
@@ -152,6 +154,8 @@ struct LSPServerCapabilities: Sendable, Equatable {
     var formats = false
     var hovers = false
     var findsReferences = false
+    var documentSymbols = false
+    var formatsRanges = false
     var renames = false
     var preparesRename = false
     var codeActions = false
@@ -163,7 +167,7 @@ struct LSPServerCapabilities: Sendable, Equatable {
 
     static func == (a: Self, b: Self) -> Bool {
         a.syncKind == b.syncKind && a.completionTriggers == b.completionTriggers && a.completionResolves == b.completionResolves
-            && a.formats == b.formats && a.hovers == b.hovers && a.findsReferences == b.findsReferences
+            && a.formats == b.formats && a.hovers == b.hovers && a.findsReferences == b.findsReferences && a.documentSymbols == b.documentSymbols && a.formatsRanges == b.formatsRanges
             && a.renames == b.renames && a.preparesRename == b.preparesRename && a.codeActions == b.codeActions && a.resolvesCodeActions == b.resolvesCodeActions
             && a.signatureHelp?.triggers == b.signatureHelp?.triggers && a.signatureHelp?.retriggers == b.signatureHelp?.retriggers
     }
@@ -178,6 +182,8 @@ struct LSPServerCapabilities: Sendable, Equatable {
         formats = capabilities["documentFormattingProvider"] is [String: Any] || capabilities["documentFormattingProvider"] as? Bool == true
         hovers = capabilities["hoverProvider"] is [String: Any] || capabilities["hoverProvider"] as? Bool == true
         findsReferences = capabilities["referencesProvider"] is [String: Any] || capabilities["referencesProvider"] as? Bool == true
+        documentSymbols = capabilities["documentSymbolProvider"] is [String: Any] || capabilities["documentSymbolProvider"] as? Bool == true
+        formatsRanges = capabilities["documentRangeFormattingProvider"] is [String: Any] || capabilities["documentRangeFormattingProvider"] as? Bool == true
         renames = capabilities["renameProvider"] is [String: Any] || capabilities["renameProvider"] as? Bool == true
         preparesRename = (capabilities["renameProvider"] as? [String: Any])?["prepareProvider"] as? Bool == true
         codeActions = capabilities["codeActionProvider"] is [String: Any] || capabilities["codeActionProvider"] as? Bool == true

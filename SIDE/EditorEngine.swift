@@ -1,4 +1,5 @@
 import AlloyCore
+import AlloySyntax
 import AppKit
 import Heron
 
@@ -79,6 +80,9 @@ protocol EditorDocument: AnyObject, Sendable {
     /// Edits made while another tab is shown (a rename across files): one undo step, and
     /// reported through `onEdits` like any other.
     func applyEdits(_ edits: [(range: NSRange, text: String)])
+    /// The syntax tree as it stands, to find the file's symbols in off the main thread; nil for
+    /// plain text or before the first parse.
+    var syntaxSymbols: SyntaxSymbolSource? { get }
     /// Colors the document for its file's language (and again if the file is renamed).
     func highlight(url: URL, appearance: EditorAppearance)
     /// Replaces one kind of decoration everywhere in the document.

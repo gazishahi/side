@@ -262,7 +262,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var referenceSymbol = ""
     /// Rename's field, over the symbol.
     private var renameField: RenameField?
-    private var symbolMatches: [CodeSymbol] = []
+    private var symbolMatches: [OutlineSymbol] = []
+    /// The active file's outline, for Go to Symbol (⇧⌘O).
+    private var outlineSymbols: [OutlineSymbol] = []
+    private var outlineGeneration = 0
     private var openTabs: [OpenTab] = []
     private var activeTabIndex: Int?
     private var tabChips: [TabChipView] = []
@@ -748,6 +751,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         searchField.stringValue = mode == .commands ? ">" : (mode == .find ? find.query : "")
         if mode == .problems { rebuildProblemRows() }
+        if mode == .symbols { outlineSymbols = []; loadOutline() }
         showQuickOpenPanel()
         searchField.window?.makeFirstResponder(searchField)
         (searchField.currentEditor() as? NSTextView)?.moveToEndOfDocument(nil)
@@ -2999,19 +3003,55 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         applySearchResults()
     }
 
+    /// Go to Symbol: the file's outline, in order and nested, until something's typed; then the
+    /// symbols that match, best first, with what they're in.
     private func performSymbolSearch() {
-        guard let index = activeTabIndex, openTabs.indices.contains(index) else { symbolMatches = []; applySearchResults(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tab = openTabs[index]
-        let allSymbols = SymbolIndexer.symbols(in: tab.document.string, ext: tab.url.pathExtension.lowercased())
         if query.isEmpty {
-            symbolMatches = Array(allSymbols.prefix(30))
+            symbolMatches = outlineSymbols
         } else {
-            symbolMatches = allSymbols.compactMap { symbol in
+            symbolMatches = outlineSymbols.compactMap { symbol in
                 FuzzyMatcher.score(query: query, candidate: symbol.name).map { (symbol, $0) }
-            }.sorted { $0.1 > $1.1 }.prefix(30).map { $0.0 }
+            }.sorted { $0.1 > $1.1 }.prefix(60).map { $0.0 }
         }
         applySearchResults()
+    }
+
+    /// The active file's outline: from its server if it has document symbols, else from the
+    /// syntax tree (off the main thread). The palette refreshes when it arrives.
+    private func loadOutline() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { outlineSymbols = []; return }
+        let tab = openTabs[index]
+        outlineGeneration += 1
+        let generation = outlineGeneration
+        guard let lspManager, lspManager.capabilities(forExtension: tab.url.pathExtension)?.documentSymbols == true else {
+            return loadTreeOutline(tab, generation: generation)
+        }
+        lspManager.documentSymbols(url: tab.url) { [weak self] symbols in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard let symbols, !symbols.isEmpty else { return self.loadTreeOutline(tab, generation: generation) }
+                self.deliverOutline(Outline.from(symbols, rope: tab.document.rope), generation: generation, file: tab.url.lastPathComponent)
+            }
+        }
+    }
+
+    private func loadTreeOutline(_ tab: OpenTab, generation: Int) {
+        let file = tab.url.lastPathComponent
+        guard let source = tab.document.syntaxSymbols else { return deliverOutline([], generation: generation, file: file) }
+        let rope = tab.document.rope
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let outline = Outline.from(source.symbols(), rope: rope)
+            await self?.deliverOutline(outline, generation: generation, file: file)
+        }
+    }
+
+    private func deliverOutline(_ symbols: [OutlineSymbol], generation: Int, file: String) {
+        guard outlineGeneration == generation else { return }
+        outlineSymbols = symbols
+        guard paletteIsOpen, searchMode == .symbols else { return }
+        searchField.placeholderString = symbols.isEmpty ? "No symbols in \(file)" : "Go to symbol in \(file)"
+        performSymbolSearch()
     }
 
     private func applySearchResults() {
@@ -3041,7 +3081,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             guard let symbol else { return }
             hideQuickOpenPanel()
             onPaletteNavigated?()
-            scrollToLine(symbol.line)
+            editor.selectedRange = symbol.nameRange
+            editor.centerRange(symbol.nameRange)
+            editor.focus()
         case .text:
             let match = (selected >= 0 && selected < textMatches.count) ? textMatches[selected] : textMatches.first
             guard let match else { return }
@@ -3130,7 +3172,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.configure(icon: NSWorkspace.shared.icon(forFile: url.path), title: url.lastPathComponent, detail: folder.isEmpty ? nil : folder, trailing: nil)
         case .symbols:
             let symbol = symbolMatches[row]
-            cell.configure(icon: Self.paletteSymbol("function"), title: symbol.name, detail: "\(symbol.kind)", trailing: "line \(symbol.line)")
+            let outline = searchField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
+            let indent = outline ? String(repeating: "    ", count: min(symbol.depth, 6)) : ""
+            cell.configure(icon: Outline.icon(symbol.kind), title: indent + symbol.name,
+                           detail: outline ? symbol.detail : (symbol.container ?? symbol.detail), trailing: "line \(symbol.line + 1)")
+            cell.tintIcon(Outline.color(symbol.kind))
         case .text:
             let match = textMatches[row]
             cell.configure(icon: NSWorkspace.shared.icon(forFile: match.url.path), title: match.text, detail: nil, trailing: "\(match.relativePath):\(match.line)")
@@ -4692,6 +4738,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     @objc func formatDocument(_ sender: Any?) {
         guard let index = activeTabIndex, openTabs[index].kind == .text else { return NSSound.beep() }
         let tab = openTabs[index]
+        // With a selection: just those lines, if the server formats ranges or prettier can.
+        if editor.selectedRange.length > 0, formatSelection(tab) { return }
         let original = tab.document.string
         let tabID = tab.id
         if let root = focusedRoot, !tab.isUntitled, let formatter = Self.stdinFormatterCommand(for: tab.url, projectRoot: root) {
@@ -4707,6 +4755,43 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return
         }
         formatWithLanguageServer(tabID: tabID, original: original)
+    }
+
+    /// Formats the selected lines; false if nothing here can format just part of a file.
+    private func formatSelection(_ tab: OpenTab) -> Bool {
+        let selection = editor.selectedRange
+        let rope = tab.document.rope
+        // Whole lines, as formatters work.
+        let firstLine = rope.line(containing: selection.location), lastLine = rope.line(containing: max(selection.location, NSMaxRange(selection) - 1))
+        let start = rope.offset(ofLine: firstLine), end = rope.range(ofLine: lastLine).upperBound
+        let original = tab.document.string
+        let tabID = tab.id
+        if let lspManager, lspManager.capabilities(forExtension: tab.url.pathExtension)?.formatsRanges == true {
+            let unit = Self.indentUnit(in: tab.document.text, near: NSRange(location: start, length: 0))
+            let range = LSPRange(start: LSPPosition(line: firstLine, character: 0), end: LSPPosition(line: lastLine, character: end - rope.offset(ofLine: lastLine)))
+            lspManager.formatRange(url: tab.url, range: range, tabSize: unit == "\t" ? 4 : unit.count, insertSpaces: unit != "\t") { [weak self] edits in
+                MainActor.assumeIsolated {
+                    guard let self, let edits, let index = self.indexForTab(id: tabID), self.activeTabIndex == index,
+                          self.openTabs[index].document.string == original,
+                          let ranges = Self.nonOverlapping(edits, in: self.openTabs[index].document.rope) else { return }
+                    self.editor.applyEdits(ranges)
+                }
+            }
+            return true
+        }
+        // prettier formats a range of the file it's given (JavaScript string offsets: UTF-16).
+        guard let root = focusedRoot, !tab.isUntitled, let formatter = Self.stdinFormatterCommand(for: tab.url, projectRoot: root),
+              formatter.executable.hasSuffix("prettier") else { return false }
+        let ranged = (formatter.executable, formatter.args + ["--range-start", "\(start)", "--range-end", "\(end)"])
+        let directory = tab.url.deletingLastPathComponent()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let formatted = Self.runFormatter(ranged, input: original, directory: directory)
+            DispatchQueue.main.async {
+                guard let self, let formatted else { return NSSound.beep() }
+                self.applyFormatted(formatted, tabID: tabID, original: original)
+            }
+        }
+        return true
     }
 
     private func formatWithLanguageServer(tabID: UUID, original: String) {
