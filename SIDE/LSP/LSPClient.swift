@@ -20,6 +20,12 @@ actor LSPClient {
     private(set) var capabilities = LSPServerCapabilities()
 
     private var onDiagnostics: (@Sendable (PublishDiagnosticsParams) -> Void)?
+    /// A server asking for edits (after a command it ran): true once they're applied.
+    private var onApplyEdit: (@Sendable (LSPWorkspaceEdit) async -> Bool)?
+
+    func setOnApplyEdit(_ handler: @escaping @Sendable (LSPWorkspaceEdit) async -> Bool) {
+        onApplyEdit = handler
+    }
     private var onTerminate: (@Sendable () -> Void)?
 
     init(executableURL: URL, arguments: [String], environment: [String: String]?, currentDirectory: URL?) {
@@ -123,6 +129,8 @@ actor LSPClient {
             guard capabilities.hovers else { return reply(nil) }
             let params: LSPValue = ["textDocument": ["uri": .string(uri)], "position": ["line": .int(position.line), "character": .int(position.character)]]
             await sendRequest(method: "textDocument/hover", params: params, token: token) { reply(try? $0.get()) }
+        case .request(let method, _, let params, let token, let reply):
+            await sendRequest(method: method, params: params, token: token) { reply(try? $0.get()) }
         case .cancel(let token, _):
             guard let id = token.id, let reply = pendingRequests.removeValue(forKey: id) else { return }
             reply(.failure(ClientError.notRunning))
@@ -179,7 +187,11 @@ actor LSPClient {
         }
         switch method {
         case "textDocument/publishDiagnostics":
-            guard let params = LSPResult(value: object["params"] ?? NSNull()).decode(PublishDiagnosticsParams.self) else { return }
+            guard var params = LSPResult(value: object["params"] ?? NSNull()).decode(PublishDiagnosticsParams.self) else { return }
+            // Each diagnostic's own object, for asking about its fixes later.
+            if let raw = (object["params"] as? [String: Any])?["diagnostics"] as? [Any], raw.count == params.diagnostics.count {
+                for index in raw.indices { params.diagnostics[index].raw = LSPValue(any: raw[index]) }
+            }
             onDiagnostics?(params)
         default:
             break
@@ -200,7 +212,13 @@ actor LSPClient {
              "workspace/inlayHint/refresh", "workspace/diagnostic/refresh", "workspace/workspaceFolders":
             result = .null
         case "workspace/applyEdit":
-            result = ["applied": false]
+            let edit = LSPWorkspaceEdit((params as? [String: Any])?["edit"])
+            guard let edit, let onApplyEdit else { result = ["applied": false]; break }
+            Task {
+                let applied = await onApplyEdit(edit)
+                self.respond(id: id, result: ["applied": .bool(applied)])
+            }
+            return
         default:
             return respond(id: id, error: ["code": -32601, "message": .string("\(method) is not supported")])
         }

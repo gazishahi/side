@@ -33,13 +33,16 @@ enum LSPOutboundOp: Sendable {
     case formatting(uri: String, tabSize: Int, insertSpaces: Bool, reply: @Sendable (LSPResult?) -> Void)
     case signatureHelp(uri: String, position: LSPPosition, context: LSPValue, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
     case hover(uri: String, position: LSPPosition, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
+    /// References, prepareRename, rename, codeAction, codeAction/resolve and executeCommand:
+    /// requests whose parameters are written out here.
+    case request(method: String, uri: String, params: LSPValue, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
     case cancel(LSPRequestToken, uri: String)
 
     /// The document this op is about, for deciding what a replay supersedes.
     var uri: String {
         switch self {
         case .didOpen(let uri, _, _, _), .didChange(let uri, _, _, _), .didSave(let uri), .didClose(let uri),
-             .completion(let uri, _, _, _, _), .resolve(_, let uri, _, _), .definition(let uri, _, _), .formatting(let uri, _, _, _), .signatureHelp(let uri, _, _, _, _), .hover(let uri, _, _, _), .cancel(_, let uri):
+             .completion(let uri, _, _, _, _), .resolve(_, let uri, _, _), .definition(let uri, _, _), .formatting(let uri, _, _, _), .signatureHelp(let uri, _, _, _, _), .hover(let uri, _, _, _), .request(_, let uri, _, _, _), .cancel(_, let uri):
             return uri
         }
     }
@@ -49,14 +52,14 @@ enum LSPOutboundOp: Sendable {
     var isDocumentSync: Bool {
         switch self {
         case .didOpen, .didChange, .didSave, .didClose, .cancel: return true
-        case .completion, .resolve, .definition, .formatting, .signatureHelp, .hover: return false
+        case .completion, .resolve, .definition, .formatting, .signatureHelp, .hover, .request: return false
         }
     }
 
     /// A request its caller no longer wants.
     var isCancelled: Bool {
         switch self {
-        case .completion(_, _, _, let token, _), .resolve(_, _, let token, _), .signatureHelp(_, _, _, let token, _), .hover(_, _, let token, _): return token.isCancelled
+        case .completion(_, _, _, let token, _), .resolve(_, _, let token, _), .signatureHelp(_, _, _, let token, _), .hover(_, _, let token, _), .request(_, _, _, let token, _): return token.isCancelled
         default: return false
         }
     }
@@ -65,7 +68,7 @@ enum LSPOutboundOp: Sendable {
     func fail() {
         switch self {
         case .completion(_, _, _, _, let reply), .resolve(_, _, _, let reply), .definition(_, _, let reply), .formatting(_, _, _, let reply),
-             .signatureHelp(_, _, _, _, let reply), .hover(_, _, _, let reply): reply(nil)
+             .signatureHelp(_, _, _, _, let reply), .hover(_, _, _, let reply), .request(_, _, _, _, let reply): reply(nil)
         case .didOpen, .didChange, .didSave, .didClose, .cancel: break
         }
     }

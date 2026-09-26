@@ -252,6 +252,76 @@ final class LSPManager: @unchecked Sendable {
         return token
     }
 
+    func capabilities(forExtension ext: String) -> LSPServerCapabilities? {
+        guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return nil }
+        return serverCapabilities[entry.binaryName]
+    }
+
+    /// Any request whose parameters the caller writes; the reply read off the main thread by
+    /// `decode`, then handed back on it.
+    @discardableResult
+    func send<T: Sendable>(_ method: String, url: URL, params: LSPValue, decode: @escaping @Sendable (LSPResult?) -> T?, completion: @escaping @Sendable (T?) -> Void) -> LSPRequestToken {
+        let token = LSPRequestToken()
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return token }
+        flush(url: url)
+        onQueue(for: entry) {
+            $0.enqueue(.request(method: method, uri: url.absoluteString, params: params, token: token) { result in
+                let value = decode(result)
+                DispatchQueue.main.async { if !token.isCancelled { completion(value) } }
+            })
+        }
+        ensureClient(for: entry)
+        return token
+    }
+
+    static func position(_ position: LSPPosition) -> LSPValue { ["line": .int(position.line), "character": .int(position.character)] }
+    static func range(_ range: LSPRange) -> LSPValue { ["start": position(range.start), "end": position(range.end)] }
+
+    /// Every use of the symbol at `position`, its declaration included.
+    func references(url: URL, position: LSPPosition, completion: @escaping @Sendable ([LSPLocation]?) -> Void) {
+        send("textDocument/references", url: url, params: ["textDocument": ["uri": .string(url.absoluteString)], "position": Self.position(position), "context": ["includeDeclaration": true]],
+             decode: { $0?.decode([LSPLocation].self) }, completion: completion)
+    }
+
+    /// Whether the symbol at `position` can be renamed, and the range of its name: nil if not.
+    /// A server that doesn't prepare says yes, with no range.
+    func prepareRename(url: URL, position: LSPPosition, completion: @escaping @Sendable (Result<LSPRange?, LSPRenameRefusal>) -> Void) {
+        guard capabilities(forExtension: url.pathExtension)?.preparesRename == true else { return completion(.success(nil)) }
+        send("textDocument/prepareRename", url: url, params: ["textDocument": ["uri": .string(url.absoluteString)], "position": Self.position(position)],
+             decode: { result -> Result<LSPRange?, LSPRenameRefusal>? in
+                 guard let result, !result.isNull else { return .failure(LSPRenameRefusal()) }
+                 if let range = LSPRange(result.value) { return .success(range) }
+                 if let range = LSPRange(result.object?["range"]) { return .success(range) }
+                 return .success(nil)   // { defaultBehavior: true }
+             }, completion: { completion($0 ?? .failure(LSPRenameRefusal())) })
+    }
+
+    func rename(url: URL, position: LSPPosition, to name: String, completion: @escaping @Sendable (LSPWorkspaceEdit?) -> Void) {
+        send("textDocument/rename", url: url, params: ["textDocument": ["uri": .string(url.absoluteString)], "position": Self.position(position), "newName": .string(name)],
+             decode: { LSPWorkspaceEdit($0?.value) }, completion: completion)
+    }
+
+    /// The fixes and refactorings for `range`, told about the problems there.
+    func codeActions(url: URL, range: LSPRange, diagnostics: [LSPDiagnostic], completion: @escaping @Sendable ([LSPCodeAction]?) -> Void) {
+        let context: LSPValue = ["diagnostics": .array(diagnostics.compactMap(\.raw)), "triggerKind": 1]
+        send("textDocument/codeAction", url: url, params: ["textDocument": ["uri": .string(url.absoluteString)], "range": Self.range(range), "context": context],
+             decode: { $0?.array?.compactMap(LSPCodeAction.init) }, completion: completion)
+    }
+
+    /// An action's edit, for a server that fills it in only when asked.
+    func resolve(_ action: LSPCodeAction, url: URL, completion: @escaping @Sendable (LSPCodeAction?) -> Void) {
+        send("codeAction/resolve", url: url, params: action.raw, decode: { $0?.object.flatMap { LSPCodeAction($0) } }, completion: completion)
+    }
+
+    func execute(command: String, arguments: LSPValue, url: URL, completion: @escaping @Sendable (Bool) -> Void) {
+        var params: [String: LSPValue] = ["command": .string(command)]
+        if case .array = arguments { params["arguments"] = arguments }
+        send("workspace/executeCommand", url: url, params: .object(params), decode: { _ in true }, completion: { completion($0 ?? false) })
+    }
+
+    /// Edits a server asks for on its own (after a command): Make applies them.
+    var onApplyEdit: ((LSPWorkspaceEdit) -> Bool)?
+
     /// Whether this file's running server formats documents.
     func formats(forExtension ext: String) -> Bool {
         guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return false }
@@ -446,6 +516,9 @@ final class LSPManager: @unchecked Sendable {
                     try await client.start(rootURI: rootURI)
                 }
                 self?.serverCapabilities[entry.binaryName] = capabilities
+                await client.setOnApplyEdit { [weak self] edit in
+                    await MainActor.run { self?.onApplyEdit?(edit) ?? false }
+                }
                 await client.setOnDiagnostics { [weak self] params in
                     guard let url = URL(string: params.uri) else { return }
                     DispatchQueue.main.async { self?.onDiagnostics?(url, params.diagnostics) }
@@ -479,3 +552,6 @@ final class LSPManager: @unchecked Sendable {
         }
     }
 }
+
+/// The server said the symbol there can't be renamed (a keyword, a literal).
+struct LSPRenameRefusal: Error {}

@@ -467,3 +467,31 @@ final class SignatureAndHoverTests: XCTestCase {
         XCTAssertEqual(shown, "\u{25CF} Cannot find name 'x'.  ts\n\nlet x")
     }
 }
+
+/// Step 3: what a server's rename and fixes say.
+final class WorkspaceEditTests: XCTestCase {
+    private let range: [String: Any] = ["start": ["line": 0, "character": 0], "end": ["line": 0, "character": 1]]
+
+    func testBothShapesOfAWorkspaceEdit() throws {
+        let changes = try XCTUnwrap(LSPWorkspaceEdit(["changes": ["file:///b.ts": [["range": range, "newText": "x"]], "file:///a.ts": [["range": range, "newText": "y"]]]]))
+        XCTAssertEqual(changes.files.map(\.uri), ["file:///a.ts", "file:///b.ts"])
+        let documentChanges = try XCTUnwrap(LSPWorkspaceEdit(["documentChanges": [
+            ["textDocument": ["uri": "file:///a.ts", "version": 3], "edits": [["range": range, "newText": "z"]]],
+            ["kind": "rename", "oldUri": "file:///a.ts", "newUri": "file:///c.ts"],
+        ]]))
+        XCTAssertEqual(documentChanges.editCount, 1)
+        XCTAssertEqual(documentChanges.unsupported, 1, "a file rename is counted, not applied")
+    }
+
+    func testActionsCommandsAndWhatsDisabled() throws {
+        let fix = try XCTUnwrap(LSPCodeAction(["title": "Add import", "kind": "quickfix", "isPreferred": true,
+                                                "edit": ["changes": ["file:///a.ts": [["range": range, "newText": "import x\n"]]]]] as [String: Any]))
+        XCTAssertTrue(fix.isQuickFix)
+        XCTAssertTrue(fix.isPreferred)
+        XCTAssertEqual(fix.edit?.editCount, 1)
+        let command = try XCTUnwrap(LSPCodeAction(["title": "Organize", "command": "_organize", "arguments": ["a"]] as [String: Any]))
+        XCTAssertEqual(command.command?.name, "_organize")
+        let disabled = try XCTUnwrap(LSPCodeAction(["title": "Extract", "kind": "refactor.extract", "disabled": ["reason": "Select an expression"]] as [String: Any]))
+        XCTAssertEqual(disabled.disabledReason, "Select an expression")
+    }
+}

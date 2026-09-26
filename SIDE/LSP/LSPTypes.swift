@@ -112,6 +112,15 @@ struct InitializeParams<Options: Encodable>: Encodable {
                 "definition": ["linkSupport": true],
                 "formatting": ["dynamicRegistration": false],
                 "hover": ["contentFormat": ["markdown", "plaintext"]],
+                "references": ["dynamicRegistration": false],
+                "rename": ["prepareSupport": true],
+                "codeAction": [
+                    "codeActionLiteralSupport": ["codeActionKind": ["valueSet": ["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports", "source.fixAll"]]],
+                    "isPreferredSupport": true,
+                    "disabledSupport": true,
+                    "dataSupport": true,
+                    "resolveSupport": ["properties": ["edit"]],
+                ],
                 "signatureHelp": [
                     "signatureInformation": [
                         "documentationFormat": ["markdown", "plaintext"],
@@ -125,7 +134,9 @@ struct InitializeParams<Options: Encodable>: Encodable {
             "workspace": [
                 "configuration": true,
                 "workspaceFolders": false,
-                "applyEdit": false,
+                "applyEdit": true,
+                "workspaceEdit": ["documentChanges": true],
+                "executeCommand": ["dynamicRegistration": false],
             ],
             "window": ["workDoneProgress": true],
         ]
@@ -140,6 +151,11 @@ struct LSPServerCapabilities: Sendable, Equatable {
     var completionResolves = false
     var formats = false
     var hovers = false
+    var findsReferences = false
+    var renames = false
+    var preparesRename = false
+    var codeActions = false
+    var resolvesCodeActions = false
     /// The characters that open signature help, and those that update it while it's up.
     var signatureHelp: (triggers: Set<String>, retriggers: Set<String>)?
 
@@ -147,7 +163,8 @@ struct LSPServerCapabilities: Sendable, Equatable {
 
     static func == (a: Self, b: Self) -> Bool {
         a.syncKind == b.syncKind && a.completionTriggers == b.completionTriggers && a.completionResolves == b.completionResolves
-            && a.formats == b.formats && a.hovers == b.hovers
+            && a.formats == b.formats && a.hovers == b.hovers && a.findsReferences == b.findsReferences
+            && a.renames == b.renames && a.preparesRename == b.preparesRename && a.codeActions == b.codeActions && a.resolvesCodeActions == b.resolvesCodeActions
             && a.signatureHelp?.triggers == b.signatureHelp?.triggers && a.signatureHelp?.retriggers == b.signatureHelp?.retriggers
     }
 
@@ -160,6 +177,11 @@ struct LSPServerCapabilities: Sendable, Equatable {
         }
         formats = capabilities["documentFormattingProvider"] is [String: Any] || capabilities["documentFormattingProvider"] as? Bool == true
         hovers = capabilities["hoverProvider"] is [String: Any] || capabilities["hoverProvider"] as? Bool == true
+        findsReferences = capabilities["referencesProvider"] is [String: Any] || capabilities["referencesProvider"] as? Bool == true
+        renames = capabilities["renameProvider"] is [String: Any] || capabilities["renameProvider"] as? Bool == true
+        preparesRename = (capabilities["renameProvider"] as? [String: Any])?["prepareProvider"] as? Bool == true
+        codeActions = capabilities["codeActionProvider"] is [String: Any] || capabilities["codeActionProvider"] as? Bool == true
+        resolvesCodeActions = (capabilities["codeActionProvider"] as? [String: Any])?["resolveProvider"] as? Bool == true
         if let signature = capabilities["signatureHelpProvider"] as? [String: Any] {
             signatureHelp = (Set(signature["triggerCharacters"] as? [String] ?? []), Set(signature["retriggerCharacters"] as? [String] ?? []))
         }
@@ -194,11 +216,15 @@ struct LSPDiagnostic: Decodable {
     let severity: LSPDiagnosticSeverity?
     let message: String
     let source: String?
+    /// The server's own object, sent back as it came when asking for its fixes.
+    var raw: LSPValue? = nil
+
+    enum CodingKeys: String, CodingKey { case range, severity, message, source }
 }
 
 struct PublishDiagnosticsParams: Decodable {
     let uri: String
-    let diagnostics: [LSPDiagnostic]
+    var diagnostics: [LSPDiagnostic]
 }
 
 struct LSPLocation: Decodable {
@@ -427,4 +453,70 @@ struct LSPSignatureHelp: Sendable, Equatable {
     var current: Signature { signatures[activeSignature] }
     /// The parameter the caret is on: the signature's own say first, then the reply's.
     var currentParameter: Int { current.activeParameter ?? activeParameter }
+}
+
+/// Changes to files a server asks for (a rename, a fix): per file, edits in that file's text
+/// as it is now. Creating, renaming and deleting files aren't applied; they're counted.
+struct LSPWorkspaceEdit: Sendable {
+    var files: [(uri: String, edits: [LSPTextEdit])]
+    var unsupported: Int
+
+    init(files: [(uri: String, edits: [LSPTextEdit])], unsupported: Int = 0) {
+        self.files = files
+        self.unsupported = unsupported
+    }
+
+    init?(_ value: Any?) {
+        guard let object = value as? [String: Any] else { return nil }
+        var files: [(String, [LSPTextEdit])] = []
+        var unsupported = 0
+        if let changes = object["documentChanges"] as? [[String: Any]] {
+            for change in changes {
+                if let document = change["textDocument"] as? [String: Any], let uri = document["uri"] as? String,
+                   let edits = change["edits"] as? [Any] {
+                    files.append((uri, edits.compactMap { LSPTextEdit($0) }))
+                } else {
+                    unsupported += 1
+                }
+            }
+        } else if let changes = object["changes"] as? [String: [Any]] {
+            for (uri, edits) in changes.sorted(by: { $0.key < $1.key }) { files.append((uri, edits.compactMap { LSPTextEdit($0) })) }
+        }
+        self.files = files.filter { !$0.1.isEmpty }
+        self.unsupported = unsupported
+    }
+
+    var editCount: Int { files.reduce(0) { $0 + $1.edits.count } }
+}
+
+/// A fix or refactoring a server offers at the caret.
+struct LSPCodeAction: Sendable {
+    let title: String
+    var kind: String?
+    var isPreferred = false
+    var disabledReason: String?
+    var edit: LSPWorkspaceEdit?
+    /// A command the server runs itself (it may send back `workspace/applyEdit`).
+    var command: (name: String, arguments: LSPValue)?
+    let raw: LSPValue
+
+    init?(_ value: Any) {
+        guard let object = value as? [String: Any], let title = object["title"] as? String else { return nil }
+        self.title = title
+        raw = LSPValue(any: object)
+        if let name = object["command"] as? String {
+            // A bare Command.
+            command = (name, LSPValue(any: object["arguments"]))
+            return
+        }
+        kind = object["kind"] as? String
+        isPreferred = object["isPreferred"] as? Bool ?? false
+        disabledReason = (object["disabled"] as? [String: Any])?["reason"] as? String
+        edit = LSPWorkspaceEdit(object["edit"])
+        if let command = object["command"] as? [String: Any], let name = command["command"] as? String {
+            self.command = (name, LSPValue(any: command["arguments"]))
+        }
+    }
+
+    var isQuickFix: Bool { kind?.hasPrefix("quickfix") ?? false }
 }

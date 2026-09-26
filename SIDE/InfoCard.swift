@@ -158,3 +158,66 @@ enum MarkdownLite {
         return out
     }
 }
+
+/// Rename's field: over the symbol, in the editor's font, the name selected. Return commits,
+/// Escape or clicking away cancels.
+@MainActor
+final class RenameField: NSObject, NSTextFieldDelegate {
+    private let panel: KeyPanel
+    private let field = NSTextField()
+    var onCommit: ((String) -> Void)?
+    var onCancel: (() -> Void)?
+    private var finished = false
+
+    private final class KeyPanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+
+    init(name: String) {
+        panel = KeyPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        super.init()
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = true
+        field.stringValue = name
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.delegate = self
+        field.setAccessibilityLabel("New name")
+        field.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView = MakeWorkspaceViewController.makeFloatingPanelSurface(embedding: field, cornerRadius: DS.Radius.control, padding: 4)
+        NotificationCenter.default.addObserver(self, selector: #selector(resigned), name: NSWindow.didResignKeyNotification, object: panel)
+    }
+
+    func show(over anchor: NSRect, in window: NSWindow, font: NSFont) {
+        field.font = font
+        let width = max(160, (field.stringValue as NSString).size(withAttributes: [.font: font]).width + 80)
+        let height = ceil(font.ascender - font.descender + font.leading) + 12
+        panel.setFrame(NSRect(x: anchor.minX - 8, y: anchor.midY - height / 2, width: width, height: height), display: true)
+        window.addChildWindow(panel, ordered: .above)
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(NSResponder.insertNewline(_:)) { finish(commit: true); return true }
+        if selector == #selector(NSResponder.cancelOperation(_:)) { finish(commit: false); return true }
+        return false
+    }
+
+    @objc private func resigned() { finish(commit: false) }
+
+    private func finish(commit: Bool) {
+        guard !finished else { return }
+        finished = true
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        NotificationCenter.default.removeObserver(self)
+        if commit { onCommit?(name) } else { onCancel?() }
+    }
+}

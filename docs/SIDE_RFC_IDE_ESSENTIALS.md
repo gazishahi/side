@@ -321,11 +321,48 @@ Tests:
   - Side: `SignatureAndHoverTests`, and `CompletionApplyTests` for a server that counted newer
     text.
 
+**Step 3, 2026-09-26.**
+
+- **Keys:** Find References ⌃⌘R, Rename ⌃⌘E and Show Problems ⇧⌘M, as chosen.
+  - Quick Fix moved to ⌥⌘. because ⌘. is Stop and ⇧⌘R is Restart Terminal.
+  - The shortcuts table has no duplicates.
+- **Show Problems** (a palette mode) lists every problem the servers report across the project.
+  - Errors come first, then by file and line, with the message, its source and `file:line`.
+    Typing filters by message or path.
+  - The top row counts errors and warnings (✕ 6); a click opens the list.
+- **Find References** (palette mode) lists each use with its line's text, read from the open
+  buffer or once per file from disk. Return goes there.
+- **Rename:**
+  - The server confirms first (`prepareRename`), then a field opens over the name, in the
+    editor's font, with the name selected.
+  - A change to one file is applied at once. One to several files lists them first, with a
+    count each.
+  - Open files change in their tabs as one undo step, left unsaved. Files that aren't open are
+    rewritten, keeping their encoding.
+  - Overlapping edits are refused, and file creates, renames and deletes are counted but not
+    applied.
+- **Quick Fix:** a menu under the caret with the server's fixes (its preferred one first, in
+  bold) and then its refactorings.
+  - Actions the server marks disabled are left out.
+  - An action is resolved when it has no edit yet. A command runs on the server, and the edits
+    it sends back (`workspace/applyEdit`) are applied and answered.
+  - Clicking a problem's dot in the gutter lists its fixes under the messages. That dot does
+    the lightbulb's job.
+- Paths through symlinks (`/tmp` for `/private/tmp`) now show relative to the project.
+- Checked in Side on Khidma (typescript-language-server):
+  - Show Problems lists 6 errors and 1 note.
+  - `useState` has 21 references.
+  - Renaming `isSubmitting` to `isSending` works.
+  - ⌥⌘. on an unused import offers "Remove import from '…'", and applying it drops the
+    count to 5.
+- Tests: `WorkspaceEditTests`, and in `EditorEngineTests` a rename across a shown tab, a tab
+  behind it and a closed file (one undo per file), plus refusing overlapping edits.
+
 ## Progress
 
 - [x] 1 LSP foundation and completion (below)
 - [x] 2 Snippets, signature help, hover, ⌘-click (below)
-- [ ] 3 Problems, references, rename, quick fixes
+- [x] 3 Problems, references, rename, quick fixes (below)
 - [ ] 4 Outline, symbols, formatting
 - [ ] 5 Settings → Languages
 - [ ] 6 More grammars

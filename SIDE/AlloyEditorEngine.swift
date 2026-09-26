@@ -314,6 +314,19 @@ final class AlloyEditorDocument: EditorDocument {
         onColorsChange?()
     }
 
+    func applyEdits(_ edits: [(range: NSRange, text: String)]) {
+        let textEdits = edits.map { TextEdit(range: $0.range.location..<NSMaxRange($0.range), text: $0.text) }
+        // Shown, the editor hears the change and passes it on; not shown, it's passed on here.
+        guard buffer.onChange == nil else { return buffer.apply(textEdits, kind: .other) }
+        var applied: [AppliedEdit] = []
+        buffer.onChange = { applied += $0.edits }
+        buffer.apply(textEdits, kind: .other)
+        buffer.onChange = nil
+        guard !applied.isEmpty else { return }
+        highlighter?.apply(applied, newText: buffer.text)
+        onEdits?(applied)
+    }
+
     func setDecorations(_ kind: EditorDecoration, _ marks: [(range: NSRange, color: NSColor)]) {
         decorations[kind] = marks
         onDecorationsChange?()

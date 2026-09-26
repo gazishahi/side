@@ -1,3 +1,4 @@
+import AlloyCore
 import AlloyAppKit
 import AppKit
 import Heron
@@ -77,7 +78,7 @@ struct PaletteCommand {
 }
 
 /// Which list the palette is showing. `commands` is also reached by typing `>` in any mode.
-enum PaletteMode { case files, symbols, text, commands, find }
+enum PaletteMode { case files, symbols, text, commands, find, problems, references }
 
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
@@ -238,6 +239,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     let lspStatusButton = LSPStatusChip()
     /// Where the caret is, "Ln 12, Col 5" (and how much is selected); click for Go to Line.
     let caretPositionButton = NSButton(title: "", target: nil, action: nil)
+    /// Errors and warnings across the project, "✕ 2  ⚠ 5"; click for Show Problems.
+    let problemsButton = NSButton(title: "", target: nil, action: nil)
     private var lspInstallPopover: NSPopover?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
@@ -247,7 +250,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var textSearchTruncated = false
     private var searchMode: SearchMode = .files
     /// Typing `>` switches any mode to commands, the way every palette does.
-    private var effectiveMode: SearchMode { searchMode != .find && searchField.stringValue.hasPrefix(">") ? .commands : searchMode }
+    private var effectiveMode: SearchMode {
+        [.find, .problems, .references].contains(searchMode) || !searchField.stringValue.hasPrefix(">") ? searchMode : .commands
+    }
+    /// Every problem the servers report, across the project (Show Problems, ⇧⌘M).
+    private var allDiagnostics: [URL: [LSPDiagnostic]] = [:]
+    private var problemRows: [(url: URL, diagnostic: LSPDiagnostic)] = []
+    /// The uses Find References found, with each line's text, and the rows the query keeps.
+    private var referenceResults: [(location: LSPLocation, url: URL, line: Int, text: String)] = []
+    private var referenceRows: [(location: LSPLocation, url: URL, line: Int, text: String)] = []
+    private var referenceSymbol = ""
+    /// Rename's field, over the symbol.
+    private var renameField: RenameField?
     private var symbolMatches: [CodeSymbol] = []
     private var openTabs: [OpenTab] = []
     private var activeTabIndex: Int?
@@ -408,6 +422,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         caretPositionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         caretPositionButton.isHidden = true
         tabBar.addSubview(caretPositionButton)
+        problemsButton.isBordered = false
+        problemsButton.target = self
+        problemsButton.action = #selector(showProblems(_:))
+        problemsButton.toolTip = "Show Problems"
+        problemsButton.translatesAutoresizingMaskIntoConstraints = false
+        problemsButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        problemsButton.isHidden = true
+        tabBar.addSubview(problemsButton)
         noFileLabel.font = DS.Text.body()
         noFileLabel.textColor = .tertiaryLabelColor
         noFileLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -417,7 +439,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             noFileLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
         NSLayoutConstraint.activate([
-            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: caretPositionButton.leadingAnchor, constant: -DS.Spacing.s),
+            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: problemsButton.leadingAnchor, constant: -DS.Spacing.s),
+            problemsButton.trailingAnchor.constraint(equalTo: caretPositionButton.leadingAnchor, constant: -DS.Spacing.m), problemsButton.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
             caretPositionButton.trailingAnchor.constraint(equalTo: lspStatusButton.leadingAnchor, constant: -DS.Spacing.m), caretPositionButton.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
             lspStatusButton.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), lspStatusButton.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
             tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
@@ -705,6 +728,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let window = view.window ?? NSApp.keyWindow
         if mode == .find && (activeTabIndex == nil || openTabs[activeTabIndex!].kind != .text) { return }
         if !paletteIsOpen { paletteReturnResponder = window?.firstResponder }
+        endHover()
+        hideSignatureHelp()
+        endCompletion()
         if paletteIsOpen, searchMode == .find, mode != .find { endFind() }
         paletteIsOpen = true
         searchMode = mode == .commands ? .files : mode
@@ -717,8 +743,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .symbols: searchField.placeholderString = "Go to symbol"
         case .commands: searchField.placeholderString = "Run a command"
         case .find: searchField.placeholderString = activeTabIndex.map { "Find in \(openTabs[$0].url.lastPathComponent)" } ?? "Find"
+        case .problems: searchField.placeholderString = problemsSummary
+        case .references: searchField.placeholderString = "References to \(referenceSymbol) \u{00B7} \(referenceResults.count)"
         }
         searchField.stringValue = mode == .commands ? ">" : (mode == .find ? find.query : "")
+        if mode == .problems { rebuildProblemRows() }
         showQuickOpenPanel()
         searchField.window?.makeFirstResponder(searchField)
         (searchField.currentEditor() as? NSTextView)?.moveToEndOfDocument(nil)
@@ -1500,12 +1529,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let manager = LSPManager(projectRoot: root)
         manager.onDiagnostics = { [weak self] fileURL, diagnostics in
             self?.applyDiagnostics(diagnostics, to: fileURL)
+            self?.recordProblems(diagnostics, for: fileURL)
             // Also published for Heron's read_diagnostics tool: an agent that can read the
             // errors its own edit just caused closes the loop inside one turn, instead of
             // waiting for the user to notice and paste them back.
             self?.publishDiagnosticsForAgent(diagnostics, fileURL: fileURL, root: root)
         }
         manager.onAvailabilityChanged = { [weak self] in self?.updateLSPIndicator() }
+        manager.onApplyEdit = { [weak self] edit in self?.applyWorkspaceEdit(edit) ?? false }
         lspManager = manager
         focusedRoot = root
         explorer.setRoot(root)
@@ -2241,7 +2272,22 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let item = menu.addItem(withTitle: diagnostic.message, action: nil, keyEquivalent: "")
             item.isEnabled = false
         }
-        NSMenu.popUpContextMenu(menu, with: event, for: gutter)
+        // And the server's fixes for them, if it has any.
+        let tab = openTabs[index]
+        guard let lspManager, lspManager.capabilities(forExtension: tab.url.pathExtension)?.codeActions == true else {
+            return NSMenu.popUpContextMenu(menu, with: event, for: gutter)
+        }
+        let range = LSPRange(start: onLine.map(\.range.start).min { ($0.line, $0.character) < ($1.line, $1.character) }!,
+                             end: onLine.map(\.range.end).max { ($0.line, $0.character) < ($1.line, $1.character) }!)
+        lspManager.codeActions(url: tab.url, range: range, diagnostics: onLine) { [weak self] actions in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let fixes = (actions ?? []).filter { $0.disabledReason == nil && ($0.isQuickFix || $0.kind == nil) }
+                if !fixes.isEmpty { menu.addItem(.separator()) }
+                for action in fixes.prefix(12) { menu.addItem(self.codeActionItem(action, url: tab.url)) }
+                NSMenu.popUpContextMenu(menu, with: event, for: self.gutter)
+            }
+        }
     }
 
     @objc private func switchToTabShortcut(_ sender: NSMenuItem) {
@@ -2720,7 +2766,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func relativePath(_ url: URL) -> String {
         guard let focusedRoot else { return url.path }
-        return url.path.replacingOccurrences(of: focusedRoot.path + "/", with: "")
+        let root = focusedRoot.path + "/"
+        if url.path.hasPrefix(root) { return String(url.path.dropFirst(root.count)) }
+        // A server's path can name the project through a symlink (/tmp for /private/tmp).
+        let resolvedRoot = focusedRoot.resolvingSymlinksInPath().path + "/", resolved = url.resolvingSymlinksInPath().path
+        if resolved.hasPrefix(resolvedRoot) { return String(resolved.dropFirst(resolvedRoot.count)) }
+        return url.path
     }
 
     private var gitDiffGeneration = 0
@@ -2867,6 +2918,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             performTextSearch()
             return
         }
+        if searchMode == .problems || searchMode == .references {
+            filterLanguageResults()
+            return
+        }
         guard projectURL != nil else { matches = []; applySearchResults(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         searchGeneration += 1
@@ -2930,6 +2985,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .text: return textMatches.count
         case .commands: return commandMatches.count
         case .find: return min(findRows.count, Self.findListLimit)
+        case .problems: return problemRows.count
+        case .references: return referenceRows.count
         }
     }
 
@@ -2994,6 +3051,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .find:
             // Return steps to the next match (⇧Return the previous); the palette stays.
             findStep(forward: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
+        case .problems:
+            let row = (selected >= 0 && selected < problemRows.count) ? problemRows[selected] : problemRows.first
+            guard let row else { return }
+            hideQuickOpenPanel()
+            onPaletteNavigated?()
+            goTo(LSPLocation(uri: row.url.absoluteString, range: row.diagnostic.range))
+        case .references:
+            let row = (selected >= 0 && selected < referenceRows.count) ? referenceRows[selected] : referenceRows.first
+            guard let row else { return }
+            hideQuickOpenPanel()
+            onPaletteNavigated?()
+            goTo(row.location)
         }
     }
     @objc private func openSelectedResult() { confirmSearch() }
@@ -3068,6 +3137,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .find:
             let (line, text) = findLine(at: row)
             cell.configure(icon: Self.paletteSymbol("text.magnifyingglass"), title: text, detail: nil, trailing: "line \(line)")
+        case .problems:
+            let problem = problemRows[row]
+            cell.configure(icon: Self.problemSymbol(problem.diagnostic.severity), title: problem.diagnostic.message,
+                           detail: problem.diagnostic.source, trailing: "\(problem.url.lastPathComponent):\(problem.diagnostic.range.start.line + 1)")
+            cell.toolTip = relativePath(problem.url)
+            cell.tintIcon(Self.problemColor(problem.diagnostic.severity))
+        case .references:
+            let reference = referenceRows[row]
+            cell.configure(icon: NSWorkspace.shared.icon(forFile: reference.url.path), title: reference.text, detail: nil,
+                           trailing: "\(reference.url.lastPathComponent):\(reference.line + 1)")
+            cell.toolTip = relativePath(reference.url)
         }
         return cell
     }
@@ -3347,6 +3427,321 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     @objc func showCompletions(_ sender: Any?) {
         updateCompletion(explicit: true)
+    }
+
+    // MARK: - Problems, references, rename, quick fixes (SIDE_RFC_IDE_ESSENTIALS.md, L3)
+
+    private func recordProblems(_ diagnostics: [LSPDiagnostic], for url: URL) {
+        allDiagnostics[url] = diagnostics.isEmpty ? nil : diagnostics
+        updateProblemsButton()
+        if paletteIsOpen, searchMode == .problems {
+            rebuildProblemRows()
+            searchField.placeholderString = problemsSummary
+        }
+    }
+
+    private var problemCounts: (errors: Int, warnings: Int, others: Int) {
+        var counts = (0, 0, 0)
+        for diagnostics in allDiagnostics.values {
+            for diagnostic in diagnostics {
+                switch diagnostic.severity {
+                case .error: counts.0 += 1
+                case .warning: counts.1 += 1
+                default: counts.2 += 1
+                }
+            }
+        }
+        return counts
+    }
+
+    private var problemsSummary: String {
+        let (errors, warnings, others) = problemCounts
+        guard errors + warnings + others > 0 else { return "No problems" }
+        var parts: [String] = []
+        if errors > 0 { parts.append(errors == 1 ? "1 error" : "\(errors) errors") }
+        if warnings > 0 { parts.append(warnings == 1 ? "1 warning" : "\(warnings) warnings") }
+        if others > 0 { parts.append(others == 1 ? "1 note" : "\(others) notes") }
+        return "Problems: " + parts.joined(separator: ", ")
+    }
+
+    /// The top row's count of errors and warnings; click to see them.
+    private func updateProblemsButton() {
+        let (errors, warnings, _) = problemCounts
+        guard errors + warnings > 0 else { problemsButton.isHidden = true; return }
+        let text = NSMutableAttributedString()
+        let font = DS.Text.caption()
+        if errors > 0 {
+            text.append(NSAttributedString(string: "\u{2715} \(errors)", attributes: [.font: font, .foregroundColor: NSColor.systemRed]))
+        }
+        if warnings > 0 {
+            if text.length > 0 { text.append(NSAttributedString(string: "  ")) }
+            text.append(NSAttributedString(string: "\u{26A0}\u{FE0E} \(warnings)", attributes: [.font: font, .foregroundColor: NSColor.systemOrange]))
+        }
+        problemsButton.attributedTitle = text
+        problemsButton.setAccessibilityLabel("\(problemsSummary). Show Problems")
+        problemsButton.isHidden = false
+    }
+
+    private func rebuildProblemRows() {
+        func rank(_ severity: LSPDiagnosticSeverity?) -> Int { severity.map { $0.rawValue } ?? 3 }
+        let all = allDiagnostics.flatMap { url, diagnostics in diagnostics.map { (url: url, diagnostic: $0) } }
+            .sorted { a, b in
+                if rank(a.diagnostic.severity) != rank(b.diagnostic.severity) { return rank(a.diagnostic.severity) < rank(b.diagnostic.severity) }
+                if a.url.path != b.url.path { return a.url.path < b.url.path }
+                return a.diagnostic.range.start.line < b.diagnostic.range.start.line
+            }
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
+        problemRows = query.isEmpty ? all : all.filter { row in
+            row.diagnostic.message.localizedCaseInsensitiveContains(query) || relativePath(row.url).localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    /// Problems and references filter what's already there as you type.
+    private func filterLanguageResults() {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
+        if searchMode == .problems {
+            rebuildProblemRows()
+        } else {
+            referenceRows = query.isEmpty ? referenceResults : referenceResults.filter {
+                $0.text.localizedCaseInsensitiveContains(query) || relativePath($0.url).localizedCaseInsensitiveContains(query)
+            }
+        }
+        applySearchResults()
+    }
+
+    @objc func showProblems(_ sender: Any?) { presentPalette(.problems) }
+
+    static func problemSymbol(_ severity: LSPDiagnosticSeverity?) -> NSImage? {
+        let name: String
+        switch severity {
+        case .error: name = "xmark.octagon.fill"
+        case .warning: name = "exclamationmark.triangle.fill"
+        default: name = "info.circle.fill"
+        }
+        return paletteSymbol(name)
+    }
+
+    static func problemColor(_ severity: LSPDiagnosticSeverity?) -> NSColor {
+        switch severity {
+        case .error: return .systemRed
+        case .warning: return .systemOrange
+        default: return .secondaryLabelColor
+        }
+    }
+
+    /// Find References: every use of the symbol at the caret, listed in the palette.
+    @objc func findReferences(_ sender: Any?) {
+        guard let index = activeTabIndex, openTabs[index].kind == .text, let lspManager,
+              lspManager.capabilities(forExtension: openTabs[index].url.pathExtension)?.findsReferences == true,
+              let word = hoverWordRange(at: editor.selectedRange.location) ?? hoverWordRange(at: max(0, editor.selectedRange.location - 1)) else { return NSSound.beep() }
+        let tab = openTabs[index]
+        referenceSymbol = (tab.document.text as NSString).substring(with: word)
+        let point = tab.document.rope.position(of: word.location)
+        lspManager.references(url: tab.url, position: LSPPosition(line: point.line, character: point.column)) { [weak self] locations in
+            guard let self else { return }
+            guard let locations, !locations.isEmpty else { return NSSound.beep() }
+            self.referenceResults = self.referenceLines(locations)
+            self.referenceRows = self.referenceResults
+            self.presentPalette(.references)
+        }
+    }
+
+    /// Each location with its line's text: from the open buffer, or read once per file from disk.
+    private func referenceLines(_ locations: [LSPLocation]) -> [(location: LSPLocation, url: URL, line: Int, text: String)] {
+        var texts: [URL: NSString] = [:]
+        return locations.compactMap { location in
+            guard let url = URL(string: location.uri) else { return nil }
+            let text: NSString
+            if let cached = texts[url] { text = cached }
+            else {
+                let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+                let open = openTabs.first { $0.kind == .text && ($0.url == url || $0.url.resolvingSymlinksInPath().standardizedFileURL == resolved) }
+                text = open?.document.text ?? ((try? String(contentsOf: url, encoding: .utf8)) as NSString? ?? "")
+                texts[url] = text
+            }
+            var line = ""
+            var lineNumber = 0
+            text.enumerateLines { string, stop in
+                if lineNumber == location.range.start.line { line = string; stop.pointee = true }
+                lineNumber += 1
+            }
+            return (location, url, location.range.start.line, line.trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    // Rename.
+
+    /// Rename Symbol: a field over the name, and on Return every use renamed by the server,
+    /// across files (a change to more than one file is shown first). One undo step per file.
+    @objc func renameSymbol(_ sender: Any?) {
+        guard let index = activeTabIndex, openTabs[index].kind == .text, let lspManager,
+              lspManager.capabilities(forExtension: openTabs[index].url.pathExtension)?.renames == true,
+              let word = hoverWordRange(at: editor.selectedRange.location) ?? hoverWordRange(at: max(0, editor.selectedRange.location - 1)) else { return NSSound.beep() }
+        let tab = openTabs[index]
+        let point = tab.document.rope.position(of: word.location)
+        let position = LSPPosition(line: point.line, character: point.column)
+        lspManager.prepareRename(url: tab.url, position: position) { [weak self] result in
+            guard let self, let index = self.activeTabIndex, self.openTabs[index].id == tab.id else { return }
+            guard case .success(let range) = result else { return NSSound.beep() }
+            let rope = self.openTabs[index].document.rope
+            let nameRange = range.map { r -> NSRange in
+                let a = rope.offset(line: r.start.line, column: r.start.character), b = rope.offset(line: r.end.line, column: r.end.character)
+                return NSRange(location: a, length: max(0, b - a))
+            } ?? word
+            let name = (self.openTabs[index].document.text as NSString).substring(with: nameRange)
+            guard let window = self.view.window, let anchor = self.editor.screenRect(forCharacterRange: nameRange) else { return }
+            let field = RenameField(name: name)
+            field.onCommit = { [weak self] newName in
+                self?.renameField = nil
+                guard let self, newName != name, !newName.isEmpty else { return }
+                self.performRename(url: tab.url, position: position, to: newName)
+            }
+            field.onCancel = { [weak self] in self?.renameField = nil; self?.editor.focus() }
+            self.renameField = field
+            field.show(over: anchor, in: window, font: Self.editorAppearance.font)
+        }
+    }
+
+    private func performRename(url: URL, position: LSPPosition, to newName: String) {
+        lspManager?.rename(url: url, position: position, to: newName) { [weak self] edit in
+            guard let self else { return }
+            guard let edit, edit.editCount > 0 else { return NSSound.beep() }
+            guard edit.files.count > 1, let window = self.view.window else {
+                _ = self.applyWorkspaceEdit(edit)
+                self.editor.focus()
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "Rename to \u{201C}\(newName)\u{201D}?"
+            let lines = edit.files.prefix(12).map { file -> String in
+                let path = URL(string: file.uri).map { self.relativePath($0) } ?? file.uri
+                return "\(path)  \u{00B7}  \(file.edits.count)"
+            }
+            alert.informativeText = "\(edit.editCount) changes in \(edit.files.count) files:\n\n" + lines.joined(separator: "\n")
+                + (edit.files.count > 12 ? "\n\u{2026}and \(edit.files.count - 12) more" : "")
+                + "\n\nOpen files are changed in their tabs (unsaved, one undo each); the rest are saved."
+            alert.addButton(withTitle: "Rename")
+            alert.addButton(withTitle: "Cancel")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard response == .alertFirstButtonReturn else { return }
+                _ = self?.applyWorkspaceEdit(edit)
+                self?.editor.focus()
+            }
+        }
+    }
+
+    /// A server's edits, applied: in an open tab as one undo step (left unsaved, as typing
+    /// would), in a file that isn't open by rewriting it. Overlapping edits are refused.
+    @discardableResult
+    func applyWorkspaceEdit(_ edit: LSPWorkspaceEdit) -> Bool {
+        var applied = false
+        for file in edit.files {
+            guard let url = URL(string: file.uri), url.isFileURL else { continue }
+            let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+            if let index = openTabs.firstIndex(where: { $0.kind == .text && ($0.url == url || $0.url.resolvingSymlinksInPath().standardizedFileURL == resolved) }) {
+                let rope = openTabs[index].document.rope
+                guard let ranges = Self.nonOverlapping(file.edits, in: rope) else { continue }
+                if activeTabIndex == index { editor.applyEdits(ranges) } else { openTabs[index].document.applyEdits(ranges) }
+                if !openTabs[index].dirty {
+                    openTabs[index].dirty = true
+                    if activeTabIndex == index { dirty = true }
+                }
+                applied = true
+            } else {
+                guard let data = try? Data(contentsOf: url), let decoded = TextFileCodec.decode(data) else { continue }
+                var rope = Rope(decoded.text)
+                guard let ranges = Self.nonOverlapping(file.edits, in: rope) else { continue }
+                for range in ranges.reversed() { rope.replace(range.range.location..<NSMaxRange(range.range), with: range.text) }
+                guard let out = TextFileCodec.encode(rope.string, as: decoded.format), (try? out.write(to: url, options: .atomic)) != nil else { continue }
+                UserSaveLog.shared.record(url)
+                applied = true
+            }
+        }
+        rebuildTabBar()
+        editor.invalidateGutter()
+        return applied
+    }
+
+    /// Edits as ranges in `rope`, sorted; nil if any two overlap (a server's bug: applying some
+    /// and not others would leave the file half changed).
+    static func nonOverlapping(_ edits: [LSPTextEdit], in rope: Rope) -> [(range: NSRange, text: String)]? {
+        let ranges = edits.map { edit -> (range: NSRange, text: String) in
+            let a = rope.offset(line: edit.range.start.line, column: edit.range.start.character)
+            let b = rope.offset(line: edit.range.end.line, column: edit.range.end.character)
+            return (NSRange(location: a, length: max(0, b - a)), edit.newText)
+        }.sorted { $0.range.location < $1.range.location }
+        for (a, b) in zip(ranges, ranges.dropFirst()) where NSMaxRange(a.range) > b.range.location { return nil }
+        return ranges
+    }
+
+    // Quick fixes.
+
+    /// Quick Fix: the server's fixes and refactorings at the caret (or the selection), in a menu
+    /// under it; its preferred fix first.
+    @objc func showQuickFixes(_ sender: Any?) {
+        guard let index = activeTabIndex, openTabs[index].kind == .text, let lspManager,
+              lspManager.capabilities(forExtension: openTabs[index].url.pathExtension)?.codeActions == true else { return NSSound.beep() }
+        let tab = openTabs[index]
+        let selection = editor.selectedRange
+        let rope = tab.document.rope
+        let start = rope.position(of: selection.location), end = rope.position(of: NSMaxRange(selection))
+        let range = LSPRange(start: LSPPosition(line: start.line, character: start.column), end: LSPPosition(line: end.line, character: end.column))
+        let problems = diagnostics(overlapping: NSRange(location: selection.location, length: max(1, selection.length)), in: tab)
+        lspManager.codeActions(url: tab.url, range: range, diagnostics: problems) { [weak self] actions in
+            MainActor.assumeIsolated { self?.showQuickFixMenu(actions, url: tab.url, at: selection) }
+        }
+    }
+
+    private func showQuickFixMenu(_ actions: [LSPCodeAction]?, url: URL, at selection: NSRange) {
+        // What the server says doesn't apply here isn't offered (it lists every refactoring,
+        // most of them disabled).
+        let actions = (actions ?? []).filter { $0.disabledReason == nil }
+        guard !actions.isEmpty else { NSSound.beep(); return }
+        let sorted = actions.enumerated().sorted { a, b in
+            if a.element.isPreferred != b.element.isPreferred { return a.element.isPreferred }
+            if a.element.isQuickFix != b.element.isQuickFix { return a.element.isQuickFix }
+            return a.offset < b.offset
+        }.map(\.element)
+        let menu = NSMenu()
+        var lastWasFix = sorted.first?.isQuickFix ?? false
+        for action in sorted.prefix(24) {
+            if lastWasFix != action.isQuickFix { menu.addItem(.separator()); lastWasFix = action.isQuickFix }
+            menu.addItem(codeActionItem(action, url: url))
+        }
+        let caret = editor.rect(forCharacterRange: NSRange(location: selection.location, length: 0))
+        menu.popUp(positioning: menu.items.first, at: NSPoint(x: caret.minX, y: caret.maxY + 2), in: editor.textView)
+    }
+
+    private func codeActionItem(_ action: LSPCodeAction, url: URL) -> NSMenuItem {
+        let item = NSMenuItem(title: action.title, action: #selector(performCodeActionItem(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = CodeActionBox(action: action, url: url)
+        if let reason = action.disabledReason { item.isEnabled = false; item.toolTip = reason }
+        if action.isPreferred { item.attributedTitle = NSAttributedString(string: action.title, attributes: [.font: DS.Text.body().withTraits(.boldFontMask)]) }
+        return item
+    }
+
+    @objc private func performCodeActionItem(_ sender: NSMenuItem) {
+        guard let box = sender.representedObject as? CodeActionBox else { return }
+        perform(box.action, url: box.url, resolved: false)
+    }
+
+    /// An action's edit applied, then its command run (which may send more edits back). One
+    /// with neither is resolved first, for a server that fills them in on request.
+    private func perform(_ action: LSPCodeAction, url: URL, resolved: Bool) {
+        guard let lspManager else { return }
+        if action.edit == nil, action.command == nil || !resolved,
+           !resolved, lspManager.capabilities(forExtension: url.pathExtension)?.resolvesCodeActions == true {
+            lspManager.resolve(action, url: url) { [weak self] resolvedAction in
+                self?.perform(resolvedAction ?? action, url: url, resolved: true)
+            }
+            return
+        }
+        if let edit = action.edit { applyWorkspaceEdit(edit) }
+        if let command = action.command {
+            lspManager.execute(command: command.name, arguments: command.arguments, url: url) { _ in }
+        }
+        editor.focus()
     }
 
     // MARK: - Signature help (SIDE_RFC_IDE_ESSENTIALS.md, L2)
@@ -3888,6 +4283,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Shortcuts.bind(editMenu.addItem(withTitle: "Show Completions", action: #selector(showCompletions(_:)), keyEquivalent: ""), "editor.complete")
         Shortcuts.bind(editMenu.addItem(withTitle: "Format Document", action: #selector(formatDocument(_:)), keyEquivalent: ""), "editor.format")
         Shortcuts.bind(editMenu.addItem(withTitle: "Show Quick Help", action: #selector(showQuickHelp(_:)), keyEquivalent: ""), "editor.quickHelp")
+        editMenu.addItem(NSMenuItem.separator())
+        Shortcuts.bind(editMenu.addItem(withTitle: "Rename Symbol\u{2026}", action: #selector(renameSymbol(_:)), keyEquivalent: ""), "editor.rename")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Quick Fix\u{2026}", action: #selector(showQuickFixes(_:)), keyEquivalent: ""), "editor.quickFix")
         editItem.submenu = editMenu
 
         // What the user actually toggles about the *presentation* of the workspace, as its own
@@ -3928,6 +4326,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         navigateMenu.addItem(findInProject)
         let jumpToDef = navigateMenu.addItem(withTitle: "Jump to Definition", action: #selector(jumpToDefinition), keyEquivalent: "")
         Shortcuts.bind(jumpToDef, "navigate.jumpToDefinition")
+        Shortcuts.bind(navigateMenu.addItem(withTitle: "Find References", action: #selector(findReferences(_:)), keyEquivalent: ""), "editor.references")
+        Shortcuts.bind(navigateMenu.addItem(withTitle: "Show Problems", action: #selector(showProblems(_:)), keyEquivalent: ""), "editor.problems")
         navigateMenu.addItem(NSMenuItem.separator())
         // Stage navigation — ⌘⌥1–4 for the four working stages, ⌘⌥0 for Tracks (Direction 02
         // §3.8). Every stage has an item whether or not it is pinned: unpinning never removes a
@@ -4937,12 +5337,20 @@ private final class PaletteCellView: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(icon image: NSImage?, title text: String, detail detailText: String?, trailing trailingText: String?) {
+        iconTint = nil
         icon.image = image
         icon.contentTintColor = .secondaryLabelColor
         title.stringValue = text
         detail.stringValue = detailText ?? ""
         trailing.stringValue = trailingText ?? ""
         setAccessibilityLabel([text, detailText, trailingText].compactMap { $0 }.joined(separator: ", "))
+    }
+
+    /// The icon in a color that says something (a problem's severity); nil for the usual.
+    private var iconTint: NSColor?
+    func tintIcon(_ color: NSColor?) {
+        iconTint = color
+        applyColors()
     }
 
     override var backgroundStyle: NSView.BackgroundStyle { didSet { applyColors() } }
@@ -4953,7 +5361,7 @@ private final class PaletteCellView: NSTableCellView {
         title.textColor = selected ? .white : .labelColor
         detail.textColor = selected ? NSColor.white.withAlphaComponent(0.75) : .tertiaryLabelColor
         trailing.textColor = selected ? NSColor.white.withAlphaComponent(0.75) : .tertiaryLabelColor
-        icon.contentTintColor = selected ? .white : .secondaryLabelColor
+        icon.contentTintColor = selected ? .white : (iconTint ?? .secondaryLabelColor)
     }
 }
 
@@ -5054,4 +5462,18 @@ enum EditorPreferences {
             NotificationCenter.default.post(name: didChangeNotification, object: nil)
         }
     }
+}
+
+/// A code action and its file, carried by a menu item.
+final class CodeActionBox: NSObject {
+    let action: LSPCodeAction
+    let url: URL
+    init(action: LSPCodeAction, url: URL) {
+        self.action = action
+        self.url = url
+    }
+}
+
+private extension NSFont {
+    func withTraits(_ traits: NSFontTraitMask) -> NSFont { NSFontManager.shared.convert(self, toHaveTrait: traits) }
 }

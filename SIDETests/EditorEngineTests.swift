@@ -1,6 +1,8 @@
 import XCTest
 @testable import Side
 @testable import Heron
+import AlloyAppKit
+import AlloyCore
 
 /// Make reaches its editor only through `EditorEngine` (SIDE_RFC_ALLOY.md). These drive Make's
 /// real typing path; they held TextKit and then Alloy to the same behavior across the switch.
@@ -103,6 +105,41 @@ final class EditorEngineTests: XCTestCase {
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline, make.hasUnsavedChanges { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
         XCTAssertFalse(make.hasUnsavedChanges, "back to what's on disk: nothing to save")
+    }
+
+    func testAServersEditsReachOpenTabsUndoablyAndClosedFilesOnDisk() throws {
+        // A rename across three files: the one shown, one open behind it, one not open.
+        let engine = try open("a.ts", "let count = 1\nuse(count)\n")
+        let other = root.appendingPathComponent("b.ts"), closed = root.appendingPathComponent("c.ts")
+        try "import { count } from './a'\n".write(to: other, atomically: true, encoding: .utf8)
+        try "count + count\n".write(to: closed, atomically: true, encoding: .utf8)
+        make.revealFile(other, line: nil)
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, make.editor.document?.string != "import { count } from './a'\n" { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        make.revealFile(root.appendingPathComponent("a.ts"), line: nil)
+        while Date() < deadline, make.editor.document?.string != "let count = 1\nuse(count)\n" { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        func edit(_ line: Int, _ from: Int, _ to: Int) -> LSPTextEdit {
+            LSPTextEdit(range: LSPRange(start: LSPPosition(line: line, character: from), end: LSPPosition(line: line, character: to)), newText: "total")
+        }
+        let applied = make.applyWorkspaceEdit(LSPWorkspaceEdit(files: [
+            (root.appendingPathComponent("a.ts").absoluteString, [edit(0, 4, 9), edit(1, 4, 9)]),
+            (other.absoluteString, [edit(0, 9, 14)]),
+            (closed.absoluteString, [edit(0, 0, 5), edit(0, 8, 13)]),
+        ]))
+        XCTAssertTrue(applied)
+        XCTAssertEqual(engine.document?.string, "let total = 1\nuse(total)\n")
+        XCTAssertEqual(try String(contentsOf: closed, encoding: .utf8), "total + total\n", "a closed file is rewritten")
+        XCTAssertTrue(make.hasUnsavedChanges, "an open file is left unsaved, as typing would")
+        engine.textView.perform(#selector(AlloyTextView.undo(_:)), with: nil)
+        XCTAssertEqual(engine.document?.string, "let count = 1\nuse(count)\n", "one undo takes the whole file's edits back")
+    }
+
+    func testOverlappingEditsAreRefused() {
+        let rope = Rope("abcdef")
+        let overlapping = [LSPTextEdit(range: LSPRange(start: LSPPosition(line: 0, character: 0), end: LSPPosition(line: 0, character: 3)), newText: "x"),
+                           LSPTextEdit(range: LSPRange(start: LSPPosition(line: 0, character: 2), end: LSPPosition(line: 0, character: 4)), newText: "y")]
+        XCTAssertNil(MakeWorkspaceViewController.nonOverlapping(overlapping, in: rope))
+        XCTAssertEqual(MakeWorkspaceViewController.nonOverlapping(Array(overlapping.prefix(1)), in: rope)?.first?.range, NSRange(location: 0, length: 3))
     }
 
     func testDecorationsReplaceOnlyTheirOwnKind() {

@@ -76,6 +76,9 @@ protocol EditorDocument: AnyObject, Sendable {
     /// Replaces everything outside the undo stack (loading, reloading, applying an agent's edit,
     /// format on save).
     func replaceAll(with text: String)
+    /// Edits made while another tab is shown (a rename across files): one undo step, and
+    /// reported through `onEdits` like any other.
+    func applyEdits(_ edits: [(range: NSRange, text: String)])
     /// Colors the document for its file's language (and again if the file is renamed).
     func highlight(url: URL, appearance: EditorAppearance)
     /// Replaces one kind of decoration everywhere in the document.
