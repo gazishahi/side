@@ -114,7 +114,7 @@ These are rows of `Budgets.table`, measured in an optimized build (step 9).
   change.
 - **Quick fixes** (⌘., default): code actions at the caret, in a small menu under it. A
   lightbulb shows in the gutter where there are any.
-- **Formatting:** Format Document and Format Selection (⌃⇧I, default), by the project's
+- **Formatting:** Format Document (⌃⇧I, built 2026-09-26, ahead of step 4) and Format Selection, by the project's
   formatter (prettier, swift-format, as save uses today) or else the server. **Format on save**
   keeps today's behavior (on when the project has a formatter) and becomes a per-language
   setting in step 5.

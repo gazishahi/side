@@ -110,6 +110,7 @@ struct InitializeParams<Options: Encodable>: Encodable {
                     "contextSupport": true,
                 ],
                 "definition": ["linkSupport": true],
+                "formatting": ["dynamicRegistration": false],
                 "publishDiagnostics": ["relatedInformation": false],
             ],
             "workspace": [
@@ -128,6 +129,7 @@ struct LSPServerCapabilities: Sendable, Equatable {
     var syncKind = 1
     var completionTriggers: Set<String> = []
     var completionResolves = false
+    var formats = false
 
     init() {}
 
@@ -138,6 +140,7 @@ struct LSPServerCapabilities: Sendable, Equatable {
         } else if let sync = capabilities["textDocumentSync"] as? [String: Any] {
             syncKind = sync["change"] as? Int ?? 0
         }
+        formats = capabilities["documentFormattingProvider"] is [String: Any] || capabilities["documentFormattingProvider"] as? Bool == true
         if let completion = capabilities["completionProvider"] as? [String: Any] {
             completionTriggers = Set(completion["triggerCharacters"] as? [String] ?? [])
             completionResolves = completion["resolveProvider"] as? Bool ?? false

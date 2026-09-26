@@ -144,6 +144,7 @@ final class LSPRespawnTests: XCTestCase {
             case .completion(let uri, _, _, _, _): return "completion(\(uri))"
             case .resolve(_, let uri, _, _): return "resolve(\(uri))"
             case .definition(let uri, _, _): return "definition(\(uri))"
+            case .formatting(let uri, _, _, _): return "formatting(\(uri))"
             case .cancel(_, let uri): return "cancel(\(uri))"
             }
         }

@@ -382,3 +382,33 @@ final class CompletionBudgetTests: XCTestCase {
         Budgets.check("completion.sync", percentile(times, 0.99), detail: String(format: "p50 %.3f ms", percentile(times, 0.5)))
     }
 }
+
+/// Return and closing brackets indent the way the code nests.
+@MainActor
+final class EditorIndentTests: XCTestCase {
+    private func newline(_ text: String) -> (text: String, caret: Int)? {
+        let caret = (text as NSString).range(of: "|").location
+        let ns = text.replacingOccurrences(of: "|", with: "") as NSString
+        return MakeWorkspaceViewController.newline(in: ns, replacing: NSRange(location: caret, length: 0))
+    }
+
+    func testReturnBetweenBracesPutsTheCloserOnItsOwnLineAtTheOuterIndent() {
+        let result = newline("    function f() {|}")
+        XCTAssertEqual(result?.text, "\n        \n    ")
+        XCTAssertEqual(result?.caret, 9, "the caret on the indented line between")
+    }
+
+    func testReturnAfterAnOpenerIndentsOnceAndOtherwiseKeepsTheIndent() {
+        XCTAssertEqual(newline("  if (x) {|\n  }")?.text, "\n    ", "two-space files indent by two")
+        XCTAssertEqual(newline("    let a = 1|")?.text, "\n    ")
+        XCTAssertEqual(newline("\tfunc a() {|}\n\t\tb()\n")?.text, "\n\t\t\n\t", "tab files indent with tabs")
+    }
+
+    func testAClosingBracketOnABlankLineGoesBackToItsOpenersIndent() {
+        let text = "function f() {\n    body()\n        " as NSString
+        let outdent = MakeWorkspaceViewController.outdentedCloser("}", in: text, at: text.length)
+        XCTAssertEqual(outdent?.text, "}")
+        XCTAssertEqual(outdent?.range, NSRange(location: 26, length: 8))
+        XCTAssertNil(MakeWorkspaceViewController.outdentedCloser("}", in: "x = {a" as NSString, at: 6), "not on a line with code")
+    }
+}

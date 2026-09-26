@@ -111,6 +111,10 @@ actor LSPClient {
         case .definition(let uri, let position, let reply):
             await sendRequest(method: "textDocument/definition",
                               params: DefinitionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position)) { reply(try? $0.get()) }
+        case .formatting(let uri, let tabSize, let insertSpaces, let reply):
+            guard capabilities.formats else { return reply(nil) }
+            let params: LSPValue = ["textDocument": ["uri": .string(uri)], "options": ["tabSize": .int(tabSize), "insertSpaces": .bool(insertSpaces)]]
+            await sendRequest(method: "textDocument/formatting", params: params) { reply(try? $0.get()) }
         case .cancel(let token, _):
             guard let id = token.id, let reply = pendingRequests.removeValue(forKey: id) else { return }
             reply(.failure(ClientError.notRunning))

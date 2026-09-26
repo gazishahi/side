@@ -88,8 +88,21 @@ final class EditorEngineTests: XCTestCase {
 
         engine.selectedRange = NSRange(location: 10, length: 0)
         engine.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
-        XCTAssertEqual(engine.document?.string, "func f() {\n    }\n", "a newline after { indents")
+        XCTAssertEqual(engine.document?.string, "func f() {\n    \n}\n", "a newline between braces indents the body, not the closer")
+        XCTAssertEqual(engine.selectedRange.location, 15, "the caret on the body's line")
         XCTAssertTrue(make.hasUnsavedChanges, "and the tab is unsaved")
+    }
+
+    func testTypingSomethingAndDeletingItByHandLeavesTheTabSaved() throws {
+        let engine = try open("c.ts", "let a = 1\n")
+        engine.selectedRange = NSRange(location: 9, length: 0)
+        engine.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        XCTAssertTrue(make.hasUnsavedChanges)
+        engine.textView.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        XCTAssertEqual(engine.document?.string, "let a = 1\n")
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline, make.hasUnsavedChanges { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertFalse(make.hasUnsavedChanges, "back to what's on disk: nothing to save")
     }
 
     func testDecorationsReplaceOnlyTheirOwnKind() {

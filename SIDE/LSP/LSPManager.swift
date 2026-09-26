@@ -212,6 +212,24 @@ final class LSPManager: @unchecked Sendable {
         return token
     }
 
+    /// Whether this file's running server formats documents.
+    func formats(forExtension ext: String) -> Bool {
+        guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return false }
+        return serverCapabilities[entry.binaryName]?.formats ?? false
+    }
+
+    /// The server's edits that format the document as it is now; nil if it gave none.
+    func format(url: URL, tabSize: Int, insertSpaces: Bool, completion: @escaping @Sendable ([LSPTextEdit]?) -> Void) {
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return }
+        flush(url: url)
+        onQueue(for: entry) {
+            $0.enqueue(.formatting(uri: url.absoluteString, tabSize: tabSize, insertSpaces: insertSpaces) { result in
+                let edits = result?.array?.compactMap { LSPTextEdit($0) }
+                DispatchQueue.main.async { completion(edits) }
+            })
+        }
+    }
+
     func cancel(_ token: LSPRequestToken, url: URL) {
         guard !token.isCancelled else { return }
         token.cancel()

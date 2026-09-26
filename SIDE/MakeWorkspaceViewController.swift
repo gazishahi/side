@@ -225,6 +225,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Trails Make's tab strip in the top row (Direction 02 §4.5).
     /// The active file's language server, trailing the tab strip: caption + dot (§4.5).
     let lspStatusButton = LSPStatusChip()
+    /// Where the caret is, "Ln 12, Col 5" (and how much is selected); click for Go to Line.
+    let caretPositionButton = NSButton(title: "", target: nil, action: nil)
     private var lspInstallPopover: NSPopover?
     private var allFiles: [IndexedFile] = []
     private var matches: [URL] = []
@@ -387,6 +389,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // Hosted in the window's top row (Direction 02 §3.2) — see `topRowContent`.
         lspStatusButton.translatesAutoresizingMaskIntoConstraints = false
         tabBar.addSubview(lspStatusButton)
+        caretPositionButton.isBordered = false
+        caretPositionButton.target = self
+        caretPositionButton.action = #selector(showGoToLine)
+        caretPositionButton.toolTip = "Go to Line\u{2026}"
+        caretPositionButton.translatesAutoresizingMaskIntoConstraints = false
+        caretPositionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        caretPositionButton.isHidden = true
+        tabBar.addSubview(caretPositionButton)
         noFileLabel.font = DS.Text.body()
         noFileLabel.textColor = .tertiaryLabelColor
         noFileLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -396,7 +406,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             noFileLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
         NSLayoutConstraint.activate([
-            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: lspStatusButton.leadingAnchor, constant: -DS.Spacing.s), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: caretPositionButton.leadingAnchor, constant: -DS.Spacing.s),
+            caretPositionButton.trailingAnchor.constraint(equalTo: lspStatusButton.leadingAnchor, constant: -DS.Spacing.m), caretPositionButton.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
             lspStatusButton.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), lspStatusButton.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
             tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1)
@@ -1902,6 +1913,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         endCompletion()
+        DispatchQueue.main.async { [weak self] in self?.updateCaretPosition() }
         if tab.hasExternalChange { showExternalChangeBanner(for: tab.url) } else { externalChangeBanner.isHidden = true }
 
         let showingMarkdownPreview = tab.kind == .text && tab.isPreviewingMarkdown
@@ -1963,6 +1975,27 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// The active file's language server as a caption and a dot: ready, starting (the working
     /// ring), stopped, or not installed — the last one clickable to install. Hidden for files
     /// with no server, and for a missing server the user can't install from here (sourcekit-lsp).
+    /// "Ln 12, Col 5", one-based, columns in characters with a tab counted to the next stop;
+    /// with a selection, how many characters it holds; with several carets, how many.
+    private func updateCaretPosition() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
+              !openTabs[index].isPreviewingMarkdown else { caretPositionButton.isHidden = true; return }
+        let document = openTabs[index].document
+        let selection = editor.selectedRange
+        let rope = document.rope
+        let caret = min(NSMaxRange(selection), rope.utf16Count)
+        let position = rope.position(of: caret)
+        let lineStart = caret - position.column
+        let prefix = (document.text as NSString).substring(with: NSRange(location: lineStart, length: position.column))
+        var column = 0
+        for character in prefix { column = character == "\t" ? (column / 4 + 1) * 4 : column + 1 }
+        var text = "Ln \(position.line + 1), Col \(column + 1)"
+        if selection.length > 0 { text += " (\(selection.length) selected)" }
+        caretPositionButton.attributedTitle = NSAttributedString(string: text, attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor])
+        caretPositionButton.setAccessibilityLabel("Line \(position.line + 1), column \(column + 1). Go to Line")
+        caretPositionButton.isHidden = false
+    }
+
     private func updateLSPIndicator() {
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
               let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension),
@@ -2478,6 +2511,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func rebuildTabBar() {
+        updateCaretPosition()
         // The tab bar is rebuilt on every open, close, and reorder, which is exactly the set of
         // moments the remembered tab list should change — except during a restore, where the
         // intermediate states are not worth persisting over the complete set.
@@ -3042,12 +3076,32 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var pendingDiffWorkItem: DispatchWorkItem?
     private func undoStateChanged(_ managerID: ObjectIdentifier?) {
         guard let managerID, let index = openTabs.firstIndex(where: { ObjectIdentifier($0.undoManager) == managerID }), openTabs[index].kind == .text else { return }
-        let text = openTabs[index].document.string
-        let matchesSaved = ContentStamp(text) == openTabs[index].savedStamp
+        compareWithSaved(index)
+    }
+
+    /// Clean again when the text is what's on disk, however it got back there: an undo, or a
+    /// line typed and deleted by hand.
+    private func compareWithSaved(_ index: Int) {
+        let matchesSaved = ContentStamp(openTabs[index].document.string) == openTabs[index].savedStamp
         guard openTabs[index].dirty == matchesSaved else { return }
         openTabs[index].dirty = !matchesSaved
         if activeTabIndex == index { dirty = !matchesSaved }
         rebuildTabBar()
+    }
+
+    /// An edit that leaves the file its saved length might have put it back: checked once
+    /// typing pauses. The length is free to read; the text is hashed only then.
+    private var savedComparison: DispatchWorkItem?
+    private func scheduleComparisonWithSaved(_ index: Int) {
+        savedComparison?.cancel()
+        guard openTabs[index].document.rope.utf8Count == openTabs[index].savedStamp.count else { return }
+        let tabID = openTabs[index].id
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let index = self.indexForTab(id: tabID) else { return }
+            self.compareWithSaved(index)
+        }
+        savedComparison = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     func editorTextDidChange(_ engine: EditorEngine) {
@@ -3057,6 +3111,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             openTabs[index].dirty = true
             rebuildTabBar()  // the tab's unsaved dot
         }
+        if let index = activeTabIndex, openTabs[index].kind == .text, !openTabs[index].isUntitled { scheduleComparisonWithSaved(index) }
         editor.invalidateGutter()
         if paletteIsOpen, searchMode == .find { scheduleRefreshMatches() }
         scheduleDiffRefresh()
@@ -3254,6 +3309,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     func editorSelectionDidChange(_ engine: EditorEngine) {
         updateBracketHighlight()
+        updateCaretPosition()
         editor.setNeedsDisplay()
         // Typing itself moves the selection, which fires this same delegate method within the
         // same call chain as textDidChange (before its just-scheduled completion request ever
@@ -3339,6 +3395,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
         }
 
+        if affectedCharRange.length == 0, let outdent = Self.outdentedCloser(char, in: engine.document?.text ?? "", at: affectedCharRange.location) {
+            engine.insertText(outdent.text, replacementRange: outdent.range)
+            return false
+        }
+
         if let closing = Self.autoClosePairs[char], affectedCharRange.length == 0 {
             engine.insertText("\(char)\(closing)", replacementRange: affectedCharRange)
             engine.selectedRange = NSRange(location: affectedCharRange.location + 1, length: 0)
@@ -3387,15 +3448,73 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
         let ns = engine.document?.text ?? ""
         let selectedRange = engine.selectedRange
-        let lineRange = ns.lineRange(for: NSRange(location: selectedRange.location, length: 0))
-        let currentLine = ns.substring(with: NSRange(location: lineRange.location, length: selectedRange.location - lineRange.location))
-        let leadingWhitespace = currentLine.prefix(while: { $0 == " " || $0 == "\t" })
-        var indent = String(leadingWhitespace)
-        if let last = currentLine.trimmingCharacters(in: .whitespaces).last, "{[(".contains(last) {
-            indent += "    "
-        }
-        engine.insertText("\n" + indent, replacementRange: selectedRange)
+        guard let newline = Self.newline(in: ns, replacing: selectedRange) else { return false }
+        engine.insertText(newline.text, replacementRange: selectedRange)
+        engine.selectedRange = NSRange(location: selectedRange.location + newline.caret, length: 0)
         return true
+    }
+
+    /// Return: the line's indent, one level more after an opening bracket, and between a pair
+    /// (`{|}`) the closer on a line of its own at the outer indent, the caret on the one between.
+    static func newline(in ns: NSString, replacing selection: NSRange) -> (text: String, caret: Int)? {
+        let lineRange = ns.lineRange(for: NSRange(location: selection.location, length: 0))
+        let before = ns.substring(with: NSRange(location: lineRange.location, length: selection.location - lineRange.location))
+        let indent = String(before.prefix(while: { $0 == " " || $0 == "\t" }))
+        let unit = indentUnit(in: ns, near: lineRange)
+        guard let last = before.trimmingCharacters(in: .whitespaces).last, let closer = bracketPairs[last] else {
+            let text = "\n" + indent
+            return (text, (text as NSString).length)
+        }
+        let after = NSMaxRange(selection)
+        var next = after
+        while next < NSMaxRange(lineRange), let scalar = UnicodeScalar(ns.character(at: next)), scalar == " " || scalar == "\t" { next += 1 }
+        if next < ns.length, let scalar = UnicodeScalar(ns.character(at: next)), Character(scalar) == closer {
+            let opened = "\n" + indent + unit
+            return (opened + "\n" + indent, (opened as NSString).length)
+        }
+        let text = "\n" + indent + unit
+        return (text, (text as NSString).length)
+    }
+
+    /// One level of indentation as the file writes it: a tab if the lines around use tabs,
+    /// else four spaces, or two where that's what the file indents by.
+    static func indentUnit(in ns: NSString, near lineRange: NSRange) -> String {
+        let start = max(0, lineRange.location - 4000), end = min(ns.length, NSMaxRange(lineRange) + 4000)
+        var tabs = 0, twos = 0, fours = 0
+        ns.enumerateSubstrings(in: NSRange(location: start, length: end - start), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
+            guard range.length > 0 else { return }
+            if ns.character(at: range.location) == 0x09 { tabs += 1; return }
+            var spaces = 0
+            while spaces < range.length, ns.character(at: range.location + spaces) == 0x20 { spaces += 1 }
+            guard spaces > 0, spaces < range.length else { return }
+            if spaces % 4 == 0 { fours += 1 } else if spaces % 2 == 0 { twos += 1 }
+        }
+        if tabs > fours + twos { return "\t" }
+        return twos > fours ? "  " : "    "
+    }
+
+    /// A closer typed on a line with nothing else on it goes to its opener's indent.
+    static func outdentedCloser(_ closer: Character, in ns: NSString, at location: Int) -> (range: NSRange, text: String)? {
+        guard let open = bracketPairsReversed[closer] else { return nil }
+        let lineRange = ns.lineRange(for: NSRange(location: location, length: 0))
+        let before = ns.substring(with: NSRange(location: lineRange.location, length: location - lineRange.location))
+        guard !before.isEmpty, before.allSatisfy({ $0 == " " || $0 == "\t" }) else { return nil }
+        guard let openUnit = String(open).utf16.first, let closeUnit = String(closer).utf16.first else { return nil }
+        var depth = 0, i = location - 1
+        let limit = max(0, location - maxBracketScanDistance)
+        while i >= limit {
+            let c = ns.character(at: i)
+            if c == closeUnit { depth += 1 } else if c == openUnit {
+                if depth == 0 { break }
+                depth -= 1
+            }
+            i -= 1
+        }
+        guard i >= limit, i >= 0 else { return nil }
+        let openerLine = ns.lineRange(for: NSRange(location: i, length: 0))
+        let openerIndent = String(ns.substring(with: openerLine).prefix(while: { $0 == " " || $0 == "\t" }))
+        guard openerIndent != before else { return nil }
+        return (NSRange(location: lineRange.location, length: location - lineRange.location), openerIndent + String(closer))
     }
 
     private func scheduleDiffRefresh() {
@@ -3497,6 +3616,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Shortcuts.bind(editMenu.addItem(withTitle: "Use Selection for Find", action: #selector(ShellViewController.useSelectionForFind(_:)), keyEquivalent: ""), "find.useSelection")
         editMenu.addItem(NSMenuItem.separator())
         Shortcuts.bind(editMenu.addItem(withTitle: "Show Completions", action: #selector(showCompletions(_:)), keyEquivalent: ""), "editor.complete")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Format Document", action: #selector(formatDocument(_:)), keyEquivalent: ""), "editor.format")
         editItem.submenu = editMenu
 
         // What the user actually toggles about the *presentation* of the workspace, as its own
@@ -3877,6 +3997,107 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             guard let self, response == .alertFirstButtonReturn, let current = self.indexForTab(id: tab.id) else { return }
             self.reloadTabFromDisk(current)
         }
+    }
+
+    /// The project's formatter reading the buffer from stdin and writing the result to stdout,
+    /// for Format Document (the saved file isn't touched).
+    private static func stdinFormatterCommand(for url: URL, projectRoot: URL) -> (executable: String, args: [String])? {
+        switch url.pathExtension.lowercased() {
+        case "js", "jsx", "ts", "tsx", "json", "md", "css", "scss", "html", "yaml", "yml":
+            let local = projectRoot.appendingPathComponent("node_modules/.bin/prettier").path
+            if FileManager.default.isExecutableFile(atPath: local) { return (local, ["--stdin-filepath", url.path]) }
+            if let global = which("prettier") { return (global, ["--stdin-filepath", url.path]) }
+            return nil
+        case "swift":
+            if let global = which("swift-format") { return (global, ["format", "--assume-filename", url.path, "-"]) }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    /// Format Document: the project's formatter (prettier, swift-format), or else the file's
+    /// language server. Applied as one undo step, and only if nothing was typed meanwhile.
+    @objc func formatDocument(_ sender: Any?) {
+        guard let index = activeTabIndex, openTabs[index].kind == .text else { return NSSound.beep() }
+        let tab = openTabs[index]
+        let original = tab.document.string
+        let tabID = tab.id
+        if let root = focusedRoot, !tab.isUntitled, let formatter = Self.stdinFormatterCommand(for: tab.url, projectRoot: root) {
+            let directory = tab.url.deletingLastPathComponent()
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let formatted = Self.runFormatter(formatter, input: original, directory: directory)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if let formatted { self.applyFormatted(formatted, tabID: tabID, original: original) }
+                    else { self.formatWithLanguageServer(tabID: tabID, original: original) }
+                }
+            }
+            return
+        }
+        formatWithLanguageServer(tabID: tabID, original: original)
+    }
+
+    private func formatWithLanguageServer(tabID: UUID, original: String) {
+        guard let index = indexForTab(id: tabID), let lspManager, lspManager.formats(forExtension: openTabs[index].url.pathExtension) else { return NSSound.beep() }
+        let tab = openTabs[index]
+        let unit = Self.indentUnit(in: tab.document.text, near: NSRange(location: 0, length: 0))
+        lspManager.format(url: tab.url, tabSize: unit == "\t" ? 4 : unit.count, insertSpaces: unit != "\t") { [weak self] edits in
+            guard let self, let edits, let index = self.indexForTab(id: tabID), self.activeTabIndex == index,
+                  self.openTabs[index].document.string == original else { return }
+            let rope = self.openTabs[index].document.rope
+            let ranges = edits.map { edit -> (range: NSRange, text: String) in
+                let a = rope.offset(line: edit.range.start.line, column: edit.range.start.character)
+                let b = rope.offset(line: edit.range.end.line, column: edit.range.end.character)
+                return (NSRange(location: a, length: max(0, b - a)), edit.newText)
+            }
+            let caret = self.editor.selectedRange.location
+            self.editor.applyEdits(ranges)
+            self.editor.selectedRange = NSRange(location: min(caret, self.openTabs[index].document.length), length: 0)
+        }
+    }
+
+    /// The formatter's output, or nil if it failed (a syntax error, a missing config).
+    private nonisolated static func runFormatter(_ formatter: (executable: String, args: [String]), input: String, directory: URL) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: formatter.executable)
+        process.arguments = formatter.args
+        process.currentDirectoryURL = directory
+        let stdin = Pipe(), stdout = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        // Written on its own thread: a formatter that answers as it reads would otherwise fill
+        // its output pipe while this still writes, and both would wait forever.
+        let data = Data(input.utf8)
+        DispatchQueue.global().async {
+            stdin.fileHandleForWriting.write(data)
+            try? stdin.fileHandleForWriting.close()
+        }
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, !output.isEmpty else { return nil }
+        return String(data: output, encoding: .utf8)
+    }
+
+    /// The formatted text as the one edit that differs (so the rest keeps its layout, folds
+    /// and colors), undoable.
+    private func applyFormatted(_ formatted: String, tabID: UUID, original: String) {
+        guard let index = indexForTab(id: tabID), activeTabIndex == index, openTabs[index].document.string == original, formatted != original else { return }
+        let old = original as NSString, new = formatted as NSString
+        var prefix = 0
+        let shortest = min(old.length, new.length)
+        while prefix < shortest, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        var suffix = 0
+        while suffix < shortest - prefix, old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        let range = NSRange(location: prefix, length: old.length - prefix - suffix)
+        let replacement = new.substring(with: NSRange(location: prefix, length: new.length - prefix - suffix))
+        let caret = editor.selectedRange.location
+        editor.applyEdits([(range, replacement)])
+        // The caret stays on its line where it can: before the change, it doesn't move.
+        let moved = caret <= prefix ? caret : min(new.length, caret + new.length - old.length)
+        editor.selectedRange = NSRange(location: max(0, moved), length: 0)
     }
 
     private static func formatterCommand(for url: URL, projectRoot: URL) -> (executable: String, args: [String])? {

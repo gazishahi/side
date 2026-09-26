@@ -30,13 +30,14 @@ enum LSPOutboundOp: Sendable {
     case completion(uri: String, position: LSPPosition, context: CompletionContext, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
     case resolve(item: LSPValue, uri: String, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
     case definition(uri: String, position: LSPPosition, reply: @Sendable (LSPResult?) -> Void)
+    case formatting(uri: String, tabSize: Int, insertSpaces: Bool, reply: @Sendable (LSPResult?) -> Void)
     case cancel(LSPRequestToken, uri: String)
 
     /// The document this op is about, for deciding what a replay supersedes.
     var uri: String {
         switch self {
         case .didOpen(let uri, _, _, _), .didChange(let uri, _, _, _), .didSave(let uri), .didClose(let uri),
-             .completion(let uri, _, _, _, _), .resolve(_, let uri, _, _), .definition(let uri, _, _), .cancel(_, let uri):
+             .completion(let uri, _, _, _, _), .resolve(_, let uri, _, _), .definition(let uri, _, _), .formatting(let uri, _, _, _), .cancel(_, let uri):
             return uri
         }
     }
@@ -46,7 +47,7 @@ enum LSPOutboundOp: Sendable {
     var isDocumentSync: Bool {
         switch self {
         case .didOpen, .didChange, .didSave, .didClose, .cancel: return true
-        case .completion, .resolve, .definition: return false
+        case .completion, .resolve, .definition, .formatting: return false
         }
     }
 
@@ -61,7 +62,7 @@ enum LSPOutboundOp: Sendable {
     /// Answers a request that will never reach a server.
     func fail() {
         switch self {
-        case .completion(_, _, _, _, let reply), .resolve(_, _, _, let reply), .definition(_, _, let reply): reply(nil)
+        case .completion(_, _, _, _, let reply), .resolve(_, _, _, let reply), .definition(_, _, let reply), .formatting(_, _, _, let reply): reply(nil)
         case .didOpen, .didChange, .didSave, .didClose, .cancel: break
         }
     }
