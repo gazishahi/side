@@ -2,6 +2,7 @@
 
 *2026-09-25. Status: **built**. A working list, not an RFC: the owner asked to go straight to building it, with a
 page to keep track of the work.*
+Symbols: `Shortcuts`, `ShortcutsViewController`, `ShortcutRecorder`, `EditorPreferences`.
 
 ## Shortcuts (Side)
 
