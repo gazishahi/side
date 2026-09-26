@@ -3357,42 +3357,45 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let updates = appMenu.addItem(withTitle: "Check for Updates\u{2026}", action: #selector(Updates.checkForUpdates(_:)), keyEquivalent: "")
         updates.target = Updates.shared
         appMenu.addItem(NSMenuItem.separator())
-        let preferences = appMenu.addItem(withTitle: "Preferences…", action: #selector(AppDelegate.showPreferences), keyEquivalent: ",")
+        let preferences = appMenu.addItem(withTitle: "Settings…", action: #selector(AppDelegate.showPreferences), keyEquivalent: "")
+        Shortcuts.bind(preferences, "app.preferences")
         preferences.target = NSApp.delegate as? AppDelegate
         appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(withTitle: "Hide Side", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
-        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        Shortcuts.bind(appMenu.addItem(withTitle: "Hide Side", action: #selector(NSApplication.hide(_:)), keyEquivalent: ""), "app.hide")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "")
+        Shortcuts.bind(hideOthers, "app.hideOthers")
         appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(withTitle: "Quit Side", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        Shortcuts.bind(appMenu.addItem(withTitle: "Quit Side", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""), "app.quit")
         appItem.submenu = appMenu
 
         let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
-        let newWindowItem = fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow), keyEquivalent: "n")
-        newWindowItem.keyEquivalentModifierMask = [.command, .shift]
+        let newWindowItem = fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow), keyEquivalent: "")
+        Shortcuts.bind(newWindowItem, "file.newWindow")
         newWindowItem.target = NSApp.delegate as? AppDelegate
-        fileMenu.addItem(withTitle: "New File", action: #selector(newFile), keyEquivalent: "n")
+        Shortcuts.bind(fileMenu.addItem(withTitle: "New File", action: #selector(newFile), keyEquivalent: ""), "file.newFile")
         // Explicitly targeted at the app delegate rather than left nil-target: as
         // responder-chain actions these went *disabled* whenever no editor held first responder,
         // which stranded anyone in the no-file state — the exact "Open Project was disabled"
         // dogfood failure. Opening a project is an app-level command, not an editor one.
         let newProjectItem = fileMenu.addItem(withTitle: "New Project…", action: #selector(AppDelegate.newProjectFromMenu), keyEquivalent: "")
+        Shortcuts.bind(newProjectItem, "file.newProject")
         newProjectItem.target = NSApp.delegate as? AppDelegate
-        let openProjectItem = fileMenu.addItem(withTitle: "Open Project…", action: #selector(AppDelegate.openProjectFromMenu), keyEquivalent: "o")
+        let openProjectItem = fileMenu.addItem(withTitle: "Open Project…", action: #selector(AppDelegate.openProjectFromMenu), keyEquivalent: "")
+        Shortcuts.bind(openProjectItem, "file.openProject")
         openProjectItem.target = NSApp.delegate as? AppDelegate
         openRecentMenu.delegate = self
         let openRecentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         openRecentItem.submenu = openRecentMenu
         fileMenu.addItem(openRecentItem)
         fileMenu.addItem(NSMenuItem.separator())
-        fileMenu.addItem(withTitle: "Save", action: #selector(save), keyEquivalent: "s")
-        let saveAsItem = fileMenu.addItem(withTitle: "Save As…", action: #selector(saveAs), keyEquivalent: "s")
-        saveAsItem.keyEquivalentModifierMask = [.command, .shift]
-        fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(revertToSaved), keyEquivalent: "")
+        Shortcuts.bind(fileMenu.addItem(withTitle: "Save", action: #selector(save), keyEquivalent: ""), "file.save")
+        let saveAsItem = fileMenu.addItem(withTitle: "Save As…", action: #selector(saveAs), keyEquivalent: "")
+        Shortcuts.bind(saveAsItem, "file.saveAs")
+        Shortcuts.bind(fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(revertToSaved), keyEquivalent: ""), "file.revert")
         fileMenu.addItem(NSMenuItem.separator())
-        fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: "w")
+        Shortcuts.bind(fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: ""), "file.closeTab")
         fileItem.submenu = fileMenu
 
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
@@ -3400,27 +3403,27 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // Replacing NSApp.mainMenu wholesale means we lose the standard Edit items AppKit
         // normally provides for free — without these, Cmd+A/C/X/V had nothing claiming their
         // key equivalents, so they never reached the text view's built-in key bindings.
-        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
-        redo.keyEquivalentModifierMask = [.command, .shift]
+        Shortcuts.bind(editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: ""), "edit.undo")
+        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "")
+        Shortcuts.bind(redo, "edit.redo")
         editMenu.addItem(NSMenuItem.separator())
-        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: ""), "edit.cut")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: ""), "edit.copy")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: ""), "edit.paste")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: ""), "edit.selectAll")
         editMenu.addItem(NSMenuItem.separator())
         // Direction 02 §5.3 — a Make action, so it's live only while Make is on screen.
-        editMenu.addItem(withTitle: "Instruct…", action: #selector(instructAtSelection), keyEquivalent: "k")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Instruct…", action: #selector(instructAtSelection), keyEquivalent: ""), "edit.instruct")
         editMenu.addItem(NSMenuItem.separator())
         // Find is a mode of the palette (SIDE_RFC_FIND_REVIEW_TRACKS.md, F1); the items target
         // the shell, which is in the responder chain whether the editor or the palette has focus.
-        editMenu.addItem(withTitle: "Find…", action: #selector(ShellViewController.showFind(_:)), keyEquivalent: "f")
-        let findReplace = editMenu.addItem(withTitle: "Find and Replace…", action: #selector(ShellViewController.showFindAndReplace(_:)), keyEquivalent: "f")
-        findReplace.keyEquivalentModifierMask = [.command, .option]
-        editMenu.addItem(withTitle: "Find Next", action: #selector(ShellViewController.findNext(_:)), keyEquivalent: "g")
-        let findPrevious = editMenu.addItem(withTitle: "Find Previous", action: #selector(ShellViewController.findPrevious(_:)), keyEquivalent: "g")
-        findPrevious.keyEquivalentModifierMask = [.command, .shift]
-        editMenu.addItem(withTitle: "Use Selection for Find", action: #selector(ShellViewController.useSelectionForFind(_:)), keyEquivalent: "e")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Find…", action: #selector(ShellViewController.showFind(_:)), keyEquivalent: ""), "find.find")
+        let findReplace = editMenu.addItem(withTitle: "Find and Replace…", action: #selector(ShellViewController.showFindAndReplace(_:)), keyEquivalent: "")
+        Shortcuts.bind(findReplace, "find.replace")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Find Next", action: #selector(ShellViewController.findNext(_:)), keyEquivalent: ""), "find.next")
+        let findPrevious = editMenu.addItem(withTitle: "Find Previous", action: #selector(ShellViewController.findPrevious(_:)), keyEquivalent: "")
+        Shortcuts.bind(findPrevious, "find.previous")
+        Shortcuts.bind(editMenu.addItem(withTitle: "Use Selection for Find", action: #selector(ShellViewController.useSelectionForFind(_:)), keyEquivalent: ""), "find.useSelection")
         editItem.submenu = editMenu
 
         // What the user actually toggles about the *presentation* of the workspace, as its own
@@ -3428,35 +3431,34 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         let viewMenu = NSMenu(title: "View")
         // ⇧⌘V, not ⌘M — ⌘M is the system's Minimize, which this used to shadow.
-        let markdownPreview = viewMenu.addItem(withTitle: "Toggle Markdown Preview", action: #selector(toggleMarkdownPreview), keyEquivalent: "v")
-        markdownPreview.keyEquivalentModifierMask = [.command, .shift]
-        let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "e")
-        explorer.keyEquivalentModifierMask = [.command, .shift]
+        let markdownPreview = viewMenu.addItem(withTitle: "Toggle Markdown Preview", action: #selector(toggleMarkdownPreview), keyEquivalent: "")
+        Shortcuts.bind(markdownPreview, "view.markdownPreview")
+        let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "")
+        Shortcuts.bind(explorer, "view.fileExplorer")
         viewItem.submenu = viewMenu
 
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
         let navigateMenu = NSMenu(title: "Navigate")
         // Palette items target the shell, which is always in the responder chain — as Make
         // actions they were disabled on every other stage.
-        navigateMenu.addItem(withTitle: "Quick Open", action: #selector(ShellViewController.showQuickOpen(_:)), keyEquivalent: "p")
-        let commandPalette = navigateMenu.addItem(withTitle: "Command Palette", action: #selector(ShellViewController.showCommandPalette(_:)), keyEquivalent: "p")
-        commandPalette.keyEquivalentModifierMask = [.command, .shift]
-        navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: "l")
-        let goToSymbol = navigateMenu.addItem(withTitle: "Go to Symbol…", action: #selector(ShellViewController.showGoToSymbol(_:)), keyEquivalent: "o")
-        let findInProject = NSMenuItem(title: "Find in Project…", action: #selector(ShellViewController.showFindInProject(_:)), keyEquivalent: "f")
-        findInProject.keyEquivalentModifierMask = [.command, .shift]
+        Shortcuts.bind(navigateMenu.addItem(withTitle: "Quick Open", action: #selector(ShellViewController.showQuickOpen(_:)), keyEquivalent: ""), "navigate.quickOpen")
+        let commandPalette = navigateMenu.addItem(withTitle: "Command Palette", action: #selector(ShellViewController.showCommandPalette(_:)), keyEquivalent: "")
+        Shortcuts.bind(commandPalette, "navigate.commandPalette")
+        Shortcuts.bind(navigateMenu.addItem(withTitle: "Go to Line…", action: #selector(showGoToLine), keyEquivalent: ""), "navigate.goToLine")
+        let goToSymbol = navigateMenu.addItem(withTitle: "Go to Symbol…", action: #selector(ShellViewController.showGoToSymbol(_:)), keyEquivalent: "")
+        Shortcuts.bind(goToSymbol, "navigate.goToSymbol")
+        let findInProject = NSMenuItem(title: "Find in Project…", action: #selector(ShellViewController.showFindInProject(_:)), keyEquivalent: "")
+        Shortcuts.bind(findInProject, "find.inProject")
         navigateMenu.addItem(findInProject)
-        goToSymbol.keyEquivalentModifierMask = [.command, .shift]
-        let jumpToDef = navigateMenu.addItem(withTitle: "Jump to Definition", action: #selector(jumpToDefinition), keyEquivalent: "j")
-        jumpToDef.keyEquivalentModifierMask = [.command, .control]
+        let jumpToDef = navigateMenu.addItem(withTitle: "Jump to Definition", action: #selector(jumpToDefinition), keyEquivalent: "")
+        Shortcuts.bind(jumpToDef, "navigate.jumpToDefinition")
         navigateMenu.addItem(NSMenuItem.separator())
         // Stage navigation — ⌘⌥1–4 for the four working stages, ⌘⌥0 for Tracks (Direction 02
         // §3.8). Every stage has an item whether or not it is pinned: unpinning never removes a
         // way in. ⌘1–⌘8 stay with tabs.
         for (index, stage) in ShellViewController.Stage.allCases.enumerated() {
-            let key = stage == .tracks ? "0" : "\(StagePins.pinnable.firstIndex(of: stage).map { $0 + 1 } ?? index + 1)"
-            let item = navigateMenu.addItem(withTitle: "Go to \(stage.rawValue)", action: #selector(ShellViewController.jumpToStage(_:)), keyEquivalent: key)
-            item.keyEquivalentModifierMask = [.command, .option]
+            let item = navigateMenu.addItem(withTitle: "Go to \(stage.rawValue)", action: #selector(ShellViewController.jumpToStage(_:)), keyEquivalent: "")
+            Shortcuts.bind(item, "stage.\(stage)")
             item.tag = index
         }
         navigateMenu.addItem(NSMenuItem.separator())
@@ -3465,16 +3467,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let tabsItem = NSMenuItem(title: "Tabs", action: nil, keyEquivalent: "")
         let tabsMenu = NSMenu(title: "Tabs")
         for i in 1...8 {
-            let item = tabsMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "\(i)")
+            let item = tabsMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "")
+            Shortcuts.bind(item, "tabs.\(i)")
             item.tag = i - 1
         }
-        let lastTab = tabsMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "9")
+        let lastTab = tabsMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "")
+        Shortcuts.bind(lastTab, "tabs.last")
         lastTab.tag = -1
         tabsMenu.addItem(NSMenuItem.separator())
-        let nextTab = tabsMenu.addItem(withTitle: "Next Tab", action: #selector(ShellViewController.selectNextTab(_:)), keyEquivalent: "\t")
-        nextTab.keyEquivalentModifierMask = [.control]
-        let previousTab = tabsMenu.addItem(withTitle: "Previous Tab", action: #selector(ShellViewController.selectPreviousTab(_:)), keyEquivalent: "\t")
-        previousTab.keyEquivalentModifierMask = [.control, .shift]
+        let nextTab = tabsMenu.addItem(withTitle: "Next Tab", action: #selector(ShellViewController.selectNextTab(_:)), keyEquivalent: "")
+        Shortcuts.bind(nextTab, "tabs.next")
+        let previousTab = tabsMenu.addItem(withTitle: "Previous Tab", action: #selector(ShellViewController.selectPreviousTab(_:)), keyEquivalent: "")
+        Shortcuts.bind(previousTab, "tabs.previous")
         tabsItem.submenu = tabsMenu
         navigateMenu.addItem(tabsItem)
         navigateItem.submenu = navigateMenu
@@ -3484,21 +3488,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // as "New Window" targeting AppDelegate directly above.
         let runItem = NSMenuItem(title: "Run", action: nil, keyEquivalent: "")
         let runMenu = NSMenu(title: "Run")
-        runMenu.addItem(withTitle: "New Terminal Tab", action: #selector(RunWorkspaceViewController.newSession), keyEquivalent: "t")
-        runMenu.addItem(withTitle: "Stop", action: #selector(RunWorkspaceViewController.stopActiveSession), keyEquivalent: ".")
-        let restart = runMenu.addItem(withTitle: "Restart Terminal", action: #selector(RunWorkspaceViewController.restartActiveSession), keyEquivalent: "r")
-        restart.keyEquivalentModifierMask = [.command, .shift]
-        runMenu.addItem(withTitle: "Rerun Last Command", action: #selector(RunWorkspaceViewController.rerunLastCommand), keyEquivalent: "")
+        Shortcuts.bind(runMenu.addItem(withTitle: "New Terminal Tab", action: #selector(RunWorkspaceViewController.newSession), keyEquivalent: ""), "run.newTerminal")
+        Shortcuts.bind(runMenu.addItem(withTitle: "Stop", action: #selector(RunWorkspaceViewController.stopActiveSession), keyEquivalent: ""), "run.stop")
+        let restart = runMenu.addItem(withTitle: "Restart Terminal", action: #selector(RunWorkspaceViewController.restartActiveSession), keyEquivalent: "")
+        Shortcuts.bind(restart, "run.restart")
+        Shortcuts.bind(runMenu.addItem(withTitle: "Rerun Last Command", action: #selector(RunWorkspaceViewController.rerunLastCommand), keyEquivalent: ""), "run.rerun")
         runItem.submenu = runMenu
 
         // Same responder-chain pattern as Run above — TracksWorkspaceViewController picks this up
         // while the Tracks stage is active.
         let trackItem = NSMenuItem(title: "Track", action: nil, keyEquivalent: "")
         let trackMenu = NSMenu(title: "Track")
-        let newTrack = trackMenu.addItem(withTitle: "New Track…", action: #selector(TracksWorkspaceViewController.newTrackTapped), keyEquivalent: "t")
-        newTrack.keyEquivalentModifierMask = [.command, .shift]
-        let trackPopover = trackMenu.addItem(withTitle: "Switch Track…", action: #selector(ShellViewController.toggleTrackPopover(_:)), keyEquivalent: "t")
-        trackPopover.keyEquivalentModifierMask = [.command, .control]
+        let newTrack = trackMenu.addItem(withTitle: "New Track…", action: #selector(TracksWorkspaceViewController.newTrackTapped), keyEquivalent: "")
+        Shortcuts.bind(newTrack, "track.new")
+        let trackPopover = trackMenu.addItem(withTitle: "Switch Track…", action: #selector(ShellViewController.toggleTrackPopover(_:)), keyEquivalent: "")
+        Shortcuts.bind(trackPopover, "track.switch")
         let stagesItem = NSMenuItem(title: "Pinned Stages", action: nil, keyEquivalent: "")
         let stagesMenu = NSMenu(title: "Pinned Stages")
         for stage in StagePins.pinnable {
@@ -3515,12 +3519,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // on top of whatever's added here explicitly.
         let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")
-        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        Shortcuts.bind(windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: ""), "window.minimize")
+        Shortcuts.bind(windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: ""), "window.zoom")
         windowMenu.addItem(NSMenuItem.separator())
         // Library is a window, not a stage (RFC R6): app-level, so it targets the delegate.
-        let library = windowMenu.addItem(withTitle: "Library", action: #selector(AppDelegate.showLibrary), keyEquivalent: "l")
-        library.keyEquivalentModifierMask = [.command, .shift]
+        let library = windowMenu.addItem(withTitle: "Library", action: #selector(AppDelegate.showLibrary), keyEquivalent: "")
+        Shortcuts.bind(library, "window.library")
         library.target = NSApp.delegate as? AppDelegate
         windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")

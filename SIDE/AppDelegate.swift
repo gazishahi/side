@@ -66,6 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("stage ") { shell.showStageForTesting(String(command.dropFirst(6))) }
                     if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
                     if command == "switcher" { shell.toggleTrackPopover(nil) }
+                    if command.hasPrefix("settings "), let pane = SettingsSplitViewController.Pane(rawValue: String(command.dropFirst(9))) {
+                        (NSApp.delegate as? AppDelegate)?.showPreferences()
+                        ((NSApp.delegate as? AppDelegate)?.preferencesWindow?.contentViewController as? SettingsSplitViewController)?.select(pane)
+                    }
                     // What's scheduled on the main run loop (timers and their callouts): for finding idle wakeups.
                     if command == "runloop" { FileHandle.standardError.write(Data("\(String(describing: CFRunLoopGetMain()))\n".utf8)) }
                     if command.hasPrefix("project ") { shell.openProject(at: URL(fileURLWithPath: String(command.dropFirst(8))), focusingTrackKey: nil) }

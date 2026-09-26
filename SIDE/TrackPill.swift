@@ -260,7 +260,7 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
         list.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(scroll)
 
-        let newTrack = Self.footerButton("New Track\u{2026}", shortcut: "\u{21E7}\u{2318}T", target: self, action: #selector(newTrackTapped))
+        let newTrack = Self.footerButton("New Track\u{2026}", shortcut: Shortcuts.display("track.new").nonEmpty, target: self, action: #selector(newTrackTapped))
         let openTracks = Self.footerButton("All Tracks", shortcut: nil, target: self, action: #selector(openTracksTapped))
         let footer = NSStackView(views: [newTrack, NSView(), openTracks])
         footer.orientation = .horizontal

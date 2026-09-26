@@ -390,19 +390,20 @@ final class ShellViewController: NSViewController {
     /// Every stage — pinned or not — and every Navigate menu item, by name.
     private func paletteCommands() -> [PaletteCommand] {
         var commands = Stage.allCases.map { stage in
-            PaletteCommand(title: "Go to \(stage.rawValue)", shortcut: stage == .tracks ? "⌘⌥0" : StagePins.pinnable.firstIndex(of: stage).map { "⌘⌥\($0 + 1)" }) { [weak self] in
+            PaletteCommand(title: "Go to \(stage.rawValue)", shortcut: Shortcuts.display("stage.\(stage)").nonEmpty) { [weak self] in
                 self?.show(stage)
             }
         }
         let navigate = NSApp.mainMenu?.items.first { $0.title == "Navigate" }?.submenu
         for item in navigate?.items ?? [] where !item.isSeparatorItem && item.action != nil && !item.title.hasPrefix("Go to ") {
-            commands.append(PaletteCommand(title: item.title, shortcut: nil) { [weak item] in
+            let chord = item.keyEquivalent.isEmpty ? nil : KeyChord(item.keyEquivalent, item.keyEquivalentModifierMask).display
+            commands.append(PaletteCommand(title: item.title, shortcut: chord) { [weak item] in
                 guard let item, let action = item.action else { return }
                 NSApp.sendAction(action, to: item.target, from: item)
             })
         }
-        commands.append(PaletteCommand(title: "New Track…", shortcut: "⇧⌘T") { [weak self] in self?.trackPill.onNewTrack?() })
-        commands.append(PaletteCommand(title: "Switch Track…", shortcut: "⌃⌘T") { [weak self] in self?.trackPill.togglePopover() })
+        commands.append(PaletteCommand(title: "New Track…", shortcut: Shortcuts.display("track.new").nonEmpty) { [weak self] in self?.trackPill.onNewTrack?() })
+        commands.append(PaletteCommand(title: "Switch Track…", shortcut: Shortcuts.display("track.switch").nonEmpty) { [weak self] in self?.trackPill.togglePopover() })
         return commands
     }
 
