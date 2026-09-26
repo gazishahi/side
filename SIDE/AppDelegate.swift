@@ -51,6 +51,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             volatile.removePersistentDomain(forName: "side.uitesting.volatile")
             GitLaunchProbe.defaults = volatile
             ProjectRules.defaults = volatile
+            MakeWorkspaceViewController.preferences = volatile
+            Shortcuts.defaults = volatile
+            ReviewViewedStore.shared = ReviewViewedStore(defaults: volatile)
             DispatchQueue.main.async { (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded() }
             // Measurement scripts drive Make directly (opening through the UI with synthetic
             // events proved unreliable): "open <path>" and "close-all", UI testing only.
@@ -66,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("stage ") { shell.showStageForTesting(String(command.dropFirst(6))) }
                     if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
                     if command == "switcher" { shell.toggleTrackPopover(nil) }
+                    // Any menu action, down the responder chain: "action foldAll:".
+                    if command.hasPrefix("action ") { NSApp.sendAction(NSSelectorFromString(String(command.dropFirst(7))), to: nil, from: nil) }
                     if command.hasPrefix("settings "), let pane = SettingsSplitViewController.Pane(rawValue: String(command.dropFirst(9))) {
                         (NSApp.delegate as? AppDelegate)?.showPreferences()
                         ((NSApp.delegate as? AppDelegate)?.preferencesWindow?.contentViewController as? SettingsSplitViewController)?.select(pane)

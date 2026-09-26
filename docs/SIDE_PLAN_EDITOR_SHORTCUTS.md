@@ -1,6 +1,6 @@
 # Editor and shortcuts
 
-*2026-09-25. Status: **in progress**. A working list, not an RFC: the owner asked to go straight to building it, with a
+*2026-09-25. Status: **built**. A working list, not an RFC: the owner asked to go straight to building it, with a
 page to keep track of the work.*
 
 ## Shortcuts (Side)
@@ -33,7 +33,7 @@ Alloy 0.1 has multiple cursors; the rest was left for after 0.1 (SIDE_RFC_ALLOY.
 - [x] 1 One table (`Shortcuts.swift`: 67 commands, 17 of them fixed in their view; the menu binds every item, the palette and the switcher read their labels from it)
 - [x] 2 Settings pane (Settings → Shortcuts: by area, searchable, a recorder that takes ⌘-keys before the menu bar, conflicts confirmed, Reset per command and all)
 - [x] 3 Tests (`ShortcutsTests`)
-- [ ] 4 Column selection
-- [ ] 5 Folding
-- [ ] 6 Minimap
-- [ ] 7 Budgets
+- [x] 4 Column selection (Alloy: ⌥-drag; ⌥-click and ⌥⌘↑/↓ as before)
+- [x] 5 Folding (Alloy: `Folding`, hidden lines in `DocumentLayout`, gutter arrows, a band on the folded line; Side: View → Code Folding, ⌥⌘← → and ⌥⇧⌘← →; off in Review's diff)
+- [x] 6 Minimap (Alloy: `AlloyMinimapView`; Side: View → Show Minimap, ⌃⌘M, off by default)
+- [x] 7 Budgets (regions 29 ms, Fold All 8 ms, minimap 2.5 ms a frame at p99)

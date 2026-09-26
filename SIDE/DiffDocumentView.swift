@@ -239,6 +239,8 @@ final class DiffDocumentView: NSView {
         guard let editor = try? AlloyEditorView(buffer: TextBuffer(text), font: font as CTFont) else { return nil }
         editor.isEditable = false
         editor.wrapsLines = false
+        // A diff folds by file, from its headers; indentation folds would cut through hunks.
+        editor.isFoldingEnabled = false
         // No band above the first file: its header starts at the top edge, as each later one
         // starts at its own row.
         editor.documentLayout.insets = CGSize(width: 12, height: 0)

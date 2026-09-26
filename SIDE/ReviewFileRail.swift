@@ -5,7 +5,7 @@ import AppKit
 /// different range is showing), the file is unviewed, because what was seen isn't what's there.
 struct ReviewViewedStore {
     /// Per process under tests, like the other preferences, so a test's marks reach no one.
-    nonisolated(unsafe) static let shared = ReviewViewedStore(defaults: NSClassFromString("XCTestCase") == nil
+    nonisolated(unsafe) static var shared = ReviewViewedStore(defaults: NSClassFromString("XCTestCase") == nil
         ? .standard : UserDefaults(suiteName: "side.tests.review-viewed.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard)
 
     let defaults: UserDefaults

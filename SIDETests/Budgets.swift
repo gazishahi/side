@@ -27,6 +27,9 @@ enum Budgets {
         Row(id: "editor.scroll.missed", area: "Make", measure: "Scrolling: frames missed beyond drawing nothing", limit: 0.5, unit: "%"),
         Row(id: "editor.memory.log", area: "Make", measure: "Memory for a 20 MB log (3x the file, plus the atlas)", limit: 92, unit: "MB"),
         Row(id: "editor.agentEdits", area: "Make", measure: "An agent's whole-file edit, applied and drawn, p99", limit: 16.7, unit: "ms"),
+        Row(id: "editor.foldRegions", area: "Make", measure: "A 100k-line file's foldable regions (off the main thread)", limit: 500, unit: "ms"),
+        Row(id: "editor.foldAll", area: "Make", measure: "Fold All in a 100k-line file", limit: 50, unit: "ms"),
+        Row(id: "editor.minimap", area: "Make", measure: "Drawing the minimap while scrolling, p99", limit: 4, unit: "ms"),
         Row(id: "find.matches", area: "Make", measure: "Find: every match in a 100k-line file", limit: 50, unit: "ms"),
         Row(id: "find.next", area: "Make", measure: "Find: to the next match, p99", limit: 8, unit: "ms"),
         // Review.

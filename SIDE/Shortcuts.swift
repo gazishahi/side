@@ -62,7 +62,7 @@ enum Shortcuts {
     enum Area: String, CaseIterable {
         case app = "Side", file = "File", edit = "Edit", find = "Find", view = "View", navigate = "Navigate"
         case tabs = "Tabs", stages = "Stages", run = "Run", track = "Tracks", window = "Window"
-        case think = "Think", review = "Review", palette = "Palette"
+        case editor = "Editor", think = "Think", review = "Review", palette = "Palette"
     }
 
     struct Command: Equatable {
@@ -119,6 +119,7 @@ enum Shortcuts {
 
         c("view.markdownPreview", "Toggle Markdown Preview", .view, "v", [.command, .shift]),
         c("view.fileExplorer", "Toggle File Explorer", .view, "e", [.command, .shift]),
+        c("view.minimap", "Show Minimap", .view, "m", [.command, .control]),
 
         c("navigate.quickOpen", "Quick Open", .navigate, "p"),
         c("navigate.commandPalette", "Command Palette", .navigate, "p", [.command, .shift]),
@@ -153,6 +154,14 @@ enum Shortcuts {
         c("window.minimize", "Minimize", .window, "m"),
         c("window.zoom", "Zoom", .window, nil),
         c("window.library", "Library", .window, "l", [.command, .shift]),
+
+        c("editor.fold", "Fold", .editor, left, [.command, .option]),
+        c("editor.unfold", "Unfold", .editor, right, [.command, .option]),
+        c("editor.foldAll", "Fold All", .editor, left, [.command, .option, .shift]),
+        c("editor.unfoldAll", "Unfold All", .editor, right, [.command, .option, .shift]),
+        fixed("editor.caretAbove", "Add a caret above", .editor, up, [.command, .option]),
+        fixed("editor.caretBelow", "Add a caret below", .editor, down, [.command, .option]),
+        fixed("editor.oneCaret", "Back to one caret", .editor, "\u{1B}"),
 
         fixed("think.send", "Send", .think, "\r"),
         fixed("think.newline", "New line", .think, "\r", .shift),

@@ -253,6 +253,39 @@ final class AlloyBudgetTests: XCTestCase {
                       limit: size * 3 + 32)
     }
 
+    /// Folding and the minimap in the 100k-line file: finding the regions (off the main thread
+    /// in the app, timed here directly), folding everything, and the minimap's cost a frame.
+    func testFoldingAndTheMinimap() throws {
+        _ = open(try swiftFile())
+        let start = now()
+        let regions = Folding.ranges(in: view.buffer.text)
+        let found = now() - start
+        Budgets.check("editor.foldRegions", found, detail: "\(regions.count) regions")
+        // The editor finds its own, off the main thread, a moment after opening.
+        Budgets.settle(10) { !view.foldRegions.isEmpty }
+        XCTAssertEqual(view.foldRegions.count, regions.count)
+        let foldStart = now()
+        view.foldAll(nil)
+        view.render()
+        let folded = now() - foldStart - (view.drawableWaitMilliseconds.last ?? 0)
+        view.unfoldAll()
+        Budgets.check("editor.foldAll", folded, detail: "\(view.documentLayout.lineCount) lines, drawn after")
+
+        make.toggleMinimap(nil)
+        defer { make.toggleMinimap(nil) }
+        window.layoutIfNeeded()
+        let minimap = view.minimap
+        XCTAssertGreaterThan(minimap.bounds.width, 0, "shown")
+        var draws: [Double] = []
+        for step in 0..<200 {
+            view.scrollY = CGFloat(step) * 900
+            let drawStart = now()
+            minimap.display()
+            draws.append(now() - drawStart)
+        }
+        Budgets.check("editor.minimap", percentile(draws, 0.99), detail: String(format: "median %.2f ms", percentile(draws, 0.5)))
+    }
+
     /// An agent's approved edit reaches the open tab as a whole-file replacement
     /// (`applyApprovedEdit`); 60 a second, each drawn.
     func testAgentEdits() throws {

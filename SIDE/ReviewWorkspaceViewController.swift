@@ -86,7 +86,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private var currentBaseRef = "main"
     /// Bumped per diff load, so a slow one for an old range doesn't land over a newer one.
     private var diffGeneration = 0
-    private let viewedStore = ReviewViewedStore.shared
+    private var viewedStore: ReviewViewedStore { .shared }
 
     override func loadView() { view = NSView() }
 

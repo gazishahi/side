@@ -87,6 +87,31 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// What Make lays out and hides: Alloy's editor view, which holds its scroll view.
     private var editorContainer: NSView { editor.containerView }
     private var gutter: NSView { editor.gutterView }
+    /// The document drawn small beside the text (View → Show Minimap), remembered.
+    private var minimap: AlloyMinimapView { (editor as! AlloyEditorEngine).view.minimap }
+    private var minimapWidth: NSLayoutConstraint?
+    private var minimapBottom: NSLayoutConstraint?
+    static let minimapKey = "SideMinimapShown"
+    /// Where Make keeps its view preferences: the person's, except under tests and UI testing,
+    /// which share the app's domain and mustn't change what the person chose.
+    nonisolated(unsafe) static var preferences: UserDefaults = NSClassFromString("XCTestCase") == nil
+        ? .standard : UserDefaults(suiteName: "side.tests.make.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard
+    private var minimapShown: Bool {
+        get { Self.preferences.bool(forKey: Self.minimapKey) }
+        set { Self.preferences.set(newValue, forKey: Self.minimapKey) }
+    }
+
+    @objc func toggleMinimap(_ sender: Any?) {
+        minimapShown.toggle()
+        applyMinimapVisibility()
+    }
+
+    private func applyMinimapVisibility() {
+        let show = minimapShown && !editorContainer.isHidden
+        minimap.isHidden = !show
+        minimapWidth?.constant = show ? AlloyMinimapView.width : 0
+        if show { minimap.needsDisplay = true }
+    }
     private let tabBar = TabStripView()
     /// Shown when a project is open but nothing is — the charter's empty-state rule: one quiet
     /// sentence plus the action that fixes it.
@@ -379,6 +404,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editorContainer.isHidden = true
         editorContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(editorContainer)
+        minimap.translatesAutoresizingMaskIntoConstraints = false
+        minimap.backgroundColor = Self.editorBackground
+        view.addSubview(minimap)
+        let width = minimap.widthAnchor.constraint(equalToConstant: 0)
+        let bottom = minimap.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        NSLayoutConstraint.activate([width, bottom])
+        minimapWidth = width
+        minimapBottom = bottom
+        minimap.isHidden = true
         gutter.isHidden = true
         gutter.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(gutter)
@@ -458,7 +492,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         NSLayoutConstraint.activate([
             gutter.topAnchor.constraint(equalTo: view.topAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: AlloyGutterView.width),
-            editorContainer.topAnchor.constraint(equalTo: view.topAnchor), editorContainer.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor), editorContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            editorContainer.topAnchor.constraint(equalTo: view.topAnchor), editorContainer.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorContainer.trailingAnchor.constraint(equalTo: minimap.leadingAnchor), editorContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            // Clear of the top row and the bar: it's a map of the document, not text to read under glass.
+            minimap.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight), minimap.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             imageScroll.topAnchor.constraint(equalTo: view.topAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             csvScroll.topAnchor.constraint(equalTo: view.topAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             markdownPreviewScroll.topAnchor.constraint(equalTo: view.topAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -1883,6 +1919,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         let showingMarkdownPreview = tab.kind == .text && tab.isPreviewingMarkdown
         editorContainer.isHidden = tab.kind != .text || showingMarkdownPreview
+        applyMinimapVisibility()
         gutter.isHidden = tab.kind != .text || showingMarkdownPreview
         imageScroll.isHidden = tab.kind != .image
         csvScroll.isHidden = tab.kind != .csv
@@ -2352,6 +2389,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         DispatchQueue.main.async { [weak self] in self?.isLoadingTab = false }
         editor.isEditable = false
         editorContainer.isHidden = true
+        applyMinimapVisibility()
         gutter.isHidden = true
         editor.lineDiffMarks = [:]
         imageScroll.isHidden = true
@@ -3435,6 +3473,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Shortcuts.bind(markdownPreview, "view.markdownPreview")
         let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "")
         Shortcuts.bind(explorer, "view.fileExplorer")
+        // Folding lives in the editor (Alloy), which is in the responder chain while it has focus.
+        let foldingItem = NSMenuItem(title: "Code Folding", action: nil, keyEquivalent: "")
+        let foldingMenu = NSMenu(title: "Code Folding")
+        for (title, selector, id) in [("Fold", #selector(AlloyEditorView.foldAtCaret(_:)), "editor.fold"),
+                                      ("Unfold", #selector(AlloyEditorView.unfoldAtCaret(_:)), "editor.unfold"),
+                                      ("Fold All", #selector(AlloyEditorView.foldAll(_:)), "editor.foldAll"),
+                                      ("Unfold All", #selector(AlloyEditorView.unfoldAll(_:)), "editor.unfoldAll")] {
+            Shortcuts.bind(foldingMenu.addItem(withTitle: title, action: selector, keyEquivalent: ""), id)
+        }
+        foldingItem.submenu = foldingMenu
+        viewMenu.addItem(foldingItem)
+        Shortcuts.bind(viewMenu.addItem(withTitle: "Show Minimap", action: #selector(toggleMinimap(_:)), keyEquivalent: ""), "view.minimap")
         viewItem.submenu = viewMenu
 
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
@@ -4315,6 +4365,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         // The editor scrolls beneath whatever covers the bottom, far enough that the last line
         // (and the caret on it — scroll-to-visible honours content insets) clears it.
         let inset = height > 0 ? height + DS.Spacing.l : 0
+        minimapBottom?.constant = -inset
         for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
             scroll.automaticallyAdjustsContentInsets = false
             scroll.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight, left: 0, bottom: inset, right: 0)
@@ -4463,3 +4514,13 @@ final class LSPStatusChip: NSButton {
     }
 }
 
+
+extension MakeWorkspaceViewController: NSMenuItemValidation {
+    /// Show Minimap carries a checkmark; everything else is as the responder chain decides.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleMinimap(_:)) {
+            item.state = Self.preferences.bool(forKey: Self.minimapKey) ? .on : .off
+        }
+        return true
+    }
+}
