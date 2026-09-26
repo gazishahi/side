@@ -1,3 +1,4 @@
+import AlloyCore
 import AppKit
 import Heron
 
@@ -61,6 +62,12 @@ protocol EditorDocument: AnyObject, Sendable {
     var text: NSString { get }
     /// UTF-16 length.
     var length: Int { get }
+    /// The text as the editor holds it: free to keep, and what the language server's positions
+    /// are counted in.
+    var rope: Rope { get }
+    /// Every change, as it's applied (typed, undone, replaced), in order: how the language
+    /// server gets just the edits.
+    var onEdits: (([AppliedEdit]) -> Void)? { get set }
     /// Replaces everything outside the undo stack (loading, reloading, applying an agent's edit,
     /// format on save).
     func replaceAll(with text: String)

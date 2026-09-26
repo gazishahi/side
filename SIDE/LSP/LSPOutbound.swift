@@ -1,38 +1,68 @@
+import AlloyCore
 import Foundation
 import Heron
+
+/// A request's handle: cancelling it before it's sent drops it from the queue; after, the
+/// client tells the server (`$/cancelRequest`) and answers the caller with nil at once.
+final class LSPRequestToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var sentID: Int?
+
+    var isCancelled: Bool { lock.withLock { cancelled } }
+    func cancel() { lock.withLock { cancelled = true } }
+    /// The JSON-RPC id it went out with, once it has.
+    var id: Int? {
+        get { lock.withLock { sentID } }
+        set { lock.withLock { sentID = newValue } }
+    }
+}
 
 /// One message bound for a language server, in the order the editor produced it.
 enum LSPOutboundOp: Sendable {
     case didOpen(uri: String, languageId: String, text: String, version: Int)
-    case didChange(uri: String, text: String, version: Int)
+    /// The edits since the last one, and the text after them for a server that syncs whole.
+    case didChange(uri: String, changes: [TextDocumentContentChangeEvent], text: Rope, version: Int)
+    case didSave(uri: String)
     case didClose(uri: String)
-    /// Requests carry their reply; `nil` means the server never answered (not running, or an error).
-    case completion(uri: String, position: LSPPosition, reply: @Sendable (Data?) -> Void)
-    case definition(uri: String, position: LSPPosition, reply: @Sendable (Data?) -> Void)
+    /// Requests carry their reply, called on the client's actor with the parsed `result`;
+    /// `nil` means no answer (not running, an error, or cancelled).
+    case completion(uri: String, position: LSPPosition, context: CompletionContext, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
+    case resolve(item: LSPValue, uri: String, token: LSPRequestToken, reply: @Sendable (LSPResult?) -> Void)
+    case definition(uri: String, position: LSPPosition, reply: @Sendable (LSPResult?) -> Void)
+    case cancel(LSPRequestToken, uri: String)
 
     /// The document this op is about, for deciding what a replay supersedes.
     var uri: String {
         switch self {
-        case .didOpen(let uri, _, _, _), .didChange(let uri, _, _), .didClose(let uri),
-             .completion(let uri, _, _), .definition(let uri, _, _):
+        case .didOpen(let uri, _, _, _), .didChange(let uri, _, _, _), .didSave(let uri), .didClose(let uri),
+             .completion(let uri, _, _, _, _), .resolve(_, let uri, _, _), .definition(let uri, _, _), .cancel(_, let uri):
             return uri
         }
     }
 
-    /// True for a notification whose entire content is superseded by a later `didOpen` carrying
-    /// the document's current text.
+    /// True for what a respawned server has no use for: document sync (a later `didOpen`
+    /// carries the current text) and cancelling a request the old server had.
     var isDocumentSync: Bool {
         switch self {
-        case .didOpen, .didChange, .didClose: return true
-        case .completion, .definition: return false
+        case .didOpen, .didChange, .didSave, .didClose, .cancel: return true
+        case .completion, .resolve, .definition: return false
+        }
+    }
+
+    /// A request its caller no longer wants.
+    var isCancelled: Bool {
+        switch self {
+        case .completion(_, _, _, let token, _), .resolve(_, _, let token, _): return token.isCancelled
+        default: return false
         }
     }
 
     /// Answers a request that will never reach a server.
     func fail() {
         switch self {
-        case .completion(_, _, let reply), .definition(_, _, let reply): reply(nil)
-        case .didOpen, .didChange, .didClose: break
+        case .completion(_, _, _, _, let reply), .resolve(_, _, _, let reply), .definition(_, _, let reply): reply(nil)
+        case .didOpen, .didChange, .didSave, .didClose, .cancel: break
         }
     }
 }
@@ -99,6 +129,9 @@ final class LSPOutboundQueue {
             defer { self?.isDraining = false }
             while let self, !self.isPaused, !self.isClosed, !self.pending.isEmpty {
                 let op = self.pending.removeFirst()
+                // Typing on past a completion's word cancels it; one still waiting here costs
+                // the server nothing if it's never sent.
+                if op.isCancelled { op.fail(); continue }
                 await self.send(op)
             }
         }

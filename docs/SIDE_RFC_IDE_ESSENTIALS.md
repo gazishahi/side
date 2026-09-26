@@ -2,7 +2,7 @@
 
 *2026-09-26. Status: **accepted**: the owner agreed to the direction on 2026-09-26 ("Let's do it").
 Defaults chosen where the owner didn't pick are marked (default); say so and they change.
-Build order below.*
+Build order below. Step 1 built.*
 *Companion to `SIDE_RFC_ALLOY.md` (the editor), `SIDE_PLAN_EDITOR_SHORTCUTS.md` (the shortcuts table
 this extends) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures). Later RFCs, not this one: a
 debugger (DAP), a tests panel, git depth, profiling, remote development with the mobile rollout,
@@ -26,7 +26,9 @@ Make edits text well, but it knows little about code. What's there today:
   Accepting an item inserts `insertText ?? label` over the word, so it ignores `textEdit`,
   auto-imports (`additionalTextEdits`), snippets and documentation.
 - **Missing features:** hover, signature help, references, rename, quick fixes, a problems list,
-  an outline and formatting. Go to Symbol is regular expressions for three languages.
+  an outline, and formatting through the server. Go to Symbol is regular expressions for three
+  languages. Save already runs prettier or swift-format when the project has one; there's no
+  Format Document command.
 - **Language breadth:**
   - There are 13 grammars (Swift, TypeScript/TSX, JavaScript, Python, Rust, Go, Lua, Ruby, C, C++,
     JSON, Markdown) and 8 servers, in a private dictionary.
@@ -112,8 +114,10 @@ These are rows of `Budgets.table`, measured in an optimized build (step 9).
   change.
 - **Quick fixes** (⌘., default): code actions at the caret, in a small menu under it. A
   lightbulb shows in the gutter where there are any.
-- **Formatting:** Format Document and Format Selection (⌃⇧I, default). **Format on save** is off
-  by default and can be turned on per language.
+- **Formatting:** Format Document and Format Selection (⌃⇧I, default), by the project's
+  formatter (prettier, swift-format, as save uses today) or else the server. **Format on save**
+  keeps today's behavior (on when the project has a formatter) and becomes a per-language
+  setting in step 5.
 - **Agents get the same tools.** Heron's `read_diagnostics` already exists. References, hover
   and document symbols become tools too, so an agent can ask the server rather than grep. How
   that fits the Heron efficiency RFC is decided there.
@@ -216,9 +220,66 @@ These are rows of `Budgets.table`, measured in an optimized build (step 9).
 Alloy's public API changes in steps 2, 6, 7 and 8. Each gets a release, published only after the
 owner says yes.
 
+## Built
+
+**Step 1, 2026-09-26.**
+
+- **The client:**
+  - It advertises capabilities (`InitializeParams.clientCapabilities`) and reads the server's
+    (`LSPServerCapabilities`: sync kind, trigger characters, resolve).
+  - It answers server requests (`workspace/configuration` with one value per item,
+    registrations, progress creation; unknown methods get "method not found").
+  - Replies are parsed once, on the client's actor (`LSPResult`).
+- **Sync:**
+  - Documents follow their edits: `EditorDocument.onEdits` reports every applied edit (typed,
+    undone, or an agent's replacement).
+  - `LSPManager` keeps each open document as a rope that shares the editor's storage, and
+    sends the edits since the last `didChange` as ranges (`LSPManager.contentChanges`, O(log n)
+    per edit).
+  - Edits go out 0.2 s after typing stops, or at once before a request. A server that asked for
+    full sync gets the text, and `didSave` is sent.
+- **Completion:**
+  - Requests carry a token (`LSPRequestToken`). One that's superseded is dropped from the queue
+    if unsent, or cancelled with `$/cancelRequest` if sent.
+  - A request goes out when a word starts, at a trigger character, on ⌃Space (Edit → Show
+    Completions, rebindable), or again only for an incomplete list.
+  - `CompletionSession` filters and ranks the reply locally on each keystroke. The ranking:
+    - fuzzy matching, preferring prefixes, word starts and the typed case;
+    - then `sortText`.
+  - Items are applied through `CompletionEdits` as one undo step. That covers `textEdit`,
+    insert-or-replace (Return inserts, Tab replaces), `itemDefaults`, and `additionalTextEdits`
+    (auto-imports, waiting up to 0.3 s for the selected item's `resolve`). Snippets go in as
+    their text until step 2.
+- **The popup** (`CompletionPopup`) shows a kind badge, the module or type, and the selected
+  item's documentation from `resolve`.
+- **Without a server,** the open files' words complete (not in Markdown or plain text).
+
+Checked in Side on Khidma with typescript-language-server:
+
+- One request per word, then local filtering.
+- `document.getEl` completes to `getElementById`, with its docs.
+- `useCallb` completes to `useCallback` and adds it to the existing `react` import; one undo
+  takes both back.
+
+| Measure | Before | After |
+|---|---|---|
+| Sent per keystroke | the whole file, twice (100k lines: ~4 MB of JSON) | the edit (~100 bytes), batched |
+| Keystroke to an updated list, once the word's reply is in | 150 ms wait plus a server round trip, every key | 0.32 ms p99 re-ranking 6,000 items (optimized), no round trip |
+| The edit's sync cost, 100k-line file, p99 | a line-by-line walk plus a copy of the text | 0.03 ms |
+| First reply for a word (tsserver, Khidma) | 150 ms + server | the server's alone: 35–460 ms here (up to ~1 s the first time) |
+
+Tests:
+
+- `LSPIncrementalSyncTests`: a randomized edit history replays exactly.
+- `LSPClientProcessTests`: a Python server over stdio keeps its copy from Side's edits, is
+  answered `workspace/configuration`, and resolves an item it sent.
+- `CompletionRankingTests`, `CompletionReplyTests`, `CompletionApplyTests`.
+- `LSPOutboundQueueTests`: a cancelled request is never sent.
+- Budgets `completion.filter` and `completion.sync`.
+
 ## Progress
 
-- [ ] 1 LSP foundation and completion
+- [x] 1 LSP foundation and completion (below)
 - [ ] 2 Snippets, signature help, hover, ⌘-click
 - [ ] 3 Problems, references, rename, quick fixes
 - [ ] 4 Outline, symbols, formatting

@@ -187,21 +187,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var markdownPreviewShown: (tab: UUID, stamp: ContentStamp, generation: Int)?
     private var markdownPreviewGeneration = 0
     private let markdownLinks = MarkdownPreviewLinks()
-    private var completionPanelStorage: CompletionPanel?
-    private var completionSurface: NSView?
-    private var completionPanel: CompletionPanel {
-        if let existing = completionPanelStorage { return existing }
-        let panel = CompletionPanel()
-        panel.contentView = completionSurface
-        completionPanelStorage = panel
-        return panel
-    }
-    private let completionTable = NSTableView()
-    private var completionItems: [LSPCompletionItem] = []
-    private var completionSelectedIndex = 0
-    private var completionReplacementRange: NSRange?
-    private var pendingCompletionWorkItem: DispatchWorkItem?
-    private var completionGeneration = 0
+    private let completionPopup = CompletionPopup()
+    /// The word being completed and the list for it (SIDE_RFC_IDE_ESSENTIALS.md, L2).
+    private var completionSession: CompletionSession?
+    private var completionTabID: UUID?
+    /// The request whose answer the session is waiting for, and the documentation being fetched.
+    private var completionToken: LSPRequestToken?
+    private var resolveToken: LSPRequestToken?
+    /// Rows of the session's list whose `resolve` came back (their edits are complete).
+    private var resolvedCompletions: Set<Int> = []
+    /// Return or Tab pressed while the selected item's `resolve` (which carries auto-imports) was
+    /// still out: accepted when it arrives, or after a short wait regardless.
+    private var acceptAfterResolve: (row: Int, replacing: Bool)?
+    /// What was just typed, from `shouldChangeTextIn`: a list opens on typing, not on deleting.
+    private var lastTypedText: String?
     private var isAcceptingCompletion = false
     private var suppressNextSelectionDismiss = false
     private var quickOpenLocalMonitor: Any?
@@ -508,7 +507,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         LaunchSignposts.begin("makePanelSurfaces")
         configureQuickOpenPanel()
         configureExplorer()
-        configureCompletionPanel()
         LaunchSignposts.end("makePanelSurfaces")
     }
 
@@ -598,34 +596,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         paletteSurface.setAccessibilityLabel("Palette")
     }
 
-    private let completionRowHeight: CGFloat = 22
-    private let completionMaxVisibleRows = 8
-
-    private func configureCompletionPanel() {
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("completion"))
-        completionTable.addTableColumn(column)
-        completionTable.headerView = nil
-        completionTable.rowHeight = completionRowHeight
-        completionTable.intercellSpacing = NSSize(width: 0, height: 0)
-        completionTable.backgroundColor = .clear
-        completionTable.selectionHighlightStyle = .regular
-        completionTable.dataSource = self
-        completionTable.delegate = self
-
-        let scroll = NSScrollView()
-        scroll.documentView = completionTable
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.automaticallyAdjustsContentInsets = false
-        scroll.contentInsets = NSEdgeInsetsZero
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-
-        completionSurface = Self.makeFloatingPanelSurface(embedding: scroll, cornerRadius: 6, padding: 6)
-    }
-
-    /// Wraps `content` in Liquid Glass on macOS 26+, falling back to the older vibrancy
-    /// material on earlier systems (deployment target stays 15.0, so both paths ship).
-    private static func makeFloatingPanelSurface(embedding content: NSView, cornerRadius: CGFloat, padding: CGFloat) -> NSView {
+    static func makeFloatingPanelSurface(embedding content: NSView, cornerRadius: CGFloat, padding: CGFloat) -> NSView {
         let padded = NSView()
         padded.translatesAutoresizingMaskIntoConstraints = false
         padded.addSubview(content)
@@ -1577,7 +1548,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             editor.invalidateGutter()
             refreshGitDiffMarks()
         }
-        lspManager?.changed(url: tab.url, content: decoded.text)
         rebuildTabBar()
         return true
     }
@@ -1854,7 +1824,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     if deferLanguageServer {
                         self.deferLanguageServerOpen(url)
                     } else {
-                        self.lspManager?.opened(url: url, content: source)
+                        self.announceToLanguageServer(url)
                     }
                 }
                 completion?()
@@ -1870,6 +1840,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// one moment that decides whether launch reads as a half bounce or a full one. Nothing the
     /// user can see needs diagnostics in the first half second; the editor does.
     private var deferredLanguageServerOpens: [URL] = []
+
+    /// Tells the file's server it's open, and sends it every edit from then on: an edit reaches
+    /// the manager as it happens (nothing copied), and goes out a moment later as just the edit.
+    private func announceToLanguageServer(_ url: URL) {
+        guard let lspManager, let tab = openTabs.first(where: { $0.url == url && $0.kind == .text }) else { return }
+        let document = tab.document
+        document.onEdits = { [weak self, weak document] edits in
+            guard let self, let document, let tab = self.openTabs.first(where: { $0.document === document }) else { return }
+            self.lspManager?.edited(url: tab.url, edits: edits, text: document.rope)
+        }
+        lspManager.opened(url: url, text: document.rope)
+    }
     private var deferredLanguageServerFlushScheduled = false
 
     private func deferLanguageServerOpen(_ url: URL) {
@@ -1883,7 +1865,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             self.deferredLanguageServerOpens.removeAll()
             for url in urls {
                 guard let tab = self.openTabs.first(where: { $0.url == url }), tab.kind == .text else { continue }
-                self.lspManager?.opened(url: url, content: tab.document.string)
+                self.announceToLanguageServer(url)
             }
         }
     }
@@ -1919,7 +1901,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func loadActiveTabIntoEditor() {
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
-        hideCompletionPanel()
+        endCompletion()
         if tab.hasExternalChange { showExternalChangeBanner(for: tab.url) } else { externalChangeBanner.isHidden = true }
 
         let showingMarkdownPreview = tab.kind == .text && tab.isPreviewingMarkdown
@@ -2012,7 +1994,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             // the editor.
             self.lspManager?.retryAfterInstall(binaryName: entry.binaryName)
             if let currentIndex = self.activeTabIndex, self.openTabs.indices.contains(currentIndex), self.openTabs[currentIndex].url == tabURL {
-                self.lspManager?.opened(url: tabURL, content: self.openTabs[currentIndex].document.string)
+                self.announceToLanguageServer(tabURL)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in self?.lspInstallPopover?.close() }
         }
@@ -2150,20 +2132,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return index + min(character, lineContentLength)
     }
 
-    /// Inverse of utf16Location(line:character:in:) — converts a flat UTF-16 offset back to
-    /// the zero-based (line, character) pair LSP positions use.
-    private func lspPosition(for characterIndex: Int, in ns: NSString) -> LSPPosition {
-        var line = 0
-        var index = 0
-        while index < characterIndex, index < ns.length {
-            let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
-            if NSMaxRange(lineRange) > characterIndex { break }
-            index = NSMaxRange(lineRange)
-            line += 1
-        }
-        return LSPPosition(line: line, character: characterIndex - index)
-    }
-
     @objc private func jumpToDefinition() {
         guard let index = activeTabIndex else { return }
         performJumpToDefinition(at: editor.selectedRange.location, tabIndex: index)
@@ -2172,8 +2140,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func performJumpToDefinition(at characterIndex: Int, tabIndex: Int) {
         guard openTabs.indices.contains(tabIndex), openTabs[tabIndex].kind == .text, let lspManager else { return }
         let tab = openTabs[tabIndex]
-        let ns = tab.document.text
-        let position = lspPosition(for: characterIndex, in: ns)
+        let point = tab.document.rope.position(of: characterIndex)
+        let position = LSPPosition(line: point.line, character: point.column)
         lspManager.definition(url: tab.url, position: position) { [weak self] locations in
             guard let self, let target = locations.first, let targetURL = URL(string: target.uri) else { return }
             self.open(targetURL) { [weak self] in
@@ -2971,7 +2939,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === resultsTable { return resultCount }
-        if tableView === completionTable { return completionItems.count }
         if tableView === csvTable {
             guard let index = activeTabIndex, openTabs.indices.contains(index) else { return 0 }
             return max(0, openTabs[index].csvRows.count - 1)
@@ -2998,32 +2965,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
             text.stringValue = colIndex < rows[dataRow].count ? rows[dataRow][colIndex] : ""
             text.textColor = NSColor.labelColor
-            return cell
-        }
-
-        if tableView === completionTable {
-            guard row < completionItems.count else { return nil }
-            let item = completionItems[row]
-            let id = NSUserInterfaceItemIdentifier("completion")
-            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
-            cell.identifier = id
-            let text = cell.textField ?? NSTextField(labelWithString: "")
-            if cell.textField == nil {
-                cell.textField = text
-                text.translatesAutoresizingMaskIntoConstraints = false
-                text.font = DS.Text.code(12, weight: .regular)
-                text.lineBreakMode = .byTruncatingTail
-                cell.addSubview(text)
-                NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
-            }
-            if let detail = item.detail, !detail.isEmpty {
-                let attributed = NSMutableAttributedString(string: item.label, attributes: [.foregroundColor: NSColor.labelColor])
-                attributed.append(NSAttributedString(string: "  \(detail)", attributes: [.foregroundColor: NSColor.tertiaryLabelColor]))
-                text.attributedStringValue = attributed
-            } else {
-                text.stringValue = item.label
-                text.textColor = NSColor.labelColor
-            }
             return cell
         }
 
@@ -3099,7 +3040,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     private var isLoadingTab = false
     private var pendingDiffWorkItem: DispatchWorkItem?
-    private var pendingLSPWorkItem: DispatchWorkItem?
     private func undoStateChanged(_ managerID: ObjectIdentifier?) {
         guard let managerID, let index = openTabs.firstIndex(where: { ObjectIdentifier($0.undoManager) == managerID }), openTabs[index].kind == .text else { return }
         let text = openTabs[index].document.string
@@ -3120,65 +3060,142 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.invalidateGutter()
         if paletteIsOpen, searchMode == .find { scheduleRefreshMatches() }
         scheduleDiffRefresh()
-        scheduleLSPDidChange()
-        scheduleCompletionRequest()
+        updateCompletion()
         suppressNextSelectionDismiss = true
     }
 
-    private func scheduleLSPDidChange() {
-        pendingLSPWorkItem?.cancel()
-        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text, lspManager != nil else { return }
-        let url = openTabs[index].url
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, let currentIndex = self.activeTabIndex, self.openTabs.indices.contains(currentIndex), self.openTabs[currentIndex].url == url else { return }
-            self.lspManager?.changed(url: url, content: self.openTabs[currentIndex].document.string)
-        }
-        pendingLSPWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
-    }
+    // MARK: - Autocomplete (SIDE_RFC_IDE_ESSENTIALS.md, L2)
 
-    // MARK: - Autocomplete
-
-    private static let identifierCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
-
-    private func scheduleCompletionRequest() {
-        pendingCompletionWorkItem?.cancel()
+    /// After each edit: filter the list that's up, or ask for one when a word starts or a
+    /// server's trigger character is typed. A server is asked once per word; typing on filters
+    /// what it sent, here, unless it said the list was incomplete.
+    private func updateCompletion(explicit: Bool = false) {
+        let typed = lastTypedText
+        lastTypedText = nil
+        guard !isAcceptingCompletion else { return }
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
-              lspManager != nil, LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension) != nil else {
-            hideCompletionPanel()
+              !openTabs[index].isPreviewingMarkdown, editor.selectedRange.length == 0 else { return endCompletion() }
+        let tab = openTabs[index]
+        let text = tab.document.text
+        let caret = editor.selectedRange.location
+        let start = CompletionText.wordStart(in: text, caret: caret)
+        let query = text.substring(with: NSRange(location: start, length: caret - start))
+
+        if !explicit, var session = completionSession, completionTabID == tab.id, session.wordStart == start {
+            if session.hasReply, session.list.isIncomplete, typed != nil {
+                requestCompletion(tab: tab, wordStart: start, caret: caret, context: CompletionContext(triggerKind: 3), keeping: session)
+            }
+            session.filter(query)
+            completionSession = session
+            presentCompletions()
             return
         }
-        let tabID = openTabs[index].id
-        let cursor = editor.selectedRange.location
-        completionGeneration += 1
-        let generation = completionGeneration
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.performCompletionRequest(tabID: tabID, cursor: cursor, generation: generation)
-        }
-        pendingCompletionWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+
+        let ext = tab.url.pathExtension
+        let triggers = lspManager?.completionTriggers(forExtension: ext) ?? []
+        let trigger = triggers.first { !$0.isEmpty && caret >= ($0 as NSString).length
+            && text.substring(with: NSRange(location: caret - ($0 as NSString).length, length: ($0 as NSString).length)) == $0 }
+        let startsWord = caret - start == 1 && !CompletionText.isDigit(text.character(at: start))
+        guard explicit || (typed != nil && (trigger != nil || startsWord)) else { return endCompletion() }
+        let context = trigger != nil && start == caret
+            ? CompletionContext(triggerKind: 2, triggerCharacter: trigger)
+            : CompletionContext(triggerKind: 1)
+        requestCompletion(tab: tab, wordStart: start, caret: caret, context: context, keeping: nil)
     }
 
-    private func performCompletionRequest(tabID: UUID, cursor: Int, generation: Int) {
-        guard let index = indexForTab(id: tabID), openTabs[index].kind == .text, let lspManager else { return }
-        let tab = openTabs[index]
-        let ns = tab.document.text
-        guard cursor <= ns.length else { return }
-        var start = cursor
-        while start > 0, let scalar = UnicodeScalar(UInt32(ns.character(at: start - 1))), Self.identifierCharacters.contains(scalar) {
-            start -= 1
+    /// Asks the file's server, or, where there's none, gathers the words of the open files.
+    private func requestCompletion(tab: OpenTab, wordStart: Int, caret: Int, context: CompletionContext, keeping previous: CompletionSession?) {
+        if let completionToken { lspManager?.cancel(completionToken, url: tab.url) }
+        var session = CompletionSession(wordStart: wordStart, requestCaret: caret)
+        // Re-asking about an incomplete list: the old one stays up (filtered) until the new one's in.
+        if let previous { session.receive(previous.list, query: previous.query) }
+        completionSession = session
+        completionTabID = tab.id
+        resolvedCompletions = []
+        let ext = tab.url.pathExtension
+        let tabID = tab.id
+        guard let lspManager, LanguageServerRegistry.entry(forExtension: ext) != nil, !lspManager.isUnavailable(forExtension: ext) else {
+            return completeFromBufferWords(tabID: tabID, ext: ext)
         }
-        completionReplacementRange = NSRange(location: start, length: cursor - start)
-        let position = lspPosition(for: cursor, in: ns)
-        lspManager.completion(url: tab.url, content: ns as String, position: position) { [weak self] items in
-            guard let self, self.completionGeneration == generation,
-                  let currentIndex = self.indexForTab(id: tabID), self.activeTabIndex == currentIndex else { return }
-            guard !items.isEmpty else { self.hideCompletionPanel(); return }
-            self.completionItems = items
-            self.completionSelectedIndex = 0
-            self.completionTable.reloadData()
-            self.completionTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-            self.showCompletionPanel()
+        let rope = tab.document.rope
+        let position = rope.position(of: caret)
+        let token = LSPRequestToken()
+        lspManager.completion(url: tab.url, position: LSPPosition(line: position.line, character: position.column), context: context, token: token) { [weak self] list in
+            guard let self, self.completionToken === token else { return }
+            self.completionToken = nil
+            guard let list, !list.items.isEmpty || list.isIncomplete else { return self.completeFromBufferWords(tabID: tabID, ext: ext) }
+            self.receiveCompletions(list, tabID: tabID)
+        }
+        completionToken = token
+    }
+
+    /// Where no server answers: the words in the open files, most used first.
+    private func completeFromBufferWords(tabID: UUID, ext: String) {
+        guard !["md", "markdown", "txt", ""].contains(ext.lowercased()) else { return endCompletion() }
+        let token = LSPRequestToken()
+        completionToken = token
+        let current = openTabs.first { $0.id == tabID }?.document.rope
+        let others = openTabs.filter { $0.id != tabID && $0.kind == .text }.prefix(12).map { $0.document.rope }
+        let ropes = [current].compactMap { $0 } + others
+        Task.detached(priority: .userInitiated) {
+            let words = CompletionText.bufferWords(ropes, excluding: "")
+            let items = words.prefix(4000).map { LSPCompletionItem(label: $0, kind: 1) }
+            await MainActor.run { [weak self] in
+                guard let self, self.completionToken === token else { return }
+                self.completionToken = nil
+                self.receiveCompletions(LSPCompletionList(items: items, isIncomplete: false), tabID: tabID)
+            }
+        }
+    }
+
+    private func receiveCompletions(_ list: LSPCompletionList, tabID: UUID) {
+        guard var session = completionSession, completionTabID == tabID, let index = indexForTab(id: tabID), activeTabIndex == index else { return }
+        let caret = editor.selectedRange.location
+        guard caret >= session.wordStart else { return endCompletion() }
+        let text = openTabs[index].document.text
+        session.receive(list, query: text.substring(with: NSRange(location: session.wordStart, length: caret - session.wordStart)))
+        completionSession = session
+        resolvedCompletions = []
+        presentCompletions()
+    }
+
+    /// Shows the session's list as it's filtered now; hides it when nothing matches, or when the
+    /// only match is what's already typed.
+    private func presentCompletions() {
+        guard let session = completionSession, session.hasReply else { return }
+        let items = Array(session.shownItems.prefix(500))
+        guard let window = view.window, let caretRect = screenRectForCaret(), !items.isEmpty,
+              !(items.count == 1 && (items[0].insertText ?? items[0].label) == session.query) else {
+            completionPopup.hide()
+            return
+        }
+        completionPopup.onSelect = { [weak self] row in self?.resolveCompletion(row: row) }
+        completionPopup.onAccept = { [weak self] in self?.acceptSelectedCompletion(replacing: false) }
+        completionPopup.show(items, selected: session.initialSelection, caret: caretRect, in: window)
+        resolveCompletion(row: completionPopup.selectedIndex)
+    }
+
+    /// The selected item's documentation and, for some servers, its auto-import edits.
+    private func resolveCompletion(row: Int) {
+        guard let session = completionSession, session.shown.indices.contains(row), let tabID = completionTabID,
+              let index = indexForTab(id: tabID), let lspManager else { return }
+        let listIndex = session.shown[row]
+        guard !resolvedCompletions.contains(listIndex) else { return }
+        if let resolveToken { lspManager.cancel(resolveToken, url: openTabs[index].url) }
+        let item = session.list.items[listIndex]
+        resolveToken = lspManager.resolve(item, url: openTabs[index].url) { [weak self] resolved in
+            guard let self, var session = self.completionSession, self.completionTabID == tabID,
+                  session.list.items.indices.contains(listIndex), session.list.items[listIndex].label == item.label else { return }
+            self.resolvedCompletions.insert(listIndex)
+            if let resolved {
+                session.update(resolved, at: listIndex)
+                self.completionSession = session
+                if let shownRow = session.shown.firstIndex(of: listIndex) { self.completionPopup.update(resolved, at: shownRow) }
+            }
+            if let pending = self.acceptAfterResolve, session.shown.indices.contains(pending.row), session.shown[pending.row] == listIndex {
+                self.acceptAfterResolve = nil
+                self.acceptSelectedCompletion(replacing: pending.replacing)
+            }
         }
     }
 
@@ -3186,50 +3203,47 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.screenRect(forCharacterRange: NSRange(location: editor.selectedRange.location, length: 0))
     }
 
-    private func showCompletionPanel() {
-        guard let window = view.window, let caretRect = screenRectForCaret() else { return }
-        let visibleRows = max(1, min(completionMaxVisibleRows, completionItems.count))
-        let height = CGFloat(visibleRows) * completionRowHeight + 12
-        let width: CGFloat = 320
-        var x = caretRect.minX
-        let windowFrame = window.frame
-        if x + width > windowFrame.maxX - 12 { x = windowFrame.maxX - width - 12 }
-        if x < windowFrame.minX + 12 { x = windowFrame.minX + 12 }
-        let panelFrame = NSRect(x: x, y: caretRect.minY - height - 4, width: width, height: height)
-        completionPanel.setFrame(panelFrame, display: true)
-        if completionPanel.parent == nil {
-            window.addChildWindow(completionPanel, ordered: .above)
-        }
-        completionPanel.orderFront(nil)
+    private func endCompletion() {
+        if let completionToken, let tabID = completionTabID, let index = indexForTab(id: tabID) { lspManager?.cancel(completionToken, url: openTabs[index].url) }
+        if let resolveToken, let tabID = completionTabID, let index = indexForTab(id: tabID) { lspManager?.cancel(resolveToken, url: openTabs[index].url) }
+        completionToken = nil
+        resolveToken = nil
+        completionSession = nil
+        acceptAfterResolve = nil
+        completionPopup.hide()
     }
 
-    private func hideCompletionPanel() {
-        pendingCompletionWorkItem?.cancel()
-        completionItems = []
-        guard completionPanel.isVisible || completionPanel.parent != nil else { return }
-        view.window?.removeChildWindow(completionPanel)
-        completionPanel.orderOut(nil)
-    }
-
-    private func acceptSelectedCompletion() {
-        guard completionItems.indices.contains(completionSelectedIndex), let range = completionReplacementRange else {
-            hideCompletionPanel()
+    /// Return inserts the item (a server's insert range); Tab replaces the rest of the word too.
+    /// The item's own edit, its auto-imports and all, is one undo step.
+    private func acceptSelectedCompletion(replacing: Bool) {
+        let row = completionPopup.selectedIndex
+        guard let session = completionSession, session.shown.indices.contains(row), let tabID = completionTabID,
+              let index = indexForTab(id: tabID), activeTabIndex == index else { return endCompletion() }
+        let listIndex = session.shown[row]
+        // A resolve still out may carry the item's import: wait for it, briefly.
+        if resolveToken != nil, !resolvedCompletions.contains(listIndex), acceptAfterResolve == nil, lspManager != nil {
+            acceptAfterResolve = (row, replacing)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, let pending = self.acceptAfterResolve, pending.row == row else { return }
+                self.resolvedCompletions.insert(listIndex)
+                self.acceptAfterResolve = nil
+                self.acceptSelectedCompletion(replacing: pending.replacing)
+            }
             return
         }
-        let item = completionItems[completionSelectedIndex]
-        let text = item.insertText ?? item.label
+        let item = session.list.items[listIndex]
+        let rope = openTabs[index].document.rope
+        let caret = editor.selectedRange.location
+        guard let edits = CompletionEdits.edits(for: item, session: session, caret: caret, text: rope, replacing: replacing) else { return endCompletion() }
         isAcceptingCompletion = true
-        editor.insertText(text, replacementRange: range)
-        editor.selectedRange = NSRange(location: range.location + (text as NSString).length, length: 0)
+        editor.applyEdits(edits.all)
+        editor.selectedRange = NSRange(location: edits.caretAfter, length: 0)
         isAcceptingCompletion = false
-        hideCompletionPanel()
+        endCompletion()
     }
 
-    private func moveCompletionSelection(_ delta: Int) {
-        guard !completionItems.isEmpty else { return }
-        completionSelectedIndex = max(0, min(completionItems.count - 1, completionSelectedIndex + delta))
-        completionTable.selectRowIndexes(IndexSet(integer: completionSelectedIndex), byExtendingSelection: false)
-        completionTable.scrollRowToVisible(completionSelectedIndex)
+    @objc func showCompletions(_ sender: Any?) {
+        updateCompletion(explicit: true)
     }
 
     // MARK: - Bracket matching
@@ -3249,7 +3263,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             suppressNextSelectionDismiss = false
             return
         }
-        hideCompletionPanel()
+        endCompletion()
     }
 
     private func updateBracketHighlight() {
@@ -3314,6 +3328,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let autoCloseClosers: Set<Character> = [")", "]", "}", "\"", "'"]
 
     func editor(_ engine: EditorEngine, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        lastTypedText = replacementString?.isEmpty == false ? replacementString : nil
         guard let replacementString, replacementString.count == 1, let char = replacementString.first else { return true }
 
         if Self.autoCloseClosers.contains(char), affectedCharRange.length == 0 {
@@ -3338,23 +3353,36 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             dismissInstructCard()
             return true
         }
-        if completionPanel.isVisible {
+        if completionPopup.isVisible {
             switch commandSelector {
             case #selector(NSResponder.moveUp(_:)):
-                moveCompletionSelection(-1)
+                completionPopup.moveSelection(-1)
                 return true
             case #selector(NSResponder.moveDown(_:)):
-                moveCompletionSelection(1)
+                completionPopup.moveSelection(1)
                 return true
-            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
-                acceptSelectedCompletion()
+            case #selector(NSResponder.pageUp(_:)), #selector(NSResponder.scrollPageUp(_:)):
+                completionPopup.moveSelection(-CompletionPopup.maxVisibleRows)
+                return true
+            case #selector(NSResponder.pageDown(_:)), #selector(NSResponder.scrollPageDown(_:)):
+                completionPopup.moveSelection(CompletionPopup.maxVisibleRows)
+                return true
+            case #selector(NSResponder.insertNewline(_:)):
+                acceptSelectedCompletion(replacing: false)
+                return true
+            case #selector(NSResponder.insertTab(_:)):
+                acceptSelectedCompletion(replacing: true)
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
-                hideCompletionPanel()
+                endCompletion()
                 return true
             default:
                 break
             }
+        }
+        if commandSelector == #selector(NSResponder.complete(_:)) {
+            updateCompletion(explicit: true)
+            return true
         }
         guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
         let ns = engine.document?.text ?? ""
@@ -3467,6 +3495,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let findPrevious = editMenu.addItem(withTitle: "Find Previous", action: #selector(ShellViewController.findPrevious(_:)), keyEquivalent: "")
         Shortcuts.bind(findPrevious, "find.previous")
         Shortcuts.bind(editMenu.addItem(withTitle: "Use Selection for Find", action: #selector(ShellViewController.useSelectionForFind(_:)), keyEquivalent: ""), "find.useSelection")
+        editMenu.addItem(NSMenuItem.separator())
+        Shortcuts.bind(editMenu.addItem(withTitle: "Show Completions", action: #selector(showCompletions(_:)), keyEquivalent: ""), "editor.complete")
         editItem.submenu = editMenu
 
         // What the user actually toggles about the *presentation* of the workspace, as its own
@@ -3753,6 +3783,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             // The user's own save — a checkpoint being written right now mustn't claim it
             // as the agent's (`UserSaveLog`, audit F4).
             UserSaveLog.shared.record(url)
+            lspManager?.saved(url: url)
             openTabs[index].savedStamp = ContentStamp(content)
             openTabs[index].knownModificationDate = modificationDate(of: url)
             openTabs[index].hasExternalChange = false
@@ -3915,10 +3946,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         removeQuickOpenDismissMonitors()
                 hideQuickOpenPanel()
         explorer.tearDown()
-        for panel in [completionPanelStorage].compactMap({ $0 as NSWindow? }) {
-            if panel.parent != nil { view.window?.removeChildWindow(panel) }
-            panel.orderOut(nil)
-        }
+        completionPopup.hide()
         lspManager?.prepareForClose()
     }
 }
@@ -3954,22 +3982,6 @@ private final class MarkdownPreviewLinks: NSObject, NSTextViewDelegate {
 /// Unlike QuickOpenPanel, this must never take key status — the editor has to keep first
 /// responder the whole time it's visible so arrow keys/Tab/Return/Escape keep landing in
 /// NSTextViewDelegate for interception instead of needing the popup to handle input itself.
-final class CompletionPanel: NSPanel {
-    convenience init() {
-        self.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
-        level = .floating
-        isFloatingPanel = true
-        hidesOnDeactivate = false
-        isReleasedWhenClosed = false
-        collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
-    }
-
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}
 
 final class TabChipView: NSView, NSDraggingSource {
     weak var closeButton: TabCloseButton?

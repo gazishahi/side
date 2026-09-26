@@ -159,6 +159,7 @@ enum Shortcuts {
         c("editor.unfold", "Unfold", .editor, right, [.command, .option]),
         c("editor.foldAll", "Fold All", .editor, left, [.command, .option, .shift]),
         c("editor.unfoldAll", "Unfold All", .editor, right, [.command, .option, .shift]),
+        c("editor.complete", "Show Completions", .editor, " ", .control),
         fixed("editor.caretAbove", "Add a caret above", .editor, up, [.command, .option]),
         fixed("editor.caretBelow", "Add a caret below", .editor, down, [.command, .option]),
         fixed("editor.oneCaret", "Back to one caret", .editor, "\u{1B}"),

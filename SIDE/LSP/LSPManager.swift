@@ -1,3 +1,4 @@
+import AlloyCore
 import Foundation
 import Heron
 
@@ -13,11 +14,19 @@ final class LSPManager: @unchecked Sendable {
     private var clients: [String: LSPClient] = [:] { didSet { announceStateChange() } }
     private var startingServers: Set<String> = [] { didSet { announceStateChange() } }
     private var documentVersions: [URL: Int] = [:]
-    /// The text of every open document, so a respawned server can be given `didOpen` for each.
-    /// A server that crashed and came back used to receive a bare `didChange` for a URI it had
-    /// never opened; strict servers (pyright) drop everything after that, silently, for the rest
-    /// of the session. The text is already sent on every keystroke, so holding it costs nothing new.
-    private var openDocuments: [URL: (languageId: String, text: String)] = [:]
+    /// Every open document as the server has it (a rope, sharing its storage with the editor's):
+    /// what the next edits' positions are counted in, and what a respawned server is given in
+    /// `didOpen`. A server that crashed and came back used to receive a bare `didChange` for a
+    /// URI it had never opened; strict servers (pyright) drop everything after that, silently.
+    private var openDocuments: [URL: (languageId: String, text: Rope)] = [:]
+    /// Edits not yet sent, and the text after them. Sent together a moment after typing stops,
+    /// or at once before a request.
+    private var pendingEdits: [URL: (edits: [AppliedEdit], text: Rope)] = [:]
+    private var flushWorkItem: DispatchWorkItem?
+    /// How long edits wait to go out together when nothing asks for them sooner.
+    static let syncDelay: TimeInterval = 0.2
+    /// What each running server said it does.
+    private var serverCapabilities: [String: LSPServerCapabilities] = [:]
     /// One ordered outbound queue per server binary — see `LSPOutboundQueue`.
     private var queues: [String: LSPOutboundQueue] = [:]
     /// Binaries whose server died since it was last spawned; the next spawn replays `didOpen`.
@@ -81,54 +90,133 @@ final class LSPManager: @unchecked Sendable {
         self.projectRoot = projectRoot
     }
 
-    func opened(url: URL, content: String) {
+    func opened(url: URL, text: Rope) {
         guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
         documentVersions[url] = 1
-        openDocuments[url] = (entry.languageId, content)
-        onQueue(for: entry) { $0.enqueue(.didOpen(uri: url.absoluteString, languageId: entry.languageId, text: content, version: 1)) }
+        openDocuments[url] = (entry.languageId, text)
+        pendingEdits[url] = nil
+        let string = text.string
+        onQueue(for: entry) { $0.enqueue(.didOpen(uri: url.absoluteString, languageId: entry.languageId, text: string, version: 1)) }
         ensureClient(for: entry)
     }
 
-    func changed(url: URL, content: String) {
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+    /// Edits to an open document, in the order they were applied, and its text after them.
+    /// Nothing is copied or sent here: they go out a moment later, or before the next request.
+    func edited(url: URL, edits: [AppliedEdit], text: Rope) {
+        guard openDocuments[url] != nil, !edits.isEmpty else { return }
+        pendingEdits[url, default: ([], text)].edits += edits
+        pendingEdits[url]?.text = text
+        guard flushWorkItem == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.flushWorkItem = nil
+            for url in Array(self.pendingEdits.keys) { self.flush(url: url) }
+        }
+        flushWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.syncDelay, execute: work)
+    }
+
+    /// Sends an open document's waiting edits as one `didChange`.
+    func flush(url: URL) {
+        guard let pending = pendingEdits.removeValue(forKey: url), let document = openDocuments[url],
+              let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+        let changes = Self.contentChanges(for: pending.edits, from: document.text)
+        // The editor's rope, not the one the changes were counted on: the same text, and its
+        // storage is the editor's own.
+        openDocuments[url]?.text = pending.text
         let version = (documentVersions[url] ?? 1) + 1
         documentVersions[url] = version
-        if openDocuments[url] != nil { openDocuments[url]?.text = content }
-        onQueue(for: entry) { $0.enqueue(.didChange(uri: url.absoluteString, text: content, version: version)) }
+        onQueue(for: entry) { $0.enqueue(.didChange(uri: url.absoluteString, changes: changes, text: pending.text, version: version)) }
         ensureClient(for: entry)
+    }
+
+    /// Edits as LSP content changes, each range counted in the text as it was just before that
+    /// edit (the rope follows along, O(log n) an edit; nothing walks the text).
+    static func contentChanges(for edits: [AppliedEdit], from text: Rope) -> [TextDocumentContentChangeEvent] {
+        var text = text
+        return edits.map { edit in
+            let start = text.position(of: edit.range.lowerBound), end = text.position(of: edit.range.upperBound)
+            text.replace(edit.range, with: edit.newText)
+            return TextDocumentContentChangeEvent(
+                range: LSPRange(start: LSPPosition(line: start.line, character: start.column), end: LSPPosition(line: end.line, character: end.column)),
+                text: edit.newText)
+        }
+    }
+
+    func saved(url: URL) {
+        guard openDocuments[url] != nil, let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+        flush(url: url)
+        onQueue(for: entry) { $0.enqueue(.didSave(uri: url.absoluteString)) }
     }
 
     func closed(url: URL) {
         documentVersions[url] = nil
         openDocuments[url] = nil
+        pendingEdits[url] = nil
         guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
         onQueue(for: entry) { $0.enqueue(.didClose(uri: url.absoluteString)) }
     }
 
+    /// The characters after which this file's server offers completions by itself (`.`, `::`…);
+    /// empty until it's running.
+    func completionTriggers(forExtension ext: String) -> Set<String> {
+        guard let entry = LanguageServerRegistry.entry(forExtension: ext) else { return [] }
+        return serverCapabilities[entry.binaryName]?.completionTriggers ?? []
+    }
+
     func definition(url: URL, position: LSPPosition, completion: @escaping @Sendable ([LSPLocation]) -> Void) {
         guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion([]); return }
+        flush(url: url)
         onQueue(for: entry) {
-            $0.enqueue(.definition(uri: url.absoluteString, position: position) { data in
-                let locations = data.map { Self.decodeLocations(from: $0) } ?? []
+            $0.enqueue(.definition(uri: url.absoluteString, position: position) { result in
+                let locations = Self.decodeLocations(from: result)
                 DispatchQueue.main.async { completion(locations) }
             })
         }
         ensureClient(for: entry)
     }
 
-    /// Flushes an immediate (non-debounced) didChange with the current buffer before asking
-    /// for completions — otherwise, if this fires faster than the ~0.3s diagnostics debounce,
-    /// the server would answer against stale content that doesn't include what was just typed.
-    /// Both go through the same queue, so the request cannot overtake the flush.
-    func completion(url: URL, content: String, position: LSPPosition, completion: @escaping @Sendable ([LSPCompletionItem]) -> Void) {
-        changed(url: url, content: content)
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion([]); return }
+    /// Asks for completions at `position`, after sending what was typed, so the server answers
+    /// the text as it is (both go through the same queue; the request can't overtake it). The
+    /// reply is read off the main thread; `nil` if there was none. Cancel with the token when
+    /// the answer stops mattering.
+    @discardableResult
+    func completion(url: URL, position: LSPPosition, context: CompletionContext, token: LSPRequestToken = LSPRequestToken(), completion: @escaping @Sendable (LSPCompletionList?) -> Void) -> LSPRequestToken {
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return token }
+        flush(url: url)
         onQueue(for: entry) {
-            $0.enqueue(.completion(uri: url.absoluteString, position: position) { data in
-                let items = data.map { Self.decodeCompletionItems(from: $0) } ?? []
-                DispatchQueue.main.async { completion(items) }
+            $0.enqueue(.completion(uri: url.absoluteString, position: position, context: context, token: token) { result in
+                let list = result.map { LSPCompletionList($0) }
+                DispatchQueue.main.async { completion(token.isCancelled ? nil : list) }
             })
         }
+        ensureClient(for: entry)
+        return token
+    }
+
+    /// The rest of one item (documentation, and for some servers its edits), if its server
+    /// resolves items; `nil` otherwise.
+    @discardableResult
+    func resolve(_ item: LSPCompletionItem, url: URL, completion: @escaping @Sendable (LSPCompletionItem?) -> Void) -> LSPRequestToken {
+        let token = LSPRequestToken()
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension),
+              serverCapabilities[entry.binaryName]?.completionResolves == true else { completion(nil); return token }
+        onQueue(for: entry) {
+            $0.enqueue(.resolve(item: item.raw, uri: url.absoluteString, token: token) { result in
+                var resolved = item
+                guard let object = result?.object else { return DispatchQueue.main.async { completion(nil) } }
+                resolved.merge(object)
+                DispatchQueue.main.async { completion(token.isCancelled ? nil : resolved) }
+            })
+        }
+        return token
+    }
+
+    func cancel(_ token: LSPRequestToken, url: URL) {
+        guard !token.isCancelled else { return }
+        token.cancel()
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+        onQueue(for: entry) { $0.enqueue(.cancel(token, uri: url.absoluteString)) }
     }
 
     /// The manager is main-confined by convention (see the class note); the queue is main-confined
@@ -173,25 +261,14 @@ final class LSPManager: @unchecked Sendable {
         return ops
     }
 
-    private static func decodeCompletionItems(from data: Data) -> [LSPCompletionItem] {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let result = object["result"], !(result is NSNull),
-              let resultData = try? JSONSerialization.data(withJSONObject: result) else { return [] }
-        if let items = try? JSONDecoder().decode([LSPCompletionItem].self, from: resultData) { return items }
-        if let list = try? JSONDecoder().decode(LSPCompletionList.self, from: resultData) { return list.items }
-        return []
-    }
-
-    private static func decodeLocations(from data: Data) -> [LSPLocation] {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let result = object["result"], !(result is NSNull),
-              let resultData = try? JSONSerialization.data(withJSONObject: result) else { return [] }
-        if let locations = try? JSONDecoder().decode([LSPLocation].self, from: resultData) { return locations }
-        if let location = try? JSONDecoder().decode(LSPLocation.self, from: resultData) { return [location] }
-        if let links = try? JSONDecoder().decode([LSPLocationLink].self, from: resultData) {
+    private static func decodeLocations(from result: LSPResult?) -> [LSPLocation] {
+        guard let result, !result.isNull else { return [] }
+        if let locations = result.decode([LSPLocation].self) { return locations }
+        if let location = result.decode(LSPLocation.self) { return [location] }
+        if let links = result.decode([LSPLocationLink].self) {
             return links.map { LSPLocation(uri: $0.targetUri, range: $0.targetRange) }
         }
-        if let link = try? JSONDecoder().decode(LSPLocationLink.self, from: resultData) {
+        if let link = result.decode(LSPLocationLink.self) {
             return [LSPLocation(uri: link.targetUri, range: link.targetRange)]
         }
         return []
@@ -207,6 +284,9 @@ final class LSPManager: @unchecked Sendable {
         MainActor.assumeIsolated { for (_, queue) in queues { queue.close() } }
         queues.removeAll()
         clients.removeAll()
+        flushWorkItem?.cancel()
+        flushWorkItem = nil
+        pendingEdits.removeAll()
         startingServers.removeAll()
     }
 
@@ -289,7 +369,7 @@ final class LSPManager: @unchecked Sendable {
                 .sorted { $0.key.path < $1.key.path }
             for (url, _) in mine { documentVersions[url] = 1 }
             let replay = Self.respawnOps(
-                openDocuments: mine.map { ($0.key.absoluteString, $0.value.languageId, $0.value.text) },
+                openDocuments: mine.map { ($0.key.absoluteString, $0.value.languageId, $0.value.text.string) },
                 pending: queue.takePending()
             )
             for op in replay { queue.enqueue(op) }
@@ -302,11 +382,12 @@ final class LSPManager: @unchecked Sendable {
         let rootURI = projectRoot.absoluteString
         Task { @MainActor [weak self] in
             do {
-                if let tsserverPath {
+                let capabilities = if let tsserverPath {
                     try await client.start(rootURI: rootURI, tsserverPath: tsserverPath)
                 } else {
                     try await client.start(rootURI: rootURI)
                 }
+                self?.serverCapabilities[entry.binaryName] = capabilities
                 await client.setOnDiagnostics { [weak self] params in
                     guard let url = URL(string: params.uri) else { return }
                     DispatchQueue.main.async { self?.onDiagnostics?(url, params.diagnostics) }

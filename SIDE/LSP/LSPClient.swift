@@ -1,3 +1,4 @@
+import AlloyCore
 import Foundation
 import Heron
 
@@ -13,8 +14,10 @@ actor LSPClient {
     /// Callbacks rather than continuations, so a request's *send* can complete independently of
     /// its reply — `LSPOutboundQueue` awaits the write to preserve ordering, and must not wait on
     /// the server's answer or one slow completion would stall every keystroke behind it.
-    private var pendingRequests: [Int: @Sendable (Result<Data, Error>) -> Void] = [:]
+    private var pendingRequests: [Int: @Sendable (Result<LSPResult, Error>) -> Void] = [:]
     private(set) var isRunning = false
+    /// What the server said it does, from its `initialize` reply.
+    private(set) var capabilities = LSPServerCapabilities()
 
     private var onDiagnostics: (@Sendable (PublishDiagnosticsParams) -> Void)?
     private var onTerminate: (@Sendable () -> Void)?
@@ -31,25 +34,29 @@ actor LSPClient {
         onTerminate = handler
     }
 
-    func start(rootURI: String) async throws {
+    @discardableResult
+    func start(rootURI: String) async throws -> LSPServerCapabilities {
         try await startInternal(rootURI: rootURI, initializationOptions: Optional<NoInitializationOptions>.none)
     }
 
     /// typescript-language-server only resolves "typescript" from the workspace's own
     /// node_modules by default — this is how a global npm install gets used as a fallback.
-    func start(rootURI: String, tsserverPath: String) async throws {
+    @discardableResult
+    func start(rootURI: String, tsserverPath: String) async throws -> LSPServerCapabilities {
         try await startInternal(rootURI: rootURI, initializationOptions: TSServerInitializationOptions(tsserver: TSServerPathOption(path: tsserverPath)))
     }
 
-    private func startInternal<Options: Encodable>(rootURI: String, initializationOptions: Options?) async throws {
+    private func startInternal<Options: Encodable>(rootURI: String, initializationOptions: Options?) async throws -> LSPServerCapabilities {
         await transport.setHandlers(
             onMessage: { data in Task { await self.handleMessage(data) } },
             onTerminate: { Task { await self.handleTermination() } }
         )
         try await transport.start()
         isRunning = true
-        _ = try await request(method: "initialize", params: InitializeParams(processId: Int(ProcessInfo.processInfo.processIdentifier), rootUri: rootURI, initializationOptions: initializationOptions))
+        let result = try await request(method: "initialize", params: InitializeParams(processId: Int(ProcessInfo.processInfo.processIdentifier), rootUri: rootURI, initializationOptions: initializationOptions))
+        capabilities = LSPServerCapabilities(initializeResult: result)
         try await notify(method: "initialized", params: [String: String]())
+        return capabilities
     }
 
     func stop() async {
@@ -65,10 +72,18 @@ actor LSPClient {
             textDocument: TextDocumentItem(uri: uri, languageId: languageId, version: version, text: text)))
     }
 
-    func didChange(uri: String, text: String, version: Int) async throws {
+    /// Just the edits to a server that syncs incrementally; the whole text to one that asked for
+    /// it; nothing to one that doesn't want changes.
+    func didChange(uri: String, changes: [TextDocumentContentChangeEvent], text: Rope, version: Int) async throws {
+        let contentChanges: [TextDocumentContentChangeEvent]
+        switch capabilities.syncKind {
+        case 2: contentChanges = changes
+        case 1: contentChanges = [TextDocumentContentChangeEvent(range: nil, text: text.string)]
+        default: return
+        }
         try await notify(method: "textDocument/didChange", params: DidChangeTextDocumentParams(
             textDocument: VersionedTextDocumentIdentifier(uri: uri, version: version),
-            contentChanges: [TextDocumentContentChangeEvent(text: text)]))
+            contentChanges: contentChanges))
     }
 
     func didClose(uri: String) async throws {
@@ -80,36 +95,37 @@ actor LSPClient {
         switch op {
         case .didOpen(let uri, let languageId, let text, let version):
             try? await didOpen(uri: uri, languageId: languageId, text: text, version: version)
-        case .didChange(let uri, let text, let version):
-            try? await didChange(uri: uri, text: text, version: version)
+        case .didChange(let uri, let changes, let text, let version):
+            try? await didChange(uri: uri, changes: changes, text: text, version: version)
+        case .didSave(let uri):
+            try? await notify(method: "textDocument/didSave", params: DidSaveTextDocumentParams(textDocument: TextDocumentIdentifier(uri: uri)))
         case .didClose(let uri):
             try? await didClose(uri: uri)
-        case .completion(let uri, let position, let reply):
+        case .completion(let uri, let position, let context, let token, let reply):
             await sendRequest(method: "textDocument/completion",
-                              params: CompletionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position)) { reply(try? $0.get()) }
+                              params: CompletionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position, context: context),
+                              token: token) { reply(try? $0.get()) }
+        case .resolve(let item, _, let token, let reply):
+            guard capabilities.completionResolves else { return reply(nil) }
+            await sendRequest(method: "completionItem/resolve", params: item, token: token) { reply(try? $0.get()) }
         case .definition(let uri, let position, let reply):
             await sendRequest(method: "textDocument/definition",
                               params: DefinitionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position)) { reply(try? $0.get()) }
+        case .cancel(let token, _):
+            guard let id = token.id, let reply = pendingRequests.removeValue(forKey: id) else { return }
+            reply(.failure(ClientError.notRunning))
+            try? await notify(method: "$/cancelRequest", params: CancelParams(id: id))
         }
-    }
-
-    /// Returns the raw JSON-RPC response body; the shape of `result` (Location vs
-    /// Location[] vs LocationLink[]) varies by server, so the caller decodes it.
-    func definition(uri: String, position: LSPPosition) async throws -> Data {
-        try await request(method: "textDocument/definition", params: DefinitionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position))
-    }
-
-    func completion(uri: String, position: LSPPosition) async throws -> Data {
-        try await request(method: "textDocument/completion", params: CompletionParams(textDocument: TextDocumentIdentifier(uri: uri), position: position))
     }
 
     // MARK: - JSON-RPC plumbing
 
     /// Writes a request and registers its reply handler; returns once the write is done.
-    private func sendRequest<Params: Encodable>(method: String, params: Params, reply: @escaping @Sendable (Result<Data, Error>) -> Void) async {
+    private func sendRequest<Params: Encodable>(method: String, params: Params, token: LSPRequestToken? = nil, reply: @escaping @Sendable (Result<LSPResult, Error>) -> Void) async {
         guard isRunning else { return reply(.failure(ClientError.notRunning)) }
         let id = nextRequestID
         nextRequestID += 1
+        token?.id = id
         let data: Data
         do { data = try JSONEncoder().encode(RequestEnvelope(id: id, method: method, params: params)) }
         catch { return reply(.failure(error)) }
@@ -117,7 +133,7 @@ actor LSPClient {
         await transport.send(data)
     }
 
-    private func request<Params: Encodable>(method: String, params: Params) async throws -> Data {
+    private func request<Params: Encodable>(method: String, params: Params) async throws -> LSPResult {
         try await withCheckedThrowingContinuation { continuation in
             Task { await sendRequest(method: method, params: params) { continuation.resume(with: $0) } }
         }
@@ -131,8 +147,13 @@ actor LSPClient {
         await transport.send(data)
     }
 
+    /// Every message is parsed once, here; a reply's `result` goes to its caller as parsed.
     private func handleMessage(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let method = object["method"] as? String
+        if let method, let id = object["id"] {
+            return answerServerRequest(method: method, id: LSPValue(any: id), params: object["params"])
+        }
         if let idNumber = object["id"] as? Int {
             guard let reply = pendingRequests.removeValue(forKey: idNumber) else { return }
             if let error = object["error"] as? [String: Any] {
@@ -140,20 +161,43 @@ actor LSPClient {
                 let code = error["code"] as? Int ?? -1
                 reply(.failure(ClientError.serverError(code: code, message: message)))
             } else {
-                reply(.success(data))
+                reply(.success(LSPResult(value: object["result"] ?? NSNull())))
             }
             return
         }
-        guard let method = object["method"] as? String else { return }
         switch method {
         case "textDocument/publishDiagnostics":
-            guard let paramsObject = object["params"],
-                  let paramsData = try? JSONSerialization.data(withJSONObject: paramsObject),
-                  let params = try? JSONDecoder().decode(PublishDiagnosticsParams.self, from: paramsData) else { return }
+            guard let params = LSPResult(value: object["params"] ?? NSNull()).decode(PublishDiagnosticsParams.self) else { return }
             onDiagnostics?(params)
         default:
             break
         }
+    }
+
+    /// A server asking the client something. Unanswered, some servers wait forever (settings
+    /// asked for with `workspace/configuration` before they'll check a file).
+    private func answerServerRequest(method: String, id: LSPValue, params: Any?) {
+        let result: LSPValue
+        switch method {
+        case "workspace/configuration":
+            // One value per item asked about; none are set yet (Settings → Languages, step 5).
+            let items = (params as? [String: Any])?["items"] as? [Any] ?? []
+            result = .array(items.map { _ in .null })
+        case "client/registerCapability", "client/unregisterCapability", "window/workDoneProgress/create",
+             "window/showMessageRequest", "workspace/codeLens/refresh", "workspace/semanticTokens/refresh",
+             "workspace/inlayHint/refresh", "workspace/diagnostic/refresh", "workspace/workspaceFolders":
+            result = .null
+        case "workspace/applyEdit":
+            result = ["applied": false]
+        default:
+            return respond(id: id, error: ["code": -32601, "message": .string("\(method) is not supported")])
+        }
+        respond(id: id, result: result)
+    }
+
+    private func respond(id: LSPValue, result: LSPValue? = nil, error: LSPValue? = nil) {
+        guard isRunning, let data = try? JSONEncoder().encode(ResponseEnvelope(id: id, result: result, error: error)) else { return }
+        Task { await transport.send(data) }
     }
 
     private func handleTermination() {
@@ -177,6 +221,22 @@ private struct RequestEnvelope<Params: Encodable>: Encodable {
     let id: Int
     let method: String
     let params: Params
+}
+
+private struct ResponseEnvelope: Encodable {
+    let jsonrpc = "2.0"
+    let id: LSPValue
+    let result: LSPValue?
+    let error: LSPValue?
+
+    enum CodingKeys: String, CodingKey { case jsonrpc, id, result, error }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(jsonrpc, forKey: .jsonrpc)
+        try container.encode(id, forKey: .id)
+        if let error { try container.encode(error, forKey: .error) } else { try container.encode(result ?? .null, forKey: .result) }
+    }
 }
 
 private struct NotificationEnvelope<Params: Encodable>: Encodable {

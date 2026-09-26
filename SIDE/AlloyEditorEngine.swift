@@ -33,6 +33,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
             // A replacement updates its document's highlighter itself (shown or not).
             guard let self, change.reason != .replace, let document = self.document as? AlloyEditorDocument else { return }
             document.highlighter?.apply(change.edits, newText: document.buffer.text)
+            document.onEdits?(change.edits)
         }
         // Make tracks "back to what's saved" from its tab's undo manager; Alloy keeps its own
         // history, so it announces undo and redo the way UndoManager does.
@@ -246,12 +247,15 @@ final class AlloyEditorDocument: EditorDocument {
     var string: String { buffer.string }
     var text: NSString { RopeString.make(buffer.text) }
     var length: Int { buffer.text.utf16Count }
+    var rope: Rope { buffer.text }
+    var onEdits: (([AppliedEdit]) -> Void)?
 
     /// Outside undo: the history describes the old text. Applied as one edit over what differs,
     /// so an agent's change to one function keeps the rest of the file's layout and colors.
     func replaceAll(with text: String) {
         guard let edit = buffer.replaceAll(with: text) else { return }
         highlighter?.apply([edit], newText: buffer.text)
+        onEdits?([edit])
         decorations = [:]
         onDecorationsChange?()
     }

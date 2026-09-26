@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+import AlloyCore
 
 /// H10 from the 2026-09-01 audit: document sync to a language server must be ordered, and a
 /// server that came back from a crash must be told about open documents before anything else.
@@ -20,12 +21,37 @@ final class LSPOutboundQueueTests: XCTestCase {
         LSPOutboundQueue { op in
             if jitter { try? await Task.sleep(nanoseconds: UInt64.random(in: 0...400_000)) }
             recorder.record(op)
-            if case .completion(_, _, let reply) = op { reply(Data("{}".utf8)) }
+            if case .completion(_, _, _, _, let reply) = op { reply(LSPResult(value: [String: Any]())) }
         }
     }
 
+    private func change(_ text: String, version: Int) -> LSPOutboundOp {
+        .didChange(uri: "f", changes: [TextDocumentContentChangeEvent(range: nil, text: text)], text: Rope(text), version: version)
+    }
+
+    private func completion(_ reply: @escaping @Sendable (LSPResult?) -> Void = { _ in }) -> LSPOutboundOp {
+        .completion(uri: "f", position: LSPPosition(line: 0, character: 0), context: CompletionContext(triggerKind: 1), token: LSPRequestToken(), reply: reply)
+    }
+
+    func testACancelledRequestIsNeverSentAndItsCallerHearsNil() async {
+        let recorder = Recorder()
+        let queue = makeQueue(recorder, jitter: false)
+        let token = LSPRequestToken()
+        let answered = expectation(description: "nil")
+        queue.enqueue(.completion(uri: "f", position: LSPPosition(line: 0, character: 0), context: CompletionContext(triggerKind: 1), token: token) { result in
+            XCTAssertNil(result)
+            answered.fulfill()
+        })
+        queue.enqueue(change("b", version: 2))
+        token.cancel()
+        queue.resume()
+        await fulfillment(of: [answered], timeout: 2)
+        await settle(recorder, until: 1)
+        XCTAssertEqual(recorder.ops.count, 1, "only the change went out")
+    }
+
     private func versions(_ ops: [LSPOutboundOp]) -> [Int] {
-        ops.compactMap { if case .didChange(_, _, let v) = $0 { return v } else { return nil } }
+        ops.compactMap { if case .didChange(_, _, _, let v) = $0 { return v } else { return nil } }
     }
 
     private func settle(_ recorder: Recorder, until count: Int) async {
@@ -41,8 +67,8 @@ final class LSPOutboundQueueTests: XCTestCase {
         var version = 1
         for _ in 0..<50 {
             version += 1
-            queue.enqueue(.didChange(uri: "f", text: "v\(version)", version: version))
-            queue.enqueue(.completion(uri: "f", position: LSPPosition(line: 0, character: 0)) { _ in })
+            queue.enqueue(change("v\(version)", version: version))
+            queue.enqueue(completion())
         }
         await settle(recorder, until: 100)
         let ops = recorder.ops
@@ -51,7 +77,7 @@ final class LSPOutboundQueueTests: XCTestCase {
         var lastSeenVersion = 1
         for (index, op) in ops.enumerated() {
             switch op {
-            case .didChange(_, _, let v):
+            case .didChange(_, _, _, let v):
                 XCTAssertGreaterThan(v, lastSeenVersion, "version went backwards at \(index)")
                 lastSeenVersion = v
             case .completion:
@@ -65,7 +91,7 @@ final class LSPOutboundQueueTests: XCTestCase {
     func testNothingIsSentWhilePaused() async {
         let recorder = Recorder()
         let queue = makeQueue(recorder, jitter: false)
-        queue.enqueue(.didChange(uri: "f", text: "a", version: 2))
+        queue.enqueue(change("a", version: 2))
         try? await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertTrue(recorder.ops.isEmpty, "a paused queue sent to a server that isn't up")
         queue.resume()
@@ -76,7 +102,7 @@ final class LSPOutboundQueueTests: XCTestCase {
     func testTakePendingEmptiesTheQueueWithoutSending() async {
         let recorder = Recorder()
         let queue = makeQueue(recorder, jitter: false)
-        queue.enqueue(.didChange(uri: "f", text: "a", version: 2))
+        queue.enqueue(change("a", version: 2))
         queue.enqueue(.didClose(uri: "g"))
         let taken = queue.takePending()
         XCTAssertEqual(taken.count, 2)
@@ -89,7 +115,7 @@ final class LSPOutboundQueueTests: XCTestCase {
         let recorder = Recorder()
         let queue = makeQueue(recorder, jitter: false)
         let answered = expectation(description: "reply")
-        queue.enqueue(.completion(uri: "f", position: LSPPosition(line: 0, character: 0)) { data in
+        queue.enqueue(completion { data in
             XCTAssertNil(data)
             answered.fulfill()
         })
@@ -112,10 +138,13 @@ final class LSPRespawnTests: XCTestCase {
         ops.map {
             switch $0 {
             case .didOpen(let uri, _, _, let v): return "open(\(uri),v\(v))"
-            case .didChange(let uri, _, let v): return "change(\(uri),v\(v))"
+            case .didChange(let uri, _, _, let v): return "change(\(uri),v\(v))"
             case .didClose(let uri): return "close(\(uri))"
-            case .completion(let uri, _, _): return "completion(\(uri))"
+            case .didSave(let uri): return "save(\(uri))"
+            case .completion(let uri, _, _, _, _): return "completion(\(uri))"
+            case .resolve(_, let uri, _, _): return "resolve(\(uri))"
             case .definition(let uri, _, _): return "definition(\(uri))"
+            case .cancel(_, let uri): return "cancel(\(uri))"
             }
         }
     }
@@ -125,7 +154,7 @@ final class LSPRespawnTests: XCTestCase {
         let ops = LSPManager.respawnOps(
             openDocuments: [("a.py", "python", "A"), ("b.py", "python", "B")],
             pending: [
-                .completion(uri: "a.py", position: LSPPosition(line: 0, character: 0)) { _ in },
+                .completion(uri: "a.py", position: LSPPosition(line: 0, character: 0), context: CompletionContext(triggerKind: 1), token: LSPRequestToken()) { _ in },
                 .definition(uri: "a.py", position: LSPPosition(line: 1, character: 2)) { _ in },
             ]
         )
@@ -138,7 +167,7 @@ final class LSPRespawnTests: XCTestCase {
         let ops = LSPManager.respawnOps(
             openDocuments: [("a.py", "python", "current")],
             pending: [
-                .didChange(uri: "a.py", text: "stale", version: 7),
+                .didChange(uri: "a.py", changes: [], text: Rope("stale"), version: 7),
                 .didClose(uri: "gone.py"),
                 .didOpen(uri: "a.py", languageId: "python", text: "older", version: 1),
             ]
