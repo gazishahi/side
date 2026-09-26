@@ -5,13 +5,8 @@ import XCTest
 @testable import Side
 @testable import Heron
 
-/// SIDE_RFC_ALLOY.md's performance budgets, measured in Make itself (step 7). Slow and
-/// machine-dependent, so they run only when asked, optimized:
-///
-///     TEST_RUNNER_SIDE_BUDGETS=1 xcodebuild test -configuration Release ENABLE_TESTABILITY=YES \
-///       -only-testing:SIDETests/AlloyBudgetTests ...
-///
-/// Each prints its numbers and fails past its budget.
+/// SIDE_RFC_ALLOY.md's performance budgets, measured in Make itself. The limits are in
+/// `Budgets.table`; `scripts/budgets.sh` runs these with the rest, optimized.
 @MainActor
 final class AlloyBudgetTests: XCTestCase {
     private var root: URL!
@@ -21,7 +16,7 @@ final class AlloyBudgetTests: XCTestCase {
     private var view: AlloyEditorView { alloy.view }
 
     override func setUpWithError() throws {
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_BUDGETS"] == "1", "set SIDE_BUDGETS=1 to measure")
+        try Budgets.skipUnlessEnabled()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("budgets-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         make = MakeWorkspaceViewController()
@@ -112,9 +107,6 @@ final class AlloyBudgetTests: XCTestCase {
         return elapsed
     }
 
-    private func report(_ name: String, _ value: String, budget: String) {
-        print("BUDGET \(name.padding(toLength: 40, withPad: " ", startingAt: 0)) \(value.padding(toLength: 28, withPad: " ", startingAt: 0)) budget \(budget)")
-    }
 
     // MARK: Budgets
 
@@ -135,10 +127,8 @@ final class AlloyBudgetTests: XCTestCase {
             }
         }
         let swiftMS = results["100k-line Swift"]!, logMS = results["20 MB log"]!
-        report("open 100k-line Swift", String(format: "%.0f, %.0f, %.0f ms", swiftMS[0], swiftMS[1], swiftMS[2]), budget: "≤ 50 ms")
-        report("open 20 MB log", String(format: "%.0f, %.0f, %.0f ms", logMS[0], logMS[1], logMS[2]), budget: "≤ 150 ms")
-        XCTAssertLessThanOrEqual(swiftMS.max()!, 50)
-        XCTAssertLessThanOrEqual(logMS.max()!, 150)
+        Budgets.check("editor.open.swift", swiftMS.max()!, detail: String(format: "three opens: %.0f, %.0f, %.0f ms", swiftMS[0], swiftMS[1], swiftMS[2]))
+        Budgets.check("editor.open.log", logMS.max()!, detail: String(format: "three opens: %.0f, %.0f, %.0f ms", logMS[0], logMS[1], logMS[2]))
     }
 
     /// Typing at the display's rate: a key on every other frame, drawn by the editor's own
@@ -180,12 +170,9 @@ final class AlloyBudgetTests: XCTestCase {
         waitUntil(30) { keys >= 330 }
         waitUntil(0.2) { false }
         view.onFrame = nil
-        let p99 = percentile(frameWork, 0.99)
-        report("keystroke: key handling", String(format: "p50 %.2f, p99 %.2f ms", percentile(keyWork, 0.5), percentile(keyWork, 0.99)), budget: "")
-        report("keystroke: its frame (CPU)", String(format: "p50 %.2f, p99 %.2f ms", percentile(frameWork, 0.5), p99), budget: "")
-        report("keystroke to frame (main thread)", String(format: "p50 %.2f, p99 %.2f ms", percentile(perKey, 0.5), percentile(perKey, 0.99)), budget: "p99 ≤ 8 ms")
         XCTAssertGreaterThan(keyWork.count, 250)
-        XCTAssertLessThanOrEqual(percentile(perKey, 0.99), 8)
+        Budgets.check("editor.keystroke", percentile(perKey, 0.99), detail: String(format: "p50 %.2f ms; the key %.2f, its frame %.2f ms at p99",
+                                                                                    percentile(perKey, 0.5), percentile(keyWork, 0.99), percentile(frameWork, 0.99)))
     }
 
     func testReHighlightAfterAnEdit() throws {
@@ -205,9 +192,7 @@ final class AlloyBudgetTests: XCTestCase {
             highlighter.waitForParse()
             reparse.append(now() - parseStart)
         }
-        report("recolor the edited line", String(format: "p99 %.3f ms", percentile(line, 0.99)), budget: "≤ 2 ms")
-        report("background reparse (off main)", String(format: "median %.0f ms", percentile(reparse, 0.5)), budget: "(not budgeted)")
-        XCTAssertLessThanOrEqual(percentile(line, 0.99), 2)
+        Budgets.check("editor.recolor", percentile(line, 0.99), detail: String(format: "the reparse behind it, off the main thread: median %.0f ms", percentile(reparse, 0.5)))
     }
 
     /// Five seconds of steady scrolling, a new stretch of the file every frame, beside the same
@@ -219,27 +204,35 @@ final class AlloyBudgetTests: XCTestCase {
         // Settle first: what launch and opening start in the background (the test host's own
         // startup, git) shows up as misses that aren't scrolling's.
         waitUntil(3) { false }
-        func scroll(controlOnly: Bool) -> (presented: Int, missed: Int, late: Int, cpu: [Double]) {
+        func scroll(controlOnly: Bool, seconds: TimeInterval) -> (presented: Int, missed: Int, cpu: [Double]) {
             TextRenderer.clearOnly = controlOnly
             defer { TextRenderer.clearOnly = false }
             view.onFrame = { [weak self] _ in self?.view.scrollY += 45 }
             waitUntil(0.3) { false }
             view.resetFrameCounters()
-            waitUntil(5) { false }
+            waitUntil(seconds) { false }
             view.onFrame = nil
             waitUntil(0.2) { false }
             let (presented, missed) = view.presentedFrameCounts()
-            return (presented, missed, view.framesDropped, view.frameMilliseconds)
+            return (presented, missed, view.frameMilliseconds)
         }
-        let control = scroll(controlOnly: true)
-        let real = scroll(controlOnly: false)
+        // Interleaved, a round of each at a time, so both see the same load on the machine
+        // (back to back, a burst of other work landed on one and read as the editor's).
+        var control: (presented: Int, missed: Int, cpu: [Double]) = (0, 0, [])
+        var real = control
+        for _ in 0..<8 {
+            let c = scroll(controlOnly: true, seconds: 1), r = scroll(controlOnly: false, seconds: 1)
+            control = (control.presented + c.presented, control.missed + c.missed, control.cpu + c.cpu)
+            real = (real.presented + r.presented, real.missed + r.missed, real.cpu + r.cpu)
+        }
         let hz = Int((1 / view.displayInterval).rounded())
-        report("scrolling at \(hz) Hz", "\(real.missed) of \(real.presented + real.missed) missed", budget: "none dropped")
-        report("  control (draws nothing)", "\(control.missed) of \(control.presented + control.missed) missed", budget: "")
-        report("  frame CPU", String(format: "median %.2f, p99 %.2f ms", percentile(real.cpu, 0.5), percentile(real.cpu, 0.99)), budget: String(format: "%.1f ms a frame", view.displayInterval * 1000))
         XCTAssertGreaterThan(real.presented, 0)
-        XCTAssertLessThanOrEqual(percentile(real.cpu, 0.99), view.displayInterval * 1000 / 2, "a frame's work fits in half a frame")
-        XCTAssertLessThanOrEqual(real.missed, control.missed + real.presented / 200, "no more misses than drawing nothing, within 0.5%")
+        let frameMS = view.displayInterval * 1000
+        Budgets.check("editor.scroll.cpu", percentile(real.cpu, 0.99) / frameMS * 100,
+                      detail: String(format: "p99 %.2f ms of a %.1f ms frame (%d Hz), median %.2f ms", percentile(real.cpu, 0.99), frameMS, hz, percentile(real.cpu, 0.5)))
+        let rate = { (p: Int, m: Int) in Double(m) / Double(max(1, p + m)) * 100 }
+        Budgets.check("editor.scroll.missed", max(0, rate(real.presented, real.missed) - rate(control.presented, control.missed)),
+                      detail: "8 rounds of a second each, interleaved: \(real.missed) of \(real.presented + real.missed) missed, drawing nothing \(control.missed) of \(control.presented + control.missed)")
     }
 
     func testMemory() throws {
@@ -253,12 +246,11 @@ final class AlloyBudgetTests: XCTestCase {
         _ = open(small)
         waitUntil(1) { false }
         let before = footprintMB()
-        report("  the editor's first frame (drawables, atlas)", String(format: "+%.0f MB", before - empty), budget: "(once per window)")
         _ = open(log)
         waitUntil(1) { false }
         let after = footprintMB()
-        report("memory for a 20 MB log", String(format: "+%.0f MB (%.1f× the file)", after - before, (after - before) / size), budget: "≤ 3× plus the atlas")
-        XCTAssertLessThanOrEqual(after - before, size * 3 + 32)
+        Budgets.check("editor.memory.log", after - before, detail: String(format: "%.1fx the file; the window's first frame (drawables, atlas) +%.0f MB, once", (after - before) / size, before - empty),
+                      limit: size * 3 + 32)
     }
 
     /// An agent's approved edit reaches the open tab as a whole-file replacement
@@ -280,8 +272,7 @@ final class AlloyBudgetTests: XCTestCase {
                 RunLoop.main.run(until: Date().addingTimeInterval(0.004))
             }
             let total = times.reduce(0, +)
-            report("agent edits, \(name)", String(format: "%.1f ms each, p99 %.1f", total / 60, percentile(times, 0.99)), budget: "60/s (≤ 16.7 ms)")
-            XCTAssertLessThanOrEqual(percentile(times, 0.99), 16.7)
+            Budgets.check("editor.agentEdits", percentile(times, 0.99), detail: String(format: "%@: %.1f ms each on average", name, total / 60))
         }
     }
 }

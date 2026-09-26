@@ -20,6 +20,23 @@ final class FindTests: XCTestCase {
         XCTAssertEqual(InFileFind(query: "a.b", options: .init()).matches(in: "axb a.b" as NSString).ranges.map(\.location), [4], "literal unless asked")
     }
 
+    /// Plain queries take a direct search, not the expression engine: the same matches, across
+    /// its 64K chunk edges too, with every option.
+    func testTheDirectSearchAgreesWithTheExpressionEngine() {
+        var generator = SystemRandomNumberGenerator()
+        let alphabet = Array("abAB _-\nÀé1".utf16)
+        let text = String(utf16CodeUnits: (0..<200_000).map { _ in alphabet.randomElement(using: &generator)! }, count: 200_000) as NSString
+        for query in ["ab", "aB a", "b_", "a", "Ab1", "À", "-a"] {
+            for options in [InFileFind.Options(), .init(caseSensitive: true), .init(wholeWord: true), .init(caseSensitive: true, wholeWord: true)] {
+                let direct = InFileFind(query: query, options: options).matches(in: text)
+                var expressionOptions = options
+                expressionOptions.regularExpression = true
+                let engine = InFileFind(query: NSRegularExpression.escapedPattern(for: query), options: expressionOptions).matches(in: text)
+                XCTAssertEqual(direct, engine, "“\(query)” \(options)")
+            }
+        }
+    }
+
     func testReplacementsAndStepping() {
         let text = "f(a) f(b)" as NSString
         let find = InFileFind(query: #"f\((\w)\)"#, options: .init(regularExpression: true))

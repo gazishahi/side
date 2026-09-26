@@ -879,6 +879,22 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         document.setDecorations(.findCurrent, current.map { [($0, NSColor.findHighlightColor.withAlphaComponent(0.7))] } ?? [])
     }
 
+    /// Stepping: only the current match's mark moves; the rest stay as they are (re-marking all
+    /// of them was most of a step's cost in a file with thousands).
+    private func markCurrentFindMatch(previous: Int?) {
+        let current = findCurrent.flatMap { findMatches.indices.contains($0) ? findMatches[$0] : nil }
+        let currentColor = NSColor.findHighlightColor.withAlphaComponent(0.7)
+        if findingInPreview, let layout = markdownPreviewView.layoutManager {
+            let length = (markdownPreviewView.string as NSString).length
+            if let previous, findMatches.indices.contains(previous), NSMaxRange(findMatches[previous]) <= length {
+                layout.addTemporaryAttribute(.backgroundColor, value: NSColor.controlAccentColor.withAlphaComponent(0.2), forCharacterRange: findMatches[previous])
+            }
+            if let current, NSMaxRange(current) <= length { layout.addTemporaryAttribute(.backgroundColor, value: currentColor, forCharacterRange: current) }
+            return
+        }
+        editor.document?.setDecorations(.findCurrent, current.map { [($0, currentColor)] } ?? [])
+    }
+
     private func clearFindMarks() {
         if let layout = markdownPreviewView.layoutManager {
             layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: (markdownPreviewView.string as NSString).length))
@@ -903,8 +919,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func showFindMatch(_ index: Int) {
         guard findMatches.indices.contains(index) else { return }
+        let previous = findCurrent
         findCurrent = index
-        markFindMatches()
+        markCurrentFindMatch(previous: previous)
         updateFindCount()
         revealFindMatch(index)
     }

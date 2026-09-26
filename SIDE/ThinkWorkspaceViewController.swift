@@ -24,6 +24,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private let transcriptScroll = NSScrollView()
     private let transcriptContainer = TranscriptContainerView()
     private let transcriptStack = NSStackView()
+    /// The transcript's blocks, a page of stack view at a time. One stack of every block made
+    /// each change (a message sent, a block built) re-sort the constraints of all of them: a
+    /// turn cost more the longer the conversation, 76 ms at turn 20 and 327 ms at turn 200. A
+    /// change now re-lays its own page and the list of pages.
+    private var transcriptPages: [NSStackView] = []
+    private static let blocksPerPage = 40
     private let composer = ComposerView()
     private var composerBottom: NSLayoutConstraint!
     private let changesGroup = NSView()
@@ -1582,6 +1588,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             transcriptStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
+        transcriptPages = []
         entryViews.removeAll()
         blocks.removeAll()
         currentWorkGroup = nil
@@ -1869,7 +1876,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// project is open at all, since `configure` is always called before this stage is visible
     /// once a project exists.
     private func appendLocalNotice(_ text: String) {
-        addBlock(makeLabel(text, font: DS.Text.body(), color: .tertiaryLabelColor), topSpacing: transcriptStack.arrangedSubviews.isEmpty ? 0 : 8)
+        addBlock(makeLabel(text, font: DS.Text.body(), color: .tertiaryLabelColor), topSpacing: transcriptPages.isEmpty ? 0 : 8)
     }
 
     /// A tool-activity line whose file paths are clickable.
@@ -1916,13 +1923,25 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     }
 
     private func addBlock(_ view: NSView, topSpacing: CGFloat? = nil) {
-        if let topSpacing, let previous = transcriptStack.arrangedSubviews.last {
-            transcriptStack.setCustomSpacing(topSpacing, after: previous)
+        let page: NSStackView
+        if let last = transcriptPages.last, last.arrangedSubviews.count < Self.blocksPerPage {
+            page = last
+            if let topSpacing, let previous = page.arrangedSubviews.last { page.setCustomSpacing(topSpacing, after: previous) }
+        } else {
+            page = NSStackView()
+            page.orientation = .vertical
+            page.alignment = .leading
+            page.spacing = transcriptStack.spacing
+            page.translatesAutoresizingMaskIntoConstraints = false
+            if let topSpacing, let previous = transcriptPages.last { transcriptStack.setCustomSpacing(topSpacing, after: previous) }
+            transcriptStack.addArrangedSubview(page)
+            page.widthAnchor.constraint(equalTo: transcriptStack.widthAnchor, constant: -(transcriptStack.edgeInsets.left + transcriptStack.edgeInsets.right)).isActive = true
+            transcriptPages.append(page)
         }
-        transcriptStack.addArrangedSubview(view)
+        page.addArrangedSubview(view)
         // Full-width blocks: wrapping labels need a definite width to compute their height, and
         // diff cards should span the transcript rather than hug their content.
-        view.widthAnchor.constraint(equalTo: transcriptStack.widthAnchor, constant: -(transcriptStack.edgeInsets.left + transcriptStack.edgeInsets.right)).isActive = true
+        view.widthAnchor.constraint(equalTo: page.widthAnchor).isActive = true
         scrollToBottom()
     }
 
@@ -2225,22 +2244,29 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
             let previous = plainText
             plainText = text
             let attrs: [NSAttributedString.Key: Any] = [.font: DS.Text.body(), .foregroundColor: style.textColor]
+            let measure = streamingMeasure
             if isShowingStreamingPlainText, text.hasPrefix(previous), let storage = bodyText.textStorage {
                 let delta = String(text.dropFirst(previous.count))
-                if !delta.isEmpty { storage.append(NSAttributedString(string: delta, attributes: attrs)) }
+                if !delta.isEmpty {
+                    storage.append(NSAttributedString(string: delta, attributes: attrs))
+                    measure.storage.append(NSAttributedString(string: delta, attributes: attrs))
+                }
             } else {
                 bodyText.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: attrs))
+                measure.storage.setAttributedString(NSAttributedString(string: text, attributes: attrs))
                 isShowingStreamingPlainText = true
             }
             // Measured with trailing newlines trimmed: the model often ends a chunk on "\n\n",
             // and sizing to it left a blank band at the bubble's bottom until the final render
             // stripped it.
-            var trimmed = text
-            while let last = trimmed.last, last.isNewline || last == " " { trimmed.removeLast() }
-            fitToContent(NSAttributedString(string: trimmed, attributes: attrs), monotonicWidth: true)
+            let full = text as NSString
+            var end = full.length
+            while end > 0, let scalar = Unicode.Scalar(full.character(at: end - 1)), CharacterSet.whitespacesAndNewlines.contains(scalar) { end -= 1 }
+            fitStreaming(measure, length: end)
             return
         }
         isShowingStreamingPlainText = false
+        streamingMeasureStorage = nil
         plainText = text
         let rendered = NSMutableAttributedString(attributedString: Self.renderedMarkdown(text, style: style))
         // The renderer terminates every block with "\n\n" — fine in a document preview, but in
@@ -2295,6 +2321,37 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
                 .foregroundColor: style == .sent ? NSColor.white : NSColor.controlAccentColor,
             ], range: range)
         }
+    }
+
+    /// A layout of the streaming text at the bubble's widest, kept while it streams: appending
+    /// lays out only what was appended. Measuring the whole message from scratch on every flush
+    /// (about 30 a second) was most of what streaming cost, and grew with the message.
+    private var streamingMeasureStorage: (storage: NSTextStorage, layout: NSLayoutManager, container: NSTextContainer)?
+    private var streamingMeasure: (storage: NSTextStorage, layout: NSLayoutManager, container: NSTextContainer) {
+        if let existing = streamingMeasureStorage { return existing }
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: maxBubbleWidth - Self.insets.left - Self.insets.right, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        streamingMeasureStorage = (storage, layout, container)
+        return (storage, layout, container)
+    }
+
+    private func fitStreaming(_ measure: (storage: NSTextStorage, layout: NSLayoutManager, container: NSTextContainer), length: Int) {
+        let range = NSRange(location: 0, length: min(length, measure.storage.length))
+        guard range.length > 0 else { return }
+        measure.layout.ensureLayout(forCharacterRange: range)
+        let glyphs = measure.layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let bounding = measure.layout.boundingRect(forGlyphRange: glyphs, in: measure.container)
+        // The widest line's text, not its fragment (a fragment spans the container).
+        var widest: CGFloat = 0
+        measure.layout.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in widest = max(widest, used.maxX) }
+        let availableWidth = maxBubbleWidth - Self.insets.left - Self.insets.right
+        let measuredWidth = max(10, min(ceil(widest) + 2, availableWidth))
+        bodyWidthConstraint.constant = max(bodyWidthConstraint.constant, measuredWidth)
+        bodyHeightConstraint.constant = max(10, ceil(bounding.maxY) + 1)
     }
 
     /// Hug the content: measure against the cap and clamp the view to exactly what it needs —

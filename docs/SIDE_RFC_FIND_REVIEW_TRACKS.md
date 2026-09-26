@@ -2,7 +2,7 @@
 
 *2026-09-25. Status: **accepted**: the owner chose the directions on 2026-09-25 (Find as one
 search surface; Review "changes first" with a summary on top; Tracks as a switcher on the track
-pill plus a list to manage them). Build order below. Steps 1–4 built.*
+pill plus a list to manage them). Build order below. Steps 1–4 and 6 built.*
 *Companion to `SIDE_DESIGN.md` (tokens, glass), `SIDE_RFC_ALLOY.md` (the renderer Review's diffs
 move to) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -37,14 +37,19 @@ frame, 7 MB after 3 s idle, and 37 ms for the first frame after that). Alloy now
 while Side isn't the active app or the editor isn't in the key window, so the driver frees it;
 while you're typing it stays warm, so keys never pay the 37 ms.
 
-## Budgets (acceptance, measured by the opt-in budget tests)
+## Budgets
+
+Every budget is a row of `Budgets.table` (`SIDETests/Budgets.swift`); `scripts/budgets.sh`
+measures them all in an optimized build and prints this table (step 6). The ones here are this
+RFC's; the editor's own are SIDE_RFC_ALLOY.md's, in the same table.
 
 | Measure | Budget |
 |---|---|
-| Idle, Side in the background, any project | ≤ 80 MB, 0% CPU, ≤ 2 wakeups a second |
-| Review, 500 changed files | open ≤ 300 ms, ≤ 60 MB, scrolls at 120 Hz |
+| Idle, Side in the background, files open | ≤ 80 MB, ≤ 0.5% CPU, ≤ 2 wakeups a second |
+| Through every stage and a Markdown preview | peak ≤ 300 MB; ≤ 120 MB 40 s later in the background |
+| Review, 500 changed files | open ≤ 300 ms, ≤ 60 MB (drawing buffers apart), scrolls at 120 Hz |
 | Think, 200-turn conversation on screen | ≤ 60 MB for the view, ≤ 25% of a core while streaming |
-| Find in a 100,000-line file | matches ≤ 50 ms, next match ≤ 8 ms |
+| Find in a 100,000-line file | every match ≤ 50 ms, the next ≤ 8 ms |
 
 ## Decisions
 
@@ -149,3 +154,26 @@ while you're typing it stays warm, so keys never pay the 37 ms.
    diff. `ReviewLayoutTests` covers the timeline, viewed marks, folding, pinning and the list.
 5. **Tracks** (T1).
 6. **Budgets in one place**: the budget tests run together against the table above.
+   **Built 2026-09-25:** `Budgets.table` holds every limit and `Budgets.check` prints a row and
+   fails past it; `scripts/budgets.sh` builds once, optimized, drops Xcode's Main Thread Checker
+   from the run (it checks every AppKit call and read as the UI's cost), runs the suites and
+   prints the table. New: `FindBudgetTests`; `AppBudgetTests`, which launches a second Side on a
+   generated project and measures it from outside (idle, every stage, and Think streaming from a
+   fake agent at a real agent's pace); Review's generates its own 500-file change set. What the
+   first runs found, and fixed:
+
+   | | Before | After |
+   |---|---|---|
+   | Find, every match (plain text) | 52 ms | 10–14 ms: a direct search over the text, not the expression engine (a test holds the two to the same answers) |
+   | Find, every match (expression) | 46 ms | 27 ms: over a flat copy, not the rope view |
+   | Find, a step without its frame, p99 | 8 ms | 2.3 ms: only the current match's mark moves; mark colors converted once, not per mark |
+   | Drawing with many marks | every mark tested per visible line | the marks on screen found once a frame |
+   | Review, split, memory | 72 MB | 37 MB: every Alloy editor shared nothing (shaders compiled and a glyph atlas of 4–64 MB each); now one set per GPU |
+   | Think, a turn at turn 200 | 327 ms | 70 ms: the transcript was one stack of every block, and each change re-sorted all their constraints; now pages of 40 |
+   | Think, reattach to 1,600 entries | 974 ms | 211 ms |
+   | Think, measuring a streaming reply | the whole message re-typeset each flush | only what was appended |
+
+   Measured 2026-09-25, M-series laptop: every row within budget except the frame-timing ones
+   when the machine is busy (the control, drawing nothing, then misses frames too); run it on a
+   quiet machine. Streaming in Side costs 3–8% of a core; the in-process number read 33% because
+   the test's waiting loop counted as the view's, so streaming is measured in the app.

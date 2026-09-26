@@ -109,9 +109,14 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         var decorations: [Decoration] = []
         // Drawn in this order, so the match Find is on sits over the others.
         let order: [EditorDecoration] = [.bracketMatch, .findMatch, .findCurrent, .diagnostic]
+        // Marks of a kind mostly share a color: converted once, not once per mark.
+        var converted: [ObjectIdentifier: SIMD4<Float>] = [:]
         for kind in order {
             for mark in document.decorations[kind] ?? [] {
-                decorations.append(Decoration(range: mark.range.location..<(mark.range.location + mark.range.length), color: components(mark.color),
+                let key = ObjectIdentifier(mark.color)
+                let color = converted[key] ?? components(mark.color)
+                converted[key] = color
+                decorations.append(Decoration(range: mark.range.location..<(mark.range.location + mark.range.length), color: color,
                                               style: kind == .diagnostic ? .dottedUnderline : .background))
             }
         }
