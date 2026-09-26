@@ -592,6 +592,14 @@ final class TabStripView: NSView {
         guard let glass = glassTrack, let scroll = trackScroll, let stack = trackStack else { return }
         let width = min(stack.frame.width, scroll.frame.width)
         glass.frame = NSRect(x: scroll.frame.minX, y: (bounds.height - Self.trackHeight) / 2, width: width, height: Self.trackHeight)
+        // The tabs are cut off at the track's round ends, not the scroll view's square ones: a
+        // selected tab half scrolled out used to poke its pill past the curve.
+        scroll.wantsLayer = true
+        let mask = (scroll.layer?.mask as? CAShapeLayer) ?? CAShapeLayer()
+        let track = convert(glass.frame, to: scroll)
+        mask.frame = scroll.bounds
+        mask.path = CGPath(roundedRect: track, cornerWidth: Self.trackHeight / 2, cornerHeight: Self.trackHeight / 2, transform: nil)
+        scroll.layer?.mask = mask
     }
     var accessibilityGroupLabel: String = "Tabs"
 
