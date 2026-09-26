@@ -159,6 +159,12 @@ final class ChromeHost {
         pillPiece = pillCapsule
     }
 
+    /// With one stage to show there's nowhere to switch to: the stage control goes (its glass
+    /// too, on the bar). The track pill and search stay; they aren't about stages.
+    func setStageControlHidden(_ hidden: Bool) {
+        (placement == .floatingBar ? bar : stageControl)?.isHidden = hidden
+    }
+
     private weak var barRoot: NSView?
     private weak var pillPiece: NSView?
     private var dockedAccessories: [NSView] = []

@@ -97,13 +97,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     nonisolated(unsafe) static var preferences: UserDefaults = NSClassFromString("XCTestCase") == nil
         ? .standard : UserDefaults(suiteName: "side.tests.make.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard
     private var minimapShown: Bool {
-        get { Self.preferences.bool(forKey: Self.minimapKey) }
-        set { Self.preferences.set(newValue, forKey: Self.minimapKey) }
+        get { EditorPreferences.minimapShown }
+        set { EditorPreferences.minimapShown = newValue }
     }
 
-    @objc func toggleMinimap(_ sender: Any?) {
-        minimapShown.toggle()
+    @objc func toggleMinimap(_ sender: Any?) { minimapShown.toggle() }
+
+    /// Settings or the View menu changed an editor preference: every window follows.
+    @objc private func editorPreferencesChanged() {
         applyMinimapVisibility()
+        (editor as? AlloyEditorEngine)?.view.isFoldingEnabled = EditorPreferences.foldingEnabled
     }
 
     private func applyMinimapVisibility() {
@@ -413,6 +416,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         minimapWidth = width
         minimapBottom = bottom
         minimap.isHidden = true
+        (editor as? AlloyEditorEngine)?.view.isFoldingEnabled = EditorPreferences.foldingEnabled
+        NotificationCenter.default.addObserver(self, selector: #selector(editorPreferencesChanged), name: EditorPreferences.didChangeNotification, object: nil)
         gutter.isHidden = true
         gutter.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(gutter)
@@ -4519,8 +4524,30 @@ extension MakeWorkspaceViewController: NSMenuItemValidation {
     /// Show Minimap carries a checkmark; everything else is as the responder chain decides.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(toggleMinimap(_:)) {
-            item.state = Self.preferences.bool(forKey: Self.minimapKey) ? .on : .off
+            item.state = EditorPreferences.minimapShown ? .on : .off
         }
         return true
+    }
+}
+
+/// Make's editor preferences, from Settings → General and the View menu.
+enum EditorPreferences {
+    static let didChangeNotification = Notification.Name("SideEditorPreferencesDidChange")
+
+    static var minimapShown: Bool {
+        get { MakeWorkspaceViewController.preferences.bool(forKey: MakeWorkspaceViewController.minimapKey) }
+        set {
+            MakeWorkspaceViewController.preferences.set(newValue, forKey: MakeWorkspaceViewController.minimapKey)
+            NotificationCenter.default.post(name: didChangeNotification, object: nil)
+        }
+    }
+
+    /// On unless turned off.
+    static var foldingEnabled: Bool {
+        get { !MakeWorkspaceViewController.preferences.bool(forKey: "SideCodeFoldingOff") }
+        set {
+            MakeWorkspaceViewController.preferences.set(!newValue, forKey: "SideCodeFoldingOff")
+            NotificationCenter.default.post(name: didChangeNotification, object: nil)
+        }
     }
 }

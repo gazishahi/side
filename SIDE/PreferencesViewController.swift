@@ -277,6 +277,8 @@ private final class AddProviderForm {
 /// view, never a capability — every stage stays on ⌘⌥1–4, Navigate and the palette.
 final class GeneralPreferencesViewController: NSViewController {
     private var switches: [NSSwitch] = []
+    private let foldingSwitch = NSSwitch()
+    private let minimapSwitch = NSSwitch()
     private var observer: NSObjectProtocol?
     private var sideObserver: NSObjectProtocol?
 
@@ -290,12 +292,24 @@ final class GeneralPreferencesViewController: NSViewController {
             switches.append(toggle)
             stageRows.append(SettingsForm.row(stage.rawValue, toggle))
         }
+        foldingSwitch.target = self
+        foldingSwitch.action = #selector(foldingToggled(_:))
+        foldingSwitch.controlSize = .small
+        foldingSwitch.setAccessibilityLabel("Code folding")
+        minimapSwitch.target = self
+        minimapSwitch.action = #selector(minimapToggled(_:))
+        minimapSwitch.controlSize = .small
+        minimapSwitch.setAccessibilityLabel("Minimap")
         let sidePopup = SettingsForm.popup(FileExplorer.Side.allCases.map(\.title), selected: 0, self, #selector(explorerSideChanged(_:)))
         explorerPopup = sidePopup
         let page = SettingsForm.page([
             SettingsSplitViewController.hero(.general),
             SettingsForm.section("Stages", footer: "Pinned stages appear in the stage control. Unpinned ones stay on the Navigate menu, \u{2318}\u{2325}1\u{2013}4 and the palette, and show up on their own when they need you.", stageRows),
-            SettingsForm.section("Make", [SettingsForm.row("File explorer side", sidePopup)]),
+            SettingsForm.section("Make", footer: "Folding and the minimap are also in the View menu, with their shortcuts in Shortcuts.", [
+                SettingsForm.row("File explorer side", sidePopup),
+                SettingsForm.row("Code folding", detail: "Fold regions from the gutter's arrows.", foldingSwitch),
+                SettingsForm.row("Minimap", detail: "The file drawn small beside the text; click or drag it to scroll.", minimapSwitch),
+            ]),
             SettingsForm.section("Updates", [
                 SettingsForm.row("Check for updates automatically", detail: "Side \(Self.versionText). Updates are signed, and verified before they install.",
                                  SettingsForm.toggle(Updates.shared.checksAutomatically, self, #selector(autoUpdateToggled(_:)))),
@@ -311,6 +325,7 @@ final class GeneralPreferencesViewController: NSViewController {
         observer = NotificationCenter.default.addObserver(forName: StagePins.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(editorPreferencesChanged), name: EditorPreferences.didChangeNotification, object: nil)
         sideObserver = NotificationCenter.default.addObserver(forName: FileExplorer.Side.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
@@ -318,6 +333,8 @@ final class GeneralPreferencesViewController: NSViewController {
 
     private func refresh() {
         explorerPopup?.selectItem(withTitle: FileExplorer.Side.preferred.title)
+        foldingSwitch.state = EditorPreferences.foldingEnabled ? .on : .off
+        minimapSwitch.state = EditorPreferences.minimapShown ? .on : .off
         let pinned = StagePins.pinned
         for toggle in switches {
             let isPinned = pinned.contains { $0.rawValue == toggle.identifier?.rawValue }
@@ -345,6 +362,10 @@ final class GeneralPreferencesViewController: NSViewController {
     @objc private func explorerSideChanged(_ sender: NSPopUpButton) {
         FileExplorer.Side.preferred = FileExplorer.Side.allCases[max(0, sender.indexOfSelectedItem)]
     }
+
+    @objc private func editorPreferencesChanged() { refresh() }
+    @objc private func foldingToggled(_ sender: NSSwitch) { EditorPreferences.foldingEnabled = sender.state == .on }
+    @objc private func minimapToggled(_ sender: NSSwitch) { EditorPreferences.minimapShown = sender.state == .on }
 
     @objc private func toggled(_ sender: NSSwitch) {
         guard let raw = sender.identifier?.rawValue, let stage = ShellViewController.Stage(rawValue: raw) else { return }

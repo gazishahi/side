@@ -469,6 +469,7 @@ final class ShellViewController: NSViewController {
             let badge = stageBadge(stage)
             stageControl.setBadge(badge?.state, spokenState: badge?.spoken, at: index)
         }
+        chrome.setStageControlHidden(stages.count <= 1)
     }
 
     /// Unpinned stages with something that needs the user: Review has a review-ready or failed
@@ -666,6 +667,9 @@ final class ShellViewController: NSViewController {
         }
         step()
     }
+
+    /// UI testing: typing into Run's terminal.
+    func runTypeForTesting(_ text: String) { runVC.typeForTesting(text) }
 
     /// UI testing: a stage brought forward by name ("make", "think", "review", "run").
     func showStageForTesting(_ name: String) {

@@ -122,6 +122,16 @@ final class RunWorkspaceViewController: NSViewController {
     /// The session this view has in its container, if any.
     private var displayedSession: TerminalSession?
 
+    /// UI testing: characters typed into the terminal on screen, one per `interval`.
+    func typeForTesting(_ text: String, interval: TimeInterval = 0.1) {
+        guard let terminal = displayedSession?.viewController.terminalView else { return }
+        for (index, character) in text.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(index)) {
+                terminal.insertText(String(character), replacementRange: NSRange(location: NSNotFound, length: 0))
+            }
+        }
+    }
+
     override func loadView() { view = NSView() }
 
     override func viewDidLoad() {
