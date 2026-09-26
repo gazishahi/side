@@ -12,6 +12,8 @@ protocol MakeDebuggerHost: AnyObject {
     var debugCurrentFile: URL? { get }
     /// Opens a file at a line (zero-based) and puts the caret there.
     func debugReveal(_ url: URL, line: Int)
+    /// The palette as a picker (the launch configurations, the processes to attach to).
+    func debugChoose(_ prompt: String, from choices: [PaletteChoice], completion: @escaping (Int) -> Void)
     /// Makes room for the inspector beside the editor and the bar over it (0s when they're gone).
     func debugSetInsets(inspector width: CGFloat, leading: Bool, bar height: CGFloat)
 }
@@ -183,28 +185,130 @@ final class MakeDebugger {
     var isActive: Bool { session?.isActive == true || parents.contains { $0.isActive } }
     var isStopped: Bool { session?.isStopped == true }
 
-    /// ⌘R: continues a paused session, or starts one with what the project and the open file
-    /// can be debugged as (SIDE_RFC_DEBUGGER.md, Q3).
+    /// What can be debugged here: the project's `.vscode/launch.json` (once accepted), then what
+    /// Side proposes (SIDE_RFC_DEBUGGER.md, Q3).
+    enum Option {
+        case configuration(DebugConfiguration, fromFile: Bool)
+        case unsupported(name: String, reason: String)
+
+        var name: String {
+            switch self {
+            case .configuration(let configuration, _): return configuration.name
+            case .unsupported(let name, _): return name
+            }
+        }
+    }
+
+    nonisolated static func options(root: URL, currentFile: URL?) async -> [Option] {
+        let fromFile: [Option] = DebugLaunchFile.entries(root: root, currentFile: currentFile).map { entry in
+            switch entry.result {
+            case .success(let configuration): return .configuration(configuration, fromFile: true)
+            case .failure(let unsupported): return .unsupported(name: entry.name, reason: unsupported.reason)
+            }
+        }
+        let proposed = await DebugLaunch.proposals(root: root, currentFile: currentFile).map { Option.configuration($0, fromFile: false) }
+        return fromFile + proposed
+    }
+
+    private func rememberedKey(_ root: URL) -> String { "SideDebugProduct." + root.standardizedFileURL.path }
+
+    /// ⌘R: continues a paused session, or starts the one chosen last in this project (asking
+    /// when there's no choice yet and more than one option).
     func start() {
         if let session, session.isActive {
             if session.isStopped { session.resume() }
             return
         }
+        begin(forcingChoice: false)
+    }
+
+    /// Debug → Choose What to Debug…: always the picker; what's picked is remembered.
+    func chooseAndStart() {
+        guard !isActive else { return }
+        begin(forcingChoice: true)
+    }
+
+    private func begin(forcingChoice: Bool) {
         guard let host, let root = host.debugProjectRoot, let window = host.debugHostView.window else { return }
         let file = host.debugCurrentFile
-        Task {
-            let proposals = await DebugLaunch.proposals(root: root, currentFile: file)
-            guard !proposals.isEmpty else {
-                return self.alert("Nothing here to debug yet", "Side debugs a Swift package's or a Cargo project's executables, the open JavaScript, TypeScript or Python file, npm scripts, and Go main packages.", in: window)
+        askToAcceptLaunchFile(root: root, window: window) { [weak self] in
+            guard let self else { return }
+            Task {
+                let options = await Self.options(root: root, currentFile: file)
+                guard !options.isEmpty else {
+                    return self.alert("Nothing here to debug yet", "Side debugs a Swift package's or a Cargo project's executables, the open JavaScript, TypeScript or Python file, npm scripts, Go main packages, and what .vscode/launch.json describes.", in: window)
+                }
+                let defaults = MakeWorkspaceViewController.preferences
+                let remembered = defaults.string(forKey: self.rememberedKey(root)).flatMap { name in options.first { $0.name == name } }
+                if !forcingChoice, let remembered { return self.run(remembered, in: window) }
+                if !forcingChoice, options.count == 1 { return self.run(options[0], in: window) }
+                let choices = options.map { option -> PaletteChoice in
+                    switch option {
+                    case .configuration(let configuration, let fromFile):
+                        let adapter = DebugAdapters.preset(configuration.adapter)?.name ?? configuration.adapter
+                        return PaletteChoice(symbol: fromFile ? "doc.text" : "play.circle", title: configuration.name,
+                                             detail: adapter + (configuration.request == "attach" ? " \u{00B7} attach" : ""),
+                                             trailing: fromFile ? "launch.json" : "proposed")
+                    case .unsupported(let name, let reason):
+                        return PaletteChoice(symbol: "exclamationmark.circle", title: name, detail: nil, trailing: "launch.json", unavailable: reason)
+                    }
+                }
+                host.debugChoose("Debug what?", from: choices) { [weak self] index in
+                    guard let self else { return }
+                    let option = options[index]
+                    if case .configuration = option { defaults.set(option.name, forKey: self.rememberedKey(root)) }
+                    self.run(option, in: window)
+                }
             }
-            guard let configuration = self.choose(proposals, root: root, window: window),
-                  let preset = DebugAdapters.preset(configuration.adapter) else { return }
-            guard let connection = await Task.detached(operation: { DebugAdapters.connection(for: preset) }).value else {
-                return self.missingAdapter(preset, in: window)
-            }
-            self.launch(configuration, connection: connection, adapterID: preset.adapterID)
         }
     }
+
+    private func run(_ option: Option, in window: NSWindow) {
+        switch option {
+        case .unsupported(let name, let reason):
+            alert("Can\u{2019}t debug \u{201C}\(name)\u{201D}", reason, in: window)
+        case .configuration(let configuration, _):
+            guard let preset = DebugAdapters.preset(configuration.adapter) else { return }
+            Task {
+                guard let connection = await Task.detached(operation: { DebugAdapters.connection(for: preset) }).value else {
+                    return self.missingAdapter(preset, in: window)
+                }
+                self.launch(configuration, connection: connection, adapterID: preset.adapterID)
+            }
+        }
+    }
+
+    /// `.vscode/launch.json` (and the tasks file it names) arrived with the project, and runs
+    /// commands: asked about once per content, as `.side/tasks.json` is. "Not Now" goes on
+    /// without it, and asks again after the file changes or Side restarts.
+    private func askToAcceptLaunchFile(root: URL, window: NSWindow, then proceed: @escaping () -> Void) {
+        let pending = DebugLaunchFile.pending(root: root).filter { !declined.contains(Self.fingerprint($0)) }
+        guard !pending.isEmpty else { return proceed() }
+        let names = pending.map { $0.url.path.dropFirst(root.path.count + 1) }.joined(separator: " and ")
+        let alert = NSAlert()
+        alert.messageText = "Use this project\u{2019}s launch configurations?"
+        alert.informativeText = "This project contains \(names), which say what to debug and which commands to run first (preLaunchTask).\n\n"
+            + "They arrive with a cloned repository, so read them first if the project isn\u{2019}t yours: a configuration can run any program. "
+            + "Until you accept them, Side offers only what it finds in the project itself."
+        alert.addButton(withTitle: "Use Them")
+        alert.addButton(withTitle: "Show Me the File")
+        alert.addButton(withTitle: "Not Now")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            switch response {
+            case .alertFirstButtonReturn:
+                DebugLaunchFile.accept(pending)
+                proceed()
+            case .alertSecondButtonReturn:
+                if let first = pending.first { self?.host?.debugReveal(first.url, line: 0) }
+            default:
+                pending.forEach { self?.declined.insert(Self.fingerprint($0)) }
+                proceed()
+            }
+        }
+    }
+    /// "Not Now", for this run of Side.
+    private var declined: Set<String> = []
+    private static func fingerprint(_ file: (url: URL, contents: String)) -> String { file.url.path + "#" + String(file.contents.hashValue) }
 
     private func alert(_ title: String, _ message: String, in window: NSWindow) {
         let alert = NSAlert()
@@ -226,28 +330,36 @@ final class MakeDebugger {
         }
     }
 
-    /// Which one, when there's more than one: the last chosen in this project, or asked.
-    private func choose(_ proposals: [DebugConfiguration], root: URL, window: NSWindow) -> DebugConfiguration? {
-        let key = "SideDebugProduct." + root.standardizedFileURL.path
-        let defaults = MakeWorkspaceViewController.preferences
-        if proposals.count == 1 { return proposals[0] }
-        // The open file's own proposal wins over a remembered one elsewhere in the project.
-        if let remembered = defaults.string(forKey: key), let match = proposals.first(where: { $0.name == remembered }) { return match }
-        let alert = NSAlert()
-        alert.messageText = "Debug what?"
-        alert.informativeText = "Side remembers the choice for this project."
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26), pullsDown: false)
-        for proposal in proposals {
-            popup.addItem(withTitle: proposal.name)
-            popup.lastItem?.toolTip = DebugAdapters.preset(proposal.adapter)?.name
+    // MARK: Attaching
+
+    /// Debug → Attach to Process…: one of the person's running processes, under LLDB (or
+    /// js-debug for Node).
+    func attachToProcess() {
+        guard !isActive, let host, let window = host.debugHostView.window else { return }
+        Task {
+            let root = host.debugProjectRoot
+            let processes = await Task.detached(operation: { DebugProcesses.list(projectRoot: root) }).value
+            guard !processes.isEmpty else { return self.alert("No processes to attach to", "Side lists your own processes, not the system's.", in: window) }
+            let choices = processes.map { process in
+                PaletteChoice(symbol: process.isNode ? "curlybraces" : "cpu", title: process.name, detail: process.path, trailing: "\(process.pid)")
+            }
+            host.debugChoose("Attach to which process?", from: choices) { [weak self] index in
+                guard let self else { return }
+                let process = processes[index]
+                let root = host.debugProjectRoot?.path ?? NSHomeDirectory()
+                let configuration: DebugConfiguration
+                if process.isNode {
+                    configuration = DebugConfiguration(name: "\(process.name) (\(process.pid))", adapter: DebugAdapters.jsDebug.id, request: "attach", launchArguments: [
+                        "type": "pwa-node", "request": "attach", "name": .string(process.name), "processId": .string(String(process.pid)), "cwd": .string(root),
+                    ], directory: root)
+                } else {
+                    configuration = DebugConfiguration(name: "\(process.name) (\(process.pid))", adapter: DebugAdapters.lldb.id, request: "attach", launchArguments: [
+                        "pid": .int(Int(process.pid)), "program": .string(process.path),
+                    ], directory: root)
+                }
+                self.run(.configuration(configuration, fromFile: false), in: window)
+            }
         }
-        alert.accessoryView = popup
-        alert.addButton(withTitle: "Debug")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let chosen = proposals[popup.indexOfSelectedItem]
-        defaults.set(chosen.name, forKey: key)
-        return chosen
     }
 
     /// Runs a configuration under lldb-dap at a path (tests start sessions this way).

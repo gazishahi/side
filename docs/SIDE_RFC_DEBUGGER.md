@@ -3,8 +3,8 @@
 *2026-09-26. Status: **accepted**: the owner answered on 2026-09-26. The debugger lives in Make;
 a breakpoint is a click on the line number; a project's `.vscode/launch.json` is read, with
 consent; agents get read-only access first. Q4, the first languages, took the recommendation
-(default). The build order is the plan below. Steps 1 to 3 are built.*
-Symbols: `DAPClient`, `DAPSocketTransport`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `DebugAdapters`, `MakeDebugger`, `DebugBar`, `DebugInspector`.
+(default). The build order is the plan below. Steps 1 to 4 are built.*
+Symbols: `DAPClient`, `DAPSocketTransport`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `DebugLaunchFile`, `DebugProcesses`, `DebugAdapters`, `MakeDebugger`, `DebugBar`, `DebugInspector`.
 *Companion to `SIDE_RFC_IDE_ESSENTIALS.md` (the language-server client this mirrors, and
 Settings → Languages, which gains a debugger per language) and `SIDE_RFC_ALLOY.md` (the gutter
 and line tints the debugger draws with).*
@@ -350,3 +350,72 @@ Checked in Side, against scratch installs:
 A global Python whose `.pth` files point into `~/Documents` (an editable install) blocks at
 startup in a process without Documents access. The test process has none, so the debugpy test
 runs its program with debugpy's own environment. Side itself has access.
+
+**Step 4, 2026-09-26.**
+
+- **`.vscode/launch.json`** (`DebugLaunchFile`):
+  - It's read as VS Code reads it: comments and trailing commas allowed.
+  - VS Code's variables are filled in: `${workspaceFolder}`, `${file}` and its parts,
+    `${relativeFile}`, `${env:…}`, `${userHome}` and the rest.
+  - A variable Side can't fill (`${command:…}`, `${input:…}`), or `${file}` with no file open,
+    makes that configuration unusable, with the reason shown, rather than wrong.
+  - Types map to adapters:
+    - `lldb`, `lldb-dap`, `swift` and `codelldb` → lldb-dap, as Side's own configuration, so the
+      program still gets its Run tab;
+    - `node`, `pwa-node`, `chrome` and their kin → js-debug;
+    - `python` and `debugpy` → debugpy;
+    - `go` → Delve.
+
+    Other types are listed as not supported yet. A launched Node or Python program defaults to a
+    terminal, as in VS Code.
+  - `preLaunchTask` is found by label in `.vscode/tasks.json` (`command` and `args`, quoted) and
+    runs as the build step. A task that isn't there makes the configuration unusable.
+- **Consent** (Q3): the launch file, and the tasks file with it, take effect only once accepted.
+  - This is per content, with the same record (`ProjectRules.acknowledge`) as `.side/tasks.json`
+    and `AGENTS.md`.
+  - The sheet offers Use Them, Show Me the File, or Not Now. Not Now goes on with Side's
+    proposals only, and asks again after the file changes or Side restarts.
+  - A changed file is asked about again.
+- **The launch picker:** the palette gains a choices mode (`PaletteChoice`, `choose(_:from:)`).
+  - Debug what? lists the file's configurations, then Side's proposals, each with its adapter
+    and where it came from. An unusable one shows why, and picking it explains.
+  - ⌘R starts the last one chosen in this project, or asks when there's no choice yet and more
+    than one option. Debug → Choose What to Debug… always asks.
+- **Attach to Process…** (`DebugProcesses`):
+  - The person's own processes are listed: not the system's, the iOS Simulator's, or Side's
+    own. The project's own programs come first, then the rest by name.
+  - Each path comes from the system (`proc_pidpath`), not `ps`, which gives the path the program
+    was started with.
+  - Node attaches through js-debug; everything else through lldb-dap.
+  - Stop detaches from an attached program and leaves it running (`terminateDebuggee` only for
+    what Side launched).
+  - A program macOS protects, such as a system binary or a notarized app with the hardened
+    runtime, can't be attached to; lldb's reason shows in the console.
+- **Fixes:**
+  - Pause works on a session that hasn't stopped yet (an attached process): the threads are
+    fetched first.
+  - The SIGSTOP that pausing reports reads as "Paused".
+  - A breakpoint that was hit counts as verified, whatever an earlier event said. lldb-dap
+    reports one unverified while the program's modules load, which step 3's event handling had
+    started to believe.
+
+Tests:
+
+- The launch file:
+  - each type's configuration;
+  - variables, including `${env:…}`;
+  - `preLaunchTask` from the tasks file;
+  - what can't run, and why;
+  - `${file}` without a file.
+- Consent: nothing takes effect before acceptance, and a changed file is asked about again.
+- The process list: its filtering, the project's programs first, and a live listing.
+- Opt-in (`SIDE_DEBUGGER_TESTS=1`): lldb-dap attaches to a compiled program, pauses it with
+  frames, and detaches with the program still running.
+
+Checked in Side:
+
+- A project with a `launch.json` asked for consent first. The picker showed "Run app.ts with a
+  flag" (its `preLaunchTask` from `tasks.json`), "Needs a picker" (unusable,
+  `${command:pickFile}`), and Side's own `app.ts`. The chosen one ran to "total 14".
+- Attach to Process… listed the project's `sleeper` first. Attaching, then Pause, showed
+  `work` at `sleeper.c:2` with `n 121`.

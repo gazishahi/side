@@ -78,7 +78,17 @@ struct PaletteCommand {
 }
 
 /// Which list the palette is showing. `commands` is also reached by typing `>` in any mode.
-enum PaletteMode { case files, symbols, text, commands, find, problems, references }
+enum PaletteMode { case files, symbols, text, commands, find, problems, references, choices }
+
+/// A row of the palette's choices mode: something to pick (a launch configuration, a process).
+struct PaletteChoice {
+    let symbol: String
+    let title: String
+    let detail: String?
+    let trailing: String?
+    /// Shown dimmed, and picking it explains why instead of choosing.
+    var unavailable: String? = nil
+}
 
 final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     let searchField = QuickOpenSearchField()
@@ -259,7 +269,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var searchMode: SearchMode = .files
     /// Typing `>` switches any mode to commands, the way every palette does.
     private var effectiveMode: SearchMode {
-        [.find, .problems, .references].contains(searchMode) || !searchField.stringValue.hasPrefix(">") ? searchMode : .commands
+        [.find, .problems, .references, .choices].contains(searchMode) || !searchField.stringValue.hasPrefix(">") ? searchMode : .commands
     }
     /// Every problem the servers report, across the project (Show Problems, ⇧⌘M).
     private var allDiagnostics: [URL: [LSPDiagnostic]] = [:]
@@ -268,6 +278,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var referenceResults: [(location: LSPLocation, url: URL, line: Int, text: String)] = []
     private var referenceRows: [(location: LSPLocation, url: URL, line: Int, text: String)] = []
     private var referenceSymbol = ""
+    /// The choices mode: what's offered, the rows the query keeps, and who's asking.
+    private var choices: [PaletteChoice] = []
+    private var choiceRows: [Int] = []
+    private var choicePrompt = ""
+    private var onChoice: ((Int) -> Void)?
     /// Rename's field, over the symbol.
     private var renameField: RenameField?
     private var symbolMatches: [OutlineSymbol] = []
@@ -764,6 +779,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .find: searchField.placeholderString = activeTabIndex.map { "Find in \(openTabs[$0].url.lastPathComponent)" } ?? "Find"
         case .problems: searchField.placeholderString = problemsSummary
         case .references: searchField.placeholderString = "References to \(referenceSymbol) \u{00B7} \(referenceResults.count)"
+        case .choices: searchField.placeholderString = choicePrompt
         }
         searchField.stringValue = mode == .commands ? ">" : (mode == .find ? find.query : "")
         if mode == .symbols { outlineSymbols = []; loadOutline() }
@@ -2975,6 +2991,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             filterLanguageResults()
             return
         }
+        if searchMode == .choices {
+            let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
+            choiceRows = query.isEmpty ? Array(choices.indices) : choices.indices.compactMap { index in
+                let choice = choices[index]
+                let text = [choice.title, choice.detail ?? "", choice.trailing ?? ""].joined(separator: " ")
+                return FuzzyMatcher.score(query: query, candidate: text).map { (index, $0) }
+            }.sorted { $0.1 > $1.1 }.map(\.0)
+            applySearchResults()
+            return
+        }
         guard projectURL != nil else { matches = []; applySearchResults(); return }
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         searchGeneration += 1
@@ -3040,6 +3066,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .find: return min(findRows.count, Self.findListLimit)
         case .problems: return problemRows.count
         case .references: return referenceRows.count
+        case .choices: return choiceRows.count
         }
     }
 
@@ -3154,6 +3181,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             hideQuickOpenPanel()
             onPaletteNavigated?()
             goTo(row.location)
+        case .choices:
+            guard let index = (selected >= 0 && selected < choiceRows.count) ? choiceRows[selected] : choiceRows.first else { return }
+            let chosen = onChoice
+            onChoice = nil
+            hideQuickOpenPanel()
+            chosen?(index)
         }
     }
     @objc private func openSelectedResult() { confirmSearch() }
@@ -3243,6 +3276,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.configure(icon: NSWorkspace.shared.icon(forFile: reference.url.path), title: reference.text, detail: nil,
                            trailing: "\(reference.url.lastPathComponent):\(reference.line + 1)")
             cell.toolTip = relativePath(reference.url)
+        case .choices:
+            let choice = choices[choiceRows[row]]
+            cell.configure(icon: Self.paletteSymbol(choice.symbol), title: choice.title, detail: choice.unavailable ?? choice.detail, trailing: choice.trailing)
+            cell.toolTip = choice.unavailable
         }
         return cell
     }
@@ -3621,6 +3658,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc func showProblems(_ sender: Any?) { presentPalette(.problems) }
+
+    /// The palette as a picker: one of these, or nothing (Escape).
+    func choose(_ prompt: String, from list: [PaletteChoice], completion: @escaping (Int) -> Void) {
+        choices = list
+        choicePrompt = prompt
+        onChoice = completion
+        presentPalette(.choices)
+    }
 
     static func problemSymbol(_ severity: LSPDiagnosticSeverity?) -> NSImage? {
         let name: String
@@ -4554,6 +4599,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                                [("Step Over", #selector(debugStepOver(_:)), "debug.stepOver"),
                                 ("Step Into", #selector(debugStepIn(_:)), "debug.stepIn"),
                                 ("Step Out", #selector(debugStepOut(_:)), "debug.stepOut")],
+                               [("Choose What to Debug\u{2026}", #selector(chooseWhatToDebug(_:)), "debug.choose"),
+                                ("Attach to Process\u{2026}", #selector(attachToProcess(_:)), "debug.attach")],
                                [("Toggle Breakpoint", #selector(toggleBreakpoint(_:)), "debug.toggleBreakpoint")]].enumerated() {
             if index > 0 { debugMenu.addItem(.separator()) }
             for (title, selector, id) in group { Shortcuts.bind(debugMenu.addItem(withTitle: title, action: selector, keyEquivalent: ""), id) }
@@ -5564,7 +5611,13 @@ extension MakeWorkspaceViewController: MakeDebuggerHost {
         editorScroll.reflectScrolledClipView(editorScroll.contentView)
     }
 
+    func debugChoose(_ prompt: String, from choices: [PaletteChoice], completion: @escaping (Int) -> Void) {
+        choose(prompt, from: choices, completion: completion)
+    }
+
     @objc func startDebugging(_ sender: Any?) { debugger.start() }
+    @objc func chooseWhatToDebug(_ sender: Any?) { debugger.chooseAndStart() }
+    @objc func attachToProcess(_ sender: Any?) { debugger.attachToProcess() }
     @objc func pauseOrContinueDebugging(_ sender: Any?) { debugger.pauseOrContinue() }
     @objc func stopDebugging(_ sender: Any?) { debugger.stop() }
     @objc func debugStepOver(_ sender: Any?) { debugger.stepOver() }
@@ -5751,6 +5804,8 @@ extension MakeWorkspaceViewController: NSMenuItemValidation {
             item.state = EditorPreferences.minimapShown ? .on : .off
         case #selector(startDebugging(_:)):
             return focusedRoot != nil && !(debugger.isActive && !debugger.isStopped)
+        case #selector(chooseWhatToDebug(_:)), #selector(attachToProcess(_:)):
+            return focusedRoot != nil && !debugger.isActive
         case #selector(pauseOrContinueDebugging(_:)), #selector(stopDebugging(_:)):
             return debugger.isActive
         case #selector(debugStepOver(_:)), #selector(debugStepIn(_:)), #selector(debugStepOut(_:)):

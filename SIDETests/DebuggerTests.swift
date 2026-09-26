@@ -345,6 +345,53 @@ while True:
 /// and ended. Opt-in (it builds a package and runs a debugger): SIDE_DEBUGGER_TESTS=1.
 @MainActor
 final class LLDBDAPTests: XCTestCase {
+    /// Attach (SIDE_RFC_DEBUGGER.md, step 4): a running program, waiting on its input, paused
+    /// and shown where it waits.
+    func testAttachesToARunningProgramAndPausesIt() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_DEBUGGER_TESTS"] == "1", "set SIDE_DEBUGGER_TESTS=1 (TEST_RUNNER_SIDE_DEBUGGER_TESTS=1)")
+        let adapter = try XCTUnwrap(DebugLaunch.lldbDAP(), "no lldb-dap")
+        // A program of the test's own that waits on its input (a system one, like cat, is
+        // protected: macOS lets no debugger attach to it).
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("side-attach-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        // It sleeps in a loop: attaching interrupts a system call, and a read would take that for its end.
+        try "#include <unistd.h>\nint main(void) { for (;;) sleep(1); }\n"
+            .write(to: folder.appendingPathComponent("wait.c"), atomically: true, encoding: .utf8)
+        let (status, log) = await DebugSession.run("cc -g -o wait wait.c", in: folder.path)
+        XCTAssertEqual(status, 0, log)
+        let program = Process()
+        program.executableURL = folder.appendingPathComponent("wait")
+        let input = Pipe()
+        program.standardInput = input
+        program.standardOutput = FileHandle.nullDevice
+        try program.run()
+        defer { program.terminate() }
+        let store = BreakpointStore(project: FileManager.default.temporaryDirectory, defaults: UserDefaults(suiteName: "side.tests.attach.\(UUID().uuidString)")!)
+        let configuration = DebugConfiguration(name: "cat", request: "attach", launchArguments: ["pid": .int(Int(program.processIdentifier))],
+                                               directory: FileManager.default.temporaryDirectory.path)
+        let session = DebugSession(configuration: configuration, adapter: adapter, breakpoints: store)
+        let running = expectation(description: "running")
+        let stopped = expectation(description: "stopped")
+        var sawRunning = false, sawStopped = false
+        session.onChange = {
+            if case .running = session.state, !sawRunning { sawRunning = true; running.fulfill() }
+            if case .stopped = session.state, !sawStopped { sawStopped = true; stopped.fulfill() }
+        }
+        await session.start()
+        await fulfillment(of: [running], timeout: 60)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        session.pause()
+        await fulfillment(of: [stopped], timeout: 30)
+        XCTAssertFalse(session.frames.isEmpty)
+        XCTAssertTrue(session.frames.contains { $0.name.contains("sleep") || $0.name.contains("main") }, session.frames.map(\.name).joined(separator: ", "))
+        session.stop()
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertFalse(session.isActive)
+        XCTAssertTrue(program.isRunning, "stopping an attached session lets the program go on")
+        try input.fileHandleForWriting.close()   // held open until here: the program waits on it
+    }
+
     func testDebugsASwiftPackage() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_DEBUGGER_TESTS"] == "1", "set SIDE_DEBUGGER_TESTS=1 (TEST_RUNNER_SIDE_DEBUGGER_TESTS=1) to debug a real package")
         let adapter = try XCTUnwrap(DebugLaunch.lldbDAP(), "no lldb-dap")

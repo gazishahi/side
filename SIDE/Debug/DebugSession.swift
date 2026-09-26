@@ -455,7 +455,15 @@ final class DebugSession {
         case "stopped":
             let threadID = object["threadId"] as? Int ?? threads.first?.id ?? 1
             let reason = object["reason"] as? String ?? "pause"
-            let text = object["text"] as? String ?? object["description"] as? String
+            var text = object["text"] as? String ?? object["description"] as? String
+            // Pausing an attached process stops it with SIGSTOP, which lldb reports as a signal.
+            if text?.contains("SIGSTOP") == true { text = nil }
+            // A breakpoint that was hit is placed, whatever an earlier event said (lldb-dap
+            // reports one unverified while the program's modules load, then stops at it).
+            for id in object["hitBreakpointIds"] as? [Int] ?? [] {
+                guard let placed = placedBreakpoints[id] else { continue }
+                breakpoints.verified(path: placed.path, lines: [(requested: placed.line, actual: placed.line, verified: true)])
+            }
             onStopEvent?()
             Task { await stopped(threadID: threadID, reason: reason, text: text) }
         case "continued":
@@ -607,8 +615,14 @@ final class DebugSession {
 
     func pause() {
         guard let client, case .running = state else { return }
-        let thread = threads.first?.id ?? 1
-        Task { _ = try? await client.request("pause", ["threadId": .int(thread)]) }
+        Task {
+            // A session that hasn't stopped yet (an attached process) has no threads known.
+            if threads.isEmpty, let reply = try? await client.request("threads"), let list = reply.object?["threads"] as? [[String: Any]] {
+                threads = list.compactMap { t in (t["id"] as? Int).map { DAPThread(id: $0, name: t["name"] as? String ?? "Thread \($0)") } }
+            }
+            guard let thread = threads.first?.id else { return }
+            _ = try? await client.request("pause", ["threadId": .int(thread)])
+        }
     }
 
     private func command(_ name: String) {
@@ -629,7 +643,8 @@ final class DebugSession {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 await client.stop()
             }
-            _ = try? await client.request("disconnect", ["terminateDebuggee": true])
+            // A launched program ends with the session; an attached one is let go, still running.
+            _ = try? await client.request("disconnect", ["terminateDebuggee": .bool(configuration.request != "attach")])
             deadline.cancel()
             await client.stop()
             self.end(nil)

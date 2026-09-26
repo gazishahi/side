@@ -90,7 +90,7 @@ final class DebugBar: NSView {
         case .running: statusLabel.stringValue = "Running \(name)"; stopped = false
         case .stopped(let reason, _, let text):
             // An exception's text says what was thrown; a breakpoint's ("breakpoint 1.1") is noise.
-            statusLabel.stringValue = reason == "exception" ? "Paused: " + (text.flatMap { $0.isEmpty ? nil : $0 } ?? "exception") : DebugBar.describe(reason)
+            statusLabel.stringValue = reason == "exception" ? (text.flatMap { $0.isEmpty ? nil : "Paused: " + $0 } ?? "Paused") : DebugBar.describe(reason)
             stopped = true
         case .ended(let message):
             // The whole message is in the console; the bar says it in a few words.

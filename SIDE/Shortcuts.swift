@@ -158,6 +158,8 @@ enum Shortcuts {
         c("debug.stepOver", "Step Over", .debug, f(6), []),
         c("debug.stepIn", "Step Into", .debug, f(7), []),
         c("debug.stepOut", "Step Out", .debug, f(8), []),
+        c("debug.choose", "Choose What to Debug\u{2026}", .debug, nil),
+        c("debug.attach", "Attach to Process\u{2026}", .debug, nil),
         c("debug.toggleBreakpoint", "Toggle Breakpoint", .debug, "\\"),
 
         c("track.new", "New Track\u{2026}", .track, "t", [.command, .shift]),
