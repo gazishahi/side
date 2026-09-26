@@ -177,6 +177,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let resultsTable = NSTableView()
     /// The file explorer (`FileExplorer`): its own component; Make only hosts it.
     private let explorer = FileExplorer()
+    /// Breakpoints, sessions, the debug bar and inspector (SIDE_RFC_DEBUGGER.md).
+    private(set) lazy var debugger = MakeDebugger(host: self)
+    /// The editor's edges, moved in while the debug inspector is beside it.
+    private var gutterLeading: NSLayoutConstraint?
+    /// What covers the editor's top (the window's top row), and the debug bar below it.
+    private var topObstruction = ChromeHost.rowHeight
+    private var debugTopInset: CGFloat = 0
+    private var minimapTrailing: NSLayoutConstraint?
     private let imageScroll = NSScrollView()
     private let imageView = NSImageView()
     private let csvScroll = NSScrollView()
@@ -545,12 +553,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         [headline, detail, buttonsRow, recentProjectsStack].forEach(emptyState.addArrangedSubview)
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyState)
+        gutterLeading = gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor)
+        minimapTrailing = minimap.trailingAnchor.constraint(equalTo: view.trailingAnchor)
 
         NSLayoutConstraint.activate([
-            gutter.topAnchor.constraint(equalTo: view.topAnchor), gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor), gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: AlloyGutterView.width),
+            gutter.topAnchor.constraint(equalTo: view.topAnchor), gutterLeading!, gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: AlloyGutterView.width),
             editorContainer.topAnchor.constraint(equalTo: view.topAnchor), editorContainer.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorContainer.trailingAnchor.constraint(equalTo: minimap.leadingAnchor), editorContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             // Clear of the top row and the bar: it's a map of the document, not text to read under glass.
-            minimap.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight), minimap.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            minimap.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight), minimapTrailing!,
             imageScroll.topAnchor.constraint(equalTo: view.topAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             csvScroll.topAnchor.constraint(equalTo: view.topAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             markdownPreviewScroll.topAnchor.constraint(equalTo: view.topAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -1537,6 +1547,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         lspManager = makeLanguageServers(root: root)
         focusedRoot = root
         explorer.setRoot(root)
+        debugger.projectChanged(root)
         searchField.placeholderString = "Indexing \(root.lastPathComponent)…"
         projectWatcher = ProjectWatcher(root: root) { [weak self] urls in self?.filesChangedOnDisk(urls) }
     }
@@ -1930,13 +1941,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Tells the file's server it's open, and sends it every edit from then on: an edit reaches
     /// the manager as it happens (nothing copied), and goes out a moment later as just the edit.
     private func announceToLanguageServer(_ url: URL) {
-        guard let lspManager, let tab = openTabs.first(where: { $0.url == url && $0.kind == .text }) else { return }
+        guard let tab = openTabs.first(where: { $0.url == url && $0.kind == .text }) else { return }
         let document = tab.document
         document.onEdits = { [weak self, weak document] edits in
             guard let self, let document, let tab = self.openTabs.first(where: { $0.document === document }) else { return }
             self.lspManager?.edited(url: tab.url, edits: edits, text: document.rope)
+            self.debugger.edited(url: tab.url, edits: edits, text: document.rope)
         }
-        lspManager.opened(url: url, text: document.rope)
+        lspManager?.opened(url: url, text: document.rope)
     }
     private var deferredLanguageServerFlushScheduled = false
 
@@ -1994,6 +2006,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         hideSignatureHelp()
         endHover()
+        debugger.refreshEditor()
         DispatchQueue.main.async { [weak self] in self?.updateCaretPosition() }
         if tab.hasExternalChange { showExternalChangeBanner(for: tab.url) } else { externalChangeBanner.isHidden = true }
 
@@ -4493,6 +4506,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Shortcuts.bind(runMenu.addItem(withTitle: "Rerun Last Command", action: #selector(RunWorkspaceViewController.rerunLastCommand), keyEquivalent: ""), "run.rerun")
         runItem.submenu = runMenu
 
+        // Make's own (SIDE_RFC_DEBUGGER.md): live while Make is on screen.
+        let debugItem = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
+        let debugMenu = NSMenu(title: "Debug")
+        for (index, group) in [[("Start Debugging", #selector(startDebugging(_:)), "debug.start"),
+                                ("Pause or Continue", #selector(pauseOrContinueDebugging(_:)), "debug.pauseContinue"),
+                                ("Stop Debugging", #selector(stopDebugging(_:)), "debug.stop")],
+                               [("Step Over", #selector(debugStepOver(_:)), "debug.stepOver"),
+                                ("Step Into", #selector(debugStepIn(_:)), "debug.stepIn"),
+                                ("Step Out", #selector(debugStepOut(_:)), "debug.stepOut")],
+                               [("Toggle Breakpoint", #selector(toggleBreakpoint(_:)), "debug.toggleBreakpoint")]].enumerated() {
+            if index > 0 { debugMenu.addItem(.separator()) }
+            for (title, selector, id) in group { Shortcuts.bind(debugMenu.addItem(withTitle: title, action: selector, keyEquivalent: ""), id) }
+        }
+        debugItem.submenu = debugMenu
+
         // Same responder-chain pattern as Run above — TracksWorkspaceViewController picks this up
         // while the Tracks stage is active.
         let trackItem = NSMenuItem(title: "Track", action: nil, keyEquivalent: "")
@@ -4528,7 +4556,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         windowItem.submenu = windowMenu
 
-        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(viewItem); main.addItem(editorItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(trackItem); main.addItem(windowItem)
+        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(viewItem); main.addItem(editorItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(debugItem); main.addItem(trackItem); main.addItem(windowItem)
         NSApp.mainMenu = main
         NSApp.windowsMenu = windowMenu
     }
@@ -5022,6 +5050,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 hideQuickOpenPanel()
         explorer.tearDown()
         completionPopup.hide()
+        debugger.stop()
         lspManager?.prepareForClose()
     }
 }
@@ -5444,6 +5473,65 @@ extension MakeWorkspaceViewController: EditorEngineDelegate {
     func editor(_ engine: EditorEngine, clickedDiagnostic severity: LSPDiagnosticSeverity, line: Int, event: NSEvent) {
         showDiagnosticMenu(line: line, severity: severity, event: event)
     }
+
+    func editor(_ engine: EditorEngine, clickedLineNumber line: Int, event: NSEvent) {
+        debugger.lineNumberClicked(line, event: event)
+    }
+}
+
+// MARK: - Debugging (SIDE_RFC_DEBUGGER.md)
+
+extension MakeWorkspaceViewController: MakeDebuggerHost {
+    var debugProjectRoot: URL? { focusedRoot }
+    var debugHostView: NSView { view }
+
+    var debugCurrentFile: URL? {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text, !openTabs[index].isUntitled else { return nil }
+        return openTabs[index].url
+    }
+
+    func debugReveal(_ url: URL, line: Int) {
+        // The adapter's paths are real ones (/private/tmp); the project's may not be (/tmp).
+        let real = realPath(url.path)
+        var target = url
+        if let tab = openTabs.first(where: { realPath($0.url.path) == real }) {
+            target = tab.url
+        } else if let root = focusedRoot?.path, case let realRoot = realPath(root), real.hasPrefix(realRoot + "/") {
+            target = URL(fileURLWithPath: root + real.dropFirst(realRoot.count))
+        }
+        let show = { [weak self] (center: Bool) in
+            guard let self, self.debugCurrentFile?.standardizedFileURL == target.standardizedFileURL, let document = self.editor.document else { return }
+            let rope = document.rope
+            guard line < rope.lineCount else { return }
+            let range = NSRange(location: rope.offset(ofLine: line), length: 0)
+            self.editor.selectedRange = range
+            // Arriving in a file centers the line; a step within one only scrolls if it must.
+            center ? self.editor.centerRange(range) : self.editor.scrollRangeToVisible(range)
+        }
+        if debugCurrentFile?.standardizedFileURL == target.standardizedFileURL { return show(false) }
+        open(target) { show(true) }
+    }
+
+    func debugSetInsets(inspector width: CGFloat, leading: Bool, bar height: CGFloat) {
+        gutterLeading?.constant = leading ? width : 0
+        minimapTrailing?.constant = leading ? 0 : -width
+        guard height != debugTopInset else { return }
+        // The text moves down by the bar, so nothing starts hidden under it.
+        var origin = editorScroll.contentView.bounds.origin
+        origin.y -= height - debugTopInset
+        debugTopInset = height
+        editorScroll.contentInsets.top = topObstruction + height
+        editorScroll.contentView.scroll(to: editorScroll.contentView.constrainBoundsRect(NSRect(origin: origin, size: editorScroll.contentView.bounds.size)).origin)
+        editorScroll.reflectScrolledClipView(editorScroll.contentView)
+    }
+
+    @objc func startDebugging(_ sender: Any?) { debugger.start() }
+    @objc func pauseOrContinueDebugging(_ sender: Any?) { debugger.pauseOrContinue() }
+    @objc func stopDebugging(_ sender: Any?) { debugger.stop() }
+    @objc func debugStepOver(_ sender: Any?) { debugger.stepOver() }
+    @objc func debugStepIn(_ sender: Any?) { debugger.stepIn() }
+    @objc func debugStepOut(_ sender: Any?) { debugger.stepOut() }
+    @objc func toggleBreakpoint(_ sender: Any?) { debugger.toggleBreakpointAtCaret() }
 }
 
 extension MakeWorkspaceViewController: StageChromeProviding {
@@ -5460,15 +5548,16 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         minimapBottom?.constant = -inset
         for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
             scroll.automaticallyAdjustsContentInsets = false
-            scroll.contentInsets = NSEdgeInsets(top: ChromeHost.rowHeight, left: 0, bottom: inset, right: 0)
+            scroll.contentInsets = NSEdgeInsets(top: topObstruction + (scroll === editorScroll ? debugTopInset : 0), left: 0, bottom: inset, right: 0)
         }
     }
 
     func setTopObstruction(_ height: CGFloat) {
         loadViewIfNeeded()
+        topObstruction = height
         for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
             scroll.automaticallyAdjustsContentInsets = false
-            scroll.contentInsets.top = height
+            scroll.contentInsets.top = height + (scroll === editorScroll ? debugTopInset : 0)
         }
     }
 
@@ -5618,8 +5707,19 @@ final class LSPStatusChip: NSButton {
 extension MakeWorkspaceViewController: NSMenuItemValidation {
     /// Show Minimap carries a checkmark; everything else is as the responder chain decides.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(toggleMinimap(_:)) {
+        switch item.action {
+        case #selector(toggleMinimap(_:)):
             item.state = EditorPreferences.minimapShown ? .on : .off
+        case #selector(startDebugging(_:)):
+            return focusedRoot != nil && !(debugger.isActive && !debugger.isStopped)
+        case #selector(pauseOrContinueDebugging(_:)), #selector(stopDebugging(_:)):
+            return debugger.isActive
+        case #selector(debugStepOver(_:)), #selector(debugStepIn(_:)), #selector(debugStepOut(_:)):
+            return debugger.isStopped
+        case #selector(toggleBreakpoint(_:)):
+            return debugCurrentFile != nil
+        default:
+            break
         }
         return true
     }

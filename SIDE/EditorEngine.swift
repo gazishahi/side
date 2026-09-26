@@ -54,6 +54,10 @@ protocol EditorEngine: AnyObject, Sendable {
     // The gutter's marks, keyed by one-based line.
     var lineDiffMarks: [Int: GitDiffMark] { get set }
     var lineDiagnostics: [Int: LSPDiagnosticSeverity] { get set }
+    /// Breakpoints on the line numbers: enabled, and whether the debugger could place them.
+    var lineBreakpoints: [Int: (enabled: Bool, verified: Bool)] { get set }
+    /// The line (zero-based) a debugged program is stopped on: tinted across the editor.
+    var stoppedLine: Int? { get set }
     func invalidateGutter()
     /// Redraws what depends on the selection (the current-line band).
     func setNeedsDisplay()
@@ -121,6 +125,8 @@ protocol EditorEngineDelegate: AnyObject {
     func editor(_ engine: EditorEngine, definitionRequestedAt characterIndex: Int)
     func editor(_ engine: EditorEngine, clickedDiffMark mark: GitDiffMark, line: Int, event: NSEvent)
     func editor(_ engine: EditorEngine, clickedDiagnostic severity: LSPDiagnosticSeverity, line: Int, event: NSEvent)
+    /// A click on a line's number (one-based): a breakpoint.
+    func editor(_ engine: EditorEngine, clickedLineNumber line: Int, event: NSEvent)
     /// The pointer over the text: the character under it (nil if none) and the keys held.
     func editor(_ engine: EditorEngine, pointerAt characterIndex: Int?, modifiers: NSEvent.ModifierFlags)
     /// The pointer left the text, or the text scrolled under it.
@@ -133,4 +139,5 @@ extension EditorEngineDelegate {
     func editor(_ engine: EditorEngine, pointerAt characterIndex: Int?, modifiers: NSEvent.ModifierFlags) {}
     func editorPointerExited(_ engine: EditorEngine) {}
     func editor(_ engine: EditorEngine, commandClickedAt characterIndex: Int) -> Bool { false }
+    func editor(_ engine: EditorEngine, clickedLineNumber line: Int, event: NSEvent) {}
 }

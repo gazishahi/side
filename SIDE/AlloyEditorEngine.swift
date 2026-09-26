@@ -43,6 +43,10 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         }
         view.onEffectiveAppearanceChange = { [weak self] in self?.applyAppearance(fontChanged: false) }
         view.gutter.onClick = { [weak self] line, event in self?.gutterClicked(line: line, event: event) }
+        view.gutter.onNumberClick = { [weak self] line, event in
+            guard let self else { return }
+            self.delegate?.editor(self, clickedLineNumber: line, event: event)
+        }
         view.onPointerMove = { [weak self] offset, modifiers in
             guard let self else { return }
             self.delegate?.editor(self, pointerAt: offset, modifiers: modifiers)
@@ -213,8 +217,25 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     var lineDiffMarks: [Int: GitDiffMark] = [:] { didSet { refreshGutter() } }
     var lineDiagnostics: [Int: LSPDiagnosticSeverity] = [:] { didSet { refreshGutter() } }
 
+    var lineBreakpoints: [Int: (enabled: Bool, verified: Bool)] = [:] { didSet { refreshGutter() } }
+
+    var stoppedLine: Int? {
+        didSet {
+            guard stoppedLine != oldValue else { return }
+            if let line = stoppedLine {
+                let tint = components(DS.Color.statusVerified.withAlphaComponent(0.22))
+                view.lineBackground = { $0 == line ? tint : nil }
+            } else {
+                view.lineBackground = nil
+            }
+        }
+    }
+
     private func refreshGutter() {
         var marks: [Int: [GutterMark]] = [:]
+        for (line, breakpoint) in lineBreakpoints {
+            marks[line, default: []].append(GutterMark(style: .breakpoint(enabled: breakpoint.enabled, verified: breakpoint.verified), color: .systemBlue))
+        }
         for (line, mark) in lineDiffMarks {
             switch mark {
             case .added: marks[line, default: []].append(GutterMark(style: .bar, color: DS.Color.statusVerified))

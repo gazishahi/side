@@ -65,7 +65,7 @@ struct KeyChord: Equatable, Hashable, Codable {
 enum Shortcuts {
     enum Area: String, CaseIterable {
         case app = "Side", file = "File", edit = "Edit", find = "Find", view = "View", navigate = "Navigate"
-        case tabs = "Tabs", stages = "Stages", run = "Run", track = "Tracks", window = "Window"
+        case tabs = "Tabs", stages = "Stages", run = "Run", debug = "Debug", track = "Tracks", window = "Window"
         case editor = "Editor", think = "Think", review = "Review", palette = "Palette"
     }
 
@@ -151,6 +151,14 @@ enum Shortcuts {
         c("run.stop", "Stop", .run, "."),
         c("run.restart", "Restart Terminal", .run, "r", [.command, .shift]),
         c("run.rerun", "Rerun Last Command", .run, nil),
+
+        c("debug.start", "Start Debugging", .debug, "r"),
+        c("debug.pauseContinue", "Pause or Continue", .debug, "y", [.command, .control]),
+        c("debug.stop", "Stop Debugging", .debug, ".", [.command, .shift]),
+        c("debug.stepOver", "Step Over", .debug, f(6), []),
+        c("debug.stepIn", "Step Into", .debug, f(7), []),
+        c("debug.stepOut", "Step Out", .debug, f(8), []),
+        c("debug.toggleBreakpoint", "Toggle Breakpoint", .debug, "\\"),
 
         c("track.new", "New Track\u{2026}", .track, "t", [.command, .shift]),
         c("track.switch", "Switch Track\u{2026}", .track, "t", [.command, .control]),
@@ -276,6 +284,9 @@ enum Shortcuts {
             "editor.rename": KeyChord(f(2), []),
             "editor.quickFix": KeyChord("."), "run.stop": KeyChord(".", [.command, .option]),
             "editor.joinLines": KeyChord("j", .control),
+            "debug.start": KeyChord(f(5), []), "debug.pauseContinue": KeyChord(f(6), []), "debug.stop": KeyChord(f(5), .shift),
+            "debug.stepOver": KeyChord(f(10), []), "debug.stepIn": KeyChord(f(11), []), "debug.stepOut": KeyChord(f(11), .shift),
+            "debug.toggleBreakpoint": KeyChord(f(9), []),
         ],
         .jetbrains: [
             "editor.moveLineUp": KeyChord(up, [.option, .shift]), "editor.moveLineDown": KeyChord(down, [.option, .shift]),
@@ -288,6 +299,9 @@ enum Shortcuts {
             "editor.rename": KeyChord(f(6), .shift), "editor.format": KeyChord("l", [.command, .option]),
             "editor.quickFix": KeyChord("\r", .option), "editor.quickHelp": KeyChord(f(1), []),
             "navigate.goToSymbol": KeyChord("o", [.command, .option]), "navigate.quickOpen": KeyChord("o", [.command, .shift]),
+            "debug.start": KeyChord("d", .control), "debug.pauseContinue": KeyChord("r", [.command, .option]), "debug.stop": KeyChord(f(2)),
+            "debug.stepOver": KeyChord(f(8), []), "debug.stepIn": KeyChord(f(7), []), "debug.stepOut": KeyChord(f(8), .shift),
+            "debug.toggleBreakpoint": KeyChord(f(8)),
         ],
     ]
 

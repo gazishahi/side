@@ -3,7 +3,8 @@
 *2026-09-26. Status: **accepted**: the owner answered on 2026-09-26. The debugger lives in Make;
 a breakpoint is a click on the line number; a project's `.vscode/launch.json` is read, with
 consent; agents get read-only access first. Q4, the first languages, took the recommendation
-(default). The build order is the plan below.*
+(default). The build order is the plan below. Step 1 is built.*
+Symbols: `DAPClient`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `MakeDebugger`, `DebugBar`, `DebugInspector`.
 *Companion to `SIDE_RFC_IDE_ESSENTIALS.md` (the language-server client this mirrors, and
 Settings → Languages, which gains a debugger per language) and `SIDE_RFC_ALLOY.md` (the gutter
 and line tints the debugger draws with).*
@@ -137,3 +138,79 @@ Side can write, check, navigate and run code, but it can't pause it. Today:
 
 Later: data breakpoints, disassembly and memory views, multiple concurrent sessions, and remote
 debugging with the mobile rollout.
+
+## Built
+
+**Step 1, 2026-09-26.**
+
+- **The client** (`DAPClient`): an actor on the LSP transport (`Content-Length` framing),
+  requests paired by `request_seq`, events handed on, reverse requests refused until step 2
+  offers them. `SIDE_DAP_LOG=<file>` writes every message both ways, for diagnosing an adapter.
+- **A session** (`DebugSession`):
+  - `initialize`, then `launch` (not awaited: an adapter may answer it only after
+    `configurationDone`), and on `initialized` every file's breakpoints,
+    `setExceptionBreakpoints` (none yet) and `configurationDone`.
+  - On `stopped`: `threads`, then `stackTrace` (60 frames). The frame shown is the first with
+    source that isn't marked subtle, so a stop inside a library shows where the program called it.
+  - Scopes and variables are fetched when shown; an array over 200 elements opens 200 at a time,
+    with a row for the rest.
+  - Continue, pause, step over, into and out, restart (built again first) and stop
+    (`disconnect` with `terminateDebuggee`). Nothing polls: a paused session has no timers.
+  - Paths sent to the adapter are real paths (`realPath`, not Foundation's
+    `resolvingSymlinksInPath`, which strips `/private` again). A project opened through a symlink
+    (`/tmp`, `/var`) otherwise got breakpoints lldb never bound.
+- **Breakpoints** (`BreakpointStore`):
+  - They're kept per project in preferences. A change reaches the gutter at once; the write to
+    preferences is coalesced per run-loop turn.
+  - They follow edits. The text before a keystroke is rebuilt from the edits' inverses (no copy
+    kept), and breakpoints below a change in line count move by it. One inside removed lines
+    goes to where the removal started, and two that meet become one.
+  - The adapter's reply marks each as verified or not, and moves one the adapter placed on
+    another line.
+- **Launching** (`DebugLaunch`): the Swift package's executable products (from
+  `swift package describe`). With more than one, Side asks which and remembers it per project.
+  The product is built with `swift build --product`, its output going to the session's output.
+  lldb-dap comes from `xcrun --find`.
+- **The gutter** (Alloy): `GutterMark.Style.breakpoint(enabled:verified:)` draws Xcode's tag
+  behind the number: filled when verified, hollow when not, faded when disabled.
+  `AlloyGutterView.onNumberClick` takes clicks and right-clicks on the numbers; the marks' column
+  keeps its own clicks.
+- **In Make** (`MakeDebugger`):
+  - A click on a number toggles a breakpoint; ⌘\ toggles at the caret.
+  - A right-click offers Disable/Enable, Delete, and Delete All.
+  - A Debug menu: Start (⌘R; it also continues a paused session), Pause or Continue (⌃⌘Y), Stop
+    (⇧⌘.), Step Over, Into and Out (F6, F7, F8), and Toggle Breakpoint. The VS Code and
+    JetBrains keymaps get their own keys (F5, F6, ⇧F5, F10, F11, ⇧F11, F9; ⌃D, ⌥⌘R, ⌘F2, F8, F7,
+    ⇧F8, ⌘F8).
+  - The debug bar is glass over the editor's top edge, and the editor's text moves down by its
+    height while it's there.
+  - The inspector holds the call stack, variables, breakpoints and output. It sits in the file
+    explorer's slot on the explorer's side, and the editor narrows beside it.
+  - The stopped line is tinted.
+  - Arriving in another file centers the line; a step within one file only scrolls if the line
+    isn't visible.
+  - A session that ends quietly clears the bar and inspector after 1.5 s. One that ends with a
+    message (a failed build) stays until Stop.
+
+Tests (`DebuggerTests.swift`):
+
+- The store: toggling and keeping, following edits (typing, lines above, a newline at a line's
+  end, deletions), and the adapter's answers.
+- A fake adapter over stdio (Python) for a whole session: the handshake's order, breakpoints
+  moved and unplaced, the stop's frame, variables and paging, a step, and the end.
+- The inspector paging a 100,000-element array.
+- The package description's executables and the build command's quoting.
+- Opt-in (`SIDE_DEBUGGER_TESTS=1`): lldb-dap on a real Swift package. The test builds it, stops
+  in `square`, reads `result`, and runs to its output.
+- Measured against D6:
+  - following an edit with 1,000 breakpoints ≤ 1 ms: it was 1.1 ms until the preferences write
+    was coalesced;
+  - the first page of a 100,000-element array ≤ 30 ms of Side's work.
+
+  Both go into `Budgets.table` in step 5.
+
+Checked in Side on a Swift package (a `Point` distance loop): clicked breakpoints, ⌘R built and
+stopped at line 9, with the line tinted, the stack (`distance(_:_:)`, `DebugDemo_main`) and locals
+(`a`, `b`, `dx 1`, `dy 2`). Step Over returned to line 15 in the caller. Stop left no lldb-dap
+or program running. The right-click menu disabled a breakpoint (faded), and ⌘\ added one at
+the caret.
