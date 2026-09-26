@@ -16,6 +16,16 @@ protocol MakeDebuggerHost: AnyObject {
     func debugSetInsets(inspector width: CGFloat, leading: Bool, bar height: CGFloat)
 }
 
+/// A Run tab the program reads and writes: its terminal's device, and a way to end the tab's
+/// holder process when the session does.
+struct DebugProgramTerminal {
+    let tty: String
+    /// The session ended: the tab stays, with what the program wrote.
+    let end: () -> Void
+    /// A new session replaces it: the tab goes.
+    let close: () -> Void
+}
+
 /// Debugging in Make (SIDE_RFC_DEBUGGER.md): the project's breakpoints in the gutter, a session,
 /// the debug bar over the editor and the inspector in the explorer's place.
 @MainActor
@@ -37,6 +47,11 @@ final class MakeDebugger {
     /// budget test.
     private(set) var lastStopShownIn: TimeInterval?
     private var stopStarted: CFAbsoluteTime?
+    /// Opens a Run tab for the program (the shell provides it: Run's terminals are its own).
+    /// Arguments: the tab's title and directory.
+    var openProgramTerminal: ((String, String) -> DebugProgramTerminal?)?
+    private var programTerminal: DebugProgramTerminal?
+    private var watches: [DebugWatch] = []
 
     init(host: MakeDebuggerHost) {
         self.host = host
@@ -47,6 +62,7 @@ final class MakeDebugger {
     func projectChanged(_ root: URL?) {
         session?.stop()
         breakpoints = root.map { BreakpointStore(project: $0) }
+        watches = (breakpoints?.watches ?? []).map { DebugWatch(expression: $0) }
         refreshEditor()
     }
 
@@ -83,6 +99,7 @@ final class MakeDebugger {
         guard let breakpoints, let view = host?.editor.gutterView else { return }
         let menu = NSMenu()
         if let breakpoint = breakpoints.breakpoints(in: path).first(where: { $0.line == line }) {
+            menu.addItem(ClosureItem("Edit Breakpoint\u{2026}") { [weak self] in self?.editBreakpoint(path: path, line: line, near: nil) })
             menu.addItem(ClosureItem(breakpoint.enabled ? "Disable Breakpoint" : "Enable Breakpoint") { [weak self] in
                 breakpoints.setEnabled(!breakpoint.enabled, path: path, line: line)
                 self?.resend(path)
@@ -103,6 +120,32 @@ final class MakeDebugger {
             })
         }
         NSMenu.popUpContextMenu(menu, with: event, for: view)
+    }
+
+    /// The condition, hit count and log message, in a popover by the line (or by a row of the
+    /// inspector's list).
+    func editBreakpoint(path: String, line: Int, near anchor: NSView?) {
+        guard let breakpoints, let breakpoint = breakpoints.breakpoints(in: path).first(where: { $0.line == line }), let host else { return }
+        let editor = BreakpointEditor(breakpoint)
+        editor.onDone = { [weak self] condition, hits, log in
+            breakpoints.setOptions(path: path, line: line, condition: condition, hitCondition: hits, logMessage: log)
+            self?.resend(path)
+        }
+        let popover = NSPopover()
+        popover.contentViewController = editor
+        popover.behavior = .transient
+        editor.popover = popover
+        if let anchor {
+            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxX)
+        } else if host.debugCurrentFile?.standardizedFileURL.path == path, let document = host.editor.document, line < document.rope.lineCount {
+            let offset = document.rope.offset(ofLine: line)
+            let text = host.editor.rect(forCharacterRange: NSRange(location: offset, length: 0))
+            let gutter = host.editor.gutterView
+            let inGutter = gutter.convert(text, from: host.editor.textView)
+            let rect = NSRect(x: gutter.bounds.midX - 8, y: inGutter.minY, width: 16, height: max(inGutter.height, 14))
+            popover.show(relativeTo: rect, of: gutter, preferredEdge: .maxX)
+        }
+        editor.view.window?.makeFirstResponder(editor.condition)
     }
 
     /// Edits to an open file: its breakpoints follow them.
@@ -187,6 +230,14 @@ final class MakeDebugger {
     /// Runs a configuration under an adapter (tests start sessions this way too).
     func launch(_ configuration: DebugConfiguration, adapter: URL, adapterArguments: [String] = []) {
         guard let breakpoints else { return }
+        var configuration = configuration
+        // The program's own terminal, a Run tab (the last session's is ended and replaced).
+        programTerminal?.close()
+        programTerminal = nil
+        if configuration.terminal == nil, let terminal = openProgramTerminal?(configuration.name, configuration.directory) {
+            programTerminal = terminal
+            configuration.terminal = terminal.tty
+        }
         self.configuration = configuration
         self.adapter = (adapter, adapterArguments)
         let session = DebugSession(configuration: configuration, adapter: adapter, adapterArguments: adapterArguments, breakpoints: breakpoints)
@@ -196,15 +247,18 @@ final class MakeDebugger {
             self.sessionChanged(session)
         }
         session.onStopEvent = { [weak self] in self?.stopStarted = CFAbsoluteTimeGetCurrent() }
-        session.onOutput = { [weak self, weak session] in
+        session.onOutput = { [weak self, weak session] text, fromProgram in
             guard let self, let session, session === self.session else { return }
-            self.inspector.show(output: session.output)
+            self.inspector.append(output: text, style: fromProgram ? .program : .adapter)
         }
         showUI()
         inspector.show(frames: [], selected: 0)
         inspector.clearVariables(placeholder: "Not paused")
         inspector.show(breakpoints: breakpoints.all)
         inspector.show(output: "")
+        inspector.show(exceptionFilters: [])
+        watches = watches.map { DebugWatch(expression: $0.expression) }
+        inspector.show(watches: watches)
         sessionChanged(session)
         Task { await session.start() }
     }
@@ -231,12 +285,15 @@ final class MakeDebugger {
         session.onStopEvent = nil
         session.stop()
         self.session = nil
-        launch(configuration, adapter: adapter.url, adapterArguments: adapter.arguments)
+        var again = configuration
+        again.terminal = nil
+        launch(again, adapter: adapter.url, adapterArguments: adapter.arguments)
     }
 
     private func sessionChanged(_ session: DebugSession) {
         bar.show(session.state, name: session.configuration.name)
         hideAfterEnd?.cancel()
+        showExceptionFilters(session)
         switch session.state {
         case .stopped:
             inspector.show(frames: session.frames, selected: session.selectedFrame)
@@ -244,10 +301,14 @@ final class MakeDebugger {
         case .running, .starting, .building:
             inspector.show(frames: [], selected: 0)
             inspector.clearVariables(placeholder: "Running")
+            watches = watches.map { DebugWatch(expression: $0.expression) }
+            inspector.show(watches: watches)
             refreshEditor()
         case .ended(let message):
             inspector.show(frames: [], selected: 0)
             inspector.clearVariables(placeholder: "Ended")
+            // Ended, not closed: the tab keeps what the program wrote until the next session.
+            programTerminal?.end()
             refreshEditor()
             // A session that ended quietly clears away; one with something to say stays until
             // closed (the bar's stop).
@@ -277,6 +338,94 @@ final class MakeDebugger {
             guard generation == self.stopGeneration, session.isStopped else { return }
             self.inspector.show(scopes: scopes)
         }
+        evaluateWatches(session, generation: generation)
+    }
+
+    // MARK: Watches, the console, hovering, exceptions
+
+    /// Every watch again, in the selected frame (D5: on each stop).
+    private func evaluateWatches(_ session: DebugSession, generation: Int) {
+        guard !watches.isEmpty else { return }
+        let expressions = watches.map(\.expression)
+        Task {
+            var results: [DebugWatch] = []
+            for expression in expressions {
+                switch await session.evaluate(expression, context: "watch") {
+                case .success(let value): results.append(DebugWatch(expression: expression, value: value.result))
+                case .failure(let error): results.append(DebugWatch(expression: expression, value: Self.message(error), failed: true))
+                }
+            }
+            guard generation == self.stopGeneration, session.isStopped, results.map(\.expression) == self.watches.map(\.expression) else { return }
+            self.watches = results
+            self.inspector.show(watches: results)
+        }
+    }
+
+    func addWatch(_ expression: String) {
+        watches.append(DebugWatch(expression: expression))
+        breakpoints?.watches = watches.map(\.expression)
+        inspector.show(watches: watches)
+        if let session, session.isStopped { evaluateWatches(session, generation: stopGeneration) }
+    }
+
+    func removeWatch(at index: Int) {
+        guard watches.indices.contains(index) else { return }
+        watches.remove(at: index)
+        breakpoints?.watches = watches.map(\.expression)
+        inspector.show(watches: watches)
+    }
+
+    /// The console: an expression in the paused frame (lldb commands too, as lldb-dap takes them).
+    func evaluateInConsole(_ expression: String) {
+        inspector.append(output: "\u{203A} \(expression)\n", style: .input)
+        guard let session, session.isActive else { return inspector.append(output: "Not debugging.\n", style: .error) }
+        Task {
+            switch await session.evaluate(expression, context: "repl") {
+            case .success(let value): self.inspector.append(output: value.result + (value.result.hasSuffix("\n") ? "" : "\n"))
+            case .failure(let error): self.inspector.append(output: Self.message(error) + "\n", style: .error)
+            }
+        }
+    }
+
+    /// Hovering an expression while paused: its value, or nil (the hover falls back to the
+    /// language server's).
+    func hoverValue(_ expression: String) async -> String? {
+        guard let session, session.isStopped else { return nil }
+        guard case .success(let value) = await session.evaluate(expression, context: "hover"), !value.result.isEmpty else { return nil }
+        return value.result
+    }
+
+    /// One line of an adapter's error: lldb's come with the expression echoed and a caret under
+    /// it ("error: <EXPR>:1:1: cannot find 'a' in scope\na.x\n^").
+    static func message(_ error: DAPClient.DAPError) -> String {
+        guard case .failed(_, let message) = error else { return error.localizedDescription }
+        let lines = message.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard var line = lines.first(where: { $0.contains("error:") }) ?? lines.first(where: { !$0.isEmpty && $0 != "^" }) else { return message }
+        if let range = line.range(of: "error:", options: .backwards) { line = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces) }
+        // "<EXPR>:1:1: cannot find…" → "cannot find…"
+        if line.hasPrefix("<"), let colon = line.range(of: ": ") { line = String(line[colon.upperBound...]) }
+        return line.isEmpty ? message : line
+    }
+
+    /// The adapter's exception breakpoints, as the session knows them.
+    private func showExceptionFilters(_ session: DebugSession) {
+        let enabled = session.enabledExceptionFilters
+        // The file's own language's first (Swift's in a Swift package), then the rest.
+        let language = host?.debugCurrentFile?.pathExtension.lowercased() == "swift" ? "swift" : ""
+        let filters = session.exceptionFilters.enumerated().sorted { a, b in
+            let aFirst = !language.isEmpty && a.element.id.hasPrefix(language), bFirst = !language.isEmpty && b.element.id.hasPrefix(language)
+            return aFirst != bFirst ? aFirst : a.offset < b.offset
+        }.map(\.element)
+        inspector.show(exceptionFilters: filters.map { ($0, enabled.contains($0.id)) })
+    }
+
+    func setExceptionFilter(_ id: String, enabled: Bool) {
+        guard let session, let breakpoints else { return }
+        var set = session.enabledExceptionFilters
+        if enabled { set.insert(id) } else { set.remove(id) }
+        breakpoints.exceptionFilters = set
+        showExceptionFilters(session)
+        if session.isActive { Task { await session.sendExceptionBreakpoints() } }
     }
 
     // MARK: The bar and the inspector
@@ -309,6 +458,15 @@ final class MakeDebugger {
                 self?.breakpoints?.remove(path: path, line: line)
                 self?.resend(path)
             }
+            inspector.onToggleBreakpoint = { [weak self] path, line, enabled in
+                self?.breakpoints?.setEnabled(enabled, path: path, line: line)
+                self?.resend(path)
+            }
+            inspector.onEditBreakpoint = { [weak self] path, line, anchor in self?.editBreakpoint(path: path, line: line, near: anchor) }
+            inspector.onExceptionFilter = { [weak self] id, enabled in self?.setExceptionFilter(id, enabled: enabled) }
+            inspector.onAddWatch = { [weak self] expression in self?.addWatch(expression) }
+            inspector.onRemoveWatch = { [weak self] index in self?.removeWatch(at: index) }
+            inspector.onEvaluate = { [weak self] expression in self?.evaluateInConsole(expression) }
         }
         if bar.superview !== view {
             view.addSubview(bar)

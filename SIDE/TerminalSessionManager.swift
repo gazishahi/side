@@ -137,10 +137,10 @@ final class TerminalSessionManager {
     /// A tab that runs one program instead of a shell — an outside agent's `terminal/create`.
     /// Appended to the track's list, not selected: it's visible and interruptible without taking
     /// the tab the user was looking at.
-    func makeCommandSession(forTrackKey key: String, launch: TerminalViewController.CommandLaunch, directory: String) -> TerminalSession {
+    func makeCommandSession(forTrackKey key: String, launch: TerminalViewController.CommandLaunch, directory: String, label: String? = nil) -> TerminalSession {
         let session = makeSession(forTrackKey: key, inDirectory: directory)
         session.viewController.commandLaunch = launch
-        session.label = ([ (launch.command as NSString).lastPathComponent ] + launch.arguments.prefix(2)).joined(separator: " ")
+        session.label = label ?? ([ (launch.command as NSString).lastPathComponent ] + launch.arguments.prefix(2)).joined(separator: " ")
         session.viewController.loadViewIfNeeded()
         var list = sessions(forTrackKey: key)
         list.append(session)

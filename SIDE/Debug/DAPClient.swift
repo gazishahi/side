@@ -20,15 +20,20 @@ actor DAPClient {
     private var pending: [Int: (command: String, reply: @Sendable (Result<LSPResult, DAPError>) -> Void)] = [:]
     private var onEvent: (@Sendable (String, LSPResult) -> Void)?
     private var onTerminate: (@Sendable () -> Void)?
+    /// The adapter asking the client (`runInTerminal`): the reply's body, or an error message.
+    typealias ReverseRequestHandler = @Sendable (String, LSPResult) async -> Result<LSPValue, DAPError>
+    private var onReverseRequest: ReverseRequestHandler?
     private(set) var isRunning = false
 
     init(executableURL: URL, arguments: [String], environment: [String: String]?, currentDirectory: URL?) {
         transport = JSONRPCTransport(executableURL: executableURL, arguments: arguments, environment: environment, currentDirectory: currentDirectory)
     }
 
-    func setHandlers(onEvent: @escaping @Sendable (String, LSPResult) -> Void, onTerminate: @escaping @Sendable () -> Void) {
+    func setHandlers(onEvent: @escaping @Sendable (String, LSPResult) -> Void, onTerminate: @escaping @Sendable () -> Void,
+                     onReverseRequest: ReverseRequestHandler? = nil) {
         self.onEvent = onEvent
         self.onTerminate = onTerminate
+        self.onReverseRequest = onReverseRequest
     }
 
     func start() async throws {
@@ -97,16 +102,29 @@ actor DAPClient {
             guard let event = object["event"] as? String else { return }
             onEvent?(event, LSPResult(value: object["body"] ?? [String: Any]()))
         case "request":
-            // The adapter asking the client (`runInTerminal`, `startDebugging`): not offered in
-            // step 1's capabilities, so refused if asked.
+            // The adapter asking the client (`runInTerminal`); what has no handler is refused.
             guard let seq = object["seq"] as? Int, let command = object["command"] as? String else { return }
-            let reply: LSPValue = ["seq": .int(nextSeq), "type": "response", "request_seq": .int(seq), "command": .string(command),
-                                   "success": false, "message": .string("\(command) isn't supported")]
-            nextSeq += 1
-            if let data = try? JSONEncoder().encode(reply) { Task { await transport.send(data) } }
+            let arguments = LSPResult(value: object["arguments"] ?? [String: Any]())
+            let handler = onReverseRequest
+            Task {
+                let result = await handler?(command, arguments) ?? .failure(.failed(command: command, message: "\(command) isn't supported"))
+                self.answer(seq: seq, command: command, result)
+            }
         default:
             break
         }
+    }
+
+    private func answer(seq: Int, command: String, _ result: Result<LSPValue, DAPError>) {
+        var reply: [String: LSPValue] = ["seq": .int(nextSeq), "type": "response", "request_seq": .int(seq), "command": .string(command)]
+        nextSeq += 1
+        switch result {
+        case .success(let body): reply["success"] = true; reply["body"] = body
+        case .failure(let error): reply["success"] = false; reply["message"] = .string(error.localizedDescription)
+        }
+        guard isRunning, let data = try? JSONEncoder().encode(LSPValue.object(reply)) else { return }
+        Self.log("→ " + String(decoding: data, as: UTF8.self))
+        Task { await transport.send(data) }
     }
 
     private func terminated() {

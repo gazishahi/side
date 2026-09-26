@@ -63,6 +63,29 @@ final class BreakpointStoreTests: XCTestCase {
         XCTAssertEqual(store.breakpoints(in: "/a.swift").map(\.line), [2])
     }
 
+    func testOptionsAreKeptAndDescribed() {
+        let defaults = UserDefaults(suiteName: "side.tests.breakpoints.\(UUID().uuidString)")!
+        let project = URL(fileURLWithPath: "/tmp/project")
+        let store = BreakpointStore(project: project, defaults: defaults)
+        store.toggle(path: "/a.swift", line: 2)
+        store.setOptions(path: "/a.swift", line: 2, condition: "n == 2", hitCondition: ">= 3", logMessage: "  ")
+        store.watches = ["total", "points.count"]
+        store.exceptionFilters = ["swift_throw"]
+        store.persist()
+        let again = BreakpointStore(project: project, defaults: defaults)
+        let breakpoint = try! XCTUnwrap(again.breakpoints(in: "/a.swift").first)
+        XCTAssertEqual(breakpoint.condition, "n == 2")
+        XCTAssertEqual(breakpoint.hitCondition, ">= 3")
+        XCTAssertNil(breakpoint.logMessage, "an empty log message isn't a logpoint")
+        XCTAssertEqual(DebugInspector.describe(breakpoint), "if n == 2, hits >= 3")
+        XCTAssertEqual(again.watches, ["total", "points.count"])
+        XCTAssertEqual(again.exceptionFilters, ["swift_throw"])
+        // Breakpoints kept before options existed still load.
+        let old = try! JSONSerialization.data(withJSONObject: ["/b.swift": [["line": 4, "enabled": false]]])
+        defaults.set(["/tmp/old": old], forKey: "SideBreakpoints")
+        XCTAssertEqual(BreakpointStore(project: URL(fileURLWithPath: "/tmp/old"), defaults: defaults).breakpoints(in: "/b.swift").map(\.enabled), [false])
+    }
+
     func testAdapterAnswersVerifyAndMove() {
         let store = store()
         store.toggle(path: "/a.swift", line: 4)
@@ -98,6 +121,16 @@ final class BreakpointStoreTests: XCTestCase {
     }
 }
 
+@MainActor
+final class DebugMessageTests: XCTestCase {
+    func testAdapterErrorsReadAsOneLine() {
+        XCTAssertEqual(MakeDebugger.message(.failed(command: "evaluate", message: "error: <EXPR>:3:1: cannot find 'a' in scope\na.x * 100\n^")),
+                       "cannot find 'a' in scope")
+        XCTAssertEqual(MakeDebugger.message(.failed(command: "evaluate", message: "error: No value")), "No value")
+        XCTAssertEqual(MakeDebugger.message(.failed(command: "evaluate", message: "not paused")), "not paused")
+    }
+}
+
 final class DebugLaunchTests: XCTestCase {
     func testExecutablesFromThePackageDescription() {
         let description: [String: Any] = ["products": [
@@ -121,6 +154,7 @@ import sys, json, os
 out = os.environ["SIDE_FAKE_DAP_OUT"]
 seq = [0]
 seen = []
+record = {}
 def send(o):
     seq[0] += 1; o["seq"] = seq[0]
     b = json.dumps(o).encode()
@@ -141,8 +175,14 @@ while True:
         k, v = l.split(b":", 1); headers[k.lower()] = int(v)
     m = json.loads(sys.stdin.buffer.read(headers[b"content-length"]))
     c = m["command"]; seen.append(c)
-    with open(out, "w") as f: json.dump({"seen": seen, "last": m.get("arguments")}, f)
-    if c == "initialize": reply(m, {"supportsConfigurationDoneRequest": True})
+    record[c] = m.get("arguments")
+    with open(out, "w") as f: json.dump({"seen": seen, "last": m.get("arguments"), "record": record}, f)
+    if c == "initialize": reply(m, {"supportsConfigurationDoneRequest": True, "exceptionBreakpointFilters": [
+        {"filter": "swift_throw", "label": "Swift Throw", "default": True}, {"filter": "cpp_throw", "label": "C++ Throw", "default": False}]})
+    elif c == "evaluate":
+        e = m["arguments"]["expression"]
+        if e == "nope": reply(m, success=False, message="error: no such thing")
+        else: reply(m, {"result": "%s@%s" % (e, m["arguments"].get("frameId")), "variablesReference": 0})
     elif c == "launch":
         event("initialized")
         event("output", {"category": "stdout", "output": "hello\n"})
@@ -203,6 +243,7 @@ while True:
         let store = BreakpointStore(project: dir, defaults: UserDefaults(suiteName: "side.tests.dap.\(UUID().uuidString)")!)
         store.toggle(path: "/p/main.swift", line: 2)    // line 3 to the adapter: moved to 4
         store.toggle(path: "/p/main.swift", line: 98)   // line 99: not placed
+        store.setOptions(path: "/p/main.swift", line: 98, condition: " x > 1 ", hitCondition: "", logMessage: "x is {x}")
         let configuration = DebugConfiguration(name: "demo", program: "/p/demo", directory: dir.path)
         let session = DebugSession(configuration: configuration, adapter: python, adapterArguments: [script.path], breakpoints: store)
         await session.start()
@@ -213,6 +254,16 @@ while True:
         let commands = (seen?["seen"] as? [String]) ?? []
         XCTAssertEqual(Array(commands.prefix(5)), ["initialize", "launch", "setBreakpoints", "setExceptionBreakpoints", "configurationDone"])
         XCTAssertEqual(store.breakpoints(in: "/p/main.swift").map { "\($0.line):\($0.verified!)" }.sorted(), ["3:true", "98:false"])
+        // Options go with a breakpoint (trimmed, empty ones left out); the adapter's default
+        // exception breakpoint is on until the person picks.
+        let record = seen?["record"] as? [String: Any]
+        let sent = ((record?["setBreakpoints"] as? [String: Any])?["breakpoints"] as? [[String: Any]]) ?? []
+        XCTAssertEqual(sent.last?["condition"] as? String, "x > 1")
+        XCTAssertEqual(sent.last?["logMessage"] as? String, "x is {x}")
+        XCTAssertNil(sent.last?["hitCondition"])
+        XCTAssertNil(sent.first?["condition"])
+        XCTAssertEqual((record?["setExceptionBreakpoints"] as? [String: Any])?["filters"] as? [String], ["swift_throw"])
+        XCTAssertEqual(session.exceptionFilters.map(\.label), ["Swift Throw", "C++ Throw"])
 
         // The stop: the first frame with source is the one shown.
         XCTAssertEqual(session.frames.count, 3)
@@ -227,6 +278,20 @@ while True:
         let page = await session.variables(11, start: 200, count: 200)
         XCTAssertEqual(page.count, 200)
         XCTAssertEqual(page.first?.name, "[200]")
+
+        // Evaluating goes to the selected frame; a failure carries the adapter's message.
+        let value = await session.evaluate("dx * 2", context: "watch")
+        XCTAssertEqual(try value.get().result, "dx * 2@2")
+        if case .failure(.failed(_, let message)) = await session.evaluate("nope", context: "repl") {
+            XCTAssertEqual(message, "error: no such thing")
+        } else {
+            XCTFail("expected a failure")
+        }
+        // Choosing exception breakpoints is kept and sent.
+        store.exceptionFilters = ["cpp_throw"]
+        await session.sendExceptionBreakpoints()
+        let again = try JSONSerialization.jsonObject(with: Data(contentsOf: out)) as? [String: Any]
+        XCTAssertEqual(((again?["record"] as? [String: Any])?["setExceptionBreakpoints"] as? [String: Any])?["filters"] as? [String], ["cpp_throw"])
 
         // A step stops again; continue runs to the end.
         session.stepOver()
@@ -306,8 +371,17 @@ final class LLDBDAPTests: XCTestCase {
         XCTAssertEqual(products, ["Demo"])
         let store = BreakpointStore(project: root, defaults: UserDefaults(suiteName: "side.tests.lldb.\(UUID().uuidString)")!)
         let path = source.resolvingSymlinksInPath().path
-        store.toggle(path: path, line: 2)   // `return result`
-        let session = DebugSession(configuration: DebugLaunch.swiftConfiguration(product: "Demo", root: root.resolvingSymlinksInPath()), adapter: adapter, breakpoints: store)
+        store.toggle(path: path, line: 2)   // `return result`, only when n is 2
+        store.setOptions(path: path, line: 2, condition: "n == 2", hitCondition: nil, logMessage: nil)
+        store.toggle(path: path, line: 1)   // a logpoint: prints, doesn't stop
+        store.setOptions(path: path, line: 1, condition: nil, hitCondition: nil, logMessage: "squaring {n}")
+        // The program on a terminal of its own, as a Run tab gives it.
+        var master: Int32 = -1, slave: Int32 = -1
+        XCTAssertEqual(openpty(&master, &slave, nil, nil, nil), 0)
+        defer { close(master); close(slave) }
+        var configuration = DebugLaunch.swiftConfiguration(product: "Demo", root: root.resolvingSymlinksInPath())
+        configuration.terminal = String(cString: ttyname(slave))
+        let session = DebugSession(configuration: configuration, adapter: adapter, breakpoints: store)
         let stopped = expectation(description: "stopped")
         let ended = expectation(description: "ended")
         var stops = 0
@@ -327,11 +401,21 @@ final class LLDBDAPTests: XCTestCase {
         let scopes = await session.scopes(frameID: frame.id)
         let locals = try XCTUnwrap(scopes.first)
         let variables = await session.variables(locals.variablesReference)
-        XCTAssertEqual(variables.first { $0.name == "result" }?.value, "1", variables.map { "\($0.name)=\($0.value)" }.joined(separator: ", "))
+        XCTAssertEqual(variables.first { $0.name == "result" }?.value, "4", variables.map { "\($0.name)=\($0.value)" }.joined(separator: ", "))
+        let tenfold = await session.evaluate("result * 10", context: "watch")
+        XCTAssertEqual(try tenfold.get().result, "40")
+        XCTAssertTrue(session.output.contains("squaring 1"), session.output)
         store.removeAll()
         await session.sendBreakpoints(path: path)
         session.resume()
         await fulfillment(of: [ended], timeout: 60)
-        XCTAssertTrue(session.output.contains("total 14"), session.output)
+        // The program's output went to its terminal, not the adapter's events.
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let flags = fcntl(master, F_GETFL)
+        _ = fcntl(master, F_SETFL, flags | O_NONBLOCK)
+        let count = read(master, &buffer, buffer.count)
+        let written = count > 0 ? String(decoding: buffer[..<count], as: UTF8.self) : ""
+        XCTAssertTrue(written.contains("total 14"), written)
+        XCTAssertFalse(session.output.contains("total 14"))
     }
 }

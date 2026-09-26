@@ -72,9 +72,34 @@ struct DAPVariable: Equatable, Sendable {
 struct Breakpoint: Codable, Equatable, Sendable {
     var line: Int
     var enabled = true
+    /// Stops only when this expression is true.
+    var condition: String?
+    /// Stops only on the hits this says ("5", ">= 10", "% 2", as the adapter reads it).
+    var hitCondition: String?
+    /// A logpoint: prints this ({expressions} in braces filled in) and doesn't stop.
+    var logMessage: String?
     var verified: Bool? = nil
+    /// Why the adapter couldn't place it, when it says.
+    var message: String? = nil
 
-    enum CodingKeys: String, CodingKey { case line, enabled }
+    init(line: Int, enabled: Bool = true) {
+        self.line = line
+        self.enabled = enabled
+    }
+
+    var isLogpoint: Bool { !(logMessage ?? "").isEmpty }
+    var hasOptions: Bool { !(condition ?? "").isEmpty || !(hitCondition ?? "").isEmpty || isLogpoint }
+
+    enum CodingKeys: String, CodingKey { case line, enabled, condition, hitCondition, logMessage }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        line = try container.decode(Int.self, forKey: .line)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        condition = try container.decodeIfPresent(String.self, forKey: .condition)
+        hitCondition = try container.decodeIfPresent(String.self, forKey: .hitCondition)
+        logMessage = try container.decodeIfPresent(String.self, forKey: .logMessage)
+    }
 }
 
 /// The project's breakpoints, by file path, kept across launches (SIDE_RFC_DEBUGGER.md, D3). They
@@ -130,6 +155,43 @@ final class BreakpointStore {
 
     func contains(path: String, line: Int) -> Bool { byPath[path]?.contains { $0.line == line } ?? false }
 
+    /// A breakpoint's condition, hit count and log message (empty clears one).
+    func setOptions(path: String, line: Int, condition: String?, hitCondition: String?, logMessage: String?) {
+        guard let index = byPath[path]?.firstIndex(where: { $0.line == line }) else { return }
+        func clean(_ text: String?) -> String? {
+            let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        byPath[path]?[index].condition = clean(condition)
+        byPath[path]?[index].hitCondition = clean(hitCondition)
+        byPath[path]?[index].logMessage = clean(logMessage)
+        save()
+    }
+
+    /// The exception breakpoints turned on, by the adapter's filter ids (nil: the adapter's
+    /// defaults, until the person picks).
+    var exceptionFilters: Set<String>? {
+        get { (defaults.dictionary(forKey: Self.exceptionsKey)?[project] as? [String]).map(Set.init) }
+        set {
+            var all = defaults.dictionary(forKey: Self.exceptionsKey) ?? [:]
+            all[project] = newValue.map { Array($0).sorted() }
+            defaults.set(all, forKey: Self.exceptionsKey)
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+    }
+    private static let exceptionsKey = "SideExceptionBreakpoints"
+
+    /// Watch expressions, in order, kept per project.
+    var watches: [String] {
+        get { defaults.dictionary(forKey: Self.watchesKey)?[project] as? [String] ?? [] }
+        set {
+            var all = defaults.dictionary(forKey: Self.watchesKey) ?? [:]
+            all[project] = newValue.isEmpty ? nil : newValue
+            defaults.set(all, forKey: Self.watchesKey)
+        }
+    }
+    private static let watchesKey = "SideWatchExpressions"
+
     func setEnabled(_ enabled: Bool, path: String, line: Int) {
         guard let index = byPath[path]?.firstIndex(where: { $0.line == line }) else { return }
         byPath[path]?[index].enabled = enabled
@@ -148,11 +210,12 @@ final class BreakpointStore {
 
     /// What a session said about a file's breakpoints: which it could place, and on which line
     /// (an adapter moves one on a blank line to the next line with code).
-    func verified(path: String, lines: [(requested: Int, actual: Int?, verified: Bool)]) {
+    func verified(path: String, lines: [(requested: Int, actual: Int?, verified: Bool)], messages: [Int: String] = [:]) {
         guard var list = byPath[path] else { return }
         for answer in lines {
             guard let index = list.firstIndex(where: { $0.line == answer.requested }) else { continue }
             list[index].verified = answer.verified
+            list[index].message = messages[answer.requested]
             if let actual = answer.actual, actual != answer.requested, !list.contains(where: { $0.line == actual }) { list[index].line = actual }
         }
         byPath[path] = list
@@ -160,7 +223,7 @@ final class BreakpointStore {
     }
 
     func clearVerification() {
-        for key in byPath.keys { byPath[key] = byPath[key]?.map { var b = $0; b.verified = nil; return b } }
+        for key in byPath.keys { byPath[key] = byPath[key]?.map { var b = $0; b.verified = nil; b.message = nil; return b } }
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
@@ -216,6 +279,23 @@ struct DebugConfiguration: Equatable, Sendable {
     /// A command run first in `directory` (`swift build --product X`); the session starts when
     /// it succeeds.
     var build: String?
+    /// The terminal the program reads and writes (a Run tab's pty), or nil for the adapter's
+    /// output events.
+    var terminal: String?
+}
+
+/// An exception breakpoint the adapter offers (`exceptionBreakpointFilters`).
+struct DAPExceptionFilter: Equatable, Sendable {
+    let id: String
+    let label: String
+    let isDefault: Bool
+}
+
+/// What an expression came to in a frame.
+struct DAPEvaluation: Equatable, Sendable {
+    let result: String
+    let type: String?
+    let variablesReference: Int
 }
 
 /// One debugging session with one adapter (SIDE_RFC_DEBUGGER.md): launch, breakpoints, stops,
@@ -240,7 +320,8 @@ final class DebugSession {
     /// The program's and the adapter's output, most recent last (a few hundred KB kept).
     private(set) var output = ""
     var onChange: (() -> Void)?
-    var onOutput: (() -> Void)?
+    /// Text added to the output, and whether the program wrote it (not the adapter or a build).
+    var onOutput: ((String, Bool) -> Void)?
     /// The adapter's `stopped` event, before the stack is asked for (the step budget's start).
     var onStopEvent: (() -> Void)?
 
@@ -291,6 +372,12 @@ final class DebugSession {
                 "program": .string(realPath(configuration.program)), "args": .array(configuration.arguments.map { .string($0) }),
                 "cwd": .string(realPath(configuration.directory)), "stopOnEntry": false,
             ]
+            // The program on a Run tab's terminal, so its input works. lldb's own target
+            // settings: lldb-1703's `runInTerminal` launcher times out on macOS, and it ignores
+            // the newer `stdio` argument.
+            if let terminal = configuration.terminal {
+                arguments["preRunCommands"] = .array(["input", "output", "error"].map { .string("settings set target.\($0)-path \(terminal)") })
+            }
             if !configuration.environment.isEmpty {
                 arguments["env"] = .array(configuration.environment.map { .string("\($0.key)=\($0.value)") })
             }
@@ -319,8 +406,12 @@ final class DebugSession {
             frames = []
             state = .running
         case "output":
-            guard let text = object["output"] as? String, (object["category"] as? String) != "telemetry" else { return }
-            appendOutput(text)
+            let category = object["category"] as? String ?? "console"
+            guard let text = object["output"] as? String, category != "telemetry" else { return }
+            // lldb-dap echoes the commands Side gave it (the program's terminal); they're Side's
+            // plumbing, not the program's or the person's.
+            if category == "console", text == "Running preRunCommands:\n" || text.hasPrefix("(lldb) settings set target.") { return }
+            appendOutput(text, fromProgram: category == "stdout" || category == "stderr")
         case "breakpoint":
             break   // re-sent per file on the next change
         case "exited":
@@ -337,9 +428,47 @@ final class DebugSession {
         guard let client, !configured else { return }
         configured = true
         for (path, _) in breakpoints.byPath { await sendBreakpoints(path: path) }
-        _ = try? await client.request("setExceptionBreakpoints", ["filters": []])
+        await sendExceptionBreakpoints()
         if case .starting = state { state = .running }
         _ = try? await client.request("configurationDone")
+    }
+
+    /// The adapter's exception breakpoints, from `initialize`.
+    var exceptionFilters: [DAPExceptionFilter] {
+        (capabilities["exceptionBreakpointFilters"] as? [[String: Any]] ?? []).compactMap { filter in
+            guard let id = filter["filter"] as? String else { return nil }
+            return DAPExceptionFilter(id: id, label: filter["label"] as? String ?? id, isDefault: filter["default"] as? Bool ?? false)
+        }
+    }
+
+    /// The exception breakpoints turned on: the person's, else the adapter's defaults.
+    var enabledExceptionFilters: Set<String> {
+        breakpoints.exceptionFilters ?? Set(exceptionFilters.filter(\.isDefault).map(\.id))
+    }
+
+    func sendExceptionBreakpoints() async {
+        guard let client else { return }
+        let offered = Set(exceptionFilters.map(\.id))
+        let filters = enabledExceptionFilters.intersection(offered).sorted()
+        _ = try? await client.request("setExceptionBreakpoints", ["filters": .array(filters.map { .string($0) })])
+    }
+
+    /// An expression in the selected frame: the console's ("repl"), a watch's ("watch") or the
+    /// pointer's ("hover").
+    func evaluate(_ expression: String, context: String) async -> Result<DAPEvaluation, DAPClient.DAPError> {
+        guard let client else { return .failure(.notRunning) }
+        var arguments: [String: LSPValue] = ["expression": .string(expression), "context": .string(context)]
+        if let frame = currentFrame { arguments["frameId"] = .int(frame.id) }
+        do {
+            let reply = try await client.request("evaluate", .object(arguments))
+            let object = reply.object ?? [:]
+            return .success(DAPEvaluation(result: object["result"] as? String ?? "", type: object["type"] as? String,
+                                          variablesReference: object["variablesReference"] as? Int ?? 0))
+        } catch let error as DAPClient.DAPError {
+            return .failure(error)
+        } catch {
+            return .failure(.failed(command: "evaluate", message: error.localizedDescription))
+        }
     }
 
     /// A file's breakpoints, as they are now (called on each change while a session runs).
@@ -348,7 +477,13 @@ final class DebugSession {
         let enabled = breakpoints.breakpoints(in: path).filter(\.enabled).sorted { $0.line < $1.line }
         let arguments: LSPValue = [
             "source": ["path": .string(realPath(path)), "name": .string((path as NSString).lastPathComponent)],
-            "breakpoints": .array(enabled.map { ["line": .int($0.line + 1)] }),
+            "breakpoints": .array(enabled.map { breakpoint in
+                var entry: [String: LSPValue] = ["line": .int(breakpoint.line + 1)]
+                if let condition = breakpoint.condition { entry["condition"] = .string(condition) }
+                if let hitCondition = breakpoint.hitCondition { entry["hitCondition"] = .string(hitCondition) }
+                if let logMessage = breakpoint.logMessage { entry["logMessage"] = .string(logMessage) }
+                return .object(entry)
+            }),
             "sourceModified": false,
         ]
         guard let reply = try? await client.request("setBreakpoints", arguments),
@@ -356,7 +491,9 @@ final class DebugSession {
         let answers = zip(enabled, placed).map { requested, answer -> (Int, Int?, Bool) in
             (requested.line, (answer["line"] as? Int).map { $0 - 1 }, answer["verified"] as? Bool ?? false)
         }
-        breakpoints.verified(path: path, lines: answers.map { (requested: $0.0, actual: $0.1, verified: $0.2) })
+        var messages: [Int: String] = [:]
+        for (requested, answer) in zip(enabled, placed) { if let message = answer["message"] as? String { messages[requested.line] = message } }
+        breakpoints.verified(path: path, lines: answers.map { (requested: $0.0, actual: $0.1, verified: $0.2) }, messages: messages)
     }
 
     private func stopped(threadID: Int, reason: String, text: String?) async {
@@ -440,10 +577,10 @@ final class DebugSession {
         if let client { Task { await client.stop() } }
     }
 
-    private func appendOutput(_ text: String) {
+    func appendOutput(_ text: String, fromProgram: Bool = false) {
         output += text
         if output.utf16.count > 400_000 { output = String(output.suffix(300_000)) }
-        onOutput?()
+        onOutput?(text, fromProgram)
     }
 
     /// A shell command's status and output, off the main thread (the build).

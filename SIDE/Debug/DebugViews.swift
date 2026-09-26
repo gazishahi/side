@@ -34,7 +34,7 @@ final class DebugBar: NSView {
         statusLabel.font = DS.Text.caption(.medium)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        statusLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         let divider = NSBox()
         divider.boxType = .separator
         let stack = NSStackView(views: [pauseContinue, stepOver, stepIn, stepOut, divider, restart, stop, statusLabel])
@@ -134,10 +134,19 @@ final class DebugVariableNode {
     }
 }
 
-/// While debugging, the call stack, the stopped frame's variables, the breakpoints and the
-/// output (SIDE_RFC_DEBUGGER.md, Q1), in the file explorer's place.
+/// A watch expression and what it came to at the last stop.
+struct DebugWatch: Equatable {
+    var expression: String
+    /// nil while running (or before the first stop).
+    var value: String?
+    var failed = false
+}
+
+/// While debugging, the call stack, the stopped frame's variables, watches, the breakpoints
+/// (exception breakpoints first) and the console (SIDE_RFC_DEBUGGER.md), in the file explorer's
+/// place.
 @MainActor
-final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate {
+final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate {
     static let width: CGFloat = 300
     /// A page of an array's elements.
     static let pageSize = 200
@@ -146,12 +155,21 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
     var onRevealBreakpoint: ((String, Int) -> Void)?
     var onToggleBreakpoint: ((String, Int, Bool) -> Void)?
     var onRemoveBreakpoint: ((String, Int) -> Void)?
+    /// Edit Breakpoint… (condition, hit count, log message), anchored on the row.
+    var onEditBreakpoint: ((String, Int, NSView) -> Void)?
+    var onExceptionFilter: ((String, Bool) -> Void)?
+    var onAddWatch: ((String) -> Void)?
+    var onRemoveWatch: ((Int) -> Void)?
+    /// An expression typed into the console.
+    var onEvaluate: ((String) -> Void)?
     /// Children of a variables reference (a page of indexed ones when start and count are given).
     var fetchVariables: ((Int, Int?, Int?) async -> [DAPVariable])?
 
     private(set) var frames: [DAPStackFrame] = []
     private var selectedFrame = 0
     private var breakpoints: [(path: String, breakpoint: Breakpoint)] = []
+    private var exceptionFilters: [(filter: DAPExceptionFilter, enabled: Bool)] = []
+    private(set) var watches: [DebugWatch] = []
     private var scopes: [DebugVariableNode] = []
     /// Bumped on each stop: an answer for an older stop is dropped.
     private var generation = 0
@@ -159,7 +177,13 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
     let stackTable = NSTableView()
     let variablesOutline = NSOutlineView()
     let breakpointsTable = NSTableView()
+    let watchesTable = NSTableView()
     let outputView = NSTextView()
+    let consoleField = NSTextField()
+    let watchField = NSTextField()
+    /// The console's history, ↑ and ↓ through it.
+    private var consoleHistory: [String] = []
+    private var historyIndex: Int?
     private let variablesPlaceholder = NSTextField(labelWithString: "Not paused")
 
     override init(frame: NSRect) {
@@ -171,7 +195,7 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func build() {
-        for (table, id) in [(stackTable, "stack"), (breakpointsTable, "breakpoints")] {
+        for (table, id) in [(stackTable, "stack"), (breakpointsTable, "breakpoints"), (watchesTable, "watches")] {
             Self.style(table, id)
             table.dataSource = self
             table.delegate = self
@@ -181,8 +205,23 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         breakpointsTable.target = self
         breakpointsTable.doubleAction = #selector(breakpointDoubleClicked)
         let menu = NSMenu()
+        menu.addItem(withTitle: "Edit Breakpoint\u{2026}", action: #selector(editClickedBreakpoint), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Delete Breakpoint", action: #selector(deleteClickedBreakpoint), keyEquivalent: "").target = self
         breakpointsTable.menu = menu
+        let watchMenu = NSMenu()
+        watchMenu.addItem(withTitle: "Remove Watch", action: #selector(removeClickedWatch), keyEquivalent: "").target = self
+        watchesTable.menu = watchMenu
+        for (field, placeholder) in [(watchField, "Add a watch expression"), (consoleField, "Evaluate in the paused frame")] {
+            field.placeholderString = placeholder
+            field.font = DS.Text.code(11)
+            field.isBordered = false
+            field.drawsBackground = false
+            field.focusRingType = .none
+            field.delegate = self
+            field.translatesAutoresizingMaskIntoConstraints = false
+        }
+        consoleField.setAccessibilityLabel("Debug console")
+        watchField.setAccessibilityLabel("Add a watch expression")
 
         Self.style(variablesOutline, "variables")
         variablesOutline.outlineTableColumn = variablesOutline.tableColumns.first
@@ -218,8 +257,14 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         split.isVertical = false
         split.dividerStyle = .thin
         split.translatesAutoresizingMaskIntoConstraints = false
-        for (title, content) in [("Call Stack", Self.scroll(stackTable)), ("Variables", variablesScroll), ("Breakpoints", Self.scroll(breakpointsTable)), ("Output", outputScroll)] {
-            split.addArrangedSubview(Self.section(title, content))
+        let watchesView = Self.stack(Self.scroll(watchesTable), watchField)
+        let consoleView = Self.stack(outputScroll, consoleField)
+        // Each keeps room for a row or two, however small the window.
+        for (title, content, least) in [("Call Stack", Self.scroll(stackTable), 56.0), ("Variables", variablesScroll, 84.0), ("Watches", watchesView, 78.0),
+                                        ("Breakpoints", Self.scroll(breakpointsTable), 70.0), ("Console", consoleView, 84.0)] {
+            let section = Self.section(title, content)
+            section.heightAnchor.constraint(greaterThanOrEqualToConstant: least).isActive = true
+            split.addArrangedSubview(section)
         }
 
         let effect = NSVisualEffectView()
@@ -245,9 +290,10 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         DispatchQueue.main.async {
             let height = split.bounds.height
             guard height > 200 else { return }
-            split.setPosition(height * 0.2, ofDividerAt: 0)
-            split.setPosition(height * 0.64, ofDividerAt: 1)
-            split.setPosition(height * 0.78, ofDividerAt: 2)
+            split.setPosition(height * 0.17, ofDividerAt: 0)
+            split.setPosition(height * 0.45, ofDividerAt: 1)
+            split.setPosition(height * 0.58, ofDividerAt: 2)
+            split.setPosition(height * 0.8, ofDividerAt: 3)
         }
     }
 
@@ -273,6 +319,25 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         return scroll
     }
 
+    /// A list with a field under it (watches, the console).
+    private static func stack(_ top: NSView, _ field: NSTextField) -> NSView {
+        let view = NSView()
+        top.translatesAutoresizingMaskIntoConstraints = false
+        let rule = NSBox()
+        rule.boxType = .separator
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(top)
+        view.addSubview(rule)
+        view.addSubview(field)
+        NSLayoutConstraint.activate([
+            top.topAnchor.constraint(equalTo: view.topAnchor), top.leadingAnchor.constraint(equalTo: view.leadingAnchor), top.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            rule.topAnchor.constraint(equalTo: top.bottomAnchor), rule.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8), rule.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            field.topAnchor.constraint(equalTo: rule.bottomAnchor, constant: 4), field.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+            field.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8), field.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -4),
+        ])
+        return view
+    }
+
     private static func section(_ title: String, _ content: NSView) -> NSView {
         let label = NSTextField(labelWithString: title.uppercased())
         label.font = DS.Text.caption(.semibold)
@@ -286,7 +351,6 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
             label.topAnchor.constraint(equalTo: view.topAnchor, constant: 6), label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
             content.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 2), content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             content.leadingAnchor.constraint(equalTo: view.leadingAnchor), content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            view.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
         return view
     }
@@ -327,16 +391,47 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         breakpointsTable.reloadData()
     }
 
+    /// The adapter's exception breakpoints (none before a session has said).
+    func show(exceptionFilters list: [(filter: DAPExceptionFilter, enabled: Bool)]) {
+        exceptionFilters = list
+        breakpointsTable.reloadData()
+    }
+
+    func show(watches list: [DebugWatch]) {
+        watches = list
+        watchesTable.reloadData()
+    }
+
+    /// The console's text: replaced (nil appends nothing) or added to.
     func show(output: String) {
-        let atBottom = outputView.enclosingScrollView.map { $0.documentVisibleRect.maxY >= outputView.bounds.maxY - 4 } ?? true
         outputView.string = output
+        outputView.scrollToEndOfDocument(nil)
+    }
+
+    func append(output: String, style: ConsoleStyle = .program) {
+        guard let storage = outputView.textStorage else { return }
+        let atBottom = outputView.enclosingScrollView.map { $0.documentVisibleRect.maxY >= outputView.bounds.maxY - 4 } ?? true
+        let color: NSColor
+        switch style {
+        case .program: color = .labelColor
+        case .adapter: color = .secondaryLabelColor
+        case .input: color = .controlAccentColor
+        case .error: color = .systemRed
+        }
+        storage.append(NSAttributedString(string: output, attributes: [.font: DS.Text.code(11), .foregroundColor: color]))
+        // Bounded, as the session's own copy is.
+        if storage.length > 400_000 { storage.deleteCharacters(in: NSRange(location: 0, length: storage.length - 300_000)) }
         if atBottom { outputView.scrollToEndOfDocument(nil) }
     }
+
+    enum ConsoleStyle { case program, adapter, input, error }
 
     // MARK: Tables
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === stackTable ? frames.count : breakpoints.count
+        if tableView === stackTable { return frames.count }
+        if tableView === watchesTable { return watches.count }
+        return exceptionFilters.count + breakpoints.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -345,11 +440,30 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
             let place = frame.path.map { "\(($0 as NSString).lastPathComponent):\(frame.line)" } ?? ""
             return Self.cell(tableView, "frame", frame.name, place, dim: frame.path == nil || frame.isSubtle)
         }
-        let entry = breakpoints[row]
-        let cell = Self.cell(tableView, "breakpoint", "\((entry.path as NSString).lastPathComponent):\(entry.breakpoint.line + 1)",
-                             (entry.path as NSString).deletingLastPathComponent.split(separator: "/").last.map(String.init) ?? "",
-                             dim: !entry.breakpoint.enabled)
-        cell.toolTip = entry.path
+        if tableView === watchesTable {
+            let watch = watches[row]
+            let cell = Self.cell(tableView, "variable", watch.expression, watch.value ?? "\u{2014}", dim: false)
+            (cell as? DebugCell)?.detail.textColor = watch.failed ? .systemRed : .secondaryLabelColor
+            cell.toolTip = watch.value
+            return cell
+        }
+        if row < exceptionFilters.count {
+            let entry = exceptionFilters[row]
+            let identifier = NSUserInterfaceItemIdentifier("exception")
+            let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? DebugCheckCell ?? DebugCheckCell(identifier: identifier)
+            cell.check.title = entry.filter.label
+            cell.check.state = entry.enabled ? .on : .off
+            cell.onToggle = { [weak self] on in self?.onExceptionFilter?(entry.filter.id, on) }
+            return cell
+        }
+        let entry = breakpoints[row - exceptionFilters.count]
+        let identifier = NSUserInterfaceItemIdentifier("breakpoint")
+        let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? DebugCheckCell ?? DebugCheckCell(identifier: identifier)
+        cell.check.title = "\((entry.path as NSString).lastPathComponent):\(entry.breakpoint.line + 1)"
+        cell.check.state = entry.breakpoint.enabled ? .on : .off
+        cell.detail.stringValue = Self.describe(entry.breakpoint)
+        cell.toolTip = [entry.path, entry.breakpoint.message].compactMap { $0 }.joined(separator: "\n")
+        cell.onToggle = { [weak self] on in self?.onToggleBreakpoint?(entry.path, entry.breakpoint.line, on) }
         return cell
     }
 
@@ -369,16 +483,74 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         onSelectFrame?(row)
     }
 
+    /// What a breakpoint does besides stop: "if x > 3", "hits ≥ 5", "log: …".
+    static func describe(_ breakpoint: Breakpoint) -> String {
+        var parts: [String] = []
+        if let logMessage = breakpoint.logMessage { parts.append("log: " + logMessage) }
+        if let condition = breakpoint.condition { parts.append("if " + condition) }
+        if let hitCondition = breakpoint.hitCondition { parts.append("hits " + hitCondition) }
+        if parts.isEmpty, breakpoint.verified == false { parts.append("not placed") }
+        return parts.joined(separator: ", ")
+    }
+
+    /// The file breakpoint on a row of the breakpoints table (not an exception row).
+    private func breakpoint(atRow row: Int) -> (path: String, breakpoint: Breakpoint)? {
+        let index = row - exceptionFilters.count
+        return breakpoints.indices.contains(index) ? breakpoints[index] : nil
+    }
+
     @objc private func breakpointDoubleClicked() {
-        let row = breakpointsTable.clickedRow
-        guard breakpoints.indices.contains(row) else { return }
-        onRevealBreakpoint?(breakpoints[row].path, breakpoints[row].breakpoint.line)
+        guard let entry = breakpoint(atRow: breakpointsTable.clickedRow) else { return }
+        onRevealBreakpoint?(entry.path, entry.breakpoint.line)
     }
 
     @objc private func deleteClickedBreakpoint() {
+        guard let entry = breakpoint(atRow: breakpointsTable.clickedRow) else { return }
+        onRemoveBreakpoint?(entry.path, entry.breakpoint.line)
+    }
+
+    @objc private func editClickedBreakpoint() {
         let row = breakpointsTable.clickedRow
-        guard breakpoints.indices.contains(row) else { return }
-        onRemoveBreakpoint?(breakpoints[row].path, breakpoints[row].breakpoint.line)
+        guard let entry = breakpoint(atRow: row), let view = breakpointsTable.view(atColumn: 0, row: row, makeIfNecessary: false) else { return }
+        onEditBreakpoint?(entry.path, entry.breakpoint.line, view)
+    }
+
+    @objc private func removeClickedWatch() {
+        let row = watchesTable.clickedRow
+        guard watches.indices.contains(row) else { return }
+        onRemoveWatch?(row)
+    }
+
+    // MARK: Fields
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard let field = control as? NSTextField else { return false }
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return true }
+            field.stringValue = ""
+            if field === consoleField {
+                if consoleHistory.last != text { consoleHistory.append(text) }
+                historyIndex = nil
+                onEvaluate?(text)
+            } else {
+                onAddWatch?(text)
+            }
+            return true
+        case #selector(NSResponder.moveUp(_:)) where field === consoleField && !consoleHistory.isEmpty:
+            let index = max(0, (historyIndex ?? consoleHistory.count) - 1)
+            historyIndex = index
+            field.stringValue = consoleHistory[index]
+            return true
+        case #selector(NSResponder.moveDown(_:)) where field === consoleField:
+            guard let index = historyIndex else { return true }
+            historyIndex = index + 1 < consoleHistory.count ? index + 1 : nil
+            field.stringValue = historyIndex.map { consoleHistory[$0] } ?? ""
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: Variables
@@ -446,8 +618,111 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
     }
 }
 
+/// A row with a checkbox: an exception breakpoint, or a file breakpoint with what it does.
+private final class DebugCheckCell: NSTableCellView {
+    let check = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let detail = NSTextField(labelWithString: "")
+    var onToggle: ((Bool) -> Void)?
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        check.font = DS.Text.caption()
+        check.target = self
+        check.action = #selector(toggled)
+        check.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        detail.font = DS.Text.caption()
+        detail.textColor = .secondaryLabelColor
+        detail.lineBreakMode = .byTruncatingTail
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let stack = NSStackView(views: [check, detail])
+        stack.orientation = .horizontal
+        stack.spacing = DS.Spacing.s
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func toggled() { onToggle?(check.state == .on) }
+}
+
+/// Edit Breakpoint: the condition, the hits it stops on, and a log message (a logpoint).
+@MainActor
+final class BreakpointEditor: NSViewController, NSTextFieldDelegate {
+    let condition = NSTextField()
+    let hitCondition = NSTextField()
+    let logMessage = NSTextField()
+    var onDone: ((String, String, String) -> Void)?
+
+    init(_ breakpoint: Breakpoint) {
+        super.init(nibName: nil, bundle: nil)
+        condition.stringValue = breakpoint.condition ?? ""
+        hitCondition.stringValue = breakpoint.hitCondition ?? ""
+        logMessage.stringValue = breakpoint.logMessage ?? ""
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadView() {
+        let rows: [(String, NSTextField, String)] = [
+            ("Condition", condition, "dx > 3"),
+            ("Hit count", hitCondition, "5, >= 10, % 2"),
+            ("Log message", logMessage, "x is {x}: logs instead of stopping"),
+        ]
+        let grid = NSGridView(views: rows.map { title, field, placeholder in
+            field.placeholderString = placeholder
+            field.font = DS.Text.code(11)
+            field.delegate = self
+            field.setAccessibilityLabel(title)
+            field.widthAnchor.constraint(equalToConstant: 240).isActive = true
+            let label = NSTextField(labelWithString: title)
+            label.font = DS.Text.caption()
+            label.textColor = .secondaryLabelColor
+            return [label, field]
+        })
+        grid.column(at: 0).xPlacement = .trailing
+        grid.rowSpacing = DS.Spacing.m
+        grid.columnSpacing = DS.Spacing.m
+        let done = NSButton(title: "Done", target: self, action: #selector(finish))
+        done.keyEquivalent = "\r"
+        done.bezelStyle = .rounded
+        let stack = NSStackView(views: [grid, done])
+        stack.orientation = .vertical
+        stack.alignment = .trailing
+        stack.spacing = DS.Spacing.l
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 12, right: 14)
+        view = stack
+    }
+
+    /// Return in any field is Done; Escape closes without saving.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)): finish(); return true
+        case #selector(NSResponder.cancelOperation(_:)): close(); return true
+        default: return false
+        }
+    }
+
+    @objc private func finish() {
+        onDone?(condition.stringValue, hitCondition.stringValue, logMessage.stringValue)
+        close()
+    }
+
+    private func close() {
+        onDone = nil
+        popover?.performClose(nil)
+    }
+    weak var popover: NSPopover?
+}
+
 /// A row: a name, and a detail after it (a frame's file and line, a variable's value).
-private final class DebugCell: NSTableCellView {
+final class DebugCell: NSTableCellView {
     let title = NSTextField(labelWithString: "")
     let detail = NSTextField(labelWithString: "")
 

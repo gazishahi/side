@@ -3,7 +3,7 @@
 *2026-09-26. Status: **accepted**: the owner answered on 2026-09-26. The debugger lives in Make;
 a breakpoint is a click on the line number; a project's `.vscode/launch.json` is read, with
 consent; agents get read-only access first. Q4, the first languages, took the recommendation
-(default). The build order is the plan below. Step 1 is built.*
+(default). The build order is the plan below. Steps 1 and 2 are built.*
 Symbols: `DAPClient`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `MakeDebugger`, `DebugBar`, `DebugInspector`.
 *Companion to `SIDE_RFC_IDE_ESSENTIALS.md` (the language-server client this mirrors, and
 Settings → Languages, which gains a debugger per language) and `SIDE_RFC_ALLOY.md` (the gutter
@@ -214,3 +214,59 @@ stopped at line 9, with the line tinted, the stack (`distance(_:_:)`, `DebugDemo
 (`a`, `b`, `dx 1`, `dy 2`). Step Over returned to line 15 in the caller. Stop left no lldb-dap
 or program running. The right-click menu disabled a breakpoint (faded), and ⌘\ added one at
 the caret.
+
+**Step 2, 2026-09-26.**
+
+- **The program's terminal.** The program runs on a Run tab of its own ("Debug: <name>"), so it
+  reads what's typed there and writes there. The tab's own process only holds the pty open;
+  the tab becomes the one Run shows, and the next session replaces it.
+  - lldb-dap is pointed at the tab's pty with lldb's own settings
+    (`target.input-path`/`output-path`/`error-path`, in `preRunCommands`, not echoed to the
+    console).
+  - Not `runInTerminal`, as D1 planned: lldb-1703's launcher and adapter both time out on their
+    comm file (checked outside Side's sandbox too). Nor `stdio`, which lldb-1703 ignores.
+  - `DAPClient` now answers the adapter's reverse requests through a handler; js-debug's and
+    debugpy's `runInTerminal` use it in step 3.
+- **The console** is the inspector's last section, not a Debug tab in Run as Q1 said:
+  - you type expressions while looking at the stack and the code;
+  - the program's own output is already in Run.
+
+  It evaluates in the selected frame (`repl`, so lldb commands work too), with ↑/↓ history.
+  The adapter's messages are dimmed, the program's shown plain, and errors in red.
+- **Watches:** a section of their own, kept per project, evaluated in the selected frame on
+  each stop (`watch`). A failure shows lldb's message in one line.
+- **Hover to evaluate:** while paused, resting on a name (or a member chain, `a.x`) shows its
+  value in the hover card. Where there's no value, the language server's hover shows as before.
+- **Breakpoint options:** Edit Breakpoint… (the gutter's right-click, or the inspector's list)
+  sets:
+  - a condition;
+  - a hit count;
+  - a log message, which makes a logpoint that prints `{expressions}` without stopping.
+
+  They're kept with the breakpoint (breakpoints kept before step 2 still load), shown in the
+  list ("if a.x == 3"), and sent in `setBreakpoints`.
+- **Exception breakpoints:** the adapter's `exceptionBreakpointFilters`, as checkboxes above the
+  file breakpoints (the file's language's first: Swift Catch and Swift Throw in a Swift
+  package). They're kept per project; the adapter's defaults apply until the person picks.
+  A stop on one reads "Paused: Swift Throw", at the frame that threw.
+- **The breakpoints list:** each file breakpoint has a checkbox (enable) and says what it does,
+  or that it wasn't placed; the adapter's reason is in its tooltip.
+
+Tests:
+
+- The fake adapter now checks the options sent with breakpoints, the default and chosen exception
+  filters, and evaluation (a result, and a failure's message).
+- Options, watches and filters are kept, and old breakpoints load.
+- lldb's errors read as one line.
+- Opt-in lldb-dap: a conditional breakpoint (`n == 2`) stops with `result` 4, a logpoint prints
+  "squaring 1", `result * 10` evaluates to 40, and the program's "total 14" reaches its pty,
+  not the adapter's output.
+
+Checked in Side on the demo package (now asking "How many points?" and throwing past 100):
+
+- The prompt showed in the program's Run tab, and typing 8 there ran it to `total: 35`.
+- A condition set in Edit Breakpoint (`a.x == 3`) stopped only there.
+- The console gave `b.y + dy` → `(Int) $R1 = 6`.
+- The watch `a.x * 100` went from 100 to 200 on the next stop.
+- Hovering `dx` showed `dx = 1`.
+- Swift Throw stopped in `check(_:)` at line 15 with `total 145`.

@@ -1172,6 +1172,29 @@ final class ShellViewController: NSViewController {
             runVC.reloadForTrackSwitch(trackKey: currentTrackKey)
         }
         runVC.attach(to: context.terminals)
+        // A debugged program's terminal (SIDE_RFC_DEBUGGER.md, step 2): a Run tab whose pty the
+        // program reads and writes. The tab's own process only holds the pty open.
+        makeVC.debugger.openProgramTerminal = { [weak self, weak context] title, directory in
+            guard let self, let terminals = context?.terminals else { return nil }
+            let launch = TerminalViewController.CommandLaunch(command: "sleep", arguments: ["2147483647"], environment: [:])
+            let session = terminals.makeCommandSession(forTrackKey: self.currentTrackKey ?? "", launch: launch, directory: directory, label: "Debug: \(title)")
+            session.viewController.start()
+            // The tab Run shows: the program may be waiting for input there.
+            let key = self.currentTrackKey ?? ""
+            if let index = terminals.sessions(forTrackKey: key).firstIndex(where: { $0 === session }) {
+                terminals.setActiveIndex(index, forTrackKey: key)
+            }
+            let fd = session.viewController.terminalView.process.childfd
+            guard fd >= 0, let name = ptsname(fd) else {
+                terminals.removeSession(session)
+                return nil
+            }
+            return DebugProgramTerminal(
+                tty: String(cString: name),
+                end: { [weak session] in session?.viewController.stopProcess() },
+                close: { [weak terminals, weak session] in if let session { terminals?.removeSession(session) } }
+            )
+        }
         reloadProjectTasks()
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
         thinkVC.onRevealFileAtLineRequested = { [weak self] url, line in

@@ -3995,6 +3995,45 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             self.hoverCard.show(content, near: anchor, in: window, preferAbove: true)
         }
         if !problems.isEmpty { present(nil) }
+        // Paused in the debugger: the expression's value, as Xcode's data tips show it; the
+        // language server's hover when there's none.
+        if debugger.isStopped, let expression = debugExpressionRange(around: range, in: tab.document.text) {
+            let text = tab.document.text.substring(with: expression)
+            Task { [weak self] in
+                guard let self else { return }
+                if let value = await self.debugger.hoverValue(text) {
+                    guard self.hoverRange == range, let window = self.view.window, let anchor = self.editor.screenRect(forCharacterRange: range) else { return }
+                    let content = NSMutableAttributedString(attributedString: Self.hoverContent(problems: problems, markdown: nil))
+                    if content.length > 0 { content.append(NSAttributedString(string: "\n\n")) }
+                    content.append(NSAttributedString(string: text + " = ", attributes: [.font: DS.Text.code(12), .foregroundColor: NSColor.secondaryLabelColor]))
+                    content.append(NSAttributedString(string: value, attributes: [.font: DS.Text.code(12, weight: .medium), .foregroundColor: NSColor.labelColor]))
+                    self.hoverCard.show(content, near: anchor, in: window, preferAbove: true)
+                } else {
+                    self.showLanguageServerHover(for: range, tab: tab, problems: problems, atCaret: atCaret, present: present)
+                }
+            }
+            return
+        }
+        showLanguageServerHover(for: range, tab: tab, problems: problems, atCaret: atCaret, present: present)
+    }
+
+    /// A word under the pointer with what it's a member of (`point.x`, `self.items`), for the
+    /// debugger to evaluate; nil if it isn't an identifier.
+    private func debugExpressionRange(around word: NSRange, in text: NSString) -> NSRange? {
+        guard word.length > 0, CompletionText.isWordUnit(text.character(at: word.location)) else { return nil }
+        var start = word.location
+        // Back through `name.` pairs.
+        while start >= 2, text.character(at: start - 1) == 0x2E, CompletionText.isWordUnit(text.character(at: start - 2)) {
+            var s = start - 2
+            while s > 0, CompletionText.isWordUnit(text.character(at: s - 1)) { s -= 1 }
+            start = s
+        }
+        let first = text.character(at: start)
+        guard !(0x30...0x39).contains(first) else { return nil }   // a number, not a name
+        return NSRange(location: start, length: NSMaxRange(word) - start)
+    }
+
+    private func showLanguageServerHover(for range: NSRange, tab: OpenTab, problems: [LSPDiagnostic], atCaret: Bool, present: @escaping (String?) -> Void) {
         guard let lspManager, lspManager.hovers(forExtension: tab.url.languageExtension) else {
             if problems.isEmpty, atCaret { NSSound.beep() }
             return
