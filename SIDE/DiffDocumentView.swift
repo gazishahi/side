@@ -348,7 +348,7 @@ final class DiffDocumentView: NSView {
                 let oldest = columns[index].highlighterOrder.removeFirst()
                 columns[index].highlighters[oldest] = nil
             }
-            let ext = (diff.files[file].path as NSString).pathExtension
+            let ext = SyntaxLanguage.languageExtension(forFileName: (diff.files[file].path as NSString).lastPathComponent)
             guard SyntaxLanguage.supports(ext), let own = columns[index].fileText[file] else { return nil }
             let buffer = columns[index].editor.buffer.text
             let rowsOfFile = own.rows

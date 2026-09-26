@@ -290,7 +290,7 @@ final class AlloyEditorDocument: EditorDocument {
     /// when the file's extension changes (a tab saved under a new name). A language not built yet
     /// is built off the main thread first: the text paints now and its colors follow.
     func highlight(url: URL, appearance: EditorAppearance) {
-        let ext = url.pathExtension.lowercased()
+        let ext = url.languageExtension
         guard ext != highlightedExtension else { return }
         highlightedExtension = ext
         guard SyntaxLanguage.supports(ext) else { highlighter = nil; onColorsChange?(); return }

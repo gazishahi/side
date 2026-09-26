@@ -2060,13 +2060,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func updateLSPIndicator() {
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
-              let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension),
-              let state = lspManager?.serverState(forExtension: openTabs[index].url.pathExtension), state != .none,
+              let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.languageExtension),
+              let state = lspManager?.serverState(forExtension: openTabs[index].url.languageExtension), state != .none,
               state != .unavailable || (entry.install != nil && entry.asksToInstall) else {
             lspStatusButton.isHidden = true
             return
         }
-        let language = LanguageSettings.preset(forExtension: openTabs[index].url.pathExtension)?.name.components(separatedBy: " and ").first
+        let language = LanguageSettings.preset(forExtension: openTabs[index].url.languageExtension)?.name.components(separatedBy: " and ").first
             ?? LSPStatusChip.languageName(entry.languageId)
         switch state {
         case .running: lspStatusButton.set(state: .verified, text: language, clickable: false, tip: "\(language) language server running")
@@ -2082,7 +2082,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     @objc private func showLSPStatusPopover() {
         guard let index = activeTabIndex, openTabs.indices.contains(index),
-              let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension) else { return }
+              let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.languageExtension) else { return }
         let tabURL = openTabs[index].url
         let content = LSPInstallPopoverViewController(entry: entry) { [weak self] in
             guard let self else { return }
@@ -2295,7 +2295,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         // And the server's fixes for them, if it has any.
         let tab = openTabs[index]
-        guard let lspManager, lspManager.capabilities(forExtension: tab.url.pathExtension)?.codeActions == true else {
+        guard let lspManager, lspManager.capabilities(forExtension: tab.url.languageExtension)?.codeActions == true else {
             return NSMenu.popUpContextMenu(menu, with: event, for: gutter)
         }
         let range = LSPRange(start: onLine.map(\.range.start).min { ($0.line, $0.character) < ($1.line, $1.character) }!,
@@ -3041,7 +3041,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let tab = openTabs[index]
         outlineGeneration += 1
         let generation = outlineGeneration
-        guard let lspManager, lspManager.capabilities(forExtension: tab.url.pathExtension)?.documentSymbols == true else {
+        guard let lspManager, lspManager.capabilities(forExtension: tab.url.languageExtension)?.documentSymbols == true else {
             return loadTreeOutline(tab, generation: generation)
         }
         lspManager.documentSymbols(url: tab.url) { [weak self] symbols in
@@ -3336,7 +3336,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return
         }
 
-        let ext = tab.url.pathExtension
+        let ext = tab.url.languageExtension
         let triggers = lspManager?.completionTriggers(forExtension: ext) ?? []
         let trigger = triggers.first { !$0.isEmpty && caret >= ($0 as NSString).length
             && text.substring(with: NSRange(location: caret - ($0 as NSString).length, length: ($0 as NSString).length)) == $0 }
@@ -3357,7 +3357,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         completionSession = session
         completionTabID = tab.id
         resolvedCompletions = []
-        let ext = tab.url.pathExtension
+        let ext = tab.url.languageExtension
         let tabID = tab.id
         guard let lspManager, LanguageServerRegistry.entry(forExtension: ext) != nil, !lspManager.isUnavailable(forExtension: ext) else {
             return completeFromBufferWords(tabID: tabID, ext: ext)
@@ -3595,7 +3595,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Find References: every use of the symbol at the caret, listed in the palette.
     @objc func findReferences(_ sender: Any?) {
         guard let index = activeTabIndex, openTabs[index].kind == .text, let lspManager,
-              lspManager.capabilities(forExtension: openTabs[index].url.pathExtension)?.findsReferences == true,
+              lspManager.capabilities(forExtension: openTabs[index].url.languageExtension)?.findsReferences == true,
               let word = hoverWordRange(at: editor.selectedRange.location) ?? hoverWordRange(at: max(0, editor.selectedRange.location - 1)) else { return NSSound.beep() }
         let tab = openTabs[index]
         referenceSymbol = (tab.document.text as NSString).substring(with: word)
@@ -3638,7 +3638,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// across files (a change to more than one file is shown first). One undo step per file.
     @objc func renameSymbol(_ sender: Any?) {
         guard let index = activeTabIndex, openTabs[index].kind == .text, let lspManager,
-              lspManager.capabilities(forExtension: openTabs[index].url.pathExtension)?.renames == true,
+              lspManager.capabilities(forExtension: openTabs[index].url.languageExtension)?.renames == true,
               let word = hoverWordRange(at: editor.selectedRange.location) ?? hoverWordRange(at: max(0, editor.selectedRange.location - 1)) else { return NSSound.beep() }
         let tab = openTabs[index]
         let point = tab.document.rope.position(of: word.location)
@@ -3743,7 +3743,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// under it; its preferred fix first.
     @objc func showQuickFixes(_ sender: Any?) {
         guard let index = activeTabIndex, openTabs[index].kind == .text, let lspManager,
-              lspManager.capabilities(forExtension: openTabs[index].url.pathExtension)?.codeActions == true else { return NSSound.beep() }
+              lspManager.capabilities(forExtension: openTabs[index].url.languageExtension)?.codeActions == true else { return NSSound.beep() }
         let tab = openTabs[index]
         let selection = editor.selectedRange
         let rope = tab.document.rope
@@ -3794,7 +3794,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func perform(_ action: LSPCodeAction, url: URL, resolved: Bool) {
         guard let lspManager else { return }
         if action.edit == nil, action.command == nil || !resolved,
-           !resolved, lspManager.capabilities(forExtension: url.pathExtension)?.resolvesCodeActions == true {
+           !resolved, lspManager.capabilities(forExtension: url.languageExtension)?.resolvesCodeActions == true {
             lspManager.resolve(action, url: url) { [weak self] resolvedAction in
                 self?.perform(resolvedAction ?? action, url: url, resolved: true)
             }
@@ -3813,7 +3813,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// edit asks again, so it follows the argument being typed and goes when the call closes.
     private func updateSignatureHelp(typed: String?) {
         guard let index = activeTabIndex, openTabs[index].kind == .text, editor.selectedRange.length == 0, let lspManager,
-              let triggers = lspManager.signatureTriggers(forExtension: openTabs[index].url.pathExtension) else { return hideSignatureHelp() }
+              let triggers = lspManager.signatureTriggers(forExtension: openTabs[index].url.languageExtension) else { return hideSignatureHelp() }
         let last = typed.flatMap { $0.last.map(String.init) }
         var context: LSPValue
         if let last, triggers.triggers.contains(last) {
@@ -3904,7 +3904,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     func editor(_ engine: EditorEngine, commandClickedAt characterIndex: Int) -> Bool {
         guard let index = activeTabIndex, openTabs[index].kind == .text, lspManager != nil,
-              LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension) != nil else { return false }
+              LanguageServerRegistry.entry(forExtension: openTabs[index].url.languageExtension) != nil else { return false }
         clearLinkUnderline()
         endHover()
         editor.selectedRange = NSRange(location: characterIndex, length: 0)
@@ -3947,7 +3947,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             self.hoverCard.show(content, near: anchor, in: window, preferAbove: true)
         }
         if !problems.isEmpty { present(nil) }
-        guard let lspManager, lspManager.hovers(forExtension: tab.url.pathExtension) else {
+        guard let lspManager, lspManager.hovers(forExtension: tab.url.languageExtension) else {
             if problems.isEmpty, atCaret { NSSound.beep() }
             return
         }
@@ -4001,7 +4001,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func updateLinkUnderline(at characterIndex: Int?, modifiers: NSEvent.ModifierFlags) {
         guard modifiers.intersection([.command, .option, .shift, .control]) == .command, let characterIndex,
               let index = activeTabIndex, openTabs[index].kind == .text,
-              LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension) != nil,
+              LanguageServerRegistry.entry(forExtension: openTabs[index].url.languageExtension) != nil,
               let range = hoverWordRange(at: characterIndex), range.length > 1 || CompletionText.isWordUnit(openTabs[index].document.text.character(at: range.location)) else {
             return clearLinkUnderline()
         }
@@ -4657,10 +4657,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func runFormatterIfNeeded(tabID: UUID, url: URL, contentAtSaveTime: String, completion: @escaping (Bool) -> Void) {
         // Settings → Languages: off, on (the project's formatter, else the language server's),
         // or as before (the project's formatter when it has one).
-        let setting = LanguageSettings.shared.formatOnSave(forExtension: url.pathExtension)
+        let setting = LanguageSettings.shared.formatOnSave(forExtension: url.languageExtension)
         guard setting != false, let focusedRoot, let formatter = Self.formatterCommand(for: url, projectRoot: focusedRoot) else {
             if setting == true, let index = indexForTab(id: tabID), activeTabIndex == index,
-               let lspManager, lspManager.formats(forExtension: url.pathExtension) {
+               let lspManager, lspManager.formats(forExtension: url.languageExtension) {
                 formatWithLanguageServer(tabID: tabID, original: contentAtSaveTime, then: { [weak self] in self?.saveAfterFormatting(tabID: tabID) })
             }
             finishSave(tabID: tabID)
@@ -4790,7 +4790,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let start = rope.offset(ofLine: firstLine), end = rope.range(ofLine: lastLine).upperBound
         let original = tab.document.string
         let tabID = tab.id
-        if let lspManager, lspManager.capabilities(forExtension: tab.url.pathExtension)?.formatsRanges == true {
+        if let lspManager, lspManager.capabilities(forExtension: tab.url.languageExtension)?.formatsRanges == true {
             let unit = Self.indentUnit(in: tab.document.text, near: NSRange(location: start, length: 0))
             let range = LSPRange(start: LSPPosition(line: firstLine, character: 0), end: LSPPosition(line: lastLine, character: end - rope.offset(ofLine: lastLine)))
             lspManager.formatRange(url: tab.url, range: range, tabSize: unit == "\t" ? 4 : unit.count, insertSpaces: unit != "\t") { [weak self] edits in
@@ -4833,7 +4833,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func formatWithLanguageServer(tabID: UUID, original: String, then: (() -> Void)? = nil) {
-        guard let index = indexForTab(id: tabID), let lspManager, lspManager.formats(forExtension: openTabs[index].url.pathExtension) else { return NSSound.beep() }
+        guard let index = indexForTab(id: tabID), let lspManager, lspManager.formats(forExtension: openTabs[index].url.languageExtension) else { return NSSound.beep() }
         let tab = openTabs[index]
         let unit = Self.indentUnit(in: tab.document.text, near: NSRange(location: 0, length: 0))
         lspManager.format(url: tab.url, tabSize: unit == "\t" ? 4 : unit.count, insertSpaces: unit != "\t") { [weak self] edits in

@@ -96,7 +96,7 @@ final class LSPManager: @unchecked Sendable {
     }
 
     func opened(url: URL, text: Rope) {
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { return }
         documentVersions[url] = 1
         openDocuments[url] = (entry.languageId, text)
         pendingEdits[url] = nil
@@ -124,7 +124,7 @@ final class LSPManager: @unchecked Sendable {
     /// Sends an open document's waiting edits as one `didChange`.
     func flush(url: URL) {
         guard let pending = pendingEdits.removeValue(forKey: url), let document = openDocuments[url],
-              let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+              let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { return }
         let changes = Self.contentChanges(for: pending.edits, from: document.text)
         // The editor's rope, not the one the changes were counted on: the same text, and its
         // storage is the editor's own.
@@ -149,7 +149,7 @@ final class LSPManager: @unchecked Sendable {
     }
 
     func saved(url: URL) {
-        guard openDocuments[url] != nil, let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+        guard openDocuments[url] != nil, let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { return }
         flush(url: url)
         onQueue(for: entry) { $0.enqueue(.didSave(uri: url.absoluteString)) }
     }
@@ -158,7 +158,7 @@ final class LSPManager: @unchecked Sendable {
         documentVersions[url] = nil
         openDocuments[url] = nil
         pendingEdits[url] = nil
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { return }
         onQueue(for: entry) { $0.enqueue(.didClose(uri: url.absoluteString)) }
     }
 
@@ -170,7 +170,7 @@ final class LSPManager: @unchecked Sendable {
     }
 
     func definition(url: URL, position: LSPPosition, completion: @escaping @Sendable ([LSPLocation]) -> Void) {
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion([]); return }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { completion([]); return }
         flush(url: url)
         onQueue(for: entry) {
             $0.enqueue(.definition(uri: url.absoluteString, position: position) { result in
@@ -187,7 +187,7 @@ final class LSPManager: @unchecked Sendable {
     /// the answer stops mattering.
     @discardableResult
     func completion(url: URL, position: LSPPosition, context: CompletionContext, token: LSPRequestToken = LSPRequestToken(), completion: @escaping @Sendable (LSPCompletionList?) -> Void) -> LSPRequestToken {
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return token }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { completion(nil); return token }
         flush(url: url)
         onQueue(for: entry) {
             $0.enqueue(.completion(uri: url.absoluteString, position: position, context: context, token: token) { result in
@@ -204,7 +204,7 @@ final class LSPManager: @unchecked Sendable {
     @discardableResult
     func resolve(_ item: LSPCompletionItem, url: URL, completion: @escaping @Sendable (LSPCompletionItem?) -> Void) -> LSPRequestToken {
         let token = LSPRequestToken()
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension),
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension),
               serverCapabilities[entry.binaryName]?.completionResolves == true else { completion(nil); return token }
         onQueue(for: entry) {
             $0.enqueue(.resolve(item: item.raw, uri: url.absoluteString, token: token) { result in
@@ -232,7 +232,7 @@ final class LSPManager: @unchecked Sendable {
     @discardableResult
     func signatureHelp(url: URL, position: LSPPosition, context: LSPValue, completion: @escaping @Sendable (LSPSignatureHelp?) -> Void) -> LSPRequestToken {
         let token = LSPRequestToken()
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return token }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { completion(nil); return token }
         flush(url: url)
         onQueue(for: entry) {
             $0.enqueue(.signatureHelp(uri: url.absoluteString, position: position, context: context, token: token) { result in
@@ -246,7 +246,7 @@ final class LSPManager: @unchecked Sendable {
     @discardableResult
     func hover(url: URL, position: LSPPosition, completion: @escaping @Sendable (LSPHover?) -> Void) -> LSPRequestToken {
         let token = LSPRequestToken()
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return token }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { completion(nil); return token }
         flush(url: url)
         onQueue(for: entry) {
             $0.enqueue(.hover(uri: url.absoluteString, position: position, token: token) { result in
@@ -267,7 +267,7 @@ final class LSPManager: @unchecked Sendable {
     @discardableResult
     func send<T: Sendable>(_ method: String, url: URL, params: LSPValue, decode: @escaping @Sendable (LSPResult?) -> T?, completion: @escaping @Sendable (T?) -> Void) -> LSPRequestToken {
         let token = LSPRequestToken()
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return token }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { completion(nil); return token }
         flush(url: url)
         onQueue(for: entry) {
             $0.enqueue(.request(method: method, uri: url.absoluteString, params: params, token: token) { result in
@@ -302,7 +302,7 @@ final class LSPManager: @unchecked Sendable {
     /// Whether the symbol at `position` can be renamed, and the range of its name: nil if not.
     /// A server that doesn't prepare says yes, with no range.
     func prepareRename(url: URL, position: LSPPosition, completion: @escaping @Sendable (Result<LSPRange?, LSPRenameRefusal>) -> Void) {
-        guard capabilities(forExtension: url.pathExtension)?.preparesRename == true else { return completion(.success(nil)) }
+        guard capabilities(forExtension: url.languageExtension)?.preparesRename == true else { return completion(.success(nil)) }
         send("textDocument/prepareRename", url: url, params: ["textDocument": ["uri": .string(url.absoluteString)], "position": Self.position(position)],
              decode: { result -> Result<LSPRange?, LSPRenameRefusal>? in
                  guard let result, !result.isNull else { return .failure(LSPRenameRefusal()) }
@@ -346,7 +346,7 @@ final class LSPManager: @unchecked Sendable {
 
     /// The server's edits that format the document as it is now; nil if it gave none.
     func format(url: URL, tabSize: Int, insertSpaces: Bool, completion: @escaping @Sendable ([LSPTextEdit]?) -> Void) {
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { completion(nil); return }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { completion(nil); return }
         flush(url: url)
         onQueue(for: entry) {
             $0.enqueue(.formatting(uri: url.absoluteString, tabSize: tabSize, insertSpaces: insertSpaces) { result in
@@ -359,7 +359,7 @@ final class LSPManager: @unchecked Sendable {
     func cancel(_ token: LSPRequestToken, url: URL) {
         guard !token.isCancelled else { return }
         token.cancel()
-        guard let entry = LanguageServerRegistry.entry(forExtension: url.pathExtension) else { return }
+        guard let entry = LanguageServerRegistry.entry(forExtension: url.languageExtension) else { return }
         onQueue(for: entry) { $0.enqueue(.cancel(token, uri: url.absoluteString)) }
     }
 
@@ -509,7 +509,7 @@ final class LSPManager: @unchecked Sendable {
         let queue = queue(for: entry)
         if crashedBinaries.remove(entry.binaryName) != nil {
             let mine = openDocuments
-                .filter { LanguageServerRegistry.entry(forExtension: $0.key.pathExtension)?.binaryName == entry.binaryName }
+                .filter { LanguageServerRegistry.entry(forExtension: $0.key.languageExtension)?.binaryName == entry.binaryName }
                 .sorted { $0.key.path < $1.key.path }
             for (url, _) in mine { documentVersions[url] = 1 }
             let replay = Self.respawnOps(

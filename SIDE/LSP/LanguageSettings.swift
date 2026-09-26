@@ -250,6 +250,8 @@ final class LanguageSettings: @unchecked Sendable {
                        servers: [s("csharp-ls", "csharp-ls", "csharp-ls", [], .dotnet("csharp-ls"))], asksToInstall: false),
         LanguagePreset(id: "php", name: "PHP", extensions: [("php", "php")],
                        servers: [s("intelephense", "Intelephense", "intelephense", ["--stdio"], .npm("intelephense"))], asksToInstall: false),
+        LanguagePreset(id: "dockerfile", name: "Dockerfile", extensions: [("dockerfile", "dockerfile")],
+                       servers: [s("docker-langserver", "Dockerfile Language Server", "docker-langserver", ["--stdio"], .npm("dockerfile-language-server-nodejs"))], asksToInstall: false),
         LanguagePreset(id: "markdown", name: "Markdown", extensions: [("md", "markdown"), ("markdown", "markdown")],
                        servers: [s("marksman", "Marksman", "marksman", ["server"], .brew("marksman"))], asksToInstall: false),
     ]

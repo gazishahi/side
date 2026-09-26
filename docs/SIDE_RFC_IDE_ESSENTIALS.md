@@ -418,6 +418,41 @@ Tests:
 - Tests: `LanguageSettingsTests` covers presets, alternatives, your own command, None, a
   language of your own, configuration sections, and format on save.
 
+**Step 6, 2026-09-26.**
+
+- **Language servers, checked properly:**
+  - Homebrew has no `sqls` formula; my preset named one that doesn't exist.
+  - The npm `sql-language-server` installs but exits at once on current Node, so SQL uses sqls,
+    installed with `go install` and found in `~/go/bin`.
+  - Install first checks that its installer (Homebrew, npm, Go, RubyGems, .NET) is there, and
+    says what to get if it isn't.
+  - A server that exits as it starts shows "didn't start" on the chip and isn't respawned on
+    every edit.
+  - Two opt-in tests: `SIDE_NETWORK_TESTS=1` asks each registry that every install names a real
+    package and installs the command Side runs; `SIDE_SERVER_TESTS=1` starts every installed
+    preset and waits for its `initialize` reply. Both pass. SQL was checked in Side: installed
+    from the pane, then running on a Khidma migration.
+- **Alloy (0.5.0, not yet published):** eleven grammars, vendored as the Swift one is (the
+  generated parser and scanner, the grammar's own MIT license, symbols renamed): YAML, TOML,
+  HTML, CSS, SCSS, Bash, Java, PHP, Dockerfile, Make and SQL.
+  - Their highlight queries are their own. SCSS's old `match?` spelling became `#match?`, and
+    the theme gained `constant` and CSS's at-rule captures.
+  - Files are matched by name as well as extension (`SyntaxLanguage.languageExtension`):
+    Dockerfile, Dockerfile.*, Containerfile, Makefile, GNUmakefile, and shell dotfiles.
+  - The outline covers them: YAML keys, TOML tables, CSS rules, shell functions, Java and PHP
+    declarations, Dockerfile stages, Make targets, SQL tables, views and functions.
+- **Size:** the eleven compile to about 6 MB of objects, inside the 12 MB budget. Kotlin
+  (4.1 MB) and C# (5.4 MB) alone would take the total to about 15.5 MB, so they wait for
+  grammar packs, or for the owner to accept the size. Their servers work already; only their
+  colors wait.
+- **Side:** every language lookup goes by `URL.languageExtension`, so a `Dockerfile` is colored
+  and gets its server (docker-langserver, npm).
+- Checked in Side: `netlify.toml`, `pnpm-workspace.yaml`, a SQL migration and a Dockerfile are
+  colored.
+- Tests:
+  - Alloy: every language loads, its query compiles, and a sample is colored (24 languages).
+  - Alloy: files known by name, and the new languages' outlines.
+
 ## Progress
 
 - [x] 1 LSP foundation and completion (below)
@@ -425,7 +460,7 @@ Tests:
 - [x] 3 Problems, references, rename, quick fixes (below)
 - [x] 4 Outline, symbols, formatting (below)
 - [x] 5 Settings → Languages (below)
-- [ ] 6 More grammars
+- [x] 6 More grammars (below; Kotlin and C# held back)
 - [ ] 7 Keymaps
 - [ ] 8 Themes
 - [ ] 9 Budgets
