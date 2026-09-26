@@ -1973,6 +1973,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         endCompletion()
+        if tab.kind == .text {
+            editor.setLanguage(lineComment: LineComments.token(forExtension: tab.url.languageExtension),
+                               indentUnit: Self.indentUnit(in: tab.document.text, near: NSRange(location: 0, length: 0)))
+        }
         hideSignatureHelp()
         endHover()
         DispatchQueue.main.async { [weak self] in self?.updateCaretPosition() }
@@ -4374,6 +4378,30 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Shortcuts.bind(viewMenu.addItem(withTitle: "Show Minimap", action: #selector(toggleMinimap(_:)), keyEquivalent: ""), "view.minimap")
         viewItem.submenu = viewMenu
 
+        // The editing commands a keymap binds (Alloy's, reached through the responder chain).
+        let editorItem = NSMenuItem(title: "Editor", action: nil, keyEquivalent: "")
+        let editorMenu = NSMenu(title: "Editor")
+        let groups: [[(String, Selector, String)]] = [
+            [("Toggle Comment", #selector(AlloyTextView.toggleLineComment(_:)), "editor.toggleComment")],
+            [("Move Line Up", #selector(AlloyTextView.moveLinesUp(_:)), "editor.moveLineUp"),
+             ("Move Line Down", #selector(AlloyTextView.moveLinesDown(_:)), "editor.moveLineDown"),
+             ("Duplicate Line", #selector(AlloyTextView.duplicateLines(_:)), "editor.duplicateLine"),
+             ("Delete Line", #selector(AlloyTextView.deleteLines(_:)), "editor.deleteLine"),
+             ("Join Lines", #selector(AlloyTextView.joinLines(_:)), "editor.joinLines")],
+            [("Indent", #selector(AlloyTextView.indentLines(_:)), "editor.indent"),
+             ("Outdent", #selector(AlloyTextView.outdentLines(_:)), "editor.outdent")],
+            [("Select Next Occurrence", #selector(AlloyTextView.selectNextOccurrence(_:)), "editor.selectNextOccurrence"),
+             ("Select All Occurrences", #selector(AlloyTextView.selectAllOccurrences(_:)), "editor.selectAllOccurrences"),
+             ("Expand Selection", #selector(AlloyTextView.expandSelection(_:)), "editor.expandSelection"),
+             ("Shrink Selection", #selector(AlloyTextView.shrinkSelection(_:)), "editor.shrinkSelection"),
+             ("Go to Matching Bracket", #selector(AlloyTextView.goToMatchingBracket(_:)), "editor.matchingBracket")],
+        ]
+        for (index, group) in groups.enumerated() {
+            if index > 0 { editorMenu.addItem(.separator()) }
+            for (title, selector, id) in group { Shortcuts.bind(editorMenu.addItem(withTitle: title, action: selector, keyEquivalent: ""), id) }
+        }
+        editorItem.submenu = editorMenu
+
         let navigateItem = NSMenuItem(title: "Navigate", action: nil, keyEquivalent: "")
         let navigateMenu = NSMenu(title: "Navigate")
         // Palette items target the shell, which is always in the responder chain — as Make
@@ -4469,7 +4497,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         windowItem.submenu = windowMenu
 
-        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(viewItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(trackItem); main.addItem(windowItem)
+        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(viewItem); main.addItem(editorItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(trackItem); main.addItem(windowItem)
         NSApp.mainMenu = main
         NSApp.windowsMenu = windowMenu
     }

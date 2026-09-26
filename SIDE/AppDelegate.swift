@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("stage ") { shell.showStageForTesting(String(command.dropFirst(6))) }
                     if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
                     if command == "switcher" { shell.toggleTrackPopover(nil) }
+                    if command.hasPrefix("keymap "), let keymap = Shortcuts.Keymap(rawValue: String(command.dropFirst(7))) { Shortcuts.keymap = keymap }
                     if command.hasPrefix("pin-only ") { StagePins.pinned = [ShellViewController.Stage(rawValue: String(command.dropFirst(9)))].compactMap { $0 }.reduce(into: Set()) { $0.insert($1) } }
                     if command.hasPrefix("run-type ") { shell.runTypeForTesting(String(command.dropFirst(9))) }
                     // Any menu action, down the responder chain: "action foldAll:".

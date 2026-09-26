@@ -33,6 +33,8 @@ protocol EditorEngine: AnyObject, Sendable {
     var selectedRange: NSRange { get set }
     var visibleRect: NSRect { get }
 
+    /// The file's line comment (Toggle Comment) and indent (Indent, Outdent).
+    func setLanguage(lineComment: String?, indentUnit: String)
     func scrollRangeToVisible(_ range: NSRange)
     /// Scrolls so the range's line sits in the middle (arriving at a definition, a line).
     func centerRange(_ range: NSRange)

@@ -15,15 +15,33 @@ final class ShortcutsTests: XCTestCase {
         super.tearDown()
     }
 
-    func testNoTwoMenuCommandsShareADefault() {
+    func testNoTwoMenuCommandsShareADefaultInAnyKeymap() {
         let menu = Shortcuts.all.filter { !$0.isFixed }
-        var seen: [KeyChord: String] = [:]
-        for command in menu {
-            guard let chord = command.defaultChord else { continue }
-            XCTAssertNil(seen[chord], "\(command.id) and \(seen[chord] ?? "") both default to \(chord.display)")
-            seen[chord] = command.id
+        for keymap in Shortcuts.Keymap.allCases {
+            var seen: [KeyChord: String] = [:]
+            for command in menu {
+                guard let chord = Shortcuts.defaultChord(command.id, in: keymap) else { continue }
+                XCTAssertNil(seen[chord], "\(keymap.title): \(command.id) and \(seen[chord] ?? "") both default to \(chord.display)")
+                seen[chord] = command.id
+            }
+            // A preset only names commands that exist.
+            for id in Shortcuts.presets[keymap]?.keys ?? [:].keys { XCTAssertNotNil(Shortcuts.command(id), "\(keymap.title) names \(id)") }
         }
         XCTAssertEqual(Set(Shortcuts.all.map(\.id)).count, Shortcuts.all.count, "ids are unique")
+    }
+
+    func testAKeymapChangesDefaultsAndKeepsThePersonsOwn() {
+        Shortcuts.set(KeyChord("y", [.command, .control]), for: "editor.toggleComment")
+        Shortcuts.keymap = .vscode
+        defer { Shortcuts.keymap = .xcode }
+        XCTAssertEqual(Shortcuts.chord("editor.selectNextOccurrence"), KeyChord("d"))
+        XCTAssertEqual(Shortcuts.chord("navigate.jumpToDefinition")?.display, "F12")
+        XCTAssertEqual(Shortcuts.chord("editor.toggleComment"), KeyChord("y", [.command, .control]), "your own stays on top")
+        Shortcuts.keymap = .jetbrains
+        XCTAssertEqual(Shortcuts.chord("navigate.jumpToDefinition"), KeyChord("b"))
+        XCTAssertEqual(Shortcuts.chord("editor.deleteLine")?.display, "\u{2318}\u{232B}")
+        Shortcuts.keymap = .xcode
+        XCTAssertEqual(Shortcuts.chord("editor.duplicateLine"), KeyChord("d"))
     }
 
     /// Every key in the menu bar is one of the table's, with the table's chord.

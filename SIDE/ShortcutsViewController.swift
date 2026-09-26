@@ -36,7 +36,12 @@ final class ShortcutsViewController: NSViewController, NSSearchFieldDelegate {
     }
 
     private func rebuild() {
-        var views: [NSView] = [SettingsSplitViewController.hero(.shortcuts), search]
+        let keymap = SettingsForm.popup(Shortcuts.Keymap.allCases.map(\.title), selected: Shortcuts.Keymap.allCases.firstIndex(of: Shortcuts.keymap) ?? 0, self, #selector(keymapChosen(_:)))
+        keymap.setAccessibilityLabel("Keymap")
+        var views: [NSView] = [SettingsSplitViewController.hero(.shortcuts),
+                               SettingsForm.section(footer: "Each keymap sets the defaults below; a shortcut you change stays yours whichever you pick.",
+                                                    [SettingsForm.row("Keymap", detail: "Whose keys: Xcode's, VS Code's or JetBrains'.", keymap)]),
+                               search]
         var shown = 0
         for area in Shortcuts.Area.allCases {
             let commands = Shortcuts.all.filter { $0.area == area && Self.matches($0, query) }
@@ -65,8 +70,8 @@ final class ShortcutsViewController: NSViewController, NSSearchFieldDelegate {
             let reset = NSButton(title: "", target: nil, action: nil)
             reset.isBordered = false
             reset.attributedTitle = NSAttributedString(string: "Reset", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.secondaryLabelColor])
-            reset.setAccessibilityLabel("Reset \(command.title) to \(command.defaultChord?.display ?? "none")")
-            reset.toolTip = "Back to \(command.defaultChord?.display ?? "none")"
+            reset.setAccessibilityLabel("Reset \(command.title) to \(Shortcuts.defaultChord(command.id)?.display ?? "none")")
+            reset.toolTip = "Back to \(Shortcuts.defaultChord(command.id)?.display ?? "none")"
             let target = ClosureTarget { Shortcuts.reset(command.id) }
             reset.target = target
             reset.action = #selector(ClosureTarget.run)
@@ -105,6 +110,12 @@ final class ShortcutsViewController: NSViewController, NSSearchFieldDelegate {
     }
 
     @objc private func resetAll() { Shortcuts.resetAll() }
+
+    @objc private func keymapChosen(_ sender: NSPopUpButton) {
+        let chosen = Shortcuts.Keymap.allCases[max(0, sender.indexOfSelectedItem)]
+        guard chosen != Shortcuts.keymap else { return }
+        Shortcuts.keymap = chosen
+    }
 }
 
 /// A button showing a command's chord; click it and press new keys. Escape cancels, Delete

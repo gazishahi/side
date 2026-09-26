@@ -442,9 +442,9 @@ Tests:
   - The outline covers them: YAML keys, TOML tables, CSS rules, shell functions, Java and PHP
     declarations, Dockerfile stages, Make targets, SQL tables, views and functions.
 - **Size:** the eleven compile to about 6 MB of objects, inside the 12 MB budget. Kotlin
-  (4.1 MB) and C# (5.4 MB) alone would take the total to about 15.5 MB, so they wait for
-  grammar packs, or for the owner to accept the size. Their servers work already; only their
-  colors wait.
+  (4.1 MB) and C# (5.4 MB) alone would take the total to about 15.5 MB, so they wait. The owner
+  wants both eventually (2026-09-26), with grammar packs or a larger budget. Their servers work
+  already; only their colors wait.
 - **Side:** every language lookup goes by `URL.languageExtension`, so a `Dockerfile` is colored
   and gets its server (docker-langserver, npm).
 - Checked in Side: `netlify.toml`, `pnpm-workspace.yaml`, a SQL migration and a Dockerfile are
@@ -452,6 +452,40 @@ Tests:
 - Tests:
   - Alloy: every language loads, its query compiles, and a sample is colored (24 languages).
   - Alloy: files known by name, and the new languages' outlines.
+
+**Step 7, 2026-09-26.**
+
+- **Alloy (0.6.0, not yet published):** the editing commands as named actions on
+  `AlloyTextView`, each on every selection and one undo step:
+  - toggle line comment (at the lines' shared indent, blank lines left alone; the owner sets
+    `lineComment`);
+  - move lines up and down, duplicate lines (the caret goes onto the copy), delete lines,
+    join lines;
+  - indent and outdent (`indentUnit`);
+  - select next occurrence (a caret takes its word first) and select all occurrences;
+  - expand and shrink selection, through `onExpandSelection`, which Side answers from the
+    syntax tree (`SyntaxHighlighter.enclosingRange`);
+  - go to matching bracket.
+- **Side:**
+  - An Editor menu holds all of them, and each is in the shortcuts table.
+  - The comment marker and indent come from each file's language (`LineComments`).
+- **Keymaps:**
+  - Xcode (the table, the default), VS Code and JetBrains; each preset lists only where it
+    differs.
+  - VS Code gets ⌘D for next occurrence, ⌥↑/⌥↓ to move lines, F12 for definition, F2 to
+    rename, ⌃G for go to line and ⌘. for quick fix, with Stop moving to ⌥⌘.
+  - JetBrains gets ⌘B for definition, ⌥⇧↑/↓ to move lines, ⌥↑/⌥↓ to expand and shrink,
+    ⌘⌫ to delete a line, ⌥⌘L to format, ⌥↩ for quick fix, and F1 for Quick Help.
+  - Function keys can now be bound and shown.
+  - Settings → Shortcuts has a keymap menu. A shortcut you set yourself stays on top of
+    whichever keymap is chosen, and Reset goes back to that keymap's default.
+- Checked in Side with the Xcode keys (⌘/, ⌥⌘], ⌘D), then VS Code's ⌥↑ (macOS takes ⌥-arrow
+  chords as menu shortcuts).
+- Tests:
+  - Alloy: `EditingActionsTests`.
+  - Side: no two commands share a default in any keymap, presets name real commands, and a
+    keymap keeps the person's own changes.
+- Vim mode builds on these actions, in its own RFC.
 
 ## Progress
 
@@ -461,6 +495,6 @@ Tests:
 - [x] 4 Outline, symbols, formatting (below)
 - [x] 5 Settings → Languages (below)
 - [x] 6 More grammars (below; Kotlin and C# held back)
-- [ ] 7 Keymaps
+- [x] 7 Keymaps (below)
 - [ ] 8 Themes
 - [ ] 9 Budgets

@@ -51,6 +51,10 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
             guard let self else { return }
             self.delegate?.editorPointerExited(self)
         }
+        // Expand Selection grows through the syntax tree's nodes.
+        view.onExpandSelection = { [weak self] range in
+            (self?.document as? AlloyEditorDocument)?.highlighter?.enclosingRange(of: range)
+        }
         view.onCommandClick = { [weak self] offset in
             guard let self else { return false }
             return self.delegate?.editor(self, commandClickedAt: offset) ?? false
@@ -154,6 +158,11 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     var visibleRect: NSRect { view.textView.visibleRect }
 
     func scrollRangeToVisible(_ range: NSRange) { view.scrollToVisible(offset: range.location) }
+
+    func setLanguage(lineComment: String?, indentUnit: String) {
+        view.lineComment = lineComment
+        view.indentUnit = indentUnit
+    }
 
     func centerRange(_ range: NSRange) {
         let line = view.rect(forCharacterRange: range.location..<range.location)

@@ -30,11 +30,15 @@ struct KeyChord: Equatable, Hashable, Codable {
         case " ": return "Space"
         case "\u{1B}": return "\u{238B}"
         case "\u{8}", "\u{7F}": return "\u{232B}"
+        case "\\": return "\\"
         case String(Character(UnicodeScalar(NSUpArrowFunctionKey)!)): return "\u{2191}"
         case String(Character(UnicodeScalar(NSDownArrowFunctionKey)!)): return "\u{2193}"
         case String(Character(UnicodeScalar(NSLeftArrowFunctionKey)!)): return "\u{2190}"
         case String(Character(UnicodeScalar(NSRightArrowFunctionKey)!)): return "\u{2192}"
-        default: return key.uppercased()
+        default:
+            // F1–F20.
+            if let scalar = key.unicodeScalars.first, scalar.value >= 0xF704, scalar.value <= 0xF717 { return "F\(scalar.value - 0xF704 + 1)" }
+            return key.uppercased()
         }
     }
 
@@ -85,6 +89,8 @@ enum Shortcuts {
     static let down = String(Character(UnicodeScalar(NSDownArrowFunctionKey)!))
     static let left = String(Character(UnicodeScalar(NSLeftArrowFunctionKey)!))
     static let right = String(Character(UnicodeScalar(NSRightArrowFunctionKey)!))
+    static func f(_ n: Int) -> String { String(Character(UnicodeScalar(UInt32(NSF1FunctionKey) + UInt32(n - 1))!)) }
+    static let backspace = "\u{8}"
 
     static let all: [Command] = [
         c("app.preferences", "Settings\u{2026}", .app, ","),
@@ -166,6 +172,19 @@ enum Shortcuts {
         c("editor.rename", "Rename Symbol\u{2026}", .editor, "e", [.control, .command]),
         c("editor.quickFix", "Quick Fix\u{2026}", .editor, ".", [.command, .option]),
         c("editor.problems", "Show Problems", .editor, "m", [.command, .shift]),
+        c("editor.toggleComment", "Toggle Comment", .editor, "/"),
+        c("editor.moveLineUp", "Move Line Up", .editor, "[", [.command, .option]),
+        c("editor.moveLineDown", "Move Line Down", .editor, "]", [.command, .option]),
+        c("editor.duplicateLine", "Duplicate Line", .editor, "d"),
+        c("editor.deleteLine", "Delete Line", .editor, "k", [.command, .shift]),
+        c("editor.indent", "Indent", .editor, "]"),
+        c("editor.outdent", "Outdent", .editor, "["),
+        c("editor.joinLines", "Join Lines", .editor, nil),
+        c("editor.selectNextOccurrence", "Select Next Occurrence", .editor, "e", [.command, .option]),
+        c("editor.selectAllOccurrences", "Select All Occurrences", .editor, "e", [.command, .option, .shift]),
+        c("editor.expandSelection", "Expand Selection", .editor, right, [.command, .control, .shift]),
+        c("editor.shrinkSelection", "Shrink Selection", .editor, left, [.command, .control, .shift]),
+        c("editor.matchingBracket", "Go to Matching Bracket", .editor, "\\", [.command, .shift]),
         fixed("editor.caretAbove", "Add a caret above", .editor, up, [.command, .option]),
         fixed("editor.caretBelow", "Add a caret below", .editor, down, [.command, .option]),
         fixed("editor.oneCaret", "Back to one caret", .editor, "\u{1B}"),
@@ -202,14 +221,75 @@ enum Shortcuts {
         set { defaults.set(newValue, forKey: defaultsKey) }
     }
 
-    /// The chord in effect: the person's, else the default.
+    /// The chord in effect: the person's, else the keymap's default.
     static func chord(_ id: String) -> KeyChord? {
         if let stored = overrides[id] {
             guard !stored.isEmpty, let colon = stored.firstIndex(of: ":"), let modifiers = UInt(stored[..<colon]) else { return nil }
             return KeyChord(String(stored[stored.index(after: colon)...]), NSEvent.ModifierFlags(rawValue: modifiers))
         }
+        return defaultChord(id)
+    }
+
+    // MARK: Keymaps (SIDE_RFC_IDE_ESSENTIALS.md, L5)
+
+    /// Whose keys: Xcode's (Side's own, the table above), VS Code's or JetBrains'. The person's
+    /// own changes sit on top of whichever it is.
+    enum Keymap: String, CaseIterable {
+        case xcode, vscode, jetbrains
+        var title: String {
+            switch self {
+            case .xcode: return "Xcode"
+            case .vscode: return "VS Code"
+            case .jetbrains: return "JetBrains"
+            }
+        }
+    }
+
+    private static let keymapKey = "SideKeymap"
+
+    static var keymap: Keymap {
+        get { Keymap(rawValue: defaults.string(forKey: keymapKey) ?? "") ?? .xcode }
+        set {
+            defaults.set(newValue.rawValue, forKey: keymapKey)
+            all.forEach { refreshBoundItems($0.id) }
+            NotificationCenter.default.post(name: didChangeNotification, object: nil)
+        }
+    }
+
+    /// A command's default in the current keymap (nil: none).
+    static func defaultChord(_ id: String) -> KeyChord? { defaultChord(id, in: keymap) }
+
+    static func defaultChord(_ id: String, in keymap: Keymap) -> KeyChord? {
+        if let preset = presets[keymap], let chord = preset[id] { return chord }
         return command(id)?.defaultChord
     }
+
+    /// Where each keymap differs from the table (Xcode's): id → chord, or nil to have none.
+    static let presets: [Keymap: [String: KeyChord?]] = [
+        .vscode: [
+            "editor.moveLineUp": KeyChord(up, .option), "editor.moveLineDown": KeyChord(down, .option),
+            "editor.duplicateLine": KeyChord(down, [.option, .shift]),
+            "editor.selectNextOccurrence": KeyChord("d"), "editor.selectAllOccurrences": KeyChord("l", [.command, .shift]),
+            "window.library": KeyChord("l", [.command, .option]),
+            "navigate.goToLine": KeyChord("g", .control),
+            "navigate.jumpToDefinition": KeyChord(f(12), []), "editor.references": KeyChord(f(12), .shift),
+            "editor.rename": KeyChord(f(2), []),
+            "editor.quickFix": KeyChord("."), "run.stop": KeyChord(".", [.command, .option]),
+            "editor.joinLines": KeyChord("j", .control),
+        ],
+        .jetbrains: [
+            "editor.moveLineUp": KeyChord(up, [.option, .shift]), "editor.moveLineDown": KeyChord(down, [.option, .shift]),
+            "editor.deleteLine": KeyChord(backspace),
+            "editor.selectNextOccurrence": KeyChord("g", .control), "editor.selectAllOccurrences": KeyChord("g", [.command, .control]),
+            "editor.expandSelection": KeyChord(up, .option), "editor.shrinkSelection": KeyChord(down, .option),
+            "editor.matchingBracket": KeyChord("m", [.control, .shift]),
+            "editor.joinLines": KeyChord("j", [.control, .shift]),
+            "navigate.jumpToDefinition": KeyChord("b"), "editor.references": KeyChord(f(7), .option),
+            "editor.rename": KeyChord(f(6), .shift), "editor.format": KeyChord("l", [.command, .option]),
+            "editor.quickFix": KeyChord("\r", .option), "editor.quickHelp": KeyChord(f(1), []),
+            "navigate.goToSymbol": KeyChord("o", [.command, .option]), "navigate.quickOpen": KeyChord("o", [.command, .shift]),
+        ],
+    ]
 
     static func isChanged(_ id: String) -> Bool { overrides[id] != nil }
 
@@ -226,7 +306,7 @@ enum Shortcuts {
     static func set(_ chord: KeyChord?, for id: String) {
         guard let command = command(id), !command.isFixed else { return }
         var stored = overrides
-        if chord == command.defaultChord {
+        if chord == defaultChord(id) {
             stored[id] = nil
         } else {
             stored[id] = chord.map { "\($0.modifiers):\($0.key)" } ?? ""

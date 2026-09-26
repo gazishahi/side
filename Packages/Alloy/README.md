@@ -21,6 +21,9 @@ clicking the `… }` opens it; a selection that lands inside opens it too; each 
 its folds when the editor switches between them), snippets (`insert(_:replacing:)` with a `Snippet`
 parsed from LSP/VS Code syntax: Tab and ⇧Tab move between stops, mirrors are typed once),
 pointer hooks for hover cards and ⌘-click (`onPointerMove`, `onPointerExit`, `onCommandClick`),
+the editing commands a keymap binds (`toggleLineComment`, `moveLinesUp`/`Down`, `duplicateLines`,
+`deleteLines`, `indentLines`/`outdentLines`, `joinLines`, `selectNextOccurrence`, `selectAllOccurrences`,
+`expandSelection`/`shrinkSelection` with `onExpandSelection`, `goToMatchingBracket`),
 and a minimap (`editor.minimap`, placed by the owner).
 
 Offsets are UTF-16 throughout, the unit AppKit and LSP use; UTF-8 conversions are there for
