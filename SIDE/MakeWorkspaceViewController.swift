@@ -311,6 +311,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         NotificationCenter.default.addObserver(self, selector: #selector(editorTextSizeChanged), name: DS.Text.CodeSize.didChangeNotification, object: nil)
         // Undo and redo can land the buffer back on what's saved; typing never can, so only
         // these two re-check (a hash of the buffer, never on every keystroke).
+        NotificationCenter.default.addObserver(self, selector: #selector(languageSettingsChanged), name: LanguageSettings.didChangeNotification, object: nil)
         for name in [Notification.Name.NSUndoManagerDidUndoChange, Notification.Name.NSUndoManagerDidRedoChange] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 let managerID = (note.object as AnyObject?).map(ObjectIdentifier.init)
@@ -1529,6 +1530,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// `LSPManager` only spawns servers lazily on first file open, so retargeting mid-session
     /// (a track switch landing on a different worktree) does no real work until a file is opened.
     private func retarget(to root: URL) {
+        lspManager = makeLanguageServers(root: root)
+        focusedRoot = root
+        explorer.setRoot(root)
+        searchField.placeholderString = "Indexing \(root.lastPathComponent)…"
+        projectWatcher = ProjectWatcher(root: root) { [weak self] urls in self?.filesChangedOnDisk(urls) }
+    }
+
+    /// Settings → Languages changed: the servers start again as now chosen, and every open
+    /// file is announced to its (possibly new) server.
+    @objc private func languageSettingsChanged() {
+        guard let root = focusedRoot else { return }
+        lspManager = makeLanguageServers(root: root)
+        for tab in openTabs where tab.kind == .text && !tab.isUntitled { announceToLanguageServer(tab.url) }
+        updateLSPIndicator()
+    }
+
+    private func makeLanguageServers(root: URL) -> LSPManager {
         lspManager?.prepareForClose()
         let manager = LSPManager(projectRoot: root)
         manager.onDiagnostics = { [weak self] fileURL, diagnostics in
@@ -1541,11 +1559,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         manager.onAvailabilityChanged = { [weak self] in self?.updateLSPIndicator() }
         manager.onApplyEdit = { [weak self] edit in self?.applyWorkspaceEdit(edit) ?? false }
-        lspManager = manager
-        focusedRoot = root
-        explorer.setRoot(root)
-        searchField.placeholderString = "Indexing \(root.lastPathComponent)…"
-        projectWatcher = ProjectWatcher(root: root) { [weak self] urls in self?.filesChangedOnDisk(urls) }
+        return manager
     }
 
     // MARK: - External changes (audit H8)
@@ -2048,7 +2062,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
               let entry = LanguageServerRegistry.entry(forExtension: openTabs[index].url.pathExtension),
               let state = lspManager?.serverState(forExtension: openTabs[index].url.pathExtension), state != .none,
-              state != .unavailable || entry.installFormula != nil else {
+              state != .unavailable || (entry.install != nil && entry.asksToInstall) else {
             lspStatusButton.isHidden = true
             return
         }
@@ -4638,7 +4652,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func runFormatterIfNeeded(tabID: UUID, url: URL, contentAtSaveTime: String, completion: @escaping (Bool) -> Void) {
-        guard let focusedRoot, let formatter = Self.formatterCommand(for: url, projectRoot: focusedRoot) else {
+        // Settings → Languages: off, on (the project's formatter, else the language server's),
+        // or as before (the project's formatter when it has one).
+        let setting = LanguageSettings.shared.formatOnSave(forExtension: url.pathExtension)
+        guard setting != false, let focusedRoot, let formatter = Self.formatterCommand(for: url, projectRoot: focusedRoot) else {
+            if setting == true, let index = indexForTab(id: tabID), activeTabIndex == index,
+               let lspManager, lspManager.formats(forExtension: url.pathExtension) {
+                formatWithLanguageServer(tabID: tabID, original: contentAtSaveTime, then: { [weak self] in self?.saveAfterFormatting(tabID: tabID) })
+            }
             finishSave(tabID: tabID)
             completion(true)
             return
@@ -4794,7 +4815,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return true
     }
 
-    private func formatWithLanguageServer(tabID: UUID, original: String) {
+    /// Formatted by the server on save: written again, so what's on disk is what's shown.
+    private func saveAfterFormatting(tabID: UUID) {
+        guard let index = indexForTab(id: tabID), openTabs[index].dirty else { return }
+        let url = openTabs[index].url
+        let content = openTabs[index].document.string
+        guard let data = TextFileCodec.encode(content, as: openTabs[index].format), (try? data.write(to: url, options: .atomic)) != nil else { return }
+        UserSaveLog.shared.record(url)
+        openTabs[index].savedStamp = ContentStamp(content)
+        openTabs[index].knownModificationDate = modificationDate(of: url)
+        openTabs[index].dirty = false
+        if activeTabIndex == index { dirty = false }
+        rebuildTabBar()
+    }
+
+    private func formatWithLanguageServer(tabID: UUID, original: String, then: (() -> Void)? = nil) {
         guard let index = indexForTab(id: tabID), let lspManager, lspManager.formats(forExtension: openTabs[index].url.pathExtension) else { return NSSound.beep() }
         let tab = openTabs[index]
         let unit = Self.indentUnit(in: tab.document.text, near: NSRange(location: 0, length: 0))
@@ -4810,6 +4845,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let caret = self.editor.selectedRange.location
             self.editor.applyEdits(ranges)
             self.editor.selectedRange = NSRange(location: min(caret, self.openTabs[index].document.length), length: 0)
+            then?()
         }
     }
 

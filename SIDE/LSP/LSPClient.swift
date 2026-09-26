@@ -20,6 +20,13 @@ actor LSPClient {
     private(set) var capabilities = LSPServerCapabilities()
 
     private var onDiagnostics: (@Sendable (PublishDiagnosticsParams) -> Void)?
+    /// Answers `workspace/configuration`: one value per section asked about.
+    private var onConfiguration: (@Sendable ([String?]) -> [LSPValue])?
+
+    func setOnConfiguration(_ handler: @escaping @Sendable ([String?]) -> [LSPValue]) {
+        onConfiguration = handler
+    }
+
     /// A server asking for edits (after a command it ran): true once they're applied.
     private var onApplyEdit: (@Sendable (LSPWorkspaceEdit) async -> Bool)?
 
@@ -204,9 +211,10 @@ actor LSPClient {
         let result: LSPValue
         switch method {
         case "workspace/configuration":
-            // One value per item asked about; none are set yet (Settings → Languages, step 5).
+            // One value per item asked about, from the language's settings (Settings → Languages).
             let items = (params as? [String: Any])?["items"] as? [Any] ?? []
-            result = .array(items.map { _ in .null })
+            let sections = items.map { ($0 as? [String: Any])?["section"] as? String }
+            result = .array(onConfiguration?(sections) ?? sections.map { _ in .null })
         case "client/registerCapability", "client/unregisterCapability", "window/workDoneProgress/create",
              "window/showMessageRequest", "workspace/codeLens/refresh", "workspace/semanticTokens/refresh",
              "workspace/inlayHint/refresh", "workspace/diagnostic/refresh", "workspace/workspaceFolders":

@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             MakeWorkspaceViewController.preferences = volatile
             StagePins.defaults = volatile
             Shortcuts.defaults = volatile
+            LanguageSettings.defaults = volatile
             ReviewViewedStore.shared = ReviewViewedStore(defaults: volatile)
             DispatchQueue.main.async { (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded() }
             // Measurement scripts drive Make directly (opening through the UI with synthetic

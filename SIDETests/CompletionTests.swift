@@ -526,3 +526,57 @@ final class OutlineTests: XCTestCase {
         XCTAssertEqual(outline.first?.kind, .function)
     }
 }
+
+/// Step 5: Settings → Languages decides which server a file gets, and what it's told.
+final class LanguageSettingsTests: XCTestCase {
+    private var settings: LanguageSettings!
+
+    override func setUp() {
+        LanguageSettings.defaults = UserDefaults(suiteName: "side.tests.languages.\(UUID().uuidString)")!
+        settings = LanguageSettings()
+    }
+
+    func testPresetsAlternativesOwnCommandsAndOff() {
+        XCTAssertEqual(settings.entry(forExtension: "tsx")?.binaryName, "typescript-language-server")
+        XCTAssertEqual(settings.entry(forExtension: "tsx")?.languageId, "typescriptreact")
+        XCTAssertEqual(settings.entry(forExtension: "sql")?.binaryName, "sqls", "SQL has a server now")
+        XCTAssertEqual(settings.entry(forExtension: "sql")?.asksToInstall, false, "new languages don't nag until chosen")
+
+        settings.setChoice(LanguageChoice(serverID: "vtsls"), for: "typescript")
+        XCTAssertEqual(settings.entry(forExtension: "ts")?.binaryName, "vtsls")
+        XCTAssertEqual(settings.entry(forExtension: "ts")?.install, .npm("@vtsls/language-server"))
+
+        settings.setChoice(LanguageChoice(customCommand: ["~/bin/my-ts", "--stdio"]), for: "typescript")
+        XCTAssertEqual(settings.entry(forExtension: "ts")?.binaryName, "~/bin/my-ts")
+        XCTAssertEqual(settings.entry(forExtension: "ts")?.arguments, ["--stdio"])
+
+        settings.setChoice(LanguageChoice(enabled: false), for: "typescript")
+        XCTAssertNil(settings.entry(forExtension: "ts"), "off: no server")
+        XCTAssertNil(settings.entry(forExtension: "txt"))
+    }
+
+    func testALanguageOfYourOwn() {
+        settings.setCustomLanguages([CustomLanguage(id: "custom.zig", name: "Zig", extensions: ["zig"], languageId: "zig", command: ["zls"])])
+        let entry = settings.entry(forExtension: "ZIG")
+        XCTAssertEqual(entry?.binaryName, "zls")
+        XCTAssertEqual(entry?.languageKey, "custom.zig")
+        // Kept across a relaunch.
+        XCTAssertEqual(LanguageSettings().customLanguages.map(\.name), ["Zig"])
+    }
+
+    func testSettingsAnswerTheSectionsAServerAsksAbout() {
+        settings.setChoice(LanguageChoice(settingsJSON: #"{"yaml": {"format": {"enable": true}}, "yaml.validate": false}"#), for: "yaml")
+        let answers = settings.configuration(languageKey: "yaml", sections: ["yaml.format", "yaml.validate", "missing", nil])
+        XCTAssertEqual(answers[0], ["enable": true])
+        XCTAssertEqual(answers[1], false)
+        XCTAssertEqual(answers[2], .null)
+        if case .object(let all) = answers[3] { XCTAssertNotNil(all["yaml"]) } else { XCTFail("the whole settings") }
+        XCTAssertEqual(settings.configuration(languageKey: "python", sections: ["python"]), [.null], "nothing set")
+    }
+
+    func testFormatOnSaveIsAsBeforeUntilChosen() {
+        XCTAssertNil(settings.formatOnSave(forExtension: "ts"))
+        settings.setChoice(LanguageChoice(formatOnSave: false), for: "typescript")
+        XCTAssertEqual(settings.formatOnSave(forExtension: "tsx"), false)
+    }
+}

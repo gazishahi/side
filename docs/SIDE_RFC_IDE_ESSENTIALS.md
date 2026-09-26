@@ -386,13 +386,45 @@ Tests:
     Markdown, JSON and a 20,000-function file.
   - Side: `OutlineTests`.
 
+**Step 5, 2026-09-26.**
+
+- **The registry is data** (`LanguageSettings`): twenty languages, each with its extensions and
+  the language id servers expect.
+  - The eight languages from before plus SQL (sqls), YAML, TOML, HTML, CSS/SCSS/Less, JSON,
+    shell, Ruby (Ruby LSP or Solargraph), Java, Kotlin, C#, PHP and Markdown.
+  - Where there's a choice there are alternatives: vtsls for TypeScript, basedpyright for
+    Python.
+  - Each server says how it installs: Homebrew, npm, RubyGems or `dotnet tool`.
+- **Your choices are kept in Side's settings.** For each language you can pick:
+  - which preset server, a command of your own (a name on your PATH or a path), or None;
+  - settings the server reads, as JSON: `workspace/configuration` is answered section by
+    section, nested or dotted keys alike, and the answer is ready before `initialize`;
+  - format on save: as the project has it (as before), on (the project's formatter, else the
+    server's), or off.
+
+  Languages you add yourself (name, extensions, language id, command) work the same way.
+- **Changing any of it restarts the servers** as now chosen and re-announces every open file.
+- **Settings → Languages:** each language with its extensions and command, Installed or an
+  Install button (the popover runs the installer in your shell, then the server starts), a
+  server menu, and ⋯ for command, settings and format on save. Plus your own languages, with
+  Add Language….
+- **Install prompts:** the "not installed" chip on a file shows only for the languages that had
+  one before, or for one you chose. Opening a YAML file doesn't nag; its server is used once
+  it's installed.
+- Deferred to step 6, where grammars bring file-name matching: Dockerfile and Makefile (no
+  extension to match on).
+- Checked in Side: the pane with TypeScript, Swift and clangd found and the rest offering
+  Install.
+- Tests: `LanguageSettingsTests` covers presets, alternatives, your own command, None, a
+  language of your own, configuration sections, and format on save.
+
 ## Progress
 
 - [x] 1 LSP foundation and completion (below)
 - [x] 2 Snippets, signature help, hover, ⌘-click (below)
 - [x] 3 Problems, references, rename, quick fixes (below)
 - [x] 4 Outline, symbols, formatting (below)
-- [ ] 5 Settings → Languages
+- [x] 5 Settings → Languages (below)
 - [ ] 6 More grammars
 - [ ] 7 Keymaps
 - [ ] 8 Themes

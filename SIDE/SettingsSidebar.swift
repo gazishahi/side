@@ -188,7 +188,7 @@ final class PaneHostController: NSViewController {
 @MainActor
 final class SettingsSplitViewController: NSSplitViewController {
     enum Pane: String, CaseIterable {
-        case general, providers, agents, usage, appearance, shortcuts, history
+        case general, providers, agents, usage, appearance, languages, shortcuts, history
     }
 
     static let items: [SidebarItem] = [
@@ -202,6 +202,9 @@ final class SettingsSplitViewController: NSSplitViewController {
                     keywords: ["tokens", "cost", "spend", "budget", "limit"], summary: "What agents have used and cost, by model and project, and a monthly budget."),
         SidebarItem(id: Pane.appearance.rawValue, title: "Appearance", symbol: "textformat.size", tint: .systemPurple,
                     keywords: ["theme", "dark", "light", "text size", "font", "editor", "terminal"], summary: "Light or dark, and text sizes for Side, the editor and the terminal."),
+        SidebarItem(id: Pane.languages.rawValue, title: "Languages", symbol: "chevron.left.forwardslash.chevron.right", tint: .systemPink,
+                    keywords: ["language server", "lsp", "completion", "sql", "yaml", "python", "typescript", "format on save", "install"],
+                    summary: "Each language's server (completion, problems, go to definition): which one, installed or not, its settings, format on save, and languages of your own."),
         SidebarItem(id: Pane.shortcuts.rawValue, title: "Shortcuts", symbol: "keyboard.fill", tint: .systemTeal,
                     keywords: ["keyboard", "keys", "hotkey", "key binding", "rebind", "command"], summary: "Every keyboard shortcut in Side, by area. Click one and press new keys to change it."),
         SidebarItem(id: Pane.history.rawValue, title: "History", symbol: "clock.fill", tint: .systemOrange,
@@ -255,6 +258,7 @@ final class SettingsSplitViewController: NSSplitViewController {
         case .agents: AgentsPreferencesViewController()
         case .usage: UsageViewController()
         case .appearance: AppearanceViewController()
+        case .languages: LanguagesViewController()
         case .shortcuts: ShortcutsViewController()
         case .history: HistoryViewController()
         }

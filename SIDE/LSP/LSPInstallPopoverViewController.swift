@@ -33,7 +33,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         super.viewDidLoad()
         view.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
-        messageLabel.stringValue = "\(entry.languageId.capitalized) language server (\(entry.binaryName)) isn't installed. Diagnostics and autocomplete are disabled for this file. Installing uses Homebrew system-wide, so it'll also be available in your terminal and other editors, not just Side."
+        messageLabel.stringValue = "\(entry.languageId.capitalized) language server (\(entry.binaryName)) isn't installed. Diagnostics and autocomplete are disabled for this file. \(entry.install.map { "Installing runs \u{201C}\($0.command)\u{201D}, so it'll also be available in your terminal and other editors, not just Side." } ?? "Install it, then reopen the file.")"
         messageLabel.font = DS.Text.body()
         messageLabel.textColor = .labelColor
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -43,7 +43,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         installButton.target = self
         installButton.action = #selector(installTapped)
         installButton.translatesAutoresizingMaskIntoConstraints = false
-        installButton.isHidden = entry.installFormula == nil
+        installButton.isHidden = entry.install == nil
 
         spinner.style = .spinning
         spinner.controlSize = .small
@@ -83,14 +83,14 @@ final class LSPInstallPopoverViewController: NSViewController {
     }
 
     @objc private func installTapped() {
-        guard let formula = entry.installFormula, task == nil else { return }
+        guard let install = entry.install, task == nil else { return }
         installButton.isHidden = true
         spinner.startAnimation(nil)
-        messageLabel.stringValue = "Installing \(formula) via Homebrew…"
+        messageLabel.stringValue = "Installing \(entry.binaryName) with \(install.tool)…"
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lic", "brew install \(formula)"]
+        process.arguments = ["-lic", install.command]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -107,7 +107,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         do {
             try process.run()
         } catch {
-            appendLog("Couldn't launch Homebrew: \(error.localizedDescription)")
+            appendLog("Couldn't launch \(install.tool): \(error.localizedDescription)")
             installFinished(exitCode: -1)
         }
     }

@@ -521,6 +521,9 @@ final class LSPManager: @unchecked Sendable {
         let rootURI = projectRoot.absoluteString
         Task { @MainActor [weak self] in
             do {
+                // Before `initialize`: a server can ask for its settings as soon as it's up.
+                let languageKey = entry.languageKey
+                await client.setOnConfiguration { sections in LanguageSettings.shared.configuration(languageKey: languageKey, sections: sections) }
                 let capabilities = if let tsserverPath {
                     try await client.start(rootURI: rootURI, tsserverPath: tsserverPath)
                 } else {

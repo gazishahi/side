@@ -4,35 +4,26 @@ import Heron
 /// Maps file extensions to language server launch commands, and resolves
 /// those binaries on disk.
 enum LanguageServerRegistry {
-    struct Entry {
+    struct Entry: Sendable {
         let languageId: String
         let binaryName: String
         let arguments: [String]
-        /// A Homebrew formula to offer installing when `binaryName` isn't found on PATH — nil
-        /// for servers that aren't independently installable (sourcekit-lsp ships with Xcode).
-        let installFormula: String?
+        /// How to install it when `binaryName` isn't found; nil for servers that aren't
+        /// installable on their own (sourcekit-lsp ships with Xcode) or a person's own command.
+        let install: LanguageInstall?
+        /// The language it's for (`LanguagePreset.id` or a custom language's), for its settings.
+        let languageKey: String
+        /// Whether a missing server shows "not installed" on the file's chip.
+        let asksToInstall: Bool
+
+        /// Homebrew's name, for finding keg-only formulas (clangd's `llvm`).
+        var installFormula: String? { install?.brewFormula }
     }
 
-    private static let entriesByExtension: [String: Entry] = [
-        "py": Entry(languageId: "python", binaryName: "pyright-langserver", arguments: ["--stdio"], installFormula: "pyright"),
-        "ts": Entry(languageId: "typescript", binaryName: "typescript-language-server", arguments: ["--stdio"], installFormula: "typescript-language-server"),
-        "tsx": Entry(languageId: "typescriptreact", binaryName: "typescript-language-server", arguments: ["--stdio"], installFormula: "typescript-language-server"),
-        "js": Entry(languageId: "javascript", binaryName: "typescript-language-server", arguments: ["--stdio"], installFormula: "typescript-language-server"),
-        "jsx": Entry(languageId: "javascriptreact", binaryName: "typescript-language-server", arguments: ["--stdio"], installFormula: "typescript-language-server"),
-        "swift": Entry(languageId: "swift", binaryName: "sourcekit-lsp", arguments: [], installFormula: nil),
-        "rs": Entry(languageId: "rust", binaryName: "rust-analyzer", arguments: [], installFormula: "rust-analyzer"),
-        "go": Entry(languageId: "go", binaryName: "gopls", arguments: [], installFormula: "gopls"),
-        "lua": Entry(languageId: "lua", binaryName: "lua-language-server", arguments: [], installFormula: "lua-language-server"),
-        "c": Entry(languageId: "c", binaryName: "clangd", arguments: [], installFormula: "llvm"),
-        "h": Entry(languageId: "c", binaryName: "clangd", arguments: [], installFormula: "llvm"),
-        "cpp": Entry(languageId: "cpp", binaryName: "clangd", arguments: [], installFormula: "llvm"),
-        "cc": Entry(languageId: "cpp", binaryName: "clangd", arguments: [], installFormula: "llvm"),
-        "cxx": Entry(languageId: "cpp", binaryName: "clangd", arguments: [], installFormula: "llvm"),
-        "hpp": Entry(languageId: "cpp", binaryName: "clangd", arguments: [], installFormula: "llvm"),
-    ]
-
+    /// The server for an extension, as Settings → Languages has it: a preset, the person's
+    /// choice of server or their own command; nil when the language is off or unknown.
     static func entry(forExtension ext: String) -> Entry? {
-        entriesByExtension[ext.lowercased()]
+        LanguageSettings.shared.entry(forExtension: ext)
     }
 
     /// typescript-language-server resolves the "typescript" package the same way Node itself
@@ -169,6 +160,13 @@ enum LanguageServerRegistry {
             case .found(let url): return url
             case .notFound: return nil
             }
+        }
+        // A path of the person's own (Settings → Languages): that file, if it runs.
+        if binaryName.contains("/") {
+            let path = (binaryName as NSString).expandingTildeInPath
+            let found = FileManager.default.isExecutableFile(atPath: path) ? URL(fileURLWithPath: path) : nil
+            cacheLock.withLock { resolutionCache[binaryName] = found.map { .found($0) } ?? .notFound }
+            return found
         }
         if let url = runShell("which \(binaryName)").flatMap(URL.init(fileURLWithPath:)) {
             cacheLock.withLock { resolutionCache[binaryName] = .found(url) }
