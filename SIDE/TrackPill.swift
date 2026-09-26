@@ -16,6 +16,8 @@ final class TrackPill: NSView {
         var isCurrent = false
         /// Set for another window's project — selecting brings that window forward.
         var windowNumber: Int?
+        /// When the track was last worked on; the switcher lists the most recent first.
+        var lastActive: Date?
     }
 
     struct Snapshot: Equatable {
@@ -42,6 +44,8 @@ final class TrackPill: NSView {
     var snapshotProvider: (() -> Snapshot)?
     var onSelectRow: ((Row) -> Void)?
     var onNewTrack: (() -> Void)?
+    /// "New track “…”" in the switcher: the typed words become the new track's intent.
+    var onNewTrackNamed: ((String) -> Void)?
     var onOpenTracks: (() -> Void)?
 
     private(set) var snapshot = Snapshot.empty
@@ -159,32 +163,55 @@ final class TrackPill: NSView {
     func togglePopover() {
         if let popover, popover.isShown { popover.close(); return }
         refresh()
-        let content = TrackPopoverViewController(snapshot: snapshot)
+        let content = TrackSwitcherViewController(snapshot: snapshot)
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = content
         content.onSelect = { [weak self, weak popover] row in popover?.close(); self?.onSelectRow?(row) }
         content.onNewTrack = { [weak self, weak popover] in popover?.close(); self?.onNewTrack?() }
+        content.onNewTrackNamed = { [weak self, weak popover] name in popover?.close(); self?.onNewTrackNamed?(name) }
         content.onOpenTracks = { [weak self, weak popover] in popover?.close(); self?.onOpenTracks?() }
         self.popover = popover
         popover.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
+        content.focusFilter()
+    }
+
+    /// Tests: the switcher's content, as it would open now.
+    func makeSwitcherForTesting() -> TrackSwitcherViewController {
+        refresh()
+        return TrackSwitcherViewController(snapshot: snapshot)
     }
 }
 
-/// The pill's popover: header (project, branch, file), filter, grouped rows, footer.
-private final class TrackPopoverViewController: NSViewController, NSSearchFieldDelegate {
+/// The track switcher, the pill's popover (SIDE_RFC_FIND_REVIEW_TRACKS.md, T1): type to filter,
+/// ↑ ↓ to move, Return to switch, Escape to close. Tracks that need you come first, then the rest
+/// most recent first; a typed name nothing matches offers itself as a new track.
+final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate {
     var onSelect: ((TrackPill.Row) -> Void)?
     var onNewTrack: (() -> Void)?
+    var onNewTrackNamed: ((String) -> Void)?
     var onOpenTracks: (() -> Void)?
     private let snapshot: TrackPill.Snapshot
     private let filterField = NSSearchField()
     private let list = NSStackView()
+    private let scroll = NSScrollView()
+
+    /// What's listed, in order: a track, or the new-track offer.
+    enum Item: Equatable {
+        case track(TrackPill.Row)
+        case newTrack(String)
+    }
+    private(set) var items: [Item] = []
+    private(set) var highlighted: Int?
+    private var rowViews: [TrackPopoverRow] = []
 
     init(snapshot: TrackPill.Snapshot) {
         self.snapshot = snapshot
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func focusFilter() { view.window?.makeFirstResponder(filterField) }
 
     override func loadView() {
         let root = NSStackView()
@@ -217,15 +244,15 @@ private final class TrackPopoverViewController: NSViewController, NSSearchFieldD
         }
         root.addArrangedSubview(header)
 
-        filterField.placeholderString = "Filter tracks"
+        filterField.placeholderString = "Switch to a track, or name a new one"
         filterField.delegate = self
         filterField.translatesAutoresizingMaskIntoConstraints = false
+        filterField.setAccessibilityLabel("Filter tracks")
         root.addArrangedSubview(filterField)
 
         list.orientation = .vertical
         list.alignment = .leading
         list.spacing = 0
-        let scroll = NSScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.documentView = list
@@ -233,19 +260,18 @@ private final class TrackPopoverViewController: NSViewController, NSSearchFieldD
         list.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(scroll)
 
-        let newTrack = NSButton(title: "New Track…", target: self, action: #selector(newTrackTapped))
-        let openTracks = NSButton(title: "Open Tracks", target: self, action: #selector(openTracksTapped))
-        for button in [newTrack, openTracks] { button.bezelStyle = .rounded; button.controlSize = .small }
+        let newTrack = Self.footerButton("New Track\u{2026}", shortcut: "\u{21E7}\u{2318}T", target: self, action: #selector(newTrackTapped))
+        let openTracks = Self.footerButton("All Tracks", shortcut: nil, target: self, action: #selector(openTracksTapped))
         let footer = NSStackView(views: [newTrack, NSView(), openTracks])
         footer.orientation = .horizontal
         footer.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(footer)
 
         NSLayoutConstraint.activate([
-            root.widthAnchor.constraint(equalToConstant: 340),
+            root.widthAnchor.constraint(equalToConstant: 360),
             filterField.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -28),
             scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -28),
-            scroll.heightAnchor.constraint(lessThanOrEqualToConstant: 360),
+            scroll.heightAnchor.constraint(lessThanOrEqualToConstant: 380),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 40),
             list.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             footer.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -28),
@@ -257,32 +283,104 @@ private final class TrackPopoverViewController: NSViewController, NSSearchFieldD
         heightFit.isActive = true
     }
 
+    private static func footerButton(_ title: String, shortcut: String?, target: AnyObject, action: Selector) -> NSButton {
+        let button = NSButton(title: "", target: target, action: action)
+        button.isBordered = false
+        let text = NSMutableAttributedString(string: title, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+        if let shortcut { text.append(NSAttributedString(string: "  " + shortcut, attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.tertiaryLabelColor])) }
+        button.attributedTitle = text
+        return button
+    }
+
     func controlTextDidChange(_ obj: Notification) { rebuild(filter: filterField.stringValue) }
+
+    /// The field keeps focus; the arrows, Return and Escape act on the list.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.moveDown(_:)): move(1); return true
+        case #selector(NSResponder.moveUp(_:)): move(-1); return true
+        case #selector(NSResponder.insertNewline(_:)): activateHighlighted(); return true
+        // Escape goes on to the popover, which closes.
+        case #selector(NSResponder.cancelOperation(_:)): return false
+        default: return false
+        }
+    }
+
+    func setFilterForTesting(_ text: String) { filterField.stringValue = text; rebuild(filter: text) }
+    func moveForTesting(_ delta: Int) { move(delta) }
+    func activateForTesting() { activateHighlighted() }
+
+    private func move(_ delta: Int) {
+        guard !items.isEmpty else { return }
+        let next = min(items.count - 1, max(0, (highlighted ?? -1) + delta))
+        setHighlight(next)
+    }
+
+    private func setHighlight(_ index: Int?) {
+        highlighted = index
+        for (i, row) in rowViews.enumerated() { row.isHighlighted = i == index }
+        if let index, rowViews.indices.contains(index) { rowViews[index].scrollToVisible(rowViews[index].bounds) }
+    }
+
+    private func activateHighlighted() {
+        guard let index = highlighted, items.indices.contains(index) else { return }
+        activate(items[index])
+    }
+
+    private func activate(_ item: Item) {
+        switch item {
+        case .track(let row): onSelect?(row)
+        case .newTrack(let name): onNewTrackNamed?(name)
+        }
+    }
 
     private func rebuild(filter raw: String) {
         list.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        // Filtering starts at two characters — one letter matches nearly every intent.
+        items = []
+        rowViews = []
         let query = raw.trimmingCharacters(in: .whitespaces)
         let matches: (TrackPill.Row) -> Bool = { row in
-            query.count < 2 || row.title.localizedCaseInsensitiveContains(query) || row.detail.localizedCaseInsensitiveContains(query)
+            query.isEmpty || row.title.localizedCaseInsensitiveContains(query) || row.detail.localizedCaseInsensitiveContains(query)
         }
+        let recent = { (rows: [TrackPill.Row]) in rows.sorted { ($0.lastActive ?? .distantPast) > ($1.lastActive ?? .distantPast) } }
         let groups: [(String, [TrackPill.Row])] = [
-            ("Needs you", snapshot.needsYou), ("Active", snapshot.active), ("Parked", snapshot.parked),
+            ("Needs you", snapshot.needsYou), ("Recent", recent(snapshot.active)), ("Parked", recent(snapshot.parked)),
             ("Other projects", snapshot.otherProjects),
         ]
         for (title, rows) in groups {
             let shown = rows.filter(matches)
             guard !shown.isEmpty else { continue }
-            let label = NSTextField(labelWithAttributedString: NSAttributedString(string: title.uppercased(), attributes: DS.Text.sectionLabelAttributes))
-            let labelBox = NSStackView(views: [label])
-            labelBox.edgeInsets = NSEdgeInsets(top: DS.Spacing.m, left: 0, bottom: DS.Spacing.xs, right: 0)
-            list.addArrangedSubview(labelBox)
-            for row in shown {
-                let view = TrackPopoverRow(row: row) { [weak self] in self?.onSelect?(row) }
-                list.addArrangedSubview(view)
-                view.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
-            }
+            addSectionLabel(title)
+            for row in shown { addRow(.track(row)) }
         }
+        let exact = groups.flatMap(\.1).contains { $0.title.compare(query, options: .caseInsensitive) == .orderedSame }
+        if !query.isEmpty, !exact { addRow(.newTrack(query)) }
+        if items.isEmpty {
+            let empty = NSTextField(labelWithString: "No tracks yet. Type what you're working on to start one.")
+            empty.font = DS.Text.caption()
+            empty.textColor = .tertiaryLabelColor
+            list.addArrangedSubview(empty)
+        }
+        // The first track that isn't the one already current: switching is what this is for.
+        let firstOther = items.firstIndex { if case .track(let row) = $0 { return !row.isCurrent } else { return true } }
+        setHighlight(query.isEmpty ? firstOther : (items.isEmpty ? nil : 0))
+    }
+
+    private func addSectionLabel(_ title: String) {
+        let label = NSTextField(labelWithAttributedString: NSAttributedString(string: title.uppercased(), attributes: DS.Text.sectionLabelAttributes))
+        let box = NSStackView(views: [label])
+        box.edgeInsets = NSEdgeInsets(top: DS.Spacing.m, left: DS.Spacing.s, bottom: DS.Spacing.xs, right: 0)
+        list.addArrangedSubview(box)
+    }
+
+    private func addRow(_ item: Item) {
+        let index = items.count
+        items.append(item)
+        let view = TrackPopoverRow(item: item) { [weak self] in self?.activate(item) }
+        view.onHover = { [weak self] in self?.setHighlight(index) }
+        list.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+        rowViews.append(view)
     }
 
     @objc private func newTrackTapped() { onNewTrack?() }
@@ -293,33 +391,65 @@ private final class TrackPopoverRow: NSView {
     private let action: () -> Void
     private let highlight = NSView()
     private var trackingArea: NSTrackingArea?
+    var onHover: (() -> Void)?
+    var isHighlighted = false { didSet { highlight.alphaValue = isHighlighted ? 1 : 0 } }
 
-    init(row: TrackPill.Row, action: @escaping () -> Void) {
+    private static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    init(item: TrackSwitcherViewController.Item, action: @escaping () -> Void) {
         self.action = action
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         highlight.wantsLayer = true
         highlight.layer?.cornerRadius = DS.Radius.control
-        highlight.bindLayerBackground(DS.Color.overlay)
+        highlight.bindLayerBackground(DS.Color.selectedCapsule)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
-        let dot = DS.StatusDot(state: row.state)
-        let title = NSTextField(labelWithString: row.title)
-        title.font = DS.Text.body(row.isCurrent ? .semibold : .regular)
+
+        let leading: NSView
+        let titleText: String, detailText: String, trailingText: String
+        var isCurrent = false
+        switch item {
+        case .track(let row):
+            leading = DS.StatusDot(state: row.state)
+            titleText = row.title
+            detailText = row.detail
+            isCurrent = row.isCurrent
+            trailingText = row.isCurrent ? "Current" : row.lastActive.map { Self.relative.localizedString(for: $0, relativeTo: Date()) } ?? ""
+            setAccessibilityLabel("\(row.title), \(row.state.name)\(row.isCurrent ? ", current" : "")")
+        case .newTrack(let name):
+            let plus = NSImageView(image: NSImage(systemSymbolName: "plus", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold)) ?? NSImage())
+            plus.contentTintColor = .controlAccentColor
+            leading = plus
+            titleText = "New track \u{201C}\(name)\u{201D}"
+            detailText = "Starts a branch for it"
+            trailingText = "\u{21A9}"
+            setAccessibilityLabel("New track, \(name)")
+        }
+        let title = NSTextField(labelWithString: titleText)
+        title.font = DS.Text.body(isCurrent ? .semibold : .regular)
         title.lineBreakMode = .byTruncatingTail
-        let detail = NSTextField(labelWithString: row.detail)
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let detail = NSTextField(labelWithString: detailText)
         detail.font = DS.Text.code(11)
         detail.textColor = .tertiaryLabelColor
         detail.lineBreakMode = .byTruncatingMiddle
-        let check = NSImageView(image: NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Current") ?? NSImage())
-        check.contentTintColor = .secondaryLabelColor
-        check.isHidden = !row.isCurrent
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let trailing = NSTextField(labelWithString: trailingText)
+        trailing.font = DS.Text.caption()
+        trailing.textColor = .tertiaryLabelColor
+        trailing.setContentCompressionResistancePriority(.required, for: .horizontal)
         let texts = NSStackView(views: [title, detail])
         texts.orientation = .vertical
         texts.alignment = .leading
         texts.spacing = 1
-        let stack = NSStackView(views: [dot, texts, NSView(), check])
+        let stack = NSStackView(views: [leading, texts, NSView(), trailing])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = DS.Spacing.m
@@ -335,7 +465,6 @@ private final class TrackPopoverRow: NSView {
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("\(row.title), \(row.state.name)\(row.isCurrent ? ", current" : "")")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -346,8 +475,7 @@ private final class TrackPopoverRow: NSView {
         addTrackingArea(area)
         trackingArea = area
     }
-    override func mouseEntered(with event: NSEvent) { highlight.alphaValue = 1 }
-    override func mouseExited(with event: NSEvent) { highlight.alphaValue = 0 }
+    override func mouseEntered(with event: NSEvent) { onHover?() }
     override func mouseUp(with event: NSEvent) { action() }
     override func accessibilityPerformPress() -> Bool { action(); return true }
 }

@@ -2,7 +2,7 @@
 
 *2026-09-25. Status: **accepted**: the owner chose the directions on 2026-09-25 (Find as one
 search surface; Review "changes first" with a summary on top; Tracks as a switcher on the track
-pill plus a list to manage them). Build order below. Steps 1–4 and 6 built.*
+pill plus a list to manage them). Build order below. All six steps built.*
 *Companion to `SIDE_DESIGN.md` (tokens, glass), `SIDE_RFC_ALLOY.md` (the renderer Review's diffs
 move to) and `SIDE_LAUNCH_PERFORMANCE.md` (how Side measures).*
 
@@ -153,6 +153,17 @@ RFC's; the editor's own are SIDE_RFC_ALLOY.md's, in the same table.
    it; headers are made under the bottom bar too. Below 820 pt the list gives its width to the
    diff. `ReviewLayoutTests` covers the timeline, viewed marks, folding, pinning and the list.
 5. **Tracks** (T1).
+   **Built 2026-09-25:** the switcher on the track pill (`TrackSwitcherViewController`): the field
+   has focus as it opens; tracks that need you first, then the rest most recent first (each with
+   when it was last worked on), parked below; ↑ ↓ and Return; the first track that isn't the
+   current one is ready for Return; a typed name no track has becomes "New track “…”", which
+   opens New Track with it filled in. The Tracks stage, when there's room (740 pt), is the list
+   beside a detail pane for the selected track (`TrackDetailView`): its name and state, `branch →
+   base`, Switch to Track (or Open in Make for the current one), Think, Review and the rest of
+   its actions in ⋯; when it was last worked on and made, its changes, its working copy's size and
+   folder, its agent and autonomy, what it's stacked on and its subtracks, and its latest five
+   checkpoints. A click selects, ↑ ↓ move, Return switches, a double click switches as before;
+   narrower, the list is as it was. `TracksLayoutTests` covers both.
 6. **Budgets in one place**: the budget tests run together against the table above.
    **Built 2026-09-25:** `Budgets.table` holds every limit and `Budgets.check` prints a row and
    fails past it; `scripts/budgets.sh` builds once, optimized, drops Xcode's Main Thread Checker

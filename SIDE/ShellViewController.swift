@@ -295,6 +295,10 @@ final class ShellViewController: NSViewController {
             self?.tracksVC.newTrackTapped()
         }
         trackPill.onOpenTracks = { [weak self] in self?.show(.tracks) }
+        trackPill.onNewTrackNamed = { [weak self] name in
+            self?.show(.tracks)
+            self?.tracksVC.newTrack(prefill: name)
+        }
 
         chrome.install(in: view, content: container)
         NotificationCenter.default.addObserver(forName: StagePins.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -524,7 +528,8 @@ final class ShellViewController: NSViewController {
         if current == .make, let projectURL, let currentFileURL { snapshot.filePath = humanePath(for: currentFileURL, projectURL: projectURL) }
         for track in store.tracks where track.status != .archived {
             let rowState = state(track)
-            let row = TrackPill.Row(key: track.branchName, title: track.intent.isEmpty ? track.branchName : track.intent, detail: track.branchName, state: rowState, isCurrent: track.branchName == currentTrackKey)
+            var row = TrackPill.Row(key: track.branchName, title: track.intent.isEmpty ? track.branchName : track.intent, detail: track.branchName, state: rowState, isCurrent: track.branchName == currentTrackKey)
+            row.lastActive = track.lastActiveAt
             if rowState == .needsYou || rowState == .failed {
                 snapshot.needsYou.append(row)
                 if !row.isCurrent { snapshot.othersNeedingYou += 1 }
@@ -1205,7 +1210,7 @@ final class ShellViewController: NSViewController {
             self.updateStageLabels()
             self.runnerActivityChanged()
         }
-        tracksVC.configure(with: store, runnerManager: context.runnerManager)
+        tracksVC.configure(with: store, runnerManager: context.runnerManager, sessionStore: context.sessionStore)
         applyWindowChrome()
         refreshGitInfo(for: workingDirectory)
         refreshFirstRunIfShown()

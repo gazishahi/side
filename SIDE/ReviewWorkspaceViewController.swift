@@ -1072,7 +1072,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         return (URL(fileURLWithPath: parentPath), true)
     }
 
-    private static func baseRef(for track: Track, trackStore: TrackStore) -> String {
+    static func baseRef(for track: Track, trackStore: TrackStore) -> String {
         guard let parentId = track.parentTrackId, let parent = trackStore.tracks.first(where: { $0.id == parentId }) else {
             return trackStore.defaultBranchName()
         }

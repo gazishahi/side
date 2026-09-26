@@ -13,6 +13,11 @@ import Heron
 private final class FocusableContainerView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
+    /// ↑ ↓ and Return, for the list.
+    var onKey: ((NSEvent) -> Bool)?
+    override func keyDown(with event: NSEvent) {
+        if onKey?(event) != true { super.keyDown(with: event) }
+    }
 }
 
 /// Colors for the grouped-card ledger. Deliberately restrained: one neutral card surface, one
@@ -25,6 +30,17 @@ private final class FocusableContainerView: NSView {
 final class TracksWorkspaceViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let documentContainer = FocusableContainerView()
+    /// The selected track, in full, beside the list (T1). Hidden when the stage is narrow.
+    private let detailView = TrackDetailView()
+    private var selectedTrackID: UUID?
+    private var listWidth: NSLayoutConstraint?
+    private var listToEdge: NSLayoutConstraint?
+    private weak var sessionStore: AgentSessionStore?
+    /// The rows as shown, top to bottom, for moving the selection with the keys.
+    private var shownTrackOrder: [UUID] = []
+    private var rowViews: [UUID: TrackRowView] = [:]
+    private static let listWidthValue: CGFloat = 360
+    private static let detailMinimumStageWidth: CGFloat = 740
     private let contentStack = NSStackView()
 
     private let newTrackButton = NSButton(title: "New Track", target: nil, action: nil)
@@ -96,8 +112,9 @@ final class TracksWorkspaceViewController: NSViewController {
     /// Set by the shell, which performs empty-state actions (§6).
     var onEmptyStateAction: ((EmptyStateAction) -> Void)?
 
-    func configure(with store: TrackStore, runnerManager: AgentRunnerManager) {
+    func configure(with store: TrackStore, runnerManager: AgentRunnerManager, sessionStore: AgentSessionStore? = nil) {
         self.runnerManager = runnerManager
+        self.sessionStore = sessionStore
         trackStore = store
     }
 
@@ -206,6 +223,14 @@ final class TracksWorkspaceViewController: NSViewController {
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scrollView)
+        view.addSubview(detailView)
+        let width = scrollView.widthAnchor.constraint(equalToConstant: Self.listWidthValue)
+        let edge = scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
+        listWidth = width
+        listToEdge = edge
+        edge.isActive = true
+        wireDetail()
+        documentContainer.onKey = { [weak self] event in self?.handleListKey(event) ?? false }
 
         NSLayoutConstraint.activate([
             headerStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16 + ChromeHost.rowHeight),
@@ -213,12 +238,115 @@ final class TracksWorkspaceViewController: NSViewController {
             headerStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             scrollView.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 14),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
+            detailView.topAnchor.constraint(equalTo: scrollView.topAnchor),
+            detailView.leadingAnchor.constraint(equalTo: scrollView.trailingAnchor, constant: 16),
+            detailView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            detailView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
+
             documentContainer.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
             documentContainer.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor)
         ])
     }
+
+    // MARK: - The selected track
+
+    /// Wide enough, the list narrows and the selected track shows beside it.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let showDetail = view.bounds.width >= Self.detailMinimumStageWidth && trackStore != nil && trackStore?.repoState != .notAGitRepo
+        if detailView.isHidden == showDetail {
+            detailView.isHidden = !showDetail
+            listToEdge?.isActive = !showDetail
+            listWidth?.isActive = showDetail
+            renderLedger()
+        }
+    }
+
+    private var showsDetail: Bool { !detailView.isHidden }
+
+    private func wireDetail() {
+        detailView.isHidden = true
+        detailView.onSwitch = { [weak self] in
+            guard let self, let track = self.selectedTrack else { return }
+            self.requestSwitch(to: track)
+        }
+        detailView.onOpenStage = { [weak self] stage in
+            guard let self, let track = self.selectedTrack else { return }
+            self.onOpenStageRequested?(track, stage)
+        }
+        detailView.onMore = { [weak self] anchor in
+            guard let self, let track = self.selectedTrack else { return }
+            self.buildContextMenu(for: track).popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+        }
+    }
+
+    private var selectedTrack: Track? { selectedTrackID.flatMap { id in trackStore?.tracks.first { $0.id == id } } }
+
+    private func select(_ track: Track) {
+        selectedTrackID = track.id
+        for (id, row) in rowViews { row.isSelected = id == track.id }
+        rowViews[track.id]?.scrollToVisible(rowViews[track.id]?.bounds ?? .zero)
+        updateDetail()
+    }
+
+    /// The pane, from the selected track (or the current one, or the first, when none is).
+    private func updateDetail() {
+        guard showsDetail, let store = trackStore else { return }
+        if selectedTrack == nil || !shownTrackOrder.contains(selectedTrackID!) {
+            let current = store.tracks.first { $0.status == .active && shownTrackOrder.contains($0.id) }
+            selectedTrackID = current?.id ?? shownTrackOrder.first
+            for (id, row) in rowViews { row.isSelected = id == selectedTrackID }
+        }
+        guard let track = selectedTrack else { detailView.show(nil); return }
+        let activity = activity(for: track)
+        let checkpoints = (sessionStore?.checkpoints(forTrackKey: track.branchName) ?? []).sorted { $0.createdAt > $1.createdAt }
+        let harness = store.harness(forTrackKey: track.branchName)
+        let agent = harness?.displayName ?? ([track.modelId].compactMap { $0 }.first.map { "Side\u{2019}s agent \u{00B7} \($0)" } ?? "Side\u{2019}s agent")
+        let parent = track.parentTrackId.flatMap { id in store.tracks.first { $0.id == id } }
+        detailView.show(TrackDetail(
+            track: track,
+            isCurrent: track.status == .active,
+            state: DS.StatusState(track: track.displayStatus, activity: activity),
+            stateText: TrackRowView.statusText(activity: activity, status: track.displayStatus),
+            baseRef: ReviewWorkspaceViewController.baseRef(for: track, trackStore: store),
+            summary: gitSummaryCache[track.id],
+            agent: agent,
+            autonomy: track.autonomy?.displayName,
+            parentIntent: parent.map { $0.intent.isEmpty ? $0.branchName : $0.intent },
+            subtracks: store.tracks.filter { $0.parentTrackId == track.id }.count,
+            checkpoints: Array(checkpoints.prefix(5)),
+            checkpointCount: checkpoints.count
+        ))
+    }
+
+    /// ↑ ↓ move the selection; Return switches to it.
+    private func handleListKey(_ event: NSEvent) -> Bool {
+        guard showsDetail, !shownTrackOrder.isEmpty else { return false }
+        let index = selectedTrackID.flatMap { shownTrackOrder.firstIndex(of: $0) }
+        switch event.specialKey {
+        case .downArrow?:
+            let next = min(shownTrackOrder.count - 1, (index ?? -1) + 1)
+            if let track = trackStore?.tracks.first(where: { $0.id == shownTrackOrder[next] }) { select(track) }
+            return true
+        case .upArrow?:
+            let next = max(0, (index ?? 1) - 1)
+            if let track = trackStore?.tracks.first(where: { $0.id == shownTrackOrder[next] }) { select(track) }
+            return true
+        case .carriageReturn?, .enter?:
+            if let track = selectedTrack, track.status != .active { requestSwitch(to: track) }
+            return true
+        default:
+            return false
+        }
+    }
+
+    // MARK: - Tests
+
+    var detailForTesting: TrackDetailView { detailView }
+    var selectedTrackForTesting: Track? { selectedTrack }
+    func selectForTesting(_ track: Track) { select(track) }
+    func keyForTesting(_ event: NSEvent) -> Bool { handleListKey(event) }
 
     // MARK: - Building the grouped-card content
 
@@ -264,6 +392,9 @@ final class TracksWorkspaceViewController: NSViewController {
             contentStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
+        shownTrackOrder = []
+        rowViews = [:]
+        defer { updateDetail() }
 
         // A plain folder with no `.git` yet (or one where it disappeared) can't do anything
         // Tracks-related — every git call would just fail. Show that plainly instead of letting
@@ -552,7 +683,8 @@ final class TracksWorkspaceViewController: NSViewController {
             ? "active now"
             : Self.relativeDateFormatter.localizedString(for: track.lastActiveAt, relativeTo: Date())
         if let summary = gitSummaryCache[track.id] {
-            let gitBits = gitSummaryText(summary)
+            // Beside the pane, the size is the pane's to say; the row stays one short line.
+            let gitBits = gitSummaryText(summary, includeSize: !showsDetail)
             if !gitBits.isEmpty { metaText += " · \(gitBits)" }
         }
         // A coordinator's row carries its subtracks' state (multi-agent RFC, step 3): a subtrack
@@ -582,6 +714,17 @@ final class TracksWorkspaceViewController: NSViewController {
         )
         row.menu = buildContextMenu(for: track)
         row.onDoubleClick = { [weak self] in self?.requestSwitch(to: track) }
+        // Beside the detail pane, a click selects and the row stays compact: its verbs are the
+        // pane's. Without the pane, the row is the whole story, as before.
+        row.compact = showsDetail
+        row.onClick = { [weak self] in
+            guard let self, self.showsDetail else { return }
+            self.select(track)
+            self.view.window?.makeFirstResponder(self.documentContainer)
+        }
+        row.isSelected = showsDetail && selectedTrackID == track.id
+        shownTrackOrder.append(track.id)
+        rowViews[track.id] = row
         row.onVerb = { [weak self] verb in
             guard let self else { return }
             switch verb {
@@ -601,14 +744,14 @@ final class TracksWorkspaceViewController: NSViewController {
     /// Turns raw ahead/behind/dirty counts into the short fragment appended to a row's meta
     /// line — omits anything that's zero/nil so a clean, caught-up track just shows its
     /// relative-time text with nothing extra, same as before this existed.
-    private func gitSummaryText(_ summary: TrackStore.GitSummary) -> String {
+    private func gitSummaryText(_ summary: TrackStore.GitSummary, includeSize: Bool = true) -> String {
         var parts: [String] = []
         if summary.aheadCount > 0 { parts.append("\(summary.aheadCount) ahead") }
         if summary.behindCount > 0 { parts.append("\(summary.behindCount) behind") }
         if let uncommitted = summary.uncommittedCount, uncommitted > 0 {
             parts.append("\(uncommitted) uncommitted")
         }
-        if let bytes = summary.diskUsageBytes {
+        if includeSize, let bytes = summary.diskUsageBytes {
             parts.append(Self.byteCountFormatter.string(fromByteCount: Int64(bytes)))
         }
         return parts.joined(separator: ", ")
@@ -699,13 +842,17 @@ final class TracksWorkspaceViewController: NSViewController {
     /// past the sheet's right edge. Matches Make's rename/new-file fields.
     static let alertFieldWidth: CGFloat = 240
 
-    @objc func newTrackTapped() {
+    @objc func newTrackTapped() { newTrack(prefill: nil) }
+
+    /// `prefill`: the intent typed in the switcher, ready to confirm.
+    func newTrack(prefill: String?) {
         guard let window = view.window, let store = trackStore else { return }
         let alert = NSAlert()
         alert.messageText = "New Track"
         alert.informativeText = "What are you working on?"
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 24))
         field.placeholderString = "Fix the save-conflict race"
+        if let prefill { field.stringValue = prefill }
 
         // A base-track picker only makes sense once there's another track worth forking from —
         // completed/archived tracks are presumed already merged up, so they're not offered as a
@@ -1286,6 +1433,17 @@ enum TrackRowVerb: Equatable {
 /// primary button does too *unless* it's `.review`/`.markReviewReady`, per `alwaysVisible` above.
 private final class TrackRowView: NSView {
     var onVerb: ((TrackRowVerb) -> Void)?
+    var onClick: (() -> Void)?
+    /// The selected row, beside the detail pane.
+    var isSelected = false { didSet { applyBackground() } }
+    /// Beside the detail pane: no verbs of its own (the pane has them), only More on hover.
+    var compact = false {
+        didSet {
+            primaryButton.isHidden = compact
+            watchButton.isHidden = compact || verb == .respond || verb == .retry
+        }
+    }
+    private var isHovered = false
     /// "Watch": straight to the track's conversation, whatever its state.
     var onWatch: (() -> Void)?
     var onMenuButtonTapped: ((NSButton) -> Void)?
@@ -1445,20 +1603,31 @@ private final class TrackRowView: NSView {
     var hoverTone = DS.Color.raised
 
     override func mouseEntered(with event: NSEvent) {
-        bindLayerBackground(hoverTone)
+        isHovered = true
+        applyBackground()
         hoverActions.animator().alphaValue = 1
         primaryButton.animator().alphaValue = 1
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = nil
+        isHovered = false
+        applyBackground()
         hoverActions.animator().alphaValue = 0
         primaryButton.animator().alphaValue = verb.alwaysVisible ? 1 : 0
     }
 
+    private func applyBackground() {
+        if isSelected { bindLayerBackground(DS.Color.selectedCapsule) } else if isHovered { bindLayerBackground(hoverTone) } else { layer?.backgroundColor = nil }
+    }
+
     override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
-        if event.clickCount == 2 { onDoubleClick?() }
+        if event.clickCount == 2 { onDoubleClick?() } else if event.clickCount == 1 { onClick?() }
+    }
+
+    /// The status as the row's label says it: the agent's activity, else the lifecycle.
+    static func statusText(activity: AgentActivity, status: TrackStatus) -> String {
+        agentChipInfo(for: activity)?.text ?? trackStatusText(for: status)
     }
 
     /// Routes clicks that land on a purely-decorative descendant (the intent/branch/meta labels)
@@ -1555,6 +1724,7 @@ extension TracksWorkspaceViewController: StageChromeProviding {
         loadViewIfNeeded()
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: height > 0 ? height : 0, right: 0)
+        detailView.bottomInset = height
     }
 
     /// `N active · N parked · N archived` — informational only; no limit, no nudge.

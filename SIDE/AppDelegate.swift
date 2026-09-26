@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("think-send ") { shell.thinkSendForTesting(String(command.dropFirst(11))) }
                     if command.hasPrefix("stage ") { shell.showStageForTesting(String(command.dropFirst(6))) }
                     if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
+                    if command == "switcher" { shell.toggleTrackPopover(nil) }
                     // What's scheduled on the main run loop (timers and their callouts): for finding idle wakeups.
                     if command == "runloop" { FileHandle.standardError.write(Data("\(String(describing: CFRunLoopGetMain()))\n".utf8)) }
                     if command.hasPrefix("project ") { shell.openProject(at: URL(fileURLWithPath: String(command.dropFirst(8))), focusingTrackKey: nil) }
