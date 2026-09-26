@@ -35,6 +35,6 @@ Alloy 0.1 has multiple cursors; the rest was left for after 0.1 (SIDE_RFC_ALLOY.
 - [x] 2 Settings pane (Settings → Shortcuts: by area, searchable, a recorder that takes ⌘-keys before the menu bar, conflicts confirmed, Reset per command and all)
 - [x] 3 Tests (`ShortcutsTests`)
 - [x] 4 Column selection (Alloy: ⌥-drag; ⌥-click and ⌥⌘↑/↓ as before)
-- [x] 5 Folding (Alloy: `Folding`, hidden lines in `DocumentLayout`, gutter arrows, a band on the folded line; Side: View → Code Folding, ⌥⌘← → and ⌥⇧⌘← →; off in Review's diff)
+- [x] 5 Folding (Alloy: `Folding`, hidden lines in `DocumentLayout`, gutter arrows, a folded region reads as one line `header { … }` and the pill opens it, folds kept per document across tab switches; Side: View → Code Folding, ⌥⌘← → and ⌥⇧⌘← →; off in Review's diff)
 - [x] 6 Minimap (Alloy: `AlloyMinimapView`; Side: View → Show Minimap, ⌃⌘M, off by default)
 - [x] 7 Budgets (regions 29 ms, Fold All 8 ms, minimap 2.5 ms a frame at p99)
