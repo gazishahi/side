@@ -15,7 +15,9 @@ actor DAPClient {
         }
     }
 
-    private let transport: JSONRPCTransport
+    private let transport: any DAPTransport
+    /// The port a server adapter listens on (a child session connects there too); nil over stdio.
+    let port: UInt16?
     private var nextSeq = 1
     private var pending: [Int: (command: String, reply: @Sendable (Result<LSPResult, DAPError>) -> Void)] = [:]
     private var onEvent: (@Sendable (String, LSPResult) -> Void)?
@@ -27,6 +29,23 @@ actor DAPClient {
 
     init(executableURL: URL, arguments: [String], environment: [String: String]?, currentDirectory: URL?) {
         transport = JSONRPCTransport(executableURL: executableURL, arguments: arguments, environment: environment, currentDirectory: currentDirectory)
+        port = nil
+    }
+
+    /// Over stdio, a server on a free port, or another connection to a running server.
+    init(connection: DAPConnection, environment: [String: String]?, currentDirectory: URL?) throws {
+        switch connection {
+        case .stdio(let executable, let arguments):
+            transport = JSONRPCTransport(executableURL: executable, arguments: arguments, environment: environment, currentDirectory: currentDirectory)
+            port = nil
+        case .server(let executable, let arguments):
+            guard let free = DAPSocketTransport.freePort() else { throw DAPSocketTransport.Failure.noPort }
+            transport = DAPSocketTransport(server: executable, arguments: arguments, environment: environment, currentDirectory: currentDirectory, port: free)
+            port = free
+        case .socket(let existing):
+            transport = DAPSocketTransport(server: nil, port: existing)
+            port = existing
+        }
     }
 
     func setHandlers(onEvent: @escaping @Sendable (String, LSPResult) -> Void, onTerminate: @escaping @Sendable () -> Void,

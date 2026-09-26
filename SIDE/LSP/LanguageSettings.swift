@@ -8,6 +8,9 @@ enum LanguageInstall: Sendable, Equatable {
     case dotnet(String)
     /// A Go module, `go install`ed (the binary lands in `$(go env GOPATH)/bin`).
     case go(String)
+    /// A command of Side's own (a debugger fetched into Side's folder), with the tool it uses
+    /// and what that needs first.
+    case script(command: String, tool: String, requires: String, hint: String)
 
     /// What runs in a login shell (so the person's PATH, nvm and rbenv apply).
     var command: String {
@@ -17,6 +20,7 @@ enum LanguageInstall: Sendable, Equatable {
         case .gem(let name): return "gem install \(name)"
         case .dotnet(let name): return "dotnet tool install -g \(name)"
         case .go(let module): return "go install \(module)@latest"
+        case .script(let command, _, _, _): return command
         }
     }
 
@@ -28,6 +32,7 @@ enum LanguageInstall: Sendable, Equatable {
         case .gem: return "RubyGems"
         case .dotnet: return ".NET"
         case .go: return "Go"
+        case .script(_, let tool, _, _): return tool
         }
     }
 
@@ -39,6 +44,7 @@ enum LanguageInstall: Sendable, Equatable {
         case .gem: return ("gem", "Ruby (it comes with macOS; or brew install ruby)")
         case .dotnet: return ("dotnet", "the .NET SDK (brew install --cask dotnet-sdk)")
         case .go: return ("go", "Go (brew install go)")
+        case .script(_, _, let requires, let hint): return (requires, hint)
         }
     }
 

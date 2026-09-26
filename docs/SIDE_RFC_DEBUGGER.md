@@ -3,8 +3,8 @@
 *2026-09-26. Status: **accepted**: the owner answered on 2026-09-26. The debugger lives in Make;
 a breakpoint is a click on the line number; a project's `.vscode/launch.json` is read, with
 consent; agents get read-only access first. Q4, the first languages, took the recommendation
-(default). The build order is the plan below. Steps 1 and 2 are built.*
-Symbols: `DAPClient`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `MakeDebugger`, `DebugBar`, `DebugInspector`.
+(default). The build order is the plan below. Steps 1 to 3 are built.*
+Symbols: `DAPClient`, `DAPSocketTransport`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `DebugAdapters`, `MakeDebugger`, `DebugBar`, `DebugInspector`.
 *Companion to `SIDE_RFC_IDE_ESSENTIALS.md` (the language-server client this mirrors, and
 Settings → Languages, which gains a debugger per language) and `SIDE_RFC_ALLOY.md` (the gutter
 and line tints the debugger draws with).*
@@ -270,3 +270,83 @@ Checked in Side on the demo package (now asking "How many points?" and throwing 
 - The watch `a.x * 100` went from 100 to 200 on the next stop.
 - Hovering `dx` showed `dx = 1`.
 - Swift Throw stopped in `check(_:)` at line 15 with `total 145`.
+
+**Step 3, 2026-09-26.**
+
+- **Adapters as presets** (`DebugAdapters`, D2):
+  - lldb-dap (Swift, C and C++, Rust; with Xcode).
+  - js-debug (JavaScript and TypeScript): VS Code's DAP server from its GitHub release, run by
+    the person's Node.
+  - debugpy (Python), in a virtual environment of Side's own. The program runs with the
+    project's `.venv` or `venv`, else `python3`.
+  - Delve (Go): `go install`ed.
+
+  Side keeps js-debug and debugpy in `~/Library/Application Support/Side/Debuggers`
+  (`SIDE_DEBUGGERS_FOLDER` stands in for it, as `SIDE_DLV` does for Delve), so installing them
+  changes neither Node nor Python. `LanguageInstall.script` is the install kind for these.
+- **Settings → Languages → Debuggers:** a row per adapter with the languages it debugs, what
+  runs, whether it's there, and Install (the language servers' install popover, generalized).
+- **Transports** (D1): `DAPConnection` is one of:
+  - stdio;
+  - a server Side starts on a free port (`{port}` in its arguments), then connects to on the
+    loopback (js-debug, Delve);
+  - another connection to a running server.
+
+  `DAPSocketTransport` does the TCP side. Servers are tracked and ended when Side quits;
+  node running js-debug otherwise outlives its client.
+- **Reverse requests:**
+  - `runInTerminal` runs the program in a Run tab of its own, and answers with its process id
+    (debugpy's and js-debug's `console: integratedTerminal`); the environment's null entries
+    are dropped.
+  - `startDebugging` (js-debug's program session) opens a child session over the same server.
+    The bar and inspector follow the child, the launcher session stays behind it, and each ends
+    the other.
+- **What Side proposes** (`DebugLaunch.proposals`), the open file's language first:
+  - a Swift package's executables;
+  - a Cargo project's bins (`cargo metadata`, built with `cargo build`);
+  - the open JavaScript, TypeScript or Python file;
+  - each `npm run` script;
+  - the Go main package holding the open file (Delve's `mode: debug`, `outputMode: remote`).
+
+  One is used as is; with more, Side asks and remembers the choice per project. A missing
+  adapter says which, and opens Settings.
+- **Fixes the new adapters needed:**
+  - Launch paths are real paths: Go found no module when the project was open through `/tmp`.
+  - Breakpoints follow the adapter's `breakpoint` events (js-debug's provisional ones bind when
+    the script loads).
+  - A `disconnect` that isn't answered no longer stalls Stop: after a second the client stops
+    anyway.
+  - Adapters don't get Side's injected `DYLD_*` libraries (Xcode's, XCTest's).
+  - Program output the adapter also reports (js-debug) isn't repeated in the console when the
+    program has its terminal.
+  - The bar's failure line is short: "Couldn't run X: see the console".
+- **Delve and Developer Tools Access:** macOS asks for the person's password the first time a
+  debugger that isn't Xcode's takes control of a process, unless Developer Mode is on
+  (`DevToolsSecurity -enable`). Settings' note for Delve says so.
+
+Tests:
+
+- Proposals (their order, npm scripts, a project's `.venv`), the presets, and a free port.
+- A fake server adapter over TCP: the launcher session's `runInTerminal` (arguments,
+  directory, environment without nulls, the process id answered) and `startDebugging`, and the
+  child session with its breakpoints, stop and end.
+- Opt-in (`SIDE_DEBUGGER_TESTS=1`): js-debug on TypeScript, debugpy on Python and Delve on Go,
+  each stopped at a breakpoint with a local read, `result * 10` evaluated to 10, and "total 14"
+  printed.
+- Opt-in (`SIDE_SERVER_TESTS=1`): every installed adapter answers `initialize`.
+- Opt-in (`SIDE_NETWORK_TESTS=1`):
+  - Side's own installs of js-debug and debugpy work, into a folder whose name has a space;
+  - Delve's module and js-debug's release exist.
+
+Checked in Side, against scratch installs:
+
+- TypeScript: paused in `square` with `n 1` and `result 1`. A breakpoint added mid-session bound
+  at once. The watch `result * 10` said ReferenceError before `result` existed.
+  "total 14" printed in the program's Run tab, and the js-debug server was gone afterwards.
+- Python: paused at `app.py:1`, with debugpy's "Uncaught Exceptions" on by default.
+- Go: paused at `main.go:11`, with Delve's panic filters on by default.
+- Settings: the Debuggers section showed debugpy installed.
+
+A global Python whose `.pth` files point into `~/Documents` (an editable install) blocks at
+startup in a process without Documents access. The test process has none, so the debugpy test
+runs its program with debugpy's own environment. Side itself has access.

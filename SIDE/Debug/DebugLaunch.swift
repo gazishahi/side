@@ -22,6 +22,7 @@ enum DebugLaunch {
         return url
     }
     nonisolated private static let cachedAdapter = DebugLockedBox<URL?>(nil)
+    nonisolated static func forgetLLDBDAP() { cachedAdapter.withLock { $0 = nil } }
 
     enum Failure: Error, LocalizedError {
         case notAPackage
@@ -67,6 +68,109 @@ enum DebugLaunch {
             build: "swift build --product \(quoted)"
         )
     }
+}
+
+// MARK: - What Side proposes (SIDE_RFC_DEBUGGER.md, Q3)
+
+extension DebugLaunch {
+    /// What the project and the open file can be debugged as, the open file's language first:
+    /// a Swift package's or a Cargo project's executables, the current JavaScript, TypeScript or
+    /// Python file, `npm run` scripts, and a Go main package.
+    nonisolated static func proposals(root: URL, currentFile: URL?) async -> [DebugConfiguration] {
+        var list: [(configuration: DebugConfiguration, language: String)] = []
+        let fileManager = FileManager.default
+        func exists(_ name: String) -> Bool { fileManager.fileExists(atPath: root.appendingPathComponent(name).path) }
+
+        if exists("Package.swift"), let products = try? await swiftExecutables(in: root) {
+            list += products.map { (swiftConfiguration(product: $0, root: root), "swift") }
+        }
+        if exists("Cargo.toml") {
+            list += await cargoBinaries(in: root).map { (cargoConfiguration(binary: $0, root: root), "rust") }
+        }
+        if let file = currentFile {
+            switch file.pathExtension.lowercased() {
+            case "js", "mjs", "cjs", "ts", "mts", "cts": list.append((nodeFile(file, root: root), "typescript"))
+            case "py": list.append((pythonFile(file, root: root), "python"))
+            default: break
+            }
+        }
+        if exists("package.json") {
+            list += npmScripts(in: root).map { (npmScript($0, root: root), "typescript") }
+        }
+        if exists("go.mod") {
+            let directory = currentFile.flatMap { $0.pathExtension == "go" ? $0.deletingLastPathComponent() : nil } ?? root
+            list.append((goPackage(directory, root: root), "go"))
+        }
+        let language = currentFile.flatMap { LanguageSettings.preset(forExtension: $0.pathExtension)?.id }
+        // Stable: the open file's language first, otherwise as found.
+        return list.enumerated().sorted { a, b in
+            let aFirst = a.element.language == language, bFirst = b.element.language == language
+            return aFirst != bFirst ? aFirst : a.offset < b.offset
+        }.map(\.element.configuration)
+    }
+
+    // Rust: `cargo metadata`'s bin targets, built with `cargo build`.
+    nonisolated static func cargoBinaries(in root: URL) async -> [String] {
+        let (status, output) = await DebugSession.run("cargo metadata --no-deps --format-version 1 2>/dev/null", in: root.path)
+        guard status == 0, let start = output.firstIndex(of: "{"),
+              let object = try? JSONSerialization.jsonObject(with: Data(output[start...].utf8)) as? [String: Any] else { return [] }
+        return (object["packages"] as? [[String: Any]] ?? []).flatMap { package in
+            (package["targets"] as? [[String: Any]] ?? []).compactMap { target in
+                (target["kind"] as? [String])?.contains("bin") == true ? target["name"] as? String : nil
+            }
+        }
+    }
+
+    nonisolated static func cargoConfiguration(binary: String, root: URL) -> DebugConfiguration {
+        DebugConfiguration(name: binary, program: root.appendingPathComponent("target/debug").appendingPathComponent(binary).path,
+                           directory: root.path, build: "cargo build --bin " + shellQuoted(binary))
+    }
+
+    /// A JavaScript or TypeScript file under Node (Node runs TypeScript as it can; js-debug maps
+    /// source maps for what's compiled).
+    nonisolated static func nodeFile(_ file: URL, root: URL) -> DebugConfiguration {
+        DebugConfiguration(name: file.lastPathComponent, adapter: DebugAdapters.jsDebug.id, launchArguments: [
+            "type": "pwa-node", "request": "launch", "name": .string(file.lastPathComponent),
+            "program": .string(file.path), "cwd": .string(root.path), "console": "integratedTerminal",
+        ], directory: root.path)
+    }
+
+    nonisolated static func npmScripts(in root: URL) -> [String] {
+        guard let data = try? Data(contentsOf: root.appendingPathComponent("package.json")),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let scripts = object["scripts"] as? [String: Any] else { return [] }
+        return scripts.keys.sorted()
+    }
+
+    nonisolated static func npmScript(_ script: String, root: URL) -> DebugConfiguration {
+        DebugConfiguration(name: "npm run \(script)", adapter: DebugAdapters.jsDebug.id, launchArguments: [
+            "type": "pwa-node", "request": "launch", "name": .string("npm run \(script)"),
+            "runtimeExecutable": "npm", "runtimeArgs": ["run", .string(script)], "cwd": .string(root.path), "console": "integratedTerminal",
+        ], directory: root.path)
+    }
+
+    /// A Python file with the project's interpreter: its `.venv` or `venv`, else `python3`.
+    nonisolated static func pythonFile(_ file: URL, root: URL) -> DebugConfiguration {
+        let python = [".venv/bin/python", "venv/bin/python"].map { root.appendingPathComponent($0).path }
+            .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "python3"
+        return DebugConfiguration(name: file.lastPathComponent, adapter: DebugAdapters.debugpy.id, launchArguments: [
+            "type": "python", "request": "launch", "name": .string(file.lastPathComponent),
+            "program": .string(file.path), "cwd": .string(root.path), "console": "integratedTerminal",
+            "python": .string(python), "justMyCode": true,
+        ], directory: root.path)
+    }
+
+    /// A Go main package, built by Delve (`mode: debug`).
+    nonisolated static func goPackage(_ directory: URL, root: URL) -> DebugConfiguration {
+        let relative = directory.standardizedFileURL.path == root.standardizedFileURL.path ? "." : "./" + directory.path.dropFirst(root.path.count + 1)
+        return DebugConfiguration(name: "go run \(relative)", adapter: DebugAdapters.delve.id, launchArguments: [
+            "request": "launch", "mode": "debug", "program": .string(directory.path), "cwd": .string(root.path),
+            // The program's output as output events (Delve otherwise writes it to its own stdout).
+            "outputMode": "remote",
+        ], directory: root.path)
+    }
+
+    nonisolated static func shellQuoted(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 }
 
 /// A path as the file system has it, symlinks resolved (`/tmp` → `/private/tmp`): what a

@@ -229,6 +229,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         LibraryWindowController.shared.show(for: nil)
     }
 
+    /// Settings, at one of its panes.
+    func openSettings(at pane: SettingsSplitViewController.Pane) {
+        showPreferences()
+        (preferencesWindow?.contentViewController as? SettingsSplitViewController)?.select(pane)
+    }
+
     @objc func showPreferences() {
         if preferencesWindow == nil {
             // System Settings' shape: full-height floating sidebar, no visible title bar.
@@ -308,6 +314,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// `AgentRunner` mid-approval-pause never got the chance to write its synthetic "closed
     /// before decided" tool results — leaving `think.json` with an orphaned `tool_use` the
     /// Messages API rejects outright on the next launch.
+    func applicationWillTerminate(_ notification: Notification) {
+        // Debugger servers (js-debug's node, Delve) don't end with their client.
+        DAPSocketTransport.terminateAllServers()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let shells = windows.compactMap { $0.contentViewController as? ShellViewController }
         let dirtyShells = shells.filter { $0.hasUnsavedChanges }

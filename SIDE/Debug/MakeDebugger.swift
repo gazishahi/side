@@ -34,7 +34,6 @@ final class MakeDebugger {
     private(set) var breakpoints: BreakpointStore?
     private(set) var session: DebugSession?
     private var configuration: DebugConfiguration?
-    private var adapter: (url: URL, arguments: [String])?
     private lazy var bar = DebugBar()
     private lazy var inspector = DebugInspector()
     private var barShown = false
@@ -181,76 +180,98 @@ final class MakeDebugger {
 
     // MARK: A session
 
-    var isActive: Bool { session?.isActive == true }
+    var isActive: Bool { session?.isActive == true || parents.contains { $0.isActive } }
     var isStopped: Bool { session?.isStopped == true }
 
-    /// ⌘R: continues a paused session, or starts one with the project's executable.
+    /// ⌘R: continues a paused session, or starts one with what the project and the open file
+    /// can be debugged as (SIDE_RFC_DEBUGGER.md, Q3).
     func start() {
         if let session, session.isActive {
             if session.isStopped { session.resume() }
             return
         }
         guard let host, let root = host.debugProjectRoot, let window = host.debugHostView.window else { return }
+        let file = host.debugCurrentFile
         Task {
-            do {
-                guard let adapter = await Task.detached(operation: { DebugLaunch.lldbDAP() }).value else { throw DebugLaunch.Failure.noAdapter }
-                let products = try await DebugLaunch.swiftExecutables(in: root)
-                guard !products.isEmpty else { throw DebugLaunch.Failure.noExecutable }
-                guard let product = self.choose(products, root: root, window: window) else { return }
-                self.launch(DebugLaunch.swiftConfiguration(product: product, root: root), adapter: adapter)
-            } catch {
-                let alert = NSAlert()
-                alert.messageText = "Can't start debugging"
-                alert.informativeText = error.localizedDescription
-                alert.beginSheetModal(for: window, completionHandler: nil)
+            let proposals = await DebugLaunch.proposals(root: root, currentFile: file)
+            guard !proposals.isEmpty else {
+                return self.alert("Nothing here to debug yet", "Side debugs a Swift package's or a Cargo project's executables, the open JavaScript, TypeScript or Python file, npm scripts, and Go main packages.", in: window)
             }
+            guard let configuration = self.choose(proposals, root: root, window: window),
+                  let preset = DebugAdapters.preset(configuration.adapter) else { return }
+            guard let connection = await Task.detached(operation: { DebugAdapters.connection(for: preset) }).value else {
+                return self.missingAdapter(preset, in: window)
+            }
+            self.launch(configuration, connection: connection, adapterID: preset.adapterID)
         }
     }
 
-    /// Which executable, when there's more than one: the last one chosen in this project, or
-    /// asked.
-    private func choose(_ products: [String], root: URL, window: NSWindow) -> String? {
+    private func alert(_ title: String, _ message: String, in window: NSWindow) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.beginSheetModal(for: window, completionHandler: nil)
+    }
+
+    /// The adapter isn't installed: say which, and offer Settings, where Install is.
+    private func missingAdapter(_ preset: DebugAdapterPreset, in window: NSWindow) {
+        let alert = NSAlert()
+        alert.messageText = "\(preset.name) isn't installed"
+        alert.informativeText = preset.install.map { "Settings \u{2192} Languages \u{2192} Debuggers installs it (\($0.tool))." } ?? preset.note
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            (NSApp.delegate as? AppDelegate)?.openSettings(at: .languages)
+        }
+    }
+
+    /// Which one, when there's more than one: the last chosen in this project, or asked.
+    private func choose(_ proposals: [DebugConfiguration], root: URL, window: NSWindow) -> DebugConfiguration? {
         let key = "SideDebugProduct." + root.standardizedFileURL.path
         let defaults = MakeWorkspaceViewController.preferences
-        if products.count == 1 { return products[0] }
-        if let remembered = defaults.string(forKey: key), products.contains(remembered) { return remembered }
+        if proposals.count == 1 { return proposals[0] }
+        // The open file's own proposal wins over a remembered one elsewhere in the project.
+        if let remembered = defaults.string(forKey: key), let match = proposals.first(where: { $0.name == remembered }) { return match }
         let alert = NSAlert()
-        alert.messageText = "Debug which executable?"
+        alert.messageText = "Debug what?"
         alert.informativeText = "Side remembers the choice for this project."
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26), pullsDown: false)
-        popup.addItems(withTitles: products)
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26), pullsDown: false)
+        for proposal in proposals {
+            popup.addItem(withTitle: proposal.name)
+            popup.lastItem?.toolTip = DebugAdapters.preset(proposal.adapter)?.name
+        }
         alert.accessoryView = popup
         alert.addButton(withTitle: "Debug")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn, let chosen = popup.titleOfSelectedItem else { return nil }
-        defaults.set(chosen, forKey: key)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let chosen = proposals[popup.indexOfSelectedItem]
+        defaults.set(chosen.name, forKey: key)
         return chosen
     }
 
-    /// Runs a configuration under an adapter (tests start sessions this way too).
+    /// Runs a configuration under lldb-dap at a path (tests start sessions this way).
     func launch(_ configuration: DebugConfiguration, adapter: URL, adapterArguments: [String] = []) {
+        launch(configuration, connection: .stdio(executable: adapter, arguments: adapterArguments), adapterID: DebugAdapters.lldb.adapterID)
+    }
+
+    /// Runs a configuration under an adapter.
+    func launch(_ configuration: DebugConfiguration, connection: DAPConnection, adapterID: String) {
         guard let breakpoints else { return }
         var configuration = configuration
         // The program's own terminal, a Run tab (the last session's is ended and replaced).
+        // lldb-dap is given one up front; the others ask for one (`runInTerminal`).
         programTerminal?.close()
         programTerminal = nil
-        if configuration.terminal == nil, let terminal = openProgramTerminal?(configuration.name, configuration.directory) {
+        if configuration.launchArguments == nil, configuration.terminal == nil, let terminal = openProgramTerminal?(configuration.name, configuration.directory) {
             programTerminal = terminal
             configuration.terminal = terminal.tty
         }
         self.configuration = configuration
-        self.adapter = (adapter, adapterArguments)
-        let session = DebugSession(configuration: configuration, adapter: adapter, adapterArguments: adapterArguments, breakpoints: breakpoints)
-        self.session = session
-        session.onChange = { [weak self, weak session] in
-            guard let self, let session, session === self.session else { return }
-            self.sessionChanged(session)
-        }
-        session.onStopEvent = { [weak self] in self?.stopStarted = CFAbsoluteTimeGetCurrent() }
-        session.onOutput = { [weak self, weak session] text, fromProgram in
-            guard let self, let session, session === self.session else { return }
-            self.inspector.append(output: text, style: fromProgram ? .program : .adapter)
-        }
+        lastLaunch = (connection, adapterID)
+        parents = []
+        let session = DebugSession(configuration: configuration, connection: connection, adapterID: adapterID, breakpoints: breakpoints)
+        adopt(session)
         showUI()
         inspector.show(frames: [], selected: 0)
         inspector.clearVariables(placeholder: "Not paused")
@@ -261,6 +282,64 @@ final class MakeDebugger {
         inspector.show(watches: watches)
         sessionChanged(session)
         Task { await session.start() }
+    }
+    private var lastLaunch: (connection: DAPConnection, adapterID: String)?
+    /// Sessions this one was started from (js-debug's launcher session): kept, not shown.
+    private var parents: [DebugSession] = []
+
+    /// A session the bar and inspector follow, with the adapter's requests answered.
+    private func adopt(_ session: DebugSession) {
+        self.session = session
+        session.onChange = { [weak self, weak session] in
+            guard let self, let session else { return }
+            if session === self.session { self.sessionChanged(session) } else { self.parentChanged(session) }
+        }
+        session.onStopEvent = { [weak self] in self?.stopStarted = CFAbsoluteTimeGetCurrent() }
+        session.onOutput = { [weak self] text, fromProgram in
+            guard let self else { return }
+            // What the program printed is in its terminal already (js-debug reports it too).
+            if fromProgram, self.programTerminal != nil { return }
+            self.inspector.append(output: text, style: fromProgram ? .program : .adapter)
+        }
+        session.runInTerminal = { [weak self] arguments, directory, environment, title in
+            self?.runInTerminal(arguments, directory: directory, environment: environment, title: title)
+        }
+        session.onStartChild = { [weak self, weak session] request, configuration in
+            guard let self, let session else { return }
+            self.startChild(of: session, request: request, configuration: configuration)
+        }
+    }
+
+    /// The program in a Run tab of its own, for an adapter that asks (`runInTerminal`).
+    var openCommandTerminal: (([String], String, [String: String], String) -> (pid: Int32, terminal: DebugProgramTerminal)?)?
+
+    private func runInTerminal(_ arguments: [String], directory: String, environment: [String: String], title: String) -> Int32? {
+        programTerminal?.close()
+        guard let opened = openCommandTerminal?(arguments, directory, environment, title) else { return nil }
+        programTerminal = opened.terminal
+        return opened.pid
+    }
+
+    /// js-debug's `startDebugging`: the program's own session, over another connection to the
+    /// same server. The bar and inspector follow it; the launcher session stays behind it.
+    private func startChild(of parent: DebugSession, request: String, configuration arguments: [String: LSPValue]) {
+        guard let port = parent.port, let breakpoints, let adapterID = lastLaunch?.adapterID else { return }
+        var configuration = parent.configuration
+        configuration.request = request
+        configuration.launchArguments = arguments
+        configuration.build = nil
+        configuration.terminal = nil
+        let child = DebugSession(configuration: configuration, connection: .socket(port: port), adapterID: adapterID, breakpoints: breakpoints)
+        parents.append(parent)
+        adopt(child)
+        sessionChanged(child)
+        Task { await child.start() }
+    }
+
+    /// The launcher session ended (or the program's did): everything does.
+    private func parentChanged(_ parent: DebugSession) {
+        guard case .ended = parent.state, let session, session.isActive else { return }
+        session.stop()
     }
 
     func pauseOrContinue() {
@@ -273,21 +352,24 @@ final class MakeDebugger {
     func stepOut() { session?.stepOut() }
 
     func stop() {
-        guard let session, session.isActive else { return hideUI() }
-        session.stop()
+        guard isActive else { return hideUI() }
+        session?.stop()
+        parents.forEach { $0.stop() }
     }
 
     /// Stops the session and starts the same configuration again (built again first).
     func restart() {
-        guard let configuration, let session, let adapter else { return }
-        session.onChange = nil
-        session.onOutput = nil
-        session.onStopEvent = nil
-        session.stop()
+        guard let configuration, let session, let lastLaunch else { return }
+        for old in [session] + parents {
+            old.onChange = nil
+            old.onOutput = nil
+            old.onStopEvent = nil
+            old.stop()
+        }
         self.session = nil
         var again = configuration
         again.terminal = nil
-        launch(again, adapter: adapter.url, adapterArguments: adapter.arguments)
+        launch(again, connection: lastLaunch.connection, adapterID: lastLaunch.adapterID)
     }
 
     private func sessionChanged(_ session: DebugSession) {
@@ -305,6 +387,7 @@ final class MakeDebugger {
             inspector.show(watches: watches)
             refreshEditor()
         case .ended(let message):
+            parents.filter(\.isActive).forEach { $0.stop() }
             inspector.show(frames: [], selected: 0)
             inspector.clearVariables(placeholder: "Ended")
             // Ended, not closed: the tab keeps what the program wrote until the next session.

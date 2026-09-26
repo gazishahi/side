@@ -1195,6 +1195,22 @@ final class ShellViewController: NSViewController {
                 close: { [weak terminals, weak session] in if let session { terminals?.removeSession(session) } }
             )
         }
+        // An adapter's `runInTerminal` (debugpy, js-debug): the program itself runs in the tab.
+        makeVC.debugger.openCommandTerminal = { [weak self, weak context] arguments, directory, environment, title in
+            guard let self, let terminals = context?.terminals, let command = arguments.first else { return nil }
+            let launch = TerminalViewController.CommandLaunch(command: command, arguments: Array(arguments.dropFirst()), environment: environment)
+            let key = self.currentTrackKey ?? ""
+            let session = terminals.makeCommandSession(forTrackKey: key, launch: launch, directory: directory, label: "Debug: \(title)")
+            session.viewController.start()
+            if let index = terminals.sessions(forTrackKey: key).firstIndex(where: { $0 === session }) { terminals.setActiveIndex(index, forTrackKey: key) }
+            let pid = session.viewController.terminalView.process.shellPid
+            guard pid > 0 else {
+                terminals.removeSession(session)
+                return nil
+            }
+            // The program ends itself; the tab stays with what it wrote until the next session.
+            return (pid, DebugProgramTerminal(tty: "", end: {}, close: { [weak terminals, weak session] in if let session { terminals?.removeSession(session) } }))
+        }
         reloadProjectTasks()
         thinkVC.onRevealFileRequested = { [weak self] url in self?.revealFile(url) }
         thinkVC.onRevealFileAtLineRequested = { [weak self] url, line in

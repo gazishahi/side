@@ -10,6 +10,8 @@ final class LanguagesViewController: NSViewController, NSSearchFieldDelegate {
     private var query = ""
     /// Whether each server's binary was found, looked up off the main thread (a login shell each).
     private var installed: [String: Bool] = [:]
+    /// Whether each debug adapter was found (by preset id).
+    private var debuggersInstalled: [String: Bool] = [:]
     private var installPopover: NSPopover?
 
     override func loadView() { view = NSView() }
@@ -22,6 +24,57 @@ final class LanguagesViewController: NSViewController, NSSearchFieldDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: LanguageSettings.didChangeNotification, object: nil)
         rebuild()
         checkInstalled()
+        checkDebuggers()
+    }
+
+    /// Each debug adapter, found or not, off the main thread.
+    private func checkDebuggers() {
+        Task.detached(priority: .utility) { [weak self] in
+            var found: [String: Bool] = [:]
+            for preset in DebugAdapters.presets { found[preset.id] = DebugAdapters.isInstalled(preset) }
+            await MainActor.run { [weak self] in
+                guard let self, found != self.debuggersInstalled else { return }
+                self.debuggersInstalled = found
+                self.rebuild()
+            }
+        }
+    }
+
+    private func debuggerRow(_ preset: DebugAdapterPreset) -> NSView {
+        let languages = preset.languages.compactMap { id in LanguageSettings.presets.first { $0.id == id }?.name }.joined(separator: ", ")
+        var status: NSView?
+        switch debuggersInstalled[preset.id] {
+        case true?:
+            status = SettingsForm.badge("Installed", color: .systemGreen)
+        case false?:
+            if preset.install != nil {
+                let install = SettingsForm.button("Install", self, #selector(installDebuggerTapped(_:)))
+                install.identifier = NSUserInterfaceItemIdentifier(preset.id)
+                install.toolTip = preset.install?.command
+                status = install
+            } else {
+                status = SettingsForm.badge("Not found", color: .systemOrange)
+            }
+        case nil:
+            status = nil
+        }
+        let line = NSStackView(views: [Self.statusColumn(status)])
+        line.orientation = .horizontal
+        return SettingsForm.row(preset.name, detail: "\(languages)  \u{00B7}  \(preset.command)\n\(preset.note)", line)
+    }
+
+    @objc private func installDebuggerTapped(_ sender: NSButton) {
+        guard let preset = DebugAdapters.preset(sender.identifier?.rawValue ?? "") else { return }
+        let content = LSPInstallPopoverViewController(debugger: preset) { [weak self] in
+            DebugAdapters.invalidate(preset)
+            self?.debuggersInstalled[preset.id] = nil
+            self?.checkDebuggers()
+        }
+        let popover = NSPopover()
+        popover.contentViewController = content
+        popover.behavior = .transient
+        installPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
 
     @objc private func settingsChanged() {
@@ -78,6 +131,15 @@ final class LanguagesViewController: NSViewController, NSSearchFieldDelegate {
         customRows.append(SettingsForm.row("Add a language Side doesn't know", detail: "Its file extensions and the command that runs its server.",
                                            SettingsForm.button("Add Language\u{2026}", self, #selector(addLanguage))))
         views.append(SettingsForm.section("Your languages", customRows))
+        let debuggers = DebugAdapters.presets.filter { preset in
+            query.isEmpty || preset.name.localizedCaseInsensitiveContains(query) || preset.languages.contains { id in
+                LanguageSettings.presets.first { $0.id == id }.map { Self.matches($0, query) } ?? false
+            }
+        }
+        if !debuggers.isEmpty {
+            views.append(SettingsForm.section("Debuggers", footer: "Make's debugger (Debug \u{2192} Start Debugging) uses these. Side installs js-debug and debugpy into its own folder, so they don't change your Node or Python.",
+                                              debuggers.map(debuggerRow)))
+        }
         if languages.isEmpty && custom.isEmpty && !query.isEmpty {
             views.insert(SettingsForm.footnote("No language matches \u{201C}\(query)\u{201D}."), at: 2)
         }

@@ -628,9 +628,14 @@ final class LanguagePresetTests: XCTestCase {
                     XCTAssertTrue(shell("curl -s 'https://azuresearch-usnc.nuget.org/query?q=packageid:\(tool)&packageType=DotnetTool'").output.contains("\"totalHits\":1"), "\(label): no .NET tool \(tool)")
                 case .go(let module):
                     XCTAssertTrue(shell("curl -s https://proxy.golang.org/\(module)/@latest").output.contains("\"Version\""), "\(label): no Go module \(module)")
+                case .script:
+                    break   // Side's own (the debuggers', checked below)
                 }
             }
         }
+        // The debuggers Side installs: Delve's module, js-debug's release asset.
+        XCTAssertTrue(shell("curl -s https://proxy.golang.org/github.com/go-delve/delve/@latest").output.contains("\"Version\""), "no Delve module")
+        XCTAssertTrue(shell("curl -fsSL https://api.github.com/repos/microsoft/vscode-js-debug/releases/latest").output.contains("js-debug-dap-v"), "no js-debug DAP release")
     }
 }
 

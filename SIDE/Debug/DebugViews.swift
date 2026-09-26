@@ -51,7 +51,7 @@ final class DebugBar: NSView {
             stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             heightAnchor.constraint(equalToConstant: Self.height),
             divider.heightAnchor.constraint(equalToConstant: 16),
-            statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+            statusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 240),
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(.toolbar)
@@ -92,7 +92,11 @@ final class DebugBar: NSView {
             // An exception's text says what was thrown; a breakpoint's ("breakpoint 1.1") is noise.
             statusLabel.stringValue = reason == "exception" ? "Paused: " + (text.flatMap { $0.isEmpty ? nil : $0 } ?? "exception") : DebugBar.describe(reason)
             stopped = true
-        case .ended(let message): statusLabel.stringValue = message ?? "Ended"; stopped = false
+        case .ended(let message):
+            // The whole message is in the console; the bar says it in a few words.
+            statusLabel.stringValue = message.map { _ in "Couldn\u{2019}t run \(name): see the console" } ?? "Ended"
+            statusLabel.toolTip = message
+            stopped = false
         }
         let label = stopped ? "Continue" : "Pause"
         pauseContinue.image = Self.symbolImage(stopped ? "play.fill" : "pause.fill", label)

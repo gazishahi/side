@@ -8,7 +8,10 @@ import Heron
 /// narrower reading of "don't hide what the machine is doing" than a full terminal tab: visible
 /// on request (failure), not forced on you for a one-shot unattended command.
 final class LSPInstallPopoverViewController: NSViewController {
-    private let entry: LanguageServerRegistry.Entry
+    /// What's installed (its binary's name, for the words), how, and what's said first.
+    private let name: String
+    private let install: LanguageInstall?
+    private let intro: String
     private let onInstalled: () -> Void
 
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -20,7 +23,19 @@ final class LSPInstallPopoverViewController: NSViewController {
     private var task: Process?
 
     init(entry: LanguageServerRegistry.Entry, onInstalled: @escaping () -> Void) {
-        self.entry = entry
+        let language = LanguageSettings.presets.first { $0.id == entry.languageKey }?.name ?? entry.languageId.capitalized
+        name = entry.binaryName
+        install = entry.install
+        intro = "\(language)'s language server (\(entry.binaryName)) isn't installed, so completion and problems are off for it. \(entry.install.map { "Installing runs \u{201C}\($0.command)\u{201D}, so it'll also be available in your terminal and other editors, not just Side." } ?? "Install it, then reopen the file.")"
+        self.onInstalled = onInstalled
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    /// A debug adapter (SIDE_RFC_DEBUGGER.md, D2).
+    init(debugger: DebugAdapterPreset, onInstalled: @escaping () -> Void) {
+        name = debugger.name
+        install = debugger.install
+        intro = "\(debugger.name) isn't installed, so debugging \(debugger.languages.compactMap { id in LanguageSettings.presets.first { $0.id == id }?.name }.joined(separator: ", ")) is off. Installing uses \(debugger.install?.tool ?? "its installer"). \(debugger.note)"
         self.onInstalled = onInstalled
         super.init(nibName: nil, bundle: nil)
     }
@@ -33,8 +48,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         super.viewDidLoad()
         view.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
-        let language = LanguageSettings.presets.first { $0.id == entry.languageKey }?.name ?? entry.languageId.capitalized
-        messageLabel.stringValue = "\(language)'s language server (\(entry.binaryName)) isn't installed, so completion and problems are off for it. \(entry.install.map { "Installing runs \u{201C}\($0.command)\u{201D}, so it'll also be available in your terminal and other editors, not just Side." } ?? "Install it, then reopen the file.")"
+        messageLabel.stringValue = intro
         messageLabel.font = DS.Text.body()
         messageLabel.textColor = .labelColor
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -44,7 +58,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         installButton.target = self
         installButton.action = #selector(installTapped)
         installButton.translatesAutoresizingMaskIntoConstraints = false
-        installButton.isHidden = entry.install == nil
+        installButton.isHidden = install == nil
 
         spinner.style = .spinning
         spinner.controlSize = .small
@@ -84,7 +98,7 @@ final class LSPInstallPopoverViewController: NSViewController {
     }
 
     @objc private func installTapped() {
-        guard let install = entry.install, task == nil else { return }
+        guard let install, task == nil else { return }
         installButton.isHidden = true
         spinner.startAnimation(nil)
         messageLabel.stringValue = "Checking for \(install.tool)…"
@@ -98,7 +112,7 @@ final class LSPInstallPopoverViewController: NSViewController {
                 guard present else {
                     LanguageServerRegistry.invalidateResolution(for: requirement.binary)
                     self.spinner.stopAnimation(nil)
-                    self.messageLabel.stringValue = "Installing \(self.entry.binaryName) needs \(requirement.hint). Install that, then try again."
+                    self.messageLabel.stringValue = "Installing \(self.name) needs \(requirement.hint). Install that, then try again."
                     self.installButton.isHidden = false
                     return
                 }
@@ -108,7 +122,7 @@ final class LSPInstallPopoverViewController: NSViewController {
     }
 
     private func runInstall(_ install: LanguageInstall) {
-        messageLabel.stringValue = "Installing \(entry.binaryName) with \(install.tool)…"
+        messageLabel.stringValue = "Installing \(name) with \(install.tool)…"
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -143,7 +157,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         task = nil
         spinner.stopAnimation(nil)
         if exitCode == 0 {
-            messageLabel.stringValue = "\(entry.binaryName) is installed and running."
+            messageLabel.stringValue = "\(name) is installed and running."
             onInstalled()
         } else {
             messageLabel.stringValue = "Install failed (exit \(exitCode)). See the log below."

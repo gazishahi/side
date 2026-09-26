@@ -272,7 +272,14 @@ final class BreakpointStore {
 /// What's being debugged (SIDE_RFC_DEBUGGER.md, D3): the program, and a build to run first.
 struct DebugConfiguration: Equatable, Sendable {
     var name: String
-    var program: String
+    /// The adapter (`DebugAdapterPreset.id`).
+    var adapter: String = DebugAdapters.lldb.id
+    /// "launch" or "attach".
+    var request = "launch"
+    /// The adapter's own launch arguments (js-debug's, debugpy's, Delve's), sent as they are;
+    /// nil builds lldb-dap's from `program`, `arguments` and `environment`.
+    var launchArguments: [String: LSPValue]?
+    var program: String = ""
     var arguments: [String] = []
     var directory: String
     var environment: [String: String] = [:]
@@ -325,17 +332,32 @@ final class DebugSession {
     /// The adapter's `stopped` event, before the stack is asked for (the step budget's start).
     var onStopEvent: (() -> Void)?
 
-    private let adapter: URL
-    private let adapterArguments: [String]
+    /// The adapter asked to run the program in a terminal (`runInTerminal`): its arguments,
+    /// directory, environment and title. The answer is the process id, or nil if it couldn't.
+    var runInTerminal: (([String], String, [String: String], String) async -> Int32?)?
+    /// The adapter asked for a child session (`startDebugging`, js-debug's program sessions):
+    /// the request and its configuration, to start over this session's connection.
+    var onStartChild: ((String, [String: LSPValue]) -> Void)?
+
+    private let connection: DAPConnection
+    private let adapterID: String
     private var client: DAPClient?
     private var capabilities: [String: Any] = [:]
     private var configured = false
+    /// The adapter's ids for the breakpoints it answered, to follow its `breakpoint` events.
+    private var placedBreakpoints: [Int: (path: String, line: Int)] = [:]
+    /// The port a server adapter listens on, for a child session.
+    private(set) var port: UInt16?
 
-    init(configuration: DebugConfiguration, adapter: URL, adapterArguments: [String] = [], breakpoints: BreakpointStore) {
+    init(configuration: DebugConfiguration, connection: DAPConnection, adapterID: String, breakpoints: BreakpointStore) {
         self.configuration = configuration
-        self.adapter = adapter
-        self.adapterArguments = adapterArguments
+        self.connection = connection
+        self.adapterID = adapterID
         self.breakpoints = breakpoints
+    }
+
+    convenience init(configuration: DebugConfiguration, adapter: URL, adapterArguments: [String] = [], breakpoints: BreakpointStore) {
+        self.init(configuration: configuration, connection: .stdio(executable: adapter, arguments: adapterArguments), adapterID: DebugAdapters.lldb.adapterID, breakpoints: breakpoints)
     }
 
     var isActive: Bool { if case .ended = state { return false } else { return true } }
@@ -352,36 +374,45 @@ final class DebugSession {
             guard status == 0 else { return state = .ended("The build failed (exit \(status)).") }
         }
         state = .starting
-        let client = DAPClient(executableURL: adapter, arguments: adapterArguments, environment: nil, currentDirectory: URL(fileURLWithPath: configuration.directory))
-        self.client = client
-        await client.setHandlers(
-            onEvent: { [weak self] event, body in Task { @MainActor in self?.handle(event: event, body: body) } },
-            onTerminate: { [weak self] in Task { @MainActor in self?.adapterExited() } }
-        )
         do {
+            // A server adapter builds and runs from the project (Delve's `go build`), and finds
+            // the person's tools on their PATH.
+            let client = try DAPClient(connection: connection, environment: Self.adapterEnvironment(),
+                                       currentDirectory: URL(fileURLWithPath: realPath(configuration.directory)))
+            self.client = client
+            port = client.port
+            await client.setHandlers(
+                onEvent: { [weak self] event, body in Task { @MainActor in self?.handle(event: event, body: body) } },
+                onTerminate: { [weak self] in Task { @MainActor in self?.adapterExited() } },
+                onReverseRequest: { [weak self] command, arguments in
+                    guard let self else { return .failure(.notRunning) }
+                    return await self.answer(command, arguments)
+                }
+            )
             try await client.start()
             let initialize = try await client.request("initialize", [
-                "clientID": "side", "clientName": "Side", "adapterID": "lldb-dap", "locale": "en",
+                "clientID": "side", "clientName": "Side", "adapterID": .string(adapterID), "locale": "en",
                 "linesStartAt1": true, "columnsStartAt1": true, "pathFormat": "path",
-                "supportsVariableType": true, "supportsVariablePaging": true, "supportsRunInTerminalRequest": false,
+                "supportsVariableType": true, "supportsVariablePaging": true,
+                "supportsRunInTerminalRequest": .bool(runInTerminal != nil), "supportsStartDebuggingRequest": .bool(onStartChild != nil),
             ])
             capabilities = initialize.object ?? [:]
             // The launch's response may come only after configurationDone, so it isn't awaited
             // before configuring (the adapter's `initialized` event starts that).
-            var arguments: [String: LSPValue] = [
+            var arguments: [String: LSPValue] = configuration.launchArguments.map(Self.realPaths) ?? [
                 "program": .string(realPath(configuration.program)), "args": .array(configuration.arguments.map { .string($0) }),
                 "cwd": .string(realPath(configuration.directory)), "stopOnEntry": false,
             ]
             // The program on a Run tab's terminal, so its input works. lldb's own target
             // settings: lldb-1703's `runInTerminal` launcher times out on macOS, and it ignores
             // the newer `stdio` argument.
-            if let terminal = configuration.terminal {
+            if let terminal = configuration.terminal, configuration.launchArguments == nil {
                 arguments["preRunCommands"] = .array(["input", "output", "error"].map { .string("settings set target.\($0)-path \(terminal)") })
             }
-            if !configuration.environment.isEmpty {
+            if !configuration.environment.isEmpty, configuration.launchArguments == nil {
                 arguments["env"] = .array(configuration.environment.map { .string("\($0.key)=\($0.value)") })
             }
-            await client.send("launch", .object(arguments)) { [weak self] result in
+            await client.send(configuration.request, .object(arguments)) { [weak self] result in
                 Task { @MainActor in
                     if case .failure(let error) = result { self?.appendOutput("Launch failed: \(error.localizedDescription)\n"); self?.end(error.localizedDescription) }
                 }
@@ -389,6 +420,31 @@ final class DebugSession {
         } catch {
             end("Couldn't start the debugger: \(error.localizedDescription)")
         }
+    }
+
+    /// The adapter's requests of Side.
+    private func answer(_ command: String, _ arguments: LSPResult) async -> Result<LSPValue, DAPClient.DAPError> {
+        let object = arguments.object ?? [:]
+        switch command {
+        case "runInTerminal":
+            guard let runInTerminal, let args = object["args"] as? [String], !args.isEmpty else { break }
+            let cwd = object["cwd"] as? String ?? configuration.directory
+            // A null value means "unset"; the terminal's environment is the person's anyway.
+            let environment = (object["env"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
+            let title = (object["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? configuration.name
+            guard let pid = await runInTerminal(args, cwd, environment, title) else {
+                return .failure(.failed(command: command, message: "Couldn't open a terminal for the program."))
+            }
+            return .success(["processId": .int(Int(pid))])
+        case "startDebugging":
+            guard let onStartChild, let configuration = object["configuration"] as? [String: Any] else { break }
+            let request = object["request"] as? String ?? "launch"
+            onStartChild(request, configuration.mapValues { LSPValue(any: $0) })
+            return .success([:])
+        default:
+            break
+        }
+        return .failure(.failed(command: command, message: "\(command) isn't supported"))
     }
 
     private func handle(event: String, body: LSPResult) {
@@ -413,7 +469,13 @@ final class DebugSession {
             if category == "console", text == "Running preRunCommands:\n" || text.hasPrefix("(lldb) settings set target.") { return }
             appendOutput(text, fromProgram: category == "stdout" || category == "stderr")
         case "breakpoint":
-            break   // re-sent per file on the next change
+            // A breakpoint the adapter placed (or moved) after answering: js-debug's
+            // "provisional" ones bind once the script loads.
+            guard let breakpoint = object["breakpoint"] as? [String: Any], let id = breakpoint["id"] as? Int,
+                  let placed = placedBreakpoints[id] else { return }
+            let line = (breakpoint["line"] as? Int).map { $0 - 1 }
+            breakpoints.verified(path: placed.path, lines: [(requested: placed.line, actual: line, verified: breakpoint["verified"] as? Bool ?? false)])
+            if let line { placedBreakpoints[id] = (placed.path, line) }
         case "exited":
             if let code = object["exitCode"] as? Int { appendOutput("\nThe program exited with code \(code).\n") }
         case "terminated":
@@ -492,7 +554,10 @@ final class DebugSession {
             (requested.line, (answer["line"] as? Int).map { $0 - 1 }, answer["verified"] as? Bool ?? false)
         }
         var messages: [Int: String] = [:]
-        for (requested, answer) in zip(enabled, placed) { if let message = answer["message"] as? String { messages[requested.line] = message } }
+        for (requested, answer) in zip(enabled, placed) {
+            if let message = answer["message"] as? String { messages[requested.line] = message }
+            if let id = answer["id"] as? Int { placedBreakpoints[id] = (path, (answer["line"] as? Int).map { $0 - 1 } ?? requested.line) }
+        }
         breakpoints.verified(path: path, lines: answers.map { (requested: $0.0, actual: $0.1, verified: $0.2) }, messages: messages)
     }
 
@@ -557,7 +622,15 @@ final class DebugSession {
     func stop() {
         guard let client, isActive else { return end(nil) }
         Task {
+            // An adapter needn't answer (js-debug's launcher session doesn't always): a second,
+            // then the adapter (and a server's process) is stopped regardless.
+            // Stopping the client fails what's pending, so the wait ends either way.
+            let deadline = Task {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await client.stop()
+            }
             _ = try? await client.request("disconnect", ["terminateDebuggee": true])
+            deadline.cancel()
             await client.stop()
             self.end(nil)
         }
@@ -581,6 +654,26 @@ final class DebugSession {
         output += text
         if output.utf16.count > 400_000 { output = String(output.suffix(300_000)) }
         onOutput?(text, fromProgram)
+    }
+
+    /// An adapter's launch arguments with their paths as the file system has them: `go build`
+    /// finds a module by the real path of its directory, and a breakpoint binds by the real path
+    /// the compiler recorded.
+    nonisolated static func realPaths(_ arguments: [String: LSPValue]) -> [String: LSPValue] {
+        var arguments = arguments
+        for key in ["program", "cwd"] {
+            if case .string(let path)? = arguments[key], path.hasPrefix("/") { arguments[key] = .string(realPath(path)) }
+        }
+        return arguments
+    }
+
+    /// The person's environment (their login PATH) without what was injected into Side's own
+    /// process: `DYLD_*` libraries from Xcode or XCTest, which an adapter's interpreter (and the
+    /// program it starts) would load too.
+    nonisolated static func adapterEnvironment() -> [String: String] {
+        LanguageServerRegistry.environmentForSpawning().filter { key, _ in
+            !key.hasPrefix("DYLD_") && !key.hasPrefix("__XPC_DYLD_") && !key.hasPrefix("XCTest") && key != "OS_ACTIVITY_DT_MODE"
+        }
     }
 
     /// A shell command's status and output, off the main thread (the build).
