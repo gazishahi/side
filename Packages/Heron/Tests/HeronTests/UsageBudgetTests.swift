@@ -25,7 +25,8 @@ final class UsageBudgetTests: XCTestCase {
     /// Rounded, not truncated: truncating $5 to 1,666,666 tokens spends $4.999998, and two of
     /// those land a hair under a threshold the test means to cross.
     private func spend(_ dollars: Double, in store: UsageStore, at date: Date = Date()) {
-        let tokens = Int((dollars / 3 * 1_000_000).rounded(.up))
+        // Sonnet 5's input: $2 a million tokens (the published price).
+        let tokens = Int((dollars / 2 * 1_000_000).rounded(.up))
         store.record(
             projectPath: "/a", trackKey: "main", providerId: "anthropic", modelId: "claude-sonnet-5",
             usage: TokenUsage(inputTokens: tokens, outputTokens: 0, cachedInputTokens: nil), now: date
@@ -110,7 +111,7 @@ final class UsageBudgetTests: XCTestCase {
         let store = makeStore()
         XCTAssertEqual(store.records.count, 1)
         XCTAssertEqual(store.records[0].periodKey, "")
-        XCTAssertEqual(store.estimatedCost().total, 3, accuracy: 0.01)
+        XCTAssertEqual(store.estimatedCost().total, 2, accuracy: 0.01)
         XCTAssertEqual(store.estimatedCostThisMonth().total, 0, accuracy: 0.0001)
     }
 }

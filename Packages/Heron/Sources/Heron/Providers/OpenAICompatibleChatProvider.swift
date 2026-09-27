@@ -16,7 +16,12 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
     private let contextWindowTokens: Int
     private let effort: AgentEffort
 
-    public init(apiKey: String?, modelId: String, baseURL: URL, contextWindowTokens: Int = 128_000, effort: AgentEffort = .standard) {
+    /// Whether to ask for usage in the stream (`stream_options`): hosted services, yes; a local
+    /// server, not (some refuse an unknown field, and a local model costs nothing).
+    private let asksForStreamUsage: Bool
+
+    public init(apiKey: String?, modelId: String, baseURL: URL, contextWindowTokens: Int = 128_000, effort: AgentEffort = .standard, asksForStreamUsage: Bool = true) {
+        self.asksForStreamUsage = asksForStreamUsage
         self.apiKey = apiKey
         self.modelId = modelId
         self.baseURL = baseURL
@@ -55,12 +60,15 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
 
     // MARK: - Request building
 
-    private func requestBody(messages: [AgentMessage], system: String?, tools: [ToolSpec]) -> [String: Any] {
+    func requestBody(messages: [AgentMessage], system: String?, tools: [ToolSpec]) -> [String: Any] {
         var body: [String: Any] = [
             "model": modelId,
             "stream": true,
+            // Without this OpenAI streams no usage at all, and nothing is metered. Servers that
+            // don't know it (older local ones) ignore it; the ones that know it answer.
             "messages": Self.openAIMessages(from: messages, system: system),
         ]
+        if asksForStreamUsage { body["stream_options"] = ["include_usage": true] }
         if !tools.isEmpty {
             body["tools"] = tools.map {
                 ["type": "function", "function": ["name": $0.name, "description": $0.description, "parameters": $0.inputSchema.anyValue]]
@@ -147,6 +155,7 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
         public var finishReason: String?
         public var promptTokens: Int?
         public var completionTokens: Int?
+        public var cachedTokens: Int?
 
         public init() {}
     }
@@ -158,7 +167,12 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
     public static func handle(sse: SSEEvent, state: TurnState, onEvent: (AgentStreamEvent) -> Void) -> Bool {
         if sse.data == "[DONE]" {
             for id in state.toolCallsByIndex.values { onEvent(.toolUseEnd(id: id)) }
-            let usage = state.promptTokens.map { TokenUsage(inputTokens: $0, outputTokens: state.completionTokens ?? 0, cachedInputTokens: nil) }
+            // OpenAI's prompt count includes what it served from its cache; Side's input is
+            // what was billed at the full price.
+            let usage = state.promptTokens.map { prompt in
+                TokenUsage(inputTokens: max(0, prompt - (state.cachedTokens ?? 0)), outputTokens: state.completionTokens ?? 0,
+                           cachedInputTokens: state.cachedTokens)
+            }
             onEvent(.messageEnd(stopReason: stopReason(from: state.finishReason), usage: usage))
             return true
         }
@@ -167,6 +181,7 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
         if let usage = object["usage"] as? [String: Any] {
             state.promptTokens = usage["prompt_tokens"] as? Int
             state.completionTokens = usage["completion_tokens"] as? Int
+            state.cachedTokens = (usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int
         }
         guard let choices = object["choices"] as? [[String: Any]], let choice = choices.first else { return false }
         if let finishReason = choice["finish_reason"] as? String { state.finishReason = finishReason }

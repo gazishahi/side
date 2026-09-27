@@ -114,16 +114,24 @@ public enum StopReason: Equatable, Sendable {
     case other(String)
 }
 
-public struct TokenUsage: Sendable {
+public struct TokenUsage: Sendable, Equatable {
+    /// Input billed at the full price: not read from the cache, not written to it.
     public let inputTokens: Int
     public let outputTokens: Int
+    /// Input read from the provider's prompt cache (a fraction of the price).
     public let cachedInputTokens: Int?
+    /// Input written to the cache this request (Anthropic: 1.25x the price, for 5 minutes).
+    public let cacheWriteInputTokens: Int?
 
-    public init(inputTokens: Int, outputTokens: Int, cachedInputTokens: Int?) {
+    public init(inputTokens: Int, outputTokens: Int, cachedInputTokens: Int?, cacheWriteInputTokens: Int? = nil) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cachedInputTokens = cachedInputTokens
+        self.cacheWriteInputTokens = cacheWriteInputTokens
     }
+
+    /// Everything the request carried, however it was billed: what the context gauge counts.
+    public var promptTokens: Int { inputTokens + (cachedInputTokens ?? 0) + (cacheWriteInputTokens ?? 0) }
 }
 
 /// Provider-level failure (bad key, rate limit, overloaded) — distinct from transport-level

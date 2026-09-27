@@ -129,6 +129,7 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
         public var stopReason: StopReason = .endTurn
         public var inputTokens: Int?
         public var cachedInputTokens: Int?
+        public var cacheWriteInputTokens: Int?
         public var outputTokens: Int?
 
         public init() {}
@@ -142,6 +143,7 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
             if let message = object["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] {
                 state.inputTokens = usage["input_tokens"] as? Int
                 state.cachedInputTokens = usage["cache_read_input_tokens"] as? Int
+                state.cacheWriteInputTokens = usage["cache_creation_input_tokens"] as? Int
             }
         case "content_block_start":
             // Text blocks need no start marker — their deltas carry everything. Tool-use
@@ -183,9 +185,14 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
             }
             if let usage = object["usage"] as? [String: Any] {
                 state.outputTokens = usage["output_tokens"] as? Int
+                // The final counts, when the API repeats them here.
+                if let input = usage["input_tokens"] as? Int { state.inputTokens = input }
+                if let read = usage["cache_read_input_tokens"] as? Int { state.cachedInputTokens = read }
+                if let write = usage["cache_creation_input_tokens"] as? Int { state.cacheWriteInputTokens = write }
             }
         case "message_stop":
-            let usage = TokenUsage(inputTokens: state.inputTokens ?? 0, outputTokens: state.outputTokens ?? 0, cachedInputTokens: state.cachedInputTokens)
+            let usage = TokenUsage(inputTokens: state.inputTokens ?? 0, outputTokens: state.outputTokens ?? 0,
+                                   cachedInputTokens: state.cachedInputTokens, cacheWriteInputTokens: state.cacheWriteInputTokens)
             onEvent(.messageEnd(stopReason: state.stopReason, usage: usage))
         case "error":
             let error = object["error"] as? [String: Any]

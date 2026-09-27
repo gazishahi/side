@@ -91,8 +91,8 @@ final class UsageStoreTests: XCTestCase {
         priced.inputTokens = 1_000_000
         priced.outputTokens = 1_000_000
         priced.cachedInputTokens = 1_000_000
-        // $3 input + $15 output + $0.30 cached.
-        XCTAssertEqual(try XCTUnwrap(ModelPricing.estimatedCost(modelId: "claude-sonnet-5", totals: priced)), 18.3, accuracy: 0.0001)
+        // Sonnet 5: $2 input + $10 output + $0.20 cached.
+        XCTAssertEqual(try XCTUnwrap(ModelPricing.estimatedCost(modelId: "claude-sonnet-5", totals: priced)), 12.2, accuracy: 0.0001)
 
         var unpriced = UsageTotals()
         unpriced.inputTokens = 5_000_000
@@ -104,7 +104,7 @@ final class UsageStoreTests: XCTestCase {
         store.record(projectPath: "/a", trackKey: "main", providerId: "anthropic", modelId: "claude-sonnet-5", usage: usage(input: 1_000_000, output: 0))
         store.record(projectPath: "/a", trackKey: "main", providerId: "local", modelId: "llama-whatever", usage: usage(input: 9_000_000, output: 9_000_000))
         let estimate = store.estimatedCost()
-        XCTAssertEqual(estimate.total, 3.0, accuracy: 0.0001)
+        XCTAssertEqual(estimate.total, 2.0, accuracy: 0.0001)
         XCTAssertTrue(estimate.hasUnpricedModels)
     }
 

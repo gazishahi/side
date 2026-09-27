@@ -66,7 +66,11 @@ public final class AgentRunner {
     public private(set) var lastReportedInputTokens: Int?
     /// The provider the in-flight request went to — recorded alongside `activeModelId` so usage
     /// is filed against what actually answered, not whatever is active in Settings now.
-    private var activeProviderId = ProviderRegistryStore.shared.activeProviderId
+    private var activeProviderId: String
+    /// Where providers, keys and models come from, and where spend is recorded: the app's own,
+    /// or a test's and the benchmark's (so they never touch the person's).
+    private let providerRegistry: ProviderRegistryStore
+    private let usageStore: UsageStore
     /// Resolved fresh on every use, never captured once — see `WorkspaceBridge`.
     private let bridgeProvider: () -> WorkspaceBridge
     /// The directory this track's tools actually operate in — its linked worktree if it has one,
@@ -188,8 +192,12 @@ public final class AgentRunner {
         bridgeProvider: @escaping () -> WorkspaceBridge,
         rootProvider: @escaping () -> URL, modeProvider: @escaping () -> AgentMode = { .default },
         modelSelectionProvider: @escaping () -> (providerId: String?, modelId: String?, effort: AgentEffort?) = { (nil, nil, nil) },
-        trackContextProvider: @escaping () -> [AgentTrackSummary] = { [] }
+        trackContextProvider: @escaping () -> [AgentTrackSummary] = { [] },
+        providerRegistry: ProviderRegistryStore = .shared, usageStore: UsageStore = .shared
     ) {
+        self.providerRegistry = providerRegistry
+        self.usageStore = usageStore
+        activeProviderId = providerRegistry.activeProviderId
         self.trackKey = trackKey
         self.sessionStore = sessionStore
         self.projectPath = projectPath
@@ -262,7 +270,7 @@ public final class AgentRunner {
     /// to fail after the text was already gone, so a missing key silently ate what you typed.
     public var isReadyToSend: Bool {
         let selection = resolvedSelection()
-        if case .ready = ProviderRegistryStore.shared.resolveAdapter(
+        if case .ready = providerRegistry.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
         ) { return true }
         return false
@@ -270,7 +278,7 @@ public final class AgentRunner {
 
     /// The reason `isReadyToSend` is false, for the UI to show.
     public var notReadyReason: String {
-        let name = ProviderRegistryStore.shared.provider(for: resolvedSelection().providerId)?.displayName ?? "the active provider"
+        let name = providerRegistry.provider(for: resolvedSelection().providerId)?.displayName ?? "the active provider"
         return "No API key for \(name) yet. Add one in Settings (⌘,). It's stored in your Keychain."
     }
 
@@ -279,7 +287,7 @@ public final class AgentRunner {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
         let selection = resolvedSelection()
-        guard case .ready(_, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
+        guard case .ready(_, _, let model) = providerRegistry.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
         ) else {
             appendMissingKeyHint()
@@ -964,7 +972,7 @@ public final class AgentRunner {
         let turns = sessionStore.session(forTrackKey: trackKey)?.turns ?? []
         let selection = resolvedSelection()
         var window = 200_000
-        if case .ready(_, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
+        if case .ready(_, _, let model) = providerRegistry.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
         ) {
             window = model.contextWindowTokens
@@ -990,7 +998,7 @@ public final class AgentRunner {
             return completion(.failure(CompactionError.nothingToCompact))
         }
         let selection = resolvedSelection()
-        guard case .ready(let provider, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
+        guard case .ready(let provider, _, let model) = providerRegistry.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
         ) else {
             return completion(.failure(CompactionError.noProvider))
@@ -1110,7 +1118,7 @@ public final class AgentRunner {
             return
         }
         let selection = resolvedSelection()
-        guard case .ready(let provider, _, let model) = ProviderRegistryStore.shared.resolveAdapter(
+        guard case .ready(let provider, _, let model) = providerRegistry.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
         ) else {
             appendMissingKeyHint()
@@ -1198,7 +1206,7 @@ public final class AgentRunner {
     private func resolvedSelection() -> (providerId: String, modelId: String?, effort: AgentEffort) {
         let selection = modelSelectionProvider()
         return (
-            selection.providerId ?? ProviderRegistryStore.shared.activeProviderId,
+            selection.providerId ?? providerRegistry.activeProviderId,
             selection.modelId,
             selection.effort ?? .default
         )
@@ -1252,11 +1260,11 @@ public final class AgentRunner {
             if let usage {
                 // Kept for the context gauge: a measured count beats an estimate, and the next
                 // request is this conversation plus a little.
-                lastReportedInputTokens = usage.inputTokens + (usage.cachedInputTokens ?? 0)
+                lastReportedInputTokens = usage.promptTokens
                 // Persisted, so the gauge doesn't silently fall back to the lower estimate
                 // after a relaunch and report a different percentage for the same conversation.
                 sessionStore.recordReportedInputTokens(lastReportedInputTokens, forTrackKey: trackKey)
-                UsageStore.shared.record(
+                usageStore.record(
                     projectPath: projectPath, trackKey: trackKey,
                     providerId: activeProviderId,
                     modelId: activeModelId, usage: usage
@@ -1684,7 +1692,7 @@ public final class AgentRunner {
     }
 
     private func appendMissingKeyHint() {
-        let name = ProviderRegistryStore.shared.provider(for: resolvedSelection().providerId)?.displayName ?? "the active provider"
+        let name = providerRegistry.provider(for: resolvedSelection().providerId)?.displayName ?? "the active provider"
         appendEntry(.meta("No API key found for \(name). Open Settings (⌘,) to add one. It's stored in your Keychain."))
     }
 

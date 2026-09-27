@@ -224,7 +224,8 @@ public final class ProviderRegistryStore: @unchecked Sendable {
             return .ready(
                 OpenAICompatibleChatProvider(
                     apiKey: apiKey, modelId: model.id, baseURL: definition.baseURL,
-                    contextWindowTokens: model.contextWindowTokens, effort: effort
+                    contextWindowTokens: model.contextWindowTokens, effort: effort,
+                    asksForStreamUsage: definition.kind == .byokOpenAICompatible
                 ),
                 definition, model
             )

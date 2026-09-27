@@ -7,24 +7,40 @@ public struct UsageTotals: Codable, Equatable {
     /// Prompt tokens served from the provider's cache — counted separately because they're
     /// billed differently (and much cheaper) than fresh input.
     public var cachedInputTokens: Int = 0
+    /// Prompt tokens written to the provider's cache (billed above fresh input, once).
+    public var cacheWriteInputTokens: Int = 0
     /// Model turns, not user messages: one agent reply that makes three tool round-trips is
     /// three requests, and each one is billed.
     public var requestCount: Int = 0
 
-    public var totalTokens: Int { inputTokens + outputTokens + cachedInputTokens }
+    public var totalTokens: Int { inputTokens + outputTokens + cachedInputTokens + cacheWriteInputTokens }
 
     public mutating func add(_ other: UsageTotals) {
         inputTokens += other.inputTokens
         outputTokens += other.outputTokens
         cachedInputTokens += other.cachedInputTokens
+        cacheWriteInputTokens += other.cacheWriteInputTokens
         requestCount += other.requestCount
     }
 
-    public init(inputTokens: Int = 0, outputTokens: Int = 0, cachedInputTokens: Int = 0, requestCount: Int = 0) {
+    public init(inputTokens: Int = 0, outputTokens: Int = 0, cachedInputTokens: Int = 0, cacheWriteInputTokens: Int = 0, requestCount: Int = 0) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cachedInputTokens = cachedInputTokens
+        self.cacheWriteInputTokens = cacheWriteInputTokens
         self.requestCount = requestCount
+    }
+
+    private enum CodingKeys: String, CodingKey { case inputTokens, outputTokens, cachedInputTokens, cacheWriteInputTokens, requestCount }
+
+    /// Tolerant: rows written before a field existed still load.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        inputTokens = try container.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
+        outputTokens = try container.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
+        cachedInputTokens = try container.decodeIfPresent(Int.self, forKey: .cachedInputTokens) ?? 0
+        cacheWriteInputTokens = try container.decodeIfPresent(Int.self, forKey: .cacheWriteInputTokens) ?? 0
+        requestCount = try container.decodeIfPresent(Int.self, forKey: .requestCount) ?? 0
     }
 }
 
@@ -128,6 +144,7 @@ public final class UsageStore: @unchecked Sendable {
         incoming.inputTokens = usage.inputTokens
         incoming.outputTokens = usage.outputTokens
         incoming.cachedInputTokens = usage.cachedInputTokens ?? 0
+        incoming.cacheWriteInputTokens = usage.cacheWriteInputTokens ?? 0
         incoming.requestCount = 1
 
         let period = UsageRecord.periodKey(for: now)
@@ -266,24 +283,34 @@ public final class UsageStore: @unchecked Sendable {
 /// cost rather than a guess, and every figure is labelled an estimate wherever it's shown.
 /// Published prices change, and a confidently wrong number is worse than an honest blank.
 public enum ModelPricing {
-    public struct Price: Sendable {
+    /// Per million tokens, in USD.
+    public struct Price: Sendable, Equatable {
         public let inputPerMillion: Double
         public let outputPerMillion: Double
-        /// Cache reads are billed at a fraction of fresh input on every provider that offers
-        /// them; 10% is the common figure and the one used here.
-        public var cachedInputPerMillion: Double { inputPerMillion * 0.1 }
+        /// A cache hit: 0.1x input on most models, less on some (0.05x Opus 5.5, 0.025x Fable 5.1).
+        public let cachedInputPerMillion: Double
+        /// A 5-minute cache write: 1.25x input.
+        public let cacheWritePerMillion: Double
 
-        public init(inputPerMillion: Double, outputPerMillion: Double) {
+        public init(inputPerMillion: Double, outputPerMillion: Double, cachedInputPerMillion: Double? = nil, cacheWritePerMillion: Double? = nil) {
             self.inputPerMillion = inputPerMillion
             self.outputPerMillion = outputPerMillion
+            self.cachedInputPerMillion = cachedInputPerMillion ?? inputPerMillion * 0.1
+            self.cacheWritePerMillion = cacheWritePerMillion ?? inputPerMillion * 1.25
         }
     }
 
-    private static let table: [String: Price] = [
-        "claude-opus-5": Price(inputPerMillion: 15, outputPerMillion: 75),
-        "claude-sonnet-5": Price(inputPerMillion: 3, outputPerMillion: 15),
+    /// Anthropic's published prices (platform.claude.com/docs/en/about-claude/pricing, read
+    /// 2026-09-26). Every model the registry seeds has a row; a test holds that.
+    static let table: [String: Price] = [
+        "claude-fable-5-1": Price(inputPerMillion: 10, outputPerMillion: 50, cachedInputPerMillion: 0.25),
+        "claude-opus-5-5": Price(inputPerMillion: 4, outputPerMillion: 20, cachedInputPerMillion: 0.20),
+        "claude-opus-5": Price(inputPerMillion: 5, outputPerMillion: 25),
+        "claude-sonnet-5": Price(inputPerMillion: 2, outputPerMillion: 10),
         "claude-haiku-4-5-20251001": Price(inputPerMillion: 1, outputPerMillion: 5),
     ]
+
+    public static func price(modelId: String) -> Price? { table[modelId] }
 
     /// `nil` when the model isn't priced here — a local model costs nothing, and an unknown
     /// remote one shouldn't be guessed at.
@@ -292,6 +319,21 @@ public enum ModelPricing {
         return Double(totals.inputTokens) / 1_000_000 * price.inputPerMillion
             + Double(totals.outputTokens) / 1_000_000 * price.outputPerMillion
             + Double(totals.cachedInputTokens) / 1_000_000 * price.cachedInputPerMillion
+            + Double(totals.cacheWriteInputTokens) / 1_000_000 * price.cacheWritePerMillion
+    }
+
+    /// One request's cost.
+    public static func estimatedCost(modelId: String, usage: TokenUsage) -> Double? {
+        estimatedCost(modelId: modelId, totals: UsageTotals(inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+                                                            cachedInputTokens: usage.cachedInputTokens ?? 0,
+                                                            cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0, requestCount: 1))
+    }
+
+    /// What the cached part would have cost at the full price, less what it did cost: the saving.
+    public static func cacheSaving(modelId: String, totals: UsageTotals) -> Double? {
+        guard let price = table[modelId] else { return nil }
+        return Double(totals.cachedInputTokens) / 1_000_000 * (price.inputPerMillion - price.cachedInputPerMillion)
+            - Double(totals.cacheWriteInputTokens) / 1_000_000 * (price.cacheWritePerMillion - price.inputPerMillion)
     }
 
     public static func isPriced(modelId: String) -> Bool { table[modelId] != nil }

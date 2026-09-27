@@ -39,6 +39,8 @@ final class UsageViewController: NSViewController {
         var subtitle: String
         var totals: UsageTotals
         var cost: Double?
+        /// What the prompt cache saved against the full price (nil: unpriced).
+        var saving: Double? = nil
     }
 
     var records: [UsageRecord] {
@@ -60,7 +62,8 @@ final class UsageViewController: NSViewController {
         return grouped.values.map { entry in
             let names = UsageNames.names(providerId: entry.providerId, modelId: entry.modelId)
             return Line(title: names.model, subtitle: names.provider, totals: entry.totals,
-                        cost: ModelPricing.estimatedCost(modelId: entry.modelId, totals: entry.totals))
+                        cost: ModelPricing.estimatedCost(modelId: entry.modelId, totals: entry.totals),
+                        saving: ModelPricing.cacheSaving(modelId: entry.modelId, totals: entry.totals))
         }.sorted { $0.totals.totalTokens > $1.totals.totalTokens }
     }
 
@@ -94,7 +97,8 @@ final class UsageViewController: NSViewController {
             let spend = models.compactMap(\.cost).reduce(0, +)
             sections.append(SettingsForm.section(footer: "Cost is an estimate from published list prices and won't match your bill exactly. A + means some models have no price here.", [
                 SettingsForm.row("Period", periodControl),
-                SettingsForm.content(summary(spend: UsageFormatting.cost(spend) + (unpriced ? "+" : ""), grand: grand)),
+                SettingsForm.content(summary(spend: UsageFormatting.cost(spend) + (unpriced ? "+" : ""), grand: grand,
+                                             saved: models.compactMap(\.saving).reduce(0, +))),
             ]))
             sections.append(group("By model", key: "models", lines: models))
             let projects = projectLines()
@@ -108,12 +112,15 @@ final class UsageViewController: NSViewController {
         SettingsForm.install(SettingsForm.page(sections), in: view)
     }
 
-    private func summary(spend: String, grand: UsageTotals) -> NSView {
-        let figures = NSStackView(views: [
+    private func summary(spend: String, grand: UsageTotals, saved: Double) -> NSView {
+        var views = [
             figure(spend, "estimated spend"),
             figure(UsageFormatting.tokens(grand.totalTokens), "tokens"),
             figure("\(grand.requestCount)", grand.requestCount == 1 ? "request" : "requests"),
-        ])
+        ]
+        // Only once there's something cached: a figure of $0.00 saved says nothing.
+        if grand.cachedInputTokens > 0 { views.append(figure(UsageFormatting.cost(max(0, saved)), "saved by caching")) }
+        let figures = NSStackView(views: views)
         figures.orientation = .horizontal
         figures.alignment = .top
         figures.distribution = .fillEqually
@@ -153,7 +160,7 @@ final class UsageViewController: NSViewController {
         let tokens = NSTextField(labelWithString: UsageFormatting.tokens(line.totals.totalTokens))
         tokens.font = NSFont.monospacedDigitSystemFont(ofSize: DS.Text.body().pointSize, weight: .regular)
         tokens.alignment = .right
-        tokens.toolTip = "\(UsageFormatting.tokens(line.totals.inputTokens)) input \u{00B7} \(UsageFormatting.tokens(line.totals.cachedInputTokens)) cached \u{00B7} \(UsageFormatting.tokens(line.totals.outputTokens)) output \u{00B7} \(line.totals.requestCount) requests"
+        tokens.toolTip = "\(UsageFormatting.tokens(line.totals.inputTokens)) input \u{00B7} \(UsageFormatting.tokens(line.totals.cachedInputTokens)) read from the cache \u{00B7} \(UsageFormatting.tokens(line.totals.cacheWriteInputTokens)) written to it \u{00B7} \(UsageFormatting.tokens(line.totals.outputTokens)) output \u{00B7} \(line.totals.requestCount) requests"
         let cost = NSTextField(labelWithString: line.cost.map { UsageFormatting.cost($0) } ?? "\u{2013}")
         cost.font = NSFont.monospacedDigitSystemFont(ofSize: DS.Text.body().pointSize, weight: .regular)
         cost.textColor = line.cost == nil ? .tertiaryLabelColor : .labelColor

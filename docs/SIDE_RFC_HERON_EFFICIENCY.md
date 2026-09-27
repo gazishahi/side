@@ -229,3 +229,65 @@ A turn is the person's message plus up to 12 round trips of tool calls
 
 Out of scope: choosing a cheaper model for a task, prompt wording beyond what D1 needs, and
 outside agents' own token use (they build their own requests).
+
+## Built
+
+**Step 1, 2026-09-26 (the real-API baseline waits on a working key).**
+
+- **Isolation:** `AgentRunner` takes its `providerRegistry` and `usageStore` (the app's by default),
+  so a test or the benchmark never touches the person's `providers.json` or `usage.json`.
+- **A headless Heron** (`HeadlessHeron`, in the tests):
+  - the real runner on a project on disk, with a registry and usage store of its own;
+  - edits applied at full autonomy, and commands refused.
+- **A fake model server** (`FakeModelServer`): Anthropic's streaming format on the loopback,
+  scripted replies (tool calls or text), and every request body recorded.
+- **The baseline, measured** (`HeronRequestMeasurementTests`): two messages of ten `read_file`
+  round trips each over a twelve-file project, 22 requests in all.
+  - They sent 3,370,213 bytes (about 840,000 tokens). Each request re-sent everything before it
+    plus about 15 KB of new file: from 5 KB to 301 KB.
+  - The part of each request identical to the previous one's start was 0 to 21 bytes, apart
+    from one stretch of 1,988: **0% of what was sent**.
+  - The JSON's key order differs between serializations even within one run, so a prompt cache
+    couldn't hit even if one were asked for. D1's sorted keys are the first thing step 2 needs,
+    before the breakpoints.
+- **Accounting (D5):**
+  - Anthropic's `cache_creation_input_tokens` is read, from `message_start` and again from
+    `message_delta` when the API repeats its counts.
+  - `TokenUsage` separates input at the full price, cache reads and cache writes;
+    `promptTokens` is their sum, which is what the context gauge counts.
+  - OpenAI-compatible hosted providers are asked for usage (`stream_options.include_usage`),
+    and `prompt_tokens_details.cached_tokens` is split out of the prompt count. Local servers
+    aren't sent the field.
+  - `UsageTotals.cacheWriteInputTokens` is recorded; rows written before it load (tolerant
+    decoding).
+  - **Prices corrected** to Anthropic's published table (read 2026-09-26):
+
+    | Model | Input | Output | Cache hit | 5-min write |
+    |---|---|---|---|---|
+    | Fable 5.1 | $10 | $50 | $0.25 (0.025x) | $12.50 |
+    | Opus 5.5 | $4 | $20 | $0.20 (0.05x) | $5 |
+    | Opus 5 | $5 | $25 | $0.50 | $6.25 |
+    | Sonnet 5 | $2 | $10 | $0.20 | $2.50 |
+    | Haiku 4.5 | $1 | $5 | $0.10 | $1.25 |
+
+    Opus 5 had been listed at $15/$75 and Sonnet 5 at $3/$15, and Opus 5.5 and Fable 5.1 had no
+    price, so the monthly budget couldn't see them. A test now fails if a seeded model has no
+    price.
+  - Settings → Usage shows cache reads and writes per model, and what caching saved.
+- **The benchmark** (`scripts/heron-bench.sh`, `HeronBenchmarkTests`): three fixed tasks on a
+  small order-service fixture (`Tests/HeronTests/Fixtures/BenchProject`, a git repository per
+  run):
+  - explaining the order flow (Ask);
+  - reasoning through the discount rules (Ask);
+  - adding `cancelOrder` (Build, applied).
+
+  It records requests, input, cache reads and writes, output and dollars per task, stops past
+  $3, and writes `build/heron-bench/<date>-<model>.json`. The key is `ANTHROPIC_API_KEY` if the
+  API accepts it, else the one Side keeps in the Keychain (macOS asks first).
+  - The first attempt spent nothing: the key in the environment was refused (401). The real
+    baseline is the first thing to run with a working key.
+
+Tests: the accounting (Anthropic's cache fields, OpenAI's usage and cached split, every model
+priced, costs at the published rates, the saving, old rows loading), the headless driver
+applying an edit, the baseline measurement, and the existing budget and pricing tests moved
+to the corrected prices.

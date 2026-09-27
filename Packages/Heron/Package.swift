@@ -9,7 +9,8 @@ let package = Package(
     products: [.library(name: "Heron", targets: ["Heron"])],
     targets: [
         .target(name: "Heron", path: "Sources/Heron"),
-        .testTarget(name: "HeronTests", dependencies: ["Heron"], path: "Tests/HeronTests"),
+        // Fixtures/: projects the benchmark copies and works in, not code of the tests'.
+        .testTarget(name: "HeronTests", dependencies: ["Heron"], path: "Tests/HeronTests", exclude: ["Fixtures"]),
     ],
     swiftLanguageModes: [.v6]
 )
