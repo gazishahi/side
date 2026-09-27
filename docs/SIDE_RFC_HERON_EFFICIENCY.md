@@ -232,7 +232,7 @@ outside agents' own token use (they build their own requests).
 
 ## Built
 
-**Step 1, 2026-09-26 (the real-API baseline waits on a working key).**
+**Step 1, 2026-09-26.**
 
 - **Isolation:** `AgentRunner` takes its `providerRegistry` and `usageStore` (the app's by default),
   so a test or the benchmark never touches the person's `providers.json` or `usage.json`.
@@ -293,11 +293,16 @@ outside agents' own token use (they build their own requests).
     |---|---|---|---|---|---|
     | explain | 4 | 19,986 | 0 | 2,305 | $0.063 |
     | discounts | 3 | 12,778 | 0 | 3,324 | $0.059 |
-    | cancel | 7+ | 52,761+ | 0 | 6,520+ | $0.171+ (didn't finish) |
+    | cancel | 11 | 105,435 | 0 | 5,228 | $0.263 |
+    | **All three** | **18** | **138,199** | **0** | **10,857** | **$0.385** |
 
-    `cancel` stalled: the model proposed a command, and the headless driver's refusal named the
-    command's id where `resolve` takes the transcript entry's, so the turn waited out its
-    600 s. The driver is fixed (and tested with a refused command); `cancel` is to be run again.
+    - `cancel` ran again on its own after a first attempt stalled. The model had proposed a
+      command, and the headless driver's refusal used the command's id where `resolve` takes the
+      transcript entry's, so the turn waited out its 600 s. The driver is fixed and tested with
+      a refused command.
+    - `cancel`'s eleven requests re-sent 105,000 input tokens for a change touching one file.
+      Input is 60% of the cost across the three tasks, and all of it at the full price: step 2's
+      target.
 
 Tests: the accounting (Anthropic's cache fields, OpenAI's usage and cached split, every model
 priced, costs at the published rates, the saving, old rows loading), the headless driver
