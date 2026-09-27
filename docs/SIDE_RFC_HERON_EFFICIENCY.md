@@ -1,9 +1,10 @@
 # RFC: Heron, efficient
 
-*2026-09-26. Status: **decisions pending**. The owner asked for this (2026-09-25): Heron should be
-"a highly efficient harness, not just a harness", in the tokens it spends as much as in CPU,
-memory and battery. What follows is measured or read from the code (file:line); the
-recommendations are marked, and the questions are the owner's to answer.*
+*2026-09-26. Status: **accepted**: the owner answered on 2026-09-26, taking each recommendation.
+Stale content is pruned in one sweep at half the window. Compaction is automatic at 85%, with
+Undo. An opt-in benchmark runs on the real API. The cache lives five minutes. The build order is
+the plan below. The owner asked for this (2026-09-25): Heron should be "a highly efficient
+harness, not just a harness", in the tokens it spends as much as in CPU, memory and battery.*
 *Companion to `SIDE_RFC_MULTI_AGENT.md` (the runner and coordination this touches),
 `SIDE_RFC_BYO_HARNESS.md` (outside agents over ACP, which share the Think path) and
 `SIDETests/Budgets.swift` (where the new budgets go).*
@@ -119,7 +120,7 @@ A turn is the person's message plus up to 12 round trips of tool calls
 4. **Measured:** each goal is a row of `Budgets.table`, with a baseline taken before the change
    and the number after.
 
-## Decisions (the owner's to make)
+## Decisions (the owner's answers, 2026-09-26; each recommendation was chosen)
 
 - **Q1. Content that's gone stale in the history** (a file read again later, a file read before
   an edit that replaced it, long command output from turns ago).
