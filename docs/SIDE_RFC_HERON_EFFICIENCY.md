@@ -301,7 +301,7 @@ outside agents' own token use (they build their own requests).
       transcript entry's, so the turn waited out its 600 s. The driver is fixed and tested with
       a refused command.
     - `cancel`'s eleven requests re-sent 105,000 input tokens for a change touching one file.
-      Input is 60% of the cost across the three tasks, and all of it at the full price: step 2's
+      Input is 72% of the cost across the three tasks ($0.28 of $0.39), and all of it at the full price: step 2's
       target.
 
 Tests: the accounting (Anthropic's cache fields, OpenAI's usage and cached split, every model
