@@ -102,12 +102,17 @@ public final class ACPConnection {
     private func receive(_ data: Data) {
         guard !data.isEmpty else { return }
         buffer.append(data)
-        while let newline = buffer.firstIndex(of: 0x0A) {
-            let line = buffer[buffer.startIndex..<newline]
-            buffer.removeSubrange(buffer.startIndex...newline)
-            guard !line.isEmpty, let message = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
-            dispatch(message)
+        // Every complete line, then one cut of what they used: removing each line from the front
+        // as it was read moved the rest of the buffer once per line (D6).
+        var start = buffer.startIndex
+        var messages: [[String: Any]] = []
+        while let newline = buffer[start...].firstIndex(of: 0x0A) {
+            let line = buffer[start..<newline]
+            start = buffer.index(after: newline)
+            if !line.isEmpty, let message = try? JSONSerialization.jsonObject(with: line) as? [String: Any] { messages.append(message) }
         }
+        if start > buffer.startIndex { buffer.removeSubrange(buffer.startIndex..<start) }
+        for message in messages { dispatch(message) }
     }
 
     private func dispatch(_ message: [String: Any]) {

@@ -657,15 +657,21 @@ public final class ACPHarness: Harness {
         case "agent_message_chunk":
             guard let text = Self.text(update["content"]) else { return }
             thinkingIndex = nil
-            if let index = streamingIndex, case .assistantText(let existing) = entries[index].kind {
-                replace(index, .assistantText(existing + text))
+            if let index = streamingIndex, case .assistantText(var existing) = entries[index].kind {
+                // Let go of the entry's copy first, so the append doesn't copy the whole message
+                // per chunk (SIDE_RFC_HERON_EFFICIENCY.md, D6).
+                entries[index].kind = .assistantText("")
+                existing += text
+                replace(index, .assistantText(existing))
             } else {
                 streamingIndex = append(.assistantText(text))
             }
         case "agent_thought_chunk":
             guard let text = Self.text(update["content"]) else { return }
-            if let index = thinkingIndex, case .thinking(let existing) = entries[index].kind {
-                replace(index, .thinking(existing + text))
+            if let index = thinkingIndex, case .thinking(var existing) = entries[index].kind {
+                entries[index].kind = .thinking("")
+                existing += text
+                replace(index, .thinking(existing))
             } else {
                 thinkingIndex = append(.thinking(text))
             }

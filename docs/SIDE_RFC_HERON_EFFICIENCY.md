@@ -409,3 +409,44 @@ Tests: the bounds (a long file in part and how to go on, whole lines at the ceil
 search lines, a command's head and tail), the sweep (superseded and edited reads, the protected
 last message, old command output and write bodies, a second sweep finding nothing), and the
 runner's sweep, automatic compaction and Undo on the fake server.
+
+**Step 4, 2026-09-26: streaming (D6).**
+
+- **One hop a frame** (`StreamEventCoalescer`): the provider's events gather under a lock on
+  its own thread, consecutive deltas of one kind merge (in place, one owner, no copy), and a
+  single main-thread hop delivers them, no sooner than a frame after the last. Order is kept,
+  and the stream's end delivers what's left before the turn finishes. It had been one hop, and
+  one transcript notification, per SSE line.
+- **The message grows in place:** the runner lets go of the entry's copy before appending, and
+  so does the ACP harness. Each had copied the whole message per delta.
+- **A streaming edit's preview** checks its 80 ms throttle before parsing the partial JSON, and
+  a call whose path gets no preview isn't parsed again.
+- **Think's bubble:** the new text is found by UTF-8 offset (the prefix comparison and the drop
+  by characters were each linear in the message, per flush); only the lines from the last one
+  on are measured; and the transcript is laid out only when the bubble's size changed.
+- **ACP's read buffer** is cut once per read, after every complete line in it, not once per line.
+- **Measured:**
+
+  | Budget | Before | After |
+  |---|---|---|
+  | Heron: 50,000 characters in 10-character deltas, as fast as they come: main-thread work | a hop per delta | 1.0–1.8 ms in 3 hops (`stream.heron` ≤ 20 ms) |
+  | Heron: the same over 2 s (2,500 deltas a second) | ~2,000 hops a second | 55 a second, 2.6 ms |
+  | Heron: 20 s of streaming, 100 writes a second: hops | ~250 a second | 55 a second (≤ 60) |
+  | The same: CPU, the fake server included | 3.9% | 3.5% (≤ 15%) |
+  | Think: a streaming bubble's flush, mean over a 50,000-character message | 0.34 ms, 2.94× for twice the text | 0.11 ms, 2.04× (`stream.think` ≤ 0.25 ms) |
+
+  - Heron's CPU barely moved: with nothing on screen its copies were cheap next to the
+    network. What's gone is the hop per SSE line, and its notification per observer, which is
+    what Think paid for.
+  - The RFC's "50 ms in all" holds when deltas come fast: Heron delivers them in a handful of
+    hops, so Think flushes a handful of times. For a slow stream, Think's cost is its flushes
+    (at most one per 35 ms), each 0.11 ms however long the message is, so the budget is
+    restated per flush.
+  - A single 50,000-character paragraph still costs more per flush: text layout redoes the
+    paragraph being appended to. The test uses paragraphs of 400 characters, as replies have.
+- Not visually checked in Side yet: the streaming bubble's growth animation, now run only when
+  its size changes.
+
+Tests: merging and order, the fast and paced streams through the real runner (every delta
+arrives, in order), the 20 s budget (opt-in), and Think's per-flush budget (opt-in,
+`StreamingBudgetTests`, in `scripts/budgets.sh`).

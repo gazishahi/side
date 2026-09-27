@@ -1686,11 +1686,15 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // Only follow the stream if the user is already at the bottom; never yank someone
             // who scrolled up to read.
             let wasAtBottom = clip.bounds.maxY >= transcriptContainer.bounds.height - 80
+            // Text that fits the bubble's lines as they are changes nothing around it: the bubble
+            // redraws, and the transcript isn't laid out (D6: it was, on every flush).
+            let sizeBefore = bubble.bodySize
+            bubble.setBody(text, streaming: true)
+            guard bubble.bodySize != sizeBefore else { return }
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = DS.Motion.duration(0.14)
                 context.timingFunction = DS.Motion.curve
                 context.allowsImplicitAnimation = true
-                bubble.setBody(text, streaming: true)
                 // The whole transcript's layout, not just the bubble's subtree — the rows below
                 // have to glide down in the same animation as the bubble's growth.
                 self.transcriptContainer.layoutSubtreeIfNeeded()
@@ -2030,7 +2034,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 /// which side it sits on and what color it is carry "who said this." Body text renders through
 /// `MarkdownRenderer` (the same one Make's preview uses), and a streamed delta re-measures the
 /// bubble's width in place so it grows with the response instead of being sized once.
-private final class TextBlockView: NSView, NSTextViewDelegate {
+final class TextBlockView: NSView, NSTextViewDelegate {
     enum Style {
         case sent      // the user: accent-filled, white text
         case received  // the assistant: gray-filled, standard text
@@ -2067,6 +2071,8 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
     private let maxBubbleWidth: CGFloat
     private let bodyWidthConstraint: NSLayoutConstraint
     private let bodyHeightConstraint: NSLayoutConstraint
+    /// The text's measured size, which is what the transcript's layout depends on.
+    var bodySize: CGSize { CGSize(width: bodyWidthConstraint.constant, height: bodyHeightConstraint.constant) }
     /// The raw source text (not the rendered `NSAttributedString`) — kept so Copy hands back
     /// what was actually said, not whatever `MarkdownRenderer` happened to produce.
     private(set) var plainText: String = ""
@@ -2242,6 +2248,21 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         return rendered
     }
 
+    /// What `text` adds to `previous`, when it only adds: found by UTF-8 offset, which a native
+    /// string indexes in constant time, and checked on the last bytes before it. Comparing the
+    /// whole prefix and dropping it by characters were each linear in the message, once per flush
+    /// (SIDE_RFC_HERON_EFFICIENCY.md, D6).
+    static func appended(to previous: String, in text: String) -> String? {
+        let old = previous.utf8, new = text.utf8
+        guard new.count >= old.count else { return nil }
+        let boundary = new.index(new.startIndex, offsetBy: old.count)
+        let checked = min(old.count, 64)
+        guard new[new.index(boundary, offsetBy: -checked)..<boundary].elementsEqual(old[old.index(old.endIndex, offsetBy: -checked)...]) else { return nil }
+        // A boundary inside a character (a combining mark added to it) isn't an append.
+        guard let start = boundary.samePosition(in: text.unicodeScalars) else { return nil }
+        return String(text.unicodeScalars[start...])
+    }
+
     /// True while the text storage holds the plain streaming form rather than rendered markdown.
     private var isShowingStreamingPlainText = false
 
@@ -2255,8 +2276,7 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
             plainText = text
             let attrs: [NSAttributedString.Key: Any] = [.font: DS.Text.body(), .foregroundColor: style.textColor]
             let measure = streamingMeasure
-            if isShowingStreamingPlainText, text.hasPrefix(previous), let storage = bodyText.textStorage {
-                let delta = String(text.dropFirst(previous.count))
+            if isShowingStreamingPlainText, let storage = bodyText.textStorage, let delta = Self.appended(to: previous, in: text) {
                 if !delta.isEmpty {
                     storage.append(NSAttributedString(string: delta, attributes: attrs))
                     measure.storage.append(NSAttributedString(string: delta, attributes: attrs))
@@ -2265,6 +2285,8 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
                 bodyText.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: attrs))
                 measure.storage.setAttributedString(NSAttributedString(string: text, attributes: attrs))
                 isShowingStreamingPlainText = true
+                streamingMeasuredFrom = 0
+                streamingWidest = 0
             }
             // Measured with trailing newlines trimmed: the model often ends a chunk on "\n\n",
             // and sizing to it left a blank band at the bubble's bottom until the final render
@@ -2277,6 +2299,8 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         }
         isShowingStreamingPlainText = false
         streamingMeasureStorage = nil
+        streamingMeasuredFrom = 0
+        streamingWidest = 0
         plainText = text
         let rendered = NSMutableAttributedString(attributedString: Self.renderedMarkdown(text, style: style))
         // The renderer terminates every block with "\n\n" — fine in a document preview, but in
@@ -2349,19 +2373,29 @@ private final class TextBlockView: NSView, NSTextViewDelegate {
         return (storage, layout, container)
     }
 
+    /// Lines measured so far while streaming: the widest, and the glyph the last one starts at.
+    /// Only lines from there on can have changed, so a flush measures those (D6).
+    private var streamingWidest: CGFloat = 0
+    private var streamingMeasuredFrom = 0
+
     private func fitStreaming(_ measure: (storage: NSTextStorage, layout: NSLayoutManager, container: NSTextContainer), length: Int) {
         let range = NSRange(location: 0, length: min(length, measure.storage.length))
         guard range.length > 0 else { return }
         measure.layout.ensureLayout(forCharacterRange: range)
         let glyphs = measure.layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-        let bounding = measure.layout.boundingRect(forGlyphRange: glyphs, in: measure.container)
+        if streamingMeasuredFrom >= NSMaxRange(glyphs) { streamingMeasuredFrom = 0; streamingWidest = 0 }
         // The widest line's text, not its fragment (a fragment spans the container).
-        var widest: CGFloat = 0
-        measure.layout.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in widest = max(widest, used.maxX) }
+        let recent = NSRange(location: streamingMeasuredFrom, length: NSMaxRange(glyphs) - streamingMeasuredFrom)
+        var bottom: CGFloat = 0
+        measure.layout.enumerateLineFragments(forGlyphRange: recent) { _, used, _, lineGlyphs, _ in
+            self.streamingWidest = max(self.streamingWidest, used.maxX)
+            self.streamingMeasuredFrom = lineGlyphs.location
+            bottom = used.maxY
+        }
         let availableWidth = maxBubbleWidth - Self.insets.left - Self.insets.right
-        let measuredWidth = max(10, min(ceil(widest) + 2, availableWidth))
+        let measuredWidth = max(10, min(ceil(streamingWidest) + 2, availableWidth))
         bodyWidthConstraint.constant = max(bodyWidthConstraint.constant, measuredWidth)
-        bodyHeightConstraint.constant = max(10, ceil(bounding.maxY) + 1)
+        bodyHeightConstraint.constant = max(10, ceil(bottom) + 1)
     }
 
     /// Hug the content: measure against the cap and clamp the view to exactly what it needs —

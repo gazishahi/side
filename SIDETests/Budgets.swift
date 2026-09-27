@@ -54,6 +54,13 @@ enum Budgets {
         Row(id: "heron.prefix.changed", area: "Think", measure: "Heron: a 22-round-trip session, requests that change what the previous one sent", limit: 0, unit: "%"),
         Row(id: "heron.result.max", area: "Think", measure: "Heron: one tool result entering the history (HistoryEfficiencyTests)", limit: 16_000, unit: "chars"),
         Row(id: "heron.prefix.uncached", area: "Think", measure: "Heron: characters past the last cache breakpoint beyond what a round trip added", limit: 2_000, unit: "chars"),
+        // Streaming (SIDE_RFC_HERON_EFFICIENCY.md, D6): 50,000 characters in 10-character deltas,
+        // 50 ms of Side's work in all. Heron's side and the 20 s hop and CPU budgets are Heron's
+        // `StreamingEfficiencyTests`; Think's bubble is measured here.
+        Row(id: "stream.heron", area: "Think", measure: "Heron: a 50,000-character message's main-thread work (StreamingEfficiencyTests)", limit: 20, unit: "ms"),
+        Row(id: "stream.think", area: "Think", measure: "Think: a streaming bubble's flush, mean over a 50,000-character message", limit: 0.25, unit: "ms"),
+        Row(id: "heron.stream.hops", area: "Think", measure: "Heron: streaming 20 s, main-thread hops (StreamingEfficiencyTests)", limit: 60, unit: "/s"),
+        Row(id: "heron.stream.cpu", area: "Think", measure: "Heron: streaming 20 s, CPU with the fake server (StreamingEfficiencyTests)", limit: 15, unit: "%"),
         // The app as a whole, launched and driven as a person would.
         Row(id: "app.idle.memory", area: "App", measure: "Idle in the background with files open", limit: 80, unit: "MB"),
         Row(id: "app.idle.cpu", area: "App", measure: "Idle in the background, CPU", limit: 0.5, unit: "%"),

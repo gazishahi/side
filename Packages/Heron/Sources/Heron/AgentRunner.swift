@@ -122,6 +122,13 @@ public final class AgentRunner {
 
     private var streamTask: Task<Void, Never>?
     private var pendingAssistantText = ""
+    /// Main-thread hops that delivered stream events, and the time they took, over this
+    /// runner's life: what the streaming budgets measure (SIDE_RFC_HERON_EFFICIENCY.md, D6).
+    private(set) var streamingDeliveries = 0
+    private(set) var streamingDeliveryTime: TimeInterval = 0
+    /// Streaming edit calls whose path has no preview (outside the project, not writable), so
+    /// their growing arguments aren't parsed again on every delivery.
+    private var editPreviewsRefused: Set<String> = []
     private var pendingToolCalls: [(id: String, name: String, partialJSON: String)] = []
     /// Live preview cards for edit tool calls whose arguments are still streaming, keyed by
     /// tool_use id. The entry each one points at is a real `.proposal` entry with `isStreaming`
@@ -1211,17 +1218,26 @@ public final class AgentRunner {
         // bytes and adds to the end: the cached prefix (SIDE_RFC_HERON_EFFICIENCY.md, D1).
         let messages = session.turns.map(\.message)
         let (systemPrompt, tools) = requestShape()
+        // At most one main-thread hop a frame, however fast the provider's lines arrive (D6).
+        let coalescer = StreamEventCoalescer { [weak self] events in
+            guard let self else { return }
+            for event in events { self.handle(event) }
+        }
         streamTask = Task {
             var transportError: Error?
             do {
                 try await provider.streamTurn(messages: messages, system: systemPrompt, tools: tools) { event in
-                    DispatchQueue.main.async { self.handle(event) }
+                    coalescer.add(event)
                 }
             } catch {
                 transportError = error
             }
             let finalError = transportError
             DispatchQueue.main.async {
+                // What's still gathered belongs to this round trip, so it goes first.
+                coalescer.flush()
+                self.streamingDeliveries += coalescer.deliveries
+                self.streamingDeliveryTime += coalescer.deliveryTime
                 self.finishModelTurn(transportError: finalError, modelId: model.id, roundTrip: roundTrip)
             }
         }
@@ -1277,18 +1293,33 @@ public final class AgentRunner {
         armStallWatchdog()
         switch event {
         case .textDelta(let delta):
-            pendingAssistantText += delta
+            // The message grows in place: the entry's copy is let go first, so the append has the
+            // only reference and doesn't copy what's already there (it used to copy the whole
+            // message per delta, quadratic in its length).
+            var text = pendingAssistantText
+            pendingAssistantText = ""
             if let index = streamingEntryIndex, entries.indices.contains(index) {
-                updateEntry(at: index, .assistantText(pendingAssistantText))
+                entries[index].kind = .assistantText("")
+                text += delta
+                pendingAssistantText = text
+                updateEntry(at: index, .assistantText(text))
             } else {
-                streamingEntryIndex = appendEntry(.assistantText(pendingAssistantText), resetStreaming: false)
+                text += delta
+                pendingAssistantText = text
+                streamingEntryIndex = appendEntry(.assistantText(text), resetStreaming: false)
             }
         case .thinkingDelta(let delta):
-            pendingThinkingText += delta
+            var text = pendingThinkingText
+            pendingThinkingText = ""
             if let index = thinkingEntryIndex, entries.indices.contains(index) {
-                updateEntry(at: index, .thinking(pendingThinkingText))
+                entries[index].kind = .thinking("")
+                text += delta
+                pendingThinkingText = text
+                updateEntry(at: index, .thinking(text))
             } else {
-                thinkingEntryIndex = appendEntry(.thinking(pendingThinkingText), resetStreaming: false)
+                text += delta
+                pendingThinkingText = text
+                thinkingEntryIndex = appendEntry(.thinking(text), resetStreaming: false)
             }
         case .toolUseStart(let id, let name):
             pendingToolCalls.append((id: id, name: name, partialJSON: ""))
@@ -1341,7 +1372,10 @@ public final class AgentRunner {
     /// fills in — rather than the preview being deleted and a second card appearing, which would
     /// make a multi-file batch flicker through twice as many arrivals as there were edits.
     private func refreshEditPreview(for call: (id: String, name: String, partialJSON: String), force: Bool) {
-        guard modeProvider().scope.allowsWrites else { return }
+        guard modeProvider().scope.allowsWrites, !editPreviewsRefused.contains(call.id) else { return }
+        // The throttle before the parse: parsing the whole partial JSON is the expensive part,
+        // and it used to happen on every delta only to be thrown away (D6).
+        if !force, let state = editPreviews[call.id], Date().timeIntervalSince(state.lastRenderedAt) < Self.editPreviewInterval { return }
         guard let draft = StreamingEditPreview.draft(toolName: call.name, partialJSON: call.partialJSON) else { return }
 
         if var state = editPreviews[call.id] {
@@ -1363,7 +1397,10 @@ public final class AgentRunner {
         // preview at all — the executor's refusal is the honest rendering of that.
         let root = rootProvider()
         guard let url = ProjectFileAccess.resolveInsideProject(path: draft.path, root: root),
-              ProjectFileAccess.isWritable(url, root: root) else { return }
+              ProjectFileAccess.isWritable(url, root: root) else {
+            editPreviewsRefused.insert(call.id)
+            return
+        }
         let isNewFile = !FileManager.default.fileExists(atPath: url.path)
         let edit = ProposedEdit(
             toolUseId: call.id, url: url, relativePath: Self.relativePath(of: url, root: root),

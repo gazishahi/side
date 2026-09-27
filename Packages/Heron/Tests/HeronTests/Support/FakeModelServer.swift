@@ -9,6 +9,9 @@ final class FakeModelServer: @unchecked Sendable {
     enum Reply {
         case tools([(name: String, input: String)])
         case text(String)
+        /// Text in deltas of `delta` characters, spread evenly over `duration` seconds (100
+        /// writes a second, a token's pace, or one when it's 0): what the streaming budgets measure.
+        case streamedText(String, delta: Int, duration: TimeInterval)
     }
 
     private let listener: NWListener
@@ -93,6 +96,36 @@ final class FakeModelServer: @unchecked Sendable {
         // Usage as the real API reports it: what the request carried, all uncached here.
         let promptTokens = request.body.count / 4
         event("message_start", ["type": "message_start", "message": ["id": "msg_\(index)", "usage": ["input_tokens": promptTokens, "output_tokens": 1]]])
+        if case .streamedText(let text, let size, let duration) = reply {
+            event("content_block_start", ["type": "content_block_start", "index": 0, "content_block": ["type": "text", "text": ""]])
+            var deltas: [String] = []
+            var rest = Substring(text)
+            while !rest.isEmpty { deltas.append(String(rest.prefix(size))); rest = rest.dropFirst(size) }
+            let writes = duration > 0 ? Int(duration * 100) : 1
+            let perWrite = (deltas.count + writes - 1) / writes
+            var chunks: [String] = [stream]
+            for start in stride(from: 0, to: deltas.count, by: perWrite) {
+                stream = ""
+                for delta in deltas[start..<min(start + perWrite, deltas.count)] {
+                    event("content_block_delta", ["type": "content_block_delta", "index": 0, "delta": ["type": "text_delta", "text": delta]])
+                }
+                chunks.append(stream)
+            }
+            stream = ""
+            event("content_block_stop", ["type": "content_block_stop", "index": 0])
+            event("message_delta", ["type": "message_delta", "delta": ["stop_reason": "end_turn"], "usage": ["output_tokens": max(1, text.count / 4)]])
+            event("message_stop", ["type": "message_stop"])
+            chunks.append(stream)
+            let gap = duration / Double(max(1, chunks.count - 1))
+            func write(_ position: Int) {
+                guard position < chunks.count else { return connection.cancel() }
+                connection.send(content: Data(chunks[position].utf8), completion: .contentProcessed { [queue] _ in
+                    queue.asyncAfter(deadline: .now() + (position == 0 ? 0 : gap)) { write(position + 1) }
+                })
+            }
+            write(0)
+            return
+        }
         switch reply {
         case .text(let text):
             event("content_block_start", ["type": "content_block_start", "index": 0, "content_block": ["type": "text", "text": ""]])
@@ -107,6 +140,8 @@ final class FakeModelServer: @unchecked Sendable {
                 event("content_block_stop", ["type": "content_block_stop", "index": position])
             }
             event("message_delta", ["type": "message_delta", "delta": ["stop_reason": "tool_use"], "usage": ["output_tokens": 40 * calls.count]])
+        case .streamedText:
+            break
         }
         event("message_stop", ["type": "message_stop"])
         send(stream, on: connection)
