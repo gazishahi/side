@@ -88,4 +88,21 @@ final class HeadlessHeronTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: project.appendingPathComponent("README.md"), encoding: .utf8).hasPrefix("# Shop (edited)"))
         XCTAssertEqual(server.requests.count, 2)
     }
+
+    /// A command the model proposes is refused, and the turn goes on to finish (the benchmark
+    /// runs no commands).
+    func testACommandIsRefusedAndTheTurnFinishes() throws {
+        let project = try HeronBenchmarkTests.projectCopy()
+        defer { try? FileManager.default.removeItem(at: project) }
+        let server = try FakeModelServer { index, _ in
+            index == 0 ? .tools([(name: "run_shell_command", input: #"{"command": "swift build"}"#)]) : .text("Couldn't build; fine.")
+        }
+        defer { server.stop() }
+        let heron = try HeadlessHeron(project: project, baseURL: server.baseURL, modelId: "claude-sonnet-5",
+                                      mode: AgentMode(scope: .build, autonomy: .full))
+        defer { heron.cleanUp() }
+        XCTAssertEqual(heron.send("Build it.", timeout: 30), .finishedTurn)
+        XCTAssertEqual(server.requests.count, 2)
+        XCTAssertTrue(String(decoding: server.requests[1], as: UTF8.self).contains("tool_result"), "the refusal went back to the model")
+    }
 }

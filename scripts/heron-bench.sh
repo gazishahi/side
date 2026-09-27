@@ -5,6 +5,7 @@
 #
 #   scripts/heron-bench.sh                 Sonnet 5
 #   scripts/heron-bench.sh claude-opus-5-5 another model
+#   SIDE_HERON_BENCH_TASKS=cancel scripts/heron-bench.sh   only some tasks (explain, discounts, cancel)
 #
 # The report is build/heron-bench/<date>-<model>.json; the table prints as it runs.
 set -uo pipefail

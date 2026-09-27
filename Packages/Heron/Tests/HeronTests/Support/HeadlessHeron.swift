@@ -51,12 +51,13 @@ final class HeadlessHeron {
             RunLoop.main.run(until: Date().addingTimeInterval(0.02))
             // An edit waiting on approval can't happen at full autonomy; a command can: refuse it.
             if runner.phase == .awaitingApproval {
+                // Resolved by the transcript entry's id, as Think's buttons do.
                 for entry in runner.entries {
                     if case .commandProposal(let presentation) = entry.kind, presentation.resolution == nil {
-                        runner.resolve(proposalId: presentation.command.id, decision: .reject)
+                        runner.resolve(proposalId: entry.id, decision: .reject)
                     }
                     if case .proposal(let presentation) = entry.kind, presentation.resolution == nil {
-                        runner.resolve(proposalId: presentation.edit.id, decision: .apply)
+                        runner.resolve(proposalId: entry.id, decision: .apply)
                     }
                 }
             }

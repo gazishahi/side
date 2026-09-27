@@ -284,8 +284,20 @@ outside agents' own token use (they build their own requests).
   It records requests, input, cache reads and writes, output and dollars per task, stops past
   $3, and writes `build/heron-bench/<date>-<model>.json`. The key is `ANTHROPIC_API_KEY` if the
   API accepts it, else the one Side keeps in the Keychain (macOS asks first).
-  - The first attempt spent nothing: the key in the environment was refused (401). The real
-    baseline is the first thing to run with a working key.
+  - The first attempt spent nothing: the key in the environment was refused (401). The owner's
+    new key then needed a workspace (the API asks an unscoped key for `anthropic-workspace-id`),
+    and a workspace-scoped key worked.
+  - **Baseline, Sonnet 5, 2026-09-26** (standard effort, nothing cached):
+
+    | Task | Requests | Input | Cached | Output | Cost |
+    |---|---|---|---|---|---|
+    | explain | 4 | 19,986 | 0 | 2,305 | $0.063 |
+    | discounts | 3 | 12,778 | 0 | 3,324 | $0.059 |
+    | cancel | 7+ | 52,761+ | 0 | 6,520+ | $0.171+ (didn't finish) |
+
+    `cancel` stalled: the model proposed a command, and the headless driver's refusal named the
+    command's id where `resolve` takes the transcript entry's, so the turn waited out its
+    600 s. The driver is fixed (and tested with a refused command); `cancel` is to be run again.
 
 Tests: the accounting (Anthropic's cache fields, OpenAI's usage and cached split, every model
 priced, costs at the published rates, the saving, old rows loading), the headless driver
