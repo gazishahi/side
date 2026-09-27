@@ -24,10 +24,10 @@ public enum JSONStore {
         public let payload: Payload
     }
 
-    private static func encoder() -> JSONEncoder {
+    private static func encoder(compact: Bool = false) -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = compact ? [.sortedKeys] : [.prettyPrinted, .sortedKeys]
         return encoder
     }
 
@@ -95,16 +95,50 @@ public enum JSONStore {
     /// Atomic, and loud on failure. Returns whether the write landed, for callers that need to
     /// avoid treating unsaved state as saved.
     @discardableResult
-    public static func write<Payload: Codable>(_ payload: Payload, to url: URL) -> Bool {
+    /// `compact` for a file only Side reads and rewrites often (an index, a ledger): no
+    /// indentation to write and parse each time.
+    public static func write<Payload: Codable>(_ payload: Payload, to url: URL, compact: Bool = false) -> Bool {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try encoder().encode(Envelope(schemaVersion: currentVersion, payload: payload))
+            let data = try encoder(compact: compact).encode(Envelope(schemaVersion: currentVersion, payload: payload))
             try data.write(to: url, options: .atomic)
             return true
         } catch {
             PersistenceFailureReporter.shared.report(url: url, operation: .write, error: error)
             return false
         }
+    }
+}
+
+extension JSONStore {
+    private static let pendingLock = NSLock()
+    nonisolated(unsafe) private static var pending: [URL: () -> Void] = [:]
+
+    /// Writes `payload()` to `url` a moment from now, once however many times it's asked for
+    /// meanwhile (SIDE_RFC_HERON_EFFICIENCY.md, D7: the session index was rewritten on every
+    /// turn, and usage on every request). The payload is read when it's written, so the latest
+    /// state goes. `flushPendingWrites` writes everything waiting, at quit.
+    public static func writeSoon<Payload: Codable>(to url: URL, delay: TimeInterval = 1, compact: Bool = true, _ payload: @escaping () -> Payload) {
+        let isFirst = pendingLock.withLock {
+            let first = pending[url] == nil
+            pending[url] = { write(payload(), to: url, compact: compact) }
+            return first
+        }
+        guard isFirst else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { flush(url) }
+    }
+
+    public static func flushPendingWrites() {
+        let writes = pendingLock.withLock { () -> [() -> Void] in
+            defer { pending = [:] }
+            return Array(pending.values)
+        }
+        for write in writes { write() }
+    }
+
+    private static func flush(_ url: URL) {
+        let write = pendingLock.withLock { pending.removeValue(forKey: url) }
+        write?()
     }
 }
 

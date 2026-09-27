@@ -106,7 +106,6 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Backs `@`-mention completion. Rebuilt when the attached track's working directory
     /// changes — a track's worktree is its own directory, so the candidate list has to follow.
     private let fileIndex = ProjectFileIndex()
-    private var fileIndexRefresh: DispatchWorkItem?
     private var usageObserverToken: UUID?
     /// Set by `ShellViewController` — Think can't reach Make directly, and shouldn't.
     var onRevealFileRequested: ((URL) -> Void)?
@@ -188,7 +187,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
         composer.placeholder = "Ask about this project…"
         composer.mentionCandidates = { [weak self] partial in
-            self?.fileIndex.matches(for: partial) ?? []
+            // A stale index rescans now, in the background; this keystroke answers from what it
+            // had, the next from the rescan.
+            self?.refreshFileIndex()
+            return self?.fileIndex.matches(for: partial) ?? []
         }
         composer.slashCandidates = { [weak self] partial in
             let query = partial.lowercased()
@@ -1065,21 +1067,27 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// which is the same directory `AgentRunner` hands its tools.
     /// Make's watcher covers the same worktree Think's mentions resolve against; a change there
     /// makes this index stale. Coalesced, since a build writes hundreds of files in a second.
+    /// Only changes under this Think's own root count, and they only mark the index stale: it's
+    /// rescanned when an `@` next asks it for files (SIDE_RFC_HERON_EFFICIENCY.md, D7). It used
+    /// to rescan a second after any change in any open project, visible or not, so a build
+    /// walked the tree again for a list nobody was looking at.
     @objc private func projectFilesDidChange(_ notification: Notification) {
-        fileIndexRefresh?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.fileIndex.markStale()
-            self?.refreshFileIndex()
-        }
-        fileIndexRefresh = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+        // Both spellings: the watcher reports real paths (/private/var/…), a root may not be one.
+        let roots = Set([fileIndexRoot.path, fileIndexRoot.resolvingSymlinksInPath().path]).map { $0 + "/" }
+        let paths = notification.userInfo?[ProjectWatcher.pathsKey] as? [String] ?? []
+        guard paths.contains(where: { path in roots.contains { path.hasPrefix($0) } }) else { return }
+        fileIndex.markStale()
     }
 
-    private func refreshFileIndex() {
-        guard let projectPath else { return }
+    private var fileIndexRoot: URL {
         let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath
-        let url = URL(fileURLWithPath: root ?? projectPath)
-        fileIndex.refresh(root: url) {}
+        return URL(fileURLWithPath: root ?? projectPath ?? "/").standardizedFileURL
+    }
+
+    /// Free when the index is current for this root.
+    private func refreshFileIndex() {
+        guard projectPath != nil else { return }
+        fileIndex.refresh(root: fileIndexRoot) {}
     }
 
     /// Existence check for bare-path linking — same root, same containment rule as opening.

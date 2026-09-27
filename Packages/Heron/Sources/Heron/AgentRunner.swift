@@ -36,7 +36,7 @@ private struct PendingToolBatch {
     /// anything — a checkpoint only stages paths that became newly dirty since this snapshot
     /// (plus whatever `changedFilePaths` names directly), so a concurrent manual edit sitting in
     /// the same worktree never gets swept into the agent's commit.
-    public let baselineDirtyPaths: Set<String>
+    public var baselineDirtyPaths: Set<String>
     /// When the batch was presented. Files the user saves after this aren't the agent's
     /// (`UserSaveLog`, audit F4) — the approval wait can be minutes, and people keep typing.
     public var startedAt = Date()
@@ -225,6 +225,36 @@ public final class AgentRunner {
         return token
     }
 
+    /// Observers besides the one its manager keeps: a window showing this runner.
+    var watcherCount: Int { max(0, observers.count - 1) }
+
+    /// The transcript, let go while the track sits unvisited (SIDE_RFC_HERON_EFFICIENCY.md, D7):
+    /// the session holds everything it's built from, so it's rebuilt on the next visit. Only
+    /// when nothing's in flight and no window shows it. What's rebuilt is what a relaunch shows
+    /// (the notes that were only ever on screen, "Compacting…" and the like, aren't in it).
+    public private(set) var isTranscriptDropped = false
+
+    @discardableResult
+    func dropTranscript() -> Bool {
+        guard !isTranscriptDropped, !entries.isEmpty, watcherCount == 0, !phase.isBusy, phase != .awaitingApproval,
+              pendingBatch == nil, streamTask == nil, runningUserTaskName == nil, userTaskToolUseIds.isEmpty else { return false }
+        entries = []
+        editPreviews = [:]
+        streamingEntryIndex = nil
+        thinkingEntryIndex = nil
+        isTranscriptDropped = true
+        return true
+    }
+
+    /// On a visit, and before anything starts work here (a coordinator's message can arrive at
+    /// a subtrack nobody is looking at).
+    func restoreTranscriptIfDropped() {
+        guard isTranscriptDropped else { return }
+        entries = []
+        hydrateFromSession()
+        notify(.reset)
+    }
+
     public func removeObserver(_ token: UUID) {
         observers.removeValue(forKey: token)
     }
@@ -293,6 +323,7 @@ public final class AgentRunner {
         guard !phase.isBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        restoreTranscriptIfDropped()
         // Between messages, never within one: the history changes here, once, and the requests
         // of the turn that follows all share the new prefix (SIDE_RFC_HERON_EFFICIENCY.md, D3, D4).
         sweepStaleContentIfNeeded()
@@ -323,6 +354,7 @@ public final class AgentRunner {
 
     private func sendNow(_ trimmed: String, attachments: [AgentImageAttachment]) {
         guard !phase.isBusy else { return }
+        restoreTranscriptIfDropped()
         let selection = resolvedSelection()
         guard case .ready(_, _, let model) = providerRegistry.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
@@ -495,6 +527,11 @@ public final class AgentRunner {
     /// resolve completely differently (diff-and-apply vs. type-into-Run-and-wait), but both
     /// share the same "decrement the batch, finish the batch once nothing's left" tail.
     public func resolve(proposalId: UUID, decision: ProposalDecision) {
+        // Until the batch's baseline is known, a decision waits for it (see `handleToolOutcomes`).
+        if pendingBatch != nil, !batchBaselineReady {
+            afterBaseline.append { [weak self] in self?.resolve(proposalId: proposalId, decision: decision) }
+            return
+        }
         guard let entryIndex = entries.firstIndex(where: { $0.id == proposalId }) else { return }
         switch entries[entryIndex].kind {
         case .proposal(let presentation):
@@ -716,6 +753,7 @@ public final class AgentRunner {
         case .streaming, .runningTools, .awaitingApproval: return nil
         default: break
         }
+        restoreTranscriptIfDropped()
         let command = ProposedCommand(toolUseId: "user-task-\(UUID().uuidString)", command: task.command, taskName: task.name)
         let index = appendEntry(.commandProposal(CommandPresentation(command: command, resolution: nil)))
         userTaskToolUseIds.insert(command.toolUseId)
@@ -892,12 +930,24 @@ public final class AgentRunner {
         //
         // `userSaved` closes the same hole from the other side: a file that only became dirty
         // because the user saved it in Make while the batch waited (audit F4) is theirs.
-        let currentDirtyPaths = GitPaths.dirtyPaths(cwd: root)
-        let pathsToStage = currentDirtyPaths.subtracting(baseline).subtracting(userSaved).union(knownChanged)
+        //
+        // The real index is read before and after the status, so a copy of it is known to be the
+        // index that status described (see `commitPathsInIsolatedIndex`).
+        let indexFile = GitPaths.indexFile(worktree: root)
+        let indexBefore = indexFile.flatMap { try? Data(contentsOf: $0) }
+        guard let status = GitPaths.status(cwd: root) else {
+            return .failed(step: "status", message: "git status failed in \(root)")
+        }
+        let indexAfter = indexFile.flatMap { try? Data(contentsOf: $0) }
+        let pathsToStage = status.dirty.subtracting(baseline).subtracting(userSaved).union(knownChanged)
         // Everything the batch did left the tree exactly as it already was (e.g. a command that
         // ran but touched nothing) — nothing to checkpoint at all.
         guard !pathsToStage.isEmpty else { return nil }
-        return commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root)
+        let realIndex: (url: URL, contents: Data)? = {
+            guard let indexFile, let indexBefore, indexBefore == indexAfter, !status.hasStaged else { return nil }
+            return (indexFile, indexBefore)
+        }()
+        return commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root, head: status.head, realIndex: realIndex)
     }
 
     /// The description a checkpoint is filed under. "no description" is the one thing a durable
@@ -1679,17 +1729,44 @@ public final class AgentRunner {
         pendingBatch = PendingToolBatch(
             callOrder: outcomes.map(\.id), resultsById: resultsById, unresolvedToolUseIds: unresolvedToolUseIds,
             lastAppliedURL: nil, roundTrip: roundTrip, modelId: modelId, providerId: activeProviderId, declaredIntent: declaredIntent,
-            baselineDirtyPaths: GitPaths.dirtyPaths(cwd: root.path)
+            baselineDirtyPaths: []
         )
-        setPhase(.awaitingApproval)
-        // Kicked off after `pendingBatch` is in place, since `executeCommand` looks it up to
-        // confirm the tool_use is still unresolved before doing anything.
-        for index in autoRunEntryIndices { executeCommand(entryIndex: index) }
-        for index in autoApplyEntryIndices {
-            guard entries.indices.contains(index), case .proposal(let presentation) = entries[index].kind else { continue }
-            resolveEditProposal(entryIndex: index, presentation: presentation, decision: .apply)
+        // What's dirty before anything in the batch runs, so its checkpoint stages only what the
+        // batch did. Read off the main thread (D7: `git status` there was a hitch that grew with
+        // the repository), and nothing in the batch runs until it's known: a decision made
+        // meanwhile waits in `afterBaseline`.
+        batchBaselineReady = false
+        afterBaseline = []
+        let batchId = UUID()
+        currentBatchId = batchId
+        let rootPath = root.path
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let baseline = GitPaths.dirtyPaths(cwd: rootPath)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.currentBatchId == batchId, self.pendingBatch != nil else { return }
+                    self.pendingBatch?.baselineDirtyPaths = baseline
+                    self.batchBaselineReady = true
+                    self.setPhase(.awaitingApproval)
+                    // Kicked off after `pendingBatch` is in place, since `executeCommand` looks it up to
+                    // confirm the tool_use is still unresolved before doing anything.
+                    for index in autoRunEntryIndices { self.executeCommand(entryIndex: index) }
+                    for index in autoApplyEntryIndices {
+                        guard self.entries.indices.contains(index), case .proposal(let presentation) = self.entries[index].kind else { continue }
+                        self.resolveEditProposal(entryIndex: index, presentation: presentation, decision: .apply)
+                    }
+                    let waiting = self.afterBaseline
+                    self.afterBaseline = []
+                    for decision in waiting { decision() }
+                }
+            }
         }
     }
+
+    /// Whether the pending batch's baseline has been read, and the decisions waiting on it.
+    private var batchBaselineReady = true
+    private var currentBatchId: UUID?
+    private var afterBaseline: [() -> Void] = []
 
     private func continueAfterTools(
         callOrder: [String], resultsById: [String: AgentContentBlock], modelId: String, roundTrip: Int,
@@ -1799,6 +1876,7 @@ public final class AgentRunner {
     private func hydrateFromSession() {
         // No permanent explainer line — per the design charter, explaining belongs in empty
         // states, not chrome that every conversation carries forever.
+        isTranscriptDropped = false
         guard let session = sessionStore.session(forTrackKey: trackKey) else { return }
         lastReportedInputTokens = session.lastReportedInputTokens
         rebuildAppliedEditCounts(sessionId: session.id)
@@ -1910,34 +1988,52 @@ public final class AgentRunner {
         case failed(step: String, message: String)
     }
 
-    private nonisolated static func commitPathsInIsolatedIndex(_ paths: [String], message: String, cwd: String) -> CheckpointCommitOutcome {
-        let indexPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("side-checkpoint-index-\(UUID().uuidString)").path
+    /// Five git processes in the usual case (D7; it was nine, and 875 ms in a 20,000-file
+    /// repository): the status above, `add -v`, `write-tree`, `commit-tree` and `update-ref`.
+    /// - `realIndex` is the user's index when nothing is staged in it, and so holds exactly HEAD:
+    ///   the private index starts as a copy of it, with its stat information, instead of
+    ///   `read-tree HEAD` rebuilding one from the tree. With something staged, `read-tree` it is,
+    ///   so their staged work can't ride along.
+    /// - `add -v` names what it changed, which is what the commit holds; `diff --cached` is asked
+    ///   only when its output isn't that.
+    /// - Afterwards the private index goes back in place as the real one, under git's own lock
+    ///   and only if nothing wrote the index meanwhile; otherwise `git add` refreshes the paths.
+    private nonisolated static func commitPathsInIsolatedIndex(
+        _ paths: [String], message: String, cwd: String, head: String?, realIndex: (url: URL, contents: Data)?
+    ) -> CheckpointCommitOutcome {
+        let indexURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("side-checkpoint-index-\(UUID().uuidString)")
+        let indexPath = indexURL.path
         let environment = ["GIT_INDEX_FILE": indexPath]
         defer { try? FileManager.default.removeItem(atPath: indexPath) }
 
-        let headSHA = GitPaths.runGit(["rev-parse", "HEAD"], cwd: cwd)
-        let hasParent = headSHA.success && !headSHA.output.isEmpty
+        let hasParent = head != nil
         // Seed from HEAD so the commit's baseline is the last commit, never the user's staged
         // state. A repo with no commits yet starts from an empty index instead.
-        if hasParent {
+        if let realIndex, hasParent, (try? realIndex.contents.write(to: indexURL)) != nil {
+            // The user's index, which holds HEAD: nothing is staged in it.
+        } else if hasParent {
             let readTree = runGitWithRetry(["read-tree", "HEAD"], cwd: cwd, extraEnvironment: environment)
             guard readTree.success else {
                 return .failed(step: "read-tree", message: readTree.output)
             }
         }
-        let add = runGitWithRetry(["add", "--"] + paths, cwd: cwd, extraEnvironment: environment)
+        let add = runGitWithRetry(["add", "-v", "--"] + paths, cwd: cwd, extraEnvironment: environment)
         guard add.success else {
             // Naming the paths matters: the failure is almost always about *which* path was
             // asked for, so a count tells the user nothing they can act on.
             return .failed(step: "add", message: "\(add.output) (paths: \(paths.joined(separator: ", ")))")
         }
 
-        let staged = GitPaths.runGit(["diff", "--cached", "--name-only"] + (hasParent ? ["HEAD"] : []), cwd: cwd, extraEnvironment: environment)
-        let committedPaths = staged.success && !staged.output.isEmpty
-            ? staged.output.split(separator: "\n").map(String.init) : []
-        guard staged.success else {
-            return .failed(step: "diff --cached", message: staged.output)
+        var committedPaths: [String]
+        if let reported = Self.addedPaths(add.output, asked: Set(paths)) {
+            committedPaths = reported
+        } else {
+            let staged = GitPaths.runGit(["diff", "--cached", "--name-only"] + (hasParent ? ["HEAD"] : []), cwd: cwd, extraEnvironment: environment)
+            guard staged.success else {
+                return .failed(step: "diff --cached", message: staged.output)
+            }
+            committedPaths = staged.output.isEmpty ? [] : staged.output.split(separator: "\n").map(String.init)
         }
         guard !committedPaths.isEmpty else { return .nothingToCommit }
 
@@ -1946,17 +2042,17 @@ public final class AgentRunner {
             return .failed(step: "write-tree", message: tree.output)
         }
         var commitArgs = ["commit-tree", tree.output, "-m", message]
-        if hasParent { commitArgs += ["-p", headSHA.output] }
+        if let head { commitArgs += ["-p", head] }
         let commit = GitPaths.runGit(commitArgs, cwd: cwd, extraEnvironment: environment)
         guard commit.success, !commit.output.isEmpty else {
             return .failed(step: "commit-tree", message: commit.output)
         }
-        // `update-ref` with the expected old value: HEAD was read at the top of this function
-        // and is the new commit's parent, so if anything committed in between — the user typing
+        // `update-ref` with the expected old value: HEAD was read with the status and is the
+        // new commit's parent, so if anything committed in between — the user typing
         // `git commit` in the Run terminal, which shares this worktree — moving HEAD
         // unconditionally would orphan their commit. Git refuses the swap instead.
         var updateArgs = ["update-ref", "HEAD", commit.output]
-        if hasParent { updateArgs.append(headSHA.output) }
+        if let head { updateArgs.append(head) }
         let update = GitPaths.runGit(updateArgs, cwd: cwd)
         guard update.success else {
             return .failed(step: "update-ref", message: update.output.isEmpty
@@ -1964,10 +2060,31 @@ public final class AgentRunner {
                 : update.output)
         }
 
-        // Refresh just these paths in the real index so they read as committed rather than as
-        // modified-vs-index. Explicit pathspecs, so unrelated staged entries stay staged.
+        // The real index should read these paths as committed rather than as modified. The
+        // private index is exactly that when it began as the real one; otherwise, or if the real
+        // one changed meanwhile, `git add` refreshes just these paths (unrelated staged entries
+        // stay staged).
+        if let realIndex, let updated = try? Data(contentsOf: indexURL),
+           GitPaths.replaceIndex(realIndex.url, expected: realIndex.contents, with: updated) {
+            return .committed(sha: commit.output, paths: committedPaths)
+        }
         _ = runGitWithRetry(["add", "--"] + paths, cwd: cwd)
         return .committed(sha: commit.output, paths: committedPaths)
+    }
+
+    /// The paths `git add -v` says it changed (`add 'path'`, `remove 'path'`), or nil when its
+    /// output is anything else (a warning, a path it wasn't asked for): then git is asked.
+    nonisolated static func addedPaths(_ output: String, asked: Set<String>) -> [String]? {
+        var paths: [String] = []
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let path: Substring
+            if line.hasPrefix("add '"), line.hasSuffix("'") { path = line.dropFirst(5).dropLast() }
+            else if line.hasPrefix("remove '"), line.hasSuffix("'") { path = line.dropFirst(8).dropLast() }
+            else { return nil }
+            guard asked.contains(String(path)) else { return nil }
+            paths.append(String(path))
+        }
+        return paths
     }
 
     /// A well-formed stream that carried no content at all — legal on the wire, useless to the

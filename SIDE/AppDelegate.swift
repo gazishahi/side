@@ -317,6 +317,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Debugger servers (js-debug's node, Delve) don't end with their client.
         DAPSocketTransport.terminateAllServers()
+        // The session index and usage are written a moment after they change; not after quit.
+        JSONStore.flushPendingWrites()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

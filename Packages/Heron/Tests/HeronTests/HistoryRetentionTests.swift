@@ -38,6 +38,7 @@ final class HistoryRetentionTests: XCTestCase {
         // Age the stale track's file and index entry by rewriting the index with an old date —
         // the same thing the passage of time would do.
         let indexURL = stateDirectory.appendingPathComponent("think/index.json")
+        JSONStore.flushPendingWrites()  // the index is written a moment after it changes
         var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: try Data(contentsOf: indexURL)) as? [String: Any])
         var entries = try XCTUnwrap(raw["payload"] as? [[String: Any]])
         let longAgo = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-60 * 60 * 24 * 120))

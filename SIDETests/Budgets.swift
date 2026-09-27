@@ -61,6 +61,12 @@ enum Budgets {
         Row(id: "stream.think", area: "Think", measure: "Think: a streaming bubble's flush, mean over a 50,000-character message", limit: 0.25, unit: "ms"),
         Row(id: "heron.stream.hops", area: "Think", measure: "Heron: streaming 20 s, main-thread hops (StreamingEfficiencyTests)", limit: 60, unit: "/s"),
         Row(id: "heron.stream.cpu", area: "Think", measure: "Heron: streaming 20 s, CPU with the fake server (StreamingEfficiencyTests)", limit: 15, unit: "%"),
+        // Heron's background work (SIDE_RFC_HERON_EFFICIENCY.md, D7), held by Heron's
+        // BackgroundWorkTests on every run.
+        Row(id: "heron.checkpoint.time", area: "Think", measure: "Heron: a checkpoint in a 20,000-file repository, median (CheckpointCostTests)", limit: 250, unit: "ms"),
+        Row(id: "heron.checkpoint.git", area: "Think", measure: "Heron: the same, git processes (nothing of the user's staged)", limit: 5, unit: ""),
+        Row(id: "heron.git.main", area: "Think", measure: "Heron: main-thread time in its git calls during a turn (MainThreadGitTests)", limit: 0, unit: "ms"),
+        Row(id: "heron.transcripts", area: "Think", measure: "Heron: 10 visited tracks, transcripts held (RunnerResidencyTests)", limit: 3, unit: ""),
         // The app as a whole, launched and driven as a person would.
         Row(id: "app.idle.memory", area: "App", measure: "Idle in the background with files open", limit: 80, unit: "MB"),
         Row(id: "app.idle.cpu", area: "App", measure: "Idle in the background, CPU", limit: 0.5, unit: "%"),

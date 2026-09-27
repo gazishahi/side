@@ -154,11 +154,12 @@ public enum GitDiffComputer {
         let outPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = FileHandle.nullDevice
+        let exited = GitPaths.exitSignal(process)
         do { try process.run() } catch { return "" }
         // Read before waiting — waiting first deadlocks once git fills the pipe buffer
         // (see GitPaths.runGit).
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         return String(data: data, encoding: .utf8) ?? ""
     }
 }

@@ -127,6 +127,7 @@ public final class UsageStore: @unchecked Sendable {
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
             self.storeURL = support.appendingPathComponent("Side/usage.json")
         }
+        JSONStore.flushPendingWrites()
         load()
     }
 
@@ -272,8 +273,10 @@ public final class UsageStore: @unchecked Sendable {
         return resolved.hasPrefix(temp) || resolved.hasPrefix("/private/var/folders/") || resolved.hasPrefix("/private/tmp/")
     }
 
+    /// A moment later, compact, once for a burst of requests (D7: every round trip rewrote it).
+    /// The monthly budget reads the records in memory, so it never waits on this.
     private func save() {
-        JSONStore.write(records, to: storeURL)
+        JSONStore.writeSoon(to: storeURL) { self.records }
     }
 }
 

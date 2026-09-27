@@ -70,6 +70,7 @@ final class UsageAccountingTests: XCTestCase {
         // A row written the store's way, then the new field taken out: a file from before it existed.
         UsageStore(storeURL: url).record(projectPath: "/p", trackKey: "", providerId: "anthropic", modelId: "claude-sonnet-5",
                                          usage: TokenUsage(inputTokens: 10, outputTokens: 5, cachedInputTokens: 2))
+        JSONStore.flushPendingWrites()  // written a moment after it changes
         let text = try String(contentsOf: url, encoding: .utf8)
         let old = text.replacingOccurrences(of: #"\s*"cacheWriteInputTokens"\s*:\s*0,?"#, with: "", options: .regularExpression)
         XCTAssertFalse(old.contains("cacheWriteInputTokens"))

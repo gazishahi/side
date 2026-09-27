@@ -67,7 +67,11 @@ public final class AgentSessionStore {
     private let outsideDirectory: URL
     private let indexURL: URL
     private let archivesURL: URL
+    /// Before checkpoints were kept per track: read once, split, removed.
     private let checkpointsURL: URL
+    /// One file per track (D7): a checkpoint rewrote every checkpoint in the project, two or
+    /// three times.
+    private let checkpointsDirectory: URL
     /// Where `think.json` (the old single-file format) used to live — read once for migration,
     /// then removed once its contents are safely split across the new files.
     private let legacyURL: URL
@@ -80,7 +84,10 @@ public final class AgentSessionStore {
         self.indexURL = thinkDirectory.appendingPathComponent("index.json")
         self.archivesURL = thinkDirectory.appendingPathComponent("archives.json")
         self.checkpointsURL = thinkDirectory.appendingPathComponent("checkpoints.json")
+        self.checkpointsDirectory = thinkDirectory.appendingPathComponent("checkpoints")
         self.legacyURL = stateDirectory.appendingPathComponent("think.json")
+        // A store that closed a moment ago may still have its index waiting to be written.
+        JSONStore.flushPendingWrites()
         load()
     }
 
@@ -181,7 +188,7 @@ public final class AgentSessionStore {
     public func attachVerification(_ verification: CheckpointVerification, toLatestCheckpointFor trackKey: String) -> Bool {
         guard let index = checkpoints.lastIndex(where: { $0.trackKey == trackKey }) else { return false }
         checkpoints[index].verification = verification
-        saveCheckpoints()
+        saveCheckpoints(trackKey: trackKey)
         notifyCheckpointsChanged()
         return true
     }
@@ -212,7 +219,7 @@ public final class AgentSessionStore {
         let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let position = checkpoints.firstIndex(where: { $0.id == id }) else { return false }
         checkpoints[position].declaredIntent = trimmed
-        saveCheckpoints()
+        saveCheckpoints(trackKey: checkpoints[position].trackKey)
         notifyCheckpointsChanged()
         return true
     }
@@ -228,7 +235,7 @@ public final class AgentSessionStore {
 
     public func appendCheckpoint(_ checkpoint: Checkpoint) {
         checkpoints.append(checkpoint)
-        saveCheckpoints()
+        saveCheckpoints(trackKey: checkpoint.trackKey)
         notifyCheckpointsChanged()
     }
 
@@ -341,12 +348,12 @@ public final class AgentSessionStore {
         residency.removeAll { $0 == trackKey }
         index.removeAll { $0.trackKey == trackKey }
         checkpoints.removeAll { $0.trackKey == trackKey }
+        try? FileManager.default.removeItem(at: checkpointsFileURL(forTrackKey: trackKey))
         try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: trackKey))
         try? FileManager.default.removeItem(at: compactedFileURL(forTrackKey: trackKey))
         for url in outsideLogs(trackKey: trackKey) { try? FileManager.default.removeItem(at: url) }
         try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
         saveIndex()
-        saveCheckpoints()
         notifyCheckpointsChanged()
     }
 
@@ -492,7 +499,7 @@ public final class AgentSessionStore {
         if let loaded = JSONStore.read([SessionIndexEntry].self, from: indexURL) {
             index = loaded.payload
             archives = JSONStore.read([ArchivedConversation].self, from: archivesURL)?.payload ?? []
-            checkpoints = JSONStore.read([Checkpoint].self, from: checkpointsURL)?.payload ?? []
+            checkpoints = loadCheckpoints()
             pruneExpiredSessions()
             return
         }
@@ -564,12 +571,20 @@ public final class AgentSessionStore {
         index = legacySessions.map { SessionIndexEntry(id: $0.id, trackKey: $0.trackKey, providerId: $0.providerId, modelId: $0.modelId, lastActiveAt: $0.lastActiveAt) }
         for session in legacySessions { saveSession(session) }
         saveIndex()
-        saveCheckpoints()
+        for trackKey in Set(checkpoints.map(\.trackKey)) { saveCheckpoints(trackKey: trackKey) }
         try? FileManager.default.removeItem(at: legacyURL)
     }
 
+    /// A moment later, compact, and once for however many changes (D7: it was written whole,
+    /// pretty-printed, on every turn). The sessions themselves are written as they change; this
+    /// is their directory.
     private func saveIndex() {
-        JSONStore.write(index, to: indexURL)
+        // The first one now: without an index the sessions on disk can't be found.
+        guard FileManager.default.fileExists(atPath: indexURL.path) else {
+            JSONStore.write(index, to: indexURL, compact: true)
+            return
+        }
+        JSONStore.writeSoon(to: indexURL) { self.index }
     }
 
     // MARK: - Conversation history
@@ -732,8 +747,29 @@ public final class AgentSessionStore {
         saveIndex()
     }
 
-    private func saveCheckpoints() {
-        JSONStore.write(checkpoints, to: checkpointsURL)
+    private func checkpointsFileURL(forTrackKey trackKey: String) -> URL {
+        checkpointsDirectory.appendingPathComponent("\(Self.slug(for: trackKey)).json")
+    }
+
+    /// Only the one track's file. Written now, not debounced: a checkpoint is the record of what
+    /// an agent changed.
+    private func saveCheckpoints(trackKey: String) {
+        let url = checkpointsFileURL(forTrackKey: trackKey)
+        let own = checkpoints.filter { $0.trackKey == trackKey }
+        if own.isEmpty { try? FileManager.default.removeItem(at: url) } else { JSONStore.write(own, to: url, compact: true) }
+    }
+
+    /// Every track's file; the one-file ledger of before, split into them the first time.
+    private func loadCheckpoints() -> [Checkpoint] {
+        if let legacy = JSONStore.read([Checkpoint].self, from: checkpointsURL)?.payload {
+            checkpoints = legacy
+            for trackKey in Set(legacy.map(\.trackKey)) { saveCheckpoints(trackKey: trackKey) }
+            try? FileManager.default.removeItem(at: checkpointsURL)
+        }
+        let files = (try? FileManager.default.contentsOfDirectory(at: checkpointsDirectory, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "json" }
+            .flatMap { JSONStore.read([Checkpoint].self, from: $0)?.payload ?? [] }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     private func saveSession(_ session: AgentSession) {

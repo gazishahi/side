@@ -25,7 +25,37 @@ public enum ProjectFileAccess {
         "__pycache__", ".tox", ".mypy_cache", ".pytest_cache",
     ]
 
+    /// The project's files, from the last walk when it still holds (SIDE_RFC_HERON_EFFICIENCY.md,
+    /// D7): `list_files` and `search_files` walked the whole tree on every call, 400 ms in a
+    /// 20,000-file project. A directory's modification time changes whenever an entry in it is
+    /// added, removed or renamed, and the list is names only, so the walk still holds while every
+    /// directory it went through has the time it had. Checking that is a stat per directory.
     public nonisolated static func scan(root: URL) -> [ScannedFile] {
+        let key = root.standardizedFileURL.path
+        if let cached = scanCacheLock.withLock({ scanCache[key] }), cached.directories.allSatisfy({ modificationTime($0.path) == $0.time }) {
+            return cached.files
+        }
+        var directories: [(path: String, time: Int)] = []
+        let files = walk(root: root, directories: &directories)
+        // A walk cut short at the cap isn't the whole list, so it isn't kept.
+        if files.count < maxIndexedFiles {
+            scanCacheLock.withLock { scanCache[key] = (files, directories) }
+        }
+        return files
+    }
+
+    private static let scanCacheLock = NSLock()
+    nonisolated(unsafe) private static var scanCache: [String: (files: [ScannedFile], directories: [(path: String, time: Int)])] = [:]
+
+    /// Nanoseconds.
+    private static func modificationTime(_ path: String) -> Int? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        return info.st_mtimespec.tv_sec * 1_000_000_000 + info.st_mtimespec.tv_nsec
+    }
+
+    private nonisolated static func walk(root: URL, directories: inout [(path: String, time: Int)]) -> [ScannedFile] {
+        if let time = modificationTime(root.path) { directories.append((root.path, time)) }
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return [] }
         // Every spelling the enumerator might use for the root. It hands back *resolved* paths
@@ -46,6 +76,7 @@ public enum ProjectFileAccess {
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: keys)
             if values?.isDirectory == true && ignoredDirectories.contains(url.lastPathComponent) { enumerator.skipDescendants(); continue }
+            if values?.isDirectory == true, let time = modificationTime(url.path) { directories.append((url.path, time)) }
             if values?.isRegularFile == true && !url.pathExtension.isEmpty {
                 scanned.append(ScannedFile(url: url, relativePath: relativePath(of: url)))
             }

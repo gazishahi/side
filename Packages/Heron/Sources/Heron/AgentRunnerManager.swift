@@ -96,7 +96,11 @@ public final class AgentRunnerManager {
     /// for the rest of its life — no separate teardown needed, since that observer closure is
     /// only ever referenced by this manager, not by any external caller.
     public func runner(forTrackKey trackKey: String) -> any Harness {
-        if let existing = runners[trackKey] { return existing }
+        visited(trackKey)
+        if let existing = runners[trackKey] {
+            (existing as? AgentRunner)?.restoreTranscriptIfDropped()
+            return existing
+        }
         if let agent = agentProvider?(trackKey), let launch = acpLaunchProvider {
             let harness = ACPHarness(trackKey: trackKey, agent: agent, launchProvider: { launch(agent) },
                                      rootProvider: { [rootProvider] in rootProvider(trackKey) },
@@ -136,6 +140,21 @@ public final class AgentRunnerManager {
         return runner
     }
 
+    /// Tracks by visit, most recent last. Heron's runners past the most recent
+    /// `residentTranscripts` let go of their transcripts (D7): every visited track kept its
+    /// whole transcript until the project closed, and the session store's own limit of three
+    /// bounded nothing while the runners held a copy.
+    private var visits: [String] = []
+    static let residentTranscripts = 3
+
+    private func visited(_ trackKey: String) {
+        visits.removeAll { $0 == trackKey }
+        visits.append(trackKey)
+        for key in visits.dropLast(Self.residentTranscripts) {
+            (runners[key] as? AgentRunner)?.dropTranscript()
+        }
+    }
+
     /// Non-creating peek — a track that's never had an agent run shouldn't spin one up just to
     /// ask "what's its activity," which would always answer `.none` anyway.
     public func existingRunner(forTrackKey trackKey: String) -> (any Harness)? {
@@ -160,6 +179,7 @@ public final class AgentRunnerManager {
     /// Called when a track is deleted — its conversation has nowhere to belong anymore, same
     /// cleanup contract as Make's file memory and Run's terminal sessions.
     public func discardRunner(forTrackKey trackKey: String) {
+        visits.removeAll { $0 == trackKey }
         guard let runner = runners.removeValue(forKey: trackKey) else { return }
         runner.teardown()
     }

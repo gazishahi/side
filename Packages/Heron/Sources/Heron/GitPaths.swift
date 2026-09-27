@@ -73,11 +73,52 @@ public enum GitPaths {
         return digest.prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Git processes launched, and the main thread's time spent waiting on them: what the
+    /// background-work budgets measure (SIDE_RFC_HERON_EFFICIENCY.md, D7). A git call on the main
+    /// thread is a hitch that grows with the repository.
+    public struct Metrics: Sendable {
+        public var processes = 0
+        public var mainThreadTime: TimeInterval = 0
+        /// The last few commands run on the main thread, so a budget can name the offender.
+        public var mainThreadCommands: [String] = []
+    }
+    private static let metricsLock = NSLock()
+    nonisolated(unsafe) private static var counted = Metrics()
+    public static var metrics: Metrics { metricsLock.withLock { counted } }
+
+    /// Signalled when `process` exits; set before it runs. `waitUntilExit()` added about 65 ms
+    /// to every git call, measured (it polls the run loop); a termination handler costs about 2.
+    /// A checkpoint makes several calls, so that was most of its time (D7).
+    static func exitSignal(_ process: Process) -> DispatchSemaphore {
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        return exited
+    }
+
+    private static func measured<T>(_ args: [String], _ run: () -> T) -> T {
+        let onMain = Thread.isMainThread
+        let start = DispatchTime.now().uptimeNanoseconds
+        let result = run()
+        let spent = TimeInterval(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+        metricsLock.withLock {
+            counted.processes += 1
+            if onMain {
+                counted.mainThreadTime += spent
+                counted.mainThreadCommands = Array((counted.mainThreadCommands + [args.prefix(3).joined(separator: " ")]).suffix(20))
+            }
+        }
+        return result
+    }
+
     /// `extraEnvironment` exists for `GIT_INDEX_FILE` — the only safe way to stage a commit
     /// without touching whatever the user already has staged in the repository's real index
     /// (see `AgentRunner.createCheckpointIfNeeded`).
     @discardableResult
     public static func runGit(_ args: [String], cwd: String, extraEnvironment: [String: String] = [:]) -> (success: Bool, output: String) {
+        measured(args) { launchGit(args, cwd: cwd, extraEnvironment: extraEnvironment) }
+    }
+
+    private static func launchGit(_ args: [String], cwd: String, extraEnvironment: [String: String]) -> (success: Bool, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git"] + args
@@ -90,13 +131,14 @@ public enum GitPaths {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        let exited = Self.exitSignal(process)
         do { try process.run() } catch { return (false, error.localizedDescription) }
         // Read *before* waiting. `waitUntilExit()` first is a deadlock: once git fills the
         // ~64KB pipe buffer it blocks writing, while we block waiting for it to exit, and
         // neither side ever moves. Reproduced against a 175KB blob — `git show` of any large
         // file, or a diff over ~64KB, hung the app until Force Quit.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus == 0, output)
     }
@@ -114,6 +156,10 @@ public enum GitPaths {
     /// whenever it was merely modified. Before checkpoint failures were reported honestly, that
     /// failure printed as "✓ Checkpoint (no file changes)".
     public static func runGitRaw(_ args: [String], cwd: String) -> (success: Bool, output: String) {
+        measured(args) { launchGitRaw(args, cwd: cwd) }
+    }
+
+    private static func launchGitRaw(_ args: [String], cwd: String) -> (success: Bool, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git"] + args
@@ -122,9 +168,10 @@ public enum GitPaths {
         process.standardOutput = pipe
         // stderr goes nowhere: merging it would corrupt a format parsed by position.
         process.standardError = FileHandle.nullDevice
+        let exited = Self.exitSignal(process)
         do { try process.run() } catch { return (false, "") }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         return (process.terminationStatus == 0, String(data: data, encoding: .utf8) ?? "")
     }
 
@@ -133,29 +180,105 @@ public enum GitPaths {
     /// checkpoint can stage only what actually changed *during* the batch instead of everything
     /// sitting in the tree (which would misattribute a concurrent manual edit to the agent).
     public static func dirtyPaths(cwd: String) -> Set<String> {
+        status(cwd: cwd)?.dirty ?? []
+    }
+
+    /// One `git status` read three ways: the dirty paths, the commit HEAD names (nil before the
+    /// first commit), and whether anything is staged. A checkpoint needs all three, and asking
+    /// in one process instead of two is part of what keeps it within budget (D7).
+    public struct Status: Sendable {
+        public var dirty: Set<String> = []
+        public var head: String?
+        public var hasStaged = false
+    }
+
+    public static func status(cwd: String) -> Status? {
         // `-z` for two independent reasons, both of which silently broke checkpoints: git
         // *quotes* any path with non-ASCII or unusual bytes by default (`"caf\303\251.txt"`),
         // and those quotes were passed straight into `git add`, which then matched nothing —
         // so a single accented filename anywhere in the tree made every checkpoint commit
         // fail. `-z` also uses NUL separators, so a filename containing a newline can't split
         // one entry into two.
-        // `runGitRaw`, not `runGit`: this format's leading column is significant. See above.
-        let result = runGitRaw(["status", "--porcelain", "-z"], cwd: cwd)
-        guard result.success, !result.output.isEmpty else { return [] }
-        // With -z a rename is two NUL-separated fields (`R  new\0old`) rather than
-        // `old -> new`, so the arrow form no longer appears at all.
-        var paths: Set<String> = []
-        var entries = result.output.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
-        while !entries.isEmpty {
-            let entry = entries.removeFirst()
-            guard entry.count > 3 else { continue }
-            let status = entry.prefix(2)
-            paths.insert(String(entry.dropFirst(3)))
-            // A rename/copy consumes the following field (the source path); it isn't dirty in
-            // its own right, and leaving it in the stream would stage a path that no longer
-            // exists.
-            if status.hasPrefix("R") || status.hasPrefix("C") { _ = entries.isEmpty ? nil : entries.removeFirst() }
+        // `runGitRaw`, not `runGit`: the format is read by position. See above.
+        // `--no-optional-locks`: status otherwise rewrites the index to refresh stat data, which
+        // contends with the user's own git and changes the file a checkpoint copies.
+        let result = runGitRaw(["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z"], cwd: cwd)
+        guard result.success else { return nil }
+        return parseStatus(result.output)
+    }
+
+    /// `git status --porcelain=v2 --branch -z`: headers (`# branch.oid <sha>`), then one entry
+    /// per path: `1 XY …8 fields… path`, `2 XY …9 fields… path` followed by the source path
+    /// as its own field (a rename), `u XY …10 fields… path`, `? path`, `! path`. X is the index
+    /// against HEAD, so anything but `.` there is staged.
+    static func parseStatus(_ output: String) -> Status {
+        var status = Status()
+        // Walked by position: removing each entry from the front was quadratic in the number of
+        // dirty files (a build's untracked output, say).
+        let entries = output.split(separator: "\0", omittingEmptySubsequences: true)
+        var position = 0
+        while position < entries.count {
+            let entry = entries[position]
+            position += 1
+            func path(after fields: Int) -> String? {
+                let parts = entry.split(separator: " ", maxSplits: fields, omittingEmptySubsequences: false)
+                return parts.count == fields + 1 ? String(parts[fields]) : nil
+            }
+            switch entry.first {
+            case "#":
+                if entry.hasPrefix("# branch.oid "), !entry.hasSuffix("(initial)") { status.head = String(entry.dropFirst("# branch.oid ".count)) }
+            case "1", "2", "u":
+                let xy = entry.dropFirst(2).prefix(2)
+                if xy.first != "." { status.hasStaged = true }
+                let fields = entry.first == "1" ? 8 : (entry.first == "2" ? 9 : 10)
+                if let path = path(after: fields) { status.dirty.insert(path) }
+                // A rename's source path is the next field; it isn't dirty in its own right, and
+                // staging it would name a path that no longer exists.
+                if entry.first == "2" { position += 1 }
+            case "?", "!":
+                if entry.first == "?" { status.dirty.insert(String(entry.dropFirst(2))) }
+            default:
+                continue
+            }
         }
-        return paths
+        return status
+    }
+
+    /// The worktree's own index file, when it can be found without asking git: `.git/index`,
+    /// or for a linked worktree the `index` in the directory its `.git` file points at. Nil when
+    /// the repository splits its index (`sharedindex.*` beside it), which a copy wouldn't carry.
+    public static func indexFile(worktree root: String) -> URL? {
+        let dotGit = URL(fileURLWithPath: root).appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDirectory) else { return nil }
+        let gitDir: URL
+        if isDirectory.boolValue {
+            gitDir = dotGit
+        } else {
+            guard let text = try? String(contentsOf: dotGit, encoding: .utf8), text.hasPrefix("gitdir: ") else { return nil }
+            let path = text.dropFirst("gitdir: ".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            gitDir = path.hasPrefix("/") ? URL(fileURLWithPath: path) : URL(fileURLWithPath: root).appendingPathComponent(path)
+        }
+        let index = gitDir.appendingPathComponent("index")
+        let shared = (try? FileManager.default.contentsOfDirectory(atPath: gitDir.path))?.contains { $0.hasPrefix("sharedindex.") } ?? true
+        guard !shared, FileManager.default.fileExists(atPath: index.path) else { return nil }
+        return index
+    }
+
+    /// Puts `replacement` in place as the index, as git itself does (`index.lock`, created
+    /// exclusively, then renamed over), and only if the index still holds `expected`: if anything
+    /// else wrote it meanwhile, nothing is replaced and the caller asks git instead.
+    public static func replaceIndex(_ index: URL, expected: Data, with replacement: Data) -> Bool {
+        let lock = index.path + ".lock"
+        let descriptor = open(lock, O_CREAT | O_EXCL | O_WRONLY, 0o644)
+        guard descriptor >= 0 else { return false }
+        var written = false
+        defer { if !written { unlink(lock) } }
+        guard (try? Data(contentsOf: index)) == expected else { close(descriptor); return false }
+        let wrote = replacement.withUnsafeBytes { buffer in write(descriptor, buffer.baseAddress, buffer.count) == buffer.count }
+        close(descriptor)
+        guard wrote, rename(lock, index.path) == 0 else { return false }
+        written = true
+        return true
     }
 }

@@ -1,10 +1,11 @@
 # RFC: Heron, efficient
 
-*2026-09-26. Status: **accepted**: the owner answered on 2026-09-26, taking each recommendation.
+*2026-09-26. Status: **built**: accepted on 2026-09-26 (the owner took each recommendation); steps 1–5 built the same day.
 Stale content is pruned in one sweep at half the window. Compaction is automatic at 85%, with
 Undo. An opt-in benchmark runs on the real API. The cache lives five minutes. The build order is
 the plan below. The owner asked for this (2026-09-25): Heron should be "a highly efficient
 harness, not just a harness", in the tokens it spends as much as in CPU, memory and battery.*
+Symbols: `StreamEventCoalescer`, `HistorySweep`, `ContextBudget`, `JSONStore`, `GitPaths`, `AgentRunnerManager`, `ProjectFileAccess` (Heron); `TextBlockView` (Side).
 *Companion to `SIDE_RFC_MULTI_AGENT.md` (the runner and coordination this touches),
 `SIDE_RFC_BYO_HARNESS.md` (outside agents over ACP, which share the Think path) and
 `SIDETests/Budgets.swift` (where the new budgets go).*
@@ -450,3 +451,79 @@ runner's sweep, automatic compaction and Undo on the fake server.
 Tests: merging and order, the fast and paced streams through the real runner (every delta
 arrives, in order), the 20 s budget (opt-in), and Think's per-flush budget (opt-in,
 `StreamingBudgetTests`, in `scripts/budgets.sh`).
+
+**Step 5, 2026-09-26: background work (D7).**
+
+- **Waiting on git cost more than git.** `Process.waitUntilExit()` added about 65 ms to every
+  process, measured: 69 ms to run `/usr/bin/true`, against 2 ms waiting on a
+  `terminationHandler`. `GitPaths` and `GitDiffComputer` now wait on the handler. On its own
+  that took a checkpoint in a 20,000-file repository from 875 ms to 215 ms.
+- **A checkpoint in five git processes** (it was ten, counting the baseline status):
+  - one `git --no-optional-locks status --porcelain=v2 --branch` gives the dirty paths, HEAD's
+    commit, and whether the user has anything staged. `--no-optional-locks` keeps status from
+    rewriting the index, which also stops it contending with the user's own git;
+  - with nothing staged, the private index starts as a copy of the real one (read before and
+    after the status, so it's the index the status described) instead of `read-tree HEAD`;
+  - `add -v` names the paths it changed, which replaces `diff --cached` (asked only when its
+    output is anything else);
+  - `write-tree`, `commit-tree`, and `update-ref` with the expected old HEAD, as before;
+  - afterwards the private index goes back in place under git's own `index.lock`, and only if
+    nothing wrote the index meanwhile. That replaces the final `git add`.
+  - With the user's change staged it takes the old steps (seven processes), and their staged
+    change stays staged and out of the commit.
+- **No git on the main thread in a turn:** the baseline status taken when a batch pauses for
+  approval now runs in the background. Nothing in the batch runs until it's known, and a
+  decision made in those milliseconds waits for it. `GitPaths.metrics` counts processes and the
+  main thread's time in them, and names the commands run there.
+- **Fewer, smaller writes:**
+  - `index.json` and `usage.json` are written compactly, a second after they change, once for a
+    burst (`JSONStore.writeSoon`), and flushed at quit and whenever a store opens. The index's
+    first write is immediate, since sessions can't be found without it.
+  - Checkpoints are one file per track (`think/checkpoints/<track>.json`), written at once
+    because they're the record of what an agent changed. The old ledger is split the first
+    time it's read. Deleting a track deletes its file.
+  - Not done: pruning checkpoints by the retention setting. Retention governs conversation
+    content, and a live track's checkpoints are its Review timeline; per-track files already
+    stop one track's history from being rewritten with another's.
+- **Idle transcripts let go:** past the three most recently visited tracks, a Heron runner that's
+  idle and on no window drops its transcript. It's rebuilt from the session on the next visit,
+  or before anything starts work there (a coordinator's message to a subtrack). Outside agents'
+  harnesses aren't included.
+- **Think's file index** listens only to changes under its own root, and marks itself stale
+  instead of rescanning a second after any change in any open project. It rescans when an `@`
+  next asks it for files.
+- **The project walk is reused** by `list_files`, `search_files` and the rest while it holds.
+  The list is names only, and a directory's modification time changes when an entry in it is
+  added, removed or renamed, so the check is a stat per directory: 405 ms → 0.2 ms in 20,000
+  files. `search_files` still reads each file: 2.3–2.9 s over 20,000 files.
+- **Measured:**
+
+  | Budget | Before | After |
+  |---|---|---|
+  | A checkpoint in a 20,000-file repository | 875 ms, 10 processes | 121 ms, 5 (≤ 250 ms, ≤ 5) |
+  | Main-thread time in Heron's git calls during a turn | 23–88 ms (the approval-time status) | 0 ms (0) |
+  | 10 visited tracks of 200 turns: transcripts held | 10 | 3 (≤ 3) |
+  | `list_files`, 20,000 files, a repeated call | 400 ms | 0.2 ms |
+
+- **The whole table** (`scripts/budgets.sh`, 2026-09-27): 33 measured, 31 within budget. The
+  new rows all hold; Think streaming with the transcript on screen, in the app, is 4.6% of a
+  core (≤ 25%). Over:
+  - Alloy's minimap while scrolling, p99 4.25 ms (≤ 4.00), which this RFC doesn't touch.
+  - The app's idle wakeups (≤ 2 a second). Five runs of this code read 4, 23, 6, 1 and 0; two of
+    the step 4 code read 5 and 0. The spread is the machine's, not step 5's. The one 23 is
+    unexplained, and worth a run on a quiet machine.
+
+## What remains (the audit)
+
+- **`waitUntilExit` in the app:** 20 calls in 11 files (TrackStore, Make, the terminal, LSP
+  setup, the debugger, GitHubCLI, the file explorer). Each pays the same 65 ms. A shared
+  helper in `GitPaths.exitSignal`'s shape, used everywhere, would be the next cheap win,
+  especially for TrackStore's git polling.
+- **`search_files` reads every file on every call:** 2.5 s over 20,000 files. A content cache
+  keyed by modification time, or `git grep` where the project is a repository, would cut it.
+- **Outside agents' harnesses** (`ACPHarness`) keep their transcripts while unvisited.
+- **Images** go back as base64 on every request after they're attached; the sweep doesn't stub
+  them yet.
+- **The benchmark** ran before and after caching only; its tasks never reach the sweep's or
+  compaction's thresholds. A long-conversation task would measure those on the real API, at
+  several dollars a run.
