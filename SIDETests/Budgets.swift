@@ -49,6 +49,10 @@ enum Budgets {
         // Think.
         Row(id: "think.memory", area: "Think", measure: "A 200-turn conversation on screen, the view's memory", limit: 60, unit: "MB"),
         Row(id: "think.cpu", area: "Think", measure: "Streaming with the transcript on screen, a core", limit: 25, unit: "%"),
+        // Heron's requests (SIDE_RFC_HERON_EFFICIENCY.md). Deterministic, so they're held on every
+        // run by Heron's own tests (HeronRequestMeasurementTests) rather than measured here.
+        Row(id: "heron.prefix.changed", area: "Think", measure: "Heron: a 22-round-trip session, requests that change what the previous one sent", limit: 0, unit: "%"),
+        Row(id: "heron.prefix.uncached", area: "Think", measure: "Heron: characters past the last cache breakpoint beyond what a round trip added", limit: 2_000, unit: "chars"),
         // The app as a whole, launched and driven as a person would.
         Row(id: "app.idle.memory", area: "App", measure: "Idle in the background with files open", limit: 80, unit: "MB"),
         Row(id: "app.idle.cpu", area: "App", measure: "Idle in the background, CPU", limit: 0.5, unit: "%"),

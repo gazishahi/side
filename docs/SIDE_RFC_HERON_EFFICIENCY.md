@@ -308,3 +308,34 @@ Tests: the accounting (Anthropic's cache fields, OpenAI's usage and cached split
 priced, costs at the published rates, the saving, old rows loading), the headless driver
 applying an edit, the baseline measurement, and the existing budget and pricing tests moved
 to the corrected prices.
+
+**Step 2, 2026-09-26: caching (D1).**
+
+- **The same request is the same bytes.** Both providers serialize with sorted keys, tool
+  arguments included; unsorted, consecutive requests had shared nothing a cache could match.
+- **Anthropic breakpoints** (`AnthropicMessagesProvider.requestBody`, 5-minute cache per Q4):
+  - one on the system prompt, now a block, covering the tools before it. Compaction's request
+    has no system prompt, so the last tool carries it there;
+  - one on the last block of the last message. Each round trip reads the whole history the
+    previous one wrote and writes only what it added. The previous breakpoint is a few blocks
+    back, well inside the API's 20-block lookback.
+- **Notes are stored with the typed message** (`AgentTurn.notes`): what the `@`-mentions
+  resolved to, and the note after a branch. Before, they were recomputed per request, rode on
+  the first request of a turn only, and so changed the history's bytes on the next one. The
+  bubble still shows only what was typed; turns saved before this load with no notes.
+- **The agent list moved into `list_tracks`' result.** `create_subtrack`'s description had
+  named the installed agents, so installing one changed the tools, which come first. Side's
+  tool server for outside agents keeps the list inline; their caching isn't ours.
+- **OpenAI:** a `prompt_cache_key` on requests to api.openai.com, a hash of the model, the system
+  prompt and the tool names. Other OpenAI-compatible servers get nothing new; some refuse an
+  unknown field.
+- **Measured** (fake server, the step 1 session plus an `@`-mention): 21 of 21 requests repeat
+  the one before and add to the end; each carries two breakpoints; nothing lies past the last
+  one. Held on every run by `HeronRequestMeasurementTests`, and rows `heron.prefix.changed` and
+  `heron.prefix.uncached` of `Budgets.table`.
+- **Left for step 3:** compaction's summary request sends no system prompt or tools, so it
+  reads nothing the conversation cached. D4 reworks it.
+
+Tests: the breakpoints and their placement, byte-identical serialization, OpenAI's key (only
+for OpenAI, stable as the conversation grows), notes sent and stored but not shown, old turns
+loading, and the session measurement above.

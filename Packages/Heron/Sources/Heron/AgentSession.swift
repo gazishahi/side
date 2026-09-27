@@ -5,12 +5,24 @@ public struct AgentTurn: Codable, Identifiable {
     public let role: AgentMessage.Role
     public var content: [AgentContentBlock]
     public let createdAt: Date
+    /// Context Side adds for the model alone (what the `@`-mentions resolved to, what a branch
+    /// left applied), sent after `content` on every request and never shown in the bubble.
+    /// Resolved once, when the message is sent, and stored with it: a note recomputed per
+    /// request moved and changed the bytes of the history, and a changed byte ends the cached
+    /// prefix there. It says what was true when the person sent the message.
+    public let notes: [String]?
 
-    public init(role: AgentMessage.Role, content: [AgentContentBlock]) {
+    public init(role: AgentMessage.Role, content: [AgentContentBlock], notes: [String]? = nil) {
         self.id = UUID()
         self.role = role
         self.content = content
         self.createdAt = Date()
+        self.notes = notes?.isEmpty == true ? nil : notes
+    }
+
+    /// The turn as the model reads it.
+    public var message: AgentMessage {
+        AgentMessage(role: role, content: content + (notes ?? []).map { .text($0) })
     }
 
     // Tolerant decoding, for the same reason `Track` has it: a persisted turn written by an
@@ -18,7 +30,7 @@ public struct AgentTurn: Codable, Identifiable {
     // treats that as a hard failure — which would take the whole conversation file down with
     // it. Identity and content are the only fields worth refusing to load without.
     private enum CodingKeys: String, CodingKey {
-        case id, role, content, createdAt
+        case id, role, content, createdAt, notes
     }
 
     public init(from decoder: Decoder) throws {
@@ -27,6 +39,7 @@ public struct AgentTurn: Codable, Identifiable {
         role = try container.decode(AgentMessage.Role.self, forKey: .role)
         content = try container.decode([AgentContentBlock].self, forKey: .content)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        notes = try container.decodeIfPresent([String].self, forKey: .notes)
     }
 }
 

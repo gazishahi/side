@@ -45,7 +45,9 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(messages: messages, system: system, tools: tools))
+        // Sorted keys: the same request is the same bytes every time, which is what a server's
+        // prefix cache matches on (SIDE_RFC_HERON_EFFICIENCY.md, D1).
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(messages: messages, system: system, tools: tools), options: .sortedKeys)
 
         let state = TurnState()
         do {
@@ -77,10 +79,26 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
         }
         // Only sent when the user actually asked for it — some OpenAI-compatible servers 400 on
         // an unknown field, and every local model is one of those.
+        // OpenAI caches a long enough prefix by itself; the key routes requests that share one
+        // to the same cache. OpenAI's own field, so only OpenAI gets it — the tools and system
+        // prompt name the prefix, which is what the requests of one mode share.
+        if baseURL.host == "api.openai.com" {
+            body["prompt_cache_key"] = Self.promptCacheKey(modelId: modelId, system: system, tools: tools)
+        }
         if let reasoning = effort.openAIReasoningEffort {
             body["reasoning_effort"] = reasoning
         }
         return body
+    }
+
+    /// A short stable name for the prefix: FNV-1a over the model, the system prompt and the tool
+    /// names. Not a secret and not unique — a routing hint.
+    static func promptCacheKey(modelId: String, system: String?, tools: [ToolSpec]) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in ([modelId, system ?? ""] + tools.map(\.name)).joined(separator: "\u{1F}").utf8 {
+            hash = (hash ^ UInt64(byte)) &* 0x100000001b3
+        }
+        return "heron-" + String(hash, radix: 16)
     }
 
     /// Unlike Anthropic (one content-block array per turn), OpenAI wants one message per role
@@ -127,7 +145,7 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
                     switch block {
                     case .text(let text): textParts.append(text)
                     case .toolUse(let id, let name, let input):
-                        let argumentsData = (try? JSONSerialization.data(withJSONObject: input.anyValue)) ?? Data("{}".utf8)
+                        let argumentsData = (try? JSONSerialization.data(withJSONObject: input.anyValue, options: .sortedKeys)) ?? Data("{}".utf8)
                         let argumentsString = String(data: argumentsData, encoding: .utf8) ?? "{}"
                         toolCalls.append(["id": id, "type": "function", "function": ["name": name, "arguments": argumentsString]])
                     case .toolResult, .image: break // never appear in an assistant-role turn

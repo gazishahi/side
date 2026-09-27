@@ -156,7 +156,7 @@ public final class SideToolServer: @unchecked Sendable {
                 }
             }
             result(["tools": tools])
-        case "tools/call" where registration.coordination != nil && CoordinationBridge.toolSpecs(agentChoices: []).contains(where: { $0.name == params["name"] as? String }):
+        case "tools/call" where registration.coordination != nil && CoordinationBridge.toolSpecs().contains(where: { $0.name == params["name"] as? String }):
             guard let bridge = registration.coordination, let name = params["name"] as? String else { return }
             let input = Self.jsonValue(params["arguments"] ?? [String: Any]())
             let text: @Sendable (String, Bool) -> Void = { output, isError in result(["content": [["type": "text", "text": output]], "isError": isError]) }

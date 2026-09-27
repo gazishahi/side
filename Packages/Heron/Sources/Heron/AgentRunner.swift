@@ -164,7 +164,7 @@ public final class AgentRunner {
     /// cleared so a checkpoint can be renamed from it — a description of what was done is a far
     /// better handle in Review than a restatement of what was asked for.
     private var lastAssistantSummary = ""
-    /// Attached to the next request only — see `branchedAwayNote`.
+    /// Stored in the next typed message's notes — see `branchedAwayNote`.
     private var branchedAwayNote: String?
     /// Set by `stop()`, cleared when the user sends again — see `continueAfterTools`.
     private var isStopRequested = false
@@ -293,18 +293,24 @@ public final class AgentRunner {
             appendMissingKeyHint()
             return
         }
-        // What's persisted is exactly what the user typed. The `@`-mention note is *not* stored
-        // with it: a stored note shows up in the bubble when the transcript is rebuilt from disk
-        // (the live transcript and the reloaded one disagreed, which is how this was caught), and
-        // it would freeze the resolution — a path that didn't exist when the message was sent
-        // would stay "doesn't exist" forever. It's attached per request instead, in `runTurn`.
+        // The content is exactly what the user typed; the `@`-mention note and the branch note
+        // go in the turn's `notes`, which the bubble never shows (a note in the content showed up
+        // when the transcript was rebuilt from disk). Mentions resolve now, against the project as
+        // it is — paths only, never file contents; see `FileMentionResolver`.
         // Images lead, text follows — the API reads a message top to bottom and the prose
         // usually refers to "this screenshot."
         var content: [AgentContentBlock] = attachments.map { .image(mediaType: $0.mediaType, base64: $0.base64) }
         if !trimmed.isEmpty { content.append(.text(trimmed)) }
         // Held so the entries below can name the turn they render — that handle is what makes the
         // message editable later.
-        let turn = AgentTurn(role: .user, content: content)
+        var notes: [String] = []
+        if !trimmed.isEmpty {
+            let resolution = FileMentionResolver.resolve(text: trimmed, projectRoot: rootProvider())
+            if let note = FileMentionResolver.contextNote(mentions: resolution.mentions, unresolved: resolution.unresolved) { notes.append(note) }
+        }
+        if let branchedAwayNote { notes.append(branchedAwayNote) }
+        branchedAwayNote = nil
+        let turn = AgentTurn(role: .user, content: content, notes: notes)
         sessionStore.appendTurn(
             turn, trackKey: trackKey, providerId: selection.providerId, modelId: model.id
         )
@@ -392,7 +398,7 @@ public final class AgentRunner {
         return line
     }
 
-    /// Told to the model once, on the request immediately after a branch. Without it the agent
+    /// Told to the model with the message sent after a branch. Without it the agent
     /// re-reads a file, finds a change it has no memory of making, and either duplicates it or
     /// reports the file as unexpectedly modified.
     private static func branchedAwayNote(checkpoints: [Checkpoint]) -> String? {
@@ -1006,7 +1012,7 @@ public final class AgentRunner {
 
         appendEntry(.meta("Compacting conversation…"))
         setPhase(.streaming)
-        var messages = session.turns.map { AgentMessage(role: $0.role, content: $0.content) }
+        var messages = session.turns.map(\.message)
         messages.append(AgentMessage(role: .user, content: [.text(ContextBudget.compactionInstruction)]))
 
         // The stream callback is `@Sendable` and fires off-actor, so the accumulating text needs
@@ -1140,32 +1146,13 @@ public final class AgentRunner {
         lastStopReason = nil
         didReceiveProviderError = false
 
-        // Mentions resolve here, against the project as it is *now*, and the note rides along
-        // with the most recent user message rather than being baked into stored history. Paths
-        // only — never file contents; see `FileMentionResolver`.
-        var messages = session.turns.map { AgentMessage(role: $0.role, content: $0.content) }
-        if let lastUserIndex = messages.lastIndex(where: { $0.role == .user }),
-           case .text(let userText)? = messages[lastUserIndex].content.first(where: { if case .text = $0 { return true } else { return false } }) {
-            let resolution = FileMentionResolver.resolve(text: userText, projectRoot: rootProvider())
-            var extraNotes: [String] = []
-            if let note = FileMentionResolver.contextNote(mentions: resolution.mentions, unresolved: resolution.unresolved) {
-                extraNotes.append(note)
-            }
-            // Same channel, same reasoning: attached per request rather than persisted, so it
-            // never shows up in a rebuilt bubble and never freezes a fact that has since changed.
-            if let branchedAwayNote { extraNotes.append(branchedAwayNote) }
-            if !extraNotes.isEmpty {
-                var content = messages[lastUserIndex].content
-                for note in extraNotes { content.append(.text(note)) }
-                messages[lastUserIndex] = AgentMessage(role: .user, content: content)
-            }
-        }
-        // One turn only. By the next one the agent has read the files and the note is noise.
-        branchedAwayNote = nil
+        // Every turn as it was stored, notes included, so each request repeats the previous one's
+        // bytes and adds to the end: the cached prefix (SIDE_RFC_HERON_EFFICIENCY.md, D1).
+        let messages = session.turns.map(\.message)
         let mode = modeProvider()
         var tools = ToolExecutor.specs(for: mode.scope)
-        if let coordinator = coordinatorProvider() {
-            tools += ToolExecutor.coordinationSpecs(for: mode.scope, agents: coordinator.agentChoices)
+        if coordinatorProvider() != nil {
+            tools += ToolExecutor.coordinationSpecs(for: mode.scope)
         }
         // Read per request, off the track's own root: editing the rules file takes effect on
         // the next message rather than the next launch.

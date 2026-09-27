@@ -29,8 +29,8 @@ public struct ToolExecutor {
     /// makes Ask/Plan a real boundary rather than an instruction it might reason past.
     /// The coordinator's tools, for the scopes that allow them: creating and messaging subtracks
     /// changes things (Build); reading and waiting on them doesn't (Plan too).
-    public static func coordinationSpecs(for scope: AgentToolScope, agents: [(id: String, name: String)]) -> [ToolSpec] {
-        CoordinationBridge.toolSpecs(agentChoices: agents).filter { spec in
+    public static func coordinationSpecs(for scope: AgentToolScope) -> [ToolSpec] {
+        CoordinationBridge.toolSpecs().filter { spec in
             switch spec.name {
             case "create_subtrack", "message_track", "promote_subtrack": return scope.allowsWrites
             default: return scope.allowsWrites || scope == .plan
@@ -222,7 +222,7 @@ public struct ToolExecutor {
     /// route to the same place. A boundary the caller can talk past is an instruction, not a
     /// boundary, so this is where it's enforced.
     public func execute(name: String, input: JSONValue, toolUseId: String, scope: AgentToolScope) -> Result {
-        if let coordination, Self.coordinationSpecs(for: scope, agents: coordinationAgents).contains(where: { $0.name == name }) {
+        if let coordination, Self.coordinationSpecs(for: scope).contains(where: { $0.name == name }) {
             return executeCoordination(name: name, input: input, toolUseId: toolUseId, bridge: coordination)
         }
         guard Self.specs(for: scope).contains(where: { $0.name == name }) else {
@@ -252,7 +252,12 @@ public struct ToolExecutor {
             return .commandProposal(ProposedCommand(toolUseId: toolUseId, command: command))
         case "list_tracks":
             let tracks = trackContextProvider()
-            return .completed(output: TrackContextTools.listing(tracks, changedPaths: Self.changedPaths), isError: false)
+            var listing = TrackContextTools.listing(tracks, changedPaths: Self.changedPaths)
+            // Here rather than in create_subtrack's description, which has to stay the same bytes.
+            if coordination != nil, !coordinationAgents.isEmpty {
+                listing += "\n\nAgents a subtrack can run on (create_subtrack's agent): " + coordinationAgents.map { "\($0.id) (\($0.name))" }.joined(separator: ", ") + "."
+            }
+            return .completed(output: listing, isError: false)
         case "read_track_overlap":
             let tracks = trackContextProvider()
             guard let current = tracks.first(where: \.isCurrent) else {

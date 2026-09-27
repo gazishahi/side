@@ -40,7 +40,9 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(messages: messages, system: system, tools: tools))
+        // Sorted keys: a cache hit needs the prefix byte for byte, and a dictionary's order isn't
+        // stable (SIDE_RFC_HERON_EFFICIENCY.md, D1 — unsorted, consecutive requests shared nothing).
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(messages: messages, system: system, tools: tools), options: .sortedKeys)
 
         let state = TurnState()
         do {
@@ -65,25 +67,48 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
 
     // MARK: - Request building
 
-    private func requestBody(messages: [AgentMessage], system: String?, tools: [ToolSpec]) -> [String: Any] {
+    /// The 5-minute cache (the owner's choice, SIDE_RFC_HERON_EFFICIENCY.md, Q4): a round trip
+    /// reads it well inside five minutes, and every read renews it.
+    static var cacheControl: [String: Any] { ["type": "ephemeral"] }
+
+    func requestBody(messages: [AgentMessage], system: String?, tools: [ToolSpec]) -> [String: Any] {
+        // System messages never appear in the messages array — Anthropic takes the system prompt
+        // as a top-level field, so .system roles are filtered out.
+        var messageJSON = messages.filter { $0.role != .system }.map { message -> [String: Any] in
+            [
+                // Anthropic has no "tool" role — tool results travel as content blocks inside a
+                // user message.
+                "role": message.role == .assistant ? "assistant" : "user",
+                "content": message.content.map(Self.contentBlockJSON),
+            ]
+        }
+        // Two cache breakpoints (D1). The API renders tools, then system, then messages, and a
+        // breakpoint caches everything before it:
+        //  - on the system prompt, which with the tools is the same for every request in a mode,
+        //    so a new conversation starts from a hit;
+        //  - on the last block of the last message, so each round trip reads the whole history
+        //    the previous one wrote and writes only what it added. The previous round trip's
+        //    breakpoint sits a few blocks back, well inside the API's 20-block lookback.
+        // A prefix under the model's minimum (512–4,096 tokens) just isn't cached; no error.
+        if var last = messageJSON.last, var content = last["content"] as? [[String: Any]], !content.isEmpty {
+            content[content.count - 1]["cache_control"] = Self.cacheControl
+            last["content"] = content
+            messageJSON[messageJSON.count - 1] = last
+        }
         var body: [String: Any] = [
             "model": modelId,
             "max_tokens": maxTokens,
             "stream": true,
-            // System messages never appear in the messages array — Anthropic takes the
-            // system prompt as a top-level field, so .system roles are filtered below.
-            "messages": messages.filter { $0.role != .system }.map { message -> [String: Any] in
-                [
-                    // Anthropic has no "tool" role — tool results travel as content blocks
-                    // inside a user message.
-                    "role": message.role == .assistant ? "assistant" : "user",
-                    "content": message.content.map(Self.contentBlockJSON),
-                ]
-            },
+            "messages": messageJSON,
         ]
-        if let system, !system.isEmpty { body["system"] = system }
+        if let system, !system.isEmpty {
+            body["system"] = [["type": "text", "text": system, "cache_control": Self.cacheControl]]
+        }
         if !tools.isEmpty {
-            body["tools"] = tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.inputSchema.anyValue] }
+            var toolJSON: [[String: Any]] = tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.inputSchema.anyValue] }
+            // No system prompt (compaction's request): the tools' own breakpoint.
+            if system?.isEmpty ?? true { toolJSON[toolJSON.count - 1]["cache_control"] = Self.cacheControl }
+            body["tools"] = toolJSON
         }
         // Omitted entirely at `.standard`: the API rejects a budget below its minimum, so
         // "no thinking" has to mean "no block," not "a zero budget."

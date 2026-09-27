@@ -166,19 +166,23 @@ public struct CoordinationBridge: @unchecked Sendable {
         return "Still working after the wait: \(stillWorking.joined(separator: ", ")). Call wait_for_tracks again to keep waiting.\n\n" + reports
     }
 
-    /// The four tools, as the model sees them. `create_subtrack` names the agents it can use.
-    public static func toolSpecs(agentChoices: [(id: String, name: String)]) -> [ToolSpec] {
-        let agents = agentChoices.map { "\($0.id) (\($0.name))" }.joined(separator: ", ")
+    /// The tools, as the model sees them. `create_subtrack` names the agents it can use, or with
+    /// nil says `list_tracks` does: Heron's own requests, whose tools have to be the same bytes
+    /// every time to stay cached, and the installed agents aren't (SIDE_RFC_HERON_EFFICIENCY.md,
+    /// D1). An outside agent over MCP, which has no such cache of ours, gets the list inline.
+    public static func toolSpecs(agentChoices: [(id: String, name: String)]? = nil) -> [ToolSpec] {
+        let agents = agentChoices.map { "Agents: " + $0.map { "\($0.id) (\($0.name))" }.joined(separator: ", ") + "." }
+            ?? "list_tracks names the agents it can use; heron is the default."
         func schema(_ properties: [String: JSONValue], required: [String]) -> JSONValue {
             .object(["type": .string("object"), "properties": .object(properties), "required": .array(required.map { .string($0) })])
         }
         return [
             ToolSpec(
                 name: "create_subtrack",
-                description: "Hand part of this track's work to another agent as a subtrack: its own branch and working copy, stacked under this track, with its own checkpoints. Its work comes back when the user promotes it into this track. Use it for a separable piece of work, and say exactly what done means in the instructions. The user approves new subtracks unless the track runs on Full autonomy. At most 4 at a time; a subtrack can't create its own. Agents: \(agents).",
+                description: "Hand part of this track's work to another agent as a subtrack: its own branch and working copy, stacked under this track, with its own checkpoints. Its work comes back when the user promotes it into this track. Use it for a separable piece of work, and say exactly what done means in the instructions. The user approves new subtracks unless the track runs on Full autonomy. At most 4 at a time; a subtrack can't create its own. \(agents)",
                 inputSchema: schema([
                     "intent": .object(["type": .string("string"), "description": .string("A short title for the subtrack, like a commit subject.")]),
-                    "agent": .object(["type": .string("string"), "description": .string("Which agent runs it: one of the ids listed in this tool's description.")]),
+                    "agent": .object(["type": .string("string"), "description": .string("Which agent runs it, by id.")]),
                     "instructions": .object(["type": .string("string"), "description": .string("The subtrack's first message: what to do, which files, how to verify it.")]),
                 ], required: ["intent", "agent", "instructions"])
             ),
