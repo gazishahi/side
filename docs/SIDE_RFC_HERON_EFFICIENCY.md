@@ -333,6 +333,22 @@ to the corrected prices.
   the one before and add to the end; each carries two breakpoints; nothing lies past the last
   one. Held on every run by `HeronRequestMeasurementTests`, and rows `heron.prefix.changed` and
   `heron.prefix.uncached` of `Budgets.table`.
+- **The benchmark after, Sonnet 5, 2026-09-26** (`build/heron-bench/2026-09-26-2244-claude-sonnet-5.json`):
+
+    | Task | Requests | Input | Cached | Written | Output | Cost |
+    |---|---|---|---|---|---|---|
+    | explain | 4 | 8 | 10,669 | 9,309 | 2,526 | $0.051 |
+    | discounts | 4 | 8 | 14,730 | 5,465 | 1,463 | $0.031 |
+    | cancel | 8 | 16 | 52,721 | 10,370 | 5,016 | $0.087 |
+    | **All three** | **16** | **32** | **78,120** | **25,144** | **9,005** | **$0.169** |
+
+  - $0.385 → $0.169 (−56%); the input's share $0.276 → $0.079 (−72%). Input billed at the full
+    price: 32 tokens against the baseline's 138,199, where the budget was ≤ 35%.
+  - 76% of the prompt tokens were cache reads. Writes are now most of the input's cost
+    ($0.063): each round trip's own addition, and each mode's system prompt and tools once.
+    `discounts` read what `explain` wrote (both Ask); `cancel` (Build) has other tools.
+  - One run: `cancel` took 8 requests where the baseline's took 11, so part of the difference
+    is the model's path. The split between full price and cache doesn't depend on it.
 - **Left for step 3:** compaction's summary request sends no system prompt or tools, so it
   reads nothing the conversation cached. D4 reworks it.
 
