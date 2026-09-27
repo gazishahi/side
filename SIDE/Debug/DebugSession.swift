@@ -467,6 +467,7 @@ final class DebugSession {
             onStopEvent?()
             Task { await stopped(threadID: threadID, reason: reason, text: text) }
         case "continued":
+            guard isActive else { return }
             frames = []
             state = .running
         case "output":
@@ -541,6 +542,19 @@ final class DebugSession {
         }
     }
 
+    /// What was thrown, for a stop on an exception (`exceptionInfo`, when the adapter has it).
+    func exceptionInfo() async -> String? {
+        guard let client, capabilities["supportsExceptionInfoRequest"] as? Bool == true,
+              case .stopped(_, let thread, _) = state,
+              let reply = try? await client.request("exceptionInfo", ["threadId": .int(thread)]), let object = reply.object else { return nil }
+        let parts = [object["exceptionId"] as? String, object["description"] as? String,
+                     (object["details"] as? [String: Any])?["message"] as? String].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: ": ")
+    }
+
+    /// The adapter's name for Settings and the agent.
+    var adapterName: String { DebugAdapters.presets.first { $0.adapterID == adapterID }?.name ?? adapterID }
+
     /// A file's breakpoints, as they are now (called on each change while a session runs).
     func sendBreakpoints(path: String) async {
         guard let client else { return }
@@ -581,6 +595,8 @@ final class DebugSession {
         // The first frame with source code the person can read; a stop inside a library still
         // shows where the program called it.
         selectedFrame = frames.firstIndex { $0.path != nil && !$0.isSubtle } ?? 0
+        // Ended while the stack was being asked for (Stop as it stopped): it stays ended.
+        guard isActive else { frames = []; return }
         state = .stopped(reason: reason, threadID: threadID, text: text)
     }
 

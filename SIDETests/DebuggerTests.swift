@@ -1,3 +1,4 @@
+import Heron
 import AlloyCore
 import XCTest
 @testable import Side
@@ -464,5 +465,61 @@ final class LLDBDAPTests: XCTestCase {
         let written = count > 0 ? String(decoding: buffer[..<count], as: UTF8.self) : ""
         XCTAssertTrue(written.contains("total 14"), written)
         XCTAssertFalse(session.output.contains("total 14"))
+    }
+}
+
+
+/// What the agent's read-only tool reads (SIDE_RFC_DEBUGGER.md, Q5): Make publishes the paused
+/// program as the inspector has it, members once it stays paused, and nothing once it ends.
+@MainActor
+final class DebugSnapshotPublishingTests: XCTestCase {
+    func testMakePublishesThePausedProgramForTheAgent() throws {
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: python.path), "no python3")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("side-snapshot-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("Sources/work.swift")
+        try (0..<200).map { "let line\($0) = \($0)" }.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+        let script = folder.appendingPathComponent("adapter.py")
+        try DebugBudgetTests.adapter.write(to: script, atomically: true, encoding: .utf8)
+        setenv("SIDE_BUDGET_FILE", realPath(file.path), 1)
+
+        let make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = container
+        for child in [make.view, make.topRowContent!] { container.addSubview(child) }
+        make.view.frame = container.bounds
+        defer { make.debugger.stop(); window.contentView = nil; window.close() }
+        make.loadProject(at: folder)
+        func waitUntil(_ timeout: TimeInterval = 10, _ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(timeout)
+            while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+        }
+        make.debugger.launch(DebugConfiguration(name: "work", program: "/bin/true", directory: folder.path), adapter: python, adapterArguments: [script.path])
+        waitUntil { DebugSnapshot.shared.state(projectRoot: folder)?.locals.isEmpty == false }
+        let paused = try XCTUnwrap(DebugSnapshot.shared.state(projectRoot: folder))
+        XCTAssertEqual(paused.status, .paused)
+        XCTAssertEqual(paused.reason, "breakpoint")
+        XCTAssertEqual(paused.frames.first?.path, "Sources/work.swift", "relative to the project")
+        XCTAssertEqual(paused.frames.count, 41)
+        XCTAssertEqual(paused.locals.first?.name, "point")
+        XCTAssertTrue(paused.locals.first?.children.isEmpty ?? false, "members only once it stays paused")
+
+        // Half a second later, still paused: the small structured local's members.
+        waitUntil { DebugSnapshot.shared.state(projectRoot: folder)?.locals.first?.children.isEmpty == false }
+        XCTAssertEqual(DebugSnapshot.shared.state(projectRoot: folder)?.locals.first?.children.map(\.name), ["x", "y"])
+        let report = DebugSnapshot.shared.report(projectRoot: folder)
+        XCTAssertTrue(report.contains("#0 work  Sources/work.swift:1  \u{2190} selected"), report)
+        XCTAssertTrue(report.contains("    x: Int = 3"), report)
+
+        // Running: no stack; ended: no session.
+        make.debugger.stepOver()
+        make.debugger.stop()
+        waitUntil { DebugSnapshot.shared.state(projectRoot: folder) == nil }
+        XCTAssertNil(DebugSnapshot.shared.state(projectRoot: folder))
     }
 }

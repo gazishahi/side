@@ -37,6 +37,11 @@ enum Budgets {
         Row(id: "problems.open", area: "Make", measure: "Show Problems with 5,000 problems in 250 files", limit: 50, unit: "ms"),
         Row(id: "find.matches", area: "Make", measure: "Find: every match in a 100k-line file", limit: 50, unit: "ms"),
         Row(id: "find.next", area: "Make", measure: "Find: to the next match, p99", limit: 8, unit: "ms"),
+        // Make's debugger (SIDE_RFC_DEBUGGER.md, D6).
+        Row(id: "debug.step", area: "Make", measure: "Debugger: a step, the stopped event to the line shown and the stack filled, median", limit: 50, unit: "ms"),
+        Row(id: "debug.variables", area: "Make", measure: "Debugger: the first page of a 100,000-element array", limit: 30, unit: "ms"),
+        Row(id: "debug.idle.cpu", area: "Make", measure: "Debugger: paused, CPU", limit: 0.5, unit: "%"),
+        Row(id: "debug.breakpoints", area: "Make", measure: "Debugger: 1,000 breakpoints following a keystroke's edit, median", limit: 1, unit: "ms"),
         // Review.
         Row(id: "review.open", area: "Review", measure: "Show a 500-file change set", limit: 300, unit: "ms"),
         Row(id: "review.memory", area: "Review", measure: "Memory for a 500-file change set, drawing buffers apart", limit: 60, unit: "MB"),

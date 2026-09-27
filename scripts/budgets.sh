@@ -8,7 +8,7 @@
 # Run it on a quiet machine: other apps' work shows up in the frame and CPU numbers.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-suites=(AlloyBudgetTests CompletionBudgetTests IDEBudgetTests FindBudgetTests ReviewBudgetTests ThinkBudgetTests AppBudgetTests)
+suites=(AlloyBudgetTests CompletionBudgetTests IDEBudgetTests DebugBudgetTests FindBudgetTests ReviewBudgetTests ThinkBudgetTests AppBudgetTests)
 if (( $# > 0 )); then suites=(); for name in "$@"; do suites+=("${name}BudgetTests"); done; fi
 only=(); for suite in $suites; do only+=("-only-testing:SIDETests/$suite"); done
 log=build/budgets.log

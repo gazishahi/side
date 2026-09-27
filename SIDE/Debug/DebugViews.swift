@@ -373,9 +373,11 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
 
     /// A frame's scopes: the first (Locals) opened at once, the rest (Globals, Registers) left
     /// closed.
-    func show(scopes list: [DAPScope]) {
+    func show(scopes list: [DAPScope], firstScopeVariables preloaded: [DAPVariable]? = nil) {
         generation += 1
         scopes = list.map { DebugVariableNode(.scope($0)) }
+        // Fetched once by the debugger, for this list and the agent's snapshot both.
+        if let preloaded, let first = scopes.first { first.children = preloaded.map { DebugVariableNode(.variable($0)) } }
         variablesPlaceholder.stringValue = "No variables"
         variablesPlaceholder.isHidden = !list.isEmpty
         variablesOutline.reloadData()

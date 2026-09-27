@@ -64,8 +64,9 @@ actor DAPClient {
         isRunning = true
     }
 
+    /// Always ends the transport, even after the adapter hung up first: a server adapter's
+    /// process (node running js-debug) outlives its connection.
     func stop() async {
-        guard isRunning else { return }
         isRunning = false
         await transport.stop()
         await transport.clearHandlers()

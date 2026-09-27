@@ -56,6 +56,8 @@ public struct ToolExecutor {
             case "list_tracks", "read_track_overlap": return scope.allowsCommands || scope == .plan
             // Reading diagnostics is a pure read — available in every scope, including Ask.
             case "read_diagnostics": return true
+            // As is reading a paused program's state: it never touches the debugger.
+            case "read_debug_state": return true
             default: return true
             }
         }
@@ -168,6 +170,14 @@ public struct ToolExecutor {
                 ])
             ),
             ToolSpec(
+                name: "read_debug_state",
+                description: "Read the state of the program the user is debugging in Make: whether it's paused and why (a breakpoint, an exception), its call stack with file and line, the selected frame's local variables, the user's watch expressions, and the debug console's last lines. Use it when the user asks why something crashes or has a wrong value while they're debugging, so your answer rests on the actual values rather than a guess. Read-only: you can't start, step or change the program; ask the user to pause or step where you need to look.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([:]),
+                ])
+            ),
+            ToolSpec(
                 name: "list_tasks",
                 description: "List this project's named tasks (build, test, lint, and so on) with what each one runs. Use this before run_task so you name a task that exists.",
                 inputSchema: .object([
@@ -263,6 +273,8 @@ public struct ToolExecutor {
             let errorsOnly: Bool
             errorsOnly = input.boolValue(for: "errors_only") ?? false
             return .completed(output: DiagnosticsSnapshot.shared.report(projectRoot: projectRoot, errorsOnly: errorsOnly), isError: false)
+        case "read_debug_state":
+            return .completed(output: DebugSnapshot.shared.report(projectRoot: projectRoot), isError: false)
         case "list_tasks":
             let tasks = ProjectTasks.tasks(projectRoot: projectRoot)
             guard !tasks.isEmpty else {

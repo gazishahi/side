@@ -486,6 +486,11 @@ final class MakeDebugger {
 
     private func sessionChanged(_ session: DebugSession) {
         bar.show(session.state, name: session.configuration.name)
+        if !session.isStopped {
+            snapshotLocals = []
+            snapshotException = nil
+            publishSnapshot(session)
+        }
         hideAfterEnd?.cancel()
         showExceptionFilters(session)
         switch session.state {
@@ -527,13 +532,87 @@ final class MakeDebugger {
             lastStopShownIn = CFAbsoluteTimeGetCurrent() - started
             stopStarted = nil
         }
-        guard let frame = session.currentFrame else { return inspector.clearVariables(placeholder: "No frame") }
+        guard let frame = session.currentFrame else {
+            publishSnapshot(session)
+            return inspector.clearVariables(placeholder: "No frame")
+        }
         Task {
             let scopes = await session.scopes(frameID: frame.id)
+            // The first scope's variables: shown open, and what the agent reads.
+            var locals: [DAPVariable]?
+            if let first = scopes.first, !first.expensive { locals = await session.variables(first.variablesReference) }
             guard generation == self.stopGeneration, session.isStopped else { return }
-            self.inspector.show(scopes: scopes)
+            self.inspector.show(scopes: scopes, firstScopeVariables: locals)
+            self.snapshotLocals = (locals ?? []).map { DebugSnapshot.Variable(name: $0.name, type: $0.type, value: $0.value) }
+            if case .stopped(let reason, _, _) = session.state, reason == "exception" { self.snapshotException = await session.exceptionInfo() }
+            guard generation == self.stopGeneration else { return }
+            self.publishSnapshot(session)
+            self.expandForAgent(session, locals: locals ?? [], generation: generation)
         }
         evaluateWatches(session, generation: generation)
+    }
+
+    // MARK: What the agent reads (SIDE_RFC_DEBUGGER.md, Q5)
+
+    private var snapshotLocals: [DebugSnapshot.Variable] = []
+    private var snapshotException: String?
+
+    /// The session as the agent's read-only tool sees it: what the inspector already has, no
+    /// requests of its own (but the members below).
+    private func publishSnapshot(_ session: DebugSession) {
+        guard let root = host?.debugProjectRoot else { return }
+        let status: DebugSnapshot.State.Status
+        var reason: String?
+        switch session.state {
+        case .building, .starting: status = .starting
+        case .running: status = .running
+        case .stopped(let why, _, _): status = .paused; reason = why
+        case .ended: status = .ended
+        }
+        var state = DebugSnapshot.State(program: session.configuration.name, adapter: session.adapterName, status: status)
+        state.reason = reason
+        if status == .paused {
+            let base = realPath(root.path)
+            state.frames = session.frames.map { frame in
+                let path = frame.path.map { path -> String in
+                    let real = realPath(path)
+                    return real.hasPrefix(base + "/") ? String(real.dropFirst(base.count + 1)) : path
+                }
+                return DebugSnapshot.Frame(name: frame.name, path: path, line: frame.line)
+            }
+            state.selectedFrame = session.selectedFrame
+            state.locals = snapshotLocals
+            state.exception = snapshotException ?? (reason == "exception" ? stoppedText(session) : nil)
+            state.watches = watches.compactMap { watch in watch.value.map { (expression: watch.expression, value: $0) } }
+        }
+        state.output = String(session.output.suffix(DebugSnapshot.maxOutput))
+        DebugSnapshot.shared.publish(status == .ended ? nil : state, projectRoot: root)
+    }
+
+    private func stoppedText(_ session: DebugSession) -> String? {
+        if case .stopped(_, _, let text) = session.state { return text }
+        return nil
+    }
+
+    /// One level of the structured locals' members, for the agent: only once the program has
+    /// stayed paused a moment (stepping through fetches nothing), and only a few small ones.
+    private func expandForAgent(_ session: DebugSession, locals: [DAPVariable], generation: Int) {
+        let candidates = locals.filter { $0.variablesReference > 0 && ($0.namedCount ?? 0) <= DebugSnapshot.maxChildren && ($0.indexedCount ?? 0) == 0 }.prefix(4)
+        guard !candidates.isEmpty else { return }
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard generation == self.stopGeneration, session.isStopped else { return }
+            var expanded: [String: [DebugSnapshot.Variable]] = [:]
+            for local in candidates {
+                let members = await session.variables(local.variablesReference)
+                guard generation == self.stopGeneration else { return }
+                expanded[local.name] = members.prefix(DebugSnapshot.maxChildren).map { DebugSnapshot.Variable(name: $0.name, type: $0.type, value: $0.value) }
+            }
+            self.snapshotLocals = self.snapshotLocals.map { local in
+                DebugSnapshot.Variable(name: local.name, type: local.type, value: local.value, children: expanded[local.name] ?? local.children)
+            }
+            self.publishSnapshot(session)
+        }
     }
 
     // MARK: Watches, the console, hovering, exceptions
@@ -553,6 +632,7 @@ final class MakeDebugger {
             guard generation == self.stopGeneration, session.isStopped, results.map(\.expression) == self.watches.map(\.expression) else { return }
             self.watches = results
             self.inspector.show(watches: results)
+            self.publishSnapshot(session)
         }
     }
 

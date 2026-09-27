@@ -1,10 +1,10 @@
 # RFC: The debugger
 
-*2026-09-26. Status: **accepted**: the owner answered on 2026-09-26. The debugger lives in Make;
-a breakpoint is a click on the line number; a project's `.vscode/launch.json` is read, with
-consent; agents get read-only access first. Q4, the first languages, took the recommendation
-(default). The build order is the plan below. Steps 1 to 4 are built.*
-Symbols: `DAPClient`, `DAPSocketTransport`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `DebugLaunchFile`, `DebugProcesses`, `DebugAdapters`, `MakeDebugger`, `DebugBar`, `DebugInspector`.
+*2026-09-26. Status: **built**: the owner answered on 2026-09-26 and all five steps are built.
+The debugger lives in Make; a breakpoint is a click on the line number; a project's
+`.vscode/launch.json` is read, with consent; agents get read-only access first. Q4, the first
+languages, took the recommendation (default).*
+Symbols: `DAPClient`, `DAPSocketTransport`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `DebugLaunchFile`, `DebugProcesses`, `DebugAdapters`, `MakeDebugger`, `DebugBar`, `DebugInspector`, `DebugSnapshot` (Heron), `read_debug_state` (Heron).
 *Companion to `SIDE_RFC_IDE_ESSENTIALS.md` (the language-server client this mirrors, and
 Settings → Languages, which gains a debugger per language) and `SIDE_RFC_ALLOY.md` (the gutter
 and line tints the debugger draws with).*
@@ -419,3 +419,46 @@ Checked in Side:
   `${command:pickFile}`), and Side's own `app.ts`. The chosen one ran to "total 14".
 - Attach to Process… listed the project's `sleeper` first. Attaching, then Pause, showed
   `work` at `sleeper.c:2` with `n 121`.
+
+**Step 5, 2026-09-26.**
+
+- **The agent's read-only tool** (Q5): Heron's `read_debug_state`, in every scope, reads a
+  `DebugSnapshot` that Make publishes, as `read_diagnostics` reads `DiagnosticsSnapshot`.
+  - It gives whether the program is paused and why, the exception (`exceptionInfo` when the
+    adapter has it), the stack (paths relative to the project, the selected frame marked), the
+    selected frame's locals, the watches, and the console's last lines.
+  - It's bounded: 20 frames, 30 locals, 12 members each, 200 characters a value, 1,500 of
+    console.
+  - Reading never touches the adapter, so it costs no requests and can't change the program.
+    The tool's description says it can't start or step anything, and that the agent should ask
+    the person to.
+  - The snapshot is what the inspector already has: the first scope's variables are fetched
+    once, for the Variables list and the snapshot both. A small structured local's members
+    (up to four locals, twelve members each) are fetched only once the program has stayed
+    paused half a second, so stepping through fetches nothing extra.
+  - The agent's instructions mention the tool, and a running or ended session says so.
+- **Budgets** (D6), as rows of `Budgets.table`, measured by `DebugBudgetTests`
+  (`scripts/budgets.sh Debug`). In an optimized build:
+
+  | Measure | Measured | Budget |
+  |---|---|---|
+  | A step, the stopped event to the line shown and 41 frames filled (fake adapter's answers included), median | 1.01 ms (p90 1.4) | ≤ 50 ms |
+  | The first page of a 100,000-element array | 6.16 ms | ≤ 30 ms |
+  | Paused, Side's CPU over 3 s | 0.26 % | ≤ 0.5 % |
+  | 1,000 breakpoints following a keystroke's edit, median | 0.18 ms | ≤ 1 ms |
+- **Fixes found on the way:**
+  - A `stopped` event still being handled as Stop ended the session set it back to paused:
+    an ended session now stays ended.
+  - The client didn't end a server adapter's process after the adapter hung up first
+    (`stop()` returned early); node running js-debug outlived it. It now always ends the
+    transport.
+
+Tests:
+
+- Heron: the report (paused, running, none), its bounds, and the tool in every scope.
+- Make publishes the paused program over a fake adapter. The stack is relative to the project,
+  with 41 frames and the locals; members follow once it stays paused; nothing is left once it
+  ends.
+- The four budgets.
+- The opt-in real-adapter tests pass (lldb-dap launch and attach, js-debug, debugpy, Delve),
+  and nothing outlives the tests.

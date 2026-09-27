@@ -1909,7 +1909,9 @@ public final class AgentRunner {
     flight and read_track_overlap names the files this track and another have both changed; \
     check before editing something another track is in the middle of. \
     fetch_url reads a public web page as text. Use it for documentation, changelogs, and API \
-    references rather than guessing at an API from memory; it is approved like a command.
+    references rather than guessing at an API from memory; it is approved like a command. \
+    When the user is debugging, read_debug_state shows the paused program's stack, locals and \
+    exception: base an answer about a crash or a wrong value on it.
     """
 
     private static func parseArguments(_ json: String) -> JSONValue {
