@@ -286,6 +286,36 @@ public final class AgentRunner {
         guard !phase.isBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        // Between messages, never within one: the history changes here, once, and the requests
+        // of the turn that follows all share the new prefix (SIDE_RFC_HERON_EFFICIENCY.md, D3, D4).
+        sweepStaleContentIfNeeded()
+        if contextUsage().fraction >= ContextBudget.autoCompactFraction {
+            compact(automatic: true) { [weak self] _ in
+                // Sent whatever the compaction's outcome: the message is the person's, and a
+                // failed compaction has said why in the transcript.
+                self?.sendNow(trimmed, attachments: attachments)
+            }
+            return
+        }
+        sendNow(trimmed, attachments: attachments)
+    }
+
+    /// Past half the window, what's gone stale is replaced with stubs (`HistorySweep`).
+    private func sweepStaleContentIfNeeded() {
+        guard let session = sessionStore.session(forTrackKey: trackKey),
+              contextUsage().fraction >= HistorySweep.thresholdFraction else { return }
+        let swept = HistorySweep.sweep(session.turns)
+        guard swept.stubbed > 0 else { return }
+        sessionStore.replaceTurns(swept.turns, trackKey: trackKey, providerId: session.providerId, modelId: session.modelId)
+        // The measured count was for the history before the sweep.
+        lastReportedInputTokens = nil
+        sessionStore.recordReportedInputTokens(nil, forTrackKey: trackKey)
+        let tokens = Int(Double(swept.charactersSaved) / ContextBudget.charactersPerToken)
+        appendEntry(.meta("Cleared \(swept.stubbed) stale result\(swept.stubbed == 1 ? "" : "s") from the agent's context (about \(UsageFormatting.tokens(tokens)) tokens): earlier reads of files that changed or were read again, and old command output."))
+    }
+
+    private func sendNow(_ trimmed: String, attachments: [AgentImageAttachment]) {
+        guard !phase.isBusy else { return }
         let selection = resolvedSelection()
         guard case .ready(_, _, let model) = providerRegistry.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
@@ -994,9 +1024,11 @@ public final class AgentRunner {
     /// turns — is what guarantees no `tool_use` is left without its `tool_result`, which the API
     /// rejects outright.
     ///
-    /// Costs one request. That's the trade being made explicit: a summarization request now, or a
-    /// conversation that stops working later.
-    public func compact(completion: @escaping (Result<Void, Error>) -> Void) {
+    /// Costs one request, mostly read from the cache: it sends the conversation's own system
+    /// prompt, tools and history, then the instruction (SIDE_RFC_HERON_EFFICIENCY.md, D4). The
+    /// conversation it replaced is kept for `undoCompaction`. `automatic` is a send past
+    /// `ContextBudget.autoCompactFraction` doing it first.
+    public func compact(automatic: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
         guard !phase.isBusy else {
             return completion(.failure(CompactionError.busy))
         }
@@ -1010,8 +1042,9 @@ public final class AgentRunner {
             return completion(.failure(CompactionError.noProvider))
         }
 
-        appendEntry(.meta("Compacting conversation…"))
+        appendEntry(.meta(automatic ? "The conversation is near the context window; compacting it before sending…" : "Compacting conversation…"))
         setPhase(.streaming)
+        let (systemPrompt, tools) = requestShape()
         var messages = session.turns.map(\.message)
         messages.append(AgentMessage(role: .user, content: [.text(ContextBudget.compactionInstruction)]))
 
@@ -1021,9 +1054,9 @@ public final class AgentRunner {
         Task { [weak self] in
             var failure: Error?
             do {
-                // No tools: this request is meant to produce prose, and offering tools invites a
-                // model to go read more files while summarizing.
-                try await provider.streamTurn(messages: messages, system: nil, tools: []) { event in
+                // The tools are offered only so the request matches the cached prefix; the
+                // instruction asks for text, and only text is collected.
+                try await provider.streamTurn(messages: messages, system: systemPrompt, tools: tools) { event in
                     if case .textDelta(let delta) = event { collector.append(delta) }
                 }
             } catch {
@@ -1045,10 +1078,13 @@ public final class AgentRunner {
                     return completion(.failure(CompactionError.emptySummary))
                 }
                 let replacement = AgentTurn(role: .user, content: [.text(ContextBudget.summaryTurnText(trimmed))])
-                self.sessionStore.replaceTurns(
-                    [replacement], trackKey: self.trackKey,
+                guard self.sessionStore.compactTurns(
+                    into: replacement, trackKey: self.trackKey,
                     providerId: selection.providerId, modelId: model.id
-                )
+                ) != nil else {
+                    self.appendEntry(.failure("Couldn't save the conversation for Undo, so it wasn't compacted."))
+                    return completion(.failure(CompactionError.emptySummary))
+                }
                 // The gauge's measured value describes the *old* request; drop it so the estimate
                 // of the compacted conversation is what shows.
                 self.lastReportedInputTokens = nil
@@ -1058,10 +1094,35 @@ public final class AgentRunner {
                 self.entries = []
                 self.hydrateFromSession()
                 self.notify(.reset)
-                self.appendEntry(.meta("Conversation compacted. Earlier turns are gone; the summary above is what the agent now knows."))
+                self.lastCompactionWasAutomatic = automatic
+                self.appendEntry(.compaction(Self.compactionLine(automatic: automatic)))
                 completion(.success(()))
             }
         }
+    }
+
+    private var lastCompactionWasAutomatic = false
+
+    private static func compactionLine(automatic: Bool) -> String {
+        (automatic ? "Compacted automatically: the conversation was near the context window. " : "Conversation compacted. ")
+            + "The summary above is what the agent now knows; Undo brings the full conversation back for the next message."
+    }
+
+    public var canUndoCompaction: Bool { !phase.isBusy && sessionStore.canUndoCompaction(forTrackKey: trackKey) }
+
+    /// The conversation as it was before its compaction, plus whatever was said since, for the
+    /// next message (the owner's answer to Q2). The summary goes.
+    @discardableResult
+    public func undoCompaction() -> Bool {
+        guard canUndoCompaction, let session = sessionStore.session(forTrackKey: trackKey),
+              sessionStore.undoCompaction(forTrackKey: trackKey, providerId: session.providerId, modelId: session.modelId) != nil else { return false }
+        lastReportedInputTokens = nil
+        sessionStore.recordReportedInputTokens(nil, forTrackKey: trackKey)
+        entries = []
+        hydrateFromSession()
+        notify(.reset)
+        appendEntry(.meta("Compaction undone: the full conversation is back, and the next message sends all of it."))
+        return true
     }
 
     /// Thread-safe accumulator for a streamed summary.
@@ -1149,14 +1210,7 @@ public final class AgentRunner {
         // Every turn as it was stored, notes included, so each request repeats the previous one's
         // bytes and adds to the end: the cached prefix (SIDE_RFC_HERON_EFFICIENCY.md, D1).
         let messages = session.turns.map(\.message)
-        let mode = modeProvider()
-        var tools = ToolExecutor.specs(for: mode.scope)
-        if coordinatorProvider() != nil {
-            tools += ToolExecutor.coordinationSpecs(for: mode.scope)
-        }
-        // Read per request, off the track's own root: editing the rules file takes effect on
-        // the next message rather than the next launch.
-        let systemPrompt = Self.systemPrompt(for: mode.scope, projectRules: ProjectRules.load(projectRoot: rootProvider()))
+        let (systemPrompt, tools) = requestShape()
         streamTask = Task {
             var transportError: Error?
             do {
@@ -1173,11 +1227,28 @@ public final class AgentRunner {
         }
     }
 
+    /// The system prompt and tools of this track's requests, in its current mode. Read per
+    /// request, off the track's own root: editing the rules file takes effect on the next message
+    /// rather than the next launch. Compaction sends the same, so it reads what the conversation
+    /// cached.
+    private func requestShape() -> (system: String, tools: [ToolSpec]) {
+        let mode = modeProvider()
+        var tools = ToolExecutor.specs(for: mode.scope)
+        if coordinatorProvider() != nil {
+            tools += ToolExecutor.coordinationSpecs(for: mode.scope)
+        }
+        return (Self.systemPrompt(for: mode.scope, projectRules: ProjectRules.load(projectRoot: rootProvider())), tools)
+    }
+
     /// The one place a tool's output becomes part of the conversation — and so the one place
     /// that can keep a credential out of both the session file on disk and every future request
     /// that replays it. See `SecretRedactor` for what this can and can't catch.
+    ///
+    /// Also the ceiling (SIDE_RFC_HERON_EFFICIENCY.md, D2): nothing enters the history past
+    /// `ToolExecutor.maxResultCharacters`, whatever the tool. Most results are already shaped
+    /// to fit by their tool; this keeps command output's head and tail and catches the rest.
     private static func toolResult(toolUseId: String, content: String, isError: Bool) -> AgentContentBlock {
-        let redaction = SecretRedactor.redacting(content)
+        let redaction = SecretRedactor.redacting(ToolExecutor.headAndTail(content))
         guard redaction.didRedact else {
             return .toolResult(toolUseId: toolUseId, content: content, isError: isError)
         }
@@ -1709,6 +1780,11 @@ public final class AgentRunner {
         defer { appendCheckpoints(through: .distantFuture) }
         for turn in session.turns {
             appendCheckpoints(through: turn.createdAt)
+            defer {
+                if turn.isCompactionSummary, sessionStore.canUndoCompaction(forTrackKey: trackKey) {
+                    appendEntry(.compaction(Self.compactionLine(automatic: false)), at: turn.createdAt)
+                }
+            }
             // The turn's own persisted timestamp, so a reloaded transcript reports the elapsed
             // times that actually happened rather than the instant of the reload.
             for block in turn.content {

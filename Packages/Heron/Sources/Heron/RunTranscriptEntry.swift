@@ -51,6 +51,8 @@ public struct RunTranscriptEntry: Identifiable {
         /// "✓ Checkpoint (sha): intent" — a meta line that knows which checkpoint it names, so
         /// the transcript can open that checkpoint's files and diff in place (Direction 02 §5.1).
         case checkpoint(id: UUID, text: String)
+        /// "Conversation compacted…": a meta line with Undo while the runner can undo it.
+        case compaction(String)
         /// An outside agent asking before it acts (ACP `session/request_permission`): the agent's
         /// own options become the card's buttons (`SIDE_RFC_BYO_HARNESS.md` D3).
         case permissionRequest(PermissionPresentation)

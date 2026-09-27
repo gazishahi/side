@@ -135,6 +135,38 @@ public final class AgentSessionStore {
         return session
     }
 
+    // MARK: - Compaction and its Undo
+
+    /// Replaces the conversation with its summary, keeping what it replaced for Undo. The old
+    /// conversation is written first: if that fails, nothing is replaced.
+    @discardableResult
+    public func compactTurns(into summary: AgentTurn, trackKey: String, providerId: String, modelId: String) -> AgentSession? {
+        guard let session = loadedSession(forTrackKey: trackKey), !session.turns.isEmpty,
+              SessionLog.write(session, to: compactedFileURL(forTrackKey: trackKey)) else { return nil }
+        return replaceTurns([summary], trackKey: trackKey, providerId: providerId, modelId: modelId)
+    }
+
+    public func canUndoCompaction(forTrackKey trackKey: String) -> Bool {
+        FileManager.default.fileExists(atPath: compactedFileURL(forTrackKey: trackKey).path)
+    }
+
+    /// The conversation before its compaction, followed by whatever was said since (the summary
+    /// itself dropped). Nil when there's nothing to undo.
+    @discardableResult
+    public func undoCompaction(forTrackKey trackKey: String, providerId: String, modelId: String) -> AgentSession? {
+        let url = compactedFileURL(forTrackKey: trackKey)
+        guard let before = SessionLog.read(from: url), let current = loadedSession(forTrackKey: trackKey) else { return nil }
+        let since = current.turns.first.map { $0.isCompactionSummary } == true ? Array(current.turns.dropFirst()) : current.turns
+        let restored = replaceTurns(before.turns + since, trackKey: trackKey, providerId: providerId, modelId: modelId)
+        try? FileManager.default.removeItem(at: url)
+        return restored
+    }
+
+    /// Undo is for the compaction just made; a conversation started over can't return to it.
+    public func discardCompactionUndo(forTrackKey trackKey: String) {
+        try? FileManager.default.removeItem(at: compactedFileURL(forTrackKey: trackKey))
+    }
+
     public func checkpoints(forTrackKey trackKey: String) -> [Checkpoint] {
         checkpoints.filter { $0.trackKey == trackKey }
     }
@@ -310,6 +342,7 @@ public final class AgentSessionStore {
         index.removeAll { $0.trackKey == trackKey }
         checkpoints.removeAll { $0.trackKey == trackKey }
         try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: trackKey))
+        try? FileManager.default.removeItem(at: compactedFileURL(forTrackKey: trackKey))
         for url in outsideLogs(trackKey: trackKey) { try? FileManager.default.removeItem(at: url) }
         try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
         saveIndex()
@@ -425,6 +458,13 @@ public final class AgentSessionStore {
         sessionsDirectory.appendingPathComponent("\(Self.slug(for: trackKey)).jsonl")
     }
 
+    /// The conversation as it was before its last compaction, kept for Undo
+    /// (SIDE_RFC_HERON_EFFICIENCY.md, D4). Beside the session rather than in it: the session's
+    /// header is one line, and this is a whole conversation.
+    private func compactedFileURL(forTrackKey trackKey: String) -> URL {
+        sessionsDirectory.appendingPathComponent("\(Self.slug(for: trackKey)).compacted.jsonl")
+    }
+
     /// The pre-JSONL filename, still read once so an existing conversation migrates instead of
     /// vanishing.
     private func legacySessionFileURL(forTrackKey trackKey: String) -> URL {
@@ -474,6 +514,7 @@ public final class AgentSessionStore {
         for entry in expired {
             loadedSessions.removeValue(forKey: entry.trackKey)
             try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: entry.trackKey))
+            try? FileManager.default.removeItem(at: compactedFileURL(forTrackKey: entry.trackKey))
             try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: entry.trackKey))
         }
         index.removeAll { $0.lastActiveAt < cutoff }
@@ -493,6 +534,7 @@ public final class AgentSessionStore {
         residency.removeAll()
         for entry in index {
             try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: entry.trackKey))
+            try? FileManager.default.removeItem(at: compactedFileURL(forTrackKey: entry.trackKey))
             try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: entry.trackKey))
         }
         index.removeAll()
@@ -661,6 +703,7 @@ public final class AgentSessionStore {
         residency.removeAll { $0 == trackKey }
         index.removeAll { $0.trackKey == trackKey }
         try? FileManager.default.removeItem(at: sessionFileURL(forTrackKey: trackKey))
+        try? FileManager.default.removeItem(at: compactedFileURL(forTrackKey: trackKey))
         try? FileManager.default.removeItem(at: legacySessionFileURL(forTrackKey: trackKey))
         saveIndex()
     }

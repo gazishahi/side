@@ -20,6 +20,12 @@ public struct AgentTurn: Codable, Identifiable {
         self.notes = notes?.isEmpty == true ? nil : notes
     }
 
+    /// The summary a compaction left in the conversation's place.
+    public var isCompactionSummary: Bool {
+        guard role == .user, case .text(let text)? = content.first else { return false }
+        return text.hasPrefix(ContextBudget.summaryMarker)
+    }
+
     /// The turn as the model reads it.
     public var message: AgentMessage {
         AgentMessage(role: role, content: content + (notes ?? []).map { .text($0) })

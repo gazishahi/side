@@ -350,8 +350,62 @@ to the corrected prices.
   - One run: `cancel` took 8 requests where the baseline's took 11, so part of the difference
     is the model's path. The split between full price and cache doesn't depend on it.
 - **Left for step 3:** compaction's summary request sends no system prompt or tools, so it
-  reads nothing the conversation cached. D4 reworks it.
+  reads nothing the conversation cached. D4 reworks it (done in step 3).
 
 Tests: the breakpoints and their placement, byte-identical serialization, OpenAI's key (only
 for OpenAI, stable as the conversation grows), notes sent and stored but not shown, old turns
 loading, and the session measurement above.
+
+**Step 3, 2026-09-26: the history (D2, D3, D4).**
+
+- **Bounds (D2).** Nothing enters the history past 16,000 characters
+  (`ToolExecutor.maxResultCharacters`, about 4,000 tokens; it was 60,000):
+  - The runner's `toolResult`, where every result enters the conversation, keeps the head and
+    the tail with the elided count between. That's the rule for command and task output, where
+    what ran is at the start and the errors and summary are at the end. Coordination results
+    and anything else long meet the same ceiling there.
+  - `read_file` without a range returns the first 600 lines, whole lines up to the ceiling, and
+    ends "lines 1–600 of 2000; read on with start_line 601".
+  - `search_files` clips a matched line at 300 characters, and the whole result at the ceiling;
+    `list_files` too, on a line boundary. `fetch_url` keeps its head.
+  - The transcript still shows a command's full output; only the history is bounded.
+- **The stale sweep (D3, `HistorySweep`).** At a send, once the context is past half the
+  window, one sweep replaces with a stub that says how to get it back:
+  - a `read_file` result read again later, or of a file edited or written since;
+  - command and task output with three typed messages since, the one being sent included;
+  - the long strings of older `write_file` and `edit_file` calls (the file holds them).
+
+  It never touches the last typed message or anything after it, and results under 600
+  characters stay. A sweep that finds nothing leaves the history, and so the cache, alone. The
+  transcript says what was cleared and about how many tokens.
+- **Compaction (D4).**
+  - A send past 85% of the window (`ContextBudget.autoCompactFraction`) compacts first, then
+    sends. If compaction fails, the message is sent anyway, and the failure is in the
+    transcript.
+  - The summary request sends the conversation's own system prompt, tools and history, then the
+    instruction, so it reads the whole history from the cache. It used to send neither system
+    prompt nor tools, and paid for everything again. The instruction asks for text without a
+    tool call, and only text is kept.
+  - Undo: the conversation before a compaction is kept beside the session
+    (`<track>.compacted.jsonl`), written before anything is replaced. The line "Conversation
+    compacted… Undo" restores it with whatever was said since, the summary dropped, for the
+    next message. The line comes back after a relaunch while Undo is possible, and starting a
+    new conversation or deleting the track discards it. The manual Compact's alert no longer
+    says it can't be undone.
+- **Measured** (fake server, `HistoryEfficiencyTests`):
+  - reads, searches and command output stay within the ceiling;
+  - a sweep replaces two superseded reads in the third message's first request, which is
+    smaller than the one before it, and the requests after it repeat it;
+  - past 85%, the compaction request repeats the previous request's tools, system prompt and
+    history exactly, and Undo restores the original turns followed by the new ones.
+  - New row `heron.result.max` in `Budgets.table`.
+- **The benchmark isn't rerun for this step:** its three tasks stay far below half of Sonnet 5's
+  window and read no file over 600 lines, so the sweep, compaction and read bound never fire
+  there. Their effect is on long conversations, which the fake-server tests cover. A long-task
+  benchmark would need a long real session, at several dollars a run.
+- Not visually checked in Side yet: the Undo line in Think.
+
+Tests: the bounds (a long file in part and how to go on, whole lines at the ceiling, clipped
+search lines, a command's head and tail), the sweep (superseded and edited reads, the protected
+last message, old command output and write bodies, a second sweep finding nothing), and the
+runner's sweep, automatic compaction and Undo on the fake server.

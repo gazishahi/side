@@ -16,6 +16,8 @@ public enum ContextBudget {
     /// The share of the window at which the UI starts warning, and at which it insists.
     public static let warningFraction = 0.7
     public static let criticalFraction = 0.9
+    /// A send past this share compacts first, with Undo (SIDE_RFC_HERON_EFFICIENCY.md, Q2).
+    public static let autoCompactFraction = 0.85
 
     public enum Status: Equatable {
         case comfortable
@@ -89,13 +91,16 @@ public enum ContextBudget {
 
         Leave out: full file contents (you can re-read them), and anything already superseded. \
         Be specific: a path or a function name is worth more than a sentence about it. Do not \
-        address the user or ask questions; this text replaces the conversation.
+        address the user or ask questions; this text replaces the conversation. Reply with the \
+        summary as text, without calling a tool.
         """
 
     /// Wraps a model-written summary so the next turn can tell what it is.
+    static let summaryMarker = "[Earlier conversation, compacted to fit the context window."
+
     public static func summaryTurnText(_ summary: String) -> String {
         """
-        [Earlier conversation, compacted to fit the context window. Detail beyond this summary \
+        \(summaryMarker) Detail beyond this summary \
         is gone. Re-read files or ask rather than assuming.]
 
         \(summary)

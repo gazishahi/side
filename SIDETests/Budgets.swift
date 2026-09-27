@@ -52,6 +52,7 @@ enum Budgets {
         // Heron's requests (SIDE_RFC_HERON_EFFICIENCY.md). Deterministic, so they're held on every
         // run by Heron's own tests (HeronRequestMeasurementTests) rather than measured here.
         Row(id: "heron.prefix.changed", area: "Think", measure: "Heron: a 22-round-trip session, requests that change what the previous one sent", limit: 0, unit: "%"),
+        Row(id: "heron.result.max", area: "Think", measure: "Heron: one tool result entering the history (HistoryEfficiencyTests)", limit: 16_000, unit: "chars"),
         Row(id: "heron.prefix.uncached", area: "Think", measure: "Heron: characters past the last cache breakpoint beyond what a round trip added", limit: 2_000, unit: "chars"),
         // The app as a whole, launched and driven as a person would.
         Row(id: "app.idle.memory", area: "App", measure: "Idle in the background with files open", limit: 80, unit: "MB"),

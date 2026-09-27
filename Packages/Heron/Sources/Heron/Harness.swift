@@ -97,6 +97,9 @@ public protocol Harness: AnyObject {
     func editableMessage(turnId: UUID) -> (text: String, attachments: [AgentImageAttachment])?
     func editAndResend(turnId: UUID, text: String, attachments: [AgentImageAttachment])
     func compact(completion: @escaping (Result<Void, Error>) -> Void)
+    /// Whether the last compaction can be undone (Heron's; an outside agent compacts its own).
+    var canUndoCompaction: Bool { get }
+    @discardableResult func undoCompaction() -> Bool
     func startNewConversation()
     func openArchivedConversation(id: UUID) -> Bool
 
@@ -131,6 +134,7 @@ extension Harness {
 }
 
 extension AgentRunner: Harness {
+    public func compact(completion: @escaping (Result<Void, Error>) -> Void) { compact(automatic: false, completion: completion) }
     public var harnessName: String? { nil }
     public var agentOptions: [HarnessOption] { [] }
     public var accountLabel: String? { nil }

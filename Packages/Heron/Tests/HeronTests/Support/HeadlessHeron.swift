@@ -12,20 +12,28 @@ final class HeadlessHeron {
     let registry: ProviderRegistryStore
     let usage: UsageStore
     let runner: AgentRunner
+    let sessionStore: AgentSessionStore
+    /// The conversation as stored.
+    var turns: [AgentTurn] { sessionStore.session(forTrackKey: "")?.turns ?? [] }
     /// `baseURL` nil: the real Anthropic API, with `ANTHROPIC_API_KEY`.
-    init(project: URL, baseURL: URL?, modelId: String, mode: AgentMode, effort: AgentEffort = .standard) throws {
+    /// `contextWindow` shrinks the model's window, so a short scripted session reaches the
+    /// sweep's and compaction's thresholds.
+    init(project: URL, baseURL: URL?, modelId: String, mode: AgentMode, effort: AgentEffort = .standard, contextWindow: Int? = nil) throws {
         self.project = project
         state = FileManager.default.temporaryDirectory.appendingPathComponent("heron-headless-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
         registry = ProviderRegistryStore(storeURL: state.appendingPathComponent("providers.json"))
         if let baseURL, var anthropic = registry.provider(for: "anthropic") {
             anthropic.baseURL = baseURL
+            if let contextWindow, let index = anthropic.models.firstIndex(where: { $0.id == modelId }) {
+                anthropic.models[index].contextWindowTokens = contextWindow
+            }
             registry.addOrUpdate(anthropic)
             // The fake server needs a key present, not a real one.
             if ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] == nil { setenv("ANTHROPIC_API_KEY", "fake", 1) }
         }
         usage = UsageStore(storeURL: state.appendingPathComponent("usage.json"))
-        let sessionStore = AgentSessionStore(stateDirectory: state.appendingPathComponent("sessions"))
+        sessionStore = AgentSessionStore(stateDirectory: state.appendingPathComponent("sessions"))
         let root = project
         let bridge = WorkspaceBridge(
             liveBufferProvider: { _ in nil },

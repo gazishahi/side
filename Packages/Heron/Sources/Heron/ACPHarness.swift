@@ -840,6 +840,9 @@ public final class ACPHarness: Harness {
     public func editableMessage(turnId: UUID) -> (text: String, attachments: [AgentImageAttachment])? { nil }
     public func editAndResend(turnId: UUID, text: String, attachments: [AgentImageAttachment]) { send(text, attachments: attachments) }
 
+    public var canUndoCompaction: Bool { false }
+    public func undoCompaction() -> Bool { false }
+
     public func compact(completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.failure(ACPConnection.RemoteError(code: -32601, message: "\(agent.displayName) manages its own context.")))
     }

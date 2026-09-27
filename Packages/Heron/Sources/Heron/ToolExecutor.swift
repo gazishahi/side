@@ -20,7 +20,15 @@ public struct ToolExecutor {
     /// Snapshotted with `coordination`, so the executor never asks the main actor for them.
     public var coordinationAgents: [(id: String, name: String)] = []
 
-    private static let maxOutputCharacters = 60_000
+    /// The most any one tool result puts into the history (SIDE_RFC_HERON_EFFICIENCY.md, D2).
+    /// A result stays in the conversation and is re-sent with every request after it, so this is
+    /// paid many times over: 16,000 characters is about 4,000 tokens.
+    public static let maxResultCharacters = 16_000
+    /// `read_file` without a range: the first this many lines of a longer file.
+    public static let defaultReadLines = 600
+    /// A matched line in `search_files`, past which it's clipped (one minified file can be a
+    /// single line of megabytes).
+    public static let maxSearchLineCharacters = 300
     private static let maxListedFiles = 400
     private static let maxSearchMatches = 100
 
@@ -67,7 +75,7 @@ public struct ToolExecutor {
         [
             ToolSpec(
                 name: "read_file",
-                description: "Read a UTF-8 text file from the open project. Paths are relative to the project root. Returns the file with 1-based line numbers prefixed, so you can cite exact lines.",
+                description: "Read a UTF-8 text file from the open project. Paths are relative to the project root. Returns the file with 1-based line numbers prefixed, so you can cite exact lines. A long file comes back in part (the first 600 lines, or fewer if they're long), saying which lines it holds; read on with start_line.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -314,8 +322,20 @@ public struct ToolExecutor {
     /// completes asynchronously in the runner). The tail is dropped, not the head: a page's
     /// title and lead are where the answer usually is.
     public static func bounded(_ text: String) -> String {
-        guard text.count > maxOutputCharacters else { return text }
-        return String(text.prefix(maxOutputCharacters)) + "\n… [truncated to \(maxOutputCharacters) characters]"
+        guard text.count > maxResultCharacters else { return text }
+        return String(text.prefix(maxResultCharacters - 100)) + "\n… [truncated to \(maxResultCharacters - 100) characters]"
+    }
+
+    /// Command and task output, and the ceiling every result meets on its way into the history:
+    /// the head and the tail, with how much was left out between. A build's errors and a test
+    /// run's summary are at the end, and what was run is at the start.
+    public static func headAndTail(_ text: String, limit: Int = maxResultCharacters) -> String {
+        guard text.count > limit else { return text }
+        let keep = limit - 120
+        let head = text.prefix(keep * 3 / 8)
+        let tail = text.suffix(keep * 5 / 8)
+        let elided = text.count - head.count - tail.count
+        return head + "\n\n[… \(elided) characters elided …]\n\n" + tail
     }
 
     /// A track's changed files against its base, via git in the shared checkout.
@@ -415,11 +435,27 @@ public struct ToolExecutor {
             firstLineNumber = min(start, totalLines)
             lines = Array(lines.dropFirst(firstLineNumber - 1))
         }
-        if let count = input.intValue(for: "line_count"), count > 0, count < lines.count {
-            lines = Array(lines.prefix(count))
+        let requested = input.intValue(for: "line_count").flatMap { $0 > 0 ? $0 : nil }
+        if let requested, requested < lines.count {
+            lines = Array(lines.prefix(requested))
+        } else if requested == nil, lines.count > Self.defaultReadLines {
+            lines = Array(lines.prefix(Self.defaultReadLines))
         }
-        let numbered = lines.enumerated().map { "\(firstLineNumber + $0.offset)\t\($0.element)" }.joined(separator: "\n")
-        return (truncate(numbered, note: "file truncated"), false)
+        // Whole lines up to the ceiling, so what comes back can be cited and continued exactly.
+        var numbered: [String] = []
+        var size = 0
+        for (offset, line) in lines.enumerated() {
+            let entry = "\(firstLineNumber + offset)\t\(line)"
+            if !numbered.isEmpty, size + entry.count + 1 > Self.maxResultCharacters - 200 { break }
+            numbered.append(String(entry.prefix(Self.maxResultCharacters - 200)))
+            size += entry.count + 1
+        }
+        let lastShown = firstLineNumber + numbered.count - 1
+        var shown = numbered.joined(separator: "\n")
+        if lastShown < totalLines {
+            shown += "\n… [lines \(firstLineNumber)–\(lastShown) of \(totalLines); read on with start_line \(lastShown + 1)]"
+        }
+        return (shown, false)
     }
 
     private func listFiles(_ input: JSONValue) -> (String, Bool) {
@@ -432,7 +468,7 @@ public struct ToolExecutor {
         let total = matches.count
         var body = matches.prefix(Self.maxListedFiles).joined(separator: "\n")
         if total > Self.maxListedFiles { body += "\n… \(total - Self.maxListedFiles) more (narrow the filter to see them)" }
-        return (truncate(body, note: "list truncated"), false)
+        return (truncate(body, note: "list truncated; narrow the filter"), false)
     }
 
     private func searchFiles(_ input: JSONValue) -> (String, Bool) {
@@ -450,16 +486,22 @@ public struct ToolExecutor {
             return (error.localizedDescription, true)
         }
         guard !results.matches.isEmpty else { return ("No matches for \"\(query)\".", false) }
-        var lines = results.matches.map { "\($0.relativePath):\($0.line)\t\($0.text)" }
+        var lines = results.matches.map { match -> String in
+            let text = match.text.count > Self.maxSearchLineCharacters ? match.text.prefix(Self.maxSearchLineCharacters) + "…" : match.text
+            return "\(match.relativePath):\(match.line)\t\(text)"
+        }
         if results.truncated { lines.append("… [stopped at \(Self.maxSearchMatches) matches; narrow the query or pass an extension]") }
-        return (lines.joined(separator: "\n"), false)
+        return (truncate(lines.joined(separator: "\n"), note: "results truncated; narrow the query"), false)
     }
 
     /// Tool output is fed straight back into the model's context, so an unbounded read of a
     /// generated file could blow the whole context window on one call.
     private func truncate(_ text: String, note: String) -> String {
-        guard text.count > Self.maxOutputCharacters else { return text }
-        return String(text.prefix(Self.maxOutputCharacters)) + "\n… [\(note)]"
+        guard text.count > Self.maxResultCharacters else { return text }
+        let head = text.prefix(Self.maxResultCharacters - 100)
+        // At a line's end, so the last line isn't half a path.
+        let cut = head.lastIndex(of: "\n") ?? head.endIndex
+        return String(head[..<cut]) + "\n… [\(note)]"
     }
 
     public init(projectRoot: URL, liveBufferProvider: @escaping (URL) -> String?) {

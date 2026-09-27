@@ -1157,7 +1157,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         alert.messageText = "Compact this conversation?"
         // Says what is lost, what it costs, and that it can't be undone — all three, because this
         // deletes the user's conversation to make room.
-        alert.informativeText = "The turns so far (\(UsageFormatting.tokens(usage.usedTokens)) tokens) are replaced by a summary the model writes of them. Detail beyond that summary is gone, and this can't be undone. Checkpoints and your files are untouched.\n\nWriting the summary costs one request."
+        alert.informativeText = "The turns so far (\(UsageFormatting.tokens(usage.usedTokens)) tokens) are replaced by a summary the model writes of them. Detail beyond that summary is gone from the agent's context; Undo, on the line that follows, brings the full conversation back. Checkpoints and your files are untouched.\n\nWriting the summary costs one request."
         alert.addButton(withTitle: "Compact")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
@@ -1756,6 +1756,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             let entryId = entry.id
             card.onChoose = { [weak self] optionId in self?.runner?.answerPermission(proposalId: entryId, optionId: optionId) }
             return card
+        case .compaction(let text):
+            // A meta line, with Undo while the compaction can still be undone
+            // (SIDE_RFC_HERON_EFFICIENCY.md, D4). Undo rebuilds the transcript, so the line goes.
+            let line = CompactionLineView(text: text, canUndo: runner?.canUndoCompaction ?? false)
+            line.onUndo = { [weak self] in
+                guard let self, let runner = self.runner, runner.undoCompaction() else { return }
+                self.renderFull()
+                self.refreshSessionPill()
+            }
+            return line
         case .checkpoint(let id, let text):
             // Same quiet line as any meta note, but it opens that checkpoint's files and diff in
             // a sheet — no trip to Review to see what just changed (§5.1).
@@ -1858,7 +1868,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private static func spacing(before kind: RunTranscriptEntry.Kind) -> CGFloat {
         switch kind {
-        case .meta, .checkpoint, .userText, .userImage, .assistantText, .proposal, .commandProposal, .permissionRequest: return 8
+        case .meta, .checkpoint, .compaction, .userText, .userImage, .assistantText, .proposal, .commandProposal, .permissionRequest: return 8
         case .toolCall, .toolResult, .failure, .thinking: return 4
         }
     }
@@ -4479,6 +4489,35 @@ private final class CheckpointLineButton: NSButton {
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     @objc private func open() { onOpen?() }
+}
+
+/// "Conversation compacted…", and Undo beside it.
+private final class CompactionLineView: NSStackView {
+    var onUndo: (() -> Void)?
+
+    init(text: String, canUndo: Bool) {
+        super.init(frame: .zero)
+        orientation = .horizontal
+        alignment = .firstBaseline
+        spacing = 8
+        translatesAutoresizingMaskIntoConstraints = false
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = DS.Text.body()
+        label.textColor = .tertiaryLabelColor
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addArrangedSubview(label)
+        if canUndo {
+            let undo = NSButton(title: "Undo", target: self, action: #selector(undo))
+            undo.bezelStyle = .inline
+            undo.controlSize = .small
+            undo.setAccessibilityHelp("Brings back the full conversation for the next message")
+            undo.setContentHuggingPriority(.required, for: .horizontal)
+            addArrangedSubview(undo)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func undo() { onUndo?() }
 }
 
 /// An outside agent's permission prompt: what it wants to do, and its own options as buttons —
