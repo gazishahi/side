@@ -210,9 +210,11 @@ final class UsageViewController: NSViewController {
     private func budgetStatusText() -> String {
         let month = UsageStore.shared.estimatedCostThisMonth()
         let spent = UsageFormatting.cost(month.total)
-        let caveat = month.hasUnpricedModels
+        // Said plainly (2026-09-30 audit, H11): outside agents report tokens, not a price, so the
+        // budget stops them at the limit but doesn't count them; a model with no price is refused.
+        let caveat = (month.hasUnpricedModels
             ? " Models with no published price here aren't counted, so the real figure is higher."
-            : ""
+            : "") + " With a limit set, a model with no price isn't sent to, and outside agents stop at the limit, though their own spend isn't in the estimate."
         switch UsageBudget.status() {
         case .unlimited:
             return "No budget set, so nothing is blocked. \(spent) estimated so far this month.\(caveat)"

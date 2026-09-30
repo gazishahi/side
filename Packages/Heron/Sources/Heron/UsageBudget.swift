@@ -50,6 +50,24 @@ public enum UsageBudget {
         return .withinBudget(spent: spent, limit: limit)
     }
 
+    /// Under a budget, a request to a model with no price is refused: its spend couldn't be
+    /// counted, so the budget couldn't hold it (2026-09-30 audit, H11). Local models cost nothing
+    /// and aren't asked about.
+    public static func refusesUnpriced(modelId: String, isLocal: Bool) -> Bool {
+        monthlyLimitUSD != nil && !isLocal && !ModelPricing.isPriced(modelId: modelId)
+    }
+
+    public static func unpricedMessage(modelId: String) -> String {
+        "\(modelId) has no price in Side, so its spend can't count against your monthly budget, and nothing was sent. Choose a model with a published price, or clear the budget in Settings → Usage."
+    }
+
+    /// What an outside agent's track shows when the budget is spent. Its own spend can't be
+    /// priced (the agent reports tokens, not the model's price), so the budget stops it once
+    /// Heron's priced spend reaches the limit but can't count what it spent itself.
+    public static func blockedMessageForOutsideAgent(spent: Double, limit: Double) -> String {
+        blockedMessage(spent: spent, limit: limit) + " Outside agents' own spend is shown in tokens and isn't part of the estimate."
+    }
+
     /// What Think shows in place of a model turn when the budget is spent. Says the number, says
     /// where to change it, and doesn't pretend the estimate is exact.
     public static func blockedMessage(spent: Double, limit: Double) -> String {

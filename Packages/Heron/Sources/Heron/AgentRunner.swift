@@ -1132,6 +1132,11 @@ public final class AgentRunner {
         ) else {
             return refuse(.noProvider)
         }
+        // A summary is a billed request too.
+        if UsageBudget.status(store: usageStore).blocksSending
+            || UsageBudget.refusesUnpriced(modelId: model.id, isLocal: providerRegistry.provider(for: selection.providerId)?.kind == .local) {
+            return refuse(.overBudget)
+        }
 
         setPhase(.streaming)
         isStopRequested = false
@@ -1251,7 +1256,7 @@ public final class AgentRunner {
     }
 
     public enum CompactionError: LocalizedError {
-        case busy, nothingToCompact, noProvider, emptySummary
+        case busy, nothingToCompact, noProvider, emptySummary, overBudget
 
         public var errorDescription: String? {
             switch self {
@@ -1259,6 +1264,7 @@ public final class AgentRunner {
             case .nothingToCompact: return "There's nothing to compact yet."
             case .noProvider: return "No model provider is configured."
             case .emptySummary: return "The model returned an empty summary."
+            case .overBudget: return "The monthly budget is reached, or this model has no price to count against it."
             }
         }
     }
@@ -1285,7 +1291,7 @@ public final class AgentRunner {
         }
         // Checked here, immediately before the request, rather than at send: a tool chain can
         // cross the limit mid-run, and the round-trip that crosses it is the one to stop.
-        if case .exceeded(let spent, let limit) = UsageBudget.status() {
+        if case .exceeded(let spent, let limit) = UsageBudget.status(store: usageStore) {
             appendEntry(.failure(UsageBudget.blockedMessage(spent: spent, limit: limit)))
             streamTask = nil
             streamingEntryIndex = nil
@@ -1298,6 +1304,13 @@ public final class AgentRunner {
         ) else {
             appendMissingKeyHint()
             finishRun(.failed)
+            return
+        }
+        if UsageBudget.refusesUnpriced(modelId: model.id, isLocal: providerRegistry.provider(for: selection.providerId)?.kind == .local) {
+            appendEntry(.failure(UsageBudget.unpricedMessage(modelId: model.id)))
+            streamTask = nil
+            streamingEntryIndex = nil
+            setPhase(.blocked(.budgetReached))
             return
         }
         setPhase(.streaming)

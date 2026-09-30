@@ -80,3 +80,44 @@ final class UsageAccountingTests: XCTestCase {
         XCTAssertEqual(reloaded.records.first?.totals.cacheWriteInputTokens, 0)
     }
 }
+
+/// 2026-09-30 audit, H11: the budget couldn't see unpriced models, and the runner read the
+/// app's shared usage store instead of its own.
+@MainActor
+final class BudgetBoundaryTests: XCTestCase {
+    override func tearDown() { UsageBudget.monthlyLimitUSD = nil }
+
+    func testDatedAndVariantIdsArePricedButFutureModelsArent() {
+        XCTAssertNotNil(ModelPricing.price(modelId: "claude-haiku-4-5-20251001"))
+        XCTAssertNotNil(ModelPricing.price(modelId: "claude-haiku-4-5"))
+        XCTAssertEqual(ModelPricing.price(modelId: "claude-opus-5-5-20261001")?.inputPerMillion, 4, "the longer family wins")
+        XCTAssertEqual(ModelPricing.price(modelId: "claude-opus-5[1m]")?.inputPerMillion, 5)
+        XCTAssertNotNil(ModelPricing.price(modelId: "claude-opus-4-8"))
+        XCTAssertNil(ModelPricing.price(modelId: "claude-opus-5-9"), "not priced as claude-opus-5")
+        XCTAssertNil(ModelPricing.price(modelId: "gpt-5"))
+    }
+
+    func testUnderABudgetAnUnpricedRemoteModelIsRefused() {
+        XCTAssertFalse(UsageBudget.refusesUnpriced(modelId: "mystery-1", isLocal: false), "no budget, no refusal")
+        UsageBudget.monthlyLimitUSD = 10
+        XCTAssertTrue(UsageBudget.refusesUnpriced(modelId: "mystery-1", isLocal: false))
+        XCTAssertFalse(UsageBudget.refusesUnpriced(modelId: "qwen3:32b", isLocal: true), "local models cost nothing")
+        XCTAssertFalse(UsageBudget.refusesUnpriced(modelId: "claude-sonnet-5", isLocal: false))
+    }
+
+    func testTheRunnerChecksItsOwnUsageStore() throws {
+        let project = try HeronRequestMeasurementTests.fixtureProject()
+        defer { try? FileManager.default.removeItem(at: project) }
+        let server = try FakeModelServer { _, _ in .text("Hi.") }
+        defer { server.stop() }
+        let heron = try HeadlessHeron(project: project, baseURL: server.baseURL, modelId: "claude-sonnet-5",
+                                      mode: AgentMode(scope: .ask, autonomy: .manual))
+        defer { heron.cleanUp() }
+        // $2 of this runner's own spend against a $1 limit.
+        heron.usage.record(projectPath: project.path, trackKey: "", providerId: "anthropic", modelId: "claude-sonnet-5",
+                           usage: TokenUsage(inputTokens: 1_000_000, outputTokens: 0, cachedInputTokens: nil))
+        UsageBudget.monthlyLimitUSD = 1
+        XCTAssertEqual(heron.send("Hello?", timeout: 10), .blocked(.budgetReached))
+        XCTAssertEqual(server.requests.count, 0)
+    }
+}

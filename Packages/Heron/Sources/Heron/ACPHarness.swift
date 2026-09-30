@@ -285,6 +285,15 @@ public final class ACPHarness: Harness {
     public func send(_ text: String, attachments: [AgentImageAttachment]) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !phase.isBusy else { return }
+        // The monthly budget stops outside agents too (2026-09-30 audit, H11: they kept spending
+        // after Heron stopped). Their own spend can't be priced, which the message says.
+        if case .exceeded(let spent, let limit) = UsageBudget.status() {
+            append(.userText(trimmed))
+            append(.failure(UsageBudget.blockedMessageForOutsideAgent(spent: spent, limit: limit)))
+            persistNewEntries()
+            setPhase(.blocked(.budgetReached))
+            return
+        }
         append(.userText(trimmed))
         persistNewEntries()
         streamingIndex = nil

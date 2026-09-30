@@ -310,15 +310,38 @@ public enum ModelPricing {
         "claude-opus-5-5": Price(inputPerMillion: 4, outputPerMillion: 20, cachedInputPerMillion: 0.20),
         "claude-opus-5": Price(inputPerMillion: 5, outputPerMillion: 25),
         "claude-sonnet-5": Price(inputPerMillion: 2, outputPerMillion: 10),
-        "claude-haiku-4-5-20251001": Price(inputPerMillion: 1, outputPerMillion: 5),
+        "claude-haiku-4-5": Price(inputPerMillion: 1, outputPerMillion: 5),
+        // Earlier models the Models API lists, which the picker can offer after a refresh; the
+        // same page's prices. Unpriced, a model's spend was invisible to the budget (2026-09-30
+        // audit, H11).
+        "claude-fable-5": Price(inputPerMillion: 10, outputPerMillion: 50),
+        "claude-mythos-5-1": Price(inputPerMillion: 10, outputPerMillion: 50, cachedInputPerMillion: 0.25),
+        "claude-opus-4-8": Price(inputPerMillion: 5, outputPerMillion: 25),
+        "claude-opus-4-7": Price(inputPerMillion: 5, outputPerMillion: 25),
+        "claude-opus-4-6": Price(inputPerMillion: 5, outputPerMillion: 25),
+        "claude-sonnet-4-6": Price(inputPerMillion: 3, outputPerMillion: 15),
     ]
 
-    public static func price(modelId: String) -> Price? { table[modelId] }
+    /// A model's row: its id exactly, or a family's with a date or a variant after it
+    /// (`claude-haiku-4-5-20251001`, `claude-opus-5[1m]`). Only those shapes, so a future
+    /// `claude-opus-5-9` isn't priced as `claude-opus-5`.
+    static func key(for modelId: String) -> String? {
+        if table[modelId] != nil { return modelId }
+        return table.keys.filter { key in
+            guard modelId.hasPrefix(key) else { return false }
+            let rest = modelId.dropFirst(key.count)
+            let isDate = rest.count == 9 && rest.first == "-" && rest.dropFirst().allSatisfy(\.isNumber)
+            let isVariant = rest.hasPrefix("[") && rest.hasSuffix("]")
+            return isDate || isVariant
+        }.max { $0.count < $1.count }
+    }
+
+    public static func price(modelId: String) -> Price? { key(for: modelId).flatMap { table[$0] } }
 
     /// `nil` when the model isn't priced here — a local model costs nothing, and an unknown
     /// remote one shouldn't be guessed at.
     public static func estimatedCost(modelId: String, totals: UsageTotals) -> Double? {
-        guard let price = table[modelId] else { return nil }
+        guard let price = price(modelId: modelId) else { return nil }
         return Double(totals.inputTokens) / 1_000_000 * price.inputPerMillion
             + Double(totals.outputTokens) / 1_000_000 * price.outputPerMillion
             + Double(totals.cachedInputTokens) / 1_000_000 * price.cachedInputPerMillion
@@ -334,12 +357,12 @@ public enum ModelPricing {
 
     /// What the cached part would have cost at the full price, less what it did cost: the saving.
     public static func cacheSaving(modelId: String, totals: UsageTotals) -> Double? {
-        guard let price = table[modelId] else { return nil }
+        guard let price = price(modelId: modelId) else { return nil }
         return Double(totals.cachedInputTokens) / 1_000_000 * (price.inputPerMillion - price.cachedInputPerMillion)
             - Double(totals.cacheWriteInputTokens) / 1_000_000 * (price.cacheWritePerMillion - price.inputPerMillion)
     }
 
-    public static func isPriced(modelId: String) -> Bool { table[modelId] != nil }
+    public static func isPriced(modelId: String) -> Bool { price(modelId: modelId) != nil }
 }
 
 /// Shared formatting so a token count reads the same in Think's header and in Preferences.
