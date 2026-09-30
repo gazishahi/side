@@ -18,7 +18,10 @@ public enum AgentEffort: String, Codable, CaseIterable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .standard: return "Standard"
+        // "Default": the model's own. Claude 5 models think at their own default effort, so
+        // "Standard" read as "no thinking", and could cost more than Thinking · Low (the owner's
+        // choice, 2026-09-30). The stored value stays `standard`.
+        case .standard: return "Default"
         case .low: return "Thinking · Low"
         case .medium: return "Thinking · Medium"
         case .high: return "Thinking · High"

@@ -3570,7 +3570,7 @@ private final class SessionSettingsViewController: NSViewController {
 
     private lazy var agentPopup = AgentPicker.makePopup(currentId: nil, target: self, action: #selector(agentChanged))
     private let modelPopup = NSPopUpButton()
-    private let effortControl = SlidingSegmentedControl(titles: AgentEffort.allCases.map { $0 == .standard ? "Standard" : $0.shortLabel.capitalized })
+    private let effortControl = SlidingSegmentedControl(titles: AgentEffort.allCases.map { $0 == .standard ? "Default" : $0.shortLabel.capitalized })
     private let scopeControl = SlidingSegmentedControl(titles: AgentToolScope.allCases.map(\.displayName))
     private let autonomyControl = SlidingSegmentedControl(titles: AgentAutonomy.allCases.map { $0.shortLabel.capitalized })
     private let autonomyCaption = NSTextField(wrappingLabelWithString: "")
