@@ -458,6 +458,13 @@ arrives, in order), the 20 s budget (opt-in), and Think's per-flush budget (opt-
   process, measured: 69 ms to run `/usr/bin/true`, against 2 ms waiting on a
   `terminationHandler`. `GitPaths` and `GitDiffComputer` now wait on the handler. On its own
   that took a checkpoint in a 20,000-file repository from 875 ms to 215 ms.
+  - **Corrected by the 2026-09-30 audit:** the 65 ms is paid **only on the main thread**,
+    where `waitUntilExit` polls the run loop (re-measured: 67 ms on main, 3 ms on a
+    background queue). These measurements ran inside XCTest, which runs tests on the main
+    thread; real checkpoints run on a background queue, where the old code cost roughly
+    10 processes × a few milliseconds each. The main-thread figures below overstate the
+    real gain. What stands is the process count (10 → 5), the removed `read-tree`, and the
+    main-thread budget.
 - **A checkpoint in five git processes** (it was ten, counting the baseline status):
   - one `git --no-optional-locks status --porcelain=v2 --branch` gives the dirty paths, HEAD's
     commit, and whether the user has anything staged. `--no-optional-locks` keeps status from
@@ -500,7 +507,7 @@ arrives, in order), the 20 s budget (opt-in), and Think's per-flush budget (opt-
 
   | Budget | Before | After |
   |---|---|---|
-  | A checkpoint in a 20,000-file repository | 875 ms, 10 processes | 121 ms, 5 (≤ 250 ms, ≤ 5) |
+  | A checkpoint in a 20,000-file repository (measured on the main thread; see the correction above) | 875 ms, 10 processes | 121 ms, 5 (≤ 250 ms, ≤ 5) |
   | Main-thread time in Heron's git calls during a turn | 23–88 ms (the approval-time status) | 0 ms (0) |
   | 10 visited tracks of 200 turns: transcripts held | 10 | 3 (≤ 3) |
   | `list_files`, 20,000 files, a repeated call | 400 ms | 0.2 ms |
@@ -515,10 +522,10 @@ arrives, in order), the 20 s budget (opt-in), and Think's per-flush budget (opt-
 
 ## What remains (the audit)
 
-- **`waitUntilExit` in the app:** 20 calls in 11 files (TrackStore, Make, the terminal, LSP
-  setup, the debugger, GitHubCLI, the file explorer). Each pays the same 65 ms. A shared
-  helper in `GitPaths.exitSignal`'s shape, used everywhere, would be the next cheap win,
-  especially for TrackStore's git polling.
+- **`waitUntilExit` in the app:** 20 calls in 11 files. Corrected by the 2026-09-30 audit:
+  only the five on the main thread pay the 65 ms (New Project's `git init`, since removed;
+  `which` on first save; login-shell PATH resolution; TrackStore's `runGit` from promote and
+  branch naming). TrackStore's polling runs off the main thread and pays nothing extra.
 - **`search_files` reads every file on every call:** 2.5 s over 20,000 files. A content cache
   keyed by modification time, or `git grep` where the project is a repository, would cut it.
 - **Outside agents' harnesses** (`ACPHarness`) keep their transcripts while unvisited.
