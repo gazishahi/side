@@ -82,7 +82,10 @@ actor JSONRPCTransport {
         guard process.isRunning else { return }
         var framed = "Content-Length: \(data.count)\r\n\r\n".data(using: .utf8)!
         framed.append(data)
-        stdinPipe.fileHandleForWriting.write(framed)
+        // A server that crashed after the `isRunning` check mustn't take Side with it.
+        if !PipeWriting.write(framed, to: stdinPipe.fileHandleForWriting) {
+            print("[LSP][\(logLabel)] the server stopped reading; dropped \(data.count) bytes")
+        }
     }
 
     private func consume(_ data: Data) {

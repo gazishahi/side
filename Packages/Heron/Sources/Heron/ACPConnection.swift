@@ -95,8 +95,8 @@ public final class ACPConnection {
               var data = try? JSONSerialization.data(withJSONObject: message, options: [.withoutEscapingSlashes]) else { return false }
         // JSONSerialization never emits raw newlines (it escapes them in strings); one message, one line.
         data.append(0x0A)
-        stdinPipe.fileHandleForWriting.write(data)
-        return true
+        // An agent that has just exited mustn't take Side with it (`PipeWriting`).
+        return PipeWriting.write(data, to: stdinPipe.fileHandleForWriting)
     }
 
     private func receive(_ data: Data) {

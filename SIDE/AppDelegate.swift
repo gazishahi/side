@@ -14,6 +14,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private(set) var didFinishRestoring = false
     private var preferencesWindow: NSWindow?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Every pipe write goes through `PipeWriting`, which turns a vanished reader into an
+        // error for that descriptor; this is the backstop for any write that doesn't. A child
+        // exiting must never end Side (2026-09-30 audit, H1).
+        signal(SIGPIPE, SIG_IGN)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
         // Persistence failures used to be swallowed by `try?` — a full disk or a revoked

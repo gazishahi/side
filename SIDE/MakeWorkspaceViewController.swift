@@ -5026,11 +5026,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     /// The formatter's output, or nil if it failed (a syntax error, a missing config).
-    private nonisolated static func runFormatter(_ formatter: (executable: String, args: [String]), input: String, directory: URL) -> String? {
+    nonisolated static func runFormatter(_ formatter: (executable: String, args: [String]), input: String, directory: URL) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: formatter.executable)
         process.arguments = formatter.args
         process.currentDirectoryURL = directory
+        // The login shell's PATH: a formatter is often a `#!/usr/bin/env node` script, and an app
+        // opened from the Dock has launchd's PATH, with no Homebrew or nvm node on it.
+        process.environment = LanguageServerRegistry.environmentForSpawning()
         let stdin = Pipe(), stdout = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout
@@ -5040,7 +5043,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // its output pipe while this still writes, and both would wait forever.
         let data = Data(input.utf8)
         DispatchQueue.global().async {
-            stdin.fileHandleForWriting.write(data)
+            // A formatter can exit without reading a large file; that must fail the format, not
+            // end Side (2026-09-30 audit, H1).
+            PipeWriting.write(data, to: stdin.fileHandleForWriting)
             try? stdin.fileHandleForWriting.close()
         }
         let output = stdout.fileHandleForReading.readDataToEndOfFile()

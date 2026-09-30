@@ -113,3 +113,20 @@ final class SSERedirectTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: leakFile.path), "the redirect target received the request — and with it the key")
     }
 }
+
+/// 2026-09-30 audit, H1: Format Document on a large file, with a formatter that exits without
+/// reading it, raised SIGPIPE and ended Side. Now the format fails and nothing else happens.
+final class FormatterPipeTests: XCTestCase {
+    func testAFormatterThatExitsWithoutReadingFailsTheFormatOnly() {
+        let large = String(repeating: "let value = 1\n", count: 20_000)  // 280 KB, past a pipe's buffer
+        let result = MakeWorkspaceViewController.runFormatter((executable: "/bin/sh", args: ["-c", "exit 3"]),
+                                                              input: large, directory: FileManager.default.temporaryDirectory)
+        XCTAssertNil(result)
+    }
+
+    func testAFormatterGetsTheLoginShellsPath() {
+        let result = MakeWorkspaceViewController.runFormatter((executable: "/bin/sh", args: ["-c", "cat >/dev/null; echo $PATH"]),
+                                                              input: "x", directory: FileManager.default.temporaryDirectory)
+        XCTAssertEqual(result?.trimmingCharacters(in: .whitespacesAndNewlines), LanguageServerRegistry.environmentForSpawning()["PATH"])
+    }
+}
