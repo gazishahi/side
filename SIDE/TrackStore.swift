@@ -142,6 +142,9 @@ final class TrackStore {
         /// The track's worktree holds uncommitted work and the caller hasn't consented to losing
         /// it. Carries the count so the consent prompt can name what is about to be destroyed.
         case worktreeHasUncommittedChanges(Int)
+        /// A repository with no commits has nothing for a track to branch from (`git worktree add
+        /// … HEAD` fails with "invalid reference"). The UI offers the initial commit.
+        case repositoryHasNoCommits
 
         var errorDescription: String? {
             switch self {
@@ -155,6 +158,8 @@ final class TrackStore {
             case .cannotDeleteTrackWithLiveChildren: return "This track still has stacked tracks forked from it. Archive them first."
             case .noParentTrack: return "This track doesn't fork from another track, so there's nothing to pull."
             case .nothingToPull: return "Already up to date with its parent branch."
+            case .repositoryHasNoCommits:
+                return "This repository has no commits yet, so there's nothing for a track to branch from. Make an initial commit first."
             case .worktreeHasUncommittedChanges(let count):
                 return "This track's working copy has \(count) uncommitted change\(count == 1 ? "" : "s") that would be lost."
             }
@@ -245,9 +250,31 @@ final class TrackStore {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let result = self.runGit(["init"], cwd: cwd)
+            // With its first commit, so a track has something to branch from.
+            let commit = result.success ? Self.makeInitialCommit(cwd: cwd, runGit: self.runGit) : result
             DispatchQueue.main.async {
                 guard result.success else { completion(.failure(TrackError.gitInitFailed(result.output))); return }
+                guard commit.success else { completion(.failure(TrackError.gitInitFailed(commit.output))); return }
                 self.repoState = .ready
+                self.applyReconciliation(currentBranch: self.currentBranchName(cwd: cwd), defaultBranch: self.defaultBranchName())
+                completion(.success(()))
+            }
+        }
+    }
+
+    /// An empty first commit, which is all a track needs to branch from. Nothing is staged, so
+    /// none of the folder's files are committed without the person choosing to.
+    nonisolated static func makeInitialCommit(cwd: String, runGit: ([String], String) -> (success: Bool, output: String)) -> (success: Bool, output: String) {
+        runGit(["commit", "--allow-empty", "-q", "-m", "Initial commit"], cwd)
+    }
+
+    func makeInitialCommit(completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
+        let cwd = projectRoot.path
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let result = Self.makeInitialCommit(cwd: cwd, runGit: self.runGit)
+            DispatchQueue.main.async {
+                guard result.success else { completion(.failure(TrackError.gitInitFailed(result.output))); return }
                 self.applyReconciliation(currentBranch: self.currentBranchName(cwd: cwd), defaultBranch: self.defaultBranchName())
                 completion(.success(()))
             }
@@ -348,11 +375,14 @@ final class TrackStore {
                 // worktrees are independent, so there's nothing to lazily create here first.
                 baseRef = baseTrack.branchName
             } else {
-                // A brand-new repo has no commits yet, so the default branch isn't a valid base
-                // to fork from — there's only one branch anyway in that case, so just branch from
-                // wherever HEAD is.
-                let hasCommits = self.runGit(["rev-parse", "--verify", "-q", "HEAD"], cwd: cwd).success
-                baseRef = hasCommits ? self.resolveDefaultBranchFromGit() : "HEAD"
+                // A brand-new repo has no commits, and nothing to branch from: `worktree add … HEAD`
+                // fails with "invalid reference: HEAD" (2026-09-30 audit, H10; this comment used
+                // to claim that case worked). The caller is told, and offers the initial commit.
+                guard self.runGit(["rev-parse", "--verify", "-q", "HEAD"], cwd: cwd).success else {
+                    DispatchQueue.main.async { completion(.failure(TrackError.repositoryHasNoCommits)) }
+                    return
+                }
+                baseRef = self.resolveDefaultBranchFromGit()
             }
             let result = self.addWorktree(branchName: branchName, baseRef: baseRef, newBranch: true)
             DispatchQueue.main.async {

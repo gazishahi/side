@@ -36,7 +36,12 @@ final class FirstRunSheetController: NSViewController {
     var onDismiss: (() -> Void)?
     private let done: Set<FirstRun.Step>
 
-    init(done: Set<FirstRun.Step>) {
+    /// The project is a plain folder: the track step is "Initialize Git…" first (2026-09-30
+    /// audit, H10: it offered New Track, which failed with git's raw error).
+    private let needsGit: Bool
+
+    init(done: Set<FirstRun.Step>, needsGit: Bool = false) {
+        self.needsGit = needsGit
         self.done = done
         super.init(nibName: nil, bundle: nil)
     }
@@ -59,7 +64,7 @@ final class FirstRunSheetController: NSViewController {
         let steps: [(FirstRun.Step, String, String)] = [
             (.project, "Open a project", "Open Project…"),
             (.model, "Choose a model", "Set Up…"),
-            (.track, "Create a track", "New Track"),
+            (.track, "Create a track", needsGit ? "Initialize Git…" : "New Track"),
         ]
         // The first step not yet done is the one to do now; it alone takes the accent.
         let next = steps.first { !done.contains($0.0) }?.0

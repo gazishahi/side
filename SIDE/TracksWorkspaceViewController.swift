@@ -898,6 +898,18 @@ final class TracksWorkspaceViewController: NSViewController {
                     case .success(let (track, outcome)):
                         self.onTrackCreated?(track)
                         self.announce(outcome: outcome)
+                    case .failure(TrackStore.TrackError.repositoryHasNoCommits):
+                        self.offerInitialCommit(window: window) { [weak self] in
+                            self?.trackStore?.createTrack(intent: intent, baseTrack: baseTrack) { [weak self] result in
+                                switch result {
+                                case .success(let (track, outcome)):
+                                    self?.onTrackCreated?(track)
+                                    self?.announce(outcome: outcome)
+                                case .failure(let error):
+                                    self?.showError(error, title: "Couldn't create track", window: window)
+                                }
+                            }
+                        }
                     case .failure(let error):
                         self.showError(error, title: "Couldn't create track", window: window)
                     }
@@ -988,6 +1000,24 @@ final class TracksWorkspaceViewController: NSViewController {
                     self.refreshUI()
                 case .failure(let error):
                     self.showError(error, title: "Couldn't create track", window: window)
+                }
+            }
+        }
+    }
+
+    /// A repository with no commits: say so plainly, and make the empty initial commit if asked.
+    private func offerInitialCommit(window: NSWindow, then retry: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "This repository has no commits yet"
+        alert.informativeText = "A track branches from a commit, and there isn't one. Side can make an empty initial commit (none of your files are included), then create the track."
+        alert.addButton(withTitle: "Make Initial Commit")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.trackStore?.makeInitialCommit { [weak self] result in
+                switch result {
+                case .success: retry()
+                case .failure(let error): self?.showError(error, title: "Couldn't make the initial commit", window: window)
                 }
             }
         }

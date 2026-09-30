@@ -840,14 +840,15 @@ final class ShellViewController: NSViewController {
         guard firstRunActive, firstRunSheet == nil, let window = view.window, window.attachedSheet == nil else { return }
         let done = firstRunDone()
         guard done.count < FirstRun.Step.allCases.count else { endFirstRun(forever: true); return }
-        let controller = FirstRunSheetController(done: done)
+        let needsGit = trackStore?.repoState == .notAGitRepo
+        let controller = FirstRunSheetController(done: done, needsGit: needsGit)
         controller.onStep = { [weak self] step in
             guard let self else { return }
             self.hideFirstRun()
             switch step {
             case .project: self.performEmptyStateAction(.openProject)
             case .model: self.performEmptyStateAction(.setUpModel)
-            case .track: self.performEmptyStateAction(.newTrack)
+            case .track: self.performEmptyStateAction(needsGit ? .initializeGit : .newTrack)
             }
         }
         controller.onDismiss = { [weak self] in self?.endFirstRun(forever: true) }

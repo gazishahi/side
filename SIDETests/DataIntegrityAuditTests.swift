@@ -70,6 +70,50 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("b.txt").path))
     }
 
+    // MARK: - 2026-09-30 audit, H10: a first track in a repository with no commits
+
+    @MainActor
+    func testAFirstTrackInAnUnbornRepositoryIsExplainedThenWorksAfterTheInitialCommit() throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        XCTAssertTrue(GitPaths.runGit(["init", "-q"], cwd: root.path).success)
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        let refused = expectation(description: "refused")
+        store.createTrack(intent: "first work") { result in
+            if case .failure(TrackStore.TrackError.repositoryHasNoCommits) = result {} else { XCTFail("expected repositoryHasNoCommits, got \(result)") }
+            refused.fulfill()
+        }
+        wait(for: [refused], timeout: 20)
+
+        let committed = expectation(description: "initial commit")
+        store.makeInitialCommit { result in
+            if case .failure(let error) = result { XCTFail("\(error)") }
+            committed.fulfill()
+        }
+        wait(for: [committed], timeout: 20)
+        XCTAssertEqual(GitPaths.runGit(["ls-tree", "-r", "--name-only", "HEAD"], cwd: root.path).output, "", "empty: none of the folder's files")
+
+        let created = expectation(description: "created")
+        store.createTrack(intent: "first work") { result in
+            if case .failure(let error) = result { XCTFail("\(error)") }
+            created.fulfill()
+        }
+        wait(for: [created], timeout: 20)
+        XCTAssertEqual(store.tracks.count, 1)
+    }
+
+    @MainActor
+    func testInitializeGitLeavesARepositoryATrackCanBranchFrom() throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".side-state"))
+        let done = expectation(description: "init")
+        store.initializeGitRepo { result in
+            if case .failure(let error) = result { XCTFail("\(error)") }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 20)
+        XCTAssertTrue(GitPaths.runGit(["rev-parse", "--verify", "-q", "HEAD"], cwd: root.path).success)
+    }
+
     // MARK: - H5: deleting a track with uncommitted work needs consent
 
     @MainActor

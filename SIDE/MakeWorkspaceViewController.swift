@@ -1494,36 +1494,24 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     self.showAlert(title: "Couldn't create project", message: error.localizedDescription, window: window)
                     return
                 }
-                let initResult = self.runGitInit(at: url)
-                guard initResult.success else {
-                    self.showAlert(title: "Couldn't initialize git", message: initResult.output, window: window)
-                    return
+                // Off the main thread, with its first commit, so a track can branch from it
+                // (2026-09-30 audit, H10: New Project then New Track failed).
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let initResult = GitPaths.runGit(["init"], cwd: url.path)
+                    let commit = initResult.success
+                        ? TrackStore.makeInitialCommit(cwd: url.path, runGit: { GitPaths.runGit($0, cwd: $1) }) : initResult
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        guard initResult.success, commit.success else {
+                            self.showAlert(title: "Couldn't initialize git", message: initResult.success ? commit.output : initResult.output, window: window)
+                            return
+                        }
+                        self.closeAllTabsImmediately()
+                        self.loadProject(at: url)
+                    }
                 }
-                self.closeAllTabsImmediately()
-                self.loadProject(at: url)
             }
         }
-    }
-
-    private func runGitInit(at url: URL) -> (success: Bool, output: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "init"]
-        process.currentDirectoryURL = url
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-        } catch {
-            return (false, error.localizedDescription)
-        }
-        // Read before waiting — waiting first deadlocks once the pipe buffer fills
-        // (see GitPaths.runGit).
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return (process.terminationStatus == 0, output)
     }
 
     /// Only ever reopens a file if this specific project has one remembered — no more
