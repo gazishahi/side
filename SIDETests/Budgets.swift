@@ -25,6 +25,10 @@ enum Budgets {
         Row(id: "editor.recolor", area: "Make", measure: "Recolor the edited line, p99", limit: 2, unit: "ms"),
         Row(id: "editor.scroll.cpu", area: "Make", measure: "Scrolling: a frame's CPU, p99, as a share of the frame", limit: 50, unit: "%"),
         Row(id: "editor.scroll.missed", area: "Make", measure: "Scrolling: frames missed beyond drawing nothing", limit: 0.5, unit: "%"),
+        // Per frame drawn, not per second: CPU per second rewards dropping frames (one query per
+        // line made a fling miss 47% of its frames and read as cheaper). With the frames missed.
+        Row(id: "editor.fling.cpu", area: "Make", measure: "Flinging through a colored 100k-line file: CPU a frame drawn, background work included", limit: 7, unit: "ms"),
+        Row(id: "editor.fling.missed", area: "Make", measure: "The same fling: frames missed", limit: 10, unit: "%"),
         Row(id: "editor.memory.log", area: "Make", measure: "Memory for a 20 MB log (3x the file, plus the atlas)", limit: 92, unit: "MB"),
         Row(id: "editor.agentEdits", area: "Make", measure: "An agent's whole-file edit, applied and drawn, p99", limit: 16.7, unit: "ms"),
         Row(id: "editor.foldRegions", area: "Make", measure: "A 100k-line file's foldable regions (off the main thread)", limit: 500, unit: "ms"),

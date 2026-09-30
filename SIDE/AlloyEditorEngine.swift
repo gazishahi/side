@@ -129,11 +129,13 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         guard let document = document as? AlloyEditorDocument else {
             view.setBuffer(TextBuffer(""))
             view.styles = nil
+            view.prepareStyles = nil
             view.decorations = []
             return
         }
         view.setBuffer(document.buffer)
         view.styles = { [weak document] line in document?.highlighter?.spans(forLine: line) ?? [] }
+        view.prepareStyles = { [weak document] lines in document?.highlighter?.prepare(lines: lines) }
         document.highlighter?.theme = EditorThemes.syntax(dark: isDark)
         refreshDecorations()
     }

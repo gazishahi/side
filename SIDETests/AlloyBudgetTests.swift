@@ -235,6 +235,39 @@ final class AlloyBudgetTests: XCTestCase {
                       detail: "8 rounds of a second each, interleaved: \(real.missed) of \(real.presented + real.missed) missed, drawing nothing \(control.missed) of \(control.presented + control.missed)")
     }
 
+    /// A fling through a colored 100,000-line file, at the display's pace: 900 points a frame
+    /// (about 50 lines), for four seconds, reversing at the ends. The whole process's CPU,
+    /// background work included, not only the main thread's share of a frame (2026-09-30, the
+    /// owner: why doesn't CPU get memory's treatment?).
+    func testFlingCPU() throws {
+        _ = open(try swiftFile())
+        (alloy.document as? AlloyEditorDocument)?.highlighter?.waitForParse()
+        waitUntil(2) { false }
+        var direction: CGFloat = 1
+        view.onFrame = { [weak self] _ in
+            guard let self else { return }
+            let bottom = self.view.documentLayout.contentHeight - self.view.bounds.height
+            if self.view.scrollY >= bottom - 900 { direction = -1 }
+            if self.view.scrollY <= 900 { direction = 1 }
+            self.view.scrollY += 900 * direction
+        }
+        if ProcessInfo.processInfo.environment["SIDE_FLING_NO_PREPARE"] == "1" { view.prepareStyles = nil }
+        waitUntil(0.3) { false }
+        view.resetFrameCounters()
+        let cpu = Budgets.cpuSeconds(), wall = CACurrentMediaTime()
+        waitUntil(4) { false }
+        view.onFrame = nil
+        let seconds = CACurrentMediaTime() - wall, spent = Budgets.cpuSeconds() - cpu
+        let (presented, missed) = view.presentedFrameCounts()
+        let share = spent / seconds * 100
+        // CPU alone rewards dropping frames: a slower editor draws fewer and spends less. So the
+        // frames are reported with it, and the CPU per frame drawn.
+        let detail = String(format: "4 s at %d Hz, 900 pt a frame: %d frames presented, %d missed; %.0f%% of a core; frame p99 %.2f ms",
+                            Int((1 / view.displayInterval).rounded()), presented, missed, share, percentile(view.frameMilliseconds, 0.99))
+        Budgets.check("editor.fling.cpu", spent * 1000 / Double(max(1, presented)), detail: detail)
+        Budgets.check("editor.fling.missed", Double(missed) / Double(max(1, presented + missed)) * 100, detail: detail)
+    }
+
     func testMemory() throws {
         let log = try logFile()
         let size = Double((try FileManager.default.attributesOfItem(atPath: log.path)[.size] as? Int) ?? 0) / 1_048_576
