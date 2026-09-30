@@ -647,13 +647,13 @@ final class TrackStore {
         }
         let workingTreeCwd = track.workingDirectoryPath ?? (track.status == .active ? inputs.projectRootPath : nil)
         if let workingTreeCwd {
-            let status = runGit(["status", "--porcelain"], cwd: workingTreeCwd)
+            let status = runGit(["--no-optional-locks", "status", "--porcelain"], cwd: workingTreeCwd)
             if status.success {
                 summary.uncommittedCount = status.output.isEmpty ? 0 : status.output.split(separator: "\n").count
             }
         }
         if let path = track.workingDirectoryPath {
-            summary.diskUsageBytes = Self.directorySizeBytes(at: path)
+            summary.diskUsageBytes = Self.cachedDirectorySizeBytes(at: path)
         }
         return summary
     }
@@ -663,6 +663,18 @@ final class TrackStore {
     /// individually. Runs on the same background thread the rest of `gitSummary` already does
     /// (see `TracksWorkspaceViewController.refreshGitSummariesIfNeeded`), so a worktree with a
     /// large `node_modules` doesn't block the main thread.
+    /// A minute at most out of date: `du` walks the whole worktree, `node_modules` and build
+    /// output included, and the ledger asked for it on every refresh.
+    nonisolated private static func cachedDirectorySizeBytes(at path: String) -> Int? {
+        let now = Date()
+        if let cached = sizeCacheLock.withLock({ sizeCache[path] }), now.timeIntervalSince(cached.at) < 60 { return cached.bytes }
+        let bytes = directorySizeBytes(at: path)
+        sizeCacheLock.withLock { sizeCache[path] = (bytes, now) }
+        return bytes
+    }
+    nonisolated private static let sizeCacheLock = NSLock()
+    nonisolated(unsafe) private static var sizeCache: [String: (bytes: Int?, at: Date)] = [:]
+
     nonisolated private static func directorySizeBytes(at path: String) -> Int? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
@@ -828,7 +840,7 @@ final class TrackStore {
     /// `nonisolated`: pure git I/O over immutable inputs. See `runGit` for why this
     /// distinction is now stated rather than assumed.
     nonisolated private func performPull(parentBranch: String, cwd: String) -> Result<String, Error> {
-        let dirty = runGit(["status", "--porcelain"], cwd: cwd)
+        let dirty = runGit(["--no-optional-locks", "status", "--porcelain"], cwd: cwd)
         guard dirty.output.isEmpty else {
             return .failure(TrackError.gitWorktreeFailed("This track's working copy has uncommitted changes. Commit or stash them first."))
         }
@@ -1022,7 +1034,7 @@ final class TrackStore {
         guard let path = GitPaths.worktreePath(forBranchSlug: track.branchName.replacingOccurrences(of: "/", with: "-"), projectRoot: projectRoot) else {
             return .failure(.gitWorktreeFailed("Couldn't resolve a worktree location for this repository."))
         }
-        let dirtyStatus = runGit(["status", "--porcelain"], cwd: cwd)
+        let dirtyStatus = runGit(["--no-optional-locks", "status", "--porcelain"], cwd: cwd)
         let dirtyCount = dirtyStatus.output.isEmpty ? 0 : dirtyStatus.output.split(separator: "\n").count
         var outcome = TrackSwitchOutcome()
         if dirtyCount > 0 {

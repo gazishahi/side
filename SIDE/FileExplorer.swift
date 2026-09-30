@@ -404,7 +404,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
     nonisolated static func gitMarks(root: URL) -> [String: GitMark] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", root.path, "status", "--porcelain=v1", "-z", "--untracked-files=all"]
+        process.arguments = ["git", "--no-optional-locks", "-C", root.path, "status", "--porcelain=v1", "-z", "--untracked-files=all"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice

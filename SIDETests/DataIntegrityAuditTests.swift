@@ -230,3 +230,30 @@ final class DataIntegrityAuditTests: XCTestCase {
         }
     }
 }
+
+/// 2026-09-30 audit, CON-5: every agent phase change refreshed Tracks, running git and `du`
+/// for every track, even with Tracks off screen.
+@MainActor
+final class TracksOffScreenTests: XCTestCase {
+    func testAnOffScreenLedgerOnlyMarksItselfStale() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("side-tracks-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for args in [["init", "-q", "-b", "main"], ["commit", "--allow-empty", "-q", "-m", "base"]] { XCTAssertTrue(GitPaths.runGit(args, cwd: root.path).success) }
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        let tracks = TracksWorkspaceViewController()
+        tracks.loadViewIfNeeded()
+        let sessions = AgentSessionStore(stateDirectory: root.appendingPathComponent(".git/side"))
+        let manager = AgentRunnerManager(
+            sessionStore: sessions, projectPath: root.path,
+            bridgeProvider: { _ in WorkspaceBridge(liveBufferProvider: { _ in nil }, applyEditIntoOpenTab: { _, _ in false }, onRevealFileRequested: { _ in },
+                                                   runShellCommand: { _, _, completion in completion("") }, interruptShellCommand: {}) },
+            rootProvider: { _ in root }, modeProvider: { _ in AgentMode(scope: .ask, autonomy: .manual) },
+            modelSelectionProvider: { _ in (nil, nil, nil) }
+        )
+        tracks.configure(with: store, runnerManager: manager, sessionStore: sessions)
+        for _ in 0..<50 { tracks.refresh() }
+        XCTAssertTrue(tracks.ledgerIsStaleForTesting)
+        XCTAssertFalse(tracks.isRefreshingGitSummariesForTesting, "no git work for a ledger nobody can see")
+    }
+}

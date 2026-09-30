@@ -123,6 +123,7 @@ final class TracksWorkspaceViewController: NSViewController {
         // Catches drift from branch switches made outside Side (a terminal in Run, another git
         // client) since the last time this stage was visible — not just at project-open time.
         trackStore?.reconcile()
+        if ledgerIsStale { refreshUI() }
     }
 
     override func viewDidAppear() {
@@ -358,16 +359,35 @@ final class TracksWorkspaceViewController: NSViewController {
     /// `gitSummaryText` run off-thread and just re-render again once they land — a ledger with
     /// more than a couple of tracks would otherwise block the main thread on a chain of blocking
     /// `git` subprocess spawns every single time the ledger changes.
+    ///
+    /// Only on screen (2026-09-30 audit, CON-5): every agent's phase change refreshed the ledger,
+    /// several times a turn, and each refresh ran `rev-list`, `status` and `du` for every track
+    /// whether or not anyone could see Tracks. Off screen it's marked stale and refreshed on
+    /// appearing.
     private func refreshUI() {
+        guard view.window != nil, !view.isHiddenOrHasHiddenAncestor else {
+            ledgerIsStale = true
+            return
+        }
+        ledgerIsStale = false
         refreshTopHeader()
         renderLedger()
         refreshGitSummariesIfNeeded()
         refreshUntrackedBranchCount()
     }
 
+    private var ledgerIsStale = false
+    var ledgerIsStaleForTesting: Bool { ledgerIsStale }
+    var isRefreshingGitSummariesForTesting: Bool { isRefreshingGitSummaries }
+    /// A refresh asked for while one runs: one more afterwards, so the counts end current (they
+    /// used to be dropped, and could stay stale after the last change).
+    private var gitSummariesWanted = false
+
     private func refreshGitSummariesIfNeeded() {
-        guard !isRefreshingGitSummaries, let store = trackStore, store.repoState != .notAGitRepo else { return }
+        guard let store = trackStore, store.repoState != .notAGitRepo else { return }
+        guard !isRefreshingGitSummaries else { return gitSummariesWanted = true }
         isRefreshingGitSummaries = true
+        gitSummariesWanted = false
         // Every main-actor value the git work needs is snapshotted *here*, on the main actor,
         // and carried into the background as plain data. The old shape captured `store` itself
         // and called into it from the background queue, reading `tracks` and the default branch
@@ -383,6 +403,7 @@ final class TracksWorkspaceViewController: NSViewController {
                 self.isRefreshingGitSummaries = false
                 self.gitSummaryCache = results
                 self.renderLedger()
+                if self.gitSummariesWanted { self.refreshGitSummariesIfNeeded() }
             }
         }
     }

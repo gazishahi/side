@@ -1400,7 +1400,7 @@ final class ShellViewController: NSViewController {
             // detached HEAD does). `nil` here just means detached, which the pill omits
             // rather than showing a misleading branch name for.
             let branch = Self.runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], in: project.path)
-            let status = Self.runGit(["status", "--porcelain"], in: project.path)
+            let status = Self.runGit(["--no-optional-locks", "status", "--porcelain"], in: project.path)
             let dirtyCount = status?.split(separator: "\n").count ?? 0
             let worktreesRoot = canonicalProject.flatMap { GitPaths.worktreesRootDirectory(for: $0)?.path }
             DispatchQueue.main.async {
