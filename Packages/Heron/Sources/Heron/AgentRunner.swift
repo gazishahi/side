@@ -1008,9 +1008,16 @@ public final class AgentRunner {
         }
         var commitSHA: String?
         var changedFiles: [String] = []
-        if case .committed(let sha, let paths) = outcome {
+        switch outcome {
+        case .committed(let sha, let paths):
             commitSHA = sha
             changedFiles = paths
+        case .committedIndexStale(let sha, let paths):
+            commitSHA = sha
+            changedFiles = paths
+            if let warning = outcome.staleIndexWarning { appendEntry(.failure(warning)) }
+        default:
+            break
         }
 
         var checkpoint = Checkpoint(
@@ -2085,6 +2092,26 @@ public final class AgentRunner {
     /// audit. Failure now has to be stated.
     public enum CheckpointCommitOutcome {
         case committed(sha: String, paths: [String])
+        /// Committed, but the real index still holds these paths as they were before: another
+        /// git process held its lock throughout. Left alone, the person's next `git commit`
+        /// would commit the old contents back, silently reverting the checkpoint (2026-09-30
+        /// audit, H4), so it's said, with the command that fixes it.
+        case committedIndexStale(sha: String, paths: [String])
+
+        /// The commit, whichever way the index came out.
+        public var commit: (sha: String, paths: [String])? {
+            switch self {
+            case .committed(let sha, let paths), .committedIndexStale(let sha, let paths): return (sha, paths)
+            default: return nil
+            }
+        }
+
+        /// What to tell the person about a stale index, with the command that fixes it.
+        public var staleIndexWarning: String? {
+            guard case .committedIndexStale(_, let paths) = self else { return nil }
+            let quoted = paths.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
+            return "The checkpoint is committed, but git's index couldn't be updated: another git command held its lock. Until it is, your next commit would undo the checkpoint. Run this in Run to fix it:\ngit reset -q HEAD -- \(quoted)"
+        }
         /// The staged tree matched HEAD — the batch genuinely changed nothing on disk.
         case nothingToCommit
         case failed(step: String, message: String)
@@ -2170,8 +2197,13 @@ public final class AgentRunner {
            GitPaths.replaceIndex(realIndex.url, expected: realIndex.contents, with: updated) {
             return .committed(sha: commit.output, paths: committedPaths)
         }
-        _ = runGitWithRetry(["add", "--"] + paths, cwd: cwd)
-        return .committed(sha: commit.output, paths: committedPaths)
+        // `reset HEAD -- paths`, not `add`: it sets exactly these entries to the new commit, and
+        // an edit the person made to one of them since stays theirs, unstaged. `add` would have
+        // staged it under the agent's commit.
+        let refresh = runGitWithRetry(["reset", "-q", "HEAD", "--"] + committedPaths, cwd: cwd, maxWait: 10)
+        return refresh.success
+            ? .committed(sha: commit.output, paths: committedPaths)
+            : .committedIndexStale(sha: commit.output, paths: committedPaths)
     }
 
     /// The paths `git add -v` says it changed (`add 'path'`, `remove 'path'`), or nil when its

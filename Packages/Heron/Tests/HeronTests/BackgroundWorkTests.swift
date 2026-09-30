@@ -241,3 +241,93 @@ final class StoreWriteTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: think.appendingPathComponent("checkpoints").path).count, 1)
     }
 }
+
+/// 2026-09-30 audit, H4: with git's index lock held, the checkpoint reported success while the
+/// real index still staged the old contents, so the person's next commit reverted it.
+final class CheckpointIndexLockTests: XCTestCase {
+    private func repo() throws -> URL {
+        let root = try CheckpointCostTests.largeRepository(files: 50)
+        try "agent\n".write(to: root.appendingPathComponent("d2/f2.txt"), atomically: false, encoding: .utf8)
+        return root
+    }
+
+    private func holdLock(_ root: URL, for seconds: TimeInterval) {
+        let lock = root.appendingPathComponent(".git/index.lock")
+        FileManager.default.createFile(atPath: lock.path, contents: Data())
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { try? FileManager.default.removeItem(at: lock) }
+    }
+
+    func testALockHeldBrieflyStillLeavesTheIndexRight() throws {
+        let root = try repo()
+        defer { try? FileManager.default.removeItem(at: root) }
+        holdLock(root, for: 1.5)
+        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "checkpoint")
+        guard case .committed(_, let paths)? = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertEqual(paths, ["d2/f2.txt"])
+        XCTAssertEqual(GitPaths.runGit(["status", "--porcelain"], cwd: root.path).output, "", "the index reads the checkpoint as committed")
+    }
+
+    func testALockHeldThroughoutIsReportedNotHidden() throws {
+        let root = try repo()
+        defer { try? FileManager.default.removeItem(at: root) }
+        holdLock(root, for: 15)
+        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "checkpoint")
+        guard case .committedIndexStale(_, let paths)? = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertEqual(paths, ["d2/f2.txt"])
+        XCTAssertTrue(outcome?.staleIndexWarning?.contains("git reset -q HEAD -- 'd2/f2.txt'") == true)
+    }
+}
+
+/// 2026-09-30 audit, GIT-5, R3, GIT-7: conversations and checkpoint records survive a crash in
+/// the index's delay, a corrupt index, and an old ledger coming back.
+final class SessionIndexDurabilityTests: XCTestCase {
+    private func state() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("heron-durable-\(UUID().uuidString)")
+    }
+
+    private func checkpoint(_ track: String, _ intent: String) -> Checkpoint {
+        Checkpoint(trackKey: track, agentSessionId: UUID(), declaredIntent: intent, changedFilePaths: ["a.swift"], commandsRun: [],
+                   provenance: AgentProvenance(providerId: "anthropic", modelId: "claude-sonnet-5", instructionSourceSummary: ""), gitCommitSHA: "abc")
+    }
+
+    func testANewTracksEntryIsOnDiskAtOnce() throws {
+        let dir = state()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = AgentSessionStore(stateDirectory: dir)
+        store.appendTurn(AgentTurn(role: .user, content: [.text("first")]), trackKey: "a", providerId: "anthropic", modelId: "claude-sonnet-5")
+        store.appendTurn(AgentTurn(role: .user, content: [.text("second track")]), trackKey: "feat/b", providerId: "anthropic", modelId: "claude-sonnet-5")
+        // No flush: what a crash right now would leave.
+        let onDisk = try String(contentsOf: dir.appendingPathComponent("think/index.json"), encoding: .utf8)
+        XCTAssertTrue(onDisk.contains("feat\\/b") || onDisk.contains("feat/b"), onDisk)
+    }
+
+    func testACorruptIndexLosesNothing() throws {
+        let dir = state()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = AgentSessionStore(stateDirectory: dir)
+        store.appendTurn(AgentTurn(role: .user, content: [.text("keep me")]), trackKey: "a", providerId: "anthropic", modelId: "claude-sonnet-5")
+        store.appendCheckpoint(checkpoint("a", "one"))
+        store.appendCheckpoint(checkpoint("a", "two"))
+        JSONStore.flushPendingWrites()
+        try Data("not json".utf8).write(to: dir.appendingPathComponent("think/index.json"))
+
+        let reopened = AgentSessionStore(stateDirectory: dir)
+        XCTAssertEqual(reopened.session(forTrackKey: "a")?.turns.count, 1, "found from its file")
+        XCTAssertEqual(reopened.checkpoints(forTrackKey: "a").count, 2)
+        reopened.appendCheckpoint(checkpoint("a", "three"))
+        XCTAssertEqual(AgentSessionStore(stateDirectory: dir).checkpoints(forTrackKey: "a").map(\.declaredIntent), ["one", "two", "three"])
+    }
+
+    func testAnOldLedgerIsMergedNotWrittenOver() throws {
+        let dir = state()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = AgentSessionStore(stateDirectory: dir)
+        store.appendTurn(AgentTurn(role: .user, content: [.text("x")]), trackKey: "a", providerId: "anthropic", modelId: "claude-sonnet-5")
+        store.appendCheckpoint(checkpoint("a", "made since"))
+        JSONStore.flushPendingWrites()
+        XCTAssertTrue(JSONStore.write([checkpoint("a", "from the old ledger")], to: dir.appendingPathComponent("think/checkpoints.json")))
+        let reopened = AgentSessionStore(stateDirectory: dir)
+        XCTAssertEqual(Set(reopened.checkpoints(forTrackKey: "a").map(\.declaredIntent)), ["made since", "from the old ledger"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("think/checkpoints.json").path))
+    }
+}

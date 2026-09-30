@@ -495,15 +495,34 @@ public final class AgentSessionStore {
 
     // MARK: - Persistence
 
+    /// Everything loads whatever state the index is in (2026-09-30 audit, R3 and GIT-5): a
+    /// missing or corrupt index used to leave checkpoints and archives unloaded, so the next
+    /// checkpoint overwrote a track's records with one, and a session written just before a
+    /// crash, whose index entry hadn't been, couldn't be found. The index is reconciled with
+    /// the session files on disk instead.
     private func load() {
-        if let loaded = JSONStore.read([SessionIndexEntry].self, from: indexURL) {
-            index = loaded.payload
-            archives = JSONStore.read([ArchivedConversation].self, from: archivesURL)?.payload ?? []
-            checkpoints = loadCheckpoints()
-            pruneExpiredSessions()
-            return
+        if !FileManager.default.fileExists(atPath: indexURL.path) { migrateLegacyStateIfPresent() }
+        index = JSONStore.read([SessionIndexEntry].self, from: indexURL)?.payload ?? []
+        archives = JSONStore.read([ArchivedConversation].self, from: archivesURL)?.payload ?? []
+        checkpoints = loadCheckpoints()
+        writtenIndexKeys = Set(index.map(\.trackKey))
+        if reconcileIndexWithSessionFiles() { saveIndex() }
+        pruneExpiredSessions()
+    }
+
+    /// Adds an entry for every session file the index doesn't name. True when it added any.
+    private func reconcileIndexWithSessionFiles() -> Bool {
+        let known = Set(index.map { Self.slug(for: $0.trackKey) })
+        let files = (try? FileManager.default.contentsOfDirectory(at: sessionsDirectory, includingPropertiesForKeys: nil)) ?? []
+        var added = false
+        for file in files where file.pathExtension == "jsonl" && !file.lastPathComponent.hasSuffix(".compacted.jsonl") {
+            guard !known.contains(file.deletingPathExtension().lastPathComponent), let session = SessionLog.read(from: file) else { continue }
+            index.append(SessionIndexEntry(id: session.id, trackKey: session.trackKey, providerId: session.providerId,
+                                           modelId: session.modelId, lastActiveAt: session.lastActiveAt,
+                                           lastReportedInputTokens: session.lastReportedInputTokens))
+            added = true
         }
-        migrateLegacyStateIfPresent()
+        return added
     }
 
     /// Applies the user's retention setting. At load, rather than on a timer: a project's
@@ -569,23 +588,29 @@ public final class AgentSessionStore {
         }
         checkpoints = legacyCheckpoints
         index = legacySessions.map { SessionIndexEntry(id: $0.id, trackKey: $0.trackKey, providerId: $0.providerId, modelId: $0.modelId, lastActiveAt: $0.lastActiveAt) }
-        for session in legacySessions { saveSession(session) }
-        saveIndex()
-        for trackKey in Set(checkpoints.map(\.trackKey)) { saveCheckpoints(trackKey: trackKey) }
-        try? FileManager.default.removeItem(at: legacyURL)
+        let sessionsWritten = legacySessions.allSatisfy { SessionLog.write($0, to: sessionFileURL(forTrackKey: $0.trackKey)) }
+        let indexWritten = JSONStore.write(index, to: indexURL, compact: true)
+        let checkpointsWritten = Set(checkpoints.map(\.trackKey)).allSatisfy { saveCheckpoints(trackKey: $0) }
+        // Only once all of it is safely written (2026-09-30 audit, GIT-7).
+        if sessionsWritten, indexWritten, checkpointsWritten { try? FileManager.default.removeItem(at: legacyURL) }
     }
 
     /// A moment later, compact, and once for however many changes (D7: it was written whole,
     /// pretty-printed, on every turn). The sessions themselves are written as they change; this
     /// is their directory.
     private func saveIndex() {
-        // The first one now: without an index the sessions on disk can't be found.
-        guard FileManager.default.fileExists(atPath: indexURL.path) else {
-            JSONStore.write(index, to: indexURL, compact: true)
+        // A track gaining or losing its entry is written now; a crash in the delay otherwise hid
+        // a conversation (2026-09-30 audit, GIT-5). Only the entries' metadata waits.
+        let keys = Set(index.map(\.trackKey))
+        guard keys == writtenIndexKeys, FileManager.default.fileExists(atPath: indexURL.path) else {
+            if JSONStore.write(index, to: indexURL, compact: true) { writtenIndexKeys = keys }
             return
         }
         JSONStore.writeSoon(to: indexURL) { self.index }
     }
+
+    /// The tracks the index on disk names.
+    private var writtenIndexKeys: Set<String> = []
 
     // MARK: - Conversation history
 
@@ -753,23 +778,34 @@ public final class AgentSessionStore {
 
     /// Only the one track's file. Written now, not debounced: a checkpoint is the record of what
     /// an agent changed.
-    private func saveCheckpoints(trackKey: String) {
+    @discardableResult
+    private func saveCheckpoints(trackKey: String) -> Bool {
         let url = checkpointsFileURL(forTrackKey: trackKey)
         let own = checkpoints.filter { $0.trackKey == trackKey }
-        if own.isEmpty { try? FileManager.default.removeItem(at: url) } else { JSONStore.write(own, to: url, compact: true) }
+        if own.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+            return true
+        }
+        return JSONStore.write(own, to: url, compact: true)
     }
 
     /// Every track's file; the one-file ledger of before, split into them the first time.
+    ///
+    /// The old ledger is merged in by id, never over what the per-track files already hold (an
+    /// older build writing it again mustn't erase checkpoints made since), and removed only once
+    /// every write has succeeded (2026-09-30 audit, GIT-7: a full disk lost every record).
     private func loadCheckpoints() -> [Checkpoint] {
-        if let legacy = JSONStore.read([Checkpoint].self, from: checkpointsURL)?.payload {
-            checkpoints = legacy
-            for trackKey in Set(legacy.map(\.trackKey)) { saveCheckpoints(trackKey: trackKey) }
-            try? FileManager.default.removeItem(at: checkpointsURL)
-        }
         let files = (try? FileManager.default.contentsOfDirectory(at: checkpointsDirectory, includingPropertiesForKeys: nil)) ?? []
-        return files.filter { $0.pathExtension == "json" }
+        var loaded = files.filter { $0.pathExtension == "json" }
             .flatMap { JSONStore.read([Checkpoint].self, from: $0)?.payload ?? [] }
-            .sorted { $0.createdAt < $1.createdAt }
+        if let legacy = JSONStore.read([Checkpoint].self, from: checkpointsURL)?.payload {
+            let known = Set(loaded.map(\.id))
+            loaded += legacy.filter { !known.contains($0.id) }
+            checkpoints = loaded
+            let allWritten = Set(legacy.map(\.trackKey)).allSatisfy { saveCheckpoints(trackKey: $0) }
+            if allWritten { try? FileManager.default.removeItem(at: checkpointsURL) }
+        }
+        return loaded.sorted { $0.createdAt < $1.createdAt }
     }
 
     private func saveSession(_ session: AgentSession) {

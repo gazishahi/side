@@ -1326,7 +1326,7 @@ public final class ACPHarness: Harness {
             let outcome = AgentRunner.stageAndCommit(root: root, baseline: baseline, knownChanged: touched.intersection(dirty),
                                                      userSaved: userSaved, message: intent.isEmpty ? "\(agent.displayName) checkpoint" : intent)
             var fileChanges: [CheckpointFileChange] = []
-            if case .committed(let sha, _)? = outcome {
+            if let sha = outcome?.commit?.sha {
                 fileChanges = Self.numstat(sha: sha, cwd: root)
             }
             DispatchQueue.main.async {
@@ -1340,7 +1340,8 @@ public final class ACPHarness: Harness {
                         return
                     case .failed(let step, let message)?:
                         lines.append(.failure("Couldn't create a checkpoint: git \(step) failed\(message.isEmpty ? "" : ": \(message)").\nThe changes are still in your working copy, uncommitted."))
-                    case .committed(let sha, let paths)?:
+                    case .committed(let sha, let paths)?, .committedIndexStale(let sha, let paths)?:
+                        if let warning = outcome?.staleIndexWarning { lines.append(.failure(warning)) }
                         let names = paths.map { ($0 as NSString).lastPathComponent }
                         let described = intent.isEmpty
                             ? (names.count == 1 ? "Edited \(names[0])" : "Edited \(names.first ?? "files") and \(max(0, names.count - 1)) other files")
