@@ -194,7 +194,10 @@ final class ReviewLayoutTests: XCTestCase {
         rail.onSelect = { selected.append($0) }
         rail.items = (0..<5).map { ReviewFileRail.Item(path: "Sources/f\($0).swift", added: 1, removed: 0, isNew: false, isDeleted: false, viewed: $0 == 1) }
         XCTAssertEqual(rail.progressText, "1 of 5 viewed")
+        // Following is coalesced (at most ten a second), and lands on the latest.
+        rail.follow(2)
         rail.follow(3)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         XCTAssertEqual(rail.selectedIndex, 3)
         XCTAssertTrue(selected.isEmpty, "following the diff doesn't move the diff")
         rail.tableForTesting.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)

@@ -81,6 +81,13 @@ final class DiffDocumentView: NSView {
     private var columns: [Column] = []
     /// Bumped on every rebuild, so work started for old columns doesn't land in new ones.
     private var columnsGeneration = 0
+    /// Files waiting to see whether they stay in view long enough to color (column side, file).
+    private var pendingHighlights: Set<String> = []
+    /// How long a file has to stay on screen before it's colored. A fling passes hundreds of
+    /// files; coloring each one it passed started a full parse per file, on its own queue, and
+    /// used every core (the owner's report, 2026-09-30: 100–167% CPU, and lag). Plain text for
+    /// a moment, then color, costs almost nothing.
+    private static let highlightDelay: TimeInterval = 0.15
     private let divider = NSBox()
     /// The file headers over their rows, in this view's coordinates; only those in view exist.
     private let headerLayer = HeaderLayerView()
@@ -194,6 +201,8 @@ final class DiffDocumentView: NSView {
         headerLayer.removeFromSuperview()
         headers.values.forEach { $0.removeFromSuperview() }
         headers = [:]
+        headerPool.forEach { $0.removeFromSuperview() }
+        headerPool = []
     }
 
     // MARK: Columns
@@ -348,35 +357,60 @@ final class DiffDocumentView: NSView {
     private func syntaxSpans(file: Int, row: Int, dark: Bool, columnSide: DiffBody.Side?) -> [StyleSpan]? {
         guard let index = columns.firstIndex(where: { $0.side == columnSide }) else { return nil }
         if columns[index].highlighters[file] == nil {
-            // Nothing yet: build it off the main thread (its text, its first parse), and draw
-            // the file plain until it lands. Building it here cost a frame on every new file.
-            columns[index].highlighters[file] = .some(nil)
-            columns[index].highlighterOrder.append(file)
-            if columns[index].highlighterOrder.count > Self.highlighterLimit {
-                let oldest = columns[index].highlighterOrder.removeFirst()
-                columns[index].highlighters[oldest] = nil
-            }
-            let ext = SyntaxLanguage.languageExtension(forFileName: (diff.files[file].path as NSString).lastPathComponent)
-            guard SyntaxLanguage.supports(ext), let own = columns[index].fileText[file] else { return nil }
-            let buffer = columns[index].editor.buffer.text
-            let rowsOfFile = own.rows
+            // Nothing yet: if the file is still on screen after `highlightDelay`, build it off
+            // the main thread (its text, its first parse). Plain until then.
+            let key = "\(String(describing: columnSide))-\(file)"
+            guard pendingHighlights.insert(key).inserted else { return nil }
             let generation = columnsGeneration
-            Task.detached(priority: .userInitiated) { [weak self] in
-                let text = Rope(rowsOfFile.map { buffer.substring(buffer.range(ofLine: $0)) }.joined(separator: "\n"))
-                await MainActor.run { [weak self] in
-                    guard let self, self.columnsGeneration == generation,
-                          let i = self.columns.firstIndex(where: { $0.side == columnSide }),
-                          self.columns[i].highlighterOrder.contains(file) else { return }
-                    let built = SyntaxHighlighter(fileExtension: ext, text: text, theme: EditorThemes.syntax(dark: dark), parseInBackground: true)
-                    built?.onInvalidate = { [weak self] in self?.columns.forEach { $0.editor.setNeedsRender() } }
-                    self.columns[i].highlighters[file] = .some(built)
-                }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.highlightDelay) { [weak self] in
+                guard let self else { return }
+                self.pendingHighlights.remove(key)
+                guard self.columnsGeneration == generation,
+                      let i = self.columns.firstIndex(where: { $0.side == columnSide }),
+                      self.columns[i].highlighters[file] == nil,
+                      self.filesInView(self.columns[i]).contains(file) else { return }
+                self.startHighlighter(file: file, column: i, dark: dark, columnSide: columnSide)
             }
             return nil
         }
         guard let highlighter = columns[index].highlighters[file] ?? nil, columns[index].localIndex.indices.contains(row) else { return nil }
         let local = columns[index].localIndex[row]
         return local >= 0 ? highlighter.spans(forLine: local) : nil
+    }
+
+    /// The files with a row on screen in a column.
+    private func filesInView(_ column: Column) -> Set<Int> {
+        let editor = column.editor
+        let layoutModel = editor.documentLayout
+        let top = layoutModel.line(atY: max(0, editor.viewport.minY)).line
+        let bottom = min(layoutModel.line(atY: editor.drawingRect.maxY).line, column.rows.count - 1)
+        guard top <= bottom else { return [] }
+        return Set((top...bottom).compactMap { file(atRow: $0, in: column) })
+    }
+
+    private func startHighlighter(file: Int, column index: Int, dark: Bool, columnSide: DiffBody.Side?) {
+        columns[index].highlighters[file] = .some(nil)
+        columns[index].highlighterOrder.append(file)
+        if columns[index].highlighterOrder.count > Self.highlighterLimit {
+            let oldest = columns[index].highlighterOrder.removeFirst()
+            columns[index].highlighters[oldest] = nil
+        }
+        let ext = SyntaxLanguage.languageExtension(forFileName: (diff.files[file].path as NSString).lastPathComponent)
+        guard SyntaxLanguage.supports(ext), let own = columns[index].fileText[file] else { return }
+        let buffer = columns[index].editor.buffer.text
+        let rowsOfFile = own.rows
+        let generation = columnsGeneration
+        Task.detached(priority: .utility) { [weak self] in
+            let text = Rope(rowsOfFile.map { buffer.substring(buffer.range(ofLine: $0)) }.joined(separator: "\n"))
+            await MainActor.run { [weak self] in
+                guard let self, self.columnsGeneration == generation,
+                      let i = self.columns.firstIndex(where: { $0.side == columnSide }),
+                      self.columns[i].highlighterOrder.contains(file) else { return }
+                let built = SyntaxHighlighter(fileExtension: ext, text: text, theme: EditorThemes.syntax(dark: dark), parseInBackground: true)
+                built?.onInvalidate = { [weak self] in self?.columns.forEach { $0.editor.setNeedsRender() } }
+                self.columns[i].highlighters[file] = .some(built)
+            }
+        }
     }
 
     private func layoutColumns() {
@@ -464,7 +498,11 @@ final class DiffDocumentView: NSView {
         let current = file(atRow: layoutModel.line(atY: visible.minY).line, in: first)
         if let current { wanted.insert(current) }
         for (file, view) in headers where !wanted.contains(file) {
-            view.removeFromSuperview()
+            // Kept for the next file that comes into view (`makeHeader`), not rebuilt for it.
+            view.isHidden = true
+            view.onToggle = nil
+            view.onInstruct = nil
+            headerPool.append(view)
             headers[file] = nil
         }
         let height = layoutModel.lineHeight * 2
@@ -498,15 +536,25 @@ final class DiffDocumentView: NSView {
         }
     }
 
+    /// Headers out of view, kept to reuse (a handful: as many as were on screen at once).
+    private var headerPool: [DiffFileHeader] = []
+
     private func makeHeader(_ index: Int) -> DiffFileHeader {
         let file = diff.files[index]
-        let header = DiffFileHeader(file: file, folded: folded.contains(index))
+        let header: DiffFileHeader
+        if let reused = headerPool.popLast() {
+            header = reused
+            header.isHidden = false
+        } else {
+            header = DiffFileHeader()
+            headerLayer.addSubview(header)
+        }
+        header.configure(file: file, folded: folded.contains(index))
         header.onToggle = { [weak self] in self?.toggleFold(index) }
         header.showsTopRule = index > 0
         if let onInstruct, !file.isDeleted, let span = file.changedNewLines {
             header.onInstruct = { anchor in onInstruct(file.path, span, anchor) }
         }
-        headerLayer.addSubview(header)
         return header
     }
 
@@ -600,41 +648,37 @@ final class DiffFileHeader: NSView {
     private let topRule = NSBox()
     var onInstruct: ((NSView) -> Void)? { didSet { instructButton.isHidden = onInstruct == nil } }
     private let instructButton = NSButton(title: "", target: nil, action: nil)
-    private let folded: Bool
-    private let describedAs: String
+    private var folded = false
+    private var describedAs = ""
+    private let chevron = NSImageView()
+    private let path = NSTextField(labelWithString: "")
+    private let counts = NSTextField(labelWithString: "")
+    private let badge = NSTextField(labelWithString: "")
+    private static let chevronRight = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
+        .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+    private static let chevronDown = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+        .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
 
-    init(file: UnifiedDiff.File, folded: Bool) {
-        self.folded = folded
-        var parts = [file.path]
-        parts.append(file.addedCount == 1 ? "1 line added" : "\(file.addedCount) lines added")
-        parts.append(file.removedCount == 1 ? "1 line removed" : "\(file.removedCount) lines removed")
-        if file.isNew { parts.append("new file") }
-        if file.isDeleted { parts.append("deleted file") }
-        describedAs = parts.joined(separator: ", ")
+    convenience init(file: UnifiedDiff.File, folded: Bool) {
+        self.init()
+        configure(file: file, folded: folded)
+    }
+
+    /// Built once and reused: a fling past hundreds of files made a header for each, with its
+    /// stack of views and constraints, and that was most of the main thread's time while
+    /// scrolling (2026-09-30, the owner's report of 100%+ CPU). `configure` changes what it shows.
+    init() {
         super.init(frame: .zero)
         wantsLayer = true
         // The document's own color: a band of another shade between files read as a gap.
         bindLayerBackground(DS.Color.raised)
 
-        let chevron = NSImageView(image: NSImage(systemSymbolName: folded ? "chevron.right" : "chevron.down", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)) ?? NSImage())
         chevron.contentTintColor = .secondaryLabelColor
-        let path = NSTextField(labelWithString: file.path)
         path.font = DS.Text.code(12, weight: .medium)
-        path.textColor = folded ? .secondaryLabelColor : .labelColor
         path.lineBreakMode = .byTruncatingMiddle
         path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let counts = NSTextField(labelWithString: "")
-        let text = NSMutableAttributedString(string: "+\(file.addedCount)", attributes: [.font: DS.Text.code(11, weight: .semibold), .foregroundColor: DiffBody.addedText])
-        text.append(NSAttributedString(string: "  −\(file.removedCount)", attributes: [.font: DS.Text.code(11, weight: .semibold), .foregroundColor: DiffBody.removedText]))
-        counts.attributedStringValue = text
-        var views: [NSView] = [chevron, path]
-        if file.isNew || file.isDeleted {
-            let badge = NSTextField(labelWithString: file.isNew ? "NEW" : "DELETED")
-            badge.font = DS.Text.caption(.bold)
-            badge.textColor = file.isNew ? DiffBody.addedText : DiffBody.removedText
-            views.append(badge)
-        }
+        badge.font = DS.Text.caption(.bold)
+        var views: [NSView] = [chevron, path, badge]
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         views.append(spacer)
@@ -644,7 +688,6 @@ final class DiffFileHeader: NSView {
         instructButton.action = #selector(instructTapped)
         instructButton.alphaValue = 0
         instructButton.isHidden = true
-        instructButton.setAccessibilityLabel("Instruct about \(file.path)")
         views.append(instructButton)
         views.append(counts)
         let row = NSStackView(views: views)
@@ -683,6 +726,28 @@ final class DiffFileHeader: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(file: UnifiedDiff.File, folded: Bool) {
+        self.folded = folded
+        var parts = [file.path]
+        parts.append(file.addedCount == 1 ? "1 line added" : "\(file.addedCount) lines added")
+        parts.append(file.removedCount == 1 ? "1 line removed" : "\(file.removedCount) lines removed")
+        if file.isNew { parts.append("new file") }
+        if file.isDeleted { parts.append("deleted file") }
+        describedAs = parts.joined(separator: ", ")
+        chevron.image = (folded ? Self.chevronRight : Self.chevronDown) ?? NSImage()
+        path.stringValue = file.path
+        path.textColor = folded ? .secondaryLabelColor : .labelColor
+        let text = NSMutableAttributedString(string: "+\(file.addedCount)", attributes: [.font: DS.Text.code(11, weight: .semibold), .foregroundColor: DiffBody.addedText])
+        text.append(NSAttributedString(string: "  −\(file.removedCount)", attributes: [.font: DS.Text.code(11, weight: .semibold), .foregroundColor: DiffBody.removedText]))
+        counts.attributedStringValue = text
+        badge.isHidden = !(file.isNew || file.isDeleted)
+        badge.stringValue = file.isNew ? "NEW" : "DELETED"
+        badge.textColor = file.isNew ? DiffBody.addedText : DiffBody.removedText
+        instructButton.setAccessibilityLabel("Instruct about \(file.path)")
+        isPinned = false
+        setHovered(false, animated: false)
+    }
 
     override func mouseDown(with event: NSEvent) { onToggle?() }
     override func hitTest(_ point: NSPoint) -> NSView? {

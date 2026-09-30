@@ -40,6 +40,7 @@ final class ReviewBudgetTests: XCTestCase {
         let diff = try env["SIDE_REVIEW_DIFF"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? Self.generatedDiff()
         let fileCount = UnifiedDiff.parse(diff).files.count
         var worst: (open: Double, memory: Double, scroll: Double) = (0, 0, 0)
+        var flingCPU = 0.0, flingDetail = ""
         var details: [String] = []
         for layout in [DiffLayout.unified, .sideBySide] {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
@@ -52,6 +53,10 @@ final class ReviewBudgetTests: XCTestCase {
                 viewer.topAnchor.constraint(equalTo: container.topAnchor), viewer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
                 viewer.leadingAnchor.constraint(equalTo: container.leadingAnchor), viewer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             ])
+            // The file list beside it, following the diff as the stage has it follow.
+            let rail = ReviewFileRail(frame: NSRect(x: 0, y: 0, width: 240, height: 900))
+            container.addSubview(rail)
+            viewer.onTopFileChange = { [weak rail] index in rail?.follow(index) }
             window.contentView = container
             window.orderFront(nil)
             // The first frame in a process brings the graphics driver's working memory and the
@@ -66,6 +71,8 @@ final class ReviewBudgetTests: XCTestCase {
             autoreleasepool {
                 let start = CACurrentMediaTime()
                 viewer.render(diffText: diff)
+                rail.items = viewer.diff.files.map { ReviewFileRail.Item(path: $0.path, added: $0.addedCount, removed: $0.removedCount,
+                                                                          isNew: $0.isNew, isDeleted: $0.isDeleted, viewed: false) }
                 window.layoutIfNeeded()
                 window.displayIfNeeded()
                 open = (CACurrentMediaTime() - start) * 1000
@@ -109,6 +116,28 @@ final class ReviewBudgetTests: XCTestCase {
                 let wall = CACurrentMediaTime() - wallStart
                 print(String(format: "REVIEWALL %d frames over %.0f pt in %.1f s, CPU %.0f%%, frame p50 %.2f p99 %.2f ms, peak +%.0f MB", allFrames.count, end, wall,
                              (Budgets.cpuSeconds() - cpuStart) / wall * 100, Budgets.percentile(allFrames, 0.5), Budgets.percentile(allFrames, 0.99), peak - before))
+                // A fling, as the owner reported (2026-09-30: 100–167% CPU and lag): top to bottom
+                // and back at 1,500 points a frame, paced at 120 Hz, then a second to settle. The
+                // CPU is the whole process's, background work included, over all of it.
+                let flingStart = Budgets.cpuSeconds(), flingWall = CACurrentMediaTime()
+                var flingFrames: [Double] = []
+                for direction in [1.0, -1.0] {
+                    var position: CGFloat = direction > 0 ? 0 : end
+                    while direction > 0 ? position < end : position > 0 {
+                        position += CGFloat(1500 * direction)
+                        autoreleasepool {
+                            let start = CACurrentMediaTime()
+                            var waited = 0.0
+                            for editor in viewer.editors { editor.scrollY = max(0, position); editor.render(); waited += editor.drawableWaitMilliseconds.last ?? 0 }
+                            flingFrames.append((CACurrentMediaTime() - start) * 1000 - waited)
+                            _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(1.0 / 120))
+                        }
+                    }
+                }
+                Budgets.settle(1)
+                let flingSeconds = CACurrentMediaTime() - flingWall
+                flingCPU = (Budgets.cpuSeconds() - flingStart) / flingSeconds * 100
+                flingDetail = String(format: "%d frames in %.1f s, then a second settling; frame p99 %.2f ms", flingFrames.count, flingSeconds, Budgets.percentile(flingFrames, 0.99))
             }
             let p99 = Budgets.percentile(frames, 0.99)
             // The window-sized drawing buffers are the window's cost, not the change set's.
@@ -124,5 +153,6 @@ final class ReviewBudgetTests: XCTestCase {
         Budgets.check("review.open", worst.open, detail: detail)
         Budgets.check("review.memory", worst.memory, detail: detail)
         Budgets.check("review.scroll", worst.scroll, detail: detail)
+        Budgets.check("review.fling.cpu", flingCPU, detail: flingDetail)
     }
 }

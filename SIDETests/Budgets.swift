@@ -46,6 +46,8 @@ enum Budgets {
         Row(id: "review.open", area: "Review", measure: "Show a 500-file change set", limit: 300, unit: "ms"),
         Row(id: "review.memory", area: "Review", measure: "Memory for a 500-file change set, drawing buffers apart", limit: 60, unit: "MB"),
         Row(id: "review.scroll", area: "Review", measure: "Scrolling a 500-file change set, a frame, p99", limit: 8.3, unit: "ms"),
+        // CPU, not only frame time: a fling used every core (2026-09-30, the owner's report).
+        Row(id: "review.fling.cpu", area: "Review", measure: "Flinging through a 500-file change set and back, CPU, background work included", limit: 60, unit: "%"),
         // Think.
         Row(id: "think.memory", area: "Think", measure: "A 200-turn conversation on screen, the view's memory", limit: 60, unit: "MB"),
         Row(id: "think.cpu", area: "Think", measure: "Streaming with the transcript on screen, a core", limit: 25, unit: "%"),

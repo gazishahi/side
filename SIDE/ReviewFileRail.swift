@@ -147,7 +147,31 @@ final class ReviewFileRail: NSView, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     /// The diff's top file, shown as the selection without moving the diff.
+    /// At most ten times a second, ending where the diff did: while a fling passes a file a
+    /// frame, selecting and scrolling the list for each one was a second table scrolling in step
+    /// with the first (2026-09-30, the owner's report of 100%+ CPU in Review).
     func follow(_ index: Int) {
+        pendingFollow = index
+        guard !followScheduled else { return }
+        followScheduled = true
+        let wait = max(0, lastFollowAt + Self.followInterval - CACurrentMediaTime())
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            guard let self else { return }
+            self.followScheduled = false
+            self.lastFollowAt = CACurrentMediaTime()
+            if let index = self.pendingFollow {
+                self.pendingFollow = nil
+                self.followNow(index)
+            }
+        }
+    }
+
+    private static let followInterval: CFTimeInterval = 0.1
+    private var pendingFollow: Int?
+    private var followScheduled = false
+    private var lastFollowAt: CFTimeInterval = 0
+
+    private func followNow(_ index: Int) {
         guard items.indices.contains(index), table.selectedRow != index else { return }
         following = true
         table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
