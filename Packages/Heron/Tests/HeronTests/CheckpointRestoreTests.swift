@@ -174,6 +174,50 @@ final class CheckpointRestoreTests: XCTestCase {
         XCTAssertEqual(rows, ["M mine.txt", "?? untracked.txt"], status)
     }
 
+    /// 2026-09-30 audit, C2: a failed undo reset the person's staged file to HEAD in the index
+    /// and the worktree, and a successful one committed it as the undo.
+    func testStagedWorkIsNeverTakenIntoOrWipedByAnUndo() throws {
+        let path = try makeRepo()
+        _ = commit("line\n", to: "a.txt", in: path, message: "base")
+        _ = commit("tracked\n", to: "user.txt", in: path, message: "add user")
+        let agentSHA = commit("agent line\n", to: "a.txt", in: path, message: "agent edit")
+        try "USER PRECIOUS\n".write(toFile: path + "/user.txt", atomically: true, encoding: .utf8)
+        XCTAssertTrue(GitPaths.runGit(["add", "user.txt"], cwd: path).success)
+
+        let outcome = CheckpointRestore.perform(commits: [agentSHA], message: "Undo", worktreePath: path)
+        XCTAssertEqual(outcome, .stagedChanges(paths: ["user.txt"]))
+        XCTAssertEqual(try String(contentsOfFile: path + "/user.txt", encoding: .utf8), "USER PRECIOUS\n")
+        XCTAssertEqual(GitPaths.runGit(["diff", "--cached", "--name-only"], cwd: path).output, "user.txt", "still staged")
+        XCTAssertEqual(try String(contentsOfFile: path + "/a.txt", encoding: .utf8), "agent line\n", "nothing reverted")
+
+        // Unstaged, the undo goes ahead and holds only the checkpoint's file.
+        XCTAssertTrue(GitPaths.runGit(["reset", "-q", "user.txt"], cwd: path).success)
+        guard case .reverted(let undoSHA, _) = CheckpointRestore.perform(commits: [agentSHA], message: "Undo", worktreePath: path) else {
+            return XCTFail("expected the undo to go ahead")
+        }
+        XCTAssertEqual(GitPaths.runGit(["show", "--name-only", "--format=", undoSHA], cwd: path).output, "a.txt")
+        XCTAssertEqual(try String(contentsOfFile: path + "/user.txt", encoding: .utf8), "USER PRECIOUS\n")
+    }
+
+    /// A failed final commit (a pre-commit hook that refuses) unwinds only the checkpoint's files.
+    func testAFailedUndoCommitUnwindsOnlyTheCheckpointsFiles() throws {
+        let path = try makeRepo()
+        _ = commit("line\n", to: "a.txt", in: path, message: "base")
+        _ = commit("tracked\n", to: "mine.txt", in: path, message: "add mine")
+        let agentSHA = commit("agent line\n", to: "a.txt", in: path, message: "agent edit")
+        try "my unsaved edit\n".write(toFile: path + "/mine.txt", atomically: true, encoding: .utf8)
+        let hook = path + "/.git/hooks/pre-commit"
+        try "#!/bin/sh\nexit 1\n".write(toFile: hook, atomically: true, encoding: .utf8)
+        chmod(hook, 0o755)
+
+        guard case .failed = CheckpointRestore.perform(commits: [agentSHA], message: "Undo", worktreePath: path) else {
+            return XCTFail("expected the hook to refuse the commit")
+        }
+        XCTAssertEqual(try String(contentsOfFile: path + "/a.txt", encoding: .utf8), "agent line\n", "the revert was unwound")
+        XCTAssertEqual(try String(contentsOfFile: path + "/mine.txt", encoding: .utf8), "my unsaved edit\n")
+        XCTAssertEqual(GitPaths.runGit(["diff", "--cached", "--name-only"], cwd: path).output, "")
+    }
+
     func testUndoingAnUndoIsJustAnotherRevert() throws {
         // Falls out of the design, and is worth pinning: reverts are ordinary commits, so the
         // undo of an undo needs no special case anywhere.

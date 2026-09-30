@@ -448,3 +448,18 @@ Mediums from 09-01:
 7. The Mediums, by stream.
 
 Each fix should come with the test that would have caught it; several of these bugs shipped beside a test that passed.
+
+---
+
+## Fixes
+
+- **C1, fixed 2026-09-30.** `CommandRiskClassifier`:
+  - `rg` forbids `--pre`, `--pre-glob` and `--hostname-bin`.
+  - `sort` forbids `--compress-program`.
+  - `find` forbids `-okdir` and `-fprint0`.
+  - `file` forbids `-C`/`--compile`.
+  - One-letter forbidden flags also match inside clusters (`sort -uo out`).
+  - git refuses every global option except `--no-pager`/`-P` (so `-c`, `--exec-path=`, `--git-dir=` and `--work-tree=` are refused).
+  - The read-only git subcommands forbid `--output`, `--ext-diff`, `--textconv` and `--filters`.
+  - 22 new rows in the must-not-auto-run table and 9 in the must-still-auto-run list.
+- **C2, fixed 2026-09-30.** `CheckpointRestore.perform` refuses while anything is staged (`.stagedChanges`), and the sheet says what's staged and that nothing was changed. After a failed revert or commit, the unwind is limited to the checkpoints' own files. Tests: `testStagedWorkIsNeverTakenIntoOrWipedByAnUndo` and `testAFailedUndoCommitUnwindsOnlyTheCheckpointsFiles` (a pre-commit hook that refuses).

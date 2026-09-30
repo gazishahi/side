@@ -73,7 +73,9 @@ public enum CommandAutoRunPolicy {
     /// no flag makes it dangerous; matching is on the exact first token.
     private static let readOnlyCommands: [String: [String]] = [
         "ls": [], "pwd": [], "echo": [], "date": [], "whoami": [], "hostname": [],
-        "cat": [], "head": [], "tail": [], "wc": [], "file": [], "stat": [], "basename": [], "dirname": [],
+        "cat": [], "head": [], "tail": [], "wc": [], "stat": [], "basename": [], "dirname": [],
+        // `file -C` compiles a magic file, which writes one.
+        "file": ["-C", "--compile"],
         // `env` and `printenv` are deliberately absent. `env` is a *launcher*: `env sh -c id`
         // or `env node evil.js` tokenizes as a clean read-only command with no forbidden flag,
         // and then execs its argument. It is the same class as awk/sed/node — a program that
@@ -82,10 +84,15 @@ public enum CommandAutoRunPolicy {
         // into a tool result. Found by the 2026-09-01 audit as a verified unattended-execution
         // path on any Guarded or Full track.
         "which": [], "type": [], "uname": [], "df": [], "du": [],
-        "grep": [], "rg": [], "egrep": [], "fgrep": [],
-        // Readers that become writers with one flag.
-        "sort": ["-o", "--output"],
-        "find": ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fprintf", "-fls"],
+        "grep": [], "egrep": [], "fgrep": [],
+        // Readers that *run a program* with one flag: ripgrep's preprocessor (`--pre sh` runs
+        // `sh` on every file searched) and its hostname helper. Found by the 2026-09-30 audit as
+        // unattended execution, the same class as `env`.
+        "rg": ["--pre", "--pre-glob", "--hostname-bin"],
+        // Readers that become writers, or runners, with one flag. `--compress-program` runs a
+        // program for sort's temporary files.
+        "sort": ["-o", "--output", "--compress-program"],
+        "find": ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"],
         "tree": ["-o"],
         "diff": [],
         // Deliberately absent, and they must stay absent: `awk`, `sed`, and `node` are
@@ -111,6 +118,16 @@ public enum CommandAutoRunPolicy {
         let separated = "/" + argument + "/"
         return separated.contains("/../") || separated.contains("/./..")
     }
+
+    /// Flags that make a read-only git subcommand write a file (`--output`) or run a configured
+    /// program (external diff, textconv and filter drivers).
+    private static let forbiddenGitFlags: [String] = ["--output", "--ext-diff", "--textconv", "--filters"]
+
+    /// The only global options allowed before the subcommand. Every other one changes what
+    /// runs or where: `-c key=value` sets any config (a pager, an external diff),
+    /// `--exec-path=` moves where git finds its programs, `--git-dir`/`--work-tree` leave the
+    /// project.
+    private static let allowedGitGlobalOptions: Set<String> = ["--no-pager", "-P"]
 
     /// Read-only `git` subcommands. Everything else — push, reset, clean, checkout, commit,
     /// merge, rebase, branch, worktree — needs a human.
@@ -164,18 +181,29 @@ public enum CommandAutoRunPolicy {
         if executable == "git" {
             // `git -C <path>` relocates the whole command, so git gets the same argument rule.
             if arguments.contains(where: argumentEscapesProject) { return false }
-            if arguments.contains("-C") { return false }
-            guard let subcommand = arguments.first(where: { !$0.hasPrefix("-") }) else { return false }
+            guard let position = arguments.firstIndex(where: { !$0.hasPrefix("-") }) else { return false }
+            guard arguments[..<position].allSatisfy(allowedGitGlobalOptions.contains) else { return false }
+            let subcommand = arguments[position]
             if subcommand == "config" {
                 return arguments.contains { readingGitConfigFlags.contains($0) }
             }
-            return readOnlyGitSubcommands.contains(subcommand)
+            guard readOnlyGitSubcommands.contains(subcommand) else { return false }
+            return !arguments.dropFirst(position + 1).contains { Self.matches($0, anyOf: forbiddenGitFlags) }
         }
 
         guard let forbiddenFlags = readOnlyCommands[executable] else { return false }
         if arguments.contains(where: argumentEscapesProject) { return false }
-        return !arguments.contains { argument in
-            forbiddenFlags.contains { argument == $0 || argument.hasPrefix($0 + "=") }
+        return !arguments.contains { Self.matches($0, anyOf: forbiddenFlags) }
+    }
+
+    /// Whether an argument is one of the flags: exactly, with `=value`, or, for a one-letter
+    /// flag, inside a cluster of them (`sort -uo out.txt` sets `-o` as surely as `-o` does).
+    private static func matches(_ argument: String, anyOf flags: [String]) -> Bool {
+        flags.contains { flag in
+            if argument == flag || argument.hasPrefix(flag + "=") { return true }
+            let isShort = flag.count == 2 && flag.hasPrefix("-") && !flag.hasPrefix("--")
+            return isShort && argument.hasPrefix("-") && !argument.hasPrefix("--") && argument.count > 2
+                && argument.dropFirst().contains(flag.last!)
         }
     }
 }

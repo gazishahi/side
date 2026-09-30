@@ -38,6 +38,11 @@ public enum CheckpointRestore {
         case conflicted(paths: [String])
         case nothingToDo
         case failed(String)
+        /// The person has changes staged. An undo is a commit, and staging is how git decides
+        /// what a commit holds, so it would either take their staged work into the undo or, when
+        /// the undo fails, have to unstage it. Neither is acceptable; nothing is done until they
+        /// commit or unstage. (2026-09-30 audit, C2: a failed undo reset staged files to HEAD.)
+        case stagedChanges(paths: [String])
     }
 
     /// Commits to reverse, newest-first — the order `git revert` needs, since each reversal is
@@ -87,6 +92,15 @@ public enum CheckpointRestore {
         runGit: (([String], String) -> (success: Bool, output: String)) = { args, cwd in GitPaths.runGit(args, cwd: cwd) }
     ) -> Outcome {
         guard !commits.isEmpty else { return .nothingToDo }
+        let staged = runGit(["diff", "--cached", "--name-only"], worktreePath)
+        guard staged.success else { return .failed(staged.output) }
+        let stagedPaths = staged.output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        guard stagedPaths.isEmpty else { return .stagedChanges(paths: stagedPaths) }
+        // What the reversal may touch: the checkpoints' own files, and nothing else.
+        let checkpointPaths = Set(commits.flatMap { sha in
+            runGit(["show", "--name-only", "--format=", sha], worktreePath).output
+                .split(separator: "\n").map(String.init)
+        })
 
         for sha in commits {
             let result = runGit(["revert", "--no-commit", "--no-edit", sha], worktreePath)
@@ -94,13 +108,13 @@ public enum CheckpointRestore {
             // Conflicted (or otherwise refused): unwind and report which files disagreed.
             let conflicted = runGit(["diff", "--name-only", "--diff-filter=U"], worktreePath)
                 .output.split(separator: "\n").map(String.init)
-            abandon(worktreePath: worktreePath, runGit: runGit)
+            abandon(worktreePath: worktreePath, limitedTo: checkpointPaths, runGit: runGit)
             return conflicted.isEmpty ? .failed(result.output) : .conflicted(paths: conflicted)
         }
 
         let commit = runGit(["commit", "-m", message], worktreePath)
         guard commit.success else {
-            abandon(worktreePath: worktreePath, runGit: runGit)
+            abandon(worktreePath: worktreePath, limitedTo: checkpointPaths, runGit: runGit)
             return .failed(commit.output)
         }
         let sha = runGit(["rev-parse", "HEAD"], worktreePath).output
@@ -119,8 +133,13 @@ public enum CheckpointRestore {
     /// `revert --quit` clears the sequencer state but leaves the half-applied changes in the
     /// tree, so they have to be undone explicitly — per path, from the pre-revert HEAD snapshot,
     /// which is precisely the set of files the revert touched and nothing else.
+    ///
+    /// The index was empty of the person's changes when the undo began (see `.stagedChanges`), so
+    /// what's staged now is the revert's; it's still limited to the checkpoints' own files, so a
+    /// path the person had nothing staged in but changed meanwhile can't be swept in.
     private static func abandon(
-        worktreePath: String, runGit: (([String], String) -> (success: Bool, output: String))
+        worktreePath: String, limitedTo checkpointPaths: Set<String>,
+        runGit: (([String], String) -> (success: Bool, output: String))
     ) {
         // Everything the revert wrote: conflicted paths plus anything it staged cleanly before
         // hitting the conflict.
@@ -129,7 +148,7 @@ public enum CheckpointRestore {
         let staged = runGit(["diff", "--name-only", "--cached"], worktreePath)
             .output.split(separator: "\n").map(String.init)
         _ = runGit(["revert", "--quit"], worktreePath)
-        let touched = Set(conflicted + staged).filter { !$0.isEmpty }
+        let touched = Set(conflicted + staged).filter { !$0.isEmpty }.intersection(checkpointPaths)
         guard !touched.isEmpty else { return }
         // `reset` unstages them, `checkout` restores their content — both scoped to these paths,
         // so a modified file the user never mentioned is never even read.

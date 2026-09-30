@@ -47,6 +47,34 @@ final class CommandAutoRunPolicyTests: XCTestCase {
                 "git config user.name someone",
             ]),
             ("empty command", ["", "   "]),
+            // Readers that run a program or write a file through one flag (2026-09-30 audit, C1).
+            ("reader that runs a program or writes", [
+                "rg --pre sh TODO evil.txt",
+                "rg --pre=./run.sh foo",
+                "rg --pre-glob '*.txt' --pre sh foo",
+                "rg --hostname-bin ./x foo",
+                "sort --compress-program=sh big.txt",
+                "sort --compress-program sh big.txt",
+                "sort -uo out.txt in.txt",
+                "find . -okdir rm {} ;",
+                "find . -fprint0 out",
+                "file -C -m magic",
+                "git diff --output=src/a.swift",
+                "git log --output x.txt",
+                "git show --output=x HEAD",
+                "git diff --ext-diff",
+                "git log -p --textconv",
+                "git cat-file --filters HEAD:a.txt",
+            ]),
+            // git's global options change what runs or where.
+            ("git global option", [
+                "git -c core.pager=sh log",
+                "git -c diff.external=./x diff",
+                "git --exec-path=. status",
+                "git --git-dir=../other/.git log",
+                "git --work-tree=.. status",
+                "git -C sub status",
+            ]),
             // awk/sed/node take their *program* as an ordinary argument, so no flag list can make
             // them read-only. All three were auto-running before the 2026-08-30 audit caught it.
             ("interpreter", [
@@ -99,6 +127,10 @@ final class CommandAutoRunPolicyTests: XCTestCase {
             "find . -name '*.swift'",
             "git status", "git status --porcelain", "git log --oneline -5", "git diff",
             "git show HEAD", "git rev-parse HEAD", "git blame f.txt", "git config --get user.email",
+            // Still readers after the 2026-09-30 tightening.
+            "rg TODO", "rg -n --glob '*.swift' foo", "sort -u f.txt", "sort -rn -k2 f.txt",
+            "git --no-pager log -3", "git -P diff --stat", "git diff --output-indicator-new=+",
+            "tree -L 2", "file -b f.txt",
         ]
         for command in readers {
             XCTAssertTrue(CommandAutoRunPolicy.isAutoRunnable(command), "should auto-run: \(command)")

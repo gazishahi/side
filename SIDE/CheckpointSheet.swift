@@ -36,6 +36,9 @@ enum CheckpointUndo {
                 done("⚠︎ Undo failed: \(message)", DS.Color.statusNeedsYou, false)
             case .nothingToDo:
                 done("Nothing to undo. That checkpoint changed no files.", .secondaryLabelColor, false)
+            case .stagedChanges(let paths):
+                let listed = paths.prefix(3).joined(separator: ", ") + (paths.count > 3 ? " and \(paths.count - 3) more" : "")
+                done("You have changes staged (\(listed)). Commit or unstage them, then undo; nothing was changed.", DS.Color.statusNeedsYou, false)
             }
         }
     }
