@@ -463,3 +463,34 @@ Each fix should come with the test that would have caught it; several of these b
   - The read-only git subcommands forbid `--output`, `--ext-diff`, `--textconv` and `--filters`.
   - 22 new rows in the must-not-auto-run table and 9 in the must-still-auto-run list.
 - **C2, fixed 2026-09-30.** `CheckpointRestore.perform` refuses while anything is staged (`.stagedChanges`), and the sheet says what's staged and that nothing was changed. After a failed revert or commit, the unwind is limited to the checkpoints' own files. Tests: `testStagedWorkIsNeverTakenIntoOrWipedByAnUndo` and `testAFailedUndoCommitUnwindsOnlyTheCheckpointsFiles` (a pre-commit hook that refuses).
+- **H1, fixed.** `PipeWriting` sets `F_SETNOSIGPIPE` on each pipe and writes with `write(contentsOf:)`, for the formatter, the LSP/DAP stdio transport and ACP. Side also ignores SIGPIPE at launch. Formatters get the login shell's PATH. Tests: a 300 KB write to an exited child in a process that doesn't ignore SIGPIPE (a control without the flag died); a formatter that exits without reading.
+- **H2, HER-1, HER-3, UX-4, UX-5, fixed.**
+  - The stored token count is cleared after compacting.
+  - A summary-only conversation is never compacted again, which would overwrite Undo's copy.
+  - The send after an Undo doesn't auto-compact.
+  - Compaction is the stream task, watched by the stall watchdog and cancelled by Stop. A stopped automatic compaction keeps the message, unsent.
+  - A manual Compact that can't run says why.
+- **H3, fixed.** `teardown` sets `isTornDown`: results of tools already running are written, and nothing more is sent.
+- **HER-4, fixed.** The ceiling applies whether or not anything was redacted.
+- **H5, fixed.** A reply that hit the output limit, reported an error, or never ended doesn't run its tool calls, doesn't continue, and doesn't report success. An OpenAI-compatible stream that closes after its finish reason counts as ended.
+- **H6, fixed.** Claude 5 gets `max_tokens` 64,000 and `thinking.display: "summarized"`. "Standard" effort is still the model's own default (see the open question below).
+- **H11, fixed.**
+  - Prices match dated and variant ids, and the table has rows for the published models the picker can list.
+  - Under a budget, an unpriced remote model is refused.
+  - The runner and compaction read their own usage store.
+  - Outside agents stop at the limit, and Usage says their spend isn't in the estimate.
+- **H4, fixed.** The index refresh falls back to `git reset -q HEAD -- <paths>` (not `add`, which would stage the person's own later edit), with a 10 s retry. If that fails too, `.committedIndexStale` puts the fix command in the transcript.
+- **GIT-5, R3, GIT-7, fixed.**
+  - An index entry being added or removed is written at once.
+  - At load, the index is reconciled with the session files, and checkpoints and archives load regardless.
+  - The legacy ledger is merged in by id, and removed only after every write succeeds (the same for `think.json`).
+- **H10, fixed.** New Project and Initialize Git… make an empty initial commit (off the main thread). New Track in a repository with no commits offers Make Initial Commit. The first-run step says "Initialize Git…" for a plain folder.
+- **H7, fixed.** ACP's and LSP's read handlers remove themselves at end of file. Test: an exited agent's next second cost 3.7 s of CPU before, under 0.2 s after.
+- **H8, fixed.** The debugger's build runs through `posix_spawn` in its own process group, with the signal mask and dispositions reset. Stop signals the group. `start()` checks the session is live after every await. Test: 15 of 15 serial runs stop at once, leaving no process.
+- **H9, fixed in Alloy (unreleased).** `endComposition()` on `setBuffer`, undo, redo and a `.replace` change. Test: both audit reproductions (they failed on the old code: `012中6789`).
+- **H12, fixed.** Agents other than Claude Code are badged Experimental in Settings and labelled in the picker, and the footer no longer claims that any ACP agent works.
+- **H13 / DOC-4, fixed.** The efficiency RFC's step-5 figures are corrected.
+- **Open:**
+  - H14: autosave and crash recovery, Save As encoding, orphaned-child promotion.
+  - H15: CI for the app's tests, and test isolation from the owner's defaults. One full-suite run on 2026-09-30 failed intermittently and wasn't identified; three runs after it passed.
+  - All Mediums and Lows.
