@@ -21,7 +21,13 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
         // Extended thinking spends tokens before the answer starts, so the budget form's
         // ceiling has to make room for both — see `AgentEffort.anthropicMaxTokens`. Adaptive
         // thinking manages its own, so the ceiling stays where it was.
-        self.maxTokens = Self.usesAdaptiveThinking(modelId: modelId) ? maxTokens : effort.anthropicMaxTokens(base: maxTokens)
+        //
+        // Claude 5 thinks by default, even with no `thinking` field, and its thinking shares the
+        // ceiling with the answer, so 8,192 cut off any large file write mid-call (2026-09-30
+        // audit, H6). Streaming allows far more; output is billed as it's used, not by the cap.
+        self.maxTokens = Self.usesAdaptiveThinking(modelId: modelId)
+            ? max(maxTokens, Self.adaptiveMaxTokens)
+            : effort.anthropicMaxTokens(base: maxTokens)
         self.effort = effort
     }
 
@@ -61,6 +67,9 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
     /// Model-family check rather than a capability flag on `ProviderModel`: the split is
     /// Anthropic's own API-version detail, so it belongs in Anthropic's adapter. A BYOK provider
     /// naming a Claude 5 model gets the same treatment, which is what you want.
+    /// The output ceiling for Claude 5: room for thinking and a large write together.
+    static let adaptiveMaxTokens = 64_000
+
     public static func usesAdaptiveThinking(modelId: String) -> Bool {
         ["claude-opus-5", "claude-sonnet-5", "claude-fable-5"].contains { modelId.hasPrefix($0) }
     }
@@ -118,8 +127,12 @@ public final class AnthropicMessagesProvider: ChatModelProvider {
         // for `thinking.type.adaptive` + `output_config.effort`, while 4.x only knows the
         // budget form.
         if Self.usesAdaptiveThinking(modelId: modelId) {
+            // Summarized, always: Claude 5 thinks whether or not it's asked to, and its default
+            // display is "omitted", which streamed the thinking group empty. Display changes
+            // only what's shown; the thinking is the same, and billed the same.
+            body["thinking"] = ["type": "adaptive", "display": "summarized"]
+            // Standard is the model's own default effort; the others are explicit.
             if let effortName = effort.anthropicOutputEffort {
-                body["thinking"] = ["type": "adaptive"]
                 body["output_config"] = ["effort": effortName]
             }
         } else if let budget = effort.anthropicThinkingBudget {

@@ -79,4 +79,21 @@ final class PromptCachingTests: XCTestCase {
         XCTAssertNil(reloaded.notes)
         XCTAssertEqual(reloaded.message.content.count, 1)
     }
+
+    /// H6: Claude 5 thinks by default and shares the ceiling with the answer; 8,192 cut off
+    /// large writes. Thinking is always summarized, so it shows.
+    func testClaude5HasRoomAndShowsItsThinking() throws {
+        let body = AnthropicMessagesProvider(apiKey: "k", modelId: "claude-sonnet-5").requestBody(messages: history, system: "s", tools: tools)
+        XCTAssertEqual(body["max_tokens"] as? Int, 64_000)
+        let thinking = try XCTUnwrap(body["thinking"] as? [String: Any])
+        XCTAssertEqual(thinking["type"] as? String, "adaptive")
+        XCTAssertEqual(thinking["display"] as? String, "summarized")
+        XCTAssertNil(body["output_config"], "standard is the model's own default effort")
+        let high = AnthropicMessagesProvider(apiKey: "k", modelId: "claude-opus-5-5", effort: .high).requestBody(messages: history, system: "s", tools: tools)
+        XCTAssertEqual((high["output_config"] as? [String: Any])?["effort"] as? String, "high")
+        // Older models keep the budget form and their own ceiling.
+        let older = AnthropicMessagesProvider(apiKey: "k", modelId: "claude-haiku-4-5-20251001").requestBody(messages: history, system: "s", tools: tools)
+        XCTAssertEqual(older["max_tokens"] as? Int, 8192)
+        XCTAssertNil(older["thinking"])
+    }
 }

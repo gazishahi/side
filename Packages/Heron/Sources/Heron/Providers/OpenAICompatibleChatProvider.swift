@@ -52,7 +52,12 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
         let state = TurnState()
         do {
             try await SSEHTTPClient.stream(request: request) { sse in
-                Self.handle(sse: sse, state: state, onEvent: onEvent)
+                if Self.handle(sse: sse, state: state, onEvent: onEvent) { state.ended = true }
+            }
+            // A server that gave its finish reason and closed without `[DONE]` still finished;
+            // the runner treats a reply with no end as cut off and won't run its tool calls.
+            if !state.ended, state.finishReason != nil {
+                Self.handle(sse: SSEEvent(event: nil, data: "[DONE]"), state: state, onEvent: onEvent)
             }
         } catch let error as SSEHTTPClientError {
             guard case .httpError(let statusCode, let body) = error else { throw error }
@@ -171,6 +176,7 @@ public final class OpenAICompatibleChatProvider: ChatModelProvider {
         /// calls specifically rather than every block.
         public var toolCallsByIndex: [Int: String] = [:] // index -> id
         public var finishReason: String?
+        public var ended = false
         public var promptTokens: Int?
         public var completionTokens: Int?
         public var cachedTokens: Int?

@@ -12,6 +12,9 @@ final class FakeModelServer: @unchecked Sendable {
         /// Text in deltas of `delta` characters, spread evenly over `duration` seconds (100
         /// writes a second, a token's pace, or one when it's 0): what the streaming budgets measure.
         case streamedText(String, delta: Int, duration: TimeInterval)
+        /// A tool call whose input stops part-way: at the output limit (`max_tokens`), or with
+        /// an error event in the middle of the stream (`overloaded_error`) and no end.
+        case cutToolCall(name: String, partialInput: String, overloaded: Bool)
     }
 
     private let listener: NWListener
@@ -142,6 +145,17 @@ final class FakeModelServer: @unchecked Sendable {
             event("message_delta", ["type": "message_delta", "delta": ["stop_reason": "tool_use"], "usage": ["output_tokens": 40 * calls.count]])
         case .streamedText:
             break
+        case .cutToolCall(let name, let partialInput, let overloaded):
+            event("content_block_start", ["type": "content_block_start", "index": 0,
+                                          "content_block": ["type": "tool_use", "id": "toolu_\(index)_0", "name": name, "input": [String: Any]()]])
+            event("content_block_delta", ["type": "content_block_delta", "index": 0, "delta": ["type": "input_json_delta", "partial_json": partialInput]])
+            if overloaded {
+                event("error", ["type": "error", "error": ["type": "overloaded_error", "message": "Overloaded"]])
+                send(stream, on: connection)
+                return
+            }
+            event("content_block_stop", ["type": "content_block_stop", "index": 0])
+            event("message_delta", ["type": "message_delta", "delta": ["stop_reason": "max_tokens"], "usage": ["output_tokens": 8192]])
         }
         event("message_stop", ["type": "message_stop"])
         send(stream, on: connection)

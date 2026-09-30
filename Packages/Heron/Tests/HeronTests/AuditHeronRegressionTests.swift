@@ -170,4 +170,31 @@ final class AuditHeronRegressionTests: XCTestCase {
         XCTAssertEqual(try compactions(), 1, "the send after Undo carried the whole conversation")
         XCTAssertFalse(heron.turns.contains(where: \.isCompactionSummary))
     }
+
+    // H5: a tool call cut off at the output limit, or by an overload error, isn't run, and
+    // nothing more is sent.
+    func testAnIncompleteToolCallIsNotRunAndNothingMoreIsSent() throws {
+        for overloaded in [false, true] {
+            let project = try HeronRequestMeasurementTests.fixtureProject()
+            defer { try? FileManager.default.removeItem(at: project) }
+            let server = try FakeModelServer { _, _ in
+                .cutToolCall(name: "write_file", partialInput: #"{"path": "Sources/New.swift", "content": "struct New {\n  // a long "#, overloaded: overloaded)
+            }
+            defer { server.stop() }
+            let heron = try HeadlessHeron(project: project, baseURL: server.baseURL, modelId: "claude-sonnet-5",
+                                          mode: AgentMode(scope: .build, autonomy: .full))
+            defer { heron.cleanUp() }
+            heron.runner.send("Write it.")
+            spin(5) { !heron.runner.phase.isBusy && server.requests.count >= 1 }
+            spin(1)
+            XCTAssertEqual(server.requests.count, 1, "nothing sent after the cut (overloaded: \(overloaded))")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: project.appendingPathComponent("Sources/New.swift").path))
+            XCTAssertFalse(heron.turns.contains { $0.content.contains { if case .toolUse = $0 { return true } else { return false } } },
+                           "no tool_use without its result")
+            XCTAssertNotEqual(heron.runner.phase, .finishedTurn, "not reported as done")
+            if !overloaded {
+                XCTAssertTrue(heron.runner.entries.contains { if case .failure(let text) = $0.kind { return text.contains("output limit") } else { return false } })
+            }
+        }
+    }
 }

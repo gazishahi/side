@@ -1573,9 +1573,14 @@ public final class AgentRunner {
             ? (lastUserMessage.count >= Self.minimumDescriptiveIntentLength ? lastUserMessage : "")
             : narrated
         let toolCalls = pendingToolCalls
-        // A tool_use block is only valid in history alongside its tool_result, so cancelled
-        // turns drop the calls rather than persisting a dangling request the API would reject.
-        let willRunTools = transportError == nil && !toolCalls.isEmpty
+        // A reply that hit the output limit, reported an error, or never finished isn't complete,
+        // and neither are its tool calls: a half-written `write_file` ran with `{}` and the loop
+        // sent again on its own, up to twelve times (2026-09-30 audit, H5).
+        let cutAtLimit: Bool = { if case .maxTokens? = lastStopReason { return true } else { return false } }()
+        let incomplete = didReceiveProviderError || cutAtLimit || !didReceiveMessageEnd
+        // A tool_use block is only valid in history alongside its tool_result, so cancelled or
+        // incomplete turns drop the calls rather than persisting a request the API would reject.
+        let willRunTools = transportError == nil && !toolCalls.isEmpty && !incomplete
         if willRunTools {
             for call in toolCalls {
                 content.append(.toolUse(id: call.id, name: call.name, input: Self.parseArguments(call.partialJSON)))
@@ -1612,6 +1617,21 @@ public final class AgentRunner {
             return
         }
         guard willRunTools else {
+            // Something was said, but the reply didn't finish: say so, and don't call it done.
+            if incomplete, !content.isEmpty || !toolCalls.isEmpty {
+                let names = Set(toolCalls.map(\.name)).sorted().joined(separator: ", ")
+                let calls = toolCalls.isEmpty ? "" : " Its \(names) call wasn't run."
+                if cutAtLimit {
+                    appendEntry(.failure("The reply hit the model's output limit before it finished.\(calls) Ask for a smaller step, or send again to continue."))
+                } else if !didReceiveProviderError {
+                    appendEntry(.failure("The reply ended before it finished (a dropped connection, usually).\(calls) Send again to continue."))
+                } else if !toolCalls.isEmpty {
+                    // The provider's own error is already in the transcript.
+                    appendEntry(.meta("The reply was interrupted.\(calls)"))
+                }
+                finishRun(.failed)
+                return
+            }
             // Nothing to run and nothing said. Distinguish the three ways that happens instead
             // of reporting a completed turn the user can't see the result of.
             if content.isEmpty {
