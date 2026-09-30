@@ -59,7 +59,8 @@ enum AgentPicker {
         popup.menu?.addItem(.separator())
         for agent in ACPAgent.known {
             let installed = AgentAvailability.isInstalled(agent)
-            popup.addItem(withTitle: installed == false ? "\(agent.displayName) (not installed)" : agent.displayName)
+            let label = agent.isVerified ? agent.displayName : "\(agent.displayName) (experimental)"
+            popup.addItem(withTitle: installed == false ? "\(label), not installed" : label)
             popup.lastItem?.representedObject = agent.id
             if installed == false { popup.lastItem?.toolTip = "Install with: \(agent.installHint)" }
         }

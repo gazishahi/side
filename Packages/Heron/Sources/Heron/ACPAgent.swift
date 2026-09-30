@@ -34,6 +34,11 @@ public struct ACPAgent: Equatable, Sendable, Codable {
         self.isCustom = isCustom
     }
 
+    /// Verified live with Side end to end (SIDE_RFC_BYO_HARNESS.md). The rest are shown as
+    /// experimental until they are (launch gate 4; 2026-09-30 audit, H12).
+    public static let verifiedIds: Set<String> = ["claude-code"]
+    public var isVerified: Bool { Self.verifiedIds.contains(id) }
+
     /// The agents Side ships knowing how to launch. Claude Code, Codex and Pi speak ACP through
     /// small adapters; Gemini CLI speaks it natively. Anything else in the ACP registry can be
     /// added as a custom agent.

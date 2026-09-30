@@ -23,7 +23,7 @@ final class AgentsPreferencesViewController: NSViewController {
         keyFields.removeAll()
         var sections: [NSView] = [SettingsSplitViewController.hero(.agents)]
         sections += ACPAgent.known.map(section(for:))
-        sections.append(SettingsForm.section(footer: "Any agent that speaks the Agent Client Protocol works: OpenCode, Qwen Code, Goose and others. Add it by the command that starts it in ACP mode.", [
+        sections.append(SettingsForm.section(footer: "Other agents that speak the Agent Client Protocol (OpenCode, Qwen Code, Goose and more) can be added by the command that starts them in ACP mode. Side has verified Claude Code; the others are experimental, and may not work fully.", [
             SettingsForm.row("Add another agent", SettingsForm.button("Add Agent\u{2026}", self, #selector(addAgent))),
         ]))
         SettingsForm.install(SettingsForm.page(sections), in: view)
@@ -35,7 +35,9 @@ final class AgentsPreferencesViewController: NSViewController {
         name.font = DS.Text.body(.semibold)
         let badge = SettingsForm.badge(installed == nil ? "Checking" : (installed! ? "Installed" : "Not installed"),
                                        color: installed == true ? DS.Color.statusVerified : .secondaryLabelColor)
-        var headerViews: [NSView] = [name, badge, NSView()]
+        var headerViews: [NSView] = [name, badge]
+        if !agent.isVerified { headerViews.append(SettingsForm.badge("Experimental", color: .secondaryLabelColor)) }
+        headerViews.append(NSView())
         if agent.isCustom {
             let remove = SettingsForm.button("Remove", self, #selector(removeAgent(_:)), destructive: true)
             remove.identifier = NSUserInterfaceItemIdentifier(agent.id)

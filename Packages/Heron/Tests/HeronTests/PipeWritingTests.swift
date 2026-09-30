@@ -55,3 +55,13 @@ final class ExitedChildIdleTests: XCTestCase {
         _ = connection
     }
 }
+
+/// 2026-09-30 audit, H12 (launch gate 4): only agents verified with Side are shown without the
+/// experimental label.
+final class OutsideAgentLabelTests: XCTestCase {
+    func testOnlyVerifiedAgentsGoUnlabelled() {
+        let verified = ACPAgent.builtIn.filter(\.isVerified).map(\.id)
+        XCTAssertEqual(verified, ["claude-code"])
+        XCTAssertFalse(ACPAgent.builtIn.first { $0.id == "codex" }?.isVerified ?? true)
+    }
+}
