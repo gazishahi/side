@@ -25,7 +25,7 @@ Heron and Alloy version on their own (SemVer from 0.1.0); Side pins the versions
 1. Distribution (this document).
 2. **Alloy built.** Decided by the owner 2026-09-24: Alloy ships before Side's first release. **Met 2026-09-24:** Make runs on Alloy only, inside every budget (`SIDE_RFC_ALLOY.md`, step 7); publishing it is step 8.
    Proposed in `SIDE_RFC_ALLOY.md`.
-3. A fresh audit since 2026-09-01 (outside agents, multi-agent, Integration, Library landed after).
+3. A fresh audit since 2026-09-01 (outside agents, multi-agent, Integration, Library landed after). **Done 2026-09-30:** `SIDE_AUDIT_REPORT_2026-09-30.md` (2 Critical, 15 High); its blocking set stands between this gate and release.
 4. Codex, Gemini CLI and Pi verified live, or labelled experimental.
 5. Dark mode, VoiceOver and text-size pass on the redesigned Preferences and Library.
 6. A clean-account first-run walkthrough.

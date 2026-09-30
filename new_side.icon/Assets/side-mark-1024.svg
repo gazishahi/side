@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Side — symmetric flat mark, with icon-safe padding</title>
+  <g id="Side-mark" fill="#1C1C1E">
+    <path id="Upper-left-half" d="M 256 192 H 736.804041 A 16 16 0 0 1 748.117749 219.313708 L 219.313708 748.117749 A 16 16 0 0 1 192 736.804041 V 256 A 64 64 0 0 1 256 192 Z"/>
+    <path id="Lower-right-half" d="M 256 192 H 736.804041 A 16 16 0 0 1 748.117749 219.313708 L 219.313708 748.117749 A 16 16 0 0 1 192 736.804041 V 256 A 64 64 0 0 1 256 192 Z" transform="rotate(180 512 512)"/>
+  </g>
+</svg>
