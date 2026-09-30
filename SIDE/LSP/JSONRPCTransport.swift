@@ -48,9 +48,16 @@ actor JSONRPCTransport {
         Task { [weak self] in
             for await chunk in chunks { await self?.consume(chunk) }
         }
+        // Empty data is end of file: the handler goes then, or it's called with nothing about
+        // 400,000 times a second until Side quits (2026-09-30 audit, H7: a server that crashed
+        // left a core spinning, since `stop()` does nothing once the process has ended).
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                continuation.finish()
+                return
+            }
             continuation.yield(data)
         }
         // Previously discarded entirely — when a server process dies right after spawn (e.g.
@@ -60,7 +67,8 @@ actor JSONRPCTransport {
         let label = logLabel
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
+            guard !data.isEmpty else { return handle.readabilityHandler = nil }
+            guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
             print("[LSP][\(label) stderr] \(text)")
         }
         process.terminationHandler = { [weak self] _ in

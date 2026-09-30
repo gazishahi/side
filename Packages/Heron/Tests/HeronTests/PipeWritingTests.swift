@@ -32,3 +32,26 @@ final class PipeWritingTests: XCTestCase {
         XCTAssertEqual(String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self), "hello")
     }
 }
+
+/// 2026-09-30 audit, H7: an agent that exits on its own left its pipe handlers being called
+/// with nothing, about 400,000 times a second, until the app quit.
+@MainActor
+final class ExitedChildIdleTests: XCTestCase {
+    private static func processCPU() -> TimeInterval {
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        return TimeInterval(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + TimeInterval(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6
+    }
+
+    func testAnAgentThatExitsLeavesNothingRunning() throws {
+        let launch = ACPLaunch(executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: [], environment: [:])
+        let connection = try ACPConnection(launch: launch, cwd: FileManager.default.temporaryDirectory)
+        // Let it exit and its end of file arrive.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        let before = Self.processCPU()
+        RunLoop.main.run(until: Date().addingTimeInterval(1))
+        let spent = Self.processCPU() - before
+        XCTAssertLessThan(spent, 0.2, "CPU over a second after the agent exited: \(spent) s")
+        _ = connection
+    }
+}

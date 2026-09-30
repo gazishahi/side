@@ -523,3 +523,33 @@ final class DebugSnapshotPublishingTests: XCTestCase {
         XCTAssertNil(DebugSnapshot.shared.state(projectRoot: folder))
     }
 }
+
+/// 2026-09-30 audit, H8: Stop during the pre-launch build left the build running, and when it
+/// finished the ended session came back to life and launched the program.
+@MainActor
+final class DebugBuildStopTests: XCTestCase {
+    func testStopDuringTheBuildEndsItAndLaunchesNothing() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("side-debug-build-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let marker = "31.\(Int.random(in: 100_000...999_999))"
+        let configuration = DebugConfiguration(name: "t", program: "/usr/bin/true", directory: dir.path, build: "sleep \(marker)")
+        let store = BreakpointStore(project: dir, defaults: UserDefaults(suiteName: "side.tests.build-stop.\(UUID().uuidString)")!)
+        let session = DebugSession(configuration: configuration, adapter: URL(fileURLWithPath: "/usr/bin/false"), breakpoints: store)
+        var states: [DebugSession.State] = []
+        session.onChange = { states.append(session.state) }
+        let started = Task { await session.start() }
+        try await Task.sleep(nanoseconds: 700_000_000)
+        XCTAssertEqual(session.state, .building)
+        session.stop()
+        _ = await started.value  // returns once the build is gone, not after 31.5 s
+        XCTAssertFalse(session.isActive)
+        XCTAssertFalse(states.contains(.starting), "nothing launched after Stop: \(states)")
+        let left = Process()
+        left.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        left.arguments = ["-f", "sleep \(marker)"]
+        try left.run()
+        left.waitUntilExit()
+        XCTAssertNotEqual(left.terminationStatus, 0, "the build is gone")
+    }
+}

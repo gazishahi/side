@@ -38,12 +38,17 @@ public final class ACPConnection {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         // Both pipes are drained continuously — a full pipe blocks the agent (ProcessHygiene).
+        // Empty data is end of file: the handler is removed then, or Foundation keeps calling it
+        // with nothing, about 400,000 times a second, for as long as Side runs (2026-09-30 audit,
+        // H7: an agent that exited on its own left 1–2 cores spinning).
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
+            guard !data.isEmpty else { return handle.readabilityHandler = nil }
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.receive(data) } }
         }
         stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
+            guard !data.isEmpty else { return handle.readabilityHandler = nil }
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.receiveLog(data) } }
         }
         process.terminationHandler = { [weak self] process in

@@ -369,10 +369,14 @@ final class DebugSession {
         if let build = configuration.build {
             state = .building
             appendOutput("$ \(build)\n")
-            let (status, log) = await Self.run(build, in: configuration.directory)
+            let (status, log) = await Self.run(build, in: configuration.directory, process: buildProcess)
+            // Stopped (or restarted) during the build: it's over, and nothing launches
+            // (2026-09-30 audit, H8: the ended session came back to life and ran the program).
+            guard isActive else { return }
             appendOutput(log)
             guard status == 0 else { return state = .ended("The build failed (exit \(status)).") }
         }
+        guard isActive else { return }
         state = .starting
         do {
             // A server adapter builds and runs from the project (Delve's `go build`), and finds
@@ -390,12 +394,14 @@ final class DebugSession {
                 }
             )
             try await client.start()
+            guard isActive else { return await client.stop() }
             let initialize = try await client.request("initialize", [
                 "clientID": "side", "clientName": "Side", "adapterID": .string(adapterID), "locale": "en",
                 "linesStartAt1": true, "columnsStartAt1": true, "pathFormat": "path",
                 "supportsVariableType": true, "supportsVariablePaging": true,
                 "supportsRunInTerminalRequest": .bool(runInTerminal != nil), "supportsStartDebuggingRequest": .bool(onStartChild != nil),
             ])
+            guard isActive else { return await client.stop() }
             capabilities = initialize.object ?? [:]
             // The launch's response may come only after configurationDone, so it isn't awaited
             // before configuring (the adapter's `initialized` event starts that).
@@ -674,6 +680,7 @@ final class DebugSession {
 
     private func end(_ message: String?) {
         guard isActive else { return }
+        buildProcess.stop()
         if let message { appendOutput("\(message)\n") }
         frames = []
         breakpoints.clearVerification()
@@ -707,21 +714,80 @@ final class DebugSession {
         }
     }
 
-    /// A shell command's status and output, off the main thread (the build).
-    nonisolated static func run(_ command: String, in directory: String) async -> (Int32, String) {
+    /// The build's process while it runs, so Stop can end it.
+    private let buildProcess = RunningProcess()
+
+    /// The build's process group, which another thread may need to stop. The build runs in a
+    /// group of its own, so Stop reaches everything it started: signalling the shell and its
+    /// current children missed a child it was about to start, and that build ran on after
+    /// Stop (2026-09-30 audit, H8).
+    final class RunningProcess: @unchecked Sendable {
+        private let lock = NSLock()
+        private var group: pid_t = 0
+        private var stopped = false
+
+        /// False if it was stopped before it started: then it's stopped at once.
+        func started(_ pid: pid_t) -> Bool {
+            lock.withLock {
+                guard !stopped else { return false }
+                group = pid
+                return true
+            }
+        }
+
+        func stop() {
+            let group: pid_t = lock.withLock {
+                stopped = true
+                defer { self.group = 0 }
+                return self.group
+            }
+            if group > 0 { kill(-group, SIGTERM) }
+        }
+    }
+
+    /// A shell command's status and output, off the main thread (the build), in a process group
+    /// of its own (`RunningProcess`).
+    nonisolated static func run(_ command: String, in directory: String, process running: RunningProcess? = nil) async -> (Int32, String) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                process.arguments = ["-lc", command]
-                process.currentDirectoryURL = URL(fileURLWithPath: directory)
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
-                do { try process.run() } catch { return continuation.resume(returning: (-1, "\(error.localizedDescription)\n")) }
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                continuation.resume(returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
+                var pipe: [Int32] = [0, 0]
+                guard Darwin.pipe(&pipe) == 0 else { return continuation.resume(returning: (-1, "Couldn't make a pipe.\n")) }
+                var actions: posix_spawn_file_actions_t?
+                posix_spawn_file_actions_init(&actions)
+                posix_spawn_file_actions_adddup2(&actions, pipe[1], 1)
+                posix_spawn_file_actions_adddup2(&actions, pipe[1], 2)
+                posix_spawn_file_actions_addclose(&actions, pipe[0])
+                posix_spawn_file_actions_addchdir_np(&actions, directory)
+                var attributes: posix_spawnattr_t?
+                posix_spawnattr_init(&attributes)
+                // Its own group; and nothing blocked or ignored, as `Process` would set it up: a
+                // queue's thread blocks most signals, and a child inherits that, so Stop's SIGTERM
+                // was held and the build ran to the end. SIGPIPE (ignored in Side) goes back to
+                // its default for the build's tools.
+                posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF))
+                posix_spawnattr_setpgroup(&attributes, 0)
+                var noSignals = sigset_t(), allSignals = sigset_t()
+                sigemptyset(&noSignals)
+                sigfillset(&allSignals)
+                posix_spawnattr_setsigmask(&attributes, &noSignals)
+                posix_spawnattr_setsigdefault(&attributes, &allSignals)
+                let arguments: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/zsh"), strdup("-lc"), strdup(command), nil]
+                var pid: pid_t = 0
+                let spawned = posix_spawn(&pid, "/bin/zsh", &actions, &attributes, arguments, environ)
+                arguments.forEach { free($0) }
+                posix_spawn_file_actions_destroy(&actions)
+                posix_spawnattr_destroy(&attributes)
+                close(pipe[1])
+                guard spawned == 0 else {
+                    close(pipe[0])
+                    return continuation.resume(returning: (-1, "\(String(cString: strerror(spawned)))\n"))
+                }
+                if let running, !running.started(pid) { kill(-pid, SIGTERM) }
+                let data = FileHandle(fileDescriptor: pipe[0], closeOnDealloc: true).readDataToEndOfFile()
+                var status: Int32 = 0
+                waitpid(pid, &status, 0)
+                let exit = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -1
+                continuation.resume(returning: (exit, String(decoding: data, as: UTF8.self)))
             }
         }
     }
