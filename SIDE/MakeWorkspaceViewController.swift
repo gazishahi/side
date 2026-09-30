@@ -1541,6 +1541,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         LaunchSignposts.begin("reindexAndRestore")
         reindexAndRestoreLastFile()
         LaunchSignposts.end("reindexAndRestore")
+        // After the last session's tabs are back: unsaved work from a session that ended
+        // without saving it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.offerRecovery(for: url) }
     }
 
     /// Tears down and recreates `lspManager` pointed at `root`, and points every other
@@ -2658,6 +2661,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func rebuildTabBar() {
+        // Whatever changed a tab's unsaved state (an edit, a save, a close) is followed by the
+        // recovery copies catching up.
+        scheduleRecoverySync()
         updateCaretPosition()
         // The tab bar is rebuilt on every open, close, and reorder, which is exactly the set of
         // moments the remembered tab list should change — except during a restore, where the
@@ -3336,6 +3342,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// An edit that leaves the file its saved length might have put it back: checked once
     /// typing pauses. The length is free to read; the text is hashed only then.
     private var savedComparison: DispatchWorkItem?
+    /// The pending write of unsaved buffers' recovery copies (see `syncRecovery`).
+    fileprivate var recoverySync: DispatchWorkItem?
+    /// The recovery copies this window wrote: another window on the same project keeps its own.
+    fileprivate var recoveryNames: Set<String> = []
     private func scheduleComparisonWithSaved(_ index: Int) {
         savedComparison?.cancel()
         guard openTabs[index].document.rope.utf8Count == openTabs[index].savedStamp.count else { return }
@@ -3350,6 +3360,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     func editorTextDidChange(_ engine: EditorEngine) {
         guard !isLoadingTab else { return }
+        scheduleRecoverySync()
         dirty = true
         if let index = activeTabIndex, !openTabs[index].dirty {
             openTabs[index].dirty = true
@@ -5846,4 +5857,154 @@ final class CodeActionBox: NSObject {
 
 private extension NSFont {
     func withTraits(_ traits: NSFontTraitMask) -> NSFont { NSFontManager.shared.convert(self, toHaveTrait: traits) }
+}
+
+// MARK: - Recovering unsaved work (as Neovim's swap files do)
+
+/// A tab's unsaved text, kept outside the project while it's unsaved, so a crash or a forced
+/// quit doesn't lose it (2026-09-30 audit, H14: there was no recovery at all, and a crash lost
+/// every unsaved buffer). Written two seconds after the last change, removed once the tab is
+/// saved or closed; offered back when the project next opens, if it differs from the file.
+private struct RecoveryCopy: Codable {
+    var path: String
+    var isUntitled: Bool
+    var savedAt: Date
+    var text: String
+}
+
+extension MakeWorkspaceViewController {
+    fileprivate static let recoveryQueue = DispatchQueue(label: "side.make.recovery", qos: .utility)
+
+    /// `~/Library/Application Support/Side/Recovery/<project>/`, one file per unsaved tab.
+    static func recoveryDirectory(for project: URL) -> URL {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in project.standardizedFileURL.path.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return support.appendingPathComponent("Side/Recovery/\(String(hash, radix: 16))", isDirectory: true)
+    }
+
+    static func recoveryFileName(for path: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in path.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        return String(hash, radix: 16) + ".json"
+    }
+
+    fileprivate func scheduleRecoverySync() {
+        guard projectURL != nil, !AppDelegate.isUITesting else { return }
+        recoverySync?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.syncRecovery() }
+        recoverySync = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    /// One copy for every text tab with unsaved changes, and none for anything else.
+    func syncRecovery() {
+        guard let projectURL else { return }
+        let copies = openTabs.filter { $0.dirty && $0.kind == .text }.map {
+            RecoveryCopy(path: $0.isUntitled ? $0.url.absoluteString : $0.url.path, isUntitled: $0.isUntitled, savedAt: Date(), text: $0.document.string)
+        }
+        let directory = Self.recoveryDirectory(for: projectURL)
+        let wanted = Dictionary(copies.map { (Self.recoveryFileName(for: $0.path), $0) }, uniquingKeysWith: { $1 })
+        let stale = recoveryNames.subtracting(wanted.keys)
+        recoveryNames = Set(wanted.keys)
+        Self.recoveryQueue.async {
+            for name in stale { try? FileManager.default.removeItem(at: directory.appendingPathComponent(name)) }
+            guard !wanted.isEmpty else { return }
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            for (name, copy) in wanted {
+                guard let data = try? encoder.encode(copy) else { continue }
+                try? data.write(to: directory.appendingPathComponent(name), options: .atomic)
+            }
+        }
+    }
+
+    /// Copies whose text isn't what's on disk (a copy written just before a save, then left by a
+    /// crash, matches and is dropped).
+    static func recoverableCopies(for project: URL) -> [(url: URL, isUntitled: Bool, text: String)] {
+        let directory = recoveryDirectory(for: project)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        return names.compactMap { name -> (URL, Bool, String)? in
+            let file = directory.appendingPathComponent(name)
+            guard let data = try? Data(contentsOf: file), let copy = try? decoder.decode(RecoveryCopy.self, from: data) else {
+                try? FileManager.default.removeItem(at: file)
+                return nil
+            }
+            if copy.isUntitled {
+                guard !copy.text.isEmpty, let url = URL(string: copy.path) else { return nil }
+                return (url, true, copy.text)
+            }
+            let url = URL(fileURLWithPath: copy.path)
+            let onDisk = (try? Data(contentsOf: url)).flatMap { TextFileCodec.decode($0)?.text }
+            guard onDisk != copy.text else {
+                try? FileManager.default.removeItem(at: file)
+                return nil
+            }
+            return (url, false, copy.text)
+        }
+    }
+
+    func openForTesting(_ url: URL, completion: @escaping () -> Void) { open(url, completion: completion) }
+    /// An unsaved edit to the active tab, as typing would leave it.
+    func editActiveTabForTesting(_ text: String) {
+        guard let index = activeTabIndex else { return }
+        openTabs[index].document.replaceAll(with: text)
+        openTabs[index].dirty = true
+        dirty = true
+        rebuildTabBar()
+    }
+    var activeTabForTesting: (text: String, dirty: Bool)? { activeTabIndex.map { (openTabs[$0].document.string, openTabs[$0].dirty) } }
+    static func flushRecoveryForTesting() { recoveryQueue.sync {} }
+    func restoreRecoveredForTesting() {
+        guard let projectURL else { return }
+        for copy in Self.recoverableCopies(for: projectURL) { restore(copy) }
+    }
+
+    fileprivate func offerRecovery(for project: URL) {
+        guard projectURL == project, !AppDelegate.isUITesting else { return }
+        let copies = Self.recoverableCopies(for: project)
+        guard !copies.isEmpty, let window = view.window else { return }
+        let names = copies.map { $0.isUntitled ? $0.url.lastPathComponent : $0.url.lastPathComponent }
+        let alert = NSAlert()
+        alert.messageText = copies.count == 1 ? "Restore unsaved changes to \(names[0])?" : "Restore unsaved changes to \(copies.count) files?"
+        alert.informativeText = "Side ended before \(copies.count == 1 ? "this file was" : "these were") saved: \(names.prefix(6).joined(separator: ", "))\(names.count > 6 ? " and \(names.count - 6) more" : ""). Restoring opens \(copies.count == 1 ? "it" : "them") with those changes, unsaved, for you to look over. The files on disk aren't touched either way."
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Discard")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            guard response == .alertFirstButtonReturn else {
+                // Only what was offered: another window's copies are its own.
+                for copy in copies {
+                    let path = copy.isUntitled ? copy.url.absoluteString : copy.url.path
+                    try? FileManager.default.removeItem(at: Self.recoveryDirectory(for: project).appendingPathComponent(Self.recoveryFileName(for: path)))
+                }
+                return
+            }
+            for copy in copies { self.restore(copy) }
+        }
+    }
+
+    private func restore(_ copy: (url: URL, isUntitled: Bool, text: String)) {
+        func apply(_ index: Int) {
+            openTabs[index].document.replaceAll(with: copy.text)
+            openTabs[index].dirty = true
+            if activeTabIndex == index {
+                dirty = true
+                loadActiveTabIntoEditor()
+            }
+            rebuildTabBar()
+        }
+        if copy.isUntitled {
+            newFile()
+            if let index = activeTabIndex { apply(index) }
+        } else {
+            open(copy.url) { [weak self] in
+                guard let self, let index = self.openTabs.firstIndex(where: { $0.url == copy.url }) else { return }
+                apply(index)
+            }
+        }
+    }
 }

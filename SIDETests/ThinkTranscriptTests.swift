@@ -42,14 +42,14 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn", "usage": {"inputTokens": 1000, "outputTokens": 400}}})
 """#.write(to: script, atomically: true, encoding: .utf8)
         agent = ACPAgent.addCustom(name: "Brief", command: "brief", arguments: [script.path], apiKeyVariable: nil)
-        UserDefaults.standard.set("/usr/bin/python3", forKey: "SideACPAgentPath.\(agent.id)")
+        ACPAgent.defaults.set("/usr/bin/python3", forKey: "SideACPAgentPath.\(agent.id)")
     }
 
     override func tearDown() async throws {
         guard let context else { return }
         for track in context.trackStore.tracks { context.runnerManager.discardRunner(forTrackKey: track.branchName) }
         ProjectContextRegistry.shared.release(projectRoot: root)
-        if let agent { ACPAgent.removeCustom(id: agent.id); UserDefaults.standard.removeObject(forKey: "SideACPAgentPath.\(agent.id)") }
+        if let agent { ACPAgent.removeCustom(id: agent.id); ACPAgent.defaults.removeObject(forKey: "SideACPAgentPath.\(agent.id)") }
         try? FileManager.default.removeItem(at: root)
     }
 

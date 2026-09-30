@@ -14,7 +14,7 @@ enum AgentAvailability {
     /// The agent's executable: a hidden per-agent override (`SideACPAgentPath.<id>`, for an
     /// agent the shell doesn't find — and for testing against a mock), else the login-shell PATH.
     nonisolated static func executable(for agent: ACPAgent) -> URL? {
-        if let override = UserDefaults.standard.string(forKey: "SideACPAgentPath.\(agent.id)") {
+        if let override = ACPAgent.defaults.string(forKey: "SideACPAgentPath.\(agent.id)") {
             return URL(fileURLWithPath: override)
         }
         return LanguageServerRegistry.resolveExecutable(named: agent.binary)

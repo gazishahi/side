@@ -69,8 +69,22 @@ public struct ACPAgent: Equatable, Sendable, Codable {
 
     private static let customKey = "SideACPCustomAgents"
 
+    /// Where agents' settings live: the person's preferences, or under tests a suite of this
+    /// process's own, gone when it exits. Parallel test processes read-modify-wrote the real
+    /// list at once, so agents vanished mid-test and test agents were left in the owner's Side
+    /// (2026-09-30 audit, TST-1).
+    nonisolated(unsafe) public static let defaults: UserDefaults = {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["XCTestBundlePath"] != nil || environment["XCTestConfigurationFilePath"] != nil || NSClassFromString("XCTestCase") != nil,
+              let suite = UserDefaults(suiteName: testSuiteName) else { return .standard }
+        suite.removePersistentDomain(forName: testSuiteName)
+        atexit { UserDefaults.standard.removePersistentDomain(forName: ACPAgent.testSuiteName) }
+        return suite
+    }()
+    static let testSuiteName = "com.shahi.side.tests.\(ProcessInfo.processInfo.processIdentifier)"
+
     public static var custom: [ACPAgent] {
-        guard let data = UserDefaults.standard.data(forKey: customKey),
+        guard let data = defaults.data(forKey: customKey),
               let agents = try? JSONDecoder().decode([ACPAgent].self, from: data) else { return [] }
         return agents
     }
@@ -88,12 +102,12 @@ public struct ACPAgent: Equatable, Sendable, Codable {
 
     public static func removeCustom(id: String) {
         saveCustom(custom.filter { $0.id != id })
-        UserDefaults.standard.removeObject(forKey: signInKey(id))
+        defaults.removeObject(forKey: signInKey(id))
         KeychainStore.delete(account: keychainAccount(id))
     }
 
     private static func saveCustom(_ agents: [ACPAgent]) {
-        UserDefaults.standard.set(try? JSONEncoder().encode(agents), forKey: customKey)
+        defaults.set(try? JSONEncoder().encode(agents), forKey: customKey)
     }
 
     // MARK: Signing in
@@ -109,8 +123,8 @@ public struct ACPAgent: Equatable, Sendable, Codable {
     static func keychainAccount(_ id: String) -> String { "acp.\(id)" }
 
     public var signIn: SignIn {
-        get { UserDefaults.standard.string(forKey: Self.signInKey(id)).flatMap(SignIn.init(rawValue:)) ?? .subscription }
-        nonmutating set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.signInKey(id)) }
+        get { Self.defaults.string(forKey: Self.signInKey(id)).flatMap(SignIn.init(rawValue:)) ?? .subscription }
+        nonmutating set { Self.defaults.set(newValue.rawValue, forKey: Self.signInKey(id)) }
     }
 
     /// Whether this agent can take a key at all (it names a variable to read it from).

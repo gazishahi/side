@@ -43,7 +43,7 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn", "usage": {"inputTokens": 100, "outputTokens": 20, "cachedReadTokens": 5}}})
 """#.write(to: script, atomically: true, encoding: .utf8)
         worker = ACPAgent.addCustom(name: "Worker", command: "worker", arguments: [script.path], apiKeyVariable: nil)
-        UserDefaults.standard.set("/usr/bin/python3", forKey: "SideACPAgentPath.\(worker.id)")
+        ACPAgent.defaults.set("/usr/bin/python3", forKey: "SideACPAgentPath.\(worker.id)")
     }
 
     override func tearDown() async throws {
@@ -53,7 +53,7 @@ for line in sys.stdin:
         }
         ProjectContextRegistry.shared.release(projectRoot: root)
         ACPAgent.removeCustom(id: worker.id)
-        UserDefaults.standard.removeObject(forKey: "SideACPAgentPath.\(worker.id)")
+        ACPAgent.defaults.removeObject(forKey: "SideACPAgentPath.\(worker.id)")
         try? FileManager.default.removeItem(at: root)
     }
 

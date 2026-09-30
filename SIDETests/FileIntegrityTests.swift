@@ -84,3 +84,59 @@ final class FileIntegrityTests: XCTestCase {
         XCTAssertEqual(Set(index.relativePaths), ["a.txt", "b.txt"])
     }
 }
+
+/// 2026-09-30 audit, H14: unsaved buffers are kept outside the project while unsaved, so a
+/// crash doesn't lose them, and are offered back when the project next opens.
+@MainActor
+final class BufferRecoveryTests: XCTestCase {
+    func testAnUnsavedBufferSurvivesAndIsGoneOnceClosed() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("side-recovery-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: MakeWorkspaceViewController.recoveryDirectory(for: folder))
+        }
+        let file = folder.appendingPathComponent("notes.txt")
+        try "on disk\n".write(to: file, atomically: true, encoding: .utf8)
+        let make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = container
+        for child in [make.view, make.topRowContent!] { container.addSubview(child) }
+        make.view.frame = container.bounds
+        defer { window.contentView = nil; window.close() }
+        make.loadProject(at: folder)
+        var opened = false
+        make.openForTesting(file) { opened = true }
+        let deadline = Date().addingTimeInterval(10)
+        while !opened, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+
+        make.editActiveTabForTesting("on disk\nand typed, never saved\n")
+        make.syncRecovery()
+        MakeWorkspaceViewController.flushRecoveryForTesting()
+        let copies = MakeWorkspaceViewController.recoverableCopies(for: folder)
+        XCTAssertEqual(copies.map(\.text), ["on disk\nand typed, never saved\n"])
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "on disk\n", "the file is untouched")
+
+        // As after a relaunch: the tab gone, the copy restored, unsaved.
+        make.closeAllTabsForTesting()
+        make.restoreRecoveredForTesting()
+        let reopened = Date().addingTimeInterval(10)
+        while make.activeTabForTesting?.dirty != true, Date() < reopened { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(make.activeTabForTesting?.text, "on disk\nand typed, never saved\n")
+        XCTAssertEqual(make.activeTabForTesting?.dirty, true)
+
+        // A copy that matches the file on disk isn't offered.
+        try "on disk\nand typed, never saved\n".write(to: file, atomically: true, encoding: .utf8)
+        XCTAssertTrue(MakeWorkspaceViewController.recoverableCopies(for: folder).isEmpty)
+
+        // Closed: no copy left.
+        make.closeAllTabsForTesting()
+        make.syncRecovery()
+        MakeWorkspaceViewController.flushRecoveryForTesting()
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: MakeWorkspaceViewController.recoveryDirectory(for: folder).path)) ?? []
+        XCTAssertTrue(left.isEmpty, "\(left)")
+    }
+}
