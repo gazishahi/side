@@ -175,6 +175,10 @@ public final class AgentRunner {
     private var branchedAwayNote: String?
     /// Set by `stop()`, cleared when the user sends again — see `continueAfterTools`.
     private var isStopRequested = false
+    /// Set by `teardown`: the project closed or the track was deleted. Nothing more is sent, and
+    /// tools already running only have their results written (2026-09-30 audit, H3: a teardown
+    /// while tools ran left the loop going, billing up to twelve more round trips).
+    private var isTornDown = false
     /// The most recent thing the user actually asked for, used to describe a checkpoint when the
     /// model didn't narrate one.
     private var lastUserMessage = ""
@@ -323,19 +327,34 @@ public final class AgentRunner {
         guard !phase.isBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        guard !isTornDown else { return }
         restoreTranscriptIfDropped()
         // Between messages, never within one: the history changes here, once, and the requests
         // of the turn that follows all share the new prefix (SIDE_RFC_HERON_EFFICIENCY.md, D3, D4).
         sweepStaleContentIfNeeded()
-        if contextUsage().fraction >= ContextBudget.autoCompactFraction {
-            compact(automatic: true) { [weak self] _ in
-                // Sent whatever the compaction's outcome: the message is the person's, and a
-                // failed compaction has said why in the transcript.
-                self?.sendNow(trimmed, attachments: attachments)
+        // Not the send right after an Undo: the person asked for the whole conversation back
+        // (2026-09-30 audit, UX-4: it was compacted again at once).
+        let justUndone = compactionJustUndone
+        compactionJustUndone = false
+        if !justUndone, contextUsage().fraction >= ContextBudget.autoCompactFraction {
+            compact(automatic: true) { [weak self] result in
+                // Sent whatever the compaction's outcome, unless it was stopped: the message is
+                // the person's, and a failed compaction has said why in the transcript.
+                if case .failure(let error) = result, Self.isCancellation(error) {
+                    self?.sendNow(trimmed, attachments: attachments, dispatch: false)
+                } else {
+                    self?.sendNow(trimmed, attachments: attachments)
+                }
             }
             return
         }
         sendNow(trimmed, attachments: attachments)
+    }
+
+    private var compactionJustUndone = false
+
+    static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled || (error as NSError).code == NSURLErrorCancelled
     }
 
     /// Past half the window, what's gone stale is replaced with stubs (`HistorySweep`).
@@ -352,8 +371,10 @@ public final class AgentRunner {
         appendEntry(.meta("Cleared \(swept.stubbed) stale result\(swept.stubbed == 1 ? "" : "s") from the agent's context (about \(UsageFormatting.tokens(tokens)) tokens): earlier reads of files that changed or were read again, and old command output."))
     }
 
-    private func sendNow(_ trimmed: String, attachments: [AgentImageAttachment]) {
-        guard !phase.isBusy else { return }
+    /// `dispatch` false keeps the message in the conversation without sending it: a Stop during
+    /// the compaction that came first mustn't lose what was typed. It goes with the next send.
+    private func sendNow(_ trimmed: String, attachments: [AgentImageAttachment], dispatch: Bool = true) {
+        guard !phase.isBusy, !isTornDown else { return }
         restoreTranscriptIfDropped()
         let selection = resolvedSelection()
         guard case .ready(_, _, let model) = providerRegistry.resolveAdapter(
@@ -391,6 +412,10 @@ public final class AgentRunner {
             // One line, trimmed to a length that reads as a description rather than a paragraph.
             let oneLine = trimmed.replacingOccurrences(of: "\n", with: " ")
             lastUserMessage = oneLine.count > 72 ? String(oneLine.prefix(72)) + "…" : oneLine
+        }
+        guard dispatch else {
+            appendEntry(.meta("Stopped before sending. Your message is kept, and goes with the next one."))
+            return
         }
         runTurn(roundTrip: 0)
     }
@@ -503,6 +528,8 @@ public final class AgentRunner {
     /// matching `tool_result`, which the Messages API rejects outright, permanently wedging that
     /// track's conversation the next time the project is opened.
     public func teardown() {
+        isTornDown = true
+        isStopRequested = true
         stopStallWatchdog()
         streamTask?.cancel()
         streamTask = nil
@@ -1086,21 +1113,31 @@ public final class AgentRunner {
     /// conversation it replaced is kept for `undoCompaction`. `automatic` is a send past
     /// `ContextBudget.autoCompactFraction` doing it first.
     public func compact(automatic: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
-        guard !phase.isBusy else {
-            return completion(.failure(CompactionError.busy))
+        // A compaction that can't start says why (2026-09-30 audit, UX-5: after its confirmation
+        // it did nothing, silently). Busy only happens from a button that should be disabled.
+        func refuse(_ error: CompactionError) {
+            if !automatic, error != .busy { appendEntry(.failure("Couldn't compact: \(error.localizedDescription)")) }
+            completion(.failure(error))
         }
+        guard !phase.isBusy, !isTornDown else { return refuse(.busy) }
         guard let session = sessionStore.session(forTrackKey: trackKey), !session.turns.isEmpty else {
-            return completion(.failure(CompactionError.nothingToCompact))
+            return refuse(.nothingToCompact)
         }
+        // A conversation that is already only its summary has nothing more to give up, and
+        // compacting it would replace Undo's copy of the real one.
+        guard !(session.turns.count == 1 && session.turns[0].isCompactionSummary) else { return refuse(.nothingToCompact) }
         let selection = resolvedSelection()
         guard case .ready(let provider, _, let model) = providerRegistry.resolveAdapter(
             providerId: selection.providerId, modelId: selection.modelId, effort: selection.effort
         ) else {
-            return completion(.failure(CompactionError.noProvider))
+            return refuse(.noProvider)
         }
 
-        appendEntry(.meta(automatic ? "The conversation is near the context window; compacting it before sending…" : "Compacting conversation…"))
         setPhase(.streaming)
+        isStopRequested = false
+        // Watched like any request, and stoppable: the task is the stream task, so Stop and the
+        // stall watchdog cancel it (2026-09-30 audit, HER-3).
+        armStallWatchdog()
         let (systemPrompt, tools) = requestShape()
         var messages = session.turns.map(\.message)
         messages.append(AgentMessage(role: .user, content: [.text(ContextBudget.compactionInstruction)]))
@@ -1108,24 +1145,31 @@ public final class AgentRunner {
         // The stream callback is `@Sendable` and fires off-actor, so the accumulating text needs
         // a reference box rather than a captured `var`.
         let collector = SummaryCollector()
-        Task { [weak self] in
+        streamTask = Task { [weak self] in
             var failure: Error?
             do {
                 // The tools are offered only so the request matches the cached prefix; the
                 // instruction asks for text, and only text is collected.
                 try await provider.streamTurn(messages: messages, system: systemPrompt, tools: tools) { event in
                     if case .textDelta(let delta) = event { collector.append(delta) }
+                    DispatchQueue.main.async { self?.armStallWatchdog() }
                 }
             } catch {
                 failure = error
             }
+            if Task.isCancelled, failure == nil { failure = CancellationError() }
             let collected = collector.text
             let error = failure
             await MainActor.run {
                 guard let self else { return }
-                self.setPhase(.idle)
+                self.stopStallWatchdog()
+                self.streamTask = nil
+                // A stall has already said so, and blocked; that stands.
+                if case .blocked = self.phase {} else { self.setPhase(.idle) }
                 if let error {
-                    self.appendEntry(.failure("Couldn't compact: \(error.localizedDescription). The conversation is unchanged."))
+                    self.appendEntry(Self.isCancellation(error)
+                        ? .meta("Compaction stopped. The conversation is unchanged.")
+                        : .failure("Couldn't compact: \(error.localizedDescription). The conversation is unchanged."))
                     return completion(.failure(error))
                 }
                 let trimmed = collected.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1143,8 +1187,11 @@ public final class AgentRunner {
                     return completion(.failure(CompactionError.emptySummary))
                 }
                 // The gauge's measured value describes the *old* request; drop it so the estimate
-                // of the compacted conversation is what shows.
+                // of the compacted conversation is what shows, and drop the stored one too: it
+                // came back with the session, the next send read 90% and compacted again, and
+                // that replaced Undo's copy (2026-09-30 audit, HER-1).
                 self.lastReportedInputTokens = nil
+                self.sessionStore.recordReportedInputTokens(nil, forTrackKey: self.trackKey)
                 // Clear first: `hydrateFromSession` *appends*, so without this the old turns
                 // stayed on screen next to the summary until the app restarted — the transcript
                 // claimed context that was already gone.
@@ -1156,6 +1203,8 @@ public final class AgentRunner {
                 completion(.success(()))
             }
         }
+        // After the task exists, so a Stop pressed the moment this appears reaches it.
+        appendEntry(.meta(automatic ? "The conversation is near the context window; compacting it before sending…" : "Compacting conversation…"))
     }
 
     private var lastCompactionWasAutomatic = false
@@ -1178,6 +1227,7 @@ public final class AgentRunner {
         entries = []
         hydrateFromSession()
         notify(.reset)
+        compactionJustUndone = true
         appendEntry(.meta("Compaction undone: the full conversation is back, and the next message sends all of it."))
         return true
     }
@@ -1221,6 +1271,7 @@ public final class AgentRunner {
     /// conversation, so a key fixed in Preferences mid-pause takes effect on the very next call
     /// instead of requiring a fresh send.
     private func runTurn(roundTrip: Int) {
+        guard !isTornDown else { return }
         guard let session = sessionStore.session(forTrackKey: trackKey) else {
             finishRun(.stopped)
             return
@@ -1314,9 +1365,12 @@ public final class AgentRunner {
     /// `ToolExecutor.maxResultCharacters`, whatever the tool. Most results are already shaped
     /// to fit by their tool; this keeps command output's head and tail and catches the rest.
     private static func toolResult(toolUseId: String, content: String, isError: Bool) -> AgentContentBlock {
-        let redaction = SecretRedactor.redacting(ToolExecutor.headAndTail(content))
+        let bounded = ToolExecutor.headAndTail(content)
+        let redaction = SecretRedactor.redacting(bounded)
         guard redaction.didRedact else {
-            return .toolResult(toolUseId: toolUseId, content: content, isError: isError)
+            // The bounded text, redacted or not (2026-09-30 audit, HER-4: this returned the raw
+            // content, so the ceiling held only for results that also carried a secret).
+            return .toolResult(toolUseId: toolUseId, content: bounded, isError: isError)
         }
         // Told to the model explicitly: without this it may read a redaction marker as the
         // file's literal contents and, say, "fix" a config by writing that string back.
@@ -1638,6 +1692,21 @@ public final class AgentRunner {
         _ outcomes: [(id: String, name: String, result: ToolExecutor.Result)], root: URL, declaredIntent: String, modelId: String, roundTrip: Int,
         precomputedDiffs: [String: String] = [:]
     ) {
+        // Torn down while the tools ran: their results are written, so the conversation stays
+        // valid (every tool_use answered), and nothing else happens. A proposal nobody can
+        // decide on any more is answered as undecided.
+        if isTornDown {
+            var results: [String: AgentContentBlock] = [:]
+            for outcome in outcomes {
+                if case .completed(let output, let isError) = outcome.result {
+                    results[outcome.id] = Self.toolResult(toolUseId: outcome.id, content: output, isError: isError)
+                } else {
+                    results[outcome.id] = .toolResult(toolUseId: outcome.id, content: "Side closed before the user decided. Ask again if this is still needed.", isError: true)
+                }
+            }
+            persistToolResults(callOrder: outcomes.map(\.id), resultsById: results, modelId: modelId)
+            return
+        }
         // Results are keyed by tool_use id and reassembled in call order at the end, so a
         // proposal resolved out of order still lands in the right slot.
         var resultsById: [String: AgentContentBlock] = [:]
