@@ -268,6 +268,66 @@ final class AlloyBudgetTests: XCTestCase {
         Budgets.check("editor.fling.missed", Double(missed) / Double(max(1, presented + missed)) * 100, detail: detail)
     }
 
+    /// A real file scrolled at trackpad speed, inside its own project (language server and
+    /// all): SIDE_SCROLL_FILE names it, SIDE_SCROLL_ROOT its project. Skipped without them.
+    func testScrollingARealFile() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["SIDE_SCROLL_FILE"] else { throw XCTSkip("set SIDE_SCROLL_FILE") }
+        // SIDE_SCROLL_WINDOW=WIDTHxHEIGHT, in points: a full-screen window has several times the text.
+        if let size = env["SIDE_SCROLL_WINDOW"]?.split(separator: "x").compactMap({ Double($0) }), size.count == 2 {
+            window.setContentSize(NSSize(width: size[0], height: size[1]))
+            window.layoutIfNeeded()
+        }
+        if let projectRoot = env["SIDE_SCROLL_ROOT"] { make.loadProject(at: URL(fileURLWithPath: projectRoot)) }
+        _ = open(URL(fileURLWithPath: path))
+        (alloy.document as? AlloyEditorDocument)?.highlighter?.waitForParse()
+        waitUntil(Double(env["SIDE_SCROLL_SETTLE"] ?? "10") ?? 10) { false }
+        let step = CGFloat(Double(env["SIDE_SCROLL_STEP"] ?? "30") ?? 30)
+        var direction: CGFloat = 1
+        view.onFrame = { [weak self] _ in
+            guard let self else { return }
+            let bottom = self.view.documentLayout.contentHeight - self.view.bounds.height
+            if self.view.scrollY >= bottom - step { direction = -1 }
+            if self.view.scrollY <= step { direction = 1 }
+            self.view.scrollY += step * direction
+        }
+        waitUntil(0.3) { false }
+        view.resetFrameCounters()
+        let cpu = Budgets.cpuSeconds(), wall = CACurrentMediaTime()
+        // For a profiler: the process to sample, now that the scrolling has started.
+        try? "\(getpid())".write(toFile: (env["SIDE_SCROLL_OUT"] ?? "/tmp/side-scroll.txt") + ".pid", atomically: true, encoding: .utf8)
+        waitUntil(Double(env["SIDE_SCROLL_SECONDS"] ?? "4") ?? 4) { false }
+        view.onFrame = nil
+        let seconds = CACurrentMediaTime() - wall, spent = Budgets.cpuSeconds() - cpu
+        let (presented, missed) = view.presentedFrameCounts()
+        let line = String(format: "SCROLL %@: %.0f s at %d Hz, %.0f pt a frame: %d presented, %d missed; %.0f%% of a core; %.2f ms CPU a frame; p50 %.2f p99 %.2f ms; footprint %.0f MB",
+                          (path as NSString).lastPathComponent, seconds, Int((1 / view.displayInterval).rounded()), step, presented, missed, spent / seconds * 100,
+                          spent * 1000 / Double(max(1, presented)), percentile(view.frameMilliseconds, 0.5), percentile(view.frameMilliseconds, 0.99), footprintMB())
+        print(line); fflush(stdout)
+        try line.write(toFile: (env["SIDE_SCROLL_OUT"] ?? "/tmp/side-scroll.txt"), atomically: true, encoding: .utf8)
+        // A picture of the gutter partway down, to check what it draws.
+        if let snapshot = env["SIDE_SCROLL_SNAPSHOT"] {
+            view.scrollY = 1003
+            waitUntil(0.5) { false }
+            let gutter = view.gutter
+            gutter.layer?.sublayers?.forEach { $0.displayIfNeeded() }
+            let scale = window.backingScaleFactor
+            let size = CGSize(width: gutter.bounds.width * scale, height: gutter.bounds.height * scale)
+            if let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
+                                       space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                context.scaleBy(x: scale, y: scale)
+                if gutter.layer?.isGeometryFlipped == true || gutter.isFlipped { context.translateBy(x: 0, y: gutter.bounds.height); context.scaleBy(x: 1, y: -1) }
+                gutter.layer?.render(in: context)
+                if let image = context.makeImage(), let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: snapshot) as CFURL, "public.png" as CFString, 1, nil) {
+                    CGImageDestinationAddImage(destination, image, nil)
+                    CGImageDestinationFinalize(destination)
+                }
+            }
+            let firstLine = view.documentLayout.line(atY: view.scrollY).line + 1
+            try "first visible line \(firstLine), scrollY \(view.scrollY), flipped layer \(gutter.layer?.isGeometryFlipped == true)".write(toFile: snapshot + ".txt", atomically: true, encoding: .utf8)
+        }
+    }
+
     func testMemory() throws {
         let log = try logFile()
         let size = Double((try FileManager.default.attributesOfItem(atPath: log.path)[.size] as? Int) ?? 0) / 1_048_576

@@ -390,7 +390,8 @@ public final class AlloyEditorView: NSView {
     @objc private func scrolled() {
         onPointerExit?()
         setNeedsRender()
-        gutter.needsDisplay = true
+        // Moves the gutter's tiles; it doesn't redraw.
+        gutter.scrolled()
         if !minimap.isHiddenOrHasHiddenAncestor { minimap.needsDisplay = true }
     }
 
