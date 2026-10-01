@@ -240,3 +240,23 @@ final class SaveAsTests: XCTestCase {
         make.closeAllTabsForTesting()
     }
 }
+
+/// 2026-10-01, the owner: scrolling the tab strip under a still pointer left the tabs it passed
+/// over highlighted, since AppKit sends no exit when the view moves rather than the pointer.
+@MainActor
+final class TabHoverTests: XCTestCase {
+    func testAScrolledAwayTabStopsLookingHovered() {
+        let tab = TabChipView(frame: NSRect(x: 0, y: 0, width: 120, height: 28))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView?.addSubview(tab)
+        tab.syncHover(pointerInWindow: tab.convert(NSPoint(x: 60, y: 14), to: nil))
+        XCTAssertTrue(tab.isHovered)
+        // The strip scrolled: the pointer is now well past the tab.
+        // The strip scrolled: the pointer is now past the tab, over where the next one is.
+        tab.syncHover(pointerInWindow: tab.convert(NSPoint(x: 300, y: 14), to: nil))
+        XCTAssertFalse(tab.isHovered)
+        XCTAssertTrue(window.isMovable, "the window drags again once no tab is hovered")
+    }
+}

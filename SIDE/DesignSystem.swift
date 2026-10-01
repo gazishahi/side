@@ -612,12 +612,31 @@ final class TabStripView: NSView {
 }
 
 
+/// A view whose hover state follows the pointer even when the view moves, not the pointer.
+@MainActor protocol PointerHoverSyncing: AnyObject {
+    func syncHover(pointerInWindow: NSPoint)
+}
+
 /// The scroll view inside a tab strip. In the title-bar region AppKit works out which parts of
 /// the window drag it before any view sees the event, and it treats a transparent scroll view
 /// as draggable without looking inside it — so pressing on a tab and dragging moved the window
 /// instead of the tab. Empty strip space still drags: the top row's own mouse handling does it.
 final class TabStripScrollView: NSScrollView {
     override var mouseDownCanMoveWindow: Bool { false }
+
+    /// After a scroll, each tab says whether the pointer is over it now: scrolling moves tabs
+    /// under a pointer that stays still, and AppKit sends no exit for that, so a tab the pointer
+    /// passed over stayed highlighted (2026-10-01, the owner).
+    override func reflectScrolledClipView(_ clipView: NSClipView) {
+        super.reflectScrolledClipView(clipView)
+        guard let window, let document = documentView else { return }
+        let pointer = window.mouseLocationOutsideOfEventStream
+        func visit(_ view: NSView) {
+            if let tab = view as? PointerHoverSyncing { tab.syncHover(pointerInWindow: pointer) }
+            view.subviews.forEach(visit)
+        }
+        visit(document)
+    }
 
     /// A mouse wheel (or an up-and-down swipe) moves the strip sideways: it only scrolls one way,
     /// and a wheel has no sideways motion to give it.

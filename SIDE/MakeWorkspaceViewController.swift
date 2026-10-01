@@ -5206,7 +5206,7 @@ private final class MarkdownPreviewLinks: NSObject, NSTextViewDelegate {
 /// responder the whole time it's visible so arrow keys/Tab/Return/Escape keep landing in
 /// NSTextViewDelegate for interception instead of needing the popup to handle input itself.
 
-final class TabChipView: NSView, NSDraggingSource {
+final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
     weak var closeButton: TabCloseButton?
     weak var closeMenuItem: NSMenuItem?
     var index: Int = 0
@@ -5264,7 +5264,7 @@ final class TabChipView: NSView, NSDraggingSource {
     private var didDrag = false
     private var isTearArmed = false
     private static let tearThreshold: CGFloat = 36
-    private var isHovered = false { didSet { needsDisplay = true } }
+    private(set) var isHovered = false { didSet { needsDisplay = true } }
 
     override var isFlipped: Bool { true }
 
@@ -5296,6 +5296,22 @@ final class TabChipView: NSView, NSDraggingSource {
     override func mouseExited(with event: NSEvent) {
         isHovered = false
         if dragOrigin == nil { window?.isMovable = true }
+        updateCloseVisibility()
+    }
+
+    /// The strip scrolled under a still pointer (`TabStripScrollView`).
+    func syncHover(pointerInWindow pointer: NSPoint) {
+        // Its own bounds, as shown: `visibleRect` alone can reach past them (views don't clip by
+        // default), over the next tab.
+        let inside = bounds.intersection(visibleRect).contains(convert(pointer, from: nil))
+        guard inside != isHovered else { return }
+        if inside {
+            isHovered = true
+            setWindowMovable(false)
+        } else {
+            isHovered = false
+            if dragOrigin == nil { window?.isMovable = true }
+        }
         updateCloseVisibility()
     }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
