@@ -400,6 +400,7 @@ public final class ACPHarness: Harness {
         // Already being opened (by `prepareSession`, or an earlier send): join it.
         guard !starting else { return }
         starting = true
+        stoppedBySide = false
         if let connection, connection.isRunning {
             openSession(on: connection)
             return
@@ -440,8 +441,16 @@ public final class ACPHarness: Harness {
     private func sessionFailed(_ message: String) {
         starting = false
         sessionWaiters.removeAll()
+        // Side stopped it (the conversation closed while the agent was starting): nothing to
+        // report. Its pending requests fail with "The agent was stopped." as the process goes,
+        // and whether that beat the reply was a matter of timing: under load a notice was left
+        // in the record (ACPFileTerminalTests, 2026-10-01).
+        guard !stoppedBySide else { return }
         if phase.isBusy { fail(message) } else { append(.meta(message)) }
     }
+
+    /// Set by `teardown`, cleared when a session starts again.
+    private var stoppedBySide = false
 
     private func start(_ launch: ACPLaunch) {
         signIn = launch.signIn
@@ -921,6 +930,7 @@ public final class ACPHarness: Harness {
     public func proposeUserTask(_ task: ProjectTask) -> UUID? { nil }
 
     public func teardown() {
+        stoppedBySide = true
         disarmStallTimer()
         if let token = toolServerRegistration?.token { toolServer?.unregister(token: token) }
         toolServerRegistration = nil
