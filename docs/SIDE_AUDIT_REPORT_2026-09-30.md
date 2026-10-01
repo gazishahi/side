@@ -499,8 +499,8 @@ Each fix should come with the test that would have caught it; several of these b
 - **GIT-3, fixed.** Status passes `--untracked-files=all` (overriding `status.showUntrackedFiles=no`) and `--ignored=matching`. Checkpoint budget unchanged: 20,000 files, 91 ms, 5 git processes.
 - **EDT-8, fixed.** Tabs keep a `DiskStamp` (date, size and inode, symlinks followed), taken before the read; any difference is an outside change.
 - **EDT-5, fixed.** Format Document checks edits with `nonOverlapping`; completion's additional edits use `CompletionEdits.conflict`, which counts an insertion inside another edit; negative signature-label offsets are ignored.
+- **H14, fixed.** Save As writes text the old encoding can't hold as UTF-8 (`saveAsFormat`) and moves the tab only after the write. Promoting a track whose parent was deleted says how many of its commits aren't its own checkpoints, and defaults to Cancel (`orphanedStackNote`).
+- **Checkpoint index copy, fixed** (found while fixing GIT-11). The private index now carries the real index's modification time; a fresh copy made git take a same-size change, made in the second the index was written, as unchanged, so the checkpoint missed it. A reproduction missed it 5 of 5 times.
 - **Open:**
-  - H14: Save As encoding, orphaned-child promotion.
   - H15: CI for the app's tests.
   - The other Mediums and Lows.
-  - Seen once while fixing GIT-11: `CheckpointCostTests.testACheckpointInALargeRepository` reported `nothingToCommit` for a round of three edited files, then passed alone and three times together. Not reproduced; possibly racy stat data in the copied index.
