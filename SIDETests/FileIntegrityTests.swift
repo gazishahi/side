@@ -140,3 +140,53 @@ final class BufferRecoveryTests: XCTestCase {
         XCTAssertTrue(left.isEmpty, "\(left)")
     }
 }
+
+/// 2026-09-30 audit, EDT-8: a file replaced by one with an older modification date (`mv`,
+/// `cp -p`, `rsync -a`, `unzip`) read as unchanged, and the next save overwrote it.
+@MainActor
+final class ExternalReplacementTests: XCTestCase {
+    func testAReplacementWithAnOlderDateIsAChange() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("side-replace-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: MakeWorkspaceViewController.recoveryDirectory(for: folder))
+        }
+        let file = folder.appendingPathComponent("notes.txt")
+        try "mine\n".write(to: file, atomically: true, encoding: .utf8)
+        // Moved into place, as `mv` or an unzip does, keeping a date from two days ago.
+        func replace(with text: String) throws {
+            let incoming = folder.appendingPathComponent("incoming-\(UUID().uuidString)")
+            try text.write(to: incoming, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-2 * 86_400)], ofItemAtPath: incoming.path)
+            XCTAssertEqual(rename(incoming.path, file.path), 0)
+        }
+        let make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = container
+        for child in [make.view, make.topRowContent!] { container.addSubview(child) }
+        make.view.frame = container.bounds
+        defer { window.contentView = nil; window.close() }
+        make.loadProject(at: folder)
+        var opened = false
+        make.openForTesting(file) { opened = true }
+        let deadline = Date().addingTimeInterval(10)
+        while !opened, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+
+        // A clean tab takes the replacement.
+        try replace(with: "from the archive\n")
+        make.reconcileWithDiskForTesting()
+        XCTAssertEqual(make.activeTabForTesting?.text, "from the archive\n")
+
+        // A tab with unsaved edits is told, not overwritten, and its save will ask.
+        make.editActiveTabForTesting("typed\n")
+        try replace(with: "replaced again\n")
+        make.reconcileWithDiskForTesting()
+        XCTAssertTrue(make.activeTabHasExternalChangeForTesting)
+        XCTAssertEqual(make.activeTabForTesting?.text, "typed\n")
+        make.closeAllTabsForTesting()
+    }
+}

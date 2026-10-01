@@ -39,6 +39,25 @@ private enum HeadContentCache {
     case fetched(String?)
 }
 
+/// A file on disk as Side last read or wrote it: modification date, size and inode. Any
+/// difference is someone else's change. A newer date alone missed a replacement carrying an
+/// older one (`mv`, `cp -p`, `rsync -a`, `unzip`), and the next save overwrote it unasked
+/// (2026-09-30 audit, EDT-8).
+struct DiskStamp: Equatable {
+    let modified: Date
+    let size: UInt64
+    let inode: UInt64
+
+    init?(of url: URL) {
+        // The file a symlink points at, which is what a save writes.
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path),
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        self.modified = modified
+        size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+    }
+}
+
 private struct OpenTab {
     let id = UUID()
     var url: URL
@@ -47,7 +66,8 @@ private struct OpenTab {
     let undoManager: UndoManager
     var dirty: Bool
     var isUntitled: Bool
-    var knownModificationDate: Date?
+    /// The file as last read or written; any difference on disk is someone else's change.
+    var knownDiskStamp: DiskStamp?
     /// How the file is stored — encoding, BOM, line ending — so a save writes the same shape back.
     var format: TextFileCodec.Format = .utf8
     /// Set when the file changed on disk while this tab had unsaved edits; cleared by Reload or
@@ -1325,7 +1345,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // The applier just wrote this file, so the stamp used for external-change detection has
         // to move with it — otherwise the next save or focus-in reports "changed on disk" about
         // Side's own write.
-        openTabs[index].knownModificationDate = modificationDate(of: url)
+        openTabs[index].knownDiskStamp = diskStamp(of: url)
         // The undo stack's registrations describe the *old* text, so replaying them after a
         // whole-buffer replacement would apply unrelated edits at meaningless offsets. Clearing
         // is the honest option: ⌘Z can't undo the agent's edit (Review's Undo does that), but it
@@ -1615,8 +1635,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
         guard tab.kind == .text, !tab.isUntitled, !tab.isSaving else { return }
-        guard let onDisk = modificationDate(of: tab.url) else { return }
-        if let known = tab.knownModificationDate, onDisk <= known { return }
+        guard let onDisk = diskStamp(of: tab.url) else { return }
+        if let known = tab.knownDiskStamp, onDisk == known { return }
         if tab.dirty {
             openTabs[index].hasExternalChange = true
             if activeTabIndex == index { showExternalChangeBanner(for: tab.url) }
@@ -1643,7 +1663,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         openTabs[index].savedStamp = ContentStamp(decoded.text)
         openTabs[index].dirty = false
         openTabs[index].hasExternalChange = false
-        openTabs[index].knownModificationDate = modificationDate(of: tab.url)
+        openTabs[index].knownDiskStamp = diskStamp(of: tab.url)
         if isActive {
             dirty = false
             let clamped = NSRange(location: min(selection.location, tab.document.length), length: 0)
@@ -1862,7 +1882,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                         completion?()
                         return
                     }
-                    var tab = OpenTab(url: url, kind: .image, document: self.editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: nil)
+                    var tab = OpenTab(url: url, kind: .image, document: self.editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownDiskStamp: nil)
                     tab.cachedImage = image
                     self.openTabs.append(tab)
                     self.activeTabIndex = self.openTabs.count - 1
@@ -1883,6 +1903,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 }
                 return
             }
+            // Before the read: a change made during it then still reads as a change.
+            let stamp = DiskStamp(of: url)
             guard let data = try? Data(contentsOf: url) else {
                 DispatchQueue.main.async {
                     self?.showAlert(title: "Couldn't open file", message: "\(url.lastPathComponent) couldn't be read.", window: window)
@@ -1898,7 +1920,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 return
             }
             let source = decoded.text
-            let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
             let isCSV = ext == "csv"
             let rows = isCSV ? CSVParser.parse(source) : []
             // Whole-file work, here rather than on the main thread.
@@ -1916,7 +1937,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     completion?()
                     return
                 }
-                var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, document: self.editor.makeDocument(source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownModificationDate: modDate)
+                var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, document: self.editor.makeDocument(source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownDiskStamp: stamp)
                 tab.csvRows = rows
                 tab.format = decoded.format
                 tab.savedStamp = savedStamp
@@ -1991,9 +2012,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         alert.beginSheetModal(for: window)
     }
 
-    private func modificationDate(of url: URL) -> Date? {
-        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-    }
+    private func diskStamp(of url: URL) -> DiskStamp? { DiskStamp(of: url) }
 
     /// Snapshots the outgoing tab's cursor position so switching back to it later restores
     /// where the user was, instead of leaving the editor's stale selection/typing attributes
@@ -4691,7 +4710,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Self.untitledCounter += 1
         let name = "Untitled-\(Self.untitledCounter)"
         let url = URL(string: "side-untitled:///\(name)")!
-        openTabs.append(OpenTab(url: url, kind: .text, document: editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: true, knownModificationDate: nil))
+        openTabs.append(OpenTab(url: url, kind: .text, document: editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: true, knownDiskStamp: nil))
         activeTabIndex = openTabs.count - 1
         loadActiveTabIntoEditor()
         editor.focus()
@@ -4752,13 +4771,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func writeTabToDisk(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
         guard let index = indexForTab(id: tabID), let window = view.window else { completion(false); return }
         let tab = openTabs[index]
-        let onDiskModDate = modificationDate(of: url)
-        // `modificationDate(of:)` returning nil while we have a known prior date doesn't mean
+        let onDiskModDate = diskStamp(of: url)
+        // `diskStamp(of:)` returning nil while we have a known prior date doesn't mean
         // "unchanged, nothing to check" — it means the file is *gone*. That case used to fall
         // through the `onDisk > known` comparison entirely (nil isn't `> known`) straight to a
         // forced write, silently resurrecting a file the user (or a branch switch, or a script)
         // had deleted, with no indication anything unusual had happened.
-        if tab.knownModificationDate != nil, onDiskModDate == nil {
+        if tab.knownDiskStamp != nil, onDiskModDate == nil {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "\u{201C}\(url.lastPathComponent)\u{201D} was deleted"
@@ -4775,7 +4794,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
             return
         }
-        if let known = tab.knownModificationDate, let onDisk = onDiskModDate, onDisk > known {
+        if let known = tab.knownDiskStamp, let onDisk = onDiskModDate, onDisk != known {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "\u{201C}\(url.lastPathComponent)\u{201D} has changed on disk"
@@ -4811,7 +4830,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             UserSaveLog.shared.record(url)
             lspManager?.saved(url: url)
             openTabs[index].savedStamp = ContentStamp(content)
-            openTabs[index].knownModificationDate = modificationDate(of: url)
+            openTabs[index].knownDiskStamp = diskStamp(of: url)
             openTabs[index].hasExternalChange = false
             if activeTabIndex == index { externalChangeBanner.isHidden = true }
             runFormatterIfNeeded(tabID: tabID, url: url, contentAtSaveTime: content, completion: completion)
@@ -4871,9 +4890,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 }
                 // Re-read even when content didn't change: some formatters touch the file
                 // (rewriting it in place) without altering its bytes, which would otherwise
-                // leave knownModificationDate pointing at the pre-formatter write and trigger
+                // leave knownDiskStamp pointing at the pre-formatter write and trigger
                 // a false "changed on disk" prompt on the next save.
-                self.openTabs[index].knownModificationDate = self.modificationDate(of: url)
+                self.openTabs[index].knownDiskStamp = self.diskStamp(of: url)
                 self.finishSave(tabID: tabID)
                 if !bufferUnchanged {
                     // Typed during the formatter run: disk holds the content that was written,
@@ -4998,7 +5017,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let data = TextFileCodec.encode(content, as: openTabs[index].format), (try? data.write(to: url, options: .atomic)) != nil else { return }
         UserSaveLog.shared.record(url)
         openTabs[index].savedStamp = ContentStamp(content)
-        openTabs[index].knownModificationDate = modificationDate(of: url)
+        openTabs[index].knownDiskStamp = diskStamp(of: url)
         openTabs[index].dirty = false
         if activeTabIndex == index { dirty = false }
         rebuildTabBar()
@@ -5958,6 +5977,9 @@ extension MakeWorkspaceViewController {
     }
     var activeTabForTesting: (text: String, dirty: Bool)? { activeTabIndex.map { (openTabs[$0].document.string, openTabs[$0].dirty) } }
     static func flushRecoveryForTesting() { recoveryQueue.sync {} }
+    /// As a batch of file events naming every open tab would.
+    func reconcileWithDiskForTesting() { for index in openTabs.indices { reconcileTabWithDisk(index) } }
+    var activeTabHasExternalChangeForTesting: Bool { activeTabIndex.map { openTabs[$0].hasExternalChange } ?? false }
     func restoreRecoveredForTesting() {
         guard let projectURL else { return }
         for copy in Self.recoverableCopies(for: projectURL) { restore(copy) }
