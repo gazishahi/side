@@ -69,3 +69,43 @@ final class ChromeTests: XCTestCase {
         XCTAssertEqual(ChromePlacement(rawValue: "topRow"), .topRow)
     }
 }
+
+/// 2026-09-30 audit, UX-8: text size reached only the four stages that restyle themselves;
+/// Settings, Library, the debugger and the chrome kept the size they were built at.
+@MainActor
+final class TextScaleFollowerTests: XCTestCase {
+    func testTextSizeReachesViewsThatDontRestyleThemselves() {
+        TextScaleFollower.start()
+        let original = DS.Text.Scale.current
+        DS.Text.Scale.current = .standard
+        defer { DS.Text.Scale.current = original }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = content
+        let label = NSTextField(labelWithString: "Providers")
+        label.font = .systemFont(ofSize: 13)
+        let table = NSTableView()
+        table.rowHeight = 20
+        let ownStyle = NSView()
+        let sample = NSTextField(labelWithString: "Sample")
+        sample.font = .systemFont(ofSize: 13)
+        ownStyle.addSubview(sample)
+        TextScaleFollower.exempt(ownStyle)
+        let detached = NSTextField(labelWithString: "A hidden stage's label")
+        detached.font = .systemFont(ofSize: 11)
+        TextScaleFollower.addDetachedViews { [detached] in [detached] }
+        for view in [label, table, ownStyle] { content.addSubview(view) }
+
+        DS.Text.Scale.current = .larger  // 1.3
+        XCTAssertEqual(label.font?.pointSize, 17, "13 × 1.3, to the half point")
+        XCTAssertEqual(table.rowHeight, 26)
+        XCTAssertEqual(detached.font?.pointSize, 14.5, "views out of a window follow too")
+        XCTAssertEqual(sample.font?.pointSize, 13, "a view that restyles itself isn't scaled twice")
+
+        DS.Text.Scale.current = .standard
+        XCTAssertEqual(label.font?.pointSize, 13)
+        XCTAssertEqual(table.rowHeight, 20)
+    }
+}

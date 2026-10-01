@@ -117,6 +117,9 @@ final class AppearanceViewController: NSViewController {
         fillThemePopups()
         NotificationCenter.default.addObserver(self, selector: #selector(fillThemePopups), name: EditorThemes.didChangeNotification, object: nil)
         applyFonts()
+        // The samples set their own size; the rest of the pane follows with everything else.
+        TextScaleFollower.exempt(sampleLabel)
+        TextScaleFollower.exempt(sampleCaption)
         NotificationCenter.default.addObserver(
             self, selector: #selector(applyFonts),
             name: DS.Text.scaleDidChangeNotification, object: nil

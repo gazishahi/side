@@ -171,9 +171,11 @@ enum DS {
                     return Scale(rawValue: stored) ?? .standard
                 }
                 set {
-                    guard newValue != current else { return }
+                    let old = current
+                    guard newValue != old else { return }
                     HeronDefaults.store.set(newValue.rawValue, forKey: defaultsKey)
-                    NotificationCenter.default.post(name: Text.scaleDidChangeNotification, object: nil)
+                    NotificationCenter.default.post(name: Text.scaleDidChangeNotification, object: nil,
+                                                    userInfo: ["old": old.rawValue, "new": newValue.rawValue])
                 }
             }
         }
@@ -986,4 +988,78 @@ enum Spoken {
     nonisolated(unsafe) static var isEnabled: () -> Bool = { NSWorkspace.shared.isVoiceOverEnabled }
     /// The last thing said, for tests.
     nonisolated(unsafe) static var lastAnnouncement: String?
+}
+
+
+/// Text size for the views that don't restyle themselves (2026-09-30 audit, UX-8): Settings,
+/// Library, Make's chrome and debugger, Run, the shell's chrome. Fonts there were set once when
+/// built, so a size change reached only Think, Review, Tracks and Usage. On a change, every
+/// window's views (and the detached ones the providers name: hidden stages, cached Settings
+/// panes) have their fonts and table row heights scaled by new ÷ old, except the subtrees that
+/// restyle themselves (`exempt`), so nothing is scaled twice.
+@MainActor
+enum TextScaleFollower {
+    private static let exempted = NSHashTable<NSView>.weakObjects()
+    /// Views out of any window that still need following.
+    private static var detachedProviders: [() -> [NSView]] = []
+    private static var observer: NSObjectProtocol?
+
+    /// A view whose own observer restyles it and everything inside it.
+    static func exempt(_ view: NSView) { exempted.add(view) }
+
+    static func addDetachedViews(_ provider: @escaping () -> [NSView]) { detachedProviders.append(provider) }
+
+    /// Once, at launch.
+    static func start() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(forName: DS.Text.scaleDidChangeNotification, object: nil, queue: .main) { note in
+            guard let old = note.userInfo?["old"] as? Double, let new = note.userInfo?["new"] as? Double, old > 0 else { return }
+            MainActor.assumeIsolated { follow(ratio: CGFloat(new / old)) }
+        }
+    }
+
+    static func follow(ratio: CGFloat) {
+        var seen = Set<ObjectIdentifier>()
+        let roots = NSApp.windows.compactMap(\.contentView) + detachedProviders.flatMap { $0() }
+        for root in roots where seen.insert(ObjectIdentifier(root)).inserted { rescale(root, by: ratio) }
+    }
+
+    static func rescale(_ view: NSView, by ratio: CGFloat) {
+        guard !exempted.contains(view) else { return }
+        if let field = view as? NSTextField {
+            scale(field, by: ratio)
+        } else if let control = view as? NSControl, let font = control.font {
+            control.font = scaled(font, ratio)
+        } else if let text = view as? NSTextView {
+            if let font = text.font { text.font = scaled(font, ratio) }
+            if let storage = text.textStorage, storage.length > 0 { scaleFonts(in: storage, by: ratio) }
+        }
+        if let table = view as? NSTableView, !(table.rowHeight <= 0) {
+            table.rowHeight = (table.rowHeight * ratio).rounded()
+        }
+        for subview in view.subviews { rescale(subview, by: ratio) }
+        view.needsLayout = true
+    }
+
+    private static func scaled(_ font: NSFont, _ ratio: CGFloat) -> NSFont {
+        NSFont(descriptor: font.fontDescriptor, size: (font.pointSize * ratio * 2).rounded() / 2) ?? font
+    }
+
+    /// A field's own font, and the fonts in its attributed text (colors and all kept).
+    private static func scale(_ field: NSTextField, by ratio: CGFloat) {
+        let attributed = field.attributedStringValue
+        if let font = field.font { field.font = scaled(font, ratio) }
+        guard !field.isEditable, attributed.length > 0 else { return }
+        let copy = NSMutableAttributedString(attributedString: attributed)
+        scaleFonts(in: copy, by: ratio)
+        field.attributedStringValue = copy
+    }
+
+    private static func scaleFonts(in text: NSMutableAttributedString, by ratio: CGFloat) {
+        text.beginEditing()
+        text.enumerateAttribute(.font, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if let font = value as? NSFont { text.addAttribute(.font, value: scaled(font, ratio), range: range) }
+        }
+        text.endEditing()
+    }
 }

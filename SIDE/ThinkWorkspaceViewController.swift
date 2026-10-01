@@ -154,6 +154,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Restyles itself on a text-size change (`textScaleChanged`): not the follower's.
+        TextScaleFollower.exempt(view)
         view.wantsLayer = true
         ChromeBackground.install(in: view)
 

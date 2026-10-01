@@ -21,6 +21,8 @@ final class UsageViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Restyles itself on a text-size change (`textScaleChanged`): not the follower's.
+        TextScaleFollower.exempt(view)
         usageObserverToken = UsageStore.shared.addChangeObserver { [weak self] in self?.render() }
         NotificationCenter.default.addObserver(self, selector: #selector(textScaleChanged), name: DS.Text.scaleDidChangeNotification, object: nil)
         render()

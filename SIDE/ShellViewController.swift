@@ -83,6 +83,11 @@ final class ShellViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // The stages not on screen follow a text-size change too, for when they come back.
+        TextScaleFollower.addDetachedViews { [weak self] in
+            guard let self else { return [] }
+            return [self.makeVC, self.runVC, self.thinkVC, self.reviewVC, self.tracksVC].filter { $0.isViewLoaded && $0.view.window == nil }.map(\.view)
+        }
         LaunchSignposts.begin("shellViewDidLoad")
         buildLayout()
         makeVC.onProjectOpened = { [weak self] url in self?.projectOpened(url) }

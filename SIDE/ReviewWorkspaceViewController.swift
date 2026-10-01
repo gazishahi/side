@@ -94,6 +94,8 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Restyles itself on a text-size change (`textScaleChanged`): not the follower's.
+        TextScaleFollower.exempt(view)
         view.wantsLayer = true
         view.bindLayerBackground(DS.Color.canvas)
         NotificationCenter.default.addObserver(self, selector: #selector(textScaleChanged), name: DS.Text.scaleDidChangeNotification, object: nil)

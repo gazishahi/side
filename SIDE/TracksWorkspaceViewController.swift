@@ -153,6 +153,8 @@ final class TracksWorkspaceViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Restyles itself on a text-size change (`textScaleChanged`): not the follower's.
+        TextScaleFollower.exempt(view)
         buildView()
         NotificationCenter.default.addObserver(
             self, selector: #selector(textScaleChanged),

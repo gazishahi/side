@@ -218,6 +218,10 @@ final class SettingsSplitViewController: NSSplitViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Panes made earlier and not showing follow a text-size change too.
+        TextScaleFollower.addDetachedViews { [weak self] in
+            self?.panes.values.filter { $0.isViewLoaded && $0.view.window == nil }.map(\.view) ?? []
+        }
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.canCollapse = false
         sidebarItem.minimumThickness = 210
