@@ -113,7 +113,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         }
         document.onColorsChange = { [weak self, weak document] in
             guard let self, let document, self.document === document else { return }
-            self.view.setNeedsRender()
+            self.view.stylesChanged()
         }
         document.onHighlighterChange = { [weak self, weak document] in
             guard let self, let document, self.document === document else { return }

@@ -83,6 +83,7 @@ final class AlloyBudgetTests: XCTestCase {
 
     private func percentile(_ values: [Double], _ p: Double) -> Double {
         let sorted = values.sorted()
+        guard !sorted.isEmpty else { return 0 }
         return sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))]
     }
 
@@ -279,17 +280,31 @@ final class AlloyBudgetTests: XCTestCase {
             window.layoutIfNeeded()
         }
         if let projectRoot = env["SIDE_SCROLL_ROOT"] { make.loadProject(at: URL(fileURLWithPath: projectRoot)) }
+        // SIDE_SCROLL_MINIMAP=1: with the minimap shown, as people have it (the tests' own
+        // preferences start with it off).
+        if env["SIDE_SCROLL_MINIMAP"] == "1", view.minimap.isHiddenOrHasHiddenAncestor { make.toggleMinimap(nil) }
         _ = open(URL(fileURLWithPath: path))
         (alloy.document as? AlloyEditorDocument)?.highlighter?.waitForParse()
         waitUntil(Double(env["SIDE_SCROLL_SETTLE"] ?? "10") ?? 10) { false }
         let step = CGFloat(Double(env["SIDE_SCROLL_STEP"] ?? "30") ?? 30)
         var direction: CGFloat = 1
+        // SIDE_SCROLL_WHEEL=N: N trackpad scroll events a frame through the scroll view, as a
+        // person's scrolling arrives, instead of setting the position.
+        let wheel = Int(env["SIDE_SCROLL_WHEEL"] ?? "0") ?? 0
         view.onFrame = { [weak self] _ in
             guard let self else { return }
             let bottom = self.view.documentLayout.contentHeight - self.view.bounds.height
             if self.view.scrollY >= bottom - step { direction = -1 }
             if self.view.scrollY <= step { direction = 1 }
-            self.view.scrollY += step * direction
+            guard wheel > 0 else { self.view.scrollY += step * direction; return }
+            for _ in 0..<wheel {
+                guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(-step * direction / CGFloat(wheel)), wheel2: 0, wheel3: 0) else { continue }
+                event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                // Global display coordinates are top-down; the window's screen point isn't.
+                let onScreen = self.window.convertPoint(toScreen: NSPoint(x: 400, y: 400))
+                event.location = CGPoint(x: onScreen.x, y: (NSScreen.screens.first?.frame.height ?? 0) - onScreen.y)
+                if let ns = NSEvent(cgEvent: event) { self.window.sendEvent(ns) }
+            }
         }
         waitUntil(0.3) { false }
         view.resetFrameCounters()
@@ -309,22 +324,22 @@ final class AlloyBudgetTests: XCTestCase {
         if let snapshot = env["SIDE_SCROLL_SNAPSHOT"] {
             view.scrollY = 1003
             waitUntil(0.5) { false }
-            let gutter = view.gutter
-            gutter.layer?.sublayers?.forEach { $0.displayIfNeeded() }
             let scale = window.backingScaleFactor
-            let size = CGSize(width: gutter.bounds.width * scale, height: gutter.bounds.height * scale)
-            if let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
-                                       space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+            for (part, path) in [(view.gutter as NSView, snapshot), (view.minimap as NSView, snapshot + ".minimap.png")] where part.bounds.width > 0 {
+                part.layer?.sublayers?.forEach { $0.displayIfNeeded() }
+                let size = CGSize(width: part.bounds.width * scale, height: part.bounds.height * scale)
+                guard let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { continue }
                 context.scaleBy(x: scale, y: scale)
-                if gutter.layer?.isGeometryFlipped == true || gutter.isFlipped { context.translateBy(x: 0, y: gutter.bounds.height); context.scaleBy(x: 1, y: -1) }
-                gutter.layer?.render(in: context)
-                if let image = context.makeImage(), let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: snapshot) as CFURL, "public.png" as CFString, 1, nil) {
+                if part.layer?.isGeometryFlipped == true || part.isFlipped { context.translateBy(x: 0, y: part.bounds.height); context.scaleBy(x: 1, y: -1) }
+                part.layer?.render(in: context)
+                if let image = context.makeImage(), let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil) {
                     CGImageDestinationAddImage(destination, image, nil)
                     CGImageDestinationFinalize(destination)
                 }
             }
             let firstLine = view.documentLayout.line(atY: view.scrollY).line + 1
-            try "first visible line \(firstLine), scrollY \(view.scrollY), flipped layer \(gutter.layer?.isGeometryFlipped == true)".write(toFile: snapshot + ".txt", atomically: true, encoding: .utf8)
+            try "first visible line \(firstLine), scrollY \(view.scrollY), minimap shown \(!view.minimap.isHiddenOrHasHiddenAncestor) \(view.minimap.bounds.size)".write(toFile: snapshot + ".txt", atomically: true, encoding: .utf8)
         }
     }
 
