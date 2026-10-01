@@ -36,7 +36,8 @@ private struct PendingToolBatch {
     /// anything — a checkpoint only stages paths that became newly dirty since this snapshot
     /// (plus whatever `changedFilePaths` names directly), so a concurrent manual edit sitting in
     /// the same worktree never gets swept into the agent's commit.
-    public var baselineDirtyPaths: Set<String>
+    /// Nil when git couldn't say: then only the batch's own edits are checkpointed.
+    public var baselineDirtyPaths: Set<String>?
     /// When the batch was presented. Files the user saves after this aren't the agent's
     /// (`UserSaveLog`, audit F4) — the approval wait can be minutes, and people keep typing.
     public var startedAt = Date()
@@ -945,7 +946,7 @@ public final class AgentRunner {
     /// reference so it cannot touch main-actor state from a background queue.
     // Internal so the staging rule — only what the batch touched — can be tested against a repo.
     public nonisolated static func stageAndCommit(
-        root: String, baseline: Set<String>, knownChanged: Set<String>, userSaved: Set<String> = [], message: String
+        root: String, baseline: Set<String>?, knownChanged: Set<String>, userSaved: Set<String> = [], message: String
     ) -> CheckpointCommitOutcome? {
 
         // Stage only what this batch actually touched: paths a command left newly dirty (not
@@ -966,7 +967,11 @@ public final class AgentRunner {
             return .failed(step: "status", message: "git status failed in \(root)")
         }
         let indexAfter = indexFile.flatMap { try? Data(contentsOf: $0) }
-        let pathsToStage = status.dirty.subtracting(baseline).subtracting(userSaved).union(knownChanged)
+        // Without a baseline (git status failed before the batch) nothing newly dirty can be
+        // told apart from the person's own work, so only the known edits are committed and a
+        // command's changes stay in the working copy.
+        let newlyDirty = baseline.map { status.dirty.subtracting($0).subtracting(userSaved) } ?? []
+        let pathsToStage = newlyDirty.union(knownChanged)
         // Everything the batch did left the tree exactly as it already was (e.g. a command that
         // ran but touched nothing) — nothing to checkpoint at all.
         guard !pathsToStage.isEmpty else { return nil }
@@ -1838,7 +1843,7 @@ public final class AgentRunner {
         pendingBatch = PendingToolBatch(
             callOrder: outcomes.map(\.id), resultsById: resultsById, unresolvedToolUseIds: unresolvedToolUseIds,
             lastAppliedURL: nil, roundTrip: roundTrip, modelId: modelId, providerId: activeProviderId, declaredIntent: declaredIntent,
-            baselineDirtyPaths: []
+            baselineDirtyPaths: nil
         )
         // What's dirty before anything in the batch runs, so its checkpoint stages only what the
         // batch did. Read off the main thread (D7: `git status` there was a hitch that grew with

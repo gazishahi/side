@@ -139,9 +139,9 @@ final class TrackStore {
         /// `pullFromParent` on a root track — there's no parent branch to pull.
         case noParentTrack
         case nothingToPull
-        /// The track's worktree holds uncommitted work and the caller hasn't consented to losing
-        /// it. Carries the count so the consent prompt can name what is about to be destroyed.
-        case worktreeHasUncommittedChanges(Int)
+        /// The track's worktree holds work that removing it would destroy, and the caller hasn't
+        /// consented to losing it. Carries what, so the consent prompt can name it.
+        case worktreeHasUncommittedChanges(WorkAtRisk)
         /// A repository with no commits has nothing for a track to branch from (`git worktree add
         /// … HEAD` fails with "invalid reference"). The UI offers the initial commit.
         case repositoryHasNoCommits
@@ -160,9 +160,52 @@ final class TrackStore {
             case .nothingToPull: return "Already up to date with its parent branch."
             case .repositoryHasNoCommits:
                 return "This repository has no commits yet, so there's nothing for a track to branch from. Make an initial commit first."
-            case .worktreeHasUncommittedChanges(let count):
-                return "This track's working copy has \(count) uncommitted change\(count == 1 ? "" : "s") that would be lost."
+            case .worktreeHasUncommittedChanges(let risk):
+                return risk.detail
             }
+        }
+    }
+
+    /// What removing a worktree would destroy. `git worktree remove` deletes ignored files too,
+    /// with or without `--force` (an `.env`, a local database), and re-creating the worktree
+    /// doesn't bring them back; and a status git couldn't read is not a clean tree (2026-09-30
+    /// audit, R5 / GIT-11: both were read as nothing to lose).
+    struct WorkAtRisk: Equatable, Sendable {
+        var uncommitted = 0
+        /// Ignored files and directories, as git lists them (a directory is one entry).
+        var ignored: [String] = []
+        /// git status failed, so what's there is unknown.
+        var unreadable = false
+
+        var isEmpty: Bool { uncommitted == 0 && ignored.isEmpty && !unreadable }
+
+        /// Reads `path`'s worktree once, ignored files included.
+        static func probe(_ path: String) -> WorkAtRisk {
+            guard let status = GitPaths.status(cwd: path, includeIgnored: true) else { return WorkAtRisk(unreadable: true) }
+            return WorkAtRisk(uncommitted: status.dirty.count, ignored: status.ignored.sorted())
+        }
+
+        /// The question's title, naming what goes.
+        var title: String {
+            if unreadable { return "Remove a working copy Side couldn\u{2019}t read?" }
+            var parts: [String] = []
+            if uncommitted > 0 { parts.append("\(uncommitted) uncommitted change\(uncommitted == 1 ? "" : "s")") }
+            if !ignored.isEmpty { parts.append("\(ignored.count) ignored item\(ignored.count == 1 ? "" : "s")") }
+            return "Discard " + parts.joined(separator: " and ") + "?"
+        }
+
+        var detail: String {
+            if unreadable {
+                return "git couldn\u{2019}t read this track\u{2019}s working copy, so Side can\u{2019}t tell what removing it would destroy. Anything uncommitted in it would be lost. This can\u{2019}t be undone."
+            }
+            var lines: [String] = []
+            if uncommitted > 0 { lines.append("This track\u{2019}s working copy has work that was never checkpointed.") }
+            if !ignored.isEmpty {
+                let names = ignored.prefix(3).joined(separator: ", ") + (ignored.count > 3 ? ", \u{2026}" : "")
+                lines.append("It also has files git ignores (\(names)), which are deleted with it and not re-created.")
+            }
+            lines.append("This can\u{2019}t be undone.")
+            return lines.joined(separator: " ")
         }
     }
 
@@ -713,8 +756,8 @@ final class TrackStore {
     /// out in a worktree.
     ///
     /// `--force` on the worktree removal destroys every uncommitted and untracked file in it, so
-    /// it is only ever passed after a dirtiness probe: a dirty worktree is refused with
-    /// `.worktreeHasUncommittedChanges(count)` unless the caller has `discardUncommittedChanges`
+    /// it is only ever passed after a dirtiness probe: a dirty worktree (ignored files included)
+    /// is refused with `.worktreeHasUncommittedChanges(risk)` unless the caller has `discardUncommittedChanges`
     /// consent from the user. Before this, "Delete" with "Also delete branch" *unchecked* — the
     /// option a user picks precisely because they believe the work survives — silently
     /// obliterated the agent's un-checkpointed edits. Found by both git passes of the 2026-09-01
@@ -744,9 +787,9 @@ final class TrackStore {
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            let dirtyCount = GitPaths.dirtyPaths(cwd: path).count
-            if dirtyCount > 0, !discardUncommittedChanges {
-                DispatchQueue.main.async { completion(.failure(TrackError.worktreeHasUncommittedChanges(dirtyCount))) }
+            let risk = WorkAtRisk.probe(path)
+            if !risk.isEmpty, !discardUncommittedChanges {
+                DispatchQueue.main.async { completion(.failure(TrackError.worktreeHasUncommittedChanges(risk))) }
                 return
             }
             if !alsoDeleteBranch {
@@ -793,11 +836,20 @@ final class TrackStore {
     /// track (same reasoning as `deleteTrack`) and never passes `--force` — a dirty worktree
     /// makes `git worktree remove` refuse on its own, which is exactly right here: silently
     /// discarding uncommitted work would contradict "just free disk space, keep everything else."
-    func removeWorkingCopy(for track: Track, completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
+    /// Ignored files are another matter: git deletes them either way, and re-creating the
+    /// worktree doesn't bring them back, so they're asked about first (`discardIgnoredFiles`).
+    func removeWorkingCopy(for track: Track, discardIgnoredFiles: Bool = false, completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
         guard track.status != .active else { completion(.failure(TrackError.cannotDeleteActive)); return }
         guard let path = track.workingDirectoryPath else { completion(.success(())); return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+            if !discardIgnoredFiles {
+                let risk = WorkAtRisk.probe(path)
+                if risk.unreadable || !risk.ignored.isEmpty {
+                    DispatchQueue.main.async { completion(.failure(TrackError.worktreeHasUncommittedChanges(risk))) }
+                    return
+                }
+            }
             let result = self.runGit(["worktree", "remove", path], cwd: self.projectRoot.path)
             DispatchQueue.main.async {
                 guard result.success else {

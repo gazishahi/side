@@ -237,6 +237,27 @@ final class CheckpointStagingTests: XCTestCase {
         XCTAssertEqual(git(["show", "--name-only", "--format=", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines), "agent.txt")
         XCTAssertEqual(git(["diff", "--cached", "--name-only"]).trimmingCharacters(in: .whitespacesAndNewlines), "manual.txt")
     }
+    /// 2026-09-30 audit, GIT-11: with no baseline (git status failed before the batch), the
+    /// checkpoint took every dirty file, the person's own included. Now only the known edits.
+    func testWithNoBaselineOnlyTheKnownEditsAreCheckpointed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("stage-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func git(_ args: [String]) -> String {
+            let r = GitPaths.runGit(args, cwd: root.path); XCTAssertTrue(r.success, "git \(args): \(r.output)"); return r.output
+        }
+        git(["init", "-q", "-b", "main"]); git(["config", "user.email", "t@t"]); git(["config", "user.name", "T"])
+        try "a".write(to: root.appendingPathComponent("agent.txt"), atomically: true, encoding: .utf8)
+        try "m".write(to: root.appendingPathComponent("manual.txt"), atomically: true, encoding: .utf8)
+        git(["add", "."]); git(["commit", "-q", "-m", "base"])
+        try "manual v2".write(to: root.appendingPathComponent("manual.txt"), atomically: true, encoding: .utf8)
+        try "agent v2".write(to: root.appendingPathComponent("agent.txt"), atomically: true, encoding: .utf8)
+
+        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: nil, knownChanged: ["agent.txt"], message: "agent work")
+        guard case .committed(_, let paths)? = outcome else { return XCTFail("expected a commit, got \(String(describing: outcome))") }
+        XCTAssertEqual(paths, ["agent.txt"])
+        XCTAssertEqual(git(["status", "--porcelain"]).trimmingCharacters(in: .whitespacesAndNewlines), "M manual.txt")
+    }
 }
 
 // MARK: - Minimal tasks.json

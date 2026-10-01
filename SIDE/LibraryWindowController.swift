@@ -1091,13 +1091,14 @@ final class StoragePaneViewController: NSViewController {
             if !kept.isEmpty {
                 let note = NSAlert()
                 note.messageText = "\(kept.count) working \(kept.count == 1 ? "copy was" : "copies were") kept"
-                note.informativeText = "They have uncommitted changes: " + kept.joined(separator: ", ")
+                note.informativeText = "They have uncommitted changes, or files git ignores that removing them would delete: " + kept.joined(separator: ", ")
                 note.runModal()
             }
         }
     }
 
-    /// Removes each copy in turn; `completion` gets the intents of the ones git refused (dirty).
+    /// Removes each copy in turn; `completion` gets the intents of the ones kept: dirty, or
+    /// holding ignored files (`TrackStore.WorkAtRisk`), which a bulk removal never discards.
     func removeCopies(_ tracks: [Track], completion: @escaping ([String]) -> Void) {
         guard let store = target?.trackStore else { return completion([]) }
         removeNext(RemovalBox(remaining: tracks, completion: completion), store: store)

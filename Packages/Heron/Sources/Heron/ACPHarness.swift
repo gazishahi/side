@@ -78,6 +78,8 @@ public final class ACPHarness: Harness {
     private var toolCalls: [String: (kind: String?, paths: Set<String>)] = [:]
     // The turn in flight, for its checkpoint.
     private var turnBaseline: Set<String>?
+    /// The turn's baseline couldn't be read (git status failed): see `stageAndCommit`.
+    private var turnBaselineUnknown = false
     private var turnStartedAt = Date()
     /// Worktree-relative paths the agent is known to have changed this turn.
     private var turnTouched: Set<String> = []
@@ -312,7 +314,8 @@ public final class ACPHarness: Harness {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.turnBaseline = baseline
+                    self.turnBaseline = baseline ?? []
+                    self.turnBaselineUnknown = baseline == nil
                     self.withSession { [weak self] sessionId in
                         self?.prompt(trimmed, sessionId: sessionId)
                     }
@@ -1308,7 +1311,8 @@ public final class ACPHarness: Harness {
     /// have changed, plus paths that became dirty during the turn — minus paths the user saved
     /// in Make meanwhile, which are theirs. Runs once per turn.
     private func checkpointTurn() {
-        guard let baseline = turnBaseline, let sessionStore else { turnBaseline = nil; return }
+        guard let known = turnBaseline, let sessionStore else { turnBaseline = nil; return }
+        let baseline: Set<String>? = turnBaselineUnknown ? nil : known
         turnBaseline = nil
         let root = rootProvider().path
         let touched = turnTouched
@@ -1322,7 +1326,8 @@ public final class ACPHarness: Harness {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // Only touched paths that actually differ now: a path the agent changed and changed
             // back has nothing to commit, and `git add` of a vanished untracked path would fail.
-            let dirty = GitPaths.dirtyPaths(cwd: root)
+            // A failed status here fails the commit's own status too, which is reported.
+            let dirty = GitPaths.dirtyPaths(cwd: root) ?? []
             let outcome = AgentRunner.stageAndCommit(root: root, baseline: baseline, knownChanged: touched.intersection(dirty),
                                                      userSaved: userSaved, message: intent.isEmpty ? "\(agent.displayName) checkpoint" : intent)
             var fileChanges: [CheckpointFileChange] = []

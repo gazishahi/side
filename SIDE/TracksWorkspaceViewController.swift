@@ -1310,12 +1310,28 @@ final class TracksWorkspaceViewController: NSViewController {
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
-            self.trackStore?.removeWorkingCopy(for: track) { [weak self] result in
-                guard let self else { return }
-                if case .failure(let error) = result {
-                    self.showError(error, title: "Couldn't remove working copy", window: window)
+            self.removeWorkingCopy(track, discardIgnoredFiles: false, window: window)
+        }
+    }
+
+    private func removeWorkingCopy(_ track: Track, discardIgnoredFiles: Bool, window: NSWindow) {
+        trackStore?.removeWorkingCopy(for: track, discardIgnoredFiles: discardIgnoredFiles) { [weak self] result in
+            guard let self, case .failure(let error) = result else { return }
+            // Files git ignores go with the copy and don't come back with it: a second question.
+            if case .worktreeHasUncommittedChanges(let risk) = error as? TrackStore.TrackError {
+                let confirm = NSAlert()
+                confirm.alertStyle = .critical
+                confirm.messageText = risk.title
+                confirm.informativeText = risk.detail
+                confirm.addButton(withTitle: "Discard and Remove")
+                confirm.addButton(withTitle: "Cancel")
+                confirm.beginSheetModal(for: window) { [weak self] response in
+                    guard response == .alertFirstButtonReturn else { return }
+                    self?.removeWorkingCopy(track, discardIgnoredFiles: true, window: window)
                 }
+                return
             }
+            self.showError(error, title: "Couldn't remove working copy", window: window)
         }
     }
 
@@ -1366,15 +1382,15 @@ final class TracksWorkspaceViewController: NSViewController {
                 case .success:
                     self.onTrackDeleted?(track)
                 case .failure(let error as TrackStore.TrackError):
-                    if case .worktreeHasUncommittedChanges(let count) = error {
+                    if case .worktreeHasUncommittedChanges(let risk) = error {
                         // Refused before touching anything. The first dialog said "removes the
                         // track from the list", which is what the user consented to — losing
                         // uncommitted work is a different decision and gets its own question,
-                        // with the number in it.
+                        // naming what goes.
                         let confirm = NSAlert()
                         confirm.alertStyle = .critical
-                        confirm.messageText = "Discard \(count) uncommitted change\(count == 1 ? "" : "s")?"
-                        confirm.informativeText = "This track's working copy has work that was never checkpointed. Deleting the track will destroy it. This can't be undone."
+                        confirm.messageText = risk.title
+                        confirm.informativeText = risk.detail
                         confirm.addButton(withTitle: "Discard and Delete")
                         confirm.addButton(withTitle: "Cancel")
                         confirm.beginSheetModal(for: window) { [weak self] response in

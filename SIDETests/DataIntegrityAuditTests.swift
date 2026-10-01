@@ -142,8 +142,8 @@ final class DataIntegrityAuditTests: XCTestCase {
 
         let refused = expectation(description: "refused")
         store.deleteTrack(parked, alsoDeleteBranch: false) { result in
-            if case .failure(let error as TrackStore.TrackError) = result, case .worktreeHasUncommittedChanges(let count) = error {
-                XCTAssertEqual(count, 1)
+            if case .failure(let error as TrackStore.TrackError) = result, case .worktreeHasUncommittedChanges(let risk) = error {
+                XCTAssertEqual(risk, TrackStore.WorkAtRisk(uncommitted: 1))
             } else {
                 XCTFail("expected refusal, got \(result)")
             }
@@ -188,6 +188,55 @@ final class DataIntegrityAuditTests: XCTestCase {
         }
         wait(for: [deleted], timeout: 20)
         XCTAssertFalse(store.tracks.contains { $0.id == track.id })
+    }
+
+    // MARK: - 2026-09-30 audit, R5: ignored files go with a worktree, so they're asked about
+
+    /// A parked track whose worktree holds only a gitignored `.env`: Delete and Remove Working
+    /// Copy both deleted it unasked (git removes ignored files with or without `--force`, and
+    /// re-creating the worktree doesn't bring them back).
+    @MainActor
+    func testAnIgnoredFileInAWorktreeIsAskedAboutBeforeItsDeleted() throws {
+        makeRepo()
+        try ".env\n".write(to: root.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        git(["add", ".gitignore"])
+        git(["commit", "-q", "-m", "ignore .env"])
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        let created = expectation(description: "create")
+        let captured = Captured<Track>()
+        store.createTrack(intent: "has secrets") { result in
+            if case .success(let made) = result { captured.value = made.0 }
+            created.fulfill()
+        }
+        wait(for: [created], timeout: 20)
+        guard let track = captured.value, let worktree = track.workingDirectoryPath else { return XCTFail("no worktree") }
+        let secret = (worktree as NSString).appendingPathComponent(".env")
+        try "API_KEY=1".write(toFile: secret, atomically: true, encoding: .utf8)
+        store.setStatus(.parked, for: track)
+        guard let parked = store.tracks.first(where: { $0.id == track.id }) else { return XCTFail("track vanished") }
+
+        for remove in [false, true] {
+            let refused = expectation(description: remove ? "remove refused" : "delete refused")
+            let handler: @Sendable (Result<Void, Error>) -> Void = { result in
+                if case .failure(let error as TrackStore.TrackError) = result, case .worktreeHasUncommittedChanges(let risk) = error {
+                    XCTAssertEqual(risk, TrackStore.WorkAtRisk(ignored: [".env"]))
+                } else {
+                    XCTFail("expected a question, got \(result)")
+                }
+                refused.fulfill()
+            }
+            if remove { store.removeWorkingCopy(for: parked, completion: handler) } else { store.deleteTrack(parked, alsoDeleteBranch: false, completion: handler) }
+            wait(for: [refused], timeout: 20)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: secret), "the .env was deleted unasked")
+        }
+
+        let removed = expectation(description: "removed")
+        store.removeWorkingCopy(for: parked, discardIgnoredFiles: true) { result in
+            if case .failure(let error) = result { XCTFail("\(error)") }
+            removed.fulfill()
+        }
+        wait(for: [removed], timeout: 20)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktree))
     }
 
     // MARK: - H6: an adopted worktree does not follow the banner to a different branch

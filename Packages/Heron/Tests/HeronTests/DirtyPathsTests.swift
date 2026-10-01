@@ -32,7 +32,7 @@ final class DirtyPathsTests: XCTestCase {
         // "rc/a.txt" instead of "src/a.txt": a path git had never heard of, which made every
         // checkpoint fail whenever the first dirty file was merely modified.
         try "changed\n".write(to: root.appendingPathComponent("src/a.txt"), atomically: true, encoding: .utf8)
-        let paths = GitPaths.dirtyPaths(cwd: root.path)
+        let paths = try XCTUnwrap(GitPaths.dirtyPaths(cwd: root.path))
         XCTAssertEqual(paths, ["src/a.txt"])
         // And the point of getting it right: git must actually accept the path.
         XCTAssertTrue(GitPaths.runGit(["add", "--"] + paths.sorted(), cwd: root.path).success)
@@ -41,7 +41,7 @@ final class DirtyPathsTests: XCTestCase {
     func testStatusShapesRoundTrip() throws {
         // A clean tree reports nothing; every porcelain shape — staged, worktree-modified,
         // untracked — reports its full path.
-        XCTAssertTrue(GitPaths.dirtyPaths(cwd: root.path).isEmpty)
+        XCTAssertEqual(GitPaths.dirtyPaths(cwd: root.path), [])
         try "changed\n".write(to: root.appendingPathComponent("src/a.txt"), atomically: true, encoding: .utf8)
         git(["add", "src/a.txt"])                                    // "M  src/a.txt"
         try "changed\n".write(to: root.appendingPathComponent("src/b.txt"), atomically: true, encoding: .utf8)  // " M src/b.txt"
@@ -52,14 +52,37 @@ final class DirtyPathsTests: XCTestCase {
     func testANonASCIIFilenameSurvives() throws {
         // git quotes such paths without -z, and the quotes then defeated `git add`.
         try "hi\n".write(to: root.appendingPathComponent("café.txt"), atomically: true, encoding: .utf8)
-        let paths = GitPaths.dirtyPaths(cwd: root.path)
+        let paths = try XCTUnwrap(GitPaths.dirtyPaths(cwd: root.path))
         XCTAssertTrue(paths.contains("café.txt"), "\(paths)")
         XCTAssertTrue(GitPaths.runGit(["add", "--"] + paths.sorted(), cwd: root.path).success)
     }
 
+    /// 2026-09-30 audit, GIT-11: a status git couldn't produce read as a clean tree.
+    func testAFailedStatusIsUnknownNotClean() throws {
+        let notARepository = FileManager.default.temporaryDirectory.appendingPathComponent("not-a-repo-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: notARepository, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: notARepository) }
+        XCTAssertNil(GitPaths.dirtyPaths(cwd: notARepository.path))
+        XCTAssertNil(GitPaths.status(cwd: notARepository.path))
+    }
+
+    /// Ignored entries only when asked for, and never as dirty.
+    func testIgnoredFilesAreListedApartWhenAsked() throws {
+        try ".env\nbuild/\n".write(to: root.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        git(["add", ".gitignore"])
+        git(["commit", "-qm", "ignore"])
+        try "SECRET=1\n".write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("build"), withIntermediateDirectories: true)
+        try "x".write(to: root.appendingPathComponent("build/out.o"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(GitPaths.dirtyPaths(cwd: root.path), [])
+        let status = try XCTUnwrap(GitPaths.status(cwd: root.path, includeIgnored: true))
+        XCTAssertEqual(status.dirty, [])
+        XCTAssertEqual(status.ignored, [".env", "build/"])
+    }
+
     func testARenameReportsOnlyTheDestination() throws {
         git(["mv", "src/a.txt", "src/renamed.txt"])
-        let paths = GitPaths.dirtyPaths(cwd: root.path)
+        let paths = try XCTUnwrap(GitPaths.dirtyPaths(cwd: root.path))
         // Under -z a rename is two NUL-separated fields; the source no longer exists, so
         // including it would stage a path git must reject.
         XCTAssertTrue(paths.contains("src/renamed.txt"), "\(paths)")

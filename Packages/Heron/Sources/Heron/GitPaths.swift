@@ -179,8 +179,12 @@ public enum GitPaths {
     /// root — used to snapshot a worktree's state before/after a batch of agent actions, so a
     /// checkpoint can stage only what actually changed *during* the batch instead of everything
     /// sitting in the tree (which would misattribute a concurrent manual edit to the agent).
-    public static func dirtyPaths(cwd: String) -> Set<String> {
-        status(cwd: cwd)?.dirty ?? []
+    ///
+    /// Nil when git status failed. That is not a clean tree: read as one, it made a checkpoint
+    /// claim every dirty file, promotion pass its cleanliness check, and delete-track remove a
+    /// working copy with `--force` unasked (2026-09-30 audit, GIT-11).
+    public static func dirtyPaths(cwd: String) -> Set<String>? {
+        status(cwd: cwd)?.dirty
     }
 
     /// One `git status` read three ways: the dirty paths, the commit HEAD names (nil before the
@@ -188,11 +192,15 @@ public enum GitPaths {
     /// in one process instead of two is part of what keeps it within budget (D7).
     public struct Status: Sendable {
         public var dirty: Set<String> = []
+        /// Ignored files and directories, only when asked for (`includeIgnored`).
+        public var ignored: Set<String> = []
         public var head: String?
         public var hasStaged = false
     }
 
-    public static func status(cwd: String) -> Status? {
+    /// `includeIgnored` adds git's ignored entries (a directory is one entry): what
+    /// `worktree remove --force` deletes besides the dirty files.
+    public static func status(cwd: String, includeIgnored: Bool = false) -> Status? {
         // `-z` for two independent reasons, both of which silently broke checkpoints: git
         // *quotes* any path with non-ASCII or unusual bytes by default (`"caf\303\251.txt"`),
         // and those quotes were passed straight into `git add`, which then matched nothing —
@@ -202,7 +210,7 @@ public enum GitPaths {
         // `runGitRaw`, not `runGit`: the format is read by position. See above.
         // `--no-optional-locks`: status otherwise rewrites the index to refresh stat data, which
         // contends with the user's own git and changes the file a checkpoint copies.
-        let result = runGitRaw(["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z"], cwd: cwd)
+        let result = runGitRaw(["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z"] + (includeIgnored ? ["--ignored"] : []), cwd: cwd)
         guard result.success else { return nil }
         return parseStatus(result.output)
     }
@@ -235,8 +243,10 @@ public enum GitPaths {
                 // A rename's source path is the next field; it isn't dirty in its own right, and
                 // staging it would name a path that no longer exists.
                 if entry.first == "2" { position += 1 }
-            case "?", "!":
-                if entry.first == "?" { status.dirty.insert(String(entry.dropFirst(2))) }
+            case "?":
+                status.dirty.insert(String(entry.dropFirst(2)))
+            case "!":
+                status.ignored.insert(String(entry.dropFirst(2)))
             default:
                 continue
             }

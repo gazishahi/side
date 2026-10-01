@@ -536,7 +536,10 @@ final class ReviewWorkspaceViewController: NSViewController {
             built.keepSelection(of: previous)
             let blockedReason: String? = {
                 guard let target else { return "\u{201C}\(baseRef)\u{201D}\u{2019}s working copy has been removed. Resume it in Tracks to promote into it." }
-                return GitPaths.dirtyPaths(cwd: target.root.path).isEmpty ? nil : "\(target.isParent ? "\u{201C}\(baseRef)\u{201D}" : "Your main working copy") has uncommitted changes. Commit or stash them first."
+                let name = target.isParent ? "\u{201C}\(baseRef)\u{201D}" : "Your main working copy"
+                // A status git couldn't read is not a clean tree (audit GIT-11).
+                guard let dirty = GitPaths.dirtyPaths(cwd: target.root.path) else { return "git couldn\u{2019}t read the status of \(name), so Side can\u{2019}t tell whether it has uncommitted changes." }
+                return dirty.isEmpty ? nil : "\(name) has uncommitted changes. Commit or stash them first."
             }()
             let hasChanges = !aheadSHAs.isEmpty || !GitDiffComputer.refDiff(fromRef: baseRef, toRef: branchName, cwd: cwd, contextLines: 0).isEmpty
             // One `git diff --name-only` per track — cheap, and it costs the model nothing:
@@ -1105,7 +1108,10 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     // Internal rather than private so the refusal paths can be exercised against a real repo.
     static func performMerge(branchName: String, baseRef: String, intent: String, cwd: String) -> (succeeded: Bool, message: String) {
-        let dirty = GitPaths.dirtyPaths(cwd: cwd)
+        // A status git couldn't read is not a clean tree (2026-09-30 audit, GIT-11).
+        guard let dirty = GitPaths.dirtyPaths(cwd: cwd) else {
+            return (false, "⚠︎ git couldn\u{2019}t read the status of \(cwd), so Side can\u{2019}t tell whether it has uncommitted changes. Nothing was promoted.")
+        }
         guard dirty.isEmpty else {
             return (false, "⚠︎ Your main working copy has uncommitted changes. Commit or stash them first.")
         }
