@@ -178,10 +178,10 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
     /// Bumped on each stop: an answer for an older stop is dropped.
     private var generation = 0
 
-    let stackTable = NSTableView()
-    let variablesOutline = NSOutlineView()
-    let breakpointsTable = NSTableView()
-    let watchesTable = NSTableView()
+    let stackTable = KeyedTableView()
+    let variablesOutline = KeyedOutlineView()
+    let breakpointsTable = KeyedTableView()
+    let watchesTable = KeyedTableView()
     let outputView = NSTextView()
     let consoleField = NSTextField()
     let watchField = NSTextField()
@@ -208,6 +208,16 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         stackTable.action = #selector(stackClicked)
         breakpointsTable.target = self
         breakpointsTable.doubleAction = #selector(breakpointDoubleClicked)
+        // The keyboard does what the mouse does (2026-09-30 audit, UX-6): Return reveals, Delete
+        // removes; the menu's commands act on the selected row when nothing was clicked.
+        breakpointsTable.onKey = { [weak self] key in
+            switch key {
+            case .return: self?.breakpointDoubleClicked()
+            case .delete: self?.deleteClickedBreakpoint()
+            }
+        }
+        watchesTable.onKey = { [weak self] key in if key == .delete { self?.removeClickedWatch() } }
+        variablesOutline.onKey = { [weak self] key in if key == .return { self?.variableDoubleClicked() } }
         let menu = NSMenu()
         menu.addItem(withTitle: "Edit Breakpoint\u{2026}", action: #selector(editClickedBreakpoint), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Delete Breakpoint", action: #selector(deleteClickedBreakpoint), keyEquivalent: "").target = self
@@ -451,6 +461,7 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
             let cell = Self.cell(tableView, "variable", watch.expression, watch.value ?? "\u{2014}", dim: false)
             (cell as? DebugCell)?.detail.textColor = watch.failed ? .systemRed : .secondaryLabelColor
             cell.toolTip = watch.value
+            cell.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Remove") { [weak self] in self?.onRemoveWatch?(row); return true }])
             return cell
         }
         if row < exceptionFilters.count {
@@ -470,6 +481,16 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         cell.detail.stringValue = Self.describe(entry.breakpoint)
         cell.toolTip = [entry.path, entry.breakpoint.message].compactMap { $0 }.joined(separator: "\n")
         cell.onToggle = { [weak self] on in self?.onToggleBreakpoint?(entry.path, entry.breakpoint.line, on) }
+        // VoiceOver's actions for the row: what the double-click, the menu and Delete do.
+        cell.setAccessibilityCustomActions([
+            NSAccessibilityCustomAction(name: "Reveal") { [weak self] in self?.onRevealBreakpoint?(entry.path, entry.breakpoint.line); return true },
+            NSAccessibilityCustomAction(name: "Edit") { [weak self, weak cell] in
+                guard let self, let cell else { return false }
+                self.onEditBreakpoint?(entry.path, entry.breakpoint.line, cell)
+                return true
+            },
+            NSAccessibilityCustomAction(name: "Delete") { [weak self] in self?.onRemoveBreakpoint?(entry.path, entry.breakpoint.line); return true },
+        ])
         return cell
     }
 
@@ -480,6 +501,18 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         cell.detail.stringValue = detail
         cell.title.textColor = dim ? .tertiaryLabelColor : .labelColor
         return cell
+    }
+
+    /// The row a command is about: the one clicked (a double-click, the menu), else the selected one.
+    private static func targetRow(_ table: NSTableView) -> Int { table.clickedRow >= 0 ? table.clickedRow : table.selectedRow }
+
+    /// Arrowing through the stack selects the frame, as a click does.
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard (notification.object as? NSTableView) === stackTable else { return }
+        let row = stackTable.selectedRow
+        guard frames.indices.contains(row), row != selectedFrame else { return }
+        selectedFrame = row
+        onSelectFrame?(row)
     }
 
     @objc private func stackClicked() {
@@ -506,23 +539,23 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
     }
 
     @objc private func breakpointDoubleClicked() {
-        guard let entry = breakpoint(atRow: breakpointsTable.clickedRow) else { return }
+        guard let entry = breakpoint(atRow: Self.targetRow(breakpointsTable)) else { return }
         onRevealBreakpoint?(entry.path, entry.breakpoint.line)
     }
 
     @objc private func deleteClickedBreakpoint() {
-        guard let entry = breakpoint(atRow: breakpointsTable.clickedRow) else { return }
+        guard let entry = breakpoint(atRow: Self.targetRow(breakpointsTable)) else { return }
         onRemoveBreakpoint?(entry.path, entry.breakpoint.line)
     }
 
     @objc private func editClickedBreakpoint() {
-        let row = breakpointsTable.clickedRow
+        let row = Self.targetRow(breakpointsTable)
         guard let entry = breakpoint(atRow: row), let view = breakpointsTable.view(atColumn: 0, row: row, makeIfNecessary: false) else { return }
         onEditBreakpoint?(entry.path, entry.breakpoint.line, view)
     }
 
     @objc private func removeClickedWatch() {
-        let row = watchesTable.clickedRow
+        let row = Self.targetRow(watchesTable)
         guard watches.indices.contains(row) else { return }
         onRemoveWatch?(row)
     }
@@ -603,7 +636,7 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
     }
 
     @objc private func variableDoubleClicked() {
-        let row = variablesOutline.clickedRow
+        let row = Self.targetRow(variablesOutline)
         guard row >= 0, let node = variablesOutline.item(atRow: row) as? DebugVariableNode, case .more(_, let start, _) = node.kind,
               let parent = variablesOutline.parent(forItem: node) as? DebugVariableNode else { return }
         load(parent, start: start)
@@ -619,7 +652,16 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
             cell.toolTip = [variable.type, variable.value].compactMap { $0 }.joined(separator: "\n")
             return cell
         case .more(_, _, let remaining):
-            return Self.cell(outlineView, "more", "\(remaining) more\u{2026}", "double-click", dim: true)
+            let cell = Self.cell(outlineView, "more", "\(remaining) more\u{2026}", "double-click or Return", dim: true)
+            cell.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Load more") { [weak self, weak outlineView] in
+                guard let self, let outlineView else { return false }
+                let row = outlineView.row(forItem: node)
+                guard row >= 0 else { return false }
+                outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                self.variableDoubleClicked()
+                return true
+            }])
+            return cell
         }
     }
 }
@@ -757,4 +799,32 @@ final class DebugCell: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+
+/// Return and Delete, for a table that also works by mouse (`DebugInspector`).
+enum TableKey { case `return`, delete }
+
+final class KeyedTableView: NSTableView {
+    var onKey: ((TableKey) -> Void)?
+    override func keyDown(with event: NSEvent) {
+        if let key = TableKey(event), let onKey, selectedRow >= 0 { onKey(key) } else { super.keyDown(with: event) }
+    }
+}
+
+final class KeyedOutlineView: NSOutlineView {
+    var onKey: ((TableKey) -> Void)?
+    override func keyDown(with event: NSEvent) {
+        if let key = TableKey(event), let onKey, selectedRow >= 0 { onKey(key) } else { super.keyDown(with: event) }
+    }
+}
+
+extension TableKey {
+    init?(_ event: NSEvent) {
+        switch event.keyCode {
+        case 36, 76: self = .return            // Return, Enter
+        case 51, 117: self = .delete           // Delete, Forward Delete
+        default: return nil
+        }
+    }
 }

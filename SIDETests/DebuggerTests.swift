@@ -553,3 +553,46 @@ final class DebugBuildStopTests: XCTestCase {
         XCTAssertNotEqual(left.terminationStatus, 0, "the build is gone")
     }
 }
+
+/// 2026-09-30 audit, UX-6: the inspector worked by mouse only (clicks, double-clicks, a menu on
+/// the clicked row). The keyboard and VoiceOver do the same now.
+@MainActor
+final class DebugInspectorKeyboardTests: XCTestCase {
+    private func key(_ code: UInt16, _ characters: String) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                         characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
+    }
+
+    func testTheInspectorWorksFromTheKeyboard() throws {
+        let inspector = DebugInspector()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = inspector
+        window.layoutIfNeeded()
+        var revealed: Int?, removed: Int?, removedWatch: Int?, selectedFrame: Int?
+        inspector.onRevealBreakpoint = { revealed = $1 }
+        inspector.onRemoveBreakpoint = { removed = $1 }
+        inspector.onRemoveWatch = { removedWatch = $0 }
+        inspector.onSelectFrame = { selectedFrame = $0 }
+
+        inspector.show(breakpoints: [("/p/a.swift", Breakpoint(line: 4)), ("/p/b.swift", Breakpoint(line: 9))])
+        inspector.breakpointsTable.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        inspector.breakpointsTable.keyDown(with: key(36, "\r"))
+        XCTAssertEqual(revealed, 9, "Return reveals the selected breakpoint")
+        inspector.breakpointsTable.keyDown(with: key(51, "\u{7F}"))
+        XCTAssertEqual(removed, 9, "Delete removes it")
+        let cell = try XCTUnwrap(inspector.breakpointsTable.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        XCTAssertEqual(cell.accessibilityCustomActions()?.map(\.name), ["Reveal", "Edit", "Delete"])
+
+        inspector.show(watches: [DebugWatch(expression: "count", value: "3")])
+        inspector.watchesTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        inspector.watchesTable.keyDown(with: key(117, "\u{F728}"))
+        XCTAssertEqual(removedWatch, 0, "Forward Delete removes the watch")
+
+        let frames = [["id": 1, "name": "main"], ["id": 2, "name": "run"]].compactMap { DAPStackFrame($0) }
+        inspector.show(frames: frames, selected: 0)
+        inspector.stackTable.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        XCTAssertEqual(selectedFrame, 1, "arrowing to a frame selects it")
+    }
+}
