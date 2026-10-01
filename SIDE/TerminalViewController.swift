@@ -275,30 +275,32 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         buffer = String(buffer[start...])
     }
 
-    /// The first `needle` in `text` at or after `from`, compared as UTF-8 bytes. Foundation's
-    /// `range(of:)` compares Characters, and under a flood of output it was a quarter of Run's
-    /// CPU even over only the new text. The marks are ASCII, so a byte match is a mark.
-    static func utf8Range(of needle: String, in text: String, from: String.Index) -> Range<String.Index>? {
-        let bytes = text.utf8, pattern = needle.utf8
-        guard let first = pattern.first else { return nil }
-        var from = from
-        while let hit = bytes[from...].firstIndex(of: first) {
-            guard let end = bytes.index(hit, offsetBy: pattern.count, limitedBy: bytes.endIndex) else { return nil }
-            if bytes[hit..<end].elementsEqual(pattern) { return hit..<end }
-            from = bytes.index(after: hit)
+    /// Where `needle` first occurs in `bytes` at or after `from`. The marks are found in the raw
+    /// output bytes, with memchr: Foundation's `range(of:)` compares Characters, and under a
+    /// flood of output it was a quarter of Run's CPU even over only the new text (2026-09-30).
+    /// The marks are ASCII, so a byte match is a mark.
+    static func firstOffset(of needle: [UInt8], in bytes: [UInt8], from: Int) -> Int? {
+        guard let first = needle.first, from >= 0, bytes.count - from >= needle.count else { return nil }
+        return bytes.withUnsafeBufferPointer { hay in
+            guard let base = hay.baseAddress else { return nil }
+            var at = from
+            while hay.count - at >= needle.count {
+                guard let hit = memchr(base + at, Int32(first), hay.count - at) else { return nil }
+                at = base.distance(to: hit.assumingMemoryBound(to: UInt8.self))
+                guard hay.count - at >= needle.count else { return nil }
+                if needle.withUnsafeBufferPointer({ memcmp(base + at, $0.baseAddress!, needle.count) }) == 0 { return at }
+                at += 1
+            }
+            return nil
         }
-        return nil
     }
 
-    /// Where a search for a mark needs to start after `chunk` was appended: the new text, and
-    /// enough before it for a mark split across chunks (a mark with its exit code and nonce is
-    /// well under this).
-    private static func searchStart(in buffer: String, afterAppending chunk: String) -> String.Index {
-        let back = min(buffer.utf8.count, chunk.utf8.count + 160)
-        var index = buffer.utf8.index(buffer.utf8.endIndex, offsetBy: -back)
-        while index > buffer.startIndex, index.samePosition(in: buffer.unicodeScalars) == nil { index = buffer.utf8.index(before: index) }
-        return index
-    }
+    private static let startMarkBytes = Array((markPrefix + "C" + markTerminator).utf8)
+    private static let doneMarkBytes = Array((markPrefix + "D;").utf8)
+    private static let markPrefixBytes = Array(markPrefix.utf8)
+    private static let markTerminatorBytes = Array(markTerminator.utf8)
+    private static let separator = UInt8(ascii: ";")
+
     /// True when integration was installed via the ZDOTDIR wrapper (zsh) — nothing was typed
     /// into the session, so there's nothing to tidy and no visible setup at all.
     private var integrationInstalledViaRc = false
@@ -339,7 +341,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     }
     private(set) var commandStatus = CommandStatus()
     var onCommandStatusChanged: (() -> Void)?
-    private var markScanCarry = ""
+    private var markScanCarry: [UInt8] = []
+    /// The marked command's output so far, raw (`advanceMarkedCapture`); the sentinel path
+    /// keeps its text in `pendingAgentCommand.buffer`.
+    private var markedOutput: [UInt8] = []
     var onOutputReceived: (() -> Void)?
     /// Return true if handled (opened in Make); returning false falls through to the default
     /// NSWorkspace.open behavior, which is what makes plain URLs already clickable for free.
@@ -601,6 +606,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         pendingAgentCommandGeneration += 1
         let generation = pendingAgentCommandGeneration
         let usesMarks = shellIntegration == .confirmed
+        markedOutput = []
         pendingAgentCommand = (sentinel, "", 0, command, usesMarks, false, completion)
         // With shell integration the command is sent exactly as-is: the shell's own marks report
         // completion, so nothing has to be appended to the user's command line at all.
@@ -702,27 +708,18 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// past any occurrence whose exit-code text isn't purely numeric rather than resolving on
     /// the first (false) match.
     private func handleAgentCommandData(_ slice: ArraySlice<UInt8>) {
-        let chunk = String(decoding: slice, as: UTF8.self)
-        trackCommandStatus(chunk)
+        trackCommandStatus(slice)
         // The probe: any `D` mark proves the shell is emitting OSC 133, whoever caused it.
-        if shellIntegration == .probing, chunk.contains(";" + markNonce + Self.markTerminator) {
+        if shellIntegration == .probing, String(decoding: slice, as: UTF8.self).contains(";" + markNonce + Self.markTerminator) {
             shellIntegration = .confirmed
             tidyAfterSetup()
             drainQueuedAgentCommandsIfIdle()
         }
         guard var pending = pendingAgentCommand else { return }
         if pending.usesMarks {
-            // The buffer taken out of both copies of `pending`, so appending to it doesn't copy it.
-            var buffer = pending.buffer
-            pending.buffer = ""
-            pendingAgentCommand?.buffer = ""
-            let finished = Self.advanceMarkedCapture(buffer: &buffer, outputStarted: &pending.outputStarted, chunk: chunk, nonce: markNonce)
-            pending.buffer = buffer
-            guard let finished else {
-                pendingAgentCommand = pending
-                return
-            }
+            let finished = Self.advanceMarkedCapture(bytes: &markedOutput, outputStarted: &pending.outputStarted, chunk: slice, nonce: markNonce)
             pendingAgentCommand = pending
+            guard let finished else { return }
             finishPendingAgentCommand(finished)
             return
         }
@@ -814,54 +811,58 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         var finished: String?
     }
 
+    /// The same, in text (what the tests feed it).
     static func advanceMarkedCapture(buffer: String, outputStarted: Bool, chunk: String, nonce: String) -> MarkedCaptureStep {
-        var buffer = buffer, outputStarted = outputStarted
-        let finished = advanceMarkedCapture(buffer: &buffer, outputStarted: &outputStarted, chunk: chunk, nonce: nonce)
-        return MarkedCaptureStep(buffer: buffer, outputStarted: outputStarted, finished: finished)
+        var bytes = Array(buffer.utf8), outputStarted = outputStarted
+        let finished = advanceMarkedCapture(bytes: &bytes, outputStarted: &outputStarted, chunk: ArraySlice(chunk.utf8), nonce: nonce)
+        return MarkedCaptureStep(buffer: String(decoding: bytes, as: UTF8.self), outputStarted: outputStarted, finished: finished)
     }
 
-    /// The same, in place; non-nil once finished.
-    static func advanceMarkedCapture(buffer: inout String, outputStarted: inout Bool, chunk: String, nonce: String) -> String? {
-        boundedAppend(&buffer, chunk)
-        var startedNow = false
-        // Only the new text is searched (see `searchStart`): searching the whole buffer again
-        // for every chunk was most of Run's CPU under a flood of output.
-        let fresh = searchStart(in: buffer, afterAppending: chunk)
+    /// In place, on the output's raw bytes: they're decoded once, when the command finishes,
+    /// rather than once a read (which also repaired a character split across two reads into
+    /// two replacement characters). Non-nil once finished.
+    static func advanceMarkedCapture(bytes: inout [UInt8], outputStarted: inout Bool, chunk: ArraySlice<UInt8>, nonce: String) -> String? {
+        bytes.append(contentsOf: chunk)
+        // Trimmed past twice the cap, to the last cap's worth, on a character's first byte.
+        if bytes.count > maxCommandBufferCharacters * 2 {
+            var cut = bytes.count - maxCommandBufferCharacters
+            while cut < bytes.count, bytes[cut] & 0xC0 == 0x80 { cut += 1 }
+            bytes.removeFirst(cut)
+        }
+        // Only the new bytes are searched, and enough before them for a mark split across reads
+        // (a mark with its exit code and nonce is well under 160 bytes): searching the whole
+        // buffer again for every read was most of Run's CPU under a flood of output.
+        var searchFrom = max(0, bytes.count - chunk.count - 160)
         if !outputStarted {
-            guard let start = utf8Range(of: markPrefix + "C" + markTerminator, in: buffer, from: fresh) else { return nil }
+            guard let start = firstOffset(of: startMarkBytes, in: bytes, from: searchFrom) else { return nil }
             outputStarted = true
-            startedNow = true
-            buffer = String(buffer[start.upperBound...])
+            bytes.removeFirst(start + startMarkBytes.count)
+            searchFrom = 0
         }
         // Output is exactly what falls between the shell's own "output starts here" and "command
         // finished" marks, so the prompt is excluded by construction rather than by filtering.
         // A `D` mark is only the shell's if it carries this terminal's nonce; anything else
         // shaped like one is output and the search moves past it.
-        // A `C` found just now cut the buffer: search all of what's left; otherwise the new text.
-        var searchFrom = startedNow ? buffer.startIndex : fresh
-        var doneRange: Range<String.Index>?
-        var exitCode = 0
-        while let candidate = utf8Range(of: markPrefix + "D;", in: buffer, from: searchFrom) {
+        let nonceBytes = Array(nonce.utf8)
+        while let candidate = firstOffset(of: doneMarkBytes, in: bytes, from: searchFrom) {
+            let payloadStart = candidate + doneMarkBytes.count
             // Still arriving — could be ours; wait for the rest.
-            guard let terminator = utf8Range(of: markTerminator, in: buffer, from: candidate.upperBound) else { return nil }
-            let payload = buffer[candidate.upperBound..<terminator.lowerBound].split(separator: ";", omittingEmptySubsequences: false)
-            if payload.count == 2, payload[1] == nonce, let code = Int(payload[0]) {
-                doneRange = candidate
-                exitCode = code
-                break
+            guard let terminator = firstOffset(of: markTerminatorBytes, in: bytes, from: payloadStart) else { return nil }
+            let payload = bytes[payloadStart..<terminator].split(separator: separator, omittingEmptySubsequences: false)
+            if payload.count == 2, payload[1].elementsEqual(nonceBytes), let exitCode = Int(String(decoding: payload[0], as: UTF8.self)) {
+                var output = strippingPromptEOLMark(
+                    stripANSI(String(decoding: bytes[..<candidate], as: UTF8.self))
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                if output.isEmpty { output = "(no output)" }
+                // Always, not only on failure: the agent needs to distinguish "succeeded" from "we
+                // could not tell", and a verification record that guesses from output text would
+                // produce false verdicts about whether the project works.
+                output += "\n[exit code: \(exitCode)]"
+                return output
             }
-            searchFrom = terminator.upperBound
+            searchFrom = terminator + 1
         }
-        guard let doneRange else { return nil }
-        var output = strippingPromptEOLMark(
-            stripANSI(String(buffer[buffer.startIndex..<doneRange.lowerBound]))
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        if output.isEmpty { output = "(no output)" }
-        // Always, not only on failure: the agent needs to distinguish "succeeded" from "we could
-        // not tell", and a verification record that guesses from output text would produce false
-        // verdicts about whether the project works.
-        output += "\n[exit code: \(exitCode)]"
-        return output
+        return nil
     }
 
     /// What the model should see: the command's own output, with the wrapper's echoed sentinel
@@ -1083,14 +1084,13 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         return path.removingPercentEncoding ?? path
     }
 
-    private func trackCommandStatus(_ chunk: String) {
+    private func trackCommandStatus(_ chunk: ArraySlice<UInt8>) {
         // Only the nonce-carrying marks count where the rc install provides one; the typed bash
         // setup has no nonce, and its marks drive nothing but this display.
-        let scan = Self.scanCommandMarks(carry: markScanCarry, chunk: chunk, nonce: integrationInstalledViaRc ? markNonce : nil)
-        markScanCarry = scan.carry
-        guard !scan.marks.isEmpty else { return }
+        let marks = Self.scanCommandMarks(carry: &markScanCarry, chunk: chunk, nonce: integrationInstalledViaRc ? markNonce : nil)
+        guard !marks.isEmpty else { return }
         var status = commandStatus
-        for mark in scan.marks {
+        for mark in marks {
             switch mark {
             case .started:
                 status.runningSince = Date()
@@ -1114,26 +1114,39 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// Every OSC 133 C / D mark in `chunk`, in order, with `carry` joining a mark split across
     /// reads. `nonce` nil accepts marks without one (the typed bash setup emits none).
     static func scanCommandMarks(carry: String, chunk: String, nonce: String?) -> (carry: String, marks: [CommandMark]) {
-        let text = carry + chunk
+        var bytes = Array(carry.utf8)
+        let marks = scanCommandMarks(carry: &bytes, chunk: ArraySlice(chunk.utf8), nonce: nonce)
+        return (String(decoding: bytes, as: UTF8.self), marks)
+    }
+
+    /// The same, on raw bytes, `carry` kept in place.
+    static func scanCommandMarks(carry: inout [UInt8], chunk: ArraySlice<UInt8>, nonce: String?) -> [CommandMark] {
+        // Most reads hold no escape at all: nothing to find, nothing to carry.
+        if carry.isEmpty, !chunk.contains(markPrefixBytes[0]) { return [] }
+        var text = carry
+        text.append(contentsOf: chunk)
         var marks: [CommandMark] = []
-        var searchFrom = text.startIndex
-        while let prefix = utf8Range(of: markPrefix, in: text, from: searchFrom) {
-            guard let terminator = utf8Range(of: markTerminator, in: text, from: prefix.upperBound) else {
+        var searchFrom = 0
+        while let prefix = firstOffset(of: markPrefixBytes, in: text, from: searchFrom) {
+            let bodyStart = prefix + markPrefixBytes.count
+            guard let terminator = firstOffset(of: markTerminatorBytes, in: text, from: bodyStart) else {
                 // Still arriving: keep it (bounded) for the next read.
-                return (String(text[prefix.lowerBound...].suffix(256)), marks)
+                carry = Array(text[prefix...].prefix(256))
+                return marks
             }
-            let body = text[prefix.upperBound..<terminator.lowerBound]
-            if body == "C" {
+            let body = text[bodyStart..<terminator]
+            if body.elementsEqual([UInt8(ascii: "C")]) {
                 marks.append(.started)
-            } else if body.hasPrefix("D;") {
-                let payload = body.dropFirst(2).split(separator: ";", omittingEmptySubsequences: false)
-                let nonceMatches = nonce.map { payload.count == 2 && payload[1] == $0 } ?? (payload.count <= 2)
-                if nonceMatches, let first = payload.first, let code = Int(first) { marks.append(.finished(exitCode: code)) }
+            } else if body.starts(with: [UInt8(ascii: "D"), separator]) {
+                let payload = body.dropFirst(2).split(separator: separator, omittingEmptySubsequences: false)
+                let nonceMatches = nonce.map { payload.count == 2 && payload[1].elementsEqual($0.utf8) } ?? (payload.count <= 2)
+                if nonceMatches, let first = payload.first, let code = Int(String(decoding: first, as: UTF8.self)) { marks.append(.finished(exitCode: code)) }
             }
-            searchFrom = terminator.upperBound
+            searchFrom = terminator + 1
         }
         // A tail shorter than the prefix can't hold a whole mark, so nothing is seen twice.
-        return (String(text[searchFrom...].suffix(markPrefix.count - 1)), marks)
+        carry = Array(text[searchFrom...].suffix(markPrefixBytes.count - 1))
+        return marks
     }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {

@@ -21,6 +21,22 @@ final class TerminalCaptureTests: XCTestCase {
         return step
     }
 
+    /// Reads split wherever the PTY splits them, mid-character included: the capture keeps raw
+    /// bytes and decodes once, so "é" split across two reads comes back as "é" (each read
+    /// decoded on its own made it two replacement characters), and a mark split across reads
+    /// is still found.
+    func testACharacterOrAMarkSplitAcrossReadsComesBackWhole() {
+        let raw = Array((prefix + "C" + bell + "café ✓\r\n" + done(0)).utf8)
+        for split in 1..<raw.count {
+            var bytes: [UInt8] = [], started = false
+            var finished = TerminalViewController.advanceMarkedCapture(bytes: &bytes, outputStarted: &started, chunk: raw[..<split], nonce: nonce)
+            if finished == nil {
+                finished = TerminalViewController.advanceMarkedCapture(bytes: &bytes, outputStarted: &started, chunk: raw[split...], nonce: nonce)
+            }
+            XCTAssertEqual(finished, "café ✓\n[exit code: 0]", "split at byte \(split)")
+        }
+    }
+
     // MARK: - Forged marks (2026-09-01 audit)
 
     func testAMarkWithoutTheNonceOrWithTheWrongOneIsOutputNotCompletion() {
