@@ -220,10 +220,29 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// error the user cares about live.
     private static let maxCommandBufferCharacters = 60_000
 
+    ///
+    /// Trimmed only past twice the cap, and by UTF-8 bytes: counting characters on every chunk
+    /// walked the whole buffer, grapheme by grapheme, for each kilobyte a command printed, and
+    /// a command with a lot of output ran at a core's worth of Side's CPU, slower than it could
+    /// print (2026-09-30, the Run budget). What's kept is at least the last cap's worth.
     private static func boundedAppend(_ existing: String, _ addition: String) -> String {
         let combined = existing + addition
-        guard combined.count > maxCommandBufferCharacters else { return combined }
-        return String(combined.suffix(maxCommandBufferCharacters))
+        guard combined.utf8.count > maxCommandBufferCharacters * 2 else { return combined }
+        let utf8 = combined.utf8
+        var start = utf8.index(utf8.endIndex, offsetBy: -maxCommandBufferCharacters)
+        // On a scalar's first byte, so the cut never splits one.
+        while start < utf8.endIndex, start.samePosition(in: combined.unicodeScalars) == nil { start = utf8.index(after: start) }
+        return String(combined[start...])
+    }
+
+    /// Where a search for a mark needs to start after `chunk` was appended: the new text, and
+    /// enough before it for a mark split across chunks (a mark with its exit code and nonce is
+    /// well under this).
+    private static func searchStart(in buffer: String, afterAppending chunk: String) -> String.Index {
+        let back = min(buffer.utf8.count, chunk.utf8.count + 160)
+        var index = buffer.utf8.index(buffer.utf8.endIndex, offsetBy: -back)
+        while index > buffer.startIndex, index.samePosition(in: buffer.unicodeScalars) == nil { index = buffer.utf8.index(before: index) }
+        return index
     }
     /// True when integration was installed via the ZDOTDIR wrapper (zsh) — nothing was typed
     /// into the session, so there's nothing to tidy and no visible setup at all.
@@ -740,18 +759,24 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     static func advanceMarkedCapture(buffer: String, outputStarted: Bool, chunk: String, nonce: String) -> MarkedCaptureStep {
         var buffer = boundedAppend(buffer, chunk)
         var outputStarted = outputStarted
+        var startedNow = false
+        // Only the new text is searched (see `searchStart`): searching the whole buffer again
+        // for every chunk was most of Run's CPU under a flood of output.
+        let fresh = searchStart(in: buffer, afterAppending: chunk)
         if !outputStarted {
-            guard let start = buffer.range(of: markPrefix + "C" + markTerminator) else {
+            guard let start = buffer.range(of: markPrefix + "C" + markTerminator, range: fresh..<buffer.endIndex) else {
                 return MarkedCaptureStep(buffer: buffer, outputStarted: false, finished: nil)
             }
             outputStarted = true
+            startedNow = true
             buffer = String(buffer[start.upperBound...])
         }
         // Output is exactly what falls between the shell's own "output starts here" and "command
         // finished" marks, so the prompt is excluded by construction rather than by filtering.
         // A `D` mark is only the shell's if it carries this terminal's nonce; anything else
         // shaped like one is output and the search moves past it.
-        var searchFrom = buffer.startIndex
+        // A `C` found just now cut the buffer: search all of what's left; otherwise the new text.
+        var searchFrom = startedNow ? buffer.startIndex : fresh
         var doneRange: Range<String.Index>?
         var exitCode = 0
         while let candidate = buffer.range(of: markPrefix + "D;", range: searchFrom..<buffer.endIndex) {

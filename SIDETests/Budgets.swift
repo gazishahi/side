@@ -65,6 +65,9 @@ enum Budgets {
         // `StreamingEfficiencyTests`; Think's bubble is measured here.
         Row(id: "stream.heron", area: "Think", measure: "Heron: a 50,000-character message's main-thread work (StreamingEfficiencyTests)", limit: 20, unit: "ms"),
         Row(id: "stream.think", area: "Think", measure: "Think: a streaming bubble's flush, mean over a 50,000-character message", limit: 0.25, unit: "ms"),
+        // Run at its heaviest: a command's flood of output into a terminal on screen.
+        Row(id: "run.flood.seconds", area: "Run", measure: "2,000,000 lines of output into a terminal on screen, to done", limit: 30, unit: "s"),
+        Row(id: "run.flood.cpu", area: "Run", measure: "The same: CPU seconds, background work included", limit: 30, unit: "s"),
         Row(id: "heron.stream.hops", area: "Think", measure: "Heron: streaming 20 s, main-thread hops (StreamingEfficiencyTests)", limit: 60, unit: "/s"),
         Row(id: "heron.stream.cpu", area: "Think", measure: "Heron: streaming 20 s, CPU with the fake server (StreamingEfficiencyTests)", limit: 15, unit: "%"),
         // Heron's background work (SIDE_RFC_HERON_EFFICIENCY.md, D7), held by Heron's
