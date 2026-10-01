@@ -962,6 +962,8 @@ public final class AgentRunner {
         // The real index is read before and after the status, so a copy of it is known to be the
         // index that status described (see `commitPathsInIsolatedIndex`).
         let indexFile = GitPaths.indexFile(worktree: root)
+        // Its modification time too, read first: the copy has to carry it (see below).
+        let indexModified = indexFile.flatMap { (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.modificationDate] as? Date }
         let indexBefore = indexFile.flatMap { try? Data(contentsOf: $0) }
         guard let status = GitPaths.status(cwd: root) else {
             return .failed(step: "status", message: "git status failed in \(root)")
@@ -975,9 +977,9 @@ public final class AgentRunner {
         // Everything the batch did left the tree exactly as it already was (e.g. a command that
         // ran but touched nothing) — nothing to checkpoint at all.
         guard !pathsToStage.isEmpty else { return nil }
-        let realIndex: (url: URL, contents: Data)? = {
-            guard let indexFile, let indexBefore, indexBefore == indexAfter, !status.hasStaged else { return nil }
-            return (indexFile, indexBefore)
+        let realIndex: (url: URL, contents: Data, modified: Date)? = {
+            guard let indexFile, let indexBefore, let indexModified, indexBefore == indexAfter, !status.hasStaged else { return nil }
+            return (indexFile, indexBefore, indexModified)
         }()
         return commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root, head: status.head, realIndex: realIndex)
     }
@@ -2133,7 +2135,7 @@ public final class AgentRunner {
     /// - Afterwards the private index goes back in place as the real one, under git's own lock
     ///   and only if nothing wrote the index meanwhile; otherwise `git add` refreshes the paths.
     private nonisolated static func commitPathsInIsolatedIndex(
-        _ paths: [String], message: String, cwd: String, head: String?, realIndex: (url: URL, contents: Data)?
+        _ paths: [String], message: String, cwd: String, head: String?, realIndex: (url: URL, contents: Data, modified: Date)?
     ) -> CheckpointCommitOutcome {
         let indexURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("side-checkpoint-index-\(UUID().uuidString)")
@@ -2144,8 +2146,17 @@ public final class AgentRunner {
         let hasParent = head != nil
         // Seed from HEAD so the commit's baseline is the last commit, never the user's staged
         // state. A repo with no commits yet starts from an empty index instead.
-        if let realIndex, hasParent, (try? realIndex.contents.write(to: indexURL)) != nil {
+        if let realIndex, hasParent, (try? realIndex.contents.write(to: indexURL)) != nil,
+           (try? FileManager.default.setAttributes([.modificationDate: realIndex.modified.addingTimeInterval(-1)], ofItemAtPath: indexPath)) != nil {
             // The user's index, which holds HEAD: nothing is staged in it.
+            //
+            // With the index's own modification time, or earlier. git trusts an entry whose
+            // stat data matches the file unless the entry is no older than the index file
+            // ("racily clean"), and a copy written now made every entry older: a file changed
+            // in place, to the same size, in the second its index was written, read as
+            // unchanged, and the checkpoint missed it or said "nothing to commit" (2026-09-30,
+            // CheckpointCostTests; 5 of 5 in a reproduction). Earlier only makes git re-read
+            // more files; later would hide changes.
         } else if hasParent {
             let readTree = runGitWithRetry(["read-tree", "HEAD"], cwd: cwd, extraEnvironment: environment)
             guard readTree.success else {

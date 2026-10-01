@@ -80,6 +80,26 @@ final class CheckpointCostTests: XCTestCase {
         XCTAssertNil(AgentRunner.addedPaths("warning: in the working copy of 'a', LF will be replaced", asked: ["a"]))
         XCTAssertEqual(AgentRunner.addedPaths("", asked: ["a"]), [])
     }
+
+    /// A file the agent changes in place, to the same size, in the second the previous
+    /// checkpoint wrote the index: the checkpoint copied the index to a file with a new date,
+    /// git took the file's matching stat data as unchanged, and the change was left out
+    /// ("nothing to commit"). Seen as this suite's intermittent failure; here it's timed.
+    func testAChangeInTheSecondTheIndexWasWrittenIsCheckpointed() throws {
+        let root = try Self.largeRepository(files: 100)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("d2/f2.txt")
+        func waitForTheNextSecond() { Thread.sleep(forTimeInterval: 1.05 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1)) }
+        waitForTheNextSecond()
+        try "changed 0\n".write(to: file, atomically: false, encoding: .utf8)
+        guard case .committed? = AgentRunner.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "first") else { return XCTFail("first checkpoint") }
+        try "changed 1\n".write(to: file, atomically: false, encoding: .utf8)  // same second, same size, same inode
+        waitForTheNextSecond()
+        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "second")
+        guard case .committed(_, let paths)? = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertEqual(paths, ["d2/f2.txt"])
+        XCTAssertEqual(GitPaths.runGit(["show", "HEAD:d2/f2.txt"], cwd: root.path).output, "changed 1")
+    }
 }
 
 /// No git on the main thread during a turn: an edit applied, a checkpoint made (D7).
