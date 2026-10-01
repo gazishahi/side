@@ -56,7 +56,7 @@ final class ProcessHygieneTests: XCTestCase {
 
 /// H2: the API key must never follow a redirect.
 final class SSERedirectTests: XCTestCase {
-    /// One Python HTTP server: `/start` answers 302 → `/leak`; `/leak` writes the headers it
+    /// One Python HTTP server: `/start` (and anything under it) answers 302 → `/leak`; `/leak` writes the headers it
     /// received to `leakFile`. The process prints its port on the first line of stdout.
     private func startServer(leakFile: URL) throws -> (process: Process, port: Int) {
         let script = """
@@ -64,7 +64,7 @@ final class SSERedirectTests: XCTestCase {
         LEAK = sys.argv[1]
         class H(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
-                if self.path == '/start':
+                if self.path.startswith('/start'):
                     self.send_response(302); self.send_header('Location', '/leak'); self.end_headers(); return
                 if self.path == '/leak':
                     open(LEAK, 'w').write(json.dumps(dict(self.headers)))
@@ -111,6 +111,26 @@ final class SSERedirectTests: XCTestCase {
             XCTAssertEqual(status, 302)
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: leakFile.path), "the redirect target received the request — and with it the key")
+    }
+
+    /// 2026-09-30 audit, SEC-12: the daily model-list refresh used `.shared`, which followed a
+    /// 302 with the key header on.
+    func testTheModelListRefreshDoesNotFollowARedirect() throws {
+        let leakFile = FileManager.default.temporaryDirectory.appendingPathComponent("leak-\(UUID().uuidString).json")
+        let server = try startServer(leakFile: leakFile)
+        defer { server.process.terminate() }
+        let store = ProviderRegistryStore(storeURL: FileManager.default.temporaryDirectory.appendingPathComponent("providers-\(UUID().uuidString).json"))
+        let id = "redirect-test-\(UUID().uuidString)"
+        defer { UserDefaults.standard.removeObject(forKey: "SideProviderModelsRefreshed.\(id)") }
+        store.addOrUpdate(ProviderDefinition(id: id, displayName: "Local", kind: .local, baseURL: URL(string: "http://127.0.0.1:\(server.port)/start")!,
+                                             requiresAPIKey: false, models: [ProviderModel(id: "m", displayName: "m", contextWindowTokens: 8_000)], defaultModelId: "m"))
+        let done = expectation(description: "refreshed")
+        store.refreshModels(providerId: id, apiKey: "sk-test-secret", force: true) { changed in
+            XCTAssertFalse(changed)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 20)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leakFile.path), "the redirect target received the refresh — and with it the key")
     }
 }
 

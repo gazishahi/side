@@ -51,7 +51,8 @@ public enum SSEHTTPClient {
     /// intercepting proxy could replay that key to a host the user never authorized. An SSE stream
     /// never legitimately redirects; the 3xx is delivered to the caller as an ordinary non-200 and
     /// surfaces as an HTTP error naming the status. (2026-09-01 audit, H2.)
-    private final class RedirectRefuser: NSObject, URLSessionTaskDelegate, Sendable {
+    /// Also the model-list refresh's (`ProviderRegistryStore.refreshModels`), which sends the key too.
+    final class RedirectRefuser: NSObject, URLSessionTaskDelegate, Sendable {
         public func urlSession(
             _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
             newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void

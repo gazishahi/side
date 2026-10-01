@@ -76,7 +76,7 @@ public final class ProviderRegistryStore: @unchecked Sendable {
     /// server's `/v1/models`) and merges them in, so a new model shows without an update to
     /// Side. At most once a day unless `force` (a key was just saved). Needs the key the caller
     /// already has: this never reads the Keychain itself.
-    public func refreshModels(providerId: String, apiKey: String?, force: Bool = false, session: URLSession = .shared, completion: ((Bool) -> Void)? = nil) {
+    public func refreshModels(providerId: String, apiKey: String?, force: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard let definition = provider(for: providerId),
               definition.id == "anthropic" || definition.kind == .local else { completion?(false); return }
         let key = Self.refreshedKey(providerId)
@@ -85,7 +85,10 @@ public final class ProviderRegistryStore: @unchecked Sendable {
             return
         }
         UserDefaults.standard.set(Date(), forKey: key)
-        var request = URLRequest(url: definition.baseURL.appendingPathComponent("v1/models").appending(queryItems: [URLQueryItem(name: "limit", value: "100")]))
+        // Anthropic's base URL is the host; a local server's already ends in its API root
+        // (`…/v1`, as chat/completions is appended to it), so its list is `models` under that.
+        let path = definition.id == "anthropic" ? "v1/models" : "models"
+        var request = URLRequest(url: definition.baseURL.appendingPathComponent(path).appending(queryItems: [URLQueryItem(name: "limit", value: "100")]))
         request.timeoutInterval = 15
         if definition.id == "anthropic" {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
@@ -93,7 +96,7 @@ public final class ProviderRegistryStore: @unchecked Sendable {
         } else if let apiKey, !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        session.dataTask(with: request) { [weak self] data, response, _ in
+        Self.modelsSession.dataTask(with: request) { [weak self] data, response, _ in
             let fetched = (response as? HTTPURLResponse)?.statusCode == 200 ? data.flatMap(Self.parseModels) : nil
             DispatchQueue.main.async {
                 guard let self, let fetched, !fetched.isEmpty, var current = self.provider(for: providerId) else {
@@ -111,6 +114,11 @@ public final class ProviderRegistryStore: @unchecked Sendable {
             }
         }.resume()
     }
+
+    /// Refuses redirects, as the streaming client does: `.shared` followed a 302 with the key
+    /// header still on, and a loopback test delivered it to the second host (2026-09-30 audit,
+    /// SEC-12). This runs unasked once a day, so it gets no session a caller could swap in.
+    private static let modelsSession = URLSession(configuration: .default, delegate: SSEHTTPClient.RedirectRefuser(), delegateQueue: nil)
 
     public static let modelsDidChangeNotification = Notification.Name("SideProviderModelsDidChange")
 
