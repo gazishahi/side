@@ -3148,6 +3148,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if count > 0 { resultsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         // The palette stays open with no results — the field is part of it now.
         showQuickOpenPanel()
+        announceResults()
     }
     @objc private func confirmSearch() {
         let selected = resultsTable.selectedRow
@@ -3219,6 +3220,30 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         resultsTable.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
         resultsTable.scrollRowToVisible(next)
         if searchMode == .find, findRows.indices.contains(next) { showFindMatch(findRows[next].firstMatch) }
+        announceResult(next)
+    }
+
+    /// How many results, and the first, once typing pauses: every keystroke refilters, and
+    /// speaking each would talk over the typing.
+    private func announceResults() {
+        announceResultsWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.paletteIsOpen else { return }
+            let count = self.resultCount
+            guard count > 0, let cell = self.resultsTable.view(atColumn: 0, row: 0, makeIfNecessary: true) else {
+                return Spoken.announce("No results")
+            }
+            Spoken.announce("\(count) result\(count == 1 ? "" : "s"). \(cell.accessibilityLabel() ?? "")")
+        }
+        announceResultsWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+    private var announceResultsWork: DispatchWorkItem?
+
+    /// The palette row, as VoiceOver would read it if it had focus (the field keeps it).
+    private func announceResult(_ row: Int) {
+        guard resultCount > 0, let cell = resultsTable.view(atColumn: 0, row: row, makeIfNecessary: true) else { return }
+        Spoken.row(cell.accessibilityLabel() ?? "", at: row, of: resultCount)
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === resultsTable { return resultCount }

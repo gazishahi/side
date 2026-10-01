@@ -549,6 +549,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             refreshConversationTitle()
         case .appended(let index):
             appendEntryView(at: index)
+            announceEntry(at: index)
             if index == 0 || conversationTitle.stringValue == "New conversation" { refreshConversationTitle() }
             refreshSessionPill()
         case .updated(let index):
@@ -562,6 +563,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 scheduleStreamFlush()
             }
         case .phaseChanged:
+            announcePhase()
             refreshEditAffordances()
             if runner?.phase.isBusy != true {
                 currentWorkGroup?.finish()
@@ -579,6 +581,43 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // view from the hierarchy entirely, which clears it.
             if isViewLoaded, view.window != nil { runner?.acknowledgeCompletion() }
         }
+    }
+
+    // MARK: - Spoken (2026-09-30 audit, UX-7)
+
+    /// A failure or a compaction, said as it lands: VoiceOver's focus is in the composer, so a
+    /// new line in the transcript went unheard.
+    private func announceEntry(at index: Int) {
+        guard isViewLoaded, view.window != nil, let entry = runner?.entries[safe: index] else { return }
+        switch entry.kind {
+        case .failure(let text): Spoken.announce("Failed: " + Self.spokenPrefix(text), priority: .high)
+        case .compaction(let text): Spoken.announce(Self.spokenPrefix(text))
+        default: break
+        }
+    }
+
+    private var lastSpokenPhaseWasBusy = false
+
+    /// A turn's end, with how the reply begins, and a wait for approval.
+    private func announcePhase() {
+        guard isViewLoaded, view.window != nil, let runner else { return }
+        let busy = runner.phase.isBusy
+        defer { lastSpokenPhaseWasBusy = busy }
+        if runner.phase == .awaitingApproval { return Spoken.announce("Waiting for your approval", priority: .high) }
+        guard lastSpokenPhaseWasBusy, !busy else { return }
+        let reply = runner.entries.last { if case .assistantText = $0.kind { return true } else { return false } }
+        if case .assistantText(let text)? = reply?.kind {
+            Spoken.announce("Reply finished: " + Self.spokenPrefix(text))
+        } else {
+            Spoken.announce("Turn finished")
+        }
+    }
+
+    /// The first sentence or so, enough to know what it is without reading it all aloud.
+    static func spokenPrefix(_ text: String, limit: Int = 140) -> String {
+        let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        guard flat.count > limit else { return flat }
+        return String(flat.prefix(limit)) + "\u{2026}"
     }
 
     // MARK: - Sending

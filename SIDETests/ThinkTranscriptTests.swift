@@ -71,6 +71,28 @@ for line in sys.stdin:
     }
 
 
+    /// 2026-09-30 audit, UX-7: a reply finishing, on screen, said nothing to VoiceOver (focus
+    /// is in the composer). It says so, with how the reply begins.
+    func testAFinishedReplyIsAnnounced() throws {
+        let track = try makeTrack()
+        context.trackStore.setHarness(agent.id, forTrackKey: track.branchName)
+        let think = ThinkWorkspaceViewController()
+        think.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: root.path, trackKey: track.branchName)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = think
+        window.orderFront(nil)
+        defer { window.close() }
+        Spoken.isEnabled = { true }
+        Spoken.lastAnnouncement = nil
+        defer { Spoken.isEnabled = { NSWorkspace.shared.isVoiceOverEnabled } }
+        let harness = context.runnerManager.runner(forTrackKey: track.branchName)
+        harness.send("Where is the cache?")
+        waitUntil(30) { harness.phase == .finishedTurn }
+        waitUntil(0.3) { false }
+        XCTAssertTrue(Spoken.lastAnnouncement?.hasPrefix("Reply finished: Here's what I found.") == true, Spoken.lastAnnouncement ?? "nothing said")
+    }
+
     /// A long conversation keeps views only near the viewport; scrolling back builds them again
     /// as they were (an expanded group stays expanded); a released block still reads to VoiceOver.
     func testOnlyBlocksNearTheViewportHoldViews() throws {

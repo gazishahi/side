@@ -765,3 +765,31 @@ final class EditorThemeTests: XCTestCase {
         }
     }
 }
+
+/// 2026-09-30 audit, UX-7: arrowing through a list that follows typing said nothing, since
+/// VoiceOver's focus stays in the field. Each move is now announced, with the list's size.
+@MainActor
+final class SpokenListTests: XCTestCase {
+    override func setUp() { Spoken.isEnabled = { true }; Spoken.lastAnnouncement = nil }
+    override func tearDown() { Spoken.isEnabled = { NSWorkspace.shared.isVoiceOverEnabled } }
+
+    func testCompletionAndMentionListsSayTheRowTheyMoveTo() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let completions = CompletionPopup()
+        completions.show([LSPCompletionItem(label: "map", detail: "func"), LSPCompletionItem(label: "filter", detail: "func"), LSPCompletionItem(label: "reduce")],
+                         selected: 0, caret: NSRect(x: 50, y: 50, width: 1, height: 16), in: window)
+        XCTAssertEqual(Spoken.lastAnnouncement, "3 completions. map, func")
+        completions.moveSelection(1)
+        XCTAssertEqual(Spoken.lastAnnouncement, "filter, func, 2 of 3")
+        completions.hide()
+
+        let mentions = MentionCompletionPopup()
+        mentions.show(candidates: ["App.tsx", "Landing.tsx"], below: NSRect(x: 50, y: 50, width: 1, height: 16), parent: window)
+        XCTAssertEqual(Spoken.lastAnnouncement, "2 suggestions. App.tsx")
+        mentions.moveSelection(by: 1)
+        XCTAssertEqual(Spoken.lastAnnouncement, "Landing.tsx, 2 of 2")
+        mentions.hide()
+    }
+}

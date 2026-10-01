@@ -89,6 +89,7 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     /// Shows `items` under the caret (above it if there's no room below), `selected` selected.
     func show(_ items: [LSPCompletionItem], selected: Int, caret: NSRect, in window: NSWindow) {
+        let appearing = !panel.isVisible
         self.items = items
         selectedIndex = max(0, min(selected, items.count - 1))
         table.reloadData()
@@ -98,6 +99,15 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
         place(caret: caret, in: window)
         if panel.parent == nil { window.addChildWindow(panel, ordered: .above) }
         panel.orderFront(nil)
+        // When the list appears, not as each keystroke refilters it (that would talk over typing).
+        if appearing, items.indices.contains(selectedIndex) {
+            Spoken.announce("\(items.count) completion\(items.count == 1 ? "" : "s"). \(Self.spoken(items[selectedIndex]))")
+        }
+    }
+
+    /// An item as said aloud: its label and what the server says it is.
+    static func spoken(_ item: LSPCompletionItem) -> String {
+        [item.label, item.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     func hide() {
@@ -110,6 +120,7 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func moveSelection(_ delta: Int) {
         guard !items.isEmpty else { return }
         select(max(0, min(items.count - 1, selectedIndex + delta)))
+        Spoken.row(Self.spoken(items[selectedIndex]), at: selectedIndex, of: items.count)
     }
 
     /// An item's details arrived (documentation from `resolve`).

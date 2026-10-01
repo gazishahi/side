@@ -962,3 +962,28 @@ enum EmptyStateAction {
     case openProject, initializeGit, newTrack, chooseTrack, setUpModel
 }
 
+
+
+/// Speaking what changed where VoiceOver's focus isn't (2026-09-30 audit, UX-7). A list that
+/// follows typing (the palette, completions, mentions) keeps focus in the field, so VoiceOver
+/// heard nothing as the arrows moved through it; an announcement says the row instead.
+@MainActor
+enum Spoken {
+    /// Says `text` when VoiceOver is on; nothing otherwise.
+    static func announce(_ text: String, priority: NSAccessibilityPriorityLevel = .medium) {
+        guard !text.isEmpty, isEnabled() else { return }
+        lastAnnouncement = text
+        NSAccessibility.post(element: NSApp.mainWindow ?? NSApp.keyWindow ?? NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: priority.rawValue])
+    }
+
+    /// A list row: what it says, and where it is in the list.
+    static func row(_ label: String, at index: Int, of count: Int) {
+        announce("\(label), \(index + 1) of \(count)")
+    }
+
+    /// Whether anything is listening; a test turns it on.
+    nonisolated(unsafe) static var isEnabled: () -> Bool = { NSWorkspace.shared.isVoiceOverEnabled }
+    /// The last thing said, for tests.
+    nonisolated(unsafe) static var lastAnnouncement: String?
+}

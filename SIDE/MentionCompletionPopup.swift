@@ -97,6 +97,7 @@ final class MentionCompletionPopup: NSObject {
 
     func show(candidates: [String], below caretRect: NSRect, parent: NSWindow?) {
         guard !candidates.isEmpty, let parent else { return hide() }
+        if !panel.isVisible { Spoken.announce("\(candidates.count) suggestion\(candidates.count == 1 ? "" : "s"). \(candidates[0])") }
         let selectionSurvives = selectedCandidate.flatMap(candidates.firstIndex(of:))
         self.candidates = candidates
         tableView.reloadData()
@@ -133,6 +134,7 @@ final class MentionCompletionPopup: NSObject {
         let next = min(max(tableView.selectedRow + delta, 0), candidates.count - 1)
         tableView.selectRowIndexes([next], byExtendingSelection: false)
         tableView.scrollRowToVisible(next)
+        Spoken.row(candidates[next], at: next, of: candidates.count)
     }
 
     func acceptSelection() {
