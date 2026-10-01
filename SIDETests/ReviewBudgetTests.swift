@@ -34,6 +34,49 @@ final class ReviewBudgetTests: XCTestCase {
         return out
     }
 
+    /// A real diff, its files stepped through one at a time as holding the down arrow in the file
+    /// list does (SIDE_REVIEW_DIFF; SIDE_REVIEW_STEP_FROM, the first file's path suffix). Each
+    /// step's time to a drawn frame goes to SIDE_REVIEW_STEP_OUT. Skipped without a diff.
+    func testSteppingThroughFiles() throws {
+        try Budgets.skipUnlessEnabled()
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["SIDE_REVIEW_DIFF"] else { throw XCTSkip("set SIDE_REVIEW_DIFF") }
+        let diff = try String(contentsOfFile: path, encoding: .utf8)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1512, height: 945), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let viewer = DiffDocumentView(frame: window.contentRect(forFrameRect: window.frame))
+        viewer.autoresizingMask = [.width, .height]
+        window.contentView = viewer
+        window.orderFront(nil)
+        if env["SIDE_REVIEW_SIDE_BY_SIDE"] == "1" { viewer.diffLayout = .sideBySide }
+        viewer.render(diffText: diff)
+        window.layoutIfNeeded()
+        window.displayIfNeeded()
+        Budgets.settle(2)
+        let files = viewer.diff.files
+        let start = env["SIDE_REVIEW_STEP_FROM"].flatMap { suffix in files.firstIndex { $0.path.hasSuffix(suffix) } } ?? 0
+        let count = Int(env["SIDE_REVIEW_STEP_COUNT"] ?? "30") ?? 30
+        let out = env["SIDE_REVIEW_STEP_OUT"] ?? "/tmp/side-review-steps.txt"
+        try? "\(getpid())".write(toFile: out + ".pid", atomically: true, encoding: .utf8)
+        Budgets.settle(1.5)  // for a profiler to attach
+        var lines: [String] = []
+        let cpu = Budgets.cpuSeconds(), wall = CACurrentMediaTime()
+        for index in start..<min(files.count, start + count) {
+            let began = CACurrentMediaTime()
+            viewer.scrollToFile(index)
+            window.displayIfNeeded()
+            for editor in viewer.editors { editor.render() }
+            let ms = (CACurrentMediaTime() - began) * 1000
+            // As key repeat does: the next press about 33 ms later.
+            Budgets.settle(Double(env["SIDE_REVIEW_STEP_PAUSE"] ?? "0.033") ?? 0.033)
+            let longest = files[index].hunks.flatMap(\.lines).map { $0.slice.utf16.count }.max() ?? 0
+            lines.append(String(format: "%7.1f ms  +%d -%d  longest line %d  %@", ms, files[index].addedCount, files[index].removedCount, longest, files[index].path))
+        }
+        lines.append(String(format: "total %.1f s, %.0f%% of a core", CACurrentMediaTime() - wall, (Budgets.cpuSeconds() - cpu) / (CACurrentMediaTime() - wall) * 100))
+        try lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+    }
+
     func testABigChangeSet() throws {
         try Budgets.skipUnlessEnabled()
         let env = ProcessInfo.processInfo.environment
