@@ -501,6 +501,12 @@ Each fix should come with the test that would have caught it; several of these b
 - **EDT-5, fixed.** Format Document checks edits with `nonOverlapping`; completion's additional edits use `CompletionEdits.conflict`, which counts an insertion inside another edit; negative signature-label offsets are ignored.
 - **H14, fixed.** Save As writes text the old encoding can't hold as UTF-8 (`saveAsFormat`) and moves the tab only after the write. Promoting a track whose parent was deleted says how many of its commits aren't its own checkpoints, and defaults to Cancel (`orphanedStackNote`).
 - **Checkpoint index copy, fixed** (found while fixing GIT-11). The private index now carries the real index's modification time; a fresh copy made git take a same-size change, made in the second the index was written, as unchanged, so the checkpoint missed it. A reproduction missed it 5 of 5 times.
+- **UX-7, fixed.** The palette, completion and mention lists announce each row as the arrows move ("App.tsx, packages/frontend/src, 3 of 20"), and their size when they appear; Think announces a finished reply (how it begins), a failure, and a wait for approval (`Spoken`).
+- **UX-6, fixed.** The debugger inspector works from the keyboard: arrowing selects a frame, Return reveals a breakpoint or loads more variables, Delete removes a breakpoint or watch, menu commands act on the selected row; VoiceOver has each row's actions.
+- **UX-8, fixed.** Text size reaches every window: `TextScaleFollower` scales fonts and table row heights of the views that don't restyle themselves, hidden stages and cached Settings panes included.
+- **UX-9, fixed.** Increase Contrast is followed: surfaces further apart (canvas against raised 1.09 → 1.36 dark, 1.10 → 1.24 light), hairlines 45% (about 3:1 or better), the strong ones 60%.
+- **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - H15: CI for the app's tests.
+  - Timing limits inside the ordinary suite (`testMarkdownPreviewSwitchesQuickly` 30 ms, `testTheInspectorPagesABigArray` 30 ms) fail under a loaded machine and pass alone; they belong with the opt-in budgets.
   - The other Mediums and Lows.
