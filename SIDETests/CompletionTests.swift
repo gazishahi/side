@@ -325,6 +325,31 @@ final class CompletionApplyTests: XCTestCase {
         XCTAssertEqual(replace.all.first?.range, NSRange(location: 0, length: 6))
     }
 
+    /// 2026-09-30 audit, EDT-5: an empty additional edit strictly inside another passed the
+    /// overlap check (a zero-length intersection), and applying both trapped in the buffer.
+    func testAnInsertionInsideAnotherAdditionalEditIsDropped() throws {
+        let text = Rope("import a\nuseSt\n")
+        var item = LSPCompletionItem(label: "useState")
+        item.textEdit = LSPTextEdit(range: LSPRange(start: LSPPosition(line: 1, character: 0), end: LSPPosition(line: 1, character: 5)), newText: "useState")
+        item.additionalTextEdits = [
+            LSPTextEdit(range: LSPRange(start: LSPPosition(line: 0, character: 0), end: LSPPosition(line: 0, character: 8)), newText: "import { useState } from 'react'"),
+            LSPTextEdit(range: LSPRange(start: LSPPosition(line: 0, character: 3), end: LSPPosition(line: 0, character: 3)), newText: "x"),
+        ]
+        let result = try XCTUnwrap(CompletionEdits.edits(for: item, session: session(wordStart: 9, requestCaret: 14), caret: 14, text: text, replacing: false))
+        XCTAssertEqual(result.all.map(\.range), [NSRange(location: 9, length: 5), NSRange(location: 0, length: 8)])
+        XCTAssertFalse(CompletionEdits.conflict(NSRange(location: 0, length: 8), NSRange(location: 8, length: 0)), "edits that only touch both apply")
+    }
+
+    /// The same audit: label offsets a server sent negative were highlighted at −1, an
+    /// NSRangeException that ended Side.
+    @MainActor
+    func testANegativeSignatureLabelOffsetIsIgnored() {
+        let parsed = LSPSignatureHelp(LSPResult(value: ["signatures": [["label": "f(a, b)", "parameters": [["label": [-1, 3]]]]]]))
+        XCTAssertNil(parsed?.current.parameters.first?.range)
+        let handMade = LSPSignatureHelp(signatures: [.init(label: "f(a, b)", parameters: [.init(range: -1..<3)], activeParameter: 0)], activeSignature: 0, activeParameter: 0)
+        XCTAssertEqual(MakeWorkspaceViewController.render(handMade).string, "f(a, b)")
+    }
+
     func testAnAutoImportAboveMovesTheCaretWithIt() throws {
         let text = Rope("\nuseSt\n")
         var item = LSPCompletionItem(label: "useState")

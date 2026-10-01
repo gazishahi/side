@@ -3980,7 +3980,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let label = NSMutableAttributedString(string: signature.label, attributes: [.font: code, .foregroundColor: NSColor.secondaryLabelColor])
         let active = help.currentParameter
         if signature.parameters.indices.contains(active), let range = signature.parameters[active].range,
-           range.upperBound <= (signature.label as NSString).length {
+           range.lowerBound >= 0, range.upperBound <= (signature.label as NSString).length {
             label.addAttributes([.font: bold, .foregroundColor: NSColor.labelColor], range: NSRange(location: range.lowerBound, length: range.count))
         }
         text.append(label)
@@ -5030,12 +5030,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         lspManager.format(url: tab.url, tabSize: unit == "\t" ? 4 : unit.count, insertSpaces: unit != "\t") { [weak self] edits in
             guard let self, let edits, let index = self.indexForTab(id: tabID), self.activeTabIndex == index,
                   self.openTabs[index].document.string == original else { return }
-            let rope = self.openTabs[index].document.rope
-            let ranges = edits.map { edit -> (range: NSRange, text: String) in
-                let a = rope.offset(line: edit.range.start.line, column: edit.range.start.character)
-                let b = rope.offset(line: edit.range.end.line, column: edit.range.end.character)
-                return (NSRange(location: a, length: max(0, b - a)), edit.newText)
-            }
+            // Overlapping edits are a server's bug, and applying them trapped in the text buffer,
+            // ending Side with the user's unsaved work (2026-09-30 audit, EDT-5).
+            guard let ranges = Self.nonOverlapping(edits, in: self.openTabs[index].document.rope) else { return NSSound.beep() }
             let caret = self.editor.selectedRange.location
             self.editor.applyEdits(ranges)
             self.editor.selectedRange = NSRange(location: min(caret, self.openTabs[index].document.length), length: 0)

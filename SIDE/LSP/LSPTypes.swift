@@ -440,7 +440,7 @@ struct LSPSignatureHelp: Sendable, Equatable {
             guard let label = signature["label"] as? String else { return nil }
             let parameters = (signature["parameters"] as? [[String: Any]] ?? []).map { parameter -> Parameter in
                 var range: Range<Int>?
-                if let offsets = parameter["label"] as? [Int], offsets.count == 2, offsets[0] <= offsets[1] {
+                if let offsets = parameter["label"] as? [Int], offsets.count == 2, offsets[0] >= 0, offsets[0] <= offsets[1] {
                     range = offsets[0]..<offsets[1]
                 } else if let text = parameter["label"] as? String {
                     let found = (label as NSString).range(of: text)

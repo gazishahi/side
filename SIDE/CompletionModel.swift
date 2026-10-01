@@ -306,11 +306,20 @@ enum CompletionEdits {
             let a = text.offset(line: extra.range.start.line, column: extra.range.start.character)
             let b = text.offset(line: extra.range.end.line, column: extra.range.end.character)
             guard a <= b, b <= start || a >= end else { continue }
-            guard !all.contains(where: { NSIntersectionRange($0.range, NSRange(location: a, length: b - a)).length > 0 || $0.range.location == a }) else { continue }
+            // Overlap includes an insertion strictly inside another edit, which a zero-length
+            // intersection missed: applying both trapped in the text buffer (audit EDT-5).
+            let candidate = NSRange(location: a, length: b - a)
+            guard !all.contains(where: { Self.conflict($0.range, candidate) }) else { continue }
             all.append((NSRange(location: a, length: b - a), extra.newText))
             if b <= start { shift += (extra.newText as NSString).length - (b - a) }
         }
         return Result(all: all, caretAfter: start + shift + caretInText, snippet: snippet)
+    }
+
+    /// Two edits that can't both apply: same start, or either reaching into the other (an
+    /// insertion strictly inside a replacement included; edits that only touch don't conflict).
+    static func conflict(_ x: NSRange, _ y: NSRange) -> Bool {
+        x.location == y.location || (x.location < NSMaxRange(y) && y.location < NSMaxRange(x))
     }
 }
 
