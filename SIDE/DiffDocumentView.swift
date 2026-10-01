@@ -576,6 +576,20 @@ final class DiffDocumentView: NSView {
 
     func isFolded(_ index: Int) -> Bool { folded.contains(index) }
 
+    /// Whether every file is folded (an empty change set counts as not).
+    var allFolded: Bool { !diff.files.isEmpty && folded.count == diff.files.count }
+
+    /// Folds or opens every file at once, in one rebuild, the file at the top kept there.
+    func setAllFolded(_ fold: Bool) {
+        let target: Set<Int> = fold ? Set(diff.files.indices) : []
+        guard target != folded else { return }
+        let top = topFile
+        folded = target
+        rebuild(keepingPosition: true)
+        if let top { scrollToFile(top) }
+        onFoldChange?(top ?? 0, fold)
+    }
+
     /// Brings a file's header to the top.
     func scrollToFile(_ index: Int) {
         guard let first = columns.first, let row = first.headerRow[index] else { return }

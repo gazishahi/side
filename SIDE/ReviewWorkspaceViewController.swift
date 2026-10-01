@@ -68,6 +68,8 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// Unified / Split. A segmented control rather than a checkbox because the two are peers, not
     /// an option and its absence; persisted, because a layout choice is a habit, not a mood.
     private let diffLayoutControl = NSSegmentedControl(labels: ["Unified", "Split"], trackingMode: .selectOne, target: nil, action: nil)
+    /// Collapses every file's diff, or expands them all once they are (the owner, 2026-10-01).
+    private let foldAllButton = NSButton(title: "Collapse All", target: nil, action: nil)
     private let diffToolbar = NSStackView()
     private let rail = ReviewFileRail()
     private var railWidth: NSLayoutConstraint?
@@ -319,17 +321,36 @@ final class ReviewWorkspaceViewController: NSViewController {
         diffLayoutControl.target = self
         diffLayoutControl.action = #selector(diffLayoutChanged)
         diffLayoutControl.setAccessibilityLabel("Diff layout")
+        foldAllButton.bezelStyle = .accessoryBarAction
+        foldAllButton.controlSize = .small
+        foldAllButton.font = DS.Text.caption()
+        foldAllButton.target = self
+        foldAllButton.action = #selector(foldAllTapped)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         diffToolbar.orientation = .horizontal
         diffToolbar.alignment = .centerY
         diffToolbar.spacing = DS.Spacing.l
         diffToolbar.translatesAutoresizingMaskIntoConstraints = false
-        for view in [diffTitle, diffTotals, spacer, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
+        for view in [diffTitle, diffTotals, spacer, foldAllButton, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
+        diffViewer.onFoldChange = { [weak self] _, _ in self?.refreshFoldAllButton() }
 
         rail.onSelect = { [weak self] index in self?.diffViewer.scrollToFile(index) }
         rail.onToggleViewed = { [weak self] index, viewed in self?.setViewed(index, viewed) }
         diffViewer.onTopFileChange = { [weak self] index in self?.rail.follow(index) }
+    }
+
+    @objc private func foldAllTapped() {
+        diffViewer.setAllFolded(!diffViewer.allFolded)
+        refreshFoldAllButton()
+    }
+
+    /// "Expand All" once everything is collapsed, "Collapse All" while anything is open.
+    func refreshFoldAllButton() {
+        let collapse = !diffViewer.allFolded
+        foldAllButton.title = collapse ? "Collapse All" : "Expand All"
+        foldAllButton.setAccessibilityLabel(collapse ? "Collapse all files" : "Expand all files")
+        foldAllButton.isEnabled = !diffViewer.diff.files.isEmpty
     }
 
     /// Narrow windows give the diff the whole width; the list comes back when there's room.
@@ -706,6 +727,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         totals.append(NSAttributedString(string: " \u{2212}\(removed)", attributes: [.font: DS.Text.code(11, weight: .medium), .foregroundColor: DiffBody.removedText]))
         diffTotals.attributedStringValue = files.isEmpty ? NSAttributedString() : totals
         diffTotals.setAccessibilityLabel("\(files.count) files, \(added) lines added, \(removed) removed")
+        refreshFoldAllButton()
         view.needsLayout = true
         if let file = releasedAtFile, files.indices.contains(file) {
             diffViewer.scrollToFile(file)
@@ -722,6 +744,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         viewedStore.set(viewed, diffViewer.diff.files[index], track: track.branchName)
         rail.items[index].viewed = viewed
         diffViewer.setFolded(index, viewed)
+        refreshFoldAllButton()
     }
 
     /// `model · time · +a −r · N files · N commands · <verification word>` — the word coloured

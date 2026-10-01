@@ -49,6 +49,24 @@ final class DiffDocumentViewTests: XCTestCase {
         while Date() < deadline { autoreleasepool { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) } }
     }
 
+    /// Collapse All folds every file in one go, leaving their headers; Expand All opens them.
+    func testCollapseAndExpandAll() throws {
+        view.diffLayout = .unified
+        view.render(diffText: diff)
+        settle()
+        let open = view.rowCount
+        XCTAssertFalse(view.allFolded)
+        view.setAllFolded(true)
+        settle()
+        XCTAssertTrue(view.allFolded)
+        XCTAssertTrue(view.diff.files.indices.allSatisfy(view.isFolded))
+        XCTAssertLessThan(view.rowCount, open, "folded files show only their headers")
+        view.setAllFolded(false)
+        settle()
+        XCTAssertFalse(view.diff.files.indices.contains(where: view.isFolded))
+        XCTAssertEqual(view.rowCount, open)
+    }
+
     func testOneDocumentWithHeadersOverTheirRows() throws {
         view.diffLayout = .unified
         view.render(diffText: diff)
