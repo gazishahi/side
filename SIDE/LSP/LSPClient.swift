@@ -59,6 +59,12 @@ actor LSPClient {
         try await startInternal(rootURI: rootURI, initializationOptions: TSServerInitializationOptions(tsserver: TSServerPathOption(path: tsserverPath)))
     }
 
+    /// With initialization options of the caller's (rust-analyzer's, for an untrusted project).
+    @discardableResult
+    func start(rootURI: String, options: LSPValue) async throws -> LSPServerCapabilities {
+        try await startInternal(rootURI: rootURI, initializationOptions: options)
+    }
+
     private func startInternal<Options: Encodable>(rootURI: String, initializationOptions: Options?) async throws -> LSPServerCapabilities {
         await transport.setHandlers(
             onMessage: { data in Task { await self.handleMessage(data) } },

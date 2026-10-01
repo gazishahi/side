@@ -260,3 +260,60 @@ final class TabHoverTests: XCTestCase {
         XCTAssertTrue(window.isMovable, "the window drags again once no tab is hovered")
     }
 }
+
+/// 2026-09-30 audit, SEC-11: opening or saving a file in a cloned repository ran its code: its
+/// node_modules TypeScript, its Prettier (or a Prettier config that's a program), its Rust
+/// build scripts and macros. Until the project is trusted, they don't run.
+@MainActor
+final class ProjectTrustTests: XCTestCase {
+    private func project() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("trust-\(UUID().uuidString)").resolvingSymlinksInPath()
+        let bin = root.appendingPathComponent("node_modules/.bin"), ts = root.appendingPathComponent("node_modules/typescript/lib")
+        for folder in [bin, ts] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        try "".write(to: ts.appendingPathComponent("tsserver.js"), atomically: true, encoding: .utf8)
+        try "#!/bin/sh\necho pwned\n".write(to: bin.appendingPathComponent("prettier"), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bin.appendingPathComponent("prettier").path)
+        return root
+    }
+
+    func testAProjectsOwnCodeWaitsForTrust() throws {
+        let root = try project()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entry = LanguageServerRegistry.Entry(languageId: "typescript", binaryName: "typescript-language-server", arguments: ["--stdio"], install: nil, languageKey: "typescript", asksToInstall: false)
+        XCTAssertNotEqual(LanguageServerRegistry.tsserverPathOverride(for: entry, projectRoot: root, trusted: false), .projectDefault, "untrusted: not the project's TypeScript")
+        XCTAssertEqual(LanguageServerRegistry.tsserverPathOverride(for: entry, projectRoot: root, trusted: true), .projectDefault)
+
+        let file = root.appendingPathComponent("a.ts")
+        XCTAssertNotEqual(MakeWorkspaceViewController.stdinFormatterCommand(for: file, projectRoot: root)?.executable, root.appendingPathComponent("node_modules/.bin/prettier").path)
+        try "module.exports = {}".write(to: root.appendingPathComponent("prettier.config.js"), atomically: true, encoding: .utf8)
+        XCTAssertNil(MakeWorkspaceViewController.stdinFormatterCommand(for: file, projectRoot: root), "a config that's code: no formatting until trusted")
+        XCTAssertEqual(ProjectTrust.projectCode(in: root), ["its TypeScript", "its formatter"])
+
+        XCTAssertFalse(ProjectTrust.isTrusted(root))
+        ProjectTrust.trust(root)
+        XCTAssertTrue(ProjectTrust.isTrusted(root))
+        XCTAssertEqual(MakeWorkspaceViewController.stdinFormatterCommand(for: file, projectRoot: root)?.executable, root.appendingPathComponent("node_modules/.bin/prettier").path)
+    }
+
+    /// A track's worktree is trusted with its repository.
+    func testAWorktreeIsItsRepositorysProject() throws {
+        let root = try project()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worktree = FileManager.default.temporaryDirectory.appendingPathComponent("trust-wt-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: worktree) }
+        try "gitdir: \(root.path)/.git/worktrees/feature\n".write(to: worktree.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(ProjectTrust.projectKey(worktree), ProjectTrust.projectKey(root))
+    }
+
+    func testMakeAsksForAnUntrustedProject() throws {
+        let root = try project()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        make.loadProject(at: root)
+        XCTAssertTrue(make.trustBannerTextForTesting?.contains("its TypeScript") == true, make.trustBannerTextForTesting ?? "no banner")
+        ProjectTrust.trust(root)
+        XCTAssertNil(make.trustBannerTextForTesting, "trusted: the banner goes")
+    }
+}

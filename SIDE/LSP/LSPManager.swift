@@ -487,9 +487,20 @@ final class LSPManager: @unchecked Sendable {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let executable = LanguageServerRegistry.resolveExecutable(named: entry.binaryName, installFormula: entry.installFormula)
             let environment = LanguageServerRegistry.environmentForSpawning()
-            let tsserverPath = LanguageServerRegistry.tsserverPathOverride(for: entry, projectRoot: projectRoot)
+            let trusted = ProjectTrust.isTrusted(projectRoot)
+            let tsserver = LanguageServerRegistry.tsserverPathOverride(for: entry, projectRoot: projectRoot, trusted: trusted)
             DispatchQueue.main.async {
                 guard let self else { return }
+                // The project's own TypeScript, not trusted yet, and no other: no server until it
+                // is (Make's banner asks; trusting it starts the servers again).
+                if tsserver == .refuse {
+                    print("[LSP] \(entry.binaryName): the project's TypeScript waits for the project to be trusted")
+                    self.startingServers.remove(entry.binaryName)
+                    completion(nil)
+                    return
+                }
+                let tsserverPath: String? = if case .global(let path) = tsserver { path } else { nil }
+                let options: LSPValue? = entry.binaryName == "rust-analyzer" && !trusted ? ProjectTrust.rustAnalyzerUntrusted : nil
                 guard let executable else {
                     print("[LSP] \(entry.binaryName) not found on PATH; diagnostics disabled for \(entry.languageId)")
                     self.startingServers.remove(entry.binaryName)
@@ -497,7 +508,7 @@ final class LSPManager: @unchecked Sendable {
                     completion(nil)
                     return
                 }
-                self.finishSpawn(entry: entry, executable: executable, environment: environment, tsserverPath: tsserverPath, completion: completion)
+                self.finishSpawn(entry: entry, executable: executable, environment: environment, tsserverPath: tsserverPath, options: options, completion: completion)
             }
         }
     }
@@ -521,7 +532,8 @@ final class LSPManager: @unchecked Sendable {
         queue.resume()
     }
 
-    private func finishSpawn(entry: LanguageServerRegistry.Entry, executable: URL, environment: [String: String], tsserverPath: String?, completion: @escaping @Sendable (LSPClient?) -> Void) {
+    private func finishSpawn(entry: LanguageServerRegistry.Entry, executable: URL, environment: [String: String], tsserverPath: String?, options: LSPValue? = nil,
+                             completion: @escaping @Sendable (LSPClient?) -> Void) {
         let client = LSPClient(executableURL: executable, arguments: entry.arguments, environment: environment, currentDirectory: projectRoot)
         let rootURI = projectRoot.absoluteString
         Task { @MainActor [weak self] in
@@ -531,6 +543,8 @@ final class LSPManager: @unchecked Sendable {
                 await client.setOnConfiguration { sections in LanguageSettings.shared.configuration(languageKey: languageKey, sections: sections) }
                 let capabilities = if let tsserverPath {
                     try await client.start(rootURI: rootURI, tsserverPath: tsserverPath)
+                } else if let options {
+                    try await client.start(rootURI: rootURI, options: options)
                 } else {
                     try await client.start(rootURI: rootURI)
                 }

@@ -269,6 +269,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var pendingReindex: DispatchWorkItem?
     private var keyWindowObserver: NSObjectProtocol?
     private let externalChangeBanner = NSView()
+    /// Asks to trust a project whose own code would run (SEC-11); `trustBannerHeight` is 0 while hidden.
+    private let trustBanner: NSView = { let banner = NSView(); banner.isHidden = true; return banner }()
+    private let trustLabel = NSTextField(labelWithString: "")
+    private var trustBannerHeight: NSLayoutConstraint?
+    /// Projects whose banner was put away this session ("Not Now").
+    private var trustDeferred: Set<String> = []
     private let externalChangeLabel = NSTextField(labelWithString: "")
     private var lspManager: LSPManager?
     /// Trails Make's tab strip in the top row (Direction 02 §4.5).
@@ -350,6 +356,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(self, selector: #selector(projectTrustChanged(_:)), name: ProjectTrust.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(editorTextSizeChanged), name: DS.Text.CodeSize.didChangeNotification, object: nil)
         // Undo and redo can land the buffer back on what's saved; typing never can, so only
         // these two re-check (a hash of the buffer, never on every keystroke).
@@ -407,6 +414,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         super.viewDidAppear()
         LaunchSignposts.begin("makeViewDidAppear")
         if keyWindowObserver == nil, let window = view.window {
+            configureTrustBanner()
             configureExternalChangeBanner()
             keyWindowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.reconcileAllTabsWithDisk() }
@@ -1599,6 +1607,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func makeLanguageServers(root: URL) -> LSPManager {
+        refreshTrustBanner(root)
         lspManager?.prepareForClose()
         let manager = LSPManager(projectRoot: root)
         manager.onDiagnostics = { [weak self] fileURL, diagnostics in
@@ -1687,6 +1696,77 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
     }
 
+    private func configureTrustBanner() {
+        trustBanner.wantsLayer = true
+        trustBanner.bindLayerBackground(DS.Color.overlay)
+        trustBanner.translatesAutoresizingMaskIntoConstraints = false
+        trustLabel.font = DS.Text.caption()
+        trustLabel.textColor = .secondaryLabelColor
+        trustLabel.lineBreakMode = .byTruncatingTail
+        let trust = NSButton(title: "Trust Project", target: self, action: #selector(trustProject))
+        let later = NSButton(title: "Not Now", target: self, action: #selector(deferTrust))
+        for button in [trust, later] { button.bezelStyle = .rounded; button.controlSize = .small; button.font = DS.Text.caption() }
+        let shield = NSImageView(image: NSImage(systemSymbolName: "checkmark.shield", accessibilityDescription: nil) ?? NSImage())
+        shield.contentTintColor = .secondaryLabelColor
+        let row = NSStackView(views: [shield, trustLabel, NSView(), trust, later])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = DS.Spacing.s
+        row.edgeInsets = NSEdgeInsets(top: 0, left: DS.Spacing.m, bottom: 0, right: DS.Spacing.m)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        trustBanner.addSubview(row)
+        view.addSubview(trustBanner)
+        let height = trustBanner.heightAnchor.constraint(equalToConstant: 0)
+        trustBannerHeight = height
+        NSLayoutConstraint.activate([
+            trustBanner.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            trustBanner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            trustBanner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            height,
+            row.leadingAnchor.constraint(equalTo: trustBanner.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: trustBanner.trailingAnchor),
+            row.topAnchor.constraint(equalTo: trustBanner.topAnchor),
+            row.bottomAnchor.constraint(equalTo: trustBanner.bottomAnchor),
+        ])
+        // A project loaded before this ran has its answer already.
+        if let root = focusedRoot { refreshTrustBanner(root) }
+    }
+
+    /// Shown while the project isn't trusted and something of its own would run.
+    private func refreshTrustBanner(_ root: URL) {
+        let code = ProjectTrust.projectCode(in: root)
+        let show = !code.isEmpty && !ProjectTrust.isTrusted(root) && !trustDeferred.contains(ProjectTrust.projectKey(root))
+        if show {
+            let list = code.count > 1 ? code.dropLast().joined(separator: ", ") + " and " + code.last! : code[0]
+            trustLabel.stringValue = "Side isn\u{2019}t running this project\u{2019}s own code (\(list)) until you trust it."
+            trustLabel.toolTip = "Opening and saving files in a project can run code it contains. Until you trust it, Side uses the global TypeScript, formats only with a global Prettier and a plain config, and turns off Rust build scripts and macros."
+        }
+        let wasHidden = trustBanner.isHidden
+        trustBanner.isHidden = !show
+        trustBannerHeight?.constant = show ? 28 : 0
+        if show, wasHidden { Spoken.announce(trustLabel.stringValue) }
+    }
+
+    @objc private func trustProject() {
+        guard let root = focusedRoot else { return }
+        ProjectTrust.trust(root)
+    }
+
+    @objc private func deferTrust() {
+        guard let root = focusedRoot else { return }
+        trustDeferred.insert(ProjectTrust.projectKey(root))
+        refreshTrustBanner(root)
+    }
+
+    /// Trusted (here or in another window): the servers start again, with the project's own tools.
+    @objc private func projectTrustChanged(_ note: Notification) {
+        guard let root = focusedRoot, note.userInfo?["project"] as? String == ProjectTrust.projectKey(root) else { return }
+        refreshTrustBanner(root)
+        languageSettingsChanged()
+    }
+
+    var trustBannerTextForTesting: String? { trustBanner.isHidden ? nil : trustLabel.stringValue }
+
     private func configureExternalChangeBanner() {
         externalChangeBanner.wantsLayer = true
         externalChangeBanner.bindLayerBackground(DS.Color.overlay)
@@ -1707,7 +1787,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         externalChangeBanner.addSubview(row)
         view.addSubview(externalChangeBanner)
         NSLayoutConstraint.activate([
-            externalChangeBanner.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            externalChangeBanner.topAnchor.constraint(equalTo: trustBanner.bottomAnchor),
             externalChangeBanner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             externalChangeBanner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             externalChangeBanner.heightAnchor.constraint(equalToConstant: 28),
@@ -4970,11 +5050,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     /// The project's formatter reading the buffer from stdin and writing the result to stdout,
     /// for Format Document (the saved file isn't touched).
-    private static func stdinFormatterCommand(for url: URL, projectRoot: URL) -> (executable: String, args: [String])? {
+    static func stdinFormatterCommand(for url: URL, projectRoot: URL) -> (executable: String, args: [String])? {
         switch url.pathExtension.lowercased() {
         case "js", "jsx", "ts", "tsx", "json", "md", "css", "scss", "html", "yaml", "yml":
+            // The project's own Prettier, or a config that's code, only for a trusted project
+            // (2026-09-30 audit, SEC-11: saving a file ran the repository's code).
+            let trusted = ProjectTrust.isTrusted(projectRoot)
             let local = projectRoot.appendingPathComponent("node_modules/.bin/prettier").path
-            if FileManager.default.isExecutableFile(atPath: local) { return (local, ["--stdin-filepath", url.path]) }
+            if trusted, FileManager.default.isExecutableFile(atPath: local) { return (local, ["--stdin-filepath", url.path]) }
+            if !trusted, ProjectTrust.hasCodePrettierConfig(projectRoot) { return nil }
             if let global = which("prettier") { return (global, ["--stdin-filepath", url.path]) }
             return nil
         case "swift":
@@ -5129,8 +5213,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let ext = url.pathExtension.lowercased()
         switch ext {
         case "js", "jsx", "ts", "tsx", "json", "md", "css", "html", "yaml", "yml":
+            // The project's own Prettier, or a config that's code, only for a trusted project
+            // (2026-09-30 audit, SEC-11: saving a file ran the repository's code).
+            let trusted = ProjectTrust.isTrusted(projectRoot)
             let local = projectRoot.appendingPathComponent("node_modules/.bin/prettier").path
-            if FileManager.default.isExecutableFile(atPath: local) { return (local, ["--write", url.path]) }
+            if trusted, FileManager.default.isExecutableFile(atPath: local) { return (local, ["--write", url.path]) }
+            if !trusted, ProjectTrust.hasCodePrettierConfig(projectRoot) { return nil }
             if let global = which("prettier") { return (global, ["--write", url.path]) }
             return nil
         case "swift":

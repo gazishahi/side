@@ -34,14 +34,21 @@ enum LanguageServerRegistry {
     /// already have its own (a project pinning a specific TypeScript version should keep
     /// using that one). Also refuses a global install that turns out to be TypeScript 7 (the
     /// new Go-based rewrite) — it has no tsserver.js at all, so it's silently unusable here.
-    static func tsserverPathOverride(for entry: Entry, projectRoot: URL) -> String? {
-        guard entry.binaryName == "typescript-language-server" else { return nil }
+    ///
+    /// A project's own TypeScript is code from the project: it runs only once the project is
+    /// trusted (`ProjectTrust`); before that the global one does, or nothing (2026-09-30 audit,
+    /// SEC-11: opening a cloned repository's .ts file ran its node_modules/typescript).
+    enum TSServerChoice: Equatable { case projectDefault, global(String), refuse }
+
+    static func tsserverPathOverride(for entry: Entry, projectRoot: URL, trusted: Bool = true) -> TSServerChoice {
+        guard entry.binaryName == "typescript-language-server" else { return .projectDefault }
         let localTsserver = projectRoot.appendingPathComponent("node_modules/typescript/lib/tsserver.js")
-        guard !FileManager.default.fileExists(atPath: localTsserver.path) else { return nil }
-        guard let globalRoot = resolveGlobalNpmRoot() else { return nil }
-        let globalTsserver = URL(fileURLWithPath: globalRoot).appendingPathComponent("typescript/lib/tsserver.js")
-        guard FileManager.default.fileExists(atPath: globalTsserver.path) else { return nil }
-        return globalTsserver.path
+        let hasLocal = FileManager.default.fileExists(atPath: localTsserver.path)
+        if hasLocal, trusted { return .projectDefault }
+        let global = resolveGlobalNpmRoot().map { URL(fileURLWithPath: $0).appendingPathComponent("typescript/lib/tsserver.js").path }
+            .flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
+        if let global { return .global(global) }
+        return hasLocal ? .refuse : .projectDefault
     }
 
     /// One lock for the three process-global caches below.
@@ -222,4 +229,71 @@ enum LanguageServerRegistry {
     static func invalidateResolution(for binaryName: String) {
         cacheLock.withLock { resolutionCache[binaryName] = nil }
     }
+}
+
+
+/// Whether a project's own code may run when its files are opened or saved: its TypeScript,
+/// its formatter (a local Prettier, or a JavaScript Prettier config), its Rust build scripts and
+/// procedural macros. Until the person trusts the project, Side uses its own or the global
+/// tools and turns those off (2026-09-30 audit, SEC-11). Kept per repository: a track's worktree
+/// is its project's.
+enum ProjectTrust {
+    static let didChangeNotification = Notification.Name("SideProjectTrustDidChange")
+    private static let key = "SideTrustedProjects"
+
+    /// The repository a root belongs to, from its `.git` (a worktree's file names its repository's).
+    static func projectKey(_ root: URL) -> String {
+        let path = realPath(root.path)
+        let dotGit = URL(fileURLWithPath: path).appendingPathComponent(".git")
+        if let text = try? String(contentsOf: dotGit, encoding: .utf8), text.hasPrefix("gitdir: ") {
+            // ".../repo/.git/worktrees/<name>": the repository is above ".git".
+            let gitDir = text.dropFirst("gitdir: ".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let range = gitDir.range(of: "/.git/worktrees/") { return realPath(String(gitDir[gitDir.startIndex..<range.lowerBound])) }
+        }
+        return path
+    }
+
+    static func isTrusted(_ root: URL) -> Bool {
+        HeronDefaults.store.stringArray(forKey: key)?.contains(projectKey(root)) ?? false
+    }
+
+    static func trust(_ root: URL) {
+        var trusted = HeronDefaults.store.stringArray(forKey: key) ?? []
+        let project = projectKey(root)
+        guard !trusted.contains(project) else { return }
+        trusted.append(project)
+        HeronDefaults.store.set(trusted, forKey: key)
+        NotificationCenter.default.post(name: didChangeNotification, object: nil, userInfo: ["project": project])
+    }
+
+    /// What of the project's own would run, in words, for the banner that asks.
+    static func projectCode(in root: URL) -> [String] {
+        var found: [String] = []
+        if FileManager.default.fileExists(atPath: root.appendingPathComponent("node_modules/typescript/lib/tsserver.js").path) { found.append("its TypeScript") }
+        if hasLocalPrettier(root) || hasCodePrettierConfig(root) { found.append("its formatter") }
+        if FileManager.default.fileExists(atPath: root.appendingPathComponent("Cargo.toml").path) { found.append("its Rust build scripts and macros") }
+        return found
+    }
+
+    static func hasLocalPrettier(_ root: URL) -> Bool {
+        FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("node_modules/.bin/prettier").path)
+    }
+
+    /// A Prettier config that's a program (or names a package, which is one).
+    static func hasCodePrettierConfig(_ root: URL) -> Bool {
+        let names = ["prettier.config.js", "prettier.config.cjs", "prettier.config.mjs", "prettier.config.ts",
+                     ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.mjs", ".prettierrc.ts"]
+        if names.contains(where: { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }) { return true }
+        // Plugins are packages, so code, whatever format names them.
+        for name in [".prettierrc", ".prettierrc.json", ".prettierrc.json5", ".prettierrc.yaml", ".prettierrc.yml", ".prettierrc.toml"] {
+            if let text = try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8), text.contains("plugins") { return true }
+        }
+        guard let data = try? Data(contentsOf: root.appendingPathComponent("package.json")),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        if object["prettier"] is String { return true }
+        return (object["prettier"] as? [String: Any])?["plugins"] != nil
+    }
+
+    /// rust-analyzer without running the project's code: no build scripts, no proc macros.
+    static let rustAnalyzerUntrusted: LSPValue = ["cargo": ["buildScripts": ["enable": false]], "procMacro": ["enable": false]]
 }
