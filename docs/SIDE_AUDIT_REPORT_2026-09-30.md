@@ -490,7 +490,17 @@ Each fix should come with the test that would have caught it; several of these b
 - **H9, fixed in Alloy (unreleased).** `endComposition()` on `setBuffer`, undo, redo and a `.replace` change. Test: both audit reproductions (they failed on the old code: `012中6789`).
 - **H12, fixed.** Agents other than Claude Code are badged Experimental in Settings and labelled in the picker, and the footer no longer claims that any ACP agent works.
 - **H13 / DOC-4, fixed.** The efficiency RFC's step-5 figures are corrected.
+- **H9, released** in Alloy 0.7.1.
+- **H14, crash recovery, fixed.** Unsaved buffers are copied outside the project every 2 s and offered back (Restore or Discard) when the project next opens.
+- **H15, test isolation, fixed.** Under XCTest the Keychain is in memory and outside agents' settings live in a per-process defaults suite.
+- **CON-4, CON-5, fixed.** Status calls pass `--no-optional-locks`; Tracks refreshes only on screen, coalesces requests and caches `du` for 60 s.
+- **SEC-12, PRV-7, fixed.** The model-list refresh has its own session that refuses redirects, and takes none from callers. A local server's list is `models` under its base URL. Test: a loopback 302 no longer reaches the second host (it did before).
+- **R5, GIT-11, fixed.** `GitPaths.dirtyPaths` is nil when status fails. An unknown baseline checkpoints only the known edits; Promote refuses and says why; Delete asks. Ignored files, which `git worktree remove` deletes with or without `--force`, are named and asked about by Delete and Remove Working Copy (`TrackStore.WorkAtRisk`); Library's bulk removal keeps those copies.
+- **GIT-3, fixed.** Status passes `--untracked-files=all` (overriding `status.showUntrackedFiles=no`) and `--ignored=matching`. Checkpoint budget unchanged: 20,000 files, 91 ms, 5 git processes.
+- **EDT-8, fixed.** Tabs keep a `DiskStamp` (date, size and inode, symlinks followed), taken before the read; any difference is an outside change.
+- **EDT-5, fixed.** Format Document checks edits with `nonOverlapping`; completion's additional edits use `CompletionEdits.conflict`, which counts an insertion inside another edit; negative signature-label offsets are ignored.
 - **Open:**
-  - H14: autosave and crash recovery, Save As encoding, orphaned-child promotion.
-  - H15: CI for the app's tests, and test isolation from the owner's defaults. One full-suite run on 2026-09-30 failed intermittently and wasn't identified; three runs after it passed.
-  - All Mediums and Lows.
+  - H14: Save As encoding, orphaned-child promotion.
+  - H15: CI for the app's tests.
+  - The other Mediums and Lows.
+  - Seen once while fixing GIT-11: `CheckpointCostTests.testACheckpointInALargeRepository` reported `nothingToCommit` for a round of three edited files, then passed alone and three times together. Not reproduced; possibly racy stat data in the copied index.
