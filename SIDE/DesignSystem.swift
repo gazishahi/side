@@ -20,11 +20,33 @@ enum DS {
             }
         }
 
-        private static func hex(_ dark: UInt32, _ light: UInt32) -> NSColor {
-            func color(_ value: UInt32) -> NSColor {
-                NSColor(red: CGFloat((value >> 16) & 0xff) / 255, green: CGFloat((value >> 8) & 0xff) / 255, blue: CGFloat(value & 0xff) / 255, alpha: 1)
+        /// With System Settings' Increase Contrast on, AppKit draws in a high-contrast appearance;
+        /// these tokens take their own values there (2026-09-30 audit, UX-9: they ignored it, and
+        /// canvas against raised was about 1.1:1, hairlines 8%).
+        static func dynamic(dark: NSColor, light: NSColor, contrastDark: NSColor, contrastLight: NSColor) -> NSColor {
+            NSColor(name: nil) { appearance in
+                let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                guard increaseContrast() else { return isDark ? dark : light }
+                return isDark ? contrastDark : contrastLight
             }
-            return dynamic(dark: color(dark), light: color(light))
+        }
+
+        /// System Settings › Accessibility › Display › Increase Contrast; a test sets its own.
+        nonisolated(unsafe) static var increaseContrast: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
+
+        private static func rgb(_ value: UInt32) -> NSColor {
+            NSColor(red: CGFloat((value >> 16) & 0xff) / 255, green: CGFloat((value >> 8) & 0xff) / 255, blue: CGFloat(value & 0xff) / 255, alpha: 1)
+        }
+
+        private static func hex(_ dark: UInt32, _ light: UInt32) -> NSColor { dynamic(dark: rgb(dark), light: rgb(light)) }
+
+        private static func hex(_ dark: UInt32, _ light: UInt32, contrast contrastDark: UInt32, _ contrastLight: UInt32) -> NSColor {
+            dynamic(dark: rgb(dark), light: rgb(light), contrastDark: rgb(contrastDark), contrastLight: rgb(contrastLight))
+        }
+
+        private static func white(_ dark: CGFloat, black light: CGFloat, contrast contrastDark: CGFloat, _ contrastLight: CGFloat) -> NSColor {
+            dynamic(dark: NSColor(white: 1, alpha: dark), light: NSColor(white: 0, alpha: light),
+                    contrastDark: NSColor(white: 1, alpha: contrastDark), contrastLight: NSColor(white: 0, alpha: contrastLight))
         }
 
         // MARK: Surfaces — three tones, no borders (Direction 02 §2.1)
@@ -35,29 +57,30 @@ enum DS {
         // close to read on their own.
 
         /// Stage background.
-        static let canvas = hex(0x15171A, 0xF4F4F6)
+        static let canvas = hex(0x15171A, 0xF4F4F6, contrast: 0x0B0C0E, 0xE6E6EB)
         /// Cards, the pinned group, the terminal, the diff body, the active tab.
-        static let raised = hex(0x1C1F23, 0xFFFFFF)
+        static let raised = hex(0x1C1F23, 0xFFFFFF, contrast: 0x262A30, 0xFFFFFF)
         /// Selected segment, running chip, popover and menu bodies.
-        static let overlay = hex(0x25292E, 0xE8E8EC)
+        static let overlay = hex(0x25292E, 0xE8E8EC, contrast: 0x363B42, 0xD6D6DD)
         /// Think's received message bubble: the system chat grey in light, the raised tone in dark.
         static let bubbleReceived = hex(0x24272C, 0xE9E9EB)
         /// The selected segment of a control sitting on glass — the toolbar segmented look.
         /// On glass, light mode's glass is itself near-white — a white thumb vanished into it, so
         /// light mode selects with a tint of the label colour instead.
-        static let selectedCapsule = dynamic(dark: NSColor(white: 1, alpha: 0.18), light: NSColor(white: 0, alpha: 0.09))
+        static let selectedCapsule = white(0.18, black: 0.09, contrast: 0.32, 0.2)
         /// The active tab: lifted off the canvas — white with a soft shadow in light, a brighter
         /// tone in dark. Inactive tabs sit on `scrimSoft`.
-        static let tabActive = dynamic(dark: NSColor(white: 1, alpha: 0.13), light: NSColor(white: 1, alpha: 1))
+        static let tabActive = dynamic(dark: NSColor(white: 1, alpha: 0.13), light: NSColor(white: 1, alpha: 1),
+                                       contrastDark: NSColor(white: 1, alpha: 0.26), contrastLight: NSColor(white: 1, alpha: 1))
         /// A tab's × on hover — stronger than the selected capsule it sits on.
         static let tabCloseHover = dynamic(dark: NSColor(white: 1, alpha: 0.32), light: NSColor(white: 0, alpha: 0.14))
         /// The overlay scroll thumb Side draws itself where there is no NSScrollView (Run's
         /// terminal) — the system overlay knob's contrast in each appearance.
         static let scrollKnob = dynamic(dark: NSColor(white: 1, alpha: 0.45), light: NSColor(white: 0, alpha: 0.4))
         /// Row separators — only. Never an enclosure.
-        static let hairline = dynamic(dark: NSColor(white: 1, alpha: 0.08), light: NSColor(white: 0, alpha: 0.08))
+        static let hairline = white(0.08, black: 0.08, contrast: 0.45, 0.45)
         /// The stacked-track connector.
-        static let hairlineStrong = dynamic(dark: NSColor(white: 1, alpha: 0.13), light: NSColor(white: 0, alpha: 0.14))
+        static let hairlineStrong = white(0.13, black: 0.14, contrast: 0.6, 0.6)
 
         // MARK: Text
         //
@@ -705,6 +728,18 @@ extension DS {
             observation = NSApp.observe(\.effectiveAppearance, options: [.new]) { _, _ in
                 DispatchQueue.main.async { appearanceMayHaveChanged() }
             }
+            // Increase Contrast turned on or off: the same as a change of appearance.
+            NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { contrastChanged() }
+            }
+        }
+
+        @MainActor
+        static func contrastChanged() {
+            LayerBindings.reapplyAll()
+            NotificationCenter.default.post(name: didChangeNotification, object: nil)
+            func redraw(_ view: NSView) { view.needsDisplay = true; view.subviews.forEach(redraw) }
+            for window in NSApp.windows { window.contentView.map(redraw) }
         }
 
         private static func apply() {

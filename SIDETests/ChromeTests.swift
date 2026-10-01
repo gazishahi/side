@@ -109,3 +109,39 @@ final class TextScaleFollowerTests: XCTestCase {
         XCTAssertEqual(table.rowHeight, 20)
     }
 }
+
+/// 2026-09-30 audit, UX-9: Increase Contrast was ignored; surfaces sat about 1.1:1 apart.
+@MainActor
+final class IncreaseContrastTests: XCTestCase {
+    private func resolved(_ color: NSColor, _ name: NSAppearance.Name) -> NSColor {
+        // High-contrast appearances can't be made by name; Increase Contrast is what turns them on.
+        let high = name == .accessibilityHighContrastDarkAqua || name == .accessibilityHighContrastAqua
+        let saved = DS.Color.increaseContrast
+        DS.Color.increaseContrast = { high }
+        defer { DS.Color.increaseContrast = saved }
+        let base: NSAppearance.Name = (name == .accessibilityHighContrastDarkAqua || name == .darkAqua) ? .darkAqua : .aqua
+        var out = color
+        NSAppearance(named: base)!.performAsCurrentDrawingAppearance { out = color.usingColorSpace(.sRGB) ?? color }
+        return out
+    }
+
+    private func luminance(_ c: NSColor) -> CGFloat {
+        func channel(_ v: CGFloat) -> CGFloat { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+        return 0.2126 * channel(c.redComponent) + 0.7152 * channel(c.greenComponent) + 0.0722 * channel(c.blueComponent)
+    }
+
+    private func contrast(_ a: NSColor, _ b: NSColor) -> CGFloat {
+        let (x, y) = (luminance(a), luminance(b))
+        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+    }
+
+    func testHighContrastSeparatesSurfacesAndStrengthensLines() {
+        for (normal, high) in [(NSAppearance.Name.darkAqua, NSAppearance.Name.accessibilityHighContrastDarkAqua), (.aqua, .accessibilityHighContrastAqua)] {
+            let before = contrast(resolved(DS.Color.canvas, normal), resolved(DS.Color.raised, normal))
+            let after = contrast(resolved(DS.Color.canvas, high), resolved(DS.Color.raised, high))
+            XCTAssertGreaterThan(after, before + 0.1, "\(high.rawValue): canvas against raised, \(before) → \(after)")
+            print(String(format: "CONTRAST %@ canvas/raised %.2f -> %.2f", high.rawValue, before, after))
+            XCTAssertGreaterThan(resolved(DS.Color.hairline, high).alphaComponent, resolved(DS.Color.hairline, normal).alphaComponent * 3)
+        }
+    }
+}
