@@ -1034,6 +1034,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         let latestVerified = checkpoints.sorted { $0.createdAt > $1.createdAt }.first { $0.verification != nil }
         let failedVerification = latestVerified?.verification.flatMap { $0.passed ? nil : $0 }
         let staleness = Self.verificationStalenessCaveat(checkpoints: checkpoints)
+        let orphaned = Self.orphanedStackNote(for: track, trackStore: trackStore, checkpoints: checkpoints)
 
         let alert = NSAlert()
         alert.messageText = failedVerification == nil ? "Promote to \(baseRef)?" : "Promote work that failed \(failedVerification!.taskName)?"
@@ -1048,11 +1049,16 @@ final class ReviewWorkspaceViewController: NSViewController {
         } else if let staleness {
             detail += "\n\n" + staleness
         }
+        if let orphaned {
+            alert.alertStyle = .warning
+            detail += "\n\n" + orphaned
+        }
         alert.informativeText = detail
         alert.addButton(withTitle: "Promote")
         alert.addButton(withTitle: "Cancel")
-        // Cancel is the safe default when the evidence says the work is broken.
-        if failedVerification != nil { alert.buttons.last?.keyEquivalent = "\r"; alert.buttons.first?.keyEquivalent = "" }
+        // Cancel is the safe default when the evidence says the work is broken, or isn't all
+        // this track's.
+        if failedVerification != nil || orphaned != nil { alert.buttons.last?.keyEquivalent = "\r"; alert.buttons.first?.keyEquivalent = "" }
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             self.promote(track: track, baseRef: baseRef, mergeRoot: target.root, trackStore: trackStore)
@@ -1073,6 +1079,21 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
         guard let parentPath = parent.workingDirectoryPath else { return nil }
         return (URL(fileURLWithPath: parentPath), true)
+    }
+
+    /// A stacked track whose parent track was deleted: with no parent, its base falls back to
+    /// the default branch, and its branch still carries the parent's commits, so promoting it
+    /// merges the deleted track's work into main too (2026-09-30 audit, H14). Nil for any
+    /// other track. Says how many of the commits are this track's own checkpoints.
+    static func orphanedStackNote(for track: Track, trackStore: TrackStore, checkpoints: [Checkpoint]) -> String? {
+        guard let parentId = track.parentTrackId, !trackStore.tracks.contains(where: { $0.id == parentId }) else { return nil }
+        let baseRef = trackStore.defaultBranchName()
+        let ahead = GitPaths.runGit(["rev-list", "\(baseRef)..\(track.branchName)"], cwd: trackStore.projectRoot.path)
+        let shas = ahead.success ? ahead.output.split(separator: "\n").map(String.init) : []
+        let own = shas.filter { sha in checkpoints.contains { $0.gitCommitSHA.map { sha.hasPrefix($0) || $0.hasPrefix(sha) } ?? false } }.count
+        let others = shas.count - own
+        guard others > 0 else { return nil }
+        return "This track was stacked on a track that has since been deleted, so its branch also carries that track\u{2019}s work: \(others) of its \(shas.count) commit\(shas.count == 1 ? "" : "s") ahead of \(baseRef) aren\u{2019}t this track\u{2019}s checkpoints. Promoting merges all of them into \(baseRef)."
     }
 
     static func baseRef(for track: Track, trackStore: TrackStore) -> String {

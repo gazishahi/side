@@ -239,6 +239,59 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: worktree))
     }
 
+    // MARK: - 2026-09-30 audit, H14: a stacked track whose parent was deleted
+
+    /// With its parent gone, a stacked track's base fell back to main and Promote merged the
+    /// deleted parent's commits into main without a word. Now Promote says how many aren't
+    /// this track's own (and defaults to Cancel).
+    @MainActor
+    func testPromotingATrackWhoseParentWasDeletedSaysWhatElseItCarries() throws {
+        makeRepo()
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        func create(_ intent: String, on base: Track?) -> Track? {
+            let done = expectation(description: intent)
+            let made = Captured<Track>()
+            store.createTrack(intent: intent, baseTrack: base) { result in
+                if case .success(let pair) = result { made.value = pair.0 }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 20)
+            return made.value
+        }
+        func commit(_ file: String, in track: Track) -> String {
+            let path = track.workingDirectoryPath ?? root.path
+            try? file.write(toFile: (path as NSString).appendingPathComponent(file), atomically: true, encoding: .utf8)
+            XCTAssertTrue(GitPaths.runGit(["add", file], cwd: path).success)
+            XCTAssertTrue(GitPaths.runGit(["-c", "user.email=t@t", "-c", "user.name=T", "commit", "-q", "-m", file], cwd: path).success)
+            return GitPaths.runGit(["rev-parse", "HEAD"], cwd: path).output
+        }
+        guard let parent = create("parent work", on: nil) else { return XCTFail("no parent") }
+        _ = commit("parent.txt", in: parent)
+        store.setStatus(.parked, for: parent)
+        guard let parked = store.tracks.first(where: { $0.id == parent.id }),
+              let child = create("child work", on: parked) else { return XCTFail("no child") }
+        let own = commit("child.txt", in: child)
+        let checkpoint = Checkpoint(trackKey: child.branchName, agentSessionId: UUID(), declaredIntent: "child", changedFilePaths: ["child.txt"], commandsRun: [],
+                                    provenance: AgentProvenance(providerId: "p", modelId: "m", instructionSourceSummary: ""), gitCommitSHA: own)
+        XCTAssertNil(ReviewWorkspaceViewController.orphanedStackNote(for: child, trackStore: store, checkpoints: [checkpoint]), "the parent is still there")
+
+        // The child archived so the parent can go, as the Tracks menu requires, then back.
+        store.setStatus(.parked, for: child)
+        store.setStatus(.archived, for: child)
+        let deleted = expectation(description: "parent deleted")
+        guard let parentNow = store.tracks.first(where: { $0.id == parent.id }) else { return XCTFail("parent vanished") }
+        store.deleteTrack(parentNow, alsoDeleteBranch: false, discardUncommittedChanges: true) { result in
+            if case .failure(let error) = result { XCTFail("\(error)") }
+            deleted.fulfill()
+        }
+        wait(for: [deleted], timeout: 20)
+        store.setStatus(.parked, for: child)
+        guard let orphan = store.tracks.first(where: { $0.id == child.id }) else { return XCTFail("child vanished") }
+        XCTAssertEqual(ReviewWorkspaceViewController.baseRef(for: orphan, trackStore: store), "main")
+        let note = ReviewWorkspaceViewController.orphanedStackNote(for: orphan, trackStore: store, checkpoints: [checkpoint])
+        XCTAssertTrue(note?.contains("1 of its 2 commits ahead of main") == true, note ?? "no note")
+    }
+
     // MARK: - H6: an adopted worktree does not follow the banner to a different branch
 
     @MainActor
