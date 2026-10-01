@@ -36,7 +36,9 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 echo "Side $VERSION ($BUILD), team $TEAM"
 
 echo "==> Archive"
-xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -destination 'generic/platform=macOS' \
+# SwiftTerm 1.19+ runs a build plugin (SwiftTermBuildInfoPlugin); xcodebuild refuses an
+# untrusted plugin unless told to skip validation. Xcode itself asks once.
+xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -destination 'generic/platform=macOS' -skipPackagePluginValidation \
   -archivePath "$ARCHIVE" -clonedSourcePackagesDirPath "$SPM" archive \
   DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" OTHER_CODE_SIGN_FLAGS="--timestamp" \
   | grep -E ":[0-9]+:[0-9]+: error:|error: .*sign|ARCHIVE (SUCCEEDED|FAILED)" || true

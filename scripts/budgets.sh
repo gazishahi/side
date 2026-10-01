@@ -15,7 +15,9 @@ log=build/budgets.log
 mkdir -p build
 echo "==> Building (optimized); the log is $log"
 rm -f build/budgets/Build/Products/*.xctestrun
-xcodebuild -project SIDE.xcodeproj -scheme SIDE -destination 'platform=macOS' -configuration Release \
+# SwiftTerm 1.19+ runs a build plugin (SwiftTermBuildInfoPlugin); xcodebuild refuses an
+# untrusted plugin unless told to skip validation. Xcode itself asks once.
+xcodebuild -project SIDE.xcodeproj -scheme SIDE -destination 'platform=macOS' -configuration Release -skipPackagePluginValidation \
   -derivedDataPath build/budgets ENABLE_TESTABILITY=YES ENABLE_HARDENED_RUNTIME=NO build-for-testing > "$log" 2>&1 || { grep -m5 "error: " "$log"; exit 1; }
 # Xcode loads its Main Thread Checker into every test run; it checks each AppKit call and
 # makes the UI read slower than it is. The run file goes without it.
