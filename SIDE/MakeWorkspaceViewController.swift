@@ -4750,10 +4750,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if let focusedRoot { panel.directoryURL = focusedRoot }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let newURL = panel.url else { completion(false); return }
-            guard let index = self.indexForTab(id: tabID) else { completion(false); return }
-            self.openTabs[index].url = newURL
-            self.openTabs[index].isUntitled = false
-            self.writeTabToDiskForced(tabID: tabID, url: newURL) { success in
+            guard self.indexForTab(id: tabID) != nil else { completion(false); return }
+            self.writeTabToDiskForced(tabID: tabID, url: newURL, asNewFile: true) { success in
                 if success {
                     if let index = self.indexForTab(id: tabID), self.activeTabIndex == index {
                         if let projectURL = self.projectURL { self.rememberLastFile(newURL, forProject: projectURL) }
@@ -4814,10 +4812,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         writeTabToDiskForced(tabID: tabID, url: url, completion: completion)
     }
 
-    private func writeTabToDiskForced(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
+    /// What Save As writes `content` as: the tab's own format, or UTF-8 with its line ending
+    /// when the old encoding can't hold the text.
+    static func saveAsFormat(for content: String, current: TextFileCodec.Format) -> TextFileCodec.Format {
+        TextFileCodec.encode(content, as: current) != nil ? current : TextFileCodec.Format(encoding: .utf8, byteOrderMark: false, lineEnding: current.lineEnding)
+    }
+
+    /// `asNewFile`: Save As. The tab moves to `url` only once the write succeeded (it moved
+    /// first, so a failed Save As left it naming a file that didn't exist), and text the old
+    /// encoding can't hold is written as UTF-8, which the refusal below tells people to do
+    /// (2026-09-30 audit, H14: Save As kept the old encoding and refused the same way).
+    private func writeTabToDiskForced(tabID: UUID, url: URL, asNewFile: Bool = false, completion: @escaping (Bool) -> Void) {
         guard let index = indexForTab(id: tabID) else { completion(false); return }
         let content = openTabs[index].document.string
-        let format = openTabs[index].format
+        let format = asNewFile ? Self.saveAsFormat(for: content, current: openTabs[index].format) : openTabs[index].format
         do {
             // The file's own encoding, BOM and line ending — bytes the user didn't touch stay
             // as they were. A character the encoding can't hold is a refusal, not a transcode.
@@ -4825,6 +4833,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 throw CocoaError(.fileWriteInapplicableStringEncoding, userInfo: [NSLocalizedDescriptionKey: "This file is \(format.encodingName), and the buffer now contains a character that encoding can't represent. Save As a new file to keep it as UTF-8."])
             }
             try data.write(to: url, options: .atomic)
+            if asNewFile {
+                openTabs[index].url = url
+                openTabs[index].isUntitled = false
+                openTabs[index].format = format
+            }
             // The user's own save — a checkpoint being written right now mustn't claim it
             // as the agent's (`UserSaveLog`, audit F4).
             UserSaveLog.shared.record(url)
@@ -5974,6 +5987,12 @@ extension MakeWorkspaceViewController {
     }
     var activeTabForTesting: (text: String, dirty: Bool)? { activeTabIndex.map { (openTabs[$0].document.string, openTabs[$0].dirty) } }
     static func flushRecoveryForTesting() { recoveryQueue.sync {} }
+    /// Save As to `url`, past the save panel.
+    func saveActiveTabAsForTesting(_ url: URL, completion: @escaping (Bool) -> Void) {
+        guard let index = activeTabIndex else { return completion(false) }
+        writeTabToDiskForced(tabID: openTabs[index].id, url: url, asNewFile: true, completion: completion)
+    }
+    var activeTabURLForTesting: URL? { activeTabIndex.map { openTabs[$0].url } }
     /// As a batch of file events naming every open tab would.
     func reconcileWithDiskForTesting() { for index in openTabs.indices { reconcileTabWithDisk(index) } }
     var activeTabHasExternalChangeForTesting: Bool { activeTabIndex.map { openTabs[$0].hasExternalChange } ?? false }

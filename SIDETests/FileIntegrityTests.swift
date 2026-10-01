@@ -190,3 +190,53 @@ final class ExternalReplacementTests: XCTestCase {
         make.closeAllTabsForTesting()
     }
 }
+
+/// 2026-09-30 audit, H14: Save As kept the old encoding, so a Windows-1252 file holding a
+/// character it can't represent was refused again, though the refusal says to Save As as UTF-8.
+@MainActor
+final class SaveAsTests: XCTestCase {
+    func testSaveAsKeepsWhatTheOldEncodingCantAsUTF8() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("side-saveas-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: MakeWorkspaceViewController.recoveryDirectory(for: folder))
+        }
+        let original = folder.appendingPathComponent("legacy.txt")
+        let legacyBytes = Data([0x63, 0x61, 0x66, 0xE9, 0x0D, 0x0A])  // "café\r\n" in Windows-1252
+        try legacyBytes.write(to: original)
+        let make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = container
+        for child in [make.view, make.topRowContent!] { container.addSubview(child) }
+        make.view.frame = container.bounds
+        defer { window.contentView = nil; window.close() }
+        make.loadProject(at: folder)
+        var opened = false
+        make.openForTesting(original) { opened = true }
+        let deadline = Date().addingTimeInterval(10)
+        while !opened, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(make.activeTabForTesting?.text, "café\n")
+
+        make.editActiveTabForTesting("café ✓\n")  // ✓ isn't in Windows-1252
+        // Checked first: a refused write puts up a sheet that holds a test host, not fails it.
+        let legacy = TextFileCodec.Format(encoding: .windowsCP1252, byteOrderMark: false, lineEnding: .crlf)
+        guard TextFileCodec.encode("café ✓\n", as: MakeWorkspaceViewController.saveAsFormat(for: "café ✓\n", current: legacy)) != nil else {
+            return XCTFail("Save As would refuse text Windows-1252 can't hold")
+        }
+        let copy = folder.appendingPathComponent("legacy-utf8.txt")
+        var saved: Bool?
+        make.saveActiveTabAsForTesting(copy) { saved = $0 }
+        let wrote = Date().addingTimeInterval(10)
+        while saved == nil, Date() < wrote { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(saved, true)
+        XCTAssertEqual(try Data(contentsOf: copy), Data("café ✓\r\n".utf8), "UTF-8, the file's own line ending kept")
+        XCTAssertEqual(try Data(contentsOf: original), legacyBytes, "the original is untouched")
+        XCTAssertEqual(make.activeTabURLForTesting, copy)
+        XCTAssertEqual(make.activeTabForTesting?.dirty, false)
+        make.closeAllTabsForTesting()
+    }
+}
