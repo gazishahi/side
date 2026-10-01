@@ -237,6 +237,30 @@ final class CheckpointStagingTests: XCTestCase {
         XCTAssertEqual(git(["show", "--name-only", "--format=", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines), "agent.txt")
         XCTAssertEqual(git(["diff", "--cached", "--name-only"]).trimmingCharacters(in: .whitespacesAndNewlines), "manual.txt")
     }
+    /// 2026-09-30 audit, GIT-3: status listed a new directory as one entry, so the person's
+    /// `newdir/notes.md`, saved while the agent's command made `newdir/x.swift`, was committed
+    /// with it (the user-save rule couldn't subtract a file it never saw named).
+    func testTheAgentsNewFileInANewDirectoryIsCheckpointedAlone() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("stage-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func git(_ args: [String]) -> String {
+            let r = GitPaths.runGit(args, cwd: root.path); XCTAssertTrue(r.success, "git \(args): \(r.output)"); return r.output
+        }
+        git(["init", "-q", "-b", "main"]); git(["config", "user.email", "t@t"]); git(["config", "user.name", "T"])
+        try "a".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        git(["add", "."]); git(["commit", "-q", "-m", "base"])
+        let baseline = GitPaths.dirtyPaths(cwd: root.path)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("newdir"), withIntermediateDirectories: true)
+        try "mine".write(to: root.appendingPathComponent("newdir/notes.md"), atomically: true, encoding: .utf8)
+        try "agent".write(to: root.appendingPathComponent("newdir/x.swift"), atomically: true, encoding: .utf8)
+
+        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: baseline, knownChanged: [], userSaved: ["newdir/notes.md"], message: "agent work")
+        guard case .committed(_, let paths)? = outcome else { return XCTFail("expected a commit, got \(String(describing: outcome))") }
+        XCTAssertEqual(paths, ["newdir/x.swift"])
+        XCTAssertEqual(git(["show", "--name-only", "--format=", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines), "newdir/x.swift")
+    }
+
     /// 2026-09-30 audit, GIT-11: with no baseline (git status failed before the batch), the
     /// checkpoint took every dirty file, the person's own included. Now only the known edits.
     func testWithNoBaselineOnlyTheKnownEditsAreCheckpointed() throws {

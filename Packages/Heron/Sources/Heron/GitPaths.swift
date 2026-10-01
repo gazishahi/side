@@ -210,7 +210,12 @@ public enum GitPaths {
         // `runGitRaw`, not `runGit`: the format is read by position. See above.
         // `--no-optional-locks`: status otherwise rewrites the index to refresh stat data, which
         // contends with the user's own git and changes the file a checkpoint copies.
-        let result = runGitRaw(["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z"] + (includeIgnored ? ["--ignored"] : []), cwd: cwd)
+        // `--untracked-files=all`: by default a new directory is one entry (`newdir/`), so a
+        // checkpoint staged the whole directory, the person's own new files in it included, a
+        // baseline `gen/` hid the agent's new `gen/agent.txt`, and `status.showUntrackedFiles=no`
+        // hid new files altogether (2026-09-30 audit, GIT-3). The flag overrides that setting.
+        // `--ignored=matching` keeps an ignored directory one entry (`node_modules/`) under it.
+        let result = runGitRaw(["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"] + (includeIgnored ? ["--ignored=matching"] : []), cwd: cwd)
         guard result.success else { return nil }
         return parseStatus(result.output)
     }

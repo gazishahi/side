@@ -66,6 +66,17 @@ final class DirtyPathsTests: XCTestCase {
         XCTAssertNil(GitPaths.status(cwd: notARepository.path))
     }
 
+    /// 2026-09-30 audit, GIT-3: a new directory was one entry, `newdir/`, and with
+    /// `status.showUntrackedFiles=no` new files weren't listed at all.
+    func testANewDirectorysFilesAreListedOneByOne() throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("newdir/deeper"), withIntermediateDirectories: true)
+        try "n".write(to: root.appendingPathComponent("newdir/notes.md"), atomically: true, encoding: .utf8)
+        try "x".write(to: root.appendingPathComponent("newdir/deeper/x.swift"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(GitPaths.dirtyPaths(cwd: root.path), ["newdir/notes.md", "newdir/deeper/x.swift"])
+        git(["config", "status.showUntrackedFiles", "no"])
+        XCTAssertEqual(GitPaths.dirtyPaths(cwd: root.path), ["newdir/notes.md", "newdir/deeper/x.swift"])
+    }
+
     /// Ignored entries only when asked for, and never as dirty.
     func testIgnoredFilesAreListedApartWhenAsked() throws {
         try ".env\nbuild/\n".write(to: root.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
@@ -77,7 +88,7 @@ final class DirtyPathsTests: XCTestCase {
         XCTAssertEqual(GitPaths.dirtyPaths(cwd: root.path), [])
         let status = try XCTUnwrap(GitPaths.status(cwd: root.path, includeIgnored: true))
         XCTAssertEqual(status.dirty, [])
-        XCTAssertEqual(status.ignored, [".env", "build/"])
+        XCTAssertEqual(status.ignored, [".env", "build/"], "an ignored directory is one entry")
     }
 
     func testARenameReportsOnlyTheDestination() throws {
