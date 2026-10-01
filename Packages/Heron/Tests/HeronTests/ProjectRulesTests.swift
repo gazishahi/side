@@ -9,7 +9,7 @@ final class ProjectRulesTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         savedDefaults = ProjectRules.defaults
-        ProjectRules.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        ProjectRules.defaults = throwawayDefaults()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("rules-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
@@ -97,4 +97,10 @@ final class ProjectRulesTests: XCTestCase {
         XCTAssertNil(ProjectRules.load(projectRoot: root))
         XCTAssertNotNil(ProjectRules.pendingAcknowledgement(projectRoot: root))
     }
+}
+
+extension XCTestCase {
+    /// A settings store of this test's own, in memory (`InMemoryDefaults`): stores made with a
+    /// suite name per test had piled up in ~/Library/Preferences (2,443 files by 2026-10-01).
+    func throwawayDefaults() -> UserDefaults { InMemoryDefaults() }
 }

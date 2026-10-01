@@ -1,4 +1,5 @@
 import AppKit
+@testable import Heron
 import MachO
 import XCTest
 
@@ -186,5 +187,22 @@ enum Budgets {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+extension XCTestCase {
+    /// A settings store of this test's own, in memory (`InMemoryDefaults`): stores made with a
+    /// suite name per test had piled up in ~/Library/Preferences (2,443 files by 2026-10-01).
+    func throwawayDefaults() -> UserDefaults { InMemoryDefaults() }
+}
+
+/// 2026-10-01: tests wrote to the owner's own settings (consent for temporary files, recent
+/// projects that were temporary folders). Every store the app uses is the process's own here.
+final class SettingsIsolationTests: XCTestCase {
+    func testTheAppsSettingsAreTheTestProcesssOwn() {
+        XCTAssertFalse(HeronDefaults.store === UserDefaults.standard, "HeronDefaults.store is the owner's settings")
+        HeronDefaults.store.set("probe", forKey: "SideIsolationProbe")
+        defer { HeronDefaults.store.removeObject(forKey: "SideIsolationProbe") }
+        XCTAssertNil(UserDefaults(suiteName: "com.shahi.side")?.string(forKey: "SideIsolationProbe"), "a write reached com.shahi.side")
     }
 }

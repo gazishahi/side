@@ -9,7 +9,7 @@ enum ChromePlacement: String {
 
     /// A hidden key so both layouts can be compared on one build — not a user setting.
     static var current: ChromePlacement {
-        UserDefaults.standard.string(forKey: "SideChromePlacement").flatMap(Self.init(rawValue:)) ?? .floatingBar
+        HeronDefaults.store.string(forKey: "SideChromePlacement").flatMap(Self.init(rawValue:)) ?? .floatingBar
     }
 }
 

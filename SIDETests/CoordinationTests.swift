@@ -172,7 +172,7 @@ for line in sys.stdin:
     func testLiveClaudeCodeUsesTheUsersMCPServer() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["SIDE_LIVE_ACP"] == "1", "live agent test is opt-in")
         let saved = MCPServerStore.defaults
-        MCPServerStore.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        MCPServerStore.defaults = throwawayDefaults()
         defer { MCPServerStore.defaults = saved }
         let script = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-\(UUID().uuidString).py")
         try #"""
@@ -274,7 +274,7 @@ for line in sys.stdin:
     /// agent's session, environment and all; one that's off doesn't.
     func testTheUsersMCPServersReachOutsideAgents() throws {
         let saved = MCPServerStore.defaults
-        MCPServerStore.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        MCPServerStore.defaults = throwawayDefaults()
         defer { MCPServerStore.defaults = saved }
         let on = MCPServerStore.save(MCPServerStore.newServer(name: "notes", command: "python3", arguments: ["-m", "notes server"]), environment: ["NOTES_TOKEN": "t0ken"])
         let off = MCPServerStore.save(MCPServerStore.newServer(name: "side", command: "/bin/echo", arguments: []), environment: nil)

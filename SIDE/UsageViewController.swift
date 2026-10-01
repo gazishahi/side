@@ -291,7 +291,7 @@ enum UsageNames {
     }
 
     private static func agentModelName(agentId: String, value: String) -> String? {
-        guard let data = UserDefaults.standard.data(forKey: "SideACPKnownOptions.\(agentId)"),
+        guard let data = HeronDefaults.store.data(forKey: "SideACPKnownOptions.\(agentId)"),
               let options = try? JSONDecoder().decode([HarnessOption].self, from: data) else { return nil }
         return options.first { $0.category == .model }?.choices.first { $0.value == value }?.name
     }

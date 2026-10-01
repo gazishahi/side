@@ -142,7 +142,7 @@ while True:
         try Self.server.write(to: script, atomically: true, encoding: .utf8)
         setenv("SIDE_FAKE_DAP_OUT", out.path, 1)
 
-        let store = BreakpointStore(project: dir, defaults: UserDefaults(suiteName: "side.tests.dap-server.\(UUID().uuidString)")!)
+        let store = BreakpointStore(project: dir, defaults: throwawayDefaults())
         store.toggle(path: "/p/app.js", line: 2)
         let configuration = DebugConfiguration(name: "app.js", adapter: DebugAdapters.jsDebug.id,
                                                launchArguments: ["type": "pwa-node", "request": "launch", "program": "/p/app.js"], directory: dir.path)
@@ -216,7 +216,7 @@ final class RealAdapterTests: XCTestCase {
     private func debug(_ configuration: DebugConfiguration, preset: DebugAdapterPreset, file: URL, line: Int,
                        local: String, value: String, expression: String, result: String) async throws -> String {
         let connection = try XCTUnwrap(DebugAdapters.connection(for: preset), "\(preset.name) isn't installed")
-        let store = BreakpointStore(project: URL(fileURLWithPath: configuration.directory), defaults: UserDefaults(suiteName: "side.tests.real.\(UUID().uuidString)")!)
+        let store = BreakpointStore(project: URL(fileURLWithPath: configuration.directory), defaults: throwawayDefaults())
         store.toggle(path: file.path, line: line)
         let printed = LockedBox("")
         var sessions: [DebugSession] = []

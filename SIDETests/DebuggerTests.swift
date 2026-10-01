@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class BreakpointStoreTests: XCTestCase {
     private func store() -> BreakpointStore {
-        let defaults = UserDefaults(suiteName: "side.tests.breakpoints.\(UUID().uuidString)")!
+        let defaults = throwawayDefaults()
         return BreakpointStore(project: URL(fileURLWithPath: "/tmp/project"), defaults: defaults)
     }
 
@@ -20,7 +20,7 @@ final class BreakpointStoreTests: XCTestCase {
     }
 
     func testTogglesAndKeepsPerProject() {
-        let defaults = UserDefaults(suiteName: "side.tests.breakpoints.\(UUID().uuidString)")!
+        let defaults = throwawayDefaults()
         let project = URL(fileURLWithPath: "/tmp/project")
         let store = BreakpointStore(project: project, defaults: defaults)
         store.toggle(path: "/a.swift", line: 3)
@@ -65,7 +65,7 @@ final class BreakpointStoreTests: XCTestCase {
     }
 
     func testOptionsAreKeptAndDescribed() {
-        let defaults = UserDefaults(suiteName: "side.tests.breakpoints.\(UUID().uuidString)")!
+        let defaults = throwawayDefaults()
         let project = URL(fileURLWithPath: "/tmp/project")
         let store = BreakpointStore(project: project, defaults: defaults)
         store.toggle(path: "/a.swift", line: 2)
@@ -241,7 +241,7 @@ while True:
         try Self.adapter.write(to: script, atomically: true, encoding: .utf8)
         setenv("SIDE_FAKE_DAP_OUT", out.path, 1)
 
-        let store = BreakpointStore(project: dir, defaults: UserDefaults(suiteName: "side.tests.dap.\(UUID().uuidString)")!)
+        let store = BreakpointStore(project: dir, defaults: throwawayDefaults())
         store.toggle(path: "/p/main.swift", line: 2)    // line 3 to the adapter: moved to 4
         store.toggle(path: "/p/main.swift", line: 98)   // line 99: not placed
         store.setOptions(path: "/p/main.swift", line: 98, condition: " x > 1 ", hitCondition: "", logMessage: "x is {x}")
@@ -368,7 +368,7 @@ final class LLDBDAPTests: XCTestCase {
         program.standardOutput = FileHandle.nullDevice
         try program.run()
         defer { program.terminate() }
-        let store = BreakpointStore(project: FileManager.default.temporaryDirectory, defaults: UserDefaults(suiteName: "side.tests.attach.\(UUID().uuidString)")!)
+        let store = BreakpointStore(project: FileManager.default.temporaryDirectory, defaults: throwawayDefaults())
         let configuration = DebugConfiguration(name: "cat", request: "attach", launchArguments: ["pid": .int(Int(program.processIdentifier))],
                                                directory: FileManager.default.temporaryDirectory.path)
         let session = DebugSession(configuration: configuration, adapter: adapter, breakpoints: store)
@@ -417,7 +417,7 @@ final class LLDBDAPTests: XCTestCase {
 
         let products = try await DebugLaunch.swiftExecutables(in: root)
         XCTAssertEqual(products, ["Demo"])
-        let store = BreakpointStore(project: root, defaults: UserDefaults(suiteName: "side.tests.lldb.\(UUID().uuidString)")!)
+        let store = BreakpointStore(project: root, defaults: throwawayDefaults())
         let path = source.resolvingSymlinksInPath().path
         store.toggle(path: path, line: 2)   // `return result`, only when n is 2
         store.setOptions(path: path, line: 2, condition: "n == 2", hitCondition: nil, logMessage: nil)
@@ -534,7 +534,7 @@ final class DebugBuildStopTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let marker = "31.\(Int.random(in: 100_000...999_999))"
         let configuration = DebugConfiguration(name: "t", program: "/usr/bin/true", directory: dir.path, build: "sleep \(marker)")
-        let store = BreakpointStore(project: dir, defaults: UserDefaults(suiteName: "side.tests.build-stop.\(UUID().uuidString)")!)
+        let store = BreakpointStore(project: dir, defaults: throwawayDefaults())
         let session = DebugSession(configuration: configuration, adapter: URL(fileURLWithPath: "/usr/bin/false"), breakpoints: store)
         var states: [DebugSession.State] = []
         session.onChange = { states.append(session.state) }

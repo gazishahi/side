@@ -35,9 +35,9 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         static let didChangeNotification = Notification.Name("SideExplorerSideDidChange")
         private static let key = "SideExplorerSide"
         static var preferred: Side {
-            get { UserDefaults.standard.string(forKey: key).flatMap(Side.init(rawValue:)) ?? .left }
+            get { HeronDefaults.store.string(forKey: key).flatMap(Side.init(rawValue:)) ?? .left }
             set {
-                UserDefaults.standard.set(newValue.rawValue, forKey: key)
+                HeronDefaults.store.set(newValue.rawValue, forKey: key)
                 NotificationCenter.default.post(name: didChangeNotification, object: nil)
             }
         }

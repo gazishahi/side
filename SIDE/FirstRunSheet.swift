@@ -18,8 +18,8 @@ enum FirstRun {
     static var forced: Bool { UserDefaults.standard.bool(forKey: "SideForceFirstRun") }
 
     static var dismissed: Bool {
-        get { UserDefaults.standard.bool(forKey: dismissedKey) }
-        set { UserDefaults.standard.set(newValue, forKey: dismissedKey) }
+        get { HeronDefaults.store.bool(forKey: dismissedKey) }
+        set { HeronDefaults.store.set(newValue, forKey: dismissedKey) }
     }
 
     /// The active provider can take a message right now.

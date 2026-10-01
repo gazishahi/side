@@ -1,4 +1,5 @@
 import AppKit
+import Heron
 
 /// A key and its modifiers, as a menu item takes them.
 struct KeyChord: Equatable, Hashable, Codable {
@@ -222,8 +223,7 @@ enum Shortcuts {
     static let didChangeNotification = Notification.Name("SideShortcutsDidChange")
     private static let defaultsKey = "SideShortcuts"
     /// Per process under tests, like the other preferences.
-    nonisolated(unsafe) static var defaults: UserDefaults = NSClassFromString("XCTestCase") == nil
-        ? .standard : UserDefaults(suiteName: "side.tests.shortcuts.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard
+    nonisolated(unsafe) static var defaults: UserDefaults = HeronDefaults.store
 
     /// The person's changes: id → "modifiers:key", or "" for none.
     private static var overrides: [String: String] {

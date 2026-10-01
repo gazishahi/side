@@ -73,15 +73,7 @@ public struct ACPAgent: Equatable, Sendable, Codable {
     /// process's own, gone when it exits. Parallel test processes read-modify-wrote the real
     /// list at once, so agents vanished mid-test and test agents were left in the owner's Side
     /// (2026-09-30 audit, TST-1).
-    nonisolated(unsafe) public static let defaults: UserDefaults = {
-        let environment = ProcessInfo.processInfo.environment
-        guard environment["XCTestBundlePath"] != nil || environment["XCTestConfigurationFilePath"] != nil || NSClassFromString("XCTestCase") != nil,
-              let suite = UserDefaults(suiteName: testSuiteName) else { return .standard }
-        suite.removePersistentDomain(forName: testSuiteName)
-        atexit { UserDefaults.standard.removePersistentDomain(forName: ACPAgent.testSuiteName) }
-        return suite
-    }()
-    static let testSuiteName = "com.shahi.side.tests.\(ProcessInfo.processInfo.processIdentifier)"
+    public static var defaults: UserDefaults { HeronDefaults.store }
 
     public static var custom: [ACPAgent] {
         guard let data = defaults.data(forKey: customKey),

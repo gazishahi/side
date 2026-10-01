@@ -269,18 +269,18 @@ final class TerminalSessionManager {
     private func rememberedKey(_ trackKey: String) -> String { "\(projectRoot.path)#\(trackKey)" }
 
     func rememberedDirectories(forTrackKey key: String) -> [String] {
-        let map = UserDefaults.standard.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
+        let map = HeronDefaults.store.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
         return map[rememberedKey(key)] ?? map[key] ?? []
     }
 
     private func remember(forTrackKey key: String) {
         guard !AppDelegate.isUITesting else { return }
-        var map = UserDefaults.standard.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
+        var map = HeronDefaults.store.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
         // Command tabs are an agent's one-off programs, not terminals to reopen.
         let directories = allSessions(forTrackKey: key).filter { !$0.viewController.isCommandSession }.compactMap { $0.viewController.workingDirectory }
         map.removeValue(forKey: key)
         if directories.isEmpty { map.removeValue(forKey: rememberedKey(key)) } else { map[rememberedKey(key)] = directories }
-        UserDefaults.standard.set(map, forKey: Self.rememberedSessionsKey)
+        HeronDefaults.store.set(map, forKey: Self.rememberedSessionsKey)
     }
 
     private func post(origin: AnyObject?) {

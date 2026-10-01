@@ -100,7 +100,7 @@ final class ReviewLayoutTests: XCTestCase {
     // MARK: Viewed
 
     func testViewedHoldsUntilTheFilesDiffChanges() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "review-viewed-\(UUID().uuidString)"))
+        let defaults = throwawayDefaults()
         let store = ReviewViewedStore(defaults: defaults)
         let before = UnifiedDiff.parse("diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -1,1 +1,1 @@\n-x\n+y").files[0]
         let after = UnifiedDiff.parse("diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -1,1 +1,1 @@\n-x\n+z").files[0]

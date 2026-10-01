@@ -30,7 +30,7 @@ enum StagePins {
         }
     }
 
-    nonisolated(unsafe) static var defaults: UserDefaults = .standard
+    nonisolated(unsafe) static var defaults: UserDefaults = HeronDefaults.store
 
     static var pinned: Set<Stage> {
         get {

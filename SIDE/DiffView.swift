@@ -167,8 +167,8 @@ enum DiffLayout: String, CaseIterable {
 
     private static let key = "SideDiffLayout"
     static var preferred: DiffLayout {
-        get { UserDefaults.standard.string(forKey: key).flatMap(DiffLayout.init) ?? .unified }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
+        get { HeronDefaults.store.string(forKey: key).flatMap(DiffLayout.init) ?? .unified }
+        set { HeronDefaults.store.set(newValue.rawValue, forKey: key) }
     }
 }
 

@@ -18,7 +18,7 @@ final class LibraryTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         savedDefaults = ProjectRules.defaults
-        ProjectRules.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        ProjectRules.defaults = throwawayDefaults()
         savedPrompts = PromptLibrary.userDirectory
         PromptLibrary.userDirectory = base.appendingPathComponent("prompts")
     }

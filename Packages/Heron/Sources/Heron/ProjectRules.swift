@@ -17,7 +17,7 @@ public enum ProjectRules {
     /// Where this type persists. `.standard` in the app; tests point it at a private suite, because
     /// parallel test processes sharing one defaults domain lose each other's writes — the flake
     /// that showed up as an acknowledgement or a cache entry vanishing between two lines of a test.
-    public nonisolated(unsafe) static var defaults: UserDefaults = .standard
+    public nonisolated(unsafe) static var defaults: UserDefaults = HeronDefaults.store
 
     /// Searched in order, first match wins. `SIDE.md` is the native name; the others are read
     /// because a project that already tells *some* coding agent how to behave is telling this

@@ -557,7 +557,7 @@ final class LanguageSettingsTests: XCTestCase {
     private var settings: LanguageSettings!
 
     override func setUp() {
-        LanguageSettings.defaults = UserDefaults(suiteName: "side.tests.languages.\(UUID().uuidString)")!
+        LanguageSettings.defaults = throwawayDefaults()
         settings = LanguageSettings()
     }
 

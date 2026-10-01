@@ -163,7 +163,7 @@ while True:
     }
 
     func testBreakpointsFollowAnEdit() {
-        let store = BreakpointStore(project: folder, defaults: UserDefaults(suiteName: "side.tests.debug-budget.\(UUID().uuidString)")!)
+        let store = BreakpointStore(project: folder, defaults: throwawayDefaults())
         let buffer = TextBuffer(String(repeating: "let x = 1\n", count: 5_000))
         for line in stride(from: 0, to: 5_000, by: 5) { store.toggle(path: "/a.swift", line: line) }
         var samples: [Double] = []

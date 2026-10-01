@@ -23,7 +23,7 @@ final class ChromeTests: XCTestCase {
 
     func testAtLeastOneStageStaysPinnedAndPinsPersist() {
         let original = StagePins.defaults
-        StagePins.defaults = UserDefaults(suiteName: "ChromeTests-\(UUID().uuidString)")!
+        StagePins.defaults = throwawayDefaults()
         defer { StagePins.defaults = original }
         XCTAssertEqual(StagePins.pinned, Set(StagePins.pinnable), "default is everything")
         StagePins.pinned = [.think]

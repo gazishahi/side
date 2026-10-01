@@ -125,8 +125,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     static let minimapKey = "SideMinimapShown"
     /// Where Make keeps its view preferences: the person's, except under tests and UI testing,
     /// which share the app's domain and mustn't change what the person chose.
-    nonisolated(unsafe) static var preferences: UserDefaults = NSClassFromString("XCTestCase") == nil
-        ? .standard : UserDefaults(suiteName: "side.tests.make.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard
+    nonisolated(unsafe) static var preferences: UserDefaults = HeronDefaults.store
     private var minimapShown: Bool {
         get { EditorPreferences.minimapShown }
         set { EditorPreferences.minimapShown = newValue }
@@ -1290,13 +1289,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func rememberLastFile(_ fileURL: URL, forProject project: URL) {
         guard soleFile == nil else { return }
-        var map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String] ?? [:]
+        var map = HeronDefaults.store.dictionary(forKey: lastFilesByProjectKey) as? [String: String] ?? [:]
         map[compositeMemoryKey(for: project)] = fileURL.path
-        UserDefaults.standard.set(map, forKey: lastFilesByProjectKey)
+        HeronDefaults.store.set(map, forKey: lastFilesByProjectKey)
     }
 
     private func lastFile(forProject project: URL) -> URL? {
-        guard let map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String],
+        guard let map = HeronDefaults.store.dictionary(forKey: lastFilesByProjectKey) as? [String: String],
               let path = map[compositeMemoryKey(for: project)] else { return nil }
         return URL(fileURLWithPath: path)
     }
@@ -1312,18 +1311,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// content lives only in the buffer.
     private func rememberOpenTabs(forProject project: URL) {
         guard soleFile == nil else { return }
-        var map = UserDefaults.standard.dictionary(forKey: openTabsByProjectKey) as? [String: [String]] ?? [:]
+        var map = HeronDefaults.store.dictionary(forKey: openTabsByProjectKey) as? [String: [String]] ?? [:]
         let paths = openTabs.filter { !$0.isUntitled }.map(\.url.path)
         if paths.isEmpty {
             map.removeValue(forKey: compositeMemoryKey(for: project))
         } else {
             map[compositeMemoryKey(for: project)] = paths
         }
-        UserDefaults.standard.set(map, forKey: openTabsByProjectKey)
+        HeronDefaults.store.set(map, forKey: openTabsByProjectKey)
     }
 
     private func rememberedOpenTabs(forProject project: URL) -> [URL] {
-        guard let map = UserDefaults.standard.dictionary(forKey: openTabsByProjectKey) as? [String: [String]],
+        guard let map = HeronDefaults.store.dictionary(forKey: openTabsByProjectKey) as? [String: [String]],
               let paths = map[compositeMemoryKey(for: project)] else { return [] }
         return paths.map { URL(fileURLWithPath: $0) }
     }
@@ -1379,21 +1378,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// entry is dropped rather than left as permanent dead weight in the defaults dictionary.
     func forgetLastFile(forTrackKey trackKey: String?) {
         guard let projectURL else { return }
-        var map = UserDefaults.standard.dictionary(forKey: lastFilesByProjectKey) as? [String: String] ?? [:]
+        var map = HeronDefaults.store.dictionary(forKey: lastFilesByProjectKey) as? [String: String] ?? [:]
         map.removeValue(forKey: "\(projectURL.path)#\(trackKey ?? "")")
-        UserDefaults.standard.set(map, forKey: lastFilesByProjectKey)
+        HeronDefaults.store.set(map, forKey: lastFilesByProjectKey)
     }
 
     private func rememberRecentProject(_ project: URL) {
-        var recents = UserDefaults.standard.stringArray(forKey: recentProjectsKey) ?? []
+        var recents = HeronDefaults.store.stringArray(forKey: recentProjectsKey) ?? []
         recents.removeAll { $0 == project.path }
         recents.insert(project.path, at: 0)
         if recents.count > maxRecentProjects { recents.removeLast(recents.count - maxRecentProjects) }
-        UserDefaults.standard.set(recents, forKey: recentProjectsKey)
+        HeronDefaults.store.set(recents, forKey: recentProjectsKey)
     }
 
     private func recentProjects() -> [URL] {
-        let recents = UserDefaults.standard.stringArray(forKey: recentProjectsKey) ?? []
+        let recents = HeronDefaults.store.stringArray(forKey: recentProjectsKey) ?? []
         return recents.filter { $0 != projectURL?.path }.map { URL(fileURLWithPath: $0) }
     }
 
@@ -1552,7 +1551,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         currentTrackKey = nil
         emptyState.isHidden = true
         if !AppDelegate.isUITesting {
-            UserDefaults.standard.set(url.path, forKey: lastProjectKey)
+            HeronDefaults.store.set(url.path, forKey: lastProjectKey)
             rememberRecentProject(url)
         }
         LaunchSignposts.begin("projectOpened")
@@ -5144,7 +5143,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (path?.isEmpty == false) ? path : nil
     }
-    func restoreLastSessionIfAvailable() { guard let saved = UserDefaults.standard.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url) }
+    func restoreLastSessionIfAvailable() { guard let saved = HeronDefaults.store.string(forKey: lastProjectKey) else { return }; let url = URL(fileURLWithPath: saved); var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }; loadProject(at: url) }
 
     /// Entry point for cross-stage "open this file" requests (currently: clicking a
     /// file-path-shaped link in the Run stage's terminal output).

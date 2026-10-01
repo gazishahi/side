@@ -228,7 +228,7 @@ public final class ACPHarness: Harness {
     private var knownOptionsKey: String { "SideACPKnownOptions.\(agent.id)" }
 
     private func seededOptions() -> [HarnessOption] {
-        guard let data = UserDefaults.standard.data(forKey: knownOptionsKey),
+        guard let data = HeronDefaults.store.data(forKey: knownOptionsKey),
               var options = try? JSONDecoder().decode([HarnessOption].self, from: data) else { return [] }
         let preferred = preferredOptions()
         for index in options.indices {
@@ -241,7 +241,7 @@ public final class ACPHarness: Harness {
 
     private func rememberKnownOptions() {
         guard !agentOptions.isEmpty, let data = try? JSONEncoder().encode(agentOptions) else { return }
-        UserDefaults.standard.set(data, forKey: knownOptionsKey)
+        HeronDefaults.store.set(data, forKey: knownOptionsKey)
     }
 
     // MARK: Observation

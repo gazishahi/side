@@ -12,7 +12,7 @@ final class GitLaunchProbeTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         savedDefaults = GitLaunchProbe.defaults
-        GitLaunchProbe.defaults = UserDefaults(suiteName: "side-tests-\(UUID().uuidString)")!
+        GitLaunchProbe.defaults = throwawayDefaults()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("probe-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }

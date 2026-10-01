@@ -167,12 +167,12 @@ enum DS {
 
             static var current: Scale {
                 get {
-                    let stored = UserDefaults.standard.double(forKey: defaultsKey)
+                    let stored = HeronDefaults.store.double(forKey: defaultsKey)
                     return Scale(rawValue: stored) ?? .standard
                 }
                 set {
                     guard newValue != current else { return }
-                    UserDefaults.standard.set(newValue.rawValue, forKey: defaultsKey)
+                    HeronDefaults.store.set(newValue.rawValue, forKey: defaultsKey)
                     NotificationCenter.default.post(name: Text.scaleDidChangeNotification, object: nil)
                 }
             }
@@ -203,8 +203,7 @@ enum DS {
             /// Under XCTest, a store of this process's own: test classes run in parallel
             /// processes, and a size one sets mid-test must reach neither the other nor the
             /// person's real setting.
-            nonisolated(unsafe) static let defaults: UserDefaults = NSClassFromString("XCTestCase") == nil
-                ? .standard : UserDefaults(suiteName: "side.tests.code-size.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard
+            nonisolated(unsafe) static let defaults: UserDefaults = HeronDefaults.store
             private static func stored(_ key: String) -> CGFloat {
                 let value = defaults.double(forKey: key)
                 return value > 0 ? CGFloat(value) : standard
@@ -683,9 +682,9 @@ extension DS {
         nonisolated(unsafe) private static var lastKnownIsDark: Bool?
 
         static var preference: Preference {
-            get { UserDefaults.standard.string(forKey: preferenceKey).flatMap(Preference.init) ?? .system }
+            get { HeronDefaults.store.string(forKey: preferenceKey).flatMap(Preference.init) ?? .system }
             set {
-                UserDefaults.standard.set(newValue.rawValue, forKey: preferenceKey)
+                HeronDefaults.store.set(newValue.rawValue, forKey: preferenceKey)
                 apply()
             }
         }

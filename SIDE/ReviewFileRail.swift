@@ -1,12 +1,12 @@
 import AppKit
+import Heron
 
 /// Which files of a track's diff have been looked at (Review's "viewed" checks). A mark holds the
 /// file's diff as it was when marked: when the diff changes (the agent edited it again, or a
 /// different range is showing), the file is unviewed, because what was seen isn't what's there.
 struct ReviewViewedStore {
     /// Per process under tests, like the other preferences, so a test's marks reach no one.
-    nonisolated(unsafe) static var shared = ReviewViewedStore(defaults: NSClassFromString("XCTestCase") == nil
-        ? .standard : UserDefaults(suiteName: "side.tests.review-viewed.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard)
+    nonisolated(unsafe) static var shared = ReviewViewedStore(defaults: HeronDefaults.store)
 
     let defaults: UserDefaults
 

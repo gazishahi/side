@@ -802,8 +802,8 @@ final class ShellViewController: NSViewController {
         guard let window = view.window else { return }
         if !FirstRun.forced {
             guard !AppDelegate.isUITesting else { return }
-            let recents = (UserDefaults.standard.array(forKey: "side.recent-projects") as? [String]) ?? []
-            let hasRecents = !recents.isEmpty || UserDefaults.standard.string(forKey: "side.last-project-path") != nil
+            let recents = (HeronDefaults.store.array(forKey: "side.recent-projects") as? [String]) ?? []
+            let hasRecents = !recents.isEmpty || HeronDefaults.store.string(forKey: "side.last-project-path") != nil
             guard FirstRun.shouldPresent(dismissed: FirstRun.dismissed, hasRecentProjects: hasRecents, modelReady: FirstRun.modelReady) else { return }
         }
         firstRunActive = true

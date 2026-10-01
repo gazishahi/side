@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             GitPaths.worktreesSupportDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("SideUITests", isDirectory: true)
             let volatile = UserDefaults(suiteName: "side.uitesting.volatile") ?? .standard
             volatile.removePersistentDomain(forName: "side.uitesting.volatile")
+            HeronDefaults.store = volatile
             GitLaunchProbe.defaults = volatile
             ProjectRules.defaults = volatile
             MakeWorkspaceViewController.preferences = volatile

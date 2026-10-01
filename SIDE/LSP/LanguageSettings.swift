@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// How a language server is installed, if Side can offer to.
 enum LanguageInstall: Sendable, Equatable {
@@ -107,8 +108,7 @@ final class LanguageSettings: @unchecked Sendable {
     private static let customKey = "SideCustomLanguages"
 
     /// Under tests and UI testing, a suite of their own, as Make's preferences.
-    nonisolated(unsafe) static var defaults: UserDefaults = NSClassFromString("XCTestCase") == nil
-        ? .standard : UserDefaults(suiteName: "side.tests.languages.\(ProcessInfo.processInfo.processIdentifier)") ?? .standard
+    nonisolated(unsafe) static var defaults: UserDefaults = HeronDefaults.store
 
     private let lock = NSLock()
     private var choices: [String: LanguageChoice] = [:]
