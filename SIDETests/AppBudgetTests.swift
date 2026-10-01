@@ -80,6 +80,68 @@ final class AppBudgetTests: XCTestCase {
         return process.processIdentifier
     }
 
+    /// Memory stage by stage in a real project, as a person moves through it (SIDE_MEMORY_PROJECT,
+    /// and SIDE_MEMORY_FILES, paths in it separated by ':'; the first Markdown one is previewed).
+    /// Each step's footprint, its peak while sampled, and the largest categories go to
+    /// SIDE_MEMORY_OUT. Skipped without a project. Nothing in the project is changed.
+    func testMemoryThroughTheStages() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let project = env["SIDE_MEMORY_PROJECT"] else { throw XCTSkip("set SIDE_MEMORY_PROJECT") }
+        root = URL(fileURLWithPath: project)
+        let files = (env["SIDE_MEMORY_FILES"] ?? "").split(separator: ":").map(String.init)
+        let pid = try launch()
+        defer { root = nil }  // tearDown removes `root`: not this one
+        var report: [String] = []
+        func categories() -> String {
+            Budgets.run("/usr/bin/footprint", ["\(pid)"]).split(separator: "\n").dropFirst(5).prefix(5)
+                .map { $0.split(separator: " ").filter { !$0.isEmpty } }
+                .compactMap { f in f.count > 5 ? "\(f[0])\(f[1]) \(f[5...].joined(separator: " "))" : nil }.joined(separator: ", ")
+        }
+        func step(_ name: String, _ seconds: TimeInterval = 3, _ action: () -> Void = {}) {
+            action()
+            // The peak, and what it was made of when it was seen.
+            var peak = 0.0, atPeak = ""
+            let deadline = Date().addingTimeInterval(seconds)
+            while Date() < deadline {
+                let seen = Budgets.footprintMB(pid: pid)
+                if seen > peak + 10 { peak = seen; atPeak = categories() } else { peak = max(peak, seen) }
+                Budgets.settle(0.2)
+            }
+            let now = Budgets.footprintMB(pid: pid)
+            report.append(String(format: "%-34@ now %4.0f MB  peak %4.0f MB  | %@\n%38@at peak: %@", name as NSString, now, peak, categories(), "" as NSString, atPeak))
+            try? report.joined(separator: "\n").write(toFile: env["SIDE_MEMORY_OUT"] ?? "/tmp/side-memory.txt", atomically: true, encoding: .utf8)
+        }
+        step("launched, settled", 12)
+        for file in files where !file.hasSuffix(".md") {
+            step("Make: open \((file as NSString).lastPathComponent)", 3) { post("open \(project)/\(file)") }
+            step("Make: scrolled", 4) { post("scroll 30") }
+        }
+        if let markdown = files.first(where: { $0.hasSuffix(".md") }) {
+            step("Make: open \((markdown as NSString).lastPathComponent)", 3) { post("open \(project)/\(markdown)") }
+            step("Preview: shown", 3) { post("toggle-preview") }
+            step("Preview: scrolled", 6) { post("scroll 40") }
+            step("Preview: idle", 6)
+            step("Preview: hidden", 3) { post("toggle-preview") }
+        }
+        step("Review: shown", 8) { post("stage review") }
+        step("Review: scrolled", 8) { post("scroll 60") }
+        step("Review: idle", 6)
+        step("Make again, after Review", 10) { post("stage make") }
+        step("Think: shown", 5) { post("stage think") }
+        step("Run: shown", 6) { post("stage run") }
+        step("Run: output flood", 10) { post("run-type seq 1 300000\r") }
+        step("Run: idle", 10)
+        step("Make again, after Run", 10) { post("stage make") }
+        NSApp.activate(ignoringOtherApps: true)
+        step("background, 30 s", 30)
+        // For a look inside (heap, vmmap): the pid, and a pause while it's taken.
+        if let pause = env["SIDE_MEMORY_PAUSE"].flatMap(Double.init) {
+            try? "\(pid)".write(toFile: (env["SIDE_MEMORY_OUT"] ?? "/tmp/side-memory.txt") + ".pid", atomically: true, encoding: .utf8)
+            Budgets.settle(pause)
+        }
+        XCTAssertTrue(app?.isRunning ?? false, "Side is still running")
+    }
+
     /// Think streaming in the app, from a fake agent at a real agent's pace: thinking, four
     /// file reads, a long answer in small chunks, an update every 4 ms.
     func testStreamingInThink() throws {
