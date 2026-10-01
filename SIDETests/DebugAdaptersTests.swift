@@ -286,6 +286,79 @@ final class RealAdapterTests: XCTestCase {
         return printed.value
     }
 
+    /// A real project debugged the ways Side offers, recorded as it happens (SIDE_DEMO_REPO, a
+    /// copy is used; SIDE_DEMO_OUT): each session's states, children, what the program printed,
+    /// and what's still running after. For looking at, not asserting.
+    func testARealProjectsTimeline() async throws {
+        try skipUnlessAsked()
+        guard let demo = ProcessInfo.processInfo.environment["SIDE_DEMO_REPO"] else { throw XCTSkip("set SIDE_DEMO_REPO") }
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = Budgets.run("/bin/cp", ["-R", demo + "/.", root.path])
+        let breakpointFile = root.appendingPathComponent(ProcessInfo.processInfo.environment["SIDE_DEMO_BREAKPOINT_FILE"] ?? "src/greeter.ts")
+        let breakpointLine = Int(ProcessInfo.processInfo.environment["SIDE_DEMO_BREAKPOINT_LINE"] ?? "6") ?? 6
+        var report: [String] = []
+        for configuration in [DebugLaunch.npmScript("start", root: root), DebugLaunch.nodeFile(root.appendingPathComponent("src/index.js"), root: root)] {
+            let preset = DebugAdapters.jsDebug
+            let connection = try XCTUnwrap(DebugAdapters.connection(for: preset))
+            let store = BreakpointStore(project: root, defaults: throwawayDefaults())
+            store.toggle(path: breakpointFile.path, line: breakpointLine)
+            let start = CACurrentMediaTime()
+            let log = LockedBox<[String]>([])
+            let note: @Sendable (String) -> Void = { text in log.value.append(String(format: "%7.0f ms  ", (CACurrentMediaTime() - start) * 1000) + text) }
+            var sessions: [DebugSession] = []
+            var children: [Process] = []
+            func watch(_ session: DebugSession, _ name: String) {
+                session.onChange = { note("\(name): \(session.state)\(session.currentFrame.map { " at \($0.name):\($0.line)" } ?? "")") }
+                session.onOutput = { text, fromProgram in note("\(name) \(fromProgram ? "program" : "adapter"): " + text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)) }
+                session.runInTerminal = { arguments, directory, environment, _ in
+                    note("\(name) runInTerminal: " + arguments.joined(separator: " ").prefix(160))
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                    process.arguments = arguments
+                    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+                    let spawning = LanguageServerRegistry.environmentForSpawning()
+                    process.environment = ["PATH": spawning["PATH"] ?? "/usr/bin:/bin", "HOME": NSHomeDirectory(), "TERM": "xterm-256color"].merging(environment) { $1 }
+                    let pipe = Pipe()
+                    process.standardOutput = pipe
+                    process.standardError = pipe
+                    pipe.fileHandleForReading.readabilityHandler = { handle in
+                        let data = handle.availableData
+                        if data.isEmpty { handle.readabilityHandler = nil } else { note("\(name) terminal: " + String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)) }
+                    }
+                    guard (try? process.run()) != nil else { return nil }
+                    children.append(process)
+                    return process.processIdentifier
+                }
+                session.onStartChild = { request, arguments in
+                    note("\(name) starts a child: \(request)")
+                    var child = session.configuration
+                    child.request = request
+                    child.launchArguments = arguments
+                    let next = DebugSession(configuration: child, connection: .socket(port: session.port!), adapterID: preset.adapterID, breakpoints: store)
+                    watch(next, name + ".child\(sessions.count)")
+                    sessions.append(next)
+                    Task { await next.start() }
+                }
+            }
+            let session = DebugSession(configuration: configuration, connection: connection, adapterID: preset.adapterID, breakpoints: store)
+            watch(session, "root")
+            sessions.append(session)
+            await session.start()
+            let deadline = Date().addingTimeInterval(15)
+            func stopped(_ session: DebugSession) -> Bool { if case .stopped = session.state { return true } else { return false } }
+            while Date() < deadline, sessions.contains(where: \.isActive), !sessions.contains(where: stopped) { try await Task.sleep(nanoseconds: 50_000_000) }
+            note("verified: \(store.breakpoints(in: breakpointFile.path).map { "\($0.line + 1)=\($0.verified.map(String.init) ?? "nil")" })")
+            for session in sessions where session.isActive { session.stop() }
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+            note("still active: \(sessions.filter(\.isActive).count) of \(sessions.count); terminal processes still running: \(children.filter(\.isRunning).count) of \(children.count)")
+            note("processes on the copy: " + Budgets.run("/bin/sh", ["-c", "pgrep -fl \(root.lastPathComponent) || true"]).trimmingCharacters(in: .whitespacesAndNewlines))
+            children.filter(\.isRunning).forEach { $0.terminate() }
+            report.append("== \(configuration.name)\n" + log.value.joined(separator: "\n"))
+        }
+        try report.joined(separator: "\n\n").write(toFile: ProcessInfo.processInfo.environment["SIDE_DEMO_OUT"] ?? "/tmp/side-demo.txt", atomically: true, encoding: .utf8)
+    }
+
     private static let squares = "total 14"
 
     func testJsDebugOnTypeScript() async throws {

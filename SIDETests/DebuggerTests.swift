@@ -596,3 +596,20 @@ final class DebugInspectorKeyboardTests: XCTestCase {
         XCTAssertEqual(selectedFrame, 1, "arrowing to a frame selects it")
     }
 }
+
+/// 2026-10-01: a program that crashed at once (side-demo-repo: "Cannot find module './greeter'")
+/// looked like the debugger vanishing: its panel cleared away as after a clean end.
+@MainActor
+final class DebugFailureTests: XCTestCase {
+    func testTheBarSaysWhyAProgramEnded() {
+        XCTAssertEqual(MakeDebugger.failure(in: "Uncaught Error Error: Cannot find module './greeter'\nRequire stack:\n- /p/src/index.js\n"),
+                       "Error: Cannot find module './greeter'")
+        XCTAssertEqual(MakeDebugger.failure(in: "\nThe program exited with code 1.\n"), "exited with code 1")
+        XCTAssertNil(MakeDebugger.failure(in: "\nThe program exited with code 0.\n"))
+        XCTAssertEqual(MakeDebugger.failure(in: "Traceback (most recent call last):\n  File \"a.py\""), "raised an exception (see the terminal)")
+        XCTAssertNil(MakeDebugger.failure(in: "Hello, Side! You are 0 years old.\n"))
+        let bar = DebugBar(frame: .zero)
+        bar.show(.ended(nil), name: "npm run start", failure: "Error: Cannot find module './greeter'")
+        XCTAssertEqual(bar.statusTextForTesting, "Ended: Error: Cannot find module './greeter'")
+    }
+}

@@ -370,6 +370,7 @@ final class MakeDebugger {
     /// Runs a configuration under an adapter.
     func launch(_ configuration: DebugConfiguration, connection: DAPConnection, adapterID: String) {
         guard let breakpoints else { return }
+        programFailure = nil
         var configuration = configuration
         // The program's own terminal, a Run tab (the last session's is ended and replaced).
         // lldb-dap is given one up front; the others ask for one (`runInTerminal`).
@@ -409,6 +410,7 @@ final class MakeDebugger {
         session.onStopEvent = { [weak self] in self?.stopStarted = CFAbsoluteTimeGetCurrent() }
         session.onOutput = { [weak self] text, fromProgram in
             guard let self else { return }
+            if self.programFailure == nil { self.programFailure = Self.failure(in: text) }
             // What the program printed is in its terminal already (js-debug reports it too).
             if fromProgram, self.programTerminal != nil { return }
             self.inspector.append(output: text, style: fromProgram ? .program : .adapter)
@@ -484,8 +486,31 @@ final class MakeDebugger {
         launch(again, connection: lastLaunch.connection, adapterID: lastLaunch.adapterID)
     }
 
+    /// The program's first uncaught error this run, or a non-zero exit: what the bar says when
+    /// the session ends because of it.
+    private var programFailure: String?
+
+    /// The first line that says the program failed: an uncaught error, or a non-zero exit.
+    static func failure(in output: String) -> String? {
+        for line in output.split(whereSeparator: \.isNewline) {
+            let text = line.trimmingCharacters(in: .whitespaces)
+            if text.hasPrefix("Uncaught ") {
+                let error = text.dropFirst("Uncaught ".count)
+                // js-debug: "Uncaught Error Error: Cannot find module…" (the class, then the message).
+                if let colon = error.range(of: ": ") { return String(error[error.startIndex..<colon.lowerBound].split(separator: " ").last ?? "Error") + ": " + error[colon.upperBound...].prefix(160) }
+                return String(error.prefix(160))
+            }
+            if text.hasPrefix("The program exited with code "), let code = Int(text.dropFirst("The program exited with code ".count).dropLast()), code != 0 {
+                return "exited with code \(code)"
+            }
+            if text.hasPrefix("Traceback (most recent call last)") { return "raised an exception (see the terminal)" }
+            if text.hasPrefix("panic: ") { return String(text.prefix(160)) }
+        }
+        return nil
+    }
+
     private func sessionChanged(_ session: DebugSession) {
-        bar.show(session.state, name: session.configuration.name)
+        bar.show(session.state, name: session.configuration.name, failure: programFailure)
         if !session.isStopped {
             snapshotLocals = []
             snapshotException = nil
@@ -511,8 +536,9 @@ final class MakeDebugger {
             programTerminal?.end()
             refreshEditor()
             // A session that ended quietly clears away; one with something to say stays until
-            // closed (the bar's stop).
-            if message == nil {
+            // closed (the bar's stop). A program that crashed has something to say: it went as
+            // if the debugger had vanished, the reason only in the terminal (2026-10-01).
+            if message == nil, programFailure == nil {
                 let work = DispatchWorkItem { [weak self] in self?.hideUI() }
                 hideAfterEnd = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)

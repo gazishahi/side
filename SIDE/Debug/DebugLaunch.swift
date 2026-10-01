@@ -132,7 +132,14 @@ extension DebugLaunch {
         DebugConfiguration(name: file.lastPathComponent, adapter: DebugAdapters.jsDebug.id, launchArguments: [
             "type": "pwa-node", "request": "launch", "name": .string(file.lastPathComponent),
             "program": .string(file.path), "cwd": .string(root.path), "console": "integratedTerminal",
-        ], directory: root.path)
+        ].merging(nodeQuiet(root)) { $1 }, directory: root.path)
+    }
+
+    /// Source maps looked for in the project only, and Node's own code stepped over: under `npm
+    /// run`, js-debug debugs npm itself, and said "Could not read source map" for each of its
+    /// files (2026-10-01, side-demo-repo).
+    nonisolated static func nodeQuiet(_ root: URL) -> [String: LSPValue] {
+        ["resolveSourceMapLocations": [.string(root.path + "/**"), "!**/node_modules/**"], "skipFiles": ["<node_internals>/**"]]
     }
 
     nonisolated static func npmScripts(in root: URL) -> [String] {
@@ -146,7 +153,7 @@ extension DebugLaunch {
         DebugConfiguration(name: "npm run \(script)", adapter: DebugAdapters.jsDebug.id, launchArguments: [
             "type": "pwa-node", "request": "launch", "name": .string("npm run \(script)"),
             "runtimeExecutable": "npm", "runtimeArgs": ["run", .string(script)], "cwd": .string(root.path), "console": "integratedTerminal",
-        ], directory: root.path)
+        ].merging(nodeQuiet(root)) { $1 }, directory: root.path)
     }
 
     /// A Python file with the project's interpreter: its `.venv` or `venv`, else `python3`.

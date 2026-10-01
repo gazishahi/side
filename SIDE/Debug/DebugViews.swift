@@ -82,7 +82,7 @@ final class DebugBar: NSView {
     }
 
     /// Shows what the session is doing: which controls apply, and a line of status.
-    func show(_ state: DebugSession.State, name: String) {
+    func show(_ state: DebugSession.State, name: String, failure: String? = nil) {
         let stopped: Bool
         switch state {
         case .building: statusLabel.stringValue = "Building \(name)\u{2026}"; stopped = false
@@ -94,8 +94,17 @@ final class DebugBar: NSView {
             stopped = true
         case .ended(let message):
             // The whole message is in the console; the bar says it in a few words.
-            statusLabel.stringValue = message.map { _ in "Couldn\u{2019}t run \(name): see the console" } ?? "Ended"
-            statusLabel.toolTip = message
+            if let message {
+                statusLabel.stringValue = "Couldn\u{2019}t run \(name): see the console"
+                statusLabel.toolTip = message
+            } else if let failure {
+                // The program itself failed (a crash, a non-zero exit): say so, not just "Ended".
+                statusLabel.stringValue = "Ended: " + failure
+                statusLabel.toolTip = failure
+            } else {
+                statusLabel.stringValue = "Ended"
+                statusLabel.toolTip = nil
+            }
             stopped = false
         }
         let label = stopped ? "Continue" : "Pause"
@@ -106,6 +115,8 @@ final class DebugBar: NSView {
         pauseContinue.isEnabled = stopped || running
         [stepOver, stepIn, stepOut].forEach { $0.isEnabled = stopped }
     }
+
+    var statusTextForTesting: String { statusLabel.stringValue }
 
     static func describe(_ reason: String) -> String {
         switch reason {
