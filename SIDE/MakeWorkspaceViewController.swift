@@ -4977,6 +4977,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let process = Process()
+            process.environment = SpawnEnvironment.current()
             process.executableURL = URL(fileURLWithPath: formatter.executable)
             process.arguments = formatter.args
             // The null device, not a `Pipe()` nobody reads: a formatter that wrote more than 64 KB
@@ -5243,6 +5244,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private static func uncachedWhich(_ tool: String) -> String? {
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["which", tool]
         let pipe = Pipe()

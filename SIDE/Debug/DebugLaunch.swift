@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// What Side proposes to debug when a project doesn't say (SIDE_RFC_DEBUGGER.md, Q3), and the
 /// adapter that debugs it. Step 1: a Swift package's executables under lldb-dap.
@@ -7,6 +8,7 @@ enum DebugLaunch {
     nonisolated static func lldbDAP() -> URL? {
         if let cached = cachedAdapter.withLock({ $0 }) { return cached }
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         process.arguments = ["--find", "lldb-dap"]
         let pipe = Pipe()

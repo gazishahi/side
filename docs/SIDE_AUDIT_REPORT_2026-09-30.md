@@ -505,6 +505,9 @@ Each fix should come with the test that would have caught it; several of these b
 - **UX-6, fixed.** The debugger inspector works from the keyboard: arrowing selects a frame, Return reveals a breakpoint or loads more variables, Delete removes a breakpoint or watch, menu commands act on the selected row; VoiceOver has each row's actions.
 - **UX-8, fixed.** Text size reaches every window: `TextScaleFollower` scales fonts and table row heights of the views that don't restyle themselves, hidden stages and cached Settings panes included.
 - **UX-9, fixed.** Increase Contrast is followed: surfaces further apart (canvas against raised 1.09 → 1.36 dark, 1.10 → 1.24 light), hairlines 45% (about 3:1 or better), the strong ones 60%.
+- **SEC-11, fixed.** A project's own code (its tsserver, rust-analyzer's build scripts and proc macros, a local Prettier) runs only once the project is trusted; Make asks with a banner, per repository.
+- **SEC-10, fixed.** Below Full, a fetch from a host not approved before in the conversation asks first.
+- **SEC-14, fixed.** Every child Side starts gets one environment without secrets (`SpawnEnvironment`: names with API_KEY, TOKEN, SECRET, PASSWORD, CREDENTIAL, ACCESS_KEY, PRIVATE_KEY): language servers, adapters and their programs, formatters, git, builds, installers, outside agents. gh keeps its own token variables; an outside agent in API-key mode still gets its key, from Side's environment if it isn't stored. The terminal keeps the person's environment. Tests: a key exported to Side doesn't reach git, a build or an adapter.
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - H15: CI for the app's tests.

@@ -132,9 +132,12 @@ public struct ACPAgent: Equatable, Sendable, Codable {
     /// The environment to launch the agent with, from the app's spawn environment. Subscription:
     /// every key variable removed, so the agent uses its login. API key: the stored key (or,
     /// without one, a key already in the environment) in the first variable, the rest removed.
+    /// The base is usually `SpawnEnvironment`'s, which has no keys in it, so a key already there
+    /// is looked for in Side's own environment too.
     public func launchEnvironment(from base: [String: String]) -> [String: String] {
         var environment = base
-        let inherited = apiKeyVariables.lazy.compactMap { base[$0] }.first { !$0.isEmpty }
+        let own = ProcessInfo.processInfo.environment
+        let inherited = apiKeyVariables.lazy.compactMap { base[$0] ?? own[$0] }.first { !$0.isEmpty }
         for name in apiKeyVariables { environment.removeValue(forKey: name) }
         if signIn == .apiKey, let variable = apiKeyVariables.first, let key = storedAPIKey ?? inherited {
             environment[variable] = key

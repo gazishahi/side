@@ -1030,6 +1030,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     private static func descendantPIDs(of rootPID: pid_t) -> [pid_t] {
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = ["-eo", "pid,ppid"]
         let pipe = Pipe()

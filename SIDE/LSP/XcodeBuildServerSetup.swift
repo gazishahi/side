@@ -49,6 +49,7 @@ enum XcodeBuildServerSetup {
                 return
             }
             let process = Process()
+            process.environment = SpawnEnvironment.current()
             process.executableURL = serverBinary
             process.arguments = ["config"] + projectFlag + ["-scheme", scheme]
             process.currentDirectoryURL = projectRoot
@@ -69,6 +70,7 @@ enum XcodeBuildServerSetup {
 
     private static func resolveScheme(preferring name: String, projectFlag: [String], cwd: URL) -> String? {
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcodebuild")
         process.arguments = projectFlag + ["-list", "-json"]
         process.currentDirectoryURL = cwd

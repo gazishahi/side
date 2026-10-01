@@ -125,6 +125,7 @@ final class LSPInstallPopoverViewController: NSViewController {
         messageLabel.stringValue = "Installing \(name) with \(install.tool)…"
 
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lic", install.command]
         let pipe = Pipe()

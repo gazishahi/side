@@ -720,6 +720,7 @@ final class TrackStore {
 
     nonisolated private static func directorySizeBytes(at path: String) -> Int? {
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
         process.arguments = ["-sk", path]
         let pipe = Pipe()
@@ -1120,6 +1121,7 @@ final class TrackStore {
     /// merely enabling it.
     nonisolated private func runGit(_ args: [String], cwd: String) -> (success: Bool, output: String) {
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git"] + args
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)

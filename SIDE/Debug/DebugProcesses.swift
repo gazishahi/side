@@ -1,4 +1,5 @@
 import Foundation
+import Heron
 
 /// The person's running processes, to attach the debugger to (SIDE_RFC_DEBUGGER.md, Q3).
 enum DebugProcesses {
@@ -14,6 +15,7 @@ enum DebugProcesses {
     /// not Side itself. Sorted by name. Blocking: call off the main thread.
     nonisolated static func list(projectRoot: URL? = nil) -> [Entry] {
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = ["-U", String(getuid()), "-o", "pid=,comm="]
         let pipe = Pipe()

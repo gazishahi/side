@@ -47,7 +47,7 @@ enum GitHubCLI {
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        var environment = LanguageServerRegistry.environmentForSpawning()
+        var environment = LanguageServerRegistry.environmentForSpawning(keeping: ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"])
         environment["GH_PROMPT_DISABLED"] = "1"
         environment["NO_COLOR"] = "1"
         process.environment = environment

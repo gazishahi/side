@@ -1,5 +1,6 @@
 import AlloyCore
 import Foundation
+import Heron
 
 // MARK: What a stopped program looks like
 
@@ -773,8 +774,11 @@ final class DebugSession {
                 posix_spawnattr_setsigdefault(&attributes, &allSignals)
                 let arguments: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/zsh"), strdup("-lc"), strdup(command), nil]
                 var pid: pid_t = 0
-                let spawned = posix_spawn(&pid, "/bin/zsh", &actions, &attributes, arguments, environ)
+                // Side's environment without its secrets (SpawnEnvironment), not `environ`.
+                let environment: [UnsafeMutablePointer<CChar>?] = SpawnEnvironment.current().map { strdup("\($0.key)=\($0.value)") } + [nil]
+                let spawned = posix_spawn(&pid, "/bin/zsh", &actions, &attributes, arguments, environment)
                 arguments.forEach { free($0) }
+                environment.forEach { free($0) }
                 posix_spawn_file_actions_destroy(&actions)
                 posix_spawnattr_destroy(&attributes)
                 close(pipe[1])

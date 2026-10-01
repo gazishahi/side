@@ -68,6 +68,7 @@ enum LanguageServerRegistry {
         if let cached = cacheLock.withLock({ globalNpmRootCache }) { return cached }
         let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: shellPath)
         process.arguments = ["-lic", "npm root -g"]
         let stdout = Pipe()
@@ -103,9 +104,9 @@ enum LanguageServerRegistry {
     /// (no Homebrew, no nvm, etc.), so `env: node: No such file or directory` kills the server
     /// immediately after spawn — which surfaces here only as a generic "notRunning" failure,
     /// not the underlying reason. Build a spawn environment with the login shell's real PATH
-    /// merged in so the shebang line actually resolves.
-    static func environmentForSpawning() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
+    /// merged in so the shebang line actually resolves. Without secrets (`SpawnEnvironment`).
+    static func environmentForSpawning(keeping: Set<String> = []) -> [String: String] {
+        var environment = SpawnEnvironment.current(keeping: keeping)
         if let path = resolveLoginShellPATH() {
             environment["PATH"] = path
         }
@@ -116,6 +117,7 @@ enum LanguageServerRegistry {
         if let cached = cacheLock.withLock({ loginShellPATHCache }) { return cached }
         let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: shellPath)
         process.arguments = ["-lic", "echo $PATH"]
         let stdout = Pipe()
@@ -204,6 +206,7 @@ enum LanguageServerRegistry {
     private static func runShell(_ command: String) -> String? {
         let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
+        process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: shellPath)
         process.arguments = ["-lic", command]
         let stdout = Pipe()

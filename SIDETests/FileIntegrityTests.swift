@@ -317,3 +317,48 @@ final class ProjectTrustTests: XCTestCase {
         XCTAssertNil(make.trustBannerTextForTesting, "trusted: the banner goes")
     }
 }
+
+/// SEC-14 (2026-09-30 audit): a key in Side's environment doesn't reach the processes it starts.
+final class SpawnEnvironmentTests: XCTestCase {
+    private let names = ["ANTHROPIC_API_KEY", "GH_TOKEN"]
+
+    override func setUp() {
+        super.setUp()
+        for name in names { setenv(name, "side-test-\(name)", 1) }
+    }
+
+    override func tearDown() {
+        for name in names { unsetenv(name) }
+        super.tearDown()
+    }
+
+    func testLanguageServersAndAdaptersGetNoKeys() {
+        XCTAssertNil(LanguageServerRegistry.environmentForSpawning()["ANTHROPIC_API_KEY"])
+        XCTAssertNil(DebugSession.adapterEnvironment()["GH_TOKEN"])
+        XCTAssertNotNil(LanguageServerRegistry.environmentForSpawning()["PATH"])
+        XCTAssertEqual(LanguageServerRegistry.environmentForSpawning(keeping: ["GH_TOKEN"])["GH_TOKEN"], "side-test-GH_TOKEN", "gh keeps its own")
+    }
+
+    /// A build is a shell Side starts: the key isn't in it.
+    func testABuildGetsNoKeys() async {
+        let (status, output) = await DebugSession.run("printenv ANTHROPIC_API_KEY; echo done", in: NSTemporaryDirectory())
+        XCTAssertEqual(status, 0)
+        XCTAssertEqual(output.trimmingCharacters(in: .whitespacesAndNewlines), "done")
+    }
+
+    /// An outside agent in API-key mode still finds a key exported to Side; in Subscription
+    /// mode it gets none.
+    func testAnAgentGetsOnlyItsOwnKeyInAPIKeyMode() {
+        let agent = ACPAgent.builtIn.first { $0.id == "claude-code" }!
+        let saved = agent.signIn
+        defer { agent.signIn = saved }
+        let base = LanguageServerRegistry.environmentForSpawning()
+        agent.signIn = .subscription
+        XCTAssertNil(agent.launchEnvironment(from: base)["ANTHROPIC_API_KEY"])
+        agent.signIn = .apiKey
+        if agent.storedAPIKey == nil {
+            XCTAssertEqual(agent.launchEnvironment(from: base)["ANTHROPIC_API_KEY"], "side-test-ANTHROPIC_API_KEY")
+        }
+        XCTAssertNil(agent.launchEnvironment(from: base)["GH_TOKEN"])
+    }
+}
