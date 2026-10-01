@@ -19,6 +19,20 @@ final class SideTerminalView: LocalProcessTerminalView {
     private var currentLineBuffer = ""
     private var accessibilityUpdateWorkItem: DispatchWorkItem?
 
+    /// Whether VoiceOver is on, kept by observing it: asking NSWorkspace on every read of output
+    /// was 5% of Run's CPU under a flood.
+    @MainActor private final class VoiceOverState {
+        private(set) var isOn = NSWorkspace.shared.isVoiceOverEnabled
+        private var observation: NSKeyValueObservation?
+        init() {
+            observation = NSWorkspace.shared.observe(\.isVoiceOverEnabled, options: [.new]) { [weak self] _, change in
+                guard let on = change.newValue else { return }
+                DispatchQueue.main.async { self?.isOn = on }
+            }
+        }
+    }
+    private static let voiceOver = VoiceOverState()
+
     override func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         if onFileLinkRequested?(link) == true { return }
         super.requestOpenLink(source: source, link: link, params: params)
@@ -48,8 +62,28 @@ final class SideTerminalView: LocalProcessTerminalView {
     override func dataReceived(slice: ArraySlice<UInt8>) {
         onDataReceived?()
         onRawDataReceived?(slice)
+        receiving = true
         super.dataReceived(slice: slice)
+        receiving = false
         scheduleAccessibilityValueUpdate()
+        followOutput()
+    }
+
+    /// Once a turn of the run loop, however many reads it delivered: output arrives in small
+    /// reads, and following each one was still a third of Run's main thread under a flood.
+    private func followOutput() {
+        guard !followScheduled else { return }
+        followScheduled = true
+        DispatchQueue.main.async { [weak self] in self?.followNow() }
+    }
+
+    private func followNow() {
+        followScheduled = false
+        if scrolledWhileReceiving {
+            scrolledWhileReceiving = false
+            super.scrolled(source: terminal, yDisp: terminal.buffer.yDisp)
+            updateThumb()
+        }
         syncScrollerVisibility()
     }
 
@@ -99,7 +133,12 @@ final class SideTerminalView: LocalProcessTerminalView {
         }
     }
 
+    /// Output scrolls the terminal once a line: the scroller and thumb follow it afterwards, in
+    /// `followOutput` (a fifth of Run's CPU under a flood of output went to following every line).
+    private var receiving = false, scrolledWhileReceiving = false, followScheduled = false
+
     override func scrolled(source terminal: Terminal, yDisp: Int) {
+        if receiving { scrolledWhileReceiving = true; return }
         super.scrolled(source: terminal, yDisp: yDisp)
         updateThumb()
     }
@@ -157,7 +196,7 @@ final class SideTerminalView: LocalProcessTerminalView {
     /// VoiceOver stutter over its own announcements. Coalesced to one notification per quiet
     /// moment, which is also when the text is worth reading.
     private func scheduleAccessibilityValueUpdate() {
-        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        guard Self.voiceOver.isOn else { return }
         accessibilityUpdateWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -225,14 +264,30 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// walked the whole buffer, grapheme by grapheme, for each kilobyte a command printed, and
     /// a command with a lot of output ran at a core's worth of Side's CPU, slower than it could
     /// print (2026-09-30, the Run budget). What's kept is at least the last cap's worth.
-    private static func boundedAppend(_ existing: String, _ addition: String) -> String {
-        let combined = existing + addition
-        guard combined.utf8.count > maxCommandBufferCharacters * 2 else { return combined }
-        let utf8 = combined.utf8
+    /// In place: a buffer the caller still shares is copied whole on every append.
+    private static func boundedAppend(_ buffer: inout String, _ addition: String) {
+        buffer += addition
+        guard buffer.utf8.count > maxCommandBufferCharacters * 2 else { return }
+        let utf8 = buffer.utf8
         var start = utf8.index(utf8.endIndex, offsetBy: -maxCommandBufferCharacters)
         // On a scalar's first byte, so the cut never splits one.
-        while start < utf8.endIndex, start.samePosition(in: combined.unicodeScalars) == nil { start = utf8.index(after: start) }
-        return String(combined[start...])
+        while start < utf8.endIndex, start.samePosition(in: buffer.unicodeScalars) == nil { start = utf8.index(after: start) }
+        buffer = String(buffer[start...])
+    }
+
+    /// The first `needle` in `text` at or after `from`, compared as UTF-8 bytes. Foundation's
+    /// `range(of:)` compares Characters, and under a flood of output it was a quarter of Run's
+    /// CPU even over only the new text. The marks are ASCII, so a byte match is a mark.
+    static func utf8Range(of needle: String, in text: String, from: String.Index) -> Range<String.Index>? {
+        let bytes = text.utf8, pattern = needle.utf8
+        guard let first = pattern.first else { return nil }
+        var from = from
+        while let hit = bytes[from...].firstIndex(of: first) {
+            guard let end = bytes.index(hit, offsetBy: pattern.count, limitedBy: bytes.endIndex) else { return nil }
+            if bytes[hit..<end].elementsEqual(pattern) { return hit..<end }
+            from = bytes.index(after: hit)
+        }
+        return nil
     }
 
     /// Where a search for a mark needs to start after `chunk` was appended: the new text, and
@@ -657,10 +712,13 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         }
         guard var pending = pendingAgentCommand else { return }
         if pending.usesMarks {
-            let step = Self.advanceMarkedCapture(buffer: pending.buffer, outputStarted: pending.outputStarted, chunk: chunk, nonce: markNonce)
-            pending.buffer = step.buffer
-            pending.outputStarted = step.outputStarted
-            guard let finished = step.finished else {
+            // The buffer taken out of both copies of `pending`, so appending to it doesn't copy it.
+            var buffer = pending.buffer
+            pending.buffer = ""
+            pendingAgentCommand?.buffer = ""
+            let finished = Self.advanceMarkedCapture(buffer: &buffer, outputStarted: &pending.outputStarted, chunk: chunk, nonce: markNonce)
+            pending.buffer = buffer
+            guard let finished else {
                 pendingAgentCommand = pending
                 return
             }
@@ -673,7 +731,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // stream mid-token, which can split the sentinel across escape sequences and make a
         // whole-buffer substring search miss it even though the rendered terminal shows the
         // sentinel as one clean, contiguous line.
-        pending.buffer = Self.boundedAppend(pending.buffer, Self.stripANSI(String(decoding: slice, as: UTF8.self)))
+        Self.boundedAppend(&pending.buffer, Self.stripANSI(String(decoding: slice, as: UTF8.self)))
 
         // Scan for `<sentinel>:<digits>` rather than reasoning about line structure.
         //
@@ -757,16 +815,20 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     }
 
     static func advanceMarkedCapture(buffer: String, outputStarted: Bool, chunk: String, nonce: String) -> MarkedCaptureStep {
-        var buffer = boundedAppend(buffer, chunk)
-        var outputStarted = outputStarted
+        var buffer = buffer, outputStarted = outputStarted
+        let finished = advanceMarkedCapture(buffer: &buffer, outputStarted: &outputStarted, chunk: chunk, nonce: nonce)
+        return MarkedCaptureStep(buffer: buffer, outputStarted: outputStarted, finished: finished)
+    }
+
+    /// The same, in place; non-nil once finished.
+    static func advanceMarkedCapture(buffer: inout String, outputStarted: inout Bool, chunk: String, nonce: String) -> String? {
+        boundedAppend(&buffer, chunk)
         var startedNow = false
         // Only the new text is searched (see `searchStart`): searching the whole buffer again
         // for every chunk was most of Run's CPU under a flood of output.
         let fresh = searchStart(in: buffer, afterAppending: chunk)
         if !outputStarted {
-            guard let start = buffer.range(of: markPrefix + "C" + markTerminator, range: fresh..<buffer.endIndex) else {
-                return MarkedCaptureStep(buffer: buffer, outputStarted: false, finished: nil)
-            }
+            guard let start = utf8Range(of: markPrefix + "C" + markTerminator, in: buffer, from: fresh) else { return nil }
             outputStarted = true
             startedNow = true
             buffer = String(buffer[start.upperBound...])
@@ -779,13 +841,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         var searchFrom = startedNow ? buffer.startIndex : fresh
         var doneRange: Range<String.Index>?
         var exitCode = 0
-        while let candidate = buffer.range(of: markPrefix + "D;", range: searchFrom..<buffer.endIndex) {
-            let afterDone = buffer[candidate.upperBound...]
-            guard let terminator = afterDone.range(of: markTerminator) else {
-                // Still arriving — could be ours; wait for the rest.
-                return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: nil)
-            }
-            let payload = afterDone[afterDone.startIndex..<terminator.lowerBound].split(separator: ";", omittingEmptySubsequences: false)
+        while let candidate = utf8Range(of: markPrefix + "D;", in: buffer, from: searchFrom) {
+            // Still arriving — could be ours; wait for the rest.
+            guard let terminator = utf8Range(of: markTerminator, in: buffer, from: candidate.upperBound) else { return nil }
+            let payload = buffer[candidate.upperBound..<terminator.lowerBound].split(separator: ";", omittingEmptySubsequences: false)
             if payload.count == 2, payload[1] == nonce, let code = Int(payload[0]) {
                 doneRange = candidate
                 exitCode = code
@@ -793,9 +852,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             }
             searchFrom = terminator.upperBound
         }
-        guard let doneRange else {
-            return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: nil)
-        }
+        guard let doneRange else { return nil }
         var output = strippingPromptEOLMark(
             stripANSI(String(buffer[buffer.startIndex..<doneRange.lowerBound]))
         ).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -804,7 +861,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // not tell", and a verification record that guesses from output text would produce false
         // verdicts about whether the project works.
         output += "\n[exit code: \(exitCode)]"
-        return MarkedCaptureStep(buffer: buffer, outputStarted: true, finished: output)
+        return output
     }
 
     /// What the model should see: the command's own output, with the wrapper's echoed sentinel
@@ -1060,13 +1117,12 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         let text = carry + chunk
         var marks: [CommandMark] = []
         var searchFrom = text.startIndex
-        while let prefix = text.range(of: markPrefix, range: searchFrom..<text.endIndex) {
-            let after = text[prefix.upperBound...]
-            guard let terminator = after.range(of: markTerminator) else {
+        while let prefix = utf8Range(of: markPrefix, in: text, from: searchFrom) {
+            guard let terminator = utf8Range(of: markTerminator, in: text, from: prefix.upperBound) else {
                 // Still arriving: keep it (bounded) for the next read.
                 return (String(text[prefix.lowerBound...].suffix(256)), marks)
             }
-            let body = after[after.startIndex..<terminator.lowerBound]
+            let body = text[prefix.upperBound..<terminator.lowerBound]
             if body == "C" {
                 marks.append(.started)
             } else if body.hasPrefix("D;") {
