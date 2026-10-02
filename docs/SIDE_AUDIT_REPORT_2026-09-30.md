@@ -513,6 +513,7 @@ Each fix should come with the test that would have caught it; several of these b
 - **Timing limits** of `testMarkdownPreviewSwitchesQuickly` and `testTheInspectorPagesABigArray` apply only with `SIDE_BUDGETS=1`.
 - **REL-1, fixed.** `release.sh` stops before deleting or building anything unless it read a real version and build number.
 - **REL-2, fixed.** Side checks for git (any developer directory, no process run) before every git call. Without it, git isn't run (so macOS's dialog doesn't appear unasked); Tracks, Think, Review and first run say git is missing and offer Install Git…, which explains and then opens macOS's installer.
+- **HER-6 / PRV-3, fixed.** A reply that ends without its end (Stop, a stall, an error, a dropped connection) is counted in Usage and the budget: its input as `message_start` gave it, its output estimated from what streamed (`usageWithoutEnd`). Compaction's request, which counted nothing, is counted too. OpenAI-compatible servers send usage only at the end, so a stopped reply there still counts nothing. Tests: a stopped reply and one cut off by an error are each one request with its real input.
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - H15: CI for the app's tests.

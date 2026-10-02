@@ -1184,7 +1184,17 @@ public final class AgentRunner {
                 // instruction asks for text, and only text is collected.
                 try await provider.streamTurn(messages: messages, system: systemPrompt, tools: tools) { event in
                     if case .textDelta(let delta) = event { collector.append(delta) }
-                    DispatchQueue.main.async { self?.armStallWatchdog() }
+                    // A summary is billed like any reply, finished or not; it used to count $0.
+                    let usage: TokenUsage?
+                    switch event {
+                    case .messageEnd(_, let ended): usage = ended
+                    case .usageWithoutEnd(let unfinished): usage = unfinished
+                    default: usage = nil
+                    }
+                    DispatchQueue.main.async {
+                        if let usage { self?.recordUsage(usage, measuresContext: false) }
+                        self?.armStallWatchdog()
+                    }
                 }
             } catch {
                 failure = error
@@ -1490,20 +1500,30 @@ public final class AgentRunner {
             // Every round trip is billed separately, so this accumulates per streamed turn
             // rather than per user message — a reply that chains four tool calls reports four
             // times, which is what the provider actually charges for.
-            if let usage {
-                // Kept for the context gauge: a measured count beats an estimate, and the next
-                // request is this conversation plus a little.
-                lastReportedInputTokens = usage.promptTokens
-                // Persisted, so the gauge doesn't silently fall back to the lower estimate
-                // after a relaunch and report a different percentage for the same conversation.
-                sessionStore.recordReportedInputTokens(lastReportedInputTokens, forTrackKey: trackKey)
-                usageStore.record(
-                    projectPath: projectPath, trackKey: trackKey,
-                    providerId: activeProviderId,
-                    modelId: activeModelId, usage: usage
-                )
-            }
+            if let usage { recordUsage(usage, measuresContext: true) }
+        case .usageWithoutEnd(let usage):
+            // Stopped, stalled or cut off, and billed all the same (HER-6 / PRV-3).
+            recordUsage(usage, measuresContext: true)
         }
+    }
+
+    /// One round trip's cost into Usage (and so the budget). `measuresContext`: its input is
+    /// this conversation's size, for the context gauge; a compaction request's isn't what the
+    /// conversation will be after it.
+    private func recordUsage(_ usage: TokenUsage, measuresContext: Bool) {
+        if measuresContext {
+            // Kept for the context gauge: a measured count beats an estimate, and the next
+            // request is this conversation plus a little.
+            lastReportedInputTokens = usage.promptTokens
+            // Persisted, so the gauge doesn't silently fall back to the lower estimate
+            // after a relaunch and report a different percentage for the same conversation.
+            sessionStore.recordReportedInputTokens(lastReportedInputTokens, forTrackKey: trackKey)
+        }
+        usageStore.record(
+            projectPath: projectPath, trackKey: trackKey,
+            providerId: activeProviderId,
+            modelId: activeModelId, usage: usage
+        )
     }
 
     // MARK: - Streaming edit previews
