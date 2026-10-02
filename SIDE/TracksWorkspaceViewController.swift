@@ -44,6 +44,15 @@ final class TracksWorkspaceViewController: NSViewController {
     private let contentStack = NSStackView()
 
     private let newTrackButton = NSButton(title: "New Track", target: nil, action: nil)
+    private let freeButton = NSButton(title: "Free Unused Working Copies\u{2026}", target: nil, action: nil)
+    /// The tracks windows show or agents are working in, which cleanup leaves (from the shell).
+    var tracksInUse: () -> Set<String> = { [] }
+    /// A track was archived or completed here: the shell sweeps what it can.
+    var onSetAside: (() -> Void)?
+    /// The idle-parked offer, once dismissed or taken, stays away for this session.
+    private var idleOfferDismissed = false
+    /// "Kept …" is said once per track and reason, not on every sweep.
+    private var announcedKept: Set<String> = []
     /// Filters intent and branch — archived tracks included (constitution: "search retrieves
     /// archived work").
     private let searchField = NSSearchField()
@@ -195,7 +204,12 @@ final class TracksWorkspaceViewController: NSViewController {
         topControlsRow.orientation = .horizontal
         topControlsRow.alignment = .centerY
         topControlsRow.spacing = DS.Spacing.xl
-        [newTrackButton, searchField, showArchivedButton, archivedCountLabel, statusLabel].forEach(topControlsRow.addArrangedSubview)
+        freeButton.bezelStyle = .rounded
+        freeButton.controlSize = .small
+        freeButton.target = self
+        freeButton.action = #selector(freeUnusedTapped)
+        freeButton.toolTip = "Removes the folders of tracks nobody is on. Each comes back from its branch when you switch to it."
+        [newTrackButton, searchField, showArchivedButton, archivedCountLabel, freeButton, statusLabel].forEach(topControlsRow.addArrangedSubview)
 
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
@@ -430,6 +444,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let hasProject = trackStore != nil
         let isRepo = hasProject && trackStore?.repoState != .notAGitRepo
         newTrackButton.isEnabled = isRepo
+        freeButton.isEnabled = isRepo
         searchField.isEnabled = isRepo
         showArchivedButton.isEnabled = isRepo
         guard hasProject else {
@@ -451,6 +466,17 @@ final class TracksWorkspaceViewController: NSViewController {
             banner.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
         } else if let branch = trackStore?.untrackedBranch {
             let banner = makeBannerCard(branchName: branch)
+            contentStack.addArrangedSubview(banner)
+            banner.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+        }
+        if !idleOfferDismissed, let idle = trackStore?.cleanupCandidates(.idleParked, sparing: tracksInUse()), !idle.isEmpty {
+            let one = idle.count == 1
+            let banner = makeInfoBannerCard(
+                symbolName: "externaldrive",
+                text: "\(one ? "A parked track hasn\u{2019}t" : "\(idle.count) parked tracks haven\u{2019}t") been opened in \(TrackStore.idleDays) days. \(one ? "Its working copy" : "Their working copies") can go; \(one ? "it comes" : "they come") back when you switch to \(one ? "it" : "them").",
+                buttonTitle: "Free \(one ? "It" : "Them")",
+                action: #selector(freeIdleParkedTapped)
+            )
             contentStack.addArrangedSubview(banner)
             banner.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
         }
@@ -1143,6 +1169,63 @@ final class TracksWorkspaceViewController: NSViewController {
         showStatus(message.prefix(1).uppercased() + message.dropFirst())
     }
 
+    /// What a cleanup did, in the status line; nothing when it did nothing.
+    func announce(cleanup report: TrackStore.CleanupReport) {
+        var parts: [String] = []
+        if !report.freedFolders.isEmpty {
+            let size = ByteCountFormatter.string(fromByteCount: Int64(report.freedBytes), countStyle: .file)
+            parts.append("Removed \(report.freedFolders.count) working cop\(report.freedFolders.count == 1 ? "y" : "ies") of finished tracks (\(size))")
+        }
+        if !report.deletedBranches.isEmpty {
+            parts.append("deleted \(report.deletedBranches.count) merged branch\(report.deletedBranches.count == 1 ? "" : "es")")
+        }
+        let newlyKept = report.kept.filter { !announcedKept.contains($0.intent + $0.reason) }
+        announcedKept.formUnion(report.kept.map { $0.intent + $0.reason })
+        if !newlyKept.isEmpty {
+            parts.append("kept \(newlyKept.map { "\u{201C}\($0.intent)\u{201D} (\($0.reason))" }.joined(separator: ", "))")
+        }
+        guard !parts.isEmpty else { return }
+        let message = parts.joined(separator: "; ")
+        showStatus(message.prefix(1).uppercased() + message.dropFirst() + ".")
+    }
+
+    @objc private func freeIdleParkedTapped() {
+        idleOfferDismissed = true
+        trackStore?.cleanUp(.idleParked, sparing: tracksInUse()) { [weak self] report in
+            DispatchQueue.main.async { self?.announce(cleanup: report); self?.refreshUI() }
+        }
+    }
+
+    /// Every track's folder but the ones in use, after saying what that means. Branches stay.
+    @objc private func freeUnusedTapped() {
+        guard let store = trackStore, let window = view.window else { return }
+        let candidates = store.cleanupCandidates(.everyUnused, sparing: tracksInUse())
+        let alert = NSAlert()
+        guard !candidates.isEmpty else {
+            alert.messageText = "No working copies to free"
+            alert.informativeText = "Every track with a folder is open in a window, has an agent working, or still has tracks stacked on it."
+            alert.beginSheetModal(for: window)
+            return
+        }
+        let one = candidates.count == 1
+        alert.messageText = "Free \(candidates.count) working cop\(one ? "y" : "ies")?"
+        alert.informativeText = "The folders of tracks no window is on and no agent is working in. Branches and checkpoints stay, and a track\u{2019}s folder comes back when you switch to it (with a fresh install of its dependencies). "
+            + "A folder with uncommitted changes, or ignored files that aren\u{2019}t build output, is kept."
+        alert.addButton(withTitle: "Free")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            store.cleanUp(.everyUnused, sparing: self.tracksInUse()) { [weak self] report in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if report.freedFolders.isEmpty, report.kept.isEmpty { return }
+                    self.announcedKept.removeAll()
+                    self.announce(cleanup: report)
+                }
+            }
+        }
+    }
+
     /// A branch turned into a track was stacked on the track it was cut from: said, with how to
     /// change it.
     private func announceInferredBase(of track: Track) {
@@ -1320,7 +1403,7 @@ final class TracksWorkspaceViewController: NSViewController {
     private func setAsideCheckingChildren(_ track: Track, to status: TrackStatus) {
         guard let store = trackStore else { return }
         let children = store.unpromotedChildren(of: track)
-        guard !children.isEmpty, let window = view.window else { return store.setStatus(status, for: track) }
+        guard !children.isEmpty, let window = view.window else { store.setStatus(status, for: track); onSetAside?(); return }
         let base = store.tracks.first { $0.id == track.parentTrackId }.map { "\u{201C}\($0.intent)\u{201D}" } ?? store.defaultBranchName()
         let one = children.count == 1
         let names = ListFormatter.localizedString(byJoining: children.map { "\u{201C}\($0.intent.isEmpty ? $0.branchName : $0.intent)\u{201D}" })
@@ -1334,10 +1417,11 @@ final class TracksWorkspaceViewController: NSViewController {
         alert.addButton(withTitle: "Cancel")
         alert.buttons.last?.keyEquivalent = "\r"
         alert.buttons.first?.keyEquivalent = ""
-        alert.beginSheetModal(for: window) { response in
-            guard response == .alertFirstButtonReturn else { return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
             store.restackChildren(of: track)
             store.setStatus(status, for: track)
+            self.onSetAside?()
         }
     }
 

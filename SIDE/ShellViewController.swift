@@ -66,7 +66,7 @@ final class ShellViewController: NSViewController {
     /// themselves get reloaded, so it never claims a track this window hasn't actually switched
     /// to yet. Backs `WorkspaceBridgeHost` — an `AgentRunner` uses it to decide whether *this*
     /// window is the one to write an approved edit into.
-    private var currentTrackKey: String?
+    private(set) var currentTrackKey: String?
     /// Where `currentTrackKey`'s stages actually operate — its own worktree if it has one, else
     /// `projectURL`. Threaded into Make/Run's `reloadForTrackSwitch` and used as the root for
     /// this window's own git-status/branch introspection (`refreshGitInfo`), so the title bar
@@ -185,6 +185,8 @@ final class ShellViewController: NSViewController {
         tracksVC.onBranchSwitched = { [weak self] branchName in
             self?.branchIsNowActive(branchName)
         }
+        tracksVC.tracksInUse = { [weak self] in self?.tracksInUse() ?? [] }
+        tracksVC.onSetAside = { [weak self] in self?.sweepSetAsideTracks() }
         tracksVC.onTrackDeleted = { [weak self] track in
             guard let self else { return }
             self.makeVC.forgetLastFile(forTrackKey: track.branchName)
@@ -1164,6 +1166,7 @@ final class ShellViewController: NSViewController {
         // otherwise the very first file restore after opening a project on an active track's
         // branch would read the shared per-project bucket instead of that track's own memory.
         currentTrackKey = store.activeTrack?.branchName
+        defer { sweepSetAsideTracks() }
         let workingDirectory = workingDirectoryURL(for: currentTrackKey)
         focusedRoot = workingDirectory
         // Only bother retargeting Make/Run's LSP/indexing/terminal-cwd machinery when the active
@@ -1284,6 +1287,7 @@ final class ShellViewController: NSViewController {
                     self.focusedRoot = workingDirectory
                     self.refreshGitInfo(for: workingDirectory)
                     self.currentTrackKey = track.branchName
+                    self.sweepSetAsideTracks()
                     self.makeVC.reloadForTrackSwitch(trackKey: track.branchName, workingDirectory: workingDirectory)
                     self.runVC.reloadForTrackSwitch(trackKey: track.branchName)
                     self.reloadProjectTasks()
@@ -1306,6 +1310,28 @@ final class ShellViewController: NSViewController {
         }
     }
 
+    /// The tracks a cleanup mustn't touch: the one any window shows (its files are open in Make,
+    /// its terminals run in its folder), and any whose agent is working or waiting on you.
+    func tracksInUse() -> Set<String> {
+        var keys = Set(NSApp.windows.compactMap { ($0.contentViewController as? ShellViewController)?.currentTrackKey })
+        if let currentTrackKey { keys.insert(currentTrackKey) }
+        if let store = trackStore, let manager = projectContext?.runnerManager {
+            for track in store.tracks {
+                guard let runner = manager.existingRunner(forTrackKey: track.branchName) else { continue }
+                if runner.phase.isBusy || runner.phase == .awaitingApproval { keys.insert(track.branchName) }
+            }
+        }
+        return keys
+    }
+
+    /// Promoted and archived tracks' folders go, and a promoted track's merged branch, once no
+    /// window is on them: when a project opens and when a window moves to another track.
+    private func sweepSetAsideTracks() {
+        trackStore?.cleanUp(.setAside, sparing: tracksInUse()) { [weak self] report in
+            DispatchQueue.main.async { self?.tracksVC.announce(cleanup: report) }
+        }
+    }
+
     /// A brand-new track (or a newly-adopted existing branch — same shape, no `Track` object
     /// needed here since only the branch name matters) is checked out as part of creating/adopting
     /// it, not a separate step — so there's no second checkout to wait on here, just reflecting
@@ -1316,6 +1342,7 @@ final class ShellViewController: NSViewController {
         focusedRoot = workingDirectory
         refreshGitInfo(for: workingDirectory)
         currentTrackKey = branchName
+        sweepSetAsideTracks()
         makeVC.reloadForTrackSwitch(trackKey: branchName, workingDirectory: workingDirectory)
         runVC.reloadForTrackSwitch(trackKey: branchName)
         reloadProjectTasks()

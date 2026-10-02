@@ -344,6 +344,70 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertNil(store.inferredBase(for: "from-track"), "an archived track isn't a base")
     }
 
+    // MARK: - Cleanup: a track's branch is its record, its folder comes back
+
+    /// A promoted track loses its folder and its merged branch; an archived one its folder only;
+    /// a folder with uncommitted work, or ignored files that aren't build output, stays; a track
+    /// a window shows is left alone; and a landed track resumes from its base.
+    @MainActor
+    func testFinishedTracksAreCleanedUpWithoutLosingWork() throws {
+        makeRepo()
+        try "node_modules/\n.env\n".write(to: root.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        git(["add", ".gitignore"]); git(["commit", "-q", "-m", "ignore"])
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        func create(_ intent: String) -> Track {
+            let done = expectation(description: intent)
+            let made = Captured<Track>()
+            store.createTrack(intent: intent, baseTrack: nil) { result in
+                if case .success(let pair) = result { made.value = pair.0 }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 20)
+            return made.value!
+        }
+        func write(_ file: String, in track: Track, commit: Bool) {
+            let path = track.workingDirectoryPath!
+            try? FileManager.default.createDirectory(atPath: (path as NSString).appendingPathComponent((file as NSString).deletingLastPathComponent), withIntermediateDirectories: true)
+            try? "x".write(toFile: (path as NSString).appendingPathComponent(file), atomically: true, encoding: .utf8)
+            guard commit else { return }
+            XCTAssertTrue(GitPaths.runGit(["add", file], cwd: path).success)
+            XCTAssertTrue(GitPaths.runGit(["commit", "-q", "-m", file], cwd: path).success)
+        }
+        let current = { (id: UUID) in store.tracks.first { $0.id == id }! }
+        let landed = create("Landed"), archived = create("Archived"), dirty = create("Dirty"), secret = create("Secret"), shown = create("Shown")
+        write("landed.txt", in: landed, commit: true)
+        write("node_modules/dep.js", in: landed, commit: false)
+        XCTAssertTrue(ReviewWorkspaceViewController.performMerge(branchName: landed.branchName, baseRef: "main", intent: "Landed", cwd: root.path).succeeded)
+        write("idea.txt", in: archived, commit: true)
+        write("draft.txt", in: dirty, commit: false)
+        write(".env", in: secret, commit: false)
+        for track in [landed, shown] { store.setStatus(.completed, for: current(track.id)) }
+        for track in [archived, dirty, secret] { store.setStatus(.archived, for: current(track.id)) }
+
+        let done = expectation(description: "cleanup")
+        let report = Captured<TrackStore.CleanupReport>()
+        store.cleanUp(.setAside, sparing: [shown.branchName]) { report.value = $0; done.fulfill() }
+        wait(for: [done], timeout: 30)
+        let branches = GitPaths.runGit(["branch", "--format=%(refname:short)"], cwd: root.path).output.split(separator: "\n").map(String.init)
+
+        XCTAssertNil(current(landed.id).workingDirectoryPath, "promoted: folder gone, node_modules and all")
+        XCTAssertFalse(branches.contains(landed.branchName), "and its merged branch")
+        XCTAssertNil(current(archived.id).workingDirectoryPath, "archived: folder gone")
+        XCTAssertTrue(branches.contains(archived.branchName), "its branch holds work that's nowhere else")
+        XCTAssertNotNil(current(dirty.id).workingDirectoryPath, "uncommitted work stays")
+        XCTAssertNotNil(current(secret.id).workingDirectoryPath, "an ignored file that isn't build output stays")
+        XCTAssertNotNil(current(shown.id).workingDirectoryPath, "a track a window shows is left alone")
+        XCTAssertTrue(branches.contains(shown.branchName))
+        XCTAssertEqual(Set(report.value?.kept.map(\.intent) ?? []), ["Dirty", "Secret"])
+
+        // Resuming the landed track starts its branch again from main, where its work is.
+        let resumed = expectation(description: "resume")
+        store.switchTo(current(landed.id)) { _ in resumed.fulfill() }
+        wait(for: [resumed], timeout: 20)
+        let path = try XCTUnwrap(current(landed.id).workingDirectoryPath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent("landed.txt")))
+    }
+
     // MARK: - 2026-09-30 audit, H14: a stacked track whose parent was deleted
 
     /// With its parent gone, a stacked track's base fell back to main and Promote merged the

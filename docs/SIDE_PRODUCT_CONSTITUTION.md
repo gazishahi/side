@@ -108,6 +108,14 @@ Promotion runs child-first: a stacked track lands in its parent, and the parent 
 
 A track's base changes in one place, `TrackStore.setBase`: **Change Base…** in a track's menu (the default branch, or any live track outside its own stack), Promote and Restack, and **Archive** or **Mark Completed** on a parent with unpromoted children, which asks first and offers to restack them the same way (their branches still hold the parent's work, which the sheet says). A branch turned into a track is stacked on the live track it was cut from, if any (`TrackStore.inferredBase`), and Tracks says so (added 2026-10-02).
 
+**A track's branch is its record; its folder is where the work happens.** The folder (a git worktree, with its own dependencies and build output) comes back from the branch whenever you switch to the track, so Side removes it when nothing needs it (`TrackStore.cleanUp`, decided with the owner 2026-10-02):
+- **Promoted:** the folder goes, and the branch is deleted with `git branch -d`, which refuses anything not merged. Promote merges with `--no-ff`, so every checkpoint stays reachable from the base. Resuming such a track starts its branch again from its base.
+- **Archived:** the folder goes; the branch stays, since its work is nowhere else.
+- **Parked:** kept; after 14 days unopened, Tracks offers to free it.
+- **Free Unused Working Copies…** in Tracks frees every folder not in use; branches stay.
+- **Never removed:** a track a window shows, one whose agent is working or waiting, a parent with unpromoted children, or a folder with uncommitted changes or ignored files that aren't build output (`TrackStore.rebuildable`: dependencies, build output and caches go; a local `.env` doesn't). Those are kept and named.
+The sweep runs when a project opens, when a window moves to another track, and after Archive or Complete.
+
 One known gap remains: `TrackStore.applyReconciliation`'s worktree-immunity logic has not been audited for hierarchy.
 
 ## First alpha

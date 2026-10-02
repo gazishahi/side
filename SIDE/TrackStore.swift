@@ -526,8 +526,14 @@ final class TrackStore {
         // Snapshotted on the main actor before the hop, for the same reason as everywhere else
         // in this file: the background side must not reach back into main-actor state.
         let defaultBranch = defaultBranchName()
+        let base = tracks.first { $0.id == track.parentTrackId }?.branchName ?? defaultBranch
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+            // A landed track's branch was deleted once merged (`cleanUp`): resuming it starts the
+            // branch again from its base, where all of its work already is.
+            if !self.runGit(["rev-parse", "--verify", "--quiet", "refs/heads/\(track.branchName)"], cwd: self.projectRoot.path).success {
+                _ = self.runGit(["branch", track.branchName, base], cwd: self.projectRoot.path)
+            }
             let result = self.materializeWorktree(for: track, defaultBranch: defaultBranch)
             DispatchQueue.main.async {
                 switch result {
@@ -935,6 +941,114 @@ final class TrackStore {
                 self.save()
                 self.notifyChange()
                 completion(.success(()))
+            }
+        }
+    }
+
+    // MARK: - Cleanup
+
+    /// A track's branch is its record; its folder is where the work happens, and comes back from
+    /// the branch on a switch. Promoted (completed) and archived tracks used to keep both
+    /// forever, a checkout and its dependencies each (2026-10-02, the owner).
+    enum CleanupScope {
+        /// Completed and archived tracks: their folders, and a completed track's branch once git
+        /// says it's merged (`branch -d`, which can't lose work). Run after Promote and Archive,
+        /// and when a project opens.
+        case setAside
+        /// Free Unused Working Copies: the folder of every track but the active one. Branches
+        /// are kept.
+        case everyUnused
+        /// Parked tracks not opened for `idleDays` (the offer Tracks makes).
+        case idleParked
+    }
+
+    static let idleDays = 14
+
+    /// What a sweep did, and what it left because removing it would lose something.
+    struct CleanupReport: Sendable {
+        var freedFolders: [String] = []
+        var freedBytes = 0
+        var deletedBranches: [String] = []
+        /// Intent, and why it was left: uncommitted changes, or ignored files that aren't build
+        /// output (a local `.env`, say).
+        var kept: [(intent: String, reason: String)] = []
+    }
+
+    /// Ignored entries that can be rebuilt (dependencies, build output, caches): a folder holding
+    /// only these is removed without asking. Anything else ignored is asked about.
+    nonisolated static let rebuildable: Set<String> = [
+        "node_modules", ".build", "build", "dist", "out", "target", ".next", ".nuxt", ".svelte-kit", ".turbo",
+        ".parcel-cache", ".cache", "coverage", "DerivedData", "__pycache__", ".pytest_cache", ".mypy_cache",
+        ".gradle", ".venv", "venv", ".DS_Store", ".swiftpm",
+    ]
+
+    nonisolated static func isRebuildable(_ ignored: String) -> Bool {
+        let last = ignored.split(separator: "/").last.map(String.init) ?? ignored
+        return rebuildable.contains(last) || last.hasSuffix(".pyc") || last.hasSuffix(".o")
+    }
+
+    /// The tracks a sweep in `scope` would look at: never one a window is showing (`shown`, by
+    /// branch), the active one, or a parent with unpromoted children (it's still their base).
+    func cleanupCandidates(_ scope: CleanupScope, sparing shown: Set<String>) -> [Track] {
+        let idleSince = Date().addingTimeInterval(-Double(Self.idleDays) * 86_400)
+        return tracks.filter { track in
+            guard !shown.contains(track.branchName), track.status != .active, unpromotedChildren(of: track).isEmpty else { return false }
+            switch scope {
+            case .setAside: return track.status == .completed || track.status == .archived
+            case .everyUnused: return track.workingDirectoryPath != nil
+            case .idleParked: return track.status == .parked && track.workingDirectoryPath != nil && track.lastActiveAt < idleSince
+            }
+        }
+    }
+
+    func cleanUp(_ scope: CleanupScope, sparing shown: Set<String>, completion: (@Sendable (CleanupReport) -> Void)? = nil) {
+        let candidates = cleanupCandidates(scope, sparing: shown)
+        guard !candidates.isEmpty else { completion?(CleanupReport()); return }
+        let cwd = projectRoot.path
+        let checkedOut = currentBranchName(cwd: cwd)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            var report = CleanupReport()
+            var freed: [UUID] = []
+            for track in candidates {
+                let name = track.intent.isEmpty ? track.branchName : track.intent
+                var folderGone = true
+                if let path = track.workingDirectoryPath, FileManager.default.fileExists(atPath: path) {
+                    let risk = WorkAtRisk.probe(path)
+                    let unknown = risk.ignored.filter { !Self.isRebuildable($0) }
+                    if risk.unreadable || risk.uncommitted > 0 || !unknown.isEmpty {
+                        let reason = risk.unreadable ? "git couldn\u{2019}t read its folder"
+                            : risk.uncommitted > 0 ? "\(risk.uncommitted) uncommitted change\(risk.uncommitted == 1 ? "" : "s")"
+                            : "ignored files that aren\u{2019}t build output (\(unknown.prefix(3).joined(separator: ", ")))"
+                        report.kept.append((name, reason))
+                        folderGone = false
+                    } else {
+                        let bytes = Self.cachedDirectorySizeBytes(at: path) ?? 0
+                        // No --force: a change made since the probe makes git refuse, and it stays.
+                        if self.runGit(["worktree", "remove", path], cwd: cwd).success {
+                            report.freedFolders.append(name)
+                            report.freedBytes += bytes
+                            freed.append(track.id)
+                        } else {
+                            folderGone = false
+                        }
+                    }
+                } else if track.workingDirectoryPath != nil {
+                    freed.append(track.id)
+                }
+                // Merged branches only (`-d`): one marked completed without landing keeps its.
+                if scope == .setAside, track.status == .completed, folderGone, track.branchName != checkedOut,
+                   self.runGit(["branch", "-d", track.branchName], cwd: cwd).success {
+                    report.deletedBranches.append(name)
+                }
+            }
+            _ = self.runGit(["worktree", "prune"], cwd: cwd)
+            DispatchQueue.main.async {
+                for index in self.tracks.indices where freed.contains(self.tracks[index].id) {
+                    self.tracks[index].workingDirectoryPath = nil
+                }
+                if !freed.isEmpty { self.save(); self.notifyChange() }
+                completion?(report)
             }
         }
     }
