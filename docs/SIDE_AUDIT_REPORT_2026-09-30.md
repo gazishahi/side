@@ -435,7 +435,7 @@ Mediums from 09-01:
 | Accessibility not blocking (gate 5) | **Not met:** UX-6, UX-7, UX-8 (by reading; a live VoiceOver pass is still needed) |
 | A clean first run (gate 6) | **Not met:** H10 |
 | Outside agents verified or labelled (gate 4) | **Not met:** H12 |
-| Documentation is true | **Not met:** DOC-2, DOC-4, H13 |
+| Documentation is true | **Met:** DOC-2, DOC-4 and H13 fixed (DOC-3's stale status lines remain, Low) |
 | Prior fixes hold | **Met** (H12 and H13 of 09-01 untested) |
 
 **Suggested order:**
@@ -514,6 +514,7 @@ Each fix should come with the test that would have caught it; several of these b
 - **REL-1, fixed.** `release.sh` stops before deleting or building anything unless it read a real version and build number.
 - **REL-2, fixed.** Side checks for git (any developer directory, no process run) before every git call. Without it, git isn't run (so macOS's dialog doesn't appear unasked); Tracks, Think, Review and first run say git is missing and offer Install Git…, which explains and then opens macOS's installer.
 - **HER-6 / PRV-3, fixed.** A reply that ends without its end (Stop, a stall, an error, a dropped connection) is counted in Usage and the budget: its input as `message_start` gave it, its output estimated from what streamed (`usageWithoutEnd`). Compaction's request, which counted nothing, is counted too. OpenAI-compatible servers send usage only at the end, so a stopped reply there still counts nothing. Tests: a stopped reply and one cut off by an error are each one request with its real input.
+- **DOC-2, fixed.** Each doc says what was built where it differs: Direction 02 (no first-run preset step; Review's line numbers in the gutter), IDE Essentials (no indexing progress, no watched-file notices), the editor plan (fold-all and column shortcuts as built, the table's size), Phase 10 (tasks from `.side/tasks.json` only; the debugger since built), the navigation ledger (the ceiling covers coordinator messages only, no `queued`).
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - H15: CI for the app's tests.

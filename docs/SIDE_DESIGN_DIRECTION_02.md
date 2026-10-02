@@ -15,10 +15,12 @@ Symbols: `ChromeHost` `TrackPill` `StatusDot` `StatusLabel` `EmptyState` `Inline
   working ring moves"; streaming growth is unaffected (`SIDE_DESIGN.md` › Motion).
 - **Run's terminal** is full-bleed with its grid ending above the bar (owner, 2026-09-22/23), not
   on a radius-10 inset card, and keeps the Nerd Font its prompt glyphs need rather than SF Mono.
-- **Review:** line numbers stay in the diff text (quaternary) rather than 44 pt unselectable
-  columns; the checkpoint meta line omits scope and autonomy, which checkpoints don't record;
+- **Review:** line numbers are in the editor's gutter (old and new, `13b1f26`); the checkpoint meta line omits scope and autonomy, which checkpoints don't record;
   "Instruct…" is per file, not per hunk — a hunk has no row of its own to hover.
 - **Think requires a track** (§6) — conversations started with no track are no longer shown.
+- **No first-run preset step** (§3.1): the first-run sheet has three steps (open a project,
+  choose a model, create a track); *How do you work?* wasn't built. Pins are set in Settings or
+  from the stage control's menu.
 - **Beyond the spec:** terminal and file tabs tear out into windows; Run's task chips go through
   the command card via `AgentRunner.proposeUserTask` without answering the model; Heron was
   extracted into `Packages/Heron` between steps 4 and 5.

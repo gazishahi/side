@@ -20,10 +20,11 @@ Symbols: `Shortcuts`, `ShortcutsViewController`, `ShortcutRecorder`, `EditorPref
 Alloy 0.1 has multiple cursors; the rest was left for after 0.1 (SIDE_RFC_ALLOY.md, A5).
 
 4. **Column selection** (Alloy): ⌥-drag selects a rectangle, one cursor per line; ⌥⇧ with the
-   arrows grows it. Built on the multiple selections Alloy has.
+   arrows grows it. Built on the multiple selections Alloy has. *As built: ⌥-drag, ⌥-click and
+   ⌥⌘↑/↓; ⌥⇧-arrows don't grow a rectangle.*
 5. **Code folding** (Alloy): foldable ranges from the syntax tree (and indentation where there's
    no grammar), a disclosure in the gutter, folded lines hidden in layout, ⌥⌘← / ⌥⌘→ to fold and
-   unfold, ⌥⌘0 / ⌥⌘J for all. Find and Go to Line open what they land in.
+   unfold, ⌥⌘0 / ⌥⌘J for all (*as built: ⌥⇧⌘← / ⌥⇧⌘→ for all; ⌥⌘0 is Go to Tracks*). Find and Go to Line open what they land in.
 6. **Minimap** (Alloy): the document drawn small beside the text, the visible part marked, click
    or drag to scroll; find matches and changed lines shown in it. Off by default, a View menu
    toggle, remembered.
@@ -31,7 +32,7 @@ Alloy 0.1 has multiple cursors; the rest was left for after 0.1 (SIDE_RFC_ALLOY.
 
 ## Progress
 
-- [x] 1 One table (`Shortcuts.swift`: 67 commands, 17 of them fixed in their view; the menu binds every item, the palette and the switcher read their labels from it)
+- [x] 1 One table (`Shortcuts.swift`: every command, some fixed in their view (67 and 17 when this was built; the table has grown since); the menu binds every item, the palette and the switcher read their labels from it)
 - [x] 2 Settings pane (Settings → Shortcuts: by area, searchable, a recorder that takes ⌘-keys before the menu bar, conflicts confirmed, Reset per command and all)
 - [x] 3 Tests (`ShortcutsTests`)
 - [x] 4 Column selection (Alloy: ⌥-drag; ⌥-click and ⌥⌘↑/↓ as before)

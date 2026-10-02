@@ -68,11 +68,15 @@ These are rows of `Budgets.table`, measured in an optimized build (step 9).
 - **Server requests are answered.** These include `workspace/configuration` (from each language's
   settings, below), `client/registerCapability`, `window/workDoneProgress/create`,
   `window/showMessage` and `workspace/applyEdit`. A server's "indexing…" progress shows on the
-  language chip.
+  language chip. *As built: not shown.* `workDoneProgress` is advertised and
+  `window/workDoneProgress/create` answered, but `$/progress` isn't read, so the chip says
+  nothing while a server indexes.
 - **Cancellation:** a superseded request sends `$/cancelRequest`. Replies are decoded once,
   straight into their types, off the main thread.
 - **`didSave` is sent,** and file watching (`workspace/didChangeWatchedFiles`) is sent when the
-  server asks for it.
+  server asks for it. *As built: `didSave` only.* A server's request to watch files is
+  acknowledged and nothing is sent, so a change made outside Side (a `git pull`, a generator)
+  reaches a server only when the file is opened.
 
 ### L2: completion, rebuilt
 

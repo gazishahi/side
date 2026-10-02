@@ -30,7 +30,8 @@ A project's known commands as first-class named things, rather than strings
 everyone re-types.
 
 - `ProjectTasks` reads a task list from the project (`SIDE.md` frontmatter or a
-  small `.side/tasks.json`), with sensible auto-detection: `Package.swift` →
+  small `.side/tasks.json`; *as built: `.side/tasks.json` only; the debugger
+  separately reads `.vscode/tasks.json` for a launch's `preLaunchTask`*), with sensible auto-detection: `Package.swift` →
   `swift build` / `swift test`; `package.json` → its `scripts`; `Makefile` →
   its targets; `*.xcodeproj` → `xcodebuild`.
 - Tasks run through the **existing** `run_shell_command` path — the track's real
@@ -76,6 +77,9 @@ runs itself is a command that runs itself.
 prove larger than expected. 10b depends on 10a; 10c depends on neither.
 
 ## Explicitly out of scope
+
+*Since built: the debugger (`SIDE_RFC_DEBUGGER.md`, DAP under `SIDE/Debug/`), so the first
+item below is history, not scope.*
 
 - **A real debugger.** Breakpoints, stepping, variable inspection — this means
   DAP (which Side's `LSP/` architecture is already shaped for: a `DAP/`

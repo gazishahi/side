@@ -76,6 +76,9 @@ No ceiling today (audit). **Recommendation:** soft ceiling of **4 concurrently
 streaming runners** per app; further sends queue, the track shows `queued` as a
 caption, and the ledger/pill shows it. `UsageBudget` stays the spend bound.
 **Decision:** fixed at 4, not a setting, until someone hits it.
+*As built: narrower.* `TrackCoordinator.concurrencyLimit` (4) holds back only the messages the
+coordinator delivers between a project's tracks; tracks a person starts by hand all stream at
+once, and nothing shows `queued`.
 
 ## R4. Cross-track awareness — structural, not conversational
 
