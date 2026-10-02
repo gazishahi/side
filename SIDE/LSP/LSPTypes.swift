@@ -466,6 +466,9 @@ struct LSPSignatureHelp: Sendable, Equatable {
 struct LSPWorkspaceEdit: Sendable {
     var files: [(uri: String, edits: [LSPTextEdit])]
     var unsupported: Int
+    /// The document version each file's edits were computed against, when the server said
+    /// (`documentChanges`): an open file at another version has changed since (EDT-6).
+    var versions: [String: Int] = [:]
 
     init(files: [(uri: String, edits: [LSPTextEdit])], unsupported: Int = 0) {
         self.files = files
@@ -476,11 +479,13 @@ struct LSPWorkspaceEdit: Sendable {
         guard let object = value as? [String: Any] else { return nil }
         var files: [(String, [LSPTextEdit])] = []
         var unsupported = 0
+        var versions: [String: Int] = [:]
         if let changes = object["documentChanges"] as? [[String: Any]] {
             for change in changes {
                 if let document = change["textDocument"] as? [String: Any], let uri = document["uri"] as? String,
                    let edits = change["edits"] as? [Any] {
                     files.append((uri, edits.compactMap { LSPTextEdit($0) }))
+                    if let version = document["version"] as? Int { versions[uri] = version }
                 } else {
                     unsupported += 1
                 }
@@ -490,6 +495,7 @@ struct LSPWorkspaceEdit: Sendable {
         }
         self.files = files.filter { !$0.1.isEmpty }
         self.unsupported = unsupported
+        self.versions = versions
     }
 
     var editCount: Int { files.reduce(0) { $0 + $1.edits.count } }

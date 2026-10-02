@@ -1,6 +1,33 @@
 import Foundation
 import Heron
 
+/// Messages from a server, handled in the order they arrived. The transport delivers them in
+/// order; a `Task` per message to reach the client's actor did not keep it (a mirror of that
+/// pattern swapped 6 to 181 adjacent pairs in 2,000 messages), so older diagnostics replaced
+/// newer ones and a debugger's stopped and continued events could swap (2026-09-30 audit,
+/// EDT-4). One loop takes them from an ordered stream instead; the end comes after the last.
+final class OrderedInbox: Sendable {
+    private enum Item { case message(Data), ended }
+    private let continuation: AsyncStream<Item>.Continuation
+
+    /// `handle` gets each message, then `ended` once, in order, each awaited before the next.
+    init(handle: @escaping @Sendable (Data) async -> Void, ended: @escaping @Sendable () async -> Void) {
+        let (stream, continuation) = AsyncStream<Item>.makeStream()
+        self.continuation = continuation
+        Task {
+            for await item in stream {
+                switch item {
+                case .message(let data): await handle(data)
+                case .ended: await ended(); return
+                }
+            }
+        }
+    }
+
+    func receive(_ data: Data) { continuation.yield(.message(data)) }
+    func end() { continuation.yield(.ended); continuation.finish() }
+}
+
 /// Frames JSON-RPC messages over a language server's stdin/stdout using the
 /// `Content-Length: N\r\n\r\n<json>` framing required by the LSP spec.
 actor JSONRPCTransport {

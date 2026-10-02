@@ -66,10 +66,8 @@ actor LSPClient {
     }
 
     private func startInternal<Options: Encodable>(rootURI: String, initializationOptions: Options?) async throws -> LSPServerCapabilities {
-        await transport.setHandlers(
-            onMessage: { data in Task { await self.handleMessage(data) } },
-            onTerminate: { Task { await self.handleTermination() } }
-        )
+        let inbox = OrderedInbox(handle: { data in await self.handleMessage(data) }, ended: { await self.handleTermination() })
+        await transport.setHandlers(onMessage: { data in inbox.receive(data) }, onTerminate: { inbox.end() })
         try await transport.start()
         isRunning = true
         let result = try await request(method: "initialize", params: InitializeParams(processId: Int(ProcessInfo.processInfo.processIdentifier), rootUri: rootURI, initializationOptions: initializationOptions))

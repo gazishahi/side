@@ -387,8 +387,10 @@ final class DebugSession {
             self.client = client
             port = client.port
             await client.setHandlers(
-                onEvent: { [weak self] event, body in Task { @MainActor in self?.handle(event: event, body: body) } },
-                onTerminate: { [weak self] in Task { @MainActor in self?.adapterExited() } },
+                // The main queue, not a Task each: FIFO, so events stay in the adapter's order
+                // (EDT-4), and the exit comes after the last of them.
+                onEvent: { [weak self] event, body in DispatchQueue.main.async { MainActor.assumeIsolated { self?.handle(event: event, body: body) } } },
+                onTerminate: { [weak self] in DispatchQueue.main.async { MainActor.assumeIsolated { self?.adapterExited() } } },
                 onReverseRequest: { [weak self] command, arguments in
                     guard let self else { return .failure(.notRunning) }
                     return await self.answer(command, arguments)

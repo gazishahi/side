@@ -105,6 +105,18 @@ final class LSPManager: @unchecked Sendable {
         ensureClient(for: entry)
     }
 
+    /// Whether the server's copy of an open document is at `version`: false once it has moved
+    /// on, or while edits wait to be sent (the text has changed since that version).
+    func isAtVersion(_ version: Int, url: URL) -> Bool {
+        documentVersions[url] == version && pendingEdits[url] == nil
+    }
+
+    /// The version an open document is at, counting edits not yet sent; nil if it isn't open.
+    func versionForTesting(_ url: URL) -> Int? {
+        guard openDocuments[url] != nil else { return nil }
+        return (documentVersions[url] ?? 1) + (pendingEdits[url] == nil ? 0 : 1)
+    }
+
     /// Edits to an open document, in the order they were applied, and its text after them.
     /// Nothing is copied or sent here: they go out a moment later, or before the next request.
     func edited(url: URL, edits: [AppliedEdit], text: Rope) {

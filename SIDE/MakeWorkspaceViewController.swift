@@ -2437,12 +2437,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         let range = LSPRange(start: onLine.map(\.range.start).min { ($0.line, $0.character) < ($1.line, $1.character) }!,
                              end: onLine.map(\.range.end).max { ($0.line, $0.character) < ($1.line, $1.character) }!)
+        let asked = openTextSnapshots()
         lspManager.codeActions(url: tab.url, range: range, diagnostics: onLine) { [weak self] actions in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let fixes = (actions ?? []).filter { $0.disabledReason == nil && ($0.isQuickFix || $0.kind == nil) }
                 if !fixes.isEmpty { menu.addItem(.separator()) }
-                for action in fixes.prefix(12) { menu.addItem(self.codeActionItem(action, url: tab.url)) }
+                for action in fixes.prefix(12) { menu.addItem(self.codeActionItem(action, url: tab.url, asked: asked)) }
                 NSMenu.popUpContextMenu(menu, with: event, for: self.gutter)
             }
         }
@@ -3881,11 +3882,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func performRename(url: URL, position: LSPPosition, to newName: String) {
+        let asked = openTextSnapshots()
         lspManager?.rename(url: url, position: position, to: newName) { [weak self] edit in
             guard let self else { return }
             guard let edit, edit.editCount > 0 else { return NSSound.beep() }
             guard edit.files.count > 1, let window = self.view.window else {
-                _ = self.applyWorkspaceEdit(edit)
+                _ = self.applyWorkspaceEdit(edit, computedOn: asked)
                 self.editor.focus()
                 return
             }
@@ -3902,16 +3904,44 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             alert.addButton(withTitle: "Cancel")
             alert.beginSheetModal(for: window) { [weak self] response in
                 guard response == .alertFirstButtonReturn else { return }
-                _ = self?.applyWorkspaceEdit(edit)
+                _ = self?.applyWorkspaceEdit(edit, computedOn: asked)
                 self?.editor.focus()
             }
         }
     }
 
+    /// Each open file's text as it is now: what a rename or quick fix asked about.
+    private func openTextSnapshots() -> [URL: Rope] {
+        Dictionary(openTabs.filter { $0.kind == .text }.map { ($0.url, $0.document.rope) }, uniquingKeysWith: { first, _ in first })
+    }
+
     /// A server's edits, applied: in an open tab as one undo step (left unsaved, as typing
     /// would), in a file that isn't open by rewriting it. Overlapping edits are refused.
+    ///
+    /// Refused whole if an open file changed since the edit was worked out: its text differs
+    /// from `computedOn` (what it was when the rename or fix was asked for), or the server
+    /// names a version it no longer has. Applied at the old offsets, the edit landed in the
+    /// wrong places, mangling what was typed meanwhile (2026-09-30 audit, EDT-6).
     @discardableResult
-    func applyWorkspaceEdit(_ edit: LSPWorkspaceEdit) -> Bool {
+    func applyWorkspaceEdit(_ edit: LSPWorkspaceEdit, computedOn asked: [URL: Rope] = [:]) -> Bool {
+        let changed = edit.files.compactMap { file -> URL? in
+            guard let url = URL(string: file.uri), url.isFileURL,
+                  let tab = openTabs.first(where: { $0.kind == .text && ($0.url == url || $0.url.resolvingSymlinksInPath().standardizedFileURL == url.resolvingSymlinksInPath().standardizedFileURL) }) else { return nil }
+            if let before = asked[tab.url], before != tab.document.rope { return tab.url }
+            if let version = edit.versions[file.uri], lspManager?.isAtVersion(version, url: tab.url) == false { return tab.url }
+            return nil
+        }
+        guard changed.isEmpty else {
+            NSSound.beep()
+            if let window = view.window {
+                let alert = NSAlert()
+                alert.messageText = "Nothing was changed"
+                let names = changed.map(\.lastPathComponent).joined(separator: ", ")
+                alert.informativeText = "\(names) changed while the language server was working out the edit, so its positions no longer match. Try again."
+                alert.beginSheetModal(for: window)
+            }
+            return false
+        }
         var applied = false
         for file in edit.files {
             guard let url = URL(string: file.uri), url.isFileURL else { continue }
@@ -3965,12 +3995,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let start = rope.position(of: selection.location), end = rope.position(of: NSMaxRange(selection))
         let range = LSPRange(start: LSPPosition(line: start.line, character: start.column), end: LSPPosition(line: end.line, character: end.column))
         let problems = diagnostics(overlapping: NSRange(location: selection.location, length: max(1, selection.length)), in: tab)
+        let asked = openTextSnapshots()
         lspManager.codeActions(url: tab.url, range: range, diagnostics: problems) { [weak self] actions in
-            MainActor.assumeIsolated { self?.showQuickFixMenu(actions, url: tab.url, at: selection) }
+            MainActor.assumeIsolated { self?.showQuickFixMenu(actions, url: tab.url, at: selection, asked: asked) }
         }
     }
 
-    private func showQuickFixMenu(_ actions: [LSPCodeAction]?, url: URL, at selection: NSRange) {
+    private func showQuickFixMenu(_ actions: [LSPCodeAction]?, url: URL, at selection: NSRange, asked: [URL: Rope]) {
         // What the server says doesn't apply here isn't offered (it lists every refactoring,
         // most of them disabled).
         let actions = (actions ?? []).filter { $0.disabledReason == nil }
@@ -3984,16 +4015,18 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         var lastWasFix = sorted.first?.isQuickFix ?? false
         for action in sorted.prefix(24) {
             if lastWasFix != action.isQuickFix { menu.addItem(.separator()); lastWasFix = action.isQuickFix }
-            menu.addItem(codeActionItem(action, url: url))
+            menu.addItem(codeActionItem(action, url: url, asked: asked))
         }
         let caret = editor.rect(forCharacterRange: NSRange(location: selection.location, length: 0))
         menu.popUp(positioning: menu.items.first, at: NSPoint(x: caret.minX, y: caret.maxY + 2), in: editor.textView)
     }
 
-    private func codeActionItem(_ action: LSPCodeAction, url: URL) -> NSMenuItem {
+    /// `asked`: the open files' text when the actions were asked for; a fix is refused if they've
+    /// changed since (EDT-6).
+    private func codeActionItem(_ action: LSPCodeAction, url: URL, asked: [URL: Rope]) -> NSMenuItem {
         let item = NSMenuItem(title: action.title, action: #selector(performCodeActionItem(_:)), keyEquivalent: "")
         item.target = self
-        item.representedObject = CodeActionBox(action: action, url: url)
+        item.representedObject = CodeActionBox(action: action, url: url, asked: asked)
         if let reason = action.disabledReason { item.isEnabled = false; item.toolTip = reason }
         if action.isPreferred { item.attributedTitle = NSAttributedString(string: action.title, attributes: [.font: DS.Text.body().withTraits(.boldFontMask)]) }
         return item
@@ -4001,21 +4034,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     @objc private func performCodeActionItem(_ sender: NSMenuItem) {
         guard let box = sender.representedObject as? CodeActionBox else { return }
-        perform(box.action, url: box.url, resolved: false)
+        perform(box.action, url: box.url, resolved: false, asked: box.asked)
     }
 
     /// An action's edit applied, then its command run (which may send more edits back). One
     /// with neither is resolved first, for a server that fills them in on request.
-    private func perform(_ action: LSPCodeAction, url: URL, resolved: Bool) {
+    private func perform(_ action: LSPCodeAction, url: URL, resolved: Bool, asked: [URL: Rope]) {
         guard let lspManager else { return }
         if action.edit == nil, action.command == nil || !resolved,
            !resolved, lspManager.capabilities(forExtension: url.languageExtension)?.resolvesCodeActions == true {
             lspManager.resolve(action, url: url) { [weak self] resolvedAction in
-                self?.perform(resolvedAction ?? action, url: url, resolved: true)
+                self?.perform(resolvedAction ?? action, url: url, resolved: true, asked: asked)
             }
             return
         }
-        if let edit = action.edit { applyWorkspaceEdit(edit) }
+        if let edit = action.edit, !applyWorkspaceEdit(edit, computedOn: asked), !edit.files.isEmpty { return }
         if let command = action.command {
             lspManager.execute(command: command.name, arguments: command.arguments, url: url) { _ in }
         }
@@ -4854,9 +4887,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if let focusedRoot { panel.directoryURL = focusedRoot }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let newURL = panel.url else { completion(false); return }
-            guard self.indexForTab(id: tabID) != nil else { completion(false); return }
+            guard let before = self.indexForTab(id: tabID).map({ self.openTabs[$0] }) else { completion(false); return }
             self.writeTabToDiskForced(tabID: tabID, url: newURL, asNewFile: true) { success in
                 if success {
+                    self.followSaveAs(from: before.url, wasUntitled: before.isUntitled, to: newURL)
                     if let index = self.indexForTab(id: tabID), self.activeTabIndex == index {
                         if let projectURL = self.projectURL { self.rememberLastFile(newURL, forProject: projectURL) }
                         self.onFileOpened?(newURL)
@@ -4868,6 +4902,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 completion(success)
             }
         }
+    }
+
+    /// The language server knew the document by its old name, or (untitled) not at all, and
+    /// edits reached it and the breakpoints only under a name it had open: so the saved file got
+    /// no diagnostics or completion, and its breakpoints stayed put while lines moved
+    /// (2026-09-30 audit, EDT-7). The old name is closed and the new one opened.
+    private func followSaveAs(from oldURL: URL, wasUntitled: Bool, to newURL: URL) {
+        guard wasUntitled || oldURL != newURL else { return }
+        if !wasUntitled { lspManager?.closed(url: oldURL) }
+        announceToLanguageServer(newURL)
     }
 
     private func writeTabToDisk(tabID: UUID, url: URL, completion: @escaping (Bool) -> Void) {
@@ -6008,9 +6052,11 @@ enum EditorPreferences {
 final class CodeActionBox: NSObject {
     let action: LSPCodeAction
     let url: URL
-    init(action: LSPCodeAction, url: URL) {
+    let asked: [URL: Rope]
+    init(action: LSPCodeAction, url: URL, asked: [URL: Rope]) {
         self.action = action
         self.url = url
+        self.asked = asked
     }
 }
 
@@ -6120,8 +6166,15 @@ extension MakeWorkspaceViewController {
     /// Save As to `url`, past the save panel.
     func saveActiveTabAsForTesting(_ url: URL, completion: @escaping (Bool) -> Void) {
         guard let index = activeTabIndex else { return completion(false) }
-        writeTabToDiskForced(tabID: openTabs[index].id, url: url, asNewFile: true, completion: completion)
+        let before = openTabs[index]
+        writeTabToDiskForced(tabID: before.id, url: url, asNewFile: true) { [weak self] success in
+            if success { self?.followSaveAs(from: before.url, wasUntitled: before.isUntitled, to: url) }
+            completion(success)
+        }
     }
+    func newUntitledForTesting() { newFile() }
+    /// Whether the language server has `url` open, and at which version (nil: not open).
+    func languageServerVersionForTesting(_ url: URL) -> Int? { lspManager?.versionForTesting(url) }
     var activeTabURLForTesting: URL? { activeTabIndex.map { openTabs[$0].url } }
     /// As a batch of file events naming every open tab would.
     func reconcileWithDiskForTesting() { for index in openTabs.indices { reconcileTabWithDisk(index) } }

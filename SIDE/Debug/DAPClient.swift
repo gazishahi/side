@@ -56,10 +56,8 @@ actor DAPClient {
     }
 
     func start() async throws {
-        await transport.setHandlers(
-            onMessage: { data in Task { await self.handle(data) } },
-            onTerminate: { Task { await self.terminated() } }
-        )
+        let inbox = OrderedInbox(handle: { data in await self.handle(data) }, ended: { await self.terminated() })
+        await transport.setHandlers(onMessage: { data in inbox.receive(data) }, onTerminate: { inbox.end() })
         try await transport.start()
         isRunning = true
     }

@@ -407,7 +407,7 @@ Carried forward, grouped because together they decide whether a crash loses work
 | H7 binary as Latin-1 | Fixed, and survived Alloy | `TextFileCodec.swift:43-94`; `FileIntegrityTests` |
 | H8 no file watching | Fixed | `ProjectWatcher.swift` |
 | H9 LSP registry race | Fixed | `LanguageServerRegistry.swift:56-191` |
-| H10 LSP sync order | Fixed outbound; inbound re-ordered (EDT-4); Save As item open (EDT-7) | `LSPManager.swift:369-557` |
+| H10 LSP sync order | Fixed both ways (EDT-4); Save As reopens (EDT-7) | `LSPManager.swift:369-557` |
 | H11 60 KB cap drops the start mark | Fixed | `TerminalViewController.swift:740-782` |
 | H12 sentinel overwrite | Fixed, no test | `TerminalViewController.swift:683-686` |
 | H13 Stop drops completions | Fixed, no test; residual R4 | `:516-523,608-617,1064-1070` |
@@ -517,6 +517,9 @@ Each fix should come with the test that would have caught it; several of these b
 - **DOC-2, fixed.** Each doc says what was built where it differs: Direction 02 (no first-run preset step; Review's line numbers in the gutter), IDE Essentials (no indexing progress, no watched-file notices), the editor plan (fold-all and column shortcuts as built, the table's size), Phase 10 (tasks from `.side/tasks.json` only; the debugger since built), the navigation ledger (the ceiling covers coordinator messages only, no `queued`).
 - **GIT-4, fixed.** A staged rename's source counts as dirty, so a `git mv` in a batch is checkpointed as a move and nothing is left staged.
 - **GIT-6, fixed.** Changes inside a submodule, which a checkpoint can't hold, are named in Think (and for outside agents) instead of passing as "(no file changes)".
+- **EDT-4, fixed.** Language server and debugger messages are handled in arrival order (`OrderedInbox`: one loop over an ordered stream, not a `Task` each), and the debugger's events reach the main thread in order. Test: 2,000 messages, a handler that suspends, none overtaken.
+- **EDT-6, fixed.** Rename, quick fixes and a server's `workspace/applyEdit` are refused whole, with a sheet, when an open file changed since they were worked out: its text differs from when they were asked for, or the server names a version it no longer has.
+- **EDT-7, fixed.** Save As closes the old name on the language server and opens the new one; a saved untitled file is opened, and its edits reach the server and the breakpoints.
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - H15: CI for the app's tests.

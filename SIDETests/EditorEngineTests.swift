@@ -134,6 +134,26 @@ final class EditorEngineTests: XCTestCase {
         XCTAssertEqual(engine.document?.string, "let count = 1\nuse(count)\n", "one undo takes the whole file's edits back")
     }
 
+    /// EDT-6: an edit worked out on text that has changed since is refused whole, not applied
+    /// at offsets that now point elsewhere.
+    func testAServersEditOnChangedTextIsRefused() throws {
+        let original = "let count = 1\nuse(count)\n"
+        let engine = try open("a.ts", original)
+        let url = root.appendingPathComponent("a.ts")
+        let asked = [url: Rope(original)]
+        let rename = LSPWorkspaceEdit(files: [(url.absoluteString, [
+            LSPTextEdit(range: LSPRange(start: LSPPosition(line: 0, character: 4), end: LSPPosition(line: 0, character: 9)), newText: "total"),
+        ])])
+        engine.document?.applyEdits([(range: NSRange(location: 0, length: 0), text: "// note\n")])  // typed meanwhile
+        XCTAssertFalse(make.applyWorkspaceEdit(rename, computedOn: asked))
+        XCTAssertEqual(engine.document?.string, "// note\n" + original, "nothing applied")
+        let current = LSPWorkspaceEdit(files: [(url.absoluteString, [
+            LSPTextEdit(range: LSPRange(start: LSPPosition(line: 1, character: 4), end: LSPPosition(line: 1, character: 9)), newText: "total"),
+        ])])
+        XCTAssertTrue(make.applyWorkspaceEdit(current, computedOn: [url: engine.document!.rope]), "worked out on the text as it is, it applies")
+        XCTAssertEqual(engine.document?.string, "// note\nlet total = 1\nuse(count)\n")
+    }
+
     func testOverlappingEditsAreRefused() {
         let rope = Rope("abcdef")
         let overlapping = [LSPTextEdit(range: LSPRange(start: LSPPosition(line: 0, character: 0), end: LSPPosition(line: 0, character: 3)), newText: "x"),

@@ -241,6 +241,51 @@ final class SaveAsTests: XCTestCase {
     }
 }
 
+/// EDT-7 (2026-09-30 audit): a file saved under a new name, or an untitled one saved, is the
+/// language server's under that name, and its edits reach it.
+@MainActor
+final class SaveAsLanguageServerTests: XCTestCase {
+    func testASavedUntitledFileIsOpenOnItsServerAndFollowsEdits() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("side-saveas-lsp-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: MakeWorkspaceViewController.recoveryDirectory(for: folder))
+        }
+        let make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = container
+        for child in [make.view, make.topRowContent!] { container.addSubview(child) }
+        make.view.frame = container.bounds
+        defer { make.closeAllTabsForTesting(); window.contentView = nil; window.close() }
+        make.loadProject(at: folder)
+
+        make.newUntitledForTesting()
+        make.editActiveTabForTesting("let a = 1\n")
+        let first = folder.appendingPathComponent("a.ts")
+        var saved: Bool?
+        make.saveActiveTabAsForTesting(first) { saved = $0 }
+        var deadline = Date().addingTimeInterval(10)
+        while saved == nil, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(saved, true)
+        XCTAssertEqual(make.languageServerVersionForTesting(first), 1, "open under its new name")
+
+        make.editActiveTabForTesting("let a = 2\n")
+        XCTAssertEqual(make.languageServerVersionForTesting(first), 2, "and its edits reach the server")
+
+        let second = folder.appendingPathComponent("b.ts")
+        saved = nil
+        make.saveActiveTabAsForTesting(second) { saved = $0 }
+        deadline = Date().addingTimeInterval(10)
+        while saved == nil, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertNil(make.languageServerVersionForTesting(first), "the old name closed")
+        XCTAssertEqual(make.languageServerVersionForTesting(second), 1)
+    }
+}
+
 /// 2026-10-01, the owner: scrolling the tab strip under a still pointer left the tabs it passed
 /// over highlighted, since AppKit sends no exit when the view moves rather than the pointer.
 @MainActor

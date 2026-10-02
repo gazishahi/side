@@ -203,3 +203,35 @@ final class LanguageServerRegistryConcurrencyTests: XCTestCase {
         for name in names { XCTAssertNil(LanguageServerRegistry.resolveExecutable(named: name)) }
     }
 }
+
+/// EDT-4 (2026-09-30 audit): what a server sends is handled in the order it arrived, and the end
+/// after the last message.
+final class OrderedInboxTests: XCTestCase {
+    private actor Log {
+        var items: [Int] = []
+        var ended = false
+        func append(_ item: Int) async {
+            // A suspension inside the handler mustn't let the next message overtake it.
+            if item % 7 == 0 { await Task.yield() }
+            items.append(item)
+        }
+        func end() { ended = true }
+    }
+
+    func testMessagesAreHandledInArrivalOrder() async throws {
+        let log = Log()
+        let done = expectation(description: "ended")
+        let inbox = OrderedInbox(handle: { data in await log.append(Int(String(decoding: data, as: UTF8.self))!) },
+                                 ended: { await log.end(); done.fulfill() })
+        let count = 2_000
+        DispatchQueue.global().async {
+            for index in 0..<count { inbox.receive(Data(String(index).utf8)) }
+            inbox.end()
+        }
+        await fulfillment(of: [done], timeout: 10)
+        let items = await log.items
+        XCTAssertEqual(items, Array(0..<count))
+        let ended = await log.ended
+        XCTAssertTrue(ended)
+    }
+}

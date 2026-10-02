@@ -505,6 +505,7 @@ final class WorkspaceEditTests: XCTestCase {
             ["kind": "rename", "oldUri": "file:///a.ts", "newUri": "file:///c.ts"],
         ]]))
         XCTAssertEqual(documentChanges.editCount, 1)
+        XCTAssertEqual(documentChanges.versions, ["file:///a.ts": 3], "the version it was worked out on (EDT-6)")
         XCTAssertEqual(documentChanges.unsupported, 1, "a file rename is counted, not applied")
     }
 
