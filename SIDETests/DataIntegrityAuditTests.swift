@@ -288,6 +288,62 @@ final class DataIntegrityAuditTests: XCTestCase {
                        "only the child's own commit is ahead of main")
     }
 
+    /// A track's base changes in one place: never onto itself or a track stacked on it (a loop),
+    /// nor onto one that has landed or been set aside.
+    @MainActor
+    func testABaseChangesOnlyToALiveTrackOutsideItsOwnStack() throws {
+        makeRepo()
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        func create(_ intent: String, on base: Track?) -> Track? {
+            let done = expectation(description: intent)
+            let made = Captured<Track>()
+            store.createTrack(intent: intent, baseTrack: base) { result in
+                if case .success(let pair) = result { made.value = pair.0 }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 20)
+            return made.value
+        }
+        guard let a = create("A", on: nil), let b = create("B", on: store.tracks.first { $0.id == a.id }),
+              let c = create("C", on: store.tracks.first { $0.id == b.id }), let d = create("D", on: nil) else { return XCTFail("no tracks") }
+        let current = { (id: UUID) in store.tracks.first { $0.id == id }! }
+        XCTAssertEqual(Set(store.eligibleBases(for: current(a.id)).map(\.id)), [d.id], "not itself, not B or C, which are stacked on it")
+        XCTAssertFalse(store.setBase(of: [current(a.id)], to: c.id), "a loop")
+        XCTAssertNil(current(a.id).parentTrackId)
+        XCTAssertTrue(store.setBase(of: [current(c.id)], to: d.id))
+        XCTAssertEqual(ReviewWorkspaceViewController.baseRef(for: current(c.id), trackStore: store), current(d.id).branchName)
+        store.setStatus(.archived, for: current(d.id))
+        XCTAssertFalse(store.setBase(of: [current(b.id)], to: d.id), "an archived track isn't a base")
+        XCTAssertTrue(store.setBase(of: [current(c.id)], to: nil), "the default branch")
+        XCTAssertEqual(ReviewWorkspaceViewController.baseRef(for: current(c.id), trackStore: store), "main")
+    }
+
+    /// A branch turned into a track is stacked on the track it was cut from, not compared with
+    /// main as if the other track's work were its own.
+    @MainActor
+    func testAnAdoptedBranchIsStackedOnTheTrackItWasCutFrom() throws {
+        makeRepo()
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        let done = expectation(description: "track")
+        let made = Captured<Track>()
+        store.createTrack(intent: "Search notes", baseTrack: nil) { result in
+            if case .success(let pair) = result { made.value = pair.0 }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 20)
+        guard let parent = made.value, let path = parent.workingDirectoryPath else { return XCTFail("no track") }
+        try "x".write(toFile: (path as NSString).appendingPathComponent("search.txt"), atomically: true, encoding: .utf8)
+        XCTAssertTrue(GitPaths.runGit(["add", "search.txt"], cwd: path).success)
+        XCTAssertTrue(GitPaths.runGit(["-c", "user.email=t@t", "-c", "user.name=T", "commit", "-q", "-m", "search"], cwd: path).success)
+        XCTAssertTrue(GitPaths.runGit(["branch", "from-track", parent.branchName], cwd: root.path).success)
+        XCTAssertTrue(GitPaths.runGit(["branch", "from-main", "main"], cwd: root.path).success)
+
+        XCTAssertEqual(store.inferredBase(for: "from-track")?.id, parent.id)
+        XCTAssertNil(store.inferredBase(for: "from-main"), "cut from main: main is its base")
+        store.setStatus(.archived, for: store.tracks.first { $0.id == parent.id }!)
+        XCTAssertNil(store.inferredBase(for: "from-track"), "an archived track isn't a base")
+    }
+
     // MARK: - 2026-09-30 audit, H14: a stacked track whose parent was deleted
 
     /// With its parent gone, a stacked track's base fell back to main and Promote merged the

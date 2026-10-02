@@ -342,7 +342,7 @@ final class TrackStore {
                     completion(.failure(error))
                 case .success(let worktreePath):
                     self.demoteActiveTrack()
-                    var track = Track(intent: trimmed, branchName: branchName)
+                    var track = Track(intent: trimmed, branchName: branchName, parentTrackId: self.inferredBase(for: branchName)?.id)
                     track.workingDirectoryPath = worktreePath.path
                     self.tracks.append(track)
                     self.isDetachedHead = false
@@ -378,7 +378,7 @@ final class TrackStore {
         guard let branchName = untrackedBranch else { completion(.failure(TrackError.nothingToPromote)); return }
         epoch += 1
         demoteActiveTrack()
-        var track = Track(intent: trimmed, branchName: branchName)
+        var track = Track(intent: trimmed, branchName: branchName, parentTrackId: inferredBase(for: branchName)?.id)
         // Belt to the clearing above's braces: only hand over a worktree that is actually on this
         // branch. One `symbolic-ref` — a click-triggered action can afford a spawn.
         if let path = untrackedBranchWorkingDirectoryPath {
@@ -577,13 +577,63 @@ final class TrackStore {
     /// their work would never reach main. Their branches already contain the parent's commits,
     /// which are now on the base, so only each child's own work is ahead of it.
     func restackChildren(of parent: Track) {
-        let children = Set(unpromotedChildren(of: parent).map(\.id))
+        let children = unpromotedChildren(of: parent)
         guard !children.isEmpty else { return }
-        for index in tracks.indices where children.contains(tracks[index].id) {
-            tracks[index].parentTrackId = parent.parentTrackId
+        setBase(of: children, to: parent.parentTrackId)
+    }
+
+    // MARK: - A track's base
+
+    /// The live track a branch was cut from, if it was cut from one: a track whose branch is in
+    /// `ref`'s history and has work the default branch doesn't, the one furthest along when
+    /// there are several (a stack). Nil means the default branch. A branch adopted as a track
+    /// used to be compared with the default branch always, so Review showed the other track's
+    /// work as its own and Promote would have landed both. Two git calls per live track.
+    func inferredBase(for ref: String) -> Track? {
+        let base = defaultBranchName()
+        let cwd = projectRoot.path
+        let candidates = tracks.filter { $0.branchName != ref && $0.status != .completed && $0.status != .archived }
+        var best: (track: Track, ahead: Int)?
+        for track in candidates {
+            guard runGit(["merge-base", "--is-ancestor", track.branchName, ref], cwd: cwd).success else { continue }
+            let count = runGit(["rev-list", "--count", "\(base)..\(track.branchName)"], cwd: cwd)
+            guard count.success, let ahead = Int(count.output), ahead > 0 else { continue }
+            if ahead > best?.ahead ?? 0 { best = (track, ahead) }
+        }
+        return best?.track
+    }
+
+    /// The tracks `track` may be stacked on: live ones (not completed or archived) other than
+    /// itself and the tracks stacked on it, at any depth (which would make a loop).
+    func eligibleBases(for track: Track) -> [Track] {
+        var below: Set<UUID> = [track.id]
+        var grew = true
+        while grew {
+            grew = false
+            for candidate in tracks where candidate.parentTrackId.map(below.contains) == true && !below.contains(candidate.id) {
+                below.insert(candidate.id)
+                grew = true
+            }
+        }
+        return tracks.filter { !below.contains($0.id) && $0.status != .completed && $0.status != .archived }
+    }
+
+    /// The one way a track's base changes: Change Base…, Promote and Restack, and archiving or
+    /// completing a parent all come here. `parentId` nil is the default branch. Only the record
+    /// moves; the branch is untouched, so Review then shows it against the new base, and Promote
+    /// lands it there. False (nothing changed) for a base that isn't eligible.
+    @discardableResult
+    func setBase(of moving: [Track], to parentId: UUID?) -> Bool {
+        if let parentId {
+            for track in moving where !eligibleBases(for: track).contains(where: { $0.id == parentId }) { return false }
+        }
+        let ids = Set(moving.map(\.id))
+        for index in tracks.indices where ids.contains(tracks[index].id) {
+            tracks[index].parentTrackId = parentId
         }
         save()
         notifyChange()
+        return true
     }
 
     /// The per-track "auto-run commands" opt-in — off by default. Never touches anything else

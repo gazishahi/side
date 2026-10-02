@@ -106,7 +106,9 @@ This is implemented. `Track.parentTrackId` records the relationship, "New Trackâ
 
 Promotion runs child-first: a stacked track lands in its parent, and the parent then lands in its own base. Promoting a parent that still has unpromoted children (anything not completed or archived) warns and names them, and the default is Cancel. **Promote and Restack** lands the parent, then stacks those children on the parent's own base (`TrackStore.restackChildren`), so their work still reaches `main` instead of promoting into a branch that has already landed (added 2026-10-02).
 
-Two known gaps remain: there is no policy yet for *archiving* (as opposed to deleting) a parent that still has live children, and `TrackStore.applyReconciliation`'s worktree-immunity logic has not been audited for hierarchy.
+A track's base changes in one place, `TrackStore.setBase`: **Change Baseâ€¦** in a track's menu (the default branch, or any live track outside its own stack), Promote and Restack, and **Archive** or **Mark Completed** on a parent with unpromoted children, which asks first and offers to restack them the same way (their branches still hold the parent's work, which the sheet says). A branch turned into a track is stacked on the live track it was cut from, if any (`TrackStore.inferredBase`), and Tracks says so (added 2026-10-02).
+
+One known gap remains: `TrackStore.applyReconciliation`'s worktree-immunity logic has not been audited for hierarchy.
 
 ## First alpha
 

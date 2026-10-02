@@ -1028,8 +1028,9 @@ final class TracksWorkspaceViewController: NSViewController {
             self.trackStore?.promoteCurrentBranch(intent: intent) { [weak self] result in
                 guard let self else { return }
                 switch result {
-                case .success:
+                case .success(let track):
                     self.refreshUI()
+                    self.announceInferredBase(of: track)
                 case .failure(let error):
                     self.showError(error, title: "Couldn't create track", window: window)
                 }
@@ -1106,6 +1107,7 @@ final class TracksWorkspaceViewController: NSViewController {
                     case .success(let (track, outcome)):
                         self.onTrackCreated?(track)
                         self.announce(outcome: outcome)
+                        self.announceInferredBase(of: track)
                     case .failure(let error):
                         self.showError(error, title: "Couldn't create track", window: window)
                     }
@@ -1139,6 +1141,13 @@ final class TracksWorkspaceViewController: NSViewController {
         guard !parts.isEmpty else { return }
         let message = parts.joined(separator: "; ")
         showStatus(message.prefix(1).uppercased() + message.dropFirst())
+    }
+
+    /// A branch turned into a track was stacked on the track it was cut from: said, with how to
+    /// change it.
+    private func announceInferredBase(of track: Track) {
+        guard let parentId = track.parentTrackId, let parent = trackStore?.tracks.first(where: { $0.id == parentId }) else { return }
+        showStatus("Stacked on \u{201C}\(parent.intent)\u{201D}, the track it was cut from. Change Base\u{2026} in its menu to change that.")
     }
 
     private func showStatus(_ message: String) {
@@ -1201,6 +1210,9 @@ final class TracksWorkspaceViewController: NSViewController {
         addItem(to: menu, title: "Open in New Window", action: #selector(openInNewWindowMenuItem(_:)), track: track)
         if let parentId = track.parentTrackId, let parent = trackStore?.tracks.first(where: { $0.id == parentId }) {
             addItem(to: menu, title: "Pull from \u{201C}\(parent.intent)\u{201D}", action: #selector(pullFromParentMenuItem(_:)), track: track)
+        }
+        if track.status != .completed, track.status != .archived {
+            addItem(to: menu, title: "Change Base\u{2026}", action: #selector(changeBaseMenuItem(_:)), track: track)
         }
         menu.addItem(NSMenuItem.separator())
 
@@ -1294,12 +1306,65 @@ final class TracksWorkspaceViewController: NSViewController {
 
     @objc private func completeTrack(_ sender: NSMenuItem) {
         guard let track = sender.representedObject as? Track else { return }
-        trackStore?.setStatus(.completed, for: track)
+        setAsideCheckingChildren(track, to: .completed)
     }
 
     @objc private func archiveTrack(_ sender: NSMenuItem) {
         guard let track = sender.representedObject as? Track else { return }
-        trackStore?.setStatus(.archived, for: track)
+        setAsideCheckingChildren(track, to: .archived)
+    }
+
+    /// Completing or archiving a track that still has tracks stacked on it: they'd keep a base
+    /// nothing lands any more. Asked first; the choice stacks them on this track's own base, as
+    /// Promote and Restack does. Their branches still hold this track's work, which is said.
+    private func setAsideCheckingChildren(_ track: Track, to status: TrackStatus) {
+        guard let store = trackStore else { return }
+        let children = store.unpromotedChildren(of: track)
+        guard !children.isEmpty, let window = view.window else { return store.setStatus(status, for: track) }
+        let base = store.tracks.first { $0.id == track.parentTrackId }.map { "\u{201C}\($0.intent)\u{201D}" } ?? store.defaultBranchName()
+        let one = children.count == 1
+        let names = ListFormatter.localizedString(byJoining: children.map { "\u{201C}\($0.intent.isEmpty ? $0.branchName : $0.intent)\u{201D}" })
+        let verb = status == .archived ? "Archive" : "Complete"
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "\(verb) a track with \(one ? "a track" : "tracks") stacked on it?"
+        alert.informativeText = "\(names) \(one ? "is" : "are") stacked on this track and \(one ? "hasn\u{2019}t" : "haven\u{2019}t") been promoted. "
+            + "\(verb) and Restack stacks \(one ? "it" : "them") on \(base) instead. \(one ? "Its branch" : "Their branches") still \(one ? "holds" : "hold") this track\u{2019}s work, so promoting \(one ? "it" : "them") lands that too."
+        alert.addButton(withTitle: "\(verb) and Restack")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.last?.keyEquivalent = "\r"
+        alert.buttons.first?.keyEquivalent = ""
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            store.restackChildren(of: track)
+            store.setStatus(status, for: track)
+        }
+    }
+
+    /// Change Base…: which track this one is stacked on, or the default branch. Review then
+    /// compares it with that base, and Promote lands it there.
+    @objc private func changeBaseMenuItem(_ sender: NSMenuItem) {
+        guard let track = sender.representedObject as? Track, let store = trackStore, let window = view.window else { return }
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: Self.alertFieldWidth, height: 26), pullsDown: false)
+        popup.addItem(withTitle: store.defaultBranchName())
+        popup.lastItem?.representedObject = nil
+        for base in store.eligibleBases(for: track) {
+            popup.addItem(withTitle: base.intent.isEmpty ? base.branchName : base.intent)
+            popup.lastItem?.representedObject = base.id
+            if base.id == track.parentTrackId { popup.select(popup.lastItem) }
+        }
+        let alert = NSAlert()
+        alert.messageText = "Change Base"
+        alert.informativeText = "What \u{201C}\(track.intent)\u{201D} builds on: Review shows its changes against this, and Promote lands it here. Its branch isn\u{2019}t changed; Pull from the new base to bring that base\u{2019}s work in."
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Change Base")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            let chosen = popup.selectedItem?.representedObject as? UUID
+            guard chosen != track.parentTrackId else { return }
+            store.setBase(of: [track], to: chosen)
+        }
     }
 
     @objc private func renameTrackMenuItem(_ sender: NSMenuItem) {
