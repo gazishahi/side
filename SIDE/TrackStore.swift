@@ -976,6 +976,61 @@ final class TrackStore {
         return cloned
     }
 
+    // MARK: - Env files in a new folder
+
+    /// A new track's folder gets the main checkout's env files, which git leaves out because
+    /// they're ignored, so the track's app starts without them being copied in by hand
+    /// (2026-10-02, the owner). Real copies, so a track can change its own (its `PORT`, say)
+    /// without touching yours, readable only by you. They never leave the Mac, and an agent could
+    /// read them in the main checkout already; `SecretRedactor` keeps credential-shaped values in
+    /// command output away from the model. Copied: every ignored `.env` or `.env.*` at any depth,
+    /// and what `.side/tracks.json` lists under `"copyFiles"` (paths inside the project, like
+    /// `config/master.key`). Nothing already there is overwritten. Returns what was copied.
+    @discardableResult
+    nonisolated static func copyEnvironmentFiles(from main: URL, into worktree: URL) -> [String] {
+        let fileManager = FileManager.default
+        var paths = Set<String>()
+        if let status = GitPaths.status(cwd: main.path, includeIgnored: true) {
+            for entry in status.ignored where !entry.hasSuffix("/") {
+                let name = (entry as NSString).lastPathComponent
+                if name == ".env" || name.hasPrefix(".env.") { paths.insert(entry) }
+            }
+        }
+        paths.formUnion(listedTrackFiles(in: main))
+        let mainRoot = main.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        var copied: [String] = []
+        for relative in paths.sorted() {
+            let source = main.appendingPathComponent(relative), target = worktree.appendingPathComponent(relative)
+            // Inside the project only, even through a symlink.
+            guard source.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(mainRoot),
+                  fileManager.fileExists(atPath: source.path), !fileManager.fileExists(atPath: target.path) else { continue }
+            try? fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard (try? fileManager.copyItem(at: source, to: target)) != nil else { continue }
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: target.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+            }
+            copied.append(relative)
+        }
+        return copied
+    }
+
+    /// `.side/tracks.json`'s `"copyFiles"`: relative paths, none leaving the project.
+    nonisolated static func listedTrackFiles(in main: URL) -> [String] {
+        guard let data = try? Data(contentsOf: main.appendingPathComponent(".side/tracks.json")),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let listed = object["copyFiles"] as? [String] else { return [] }
+        return listed.filter { !$0.hasPrefix("/") && !$0.split(separator: "/").contains("..") && !$0.isEmpty }
+    }
+
+    /// An ignored file in a track's folder that's the same as the main checkout's (an env file
+    /// Side copied in, unchanged): removing it loses nothing.
+    nonisolated static func isUnchangedCopy(_ relative: String, worktree: String, main: URL) -> Bool {
+        let copy = URL(fileURLWithPath: worktree).appendingPathComponent(relative), original = main.appendingPathComponent(relative)
+        guard let ours = try? Data(contentsOf: copy), let theirs = try? Data(contentsOf: original) else { return false }
+        return ours == theirs
+    }
+
     // MARK: - Cleanup
 
     /// A track's branch is its record; its folder is where the work happens, and comes back from
@@ -1046,7 +1101,7 @@ final class TrackStore {
                 var folderGone = true
                 if let path = track.workingDirectoryPath, FileManager.default.fileExists(atPath: path) {
                     let risk = WorkAtRisk.probe(path)
-                    let unknown = risk.ignored.filter { !Self.isRebuildable($0) }
+                    let unknown = risk.ignored.filter { !Self.isRebuildable($0) && !Self.isUnchangedCopy($0, worktree: path, main: self.projectRoot) }
                     if risk.unreadable || risk.uncommitted > 0 || !unknown.isEmpty {
                         let reason = risk.unreadable ? "git couldn\u{2019}t read its folder"
                             : risk.uncommitted > 0 ? "\(risk.uncommitted) uncommitted change\(risk.uncommitted == 1 ? "" : "s")"
@@ -1284,6 +1339,7 @@ final class TrackStore {
         let result = runGit(args, cwd: cwd)
         guard result.success else { return .failure(.gitWorktreeFailed(result.output)) }
         Self.cloneDependencies(from: projectRoot, into: path)
+        Self.copyEnvironmentFiles(from: projectRoot, into: path)
         return .success(path)
     }
 
@@ -1323,6 +1379,7 @@ final class TrackStore {
         let addResult = runGit(["worktree", "add", path.path, track.branchName], cwd: cwd)
         guard addResult.success else { return .failure(.gitWorktreeFailed(addResult.output)) }
         Self.cloneDependencies(from: projectRoot, into: path)
+        Self.copyEnvironmentFiles(from: projectRoot, into: path)
         if dirtyCount > 0 {
             let popResult = runGit(["stash", "pop"], cwd: path.path)
             outcome.restoredFileCount = dirtyCount

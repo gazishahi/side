@@ -118,6 +118,8 @@ The sweep runs when a project opens, when a window moves to another track, and a
 
 A new track's folder starts with the main checkout's `node_modules` (at any depth, for a monorepo's packages) as APFS clones (`TrackStore.cloneDependencies`): instant, and no disk used until a file changes. Only `node_modules`: virtualenvs and build folders record absolute paths. On a disk without clones nothing is copied.
 
+A new track's folder also gets the main checkout's env files, which git leaves out: every ignored `.env` and `.env.*`, and anything `.side/tracks.json` lists under `"copyFiles"` (paths inside the project), as real copies readable only by you (`TrackStore.copyEnvironmentFiles`). A copy the track left unchanged doesn't keep its folder from being cleaned up; one it changed does (decided with the owner 2026-10-02: copies, not links, so a track can change its own).
+
 One known gap remains: `TrackStore.applyReconciliation`'s worktree-immunity logic has not been audited for hierarchy.
 
 ## First alpha

@@ -443,6 +443,56 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertEqual(GitPaths.runGit(["status", "--porcelain"], cwd: worktree.path).output, "", "and git ignores it there too")
     }
 
+    /// A new track's folder gets the project's env files and what `.side/tracks.json` lists,
+    /// copies readable only by you; nothing outside the project. A copy left as it was doesn't
+    /// keep a finished track's folder around; one the track changed does.
+    @MainActor
+    func testANewTrackGetsTheProjectsEnvFiles() throws {
+        makeRepo()
+        try ".env\n.env.*\n!.env.example\nconfig/master.key\n".write(to: root.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".side"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("config"), withIntermediateDirectories: true)
+        try #"{"copyFiles": ["config/master.key", "../outside.txt"]}"#.write(to: root.appendingPathComponent(".side/tracks.json"), atomically: true, encoding: .utf8)
+        try "EXAMPLE=1".write(to: root.appendingPathComponent(".env.example"), atomically: true, encoding: .utf8)
+        git(["add", "."]); git(["commit", "-q", "-m", "config"])
+        try "SECRET=1".write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        try "LOCAL=1".write(to: root.appendingPathComponent(".env.local"), atomically: true, encoding: .utf8)
+        try "key".write(to: root.appendingPathComponent("config/master.key"), atomically: true, encoding: .utf8)
+        try "no".write(to: root.deletingLastPathComponent().appendingPathComponent("outside.txt"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent().appendingPathComponent("outside.txt")) }
+
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        func create(_ intent: String) -> Track {
+            let done = expectation(description: intent)
+            let made = Captured<Track>()
+            store.createTrack(intent: intent, baseTrack: nil) { result in
+                if case .success(let pair) = result { made.value = pair.0 }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 20)
+            return made.value!
+        }
+        let kept = create("Kept as copied"), changed = create("Changed its env")
+        let folder = URL(fileURLWithPath: kept.workingDirectoryPath!)
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent(".env"), encoding: .utf8), "SECRET=1")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent(".env.local"), encoding: .utf8), "LOCAL=1")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("config/master.key"), encoding: .utf8), "key")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.deletingLastPathComponent().appendingPathComponent("outside.txt").path), "nothing from outside the project")
+        let permissions = try FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(".env").path)[.posixPermissions] as? Int
+        XCTAssertEqual(permissions, 0o600, "readable only by you")
+        XCTAssertEqual(GitPaths.runGit(["status", "--porcelain"], cwd: folder.path).output, "", "git ignores them there too")
+
+        try "SECRET=2".write(toFile: (changed.workingDirectoryPath! as NSString).appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        for track in [kept, changed] { store.setStatus(.archived, for: store.tracks.first { $0.id == track.id }!) }
+        let done = expectation(description: "cleanup")
+        let report = Captured<TrackStore.CleanupReport>()
+        store.cleanUp(.setAside, sparing: []) { report.value = $0; done.fulfill() }
+        wait(for: [done], timeout: 30)
+        XCTAssertNil(store.tracks.first { $0.id == kept.id }?.workingDirectoryPath, "an unchanged copy loses nothing")
+        XCTAssertNotNil(store.tracks.first { $0.id == changed.id }?.workingDirectoryPath, "a changed one is kept")
+        XCTAssertEqual(report.value?.kept.map(\.intent), ["Changed its env"])
+    }
+
     // MARK: - 2026-09-30 audit, H14: a stacked track whose parent was deleted
 
     /// With its parent gone, a stacked track's base fell back to main and Promote merged the
