@@ -402,6 +402,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
     }
 
     nonisolated static func gitMarks(root: URL) -> [String: GitMark] {
+        guard DeveloperTools.gitInstalled else { return [:] }
         let process = Process()
         process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")

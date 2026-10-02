@@ -1419,6 +1419,7 @@ final class ShellViewController: NSViewController {
     }
 
     nonisolated private static func runGit(_ args: [String], in directory: String) -> String? {
+        guard DeveloperTools.gitInstalled else { return nil }
         let process = Process()
         process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")

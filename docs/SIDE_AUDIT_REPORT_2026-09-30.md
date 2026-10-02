@@ -511,6 +511,8 @@ Each fix should come with the test that would have caught it; several of these b
 - **SEC-13, fixed.** Consent fingerprints (rules, `.side/tasks.json`, `.vscode/launch.json` and `tasks.json`) are SHA-256; an acceptance recorded under FNV-1a matches nothing, so each file is asked about once more.
 - **UX-14, fixed.** Until the person chooses, an outside agent other than Claude Code whose key is exported to Side starts in API-key mode; Claude Code keeps its subscription. The BYO RFC describes what's built.
 - **Timing limits** of `testMarkdownPreviewSwitchesQuickly` and `testTheInspectorPagesABigArray` apply only with `SIDE_BUDGETS=1`.
+- **REL-1, fixed.** `release.sh` stops before deleting or building anything unless it read a real version and build number.
+- **REL-2, fixed.** Side checks for git (any developer directory, no process run) before every git call. Without it, git isn't run (so macOS's dialog doesn't appear unasked); Tracks, Think, Review and first run say git is missing and offer Install Git…, which explains and then opens macOS's installer.
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - H15: CI for the app's tests.

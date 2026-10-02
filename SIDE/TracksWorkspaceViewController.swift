@@ -840,7 +840,16 @@ final class TracksWorkspaceViewController: NSViewController {
     }
 
     private func makeNotAGitRepoBanner() -> NSView {
-        makeInfoBannerCard(
+        // No git at all (REL-2): every folder reads as a non-repository; say what's missing.
+        guard DeveloperTools.gitInstalled else {
+            return makeInfoBannerCard(
+                symbolName: "exclamationmark.circle",
+                text: "\(DeveloperTools.missingMessage) Tracks needs it to manage branches.",
+                buttonTitle: "Install Git…",
+                action: #selector(initializeGitTapped)
+            )
+        }
+        return makeInfoBannerCard(
             symbolName: "exclamationmark.circle",
             text: "This project isn't a git repository yet. Tracks needs one to manage branches.",
             buttonTitle: "Initialize Git…",
@@ -1048,6 +1057,7 @@ final class TracksWorkspaceViewController: NSViewController {
 
     @objc private func initializeGitTapped() {
         guard let window = view.window else { return }
+        guard DeveloperTools.gitInstalled else { return Self.offerToInstallGit(window: window) }
         trackStore?.initializeGitRepo { [weak self] result in
             guard let self else { return }
             switch result {
@@ -1056,6 +1066,18 @@ final class TracksWorkspaceViewController: NSViewController {
             case .failure(let error):
                 self.showError(error, title: "Couldn't initialize git", window: window)
             }
+        }
+    }
+
+    /// Git is missing (REL-2): say so before macOS's own installer appears.
+    static func offerToInstallGit(window: NSWindow) {
+        let alert = NSAlert()
+        alert.messageText = "Install Git"
+        alert.informativeText = "\(DeveloperTools.missingMessage) macOS installs them (about 1 GB, a few minutes). Reopen the project when they're done."
+        alert.addButton(withTitle: "Install Command Line Tools")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { DeveloperTools.install() }
         }
     }
 

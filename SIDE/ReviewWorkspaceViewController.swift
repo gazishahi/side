@@ -505,7 +505,11 @@ final class ReviewWorkspaceViewController: NSViewController {
             return
         }
         if trackStore?.repoState == .notAGitRepo {
-            showEmptyState(true, message: "Review works from commits, and this project isn't a git repository yet.", action: ("Initialize Git…", .initializeGit))
+            if !DeveloperTools.gitInstalled {
+                showEmptyState(true, message: "Review works from commits. \(DeveloperTools.missingMessage)", action: ("Install Git…", .initializeGit))
+            } else {
+                showEmptyState(true, message: "Review works from commits, and this project isn't a git repository yet.", action: ("Initialize Git…", .initializeGit))
+            }
             return
         }
         guard let track = currentTrack, let trackStore else {

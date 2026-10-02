@@ -1120,6 +1120,7 @@ final class TrackStore {
     /// diagnostics — which is the whole argument for adopting strict concurrency rather than
     /// merely enabling it.
     nonisolated private func runGit(_ args: [String], cwd: String) -> (success: Bool, output: String) {
+        guard DeveloperTools.gitInstalled else { return (false, DeveloperTools.missingMessage) }
         let process = Process()
         process.environment = SpawnEnvironment.current()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")

@@ -522,7 +522,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         if runnerManager == nil {
             emptyState.configure("Open a project to start a conversation.", action: "Open Project…", handler: act(.openProject))
         } else if trackStore?.repoState == .notAGitRepo {
-            emptyState.configure("Conversations happen on tracks, and tracks need git.", action: "Initialize Git…", handler: act(.initializeGit))
+            let installed = DeveloperTools.gitInstalled
+            emptyState.configure(installed ? "Conversations happen on tracks, and tracks need git." : "Conversations happen on tracks, and tracks need git. \(DeveloperTools.missingMessage)",
+                                 action: installed ? "Initialize Git…" : "Install Git…", handler: act(.initializeGit))
         } else if runner == nil {
             let hasTracks = trackStore?.tracks.contains { $0.status != .archived } ?? false
             emptyState.configure("Think works on a track.", action: hasTracks ? "Choose a Track…" : "New Track", handler: act(hasTracks ? .chooseTrack : .newTrack))

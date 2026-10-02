@@ -20,8 +20,13 @@ TEAM="${SIDE_TEAM_ID:?Set SIDE_TEAM_ID to your Apple Developer Team ID}"
 PROFILE="${SIDE_NOTARY_PROFILE:-side-notary}"
 DRY_RUN=0; [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-VERSION=$(xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -showBuildSettings 2>/dev/null | awk -F' = ' '/ MARKETING_VERSION /{print $2; exit}')
-BUILD=$(xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -showBuildSettings 2>/dev/null | awk -F' = ' '/ CURRENT_PROJECT_VERSION /{print $2; exit}')
+SETTINGS=$(xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -skipPackagePluginValidation -showBuildSettings 2>/dev/null || true)
+VERSION=$(awk -F' = ' '/ MARKETING_VERSION /{print $2; exit}' <<< "$SETTINGS")
+BUILD=$(awk -F' = ' '/ CURRENT_PROJECT_VERSION /{print $2; exit}' <<< "$SETTINGS")
+# Nothing is deleted or built without a real version: an empty one made OUT build/release/, and
+# the rm -rf below took every earlier release with it, dSYMs included (2026-09-30 audit, REL-1).
+[[ "$VERSION" =~ '^[0-9]+(\.[0-9]+){1,2}$' ]] || { echo "couldn't read MARKETING_VERSION (got '$VERSION'); nothing was deleted" >&2; exit 1; }
+[[ "$BUILD" =~ '^[0-9]+(\.[0-9]+)*$' ]] || { echo "couldn't read CURRENT_PROJECT_VERSION (got '$BUILD'); nothing was deleted" >&2; exit 1; }
 OUT="build/release/$VERSION"
 SPM="build/spm"
 RELEASES_REPO="${SIDE_RELEASES_REPO:-gazishahi/side-releases}"
