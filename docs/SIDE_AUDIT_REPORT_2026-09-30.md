@@ -521,7 +521,7 @@ Each fix should come with the test that would have caught it; several of these b
 - **EDT-6, fixed.** Rename, quick fixes and a server's `workspace/applyEdit` are refused whole, with a sheet, when an open file changed since they were worked out: its text differs from when they were asked for, or the server names a version it no longer has.
 - **EDT-7, fixed.** Save As closes the old name on the language server and opens the new one; a saved untitled file is opened, and its edits reach the server and the breakpoints.
 - **UX-10, fixed.** Remove Provider, Remove Key and Remove Agent ask first. Add Provider says what's missing or wrong and keeps what was typed. A saved provider key is checked with the provider's model list (free) and the status line says whether it was accepted, refused or couldn't be checked; outside agents' keys aren't checked. A track whose provider was removed says so instead of "No API key".
+- **H15, CI, decided (owner, 2026-10-02): no hosted CI before launch.** `gazishahi/side` is private, where GitHub's macOS runners cost about ten times the free minutes, roughly ten full runs a month. The gate is local instead: every commit lands only after `scripts/test.sh` exits 0. Heron and Alloy keep their own CI, free as public repositories. Revisit after launch.
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
-  - H15: CI for the app's tests.
   - The other Mediums and Lows.
