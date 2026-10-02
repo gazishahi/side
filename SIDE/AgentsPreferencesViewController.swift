@@ -23,7 +23,7 @@ final class AgentsPreferencesViewController: NSViewController {
         keyFields.removeAll()
         var sections: [NSView] = [SettingsSplitViewController.hero(.agents)]
         sections += ACPAgent.known.map(section(for:))
-        sections.append(SettingsForm.section(footer: "Other agents that speak the Agent Client Protocol (OpenCode, Qwen Code, Goose and more) can be added by the command that starts them in ACP mode. Side has verified Claude Code; the others are experimental, and may not work fully.", [
+        sections.append(SettingsForm.section(footer: "Other agents that speak the Agent Client Protocol (Qwen Code, Goose and more) can be added by the command that starts them in ACP mode. Side has verified Claude Code; the others are experimental, and may not work fully.", [
             SettingsForm.row("Add another agent", SettingsForm.button("Add Agent\u{2026}", self, #selector(addAgent))),
         ]))
         SettingsForm.install(SettingsForm.page(sections), in: view)

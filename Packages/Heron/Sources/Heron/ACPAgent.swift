@@ -40,8 +40,9 @@ public struct ACPAgent: Equatable, Sendable, Codable {
     public var isVerified: Bool { Self.verifiedIds.contains(id) }
 
     /// The agents Side ships knowing how to launch. Claude Code, Codex and Pi speak ACP through
-    /// small adapters; Gemini CLI speaks it natively. Anything else in the ACP registry can be
-    /// added as a custom agent.
+    /// small adapters; Gemini CLI and OpenCode speak it natively. Anything else in the ACP
+    /// registry can be added as a custom agent. OpenCode keeps its providers' keys itself
+    /// (`opencode auth login`), so it takes none from Side.
     public static let builtIn: [ACPAgent] = [
         ACPAgent(id: "claude-code", displayName: "Claude Code", binary: "claude-agent-acp",
                  installHint: "npm install -g @agentclientprotocol/claude-agent-acp",
@@ -58,6 +59,9 @@ public struct ACPAgent: Equatable, Sendable, Codable {
         ACPAgent(id: "pi", displayName: "Pi", binary: "pi-acp",
                  installHint: "npm install -g pi-acp @earendil-works/pi-coding-agent",
                  subscriptionName: "Pi's own login"),
+        ACPAgent(id: "opencode", displayName: "OpenCode", binary: "opencode", arguments: ["acp"],
+                 installHint: "brew install opencode, or npm install -g opencode-ai",
+                 subscriptionName: "OpenCode's own sign-in (opencode auth login)"),
     ]
 
     /// Built-in agents, then the user's own.
