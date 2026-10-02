@@ -227,6 +227,9 @@ final class EditorParityTests: XCTestCase {
         }
         // The first switch to the preview renders and lays it out; after that the unchanged
         // document is reused, so every switch is immediate.
+        // Limits only where timings mean something (the budgets): on a loaded machine the
+        // ordinary suite missed 30 ms and passed alone.
+        guard Budgets.enabled else { return }
         XCTAssertLessThan(times[0], 250, "first preview")
         XCTAssertLessThan(times.dropFirst().max()!, 30, "switches after that: \(times)")
     }

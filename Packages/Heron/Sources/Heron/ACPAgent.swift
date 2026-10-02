@@ -114,9 +114,19 @@ public struct ACPAgent: Equatable, Sendable, Codable {
     private static func signInKey(_ id: String) -> String { "SideACPSignIn.\(id)" }
     static func keychainAccount(_ id: String) -> String { "acp.\(id)" }
 
+    /// Until the person chooses: the subscription, except for an agent whose key is already in
+    /// Side's environment, where that key is often the only credential (an exported Gemini or
+    /// OpenAI key; 2026-09-30 audit, UX-14). Not Claude Code, where an exported key silently
+    /// bills instead of the login (D7 addendum).
     public var signIn: SignIn {
-        get { Self.defaults.string(forKey: Self.signInKey(id)).flatMap(SignIn.init(rawValue:)) ?? .subscription }
+        get { Self.defaults.string(forKey: Self.signInKey(id)).flatMap(SignIn.init(rawValue:)) ?? defaultSignIn }
         nonmutating set { Self.defaults.set(newValue.rawValue, forKey: Self.signInKey(id)) }
+    }
+
+    var defaultSignIn: SignIn {
+        let environment = ProcessInfo.processInfo.environment
+        let exported = apiKeyVariables.contains { environment[$0]?.isEmpty == false }
+        return exported && id != "claude-code" ? .apiKey : .subscription
     }
 
     /// Whether this agent can take a key at all (it names a variable to read it from).

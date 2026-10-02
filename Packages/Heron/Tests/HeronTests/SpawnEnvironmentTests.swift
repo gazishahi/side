@@ -19,4 +19,16 @@ final class SpawnEnvironmentTests: XCTestCase {
         let result = GitPaths.runGit(["-c", "alias.env=!printenv SIDE_TEST_API_KEY; echo done", "env"], cwd: NSTemporaryDirectory())
         XCTAssertEqual(result.output.trimmingCharacters(in: .whitespacesAndNewlines), "done")
     }
+
+    /// UX-14: with no choice made, an agent whose key is exported uses it; Claude Code doesn't.
+    func testAnExportedKeyIsTheDefaultSignInExceptForClaudeCode() {
+        setenv("SIDE_TEST_AGENT_KEY", "k", 1)
+        defer { unsetenv("SIDE_TEST_AGENT_KEY") }
+        let gemini = ACPAgent(id: "gemini", displayName: "G", binary: "g", installHint: "", apiKeyVariables: ["SIDE_TEST_AGENT_KEY"])
+        let claude = ACPAgent(id: "claude-code", displayName: "C", binary: "c", installHint: "", apiKeyVariables: ["SIDE_TEST_AGENT_KEY"])
+        let unset = ACPAgent(id: "codex", displayName: "X", binary: "x", installHint: "", apiKeyVariables: ["SIDE_TEST_NO_SUCH_KEY"])
+        XCTAssertEqual(gemini.defaultSignIn, .apiKey)
+        XCTAssertEqual(claude.defaultSignIn, .subscription)
+        XCTAssertEqual(unset.defaultSignIn, .subscription)
+    }
 }

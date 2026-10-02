@@ -508,8 +508,10 @@ Each fix should come with the test that would have caught it; several of these b
 - **SEC-11, fixed.** A project's own code (its tsserver, rust-analyzer's build scripts and proc macros, a local Prettier) runs only once the project is trusted; Make asks with a banner, per repository.
 - **SEC-10, fixed.** Below Full, a fetch from a host not approved before in the conversation asks first.
 - **SEC-14, fixed.** Every child Side starts gets one environment without secrets (`SpawnEnvironment`: names with API_KEY, TOKEN, SECRET, PASSWORD, CREDENTIAL, ACCESS_KEY, PRIVATE_KEY): language servers, adapters and their programs, formatters, git, builds, installers, outside agents. gh keeps its own token variables; an outside agent in API-key mode still gets its key, from Side's environment if it isn't stored. The terminal keeps the person's environment. Tests: a key exported to Side doesn't reach git, a build or an adapter.
+- **SEC-13, fixed.** Consent fingerprints (rules, `.side/tasks.json`, `.vscode/launch.json` and `tasks.json`) are SHA-256; an acceptance recorded under FNV-1a matches nothing, so each file is asked about once more.
+- **UX-14, fixed.** Until the person chooses, an outside agent other than Claude Code whose key is exported to Side starts in API-key mode; Claude Code keeps its subscription. The BYO RFC describes what's built.
+- **Timing limits** of `testMarkdownPreviewSwitchesQuickly` and `testTheInspectorPagesABigArray` apply only with `SIDE_BUDGETS=1`.
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - H15: CI for the app's tests.
-  - Timing limits inside the ordinary suite (`testMarkdownPreviewSwitchesQuickly` 30 ms, `testTheInspectorPagesABigArray` 30 ms) fail under a loaded machine and pass alone; they belong with the opt-in budgets.
   - The other Mediums and Lows.

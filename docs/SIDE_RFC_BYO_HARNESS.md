@@ -214,8 +214,11 @@ another agent).
    "Claude Code · Opus 5.5 · 12%". The session opens when Think attaches, so all of this shows
    before the first message. Verified live with Claude Code; **Codex, Gemini CLI and Pi are
    selectable and detected but not yet verified against the real adapters** (not installed on
-   the development machine). Environment hiding (`ACPAgent.hiddenEnvironment`) is Claude Code
-   only: an exported Gemini or OpenAI key is often the user's only credential for those agents.
+   the development machine). Keys follow the D7 addendum (`ACPAgent.launchEnvironment`):
+   Subscription removes every key variable the agent reads; API key gives it one. An exported
+   Gemini or OpenAI key is often the user's only credential, so until the person chooses, an
+   agent other than Claude Code whose key is in Side's environment starts in API-key mode
+   (2026-10-01, UX-14).
 5. **Durability**: the tagged session log and `session/load`.
    **Built 2026-09-23.** `OutsideSessionLog`: Side's record of each outside conversation, one
    JSON line per finished entry in `think/outside/<track>.<agent>.jsonl`, appended at each send
