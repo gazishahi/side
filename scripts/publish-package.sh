@@ -35,7 +35,10 @@ if (( ! RELEASE_ONLY )); then
   git -C "$ROOT" archive "HEAD:Packages/$PACKAGE" | tar -x
   git add -A
   git diff --cached --quiet && { echo "nothing changed since the last publish" >&2; exit 1; }
-  git -c user.name="$AUTHOR_NAME" -c user.email="$AUTHOR_EMAIL" commit -q -m "$SUBJECT" ${NOTES_BODY:+-m "$NOTES_BODY"}
+  # An array: `${NOTES_BODY:+-m "$NOTES_BODY"}` is one word in zsh ("-m <body>"), which made the
+  # body start with a space and the notes skip its first bullet (Heron 0.1.2).
+  message=(-m "$SUBJECT"); [[ -n "${NOTES_BODY:-}" ]] && message+=(-m "$NOTES_BODY")
+  git -c user.name="$AUTHOR_NAME" -c user.email="$AUTHOR_EMAIL" commit -q "${message[@]}"
   git push -q origin HEAD
   SHA=$(git rev-parse HEAD)
   echo "==> Waiting for CI on ${SHA:0:7}"
@@ -52,7 +55,7 @@ if (( ! RELEASE_ONLY )); then
 fi
 
 git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null || { echo "no tag $VERSION" >&2; exit 1; }
-gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1 && { echo "$PACKAGE $VERSION already has a Release"; exit 0; }
+[[ -z "${DRY_RUN:-}" ]] && gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1 && { echo "$PACKAGE $VERSION already has a Release"; exit 0; }
 
 # The notes: each commit since the previous tag, its "X.Y.Z: " prefix dropped, its body's
 # "- " bullets under it.
@@ -66,7 +69,7 @@ NOTES="$WORK/notes.md"
     [[ "$subject" == "Initial commit" ]] && continue
     echo "- ${(U)subject[1]}${subject[2,-1]}"
     # A body bullet may wrap onto indented lines: joined back into one.
-    git log -1 --format=%b "$sha" | awk '/^- / { if (item) print item; item = "  " $0; next }
+    git log -1 --format=%b "$sha" | awk '{ sub(/^ +- /, "- ") } /^- / { if (item) print item; item = "  " $0; next }
       /^  +[^ ]/ && item { sub(/^ +/, ""); item = item " " $0; next }
       { if (item) print item; item = "" } END { if (item) print item }'
   done
