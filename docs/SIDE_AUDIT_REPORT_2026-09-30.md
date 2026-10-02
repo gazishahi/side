@@ -426,26 +426,24 @@ Mediums from 09-01:
 
 ## Release-readiness gate
 
-| Condition | Verdict |
-|---|---|
-| Zero known unattended code-execution paths | **Not met:** C1 |
-| No data loss | **Not met:** C2, H1 with no autosave, H2, H4, GIT-5/R3 |
-| No false success or misattribution | **Not met:** H4, H5, GIT-6, UX-11 |
-| Spend is bounded as promised | **Not met:** H3, H5, H11 |
-| Accessibility not blocking (gate 5) | **Not met:** UX-6, UX-7, UX-8 (by reading; a live VoiceOver pass is still needed) |
-| A clean first run (gate 6) | **Not met:** H10 |
-| Outside agents verified or labelled (gate 4) | **Not met:** H12 |
-| Documentation is true | **Met:** DOC-2, DOC-4 and H13 fixed (DOC-3's stale status lines remain, Low) |
-| Prior fixes hold | **Met** (H12 and H13 of 09-01 untested) |
+Re-checked 2026-10-02 against the fixes below. The verdicts as found on 09-30 are in each item's own entry.
 
-**Suggested order:**
-1. The two Criticals.
-2. H1, the SIGPIPE crash: one line at launch, plus the write calls.
-3. The runaway-billing Highs: H3, H5, H6, H11.
-4. The data Highs: H2, H4, and GIT-5 with R3.
-5. H10, the first run.
-6. H7, H8 and H9.
-7. The Mediums, by stream.
+| Condition | Verdict now | As found (09-30) |
+|---|---|---|
+| Zero known unattended code-execution paths | **Met:** C1 and SEC-11 fixed. Low SEC-1 (subtracks without a card under Full) and SEC-15 (unpinned installers) remain. | C1 |
+| No data loss | **Met:** C2, H1, H2, H4 and GIT-5/R3/GIT-7 fixed, plus crash recovery (H14). Lows EDT-10 and EDT-11 (line endings changed on save) remain. | C2, H1, H2, H4, GIT-5/R3 |
+| No false success or misattribution | **Not met:** UX-11 (Low), the verification line naming a checkpoint that wasn't made. H4, H5 and GIT-6 fixed. | H4, H5, GIT-6, UX-11 |
+| Spend is bounded as promised | **Met:** H3, H5, H11 and HER-6/PRV-3 fixed; outside agents stop at the limit. | H3, H5, H11 |
+| Accessibility not blocking (gate 5) | **Met:** UX-6 to UX-9 fixed, and the owner's live VoiceOver pass found nothing (2026-10-02). | UX-6, UX-7, UX-8 |
+| A clean first run (gate 6) | **Met:** H10 fixed (with UX-1 and UX-2). | H10 |
+| Outside agents verified or labelled (gate 4) | **Met:** H12 fixed. Claude Code is verified; Codex, Gemini CLI, Pi and OpenCode are labelled Experimental (OpenCode's handshake checked 2026-10-02). | H12 |
+| Documentation is true | **Met:** DOC-2, DOC-4 and H13 fixed. DOC-3's stale status lines remain (Low). | DOC-2, DOC-4, H13 |
+| Prior fixes hold | **Met.** H12 and H13 of 09-01 still have no regression tests (Low). | Met |
+
+**Still open:**
+1. Mediums: EDT-9 (pasted CRLF and lone CR), PRV-5 (local providers' context window), HER-5 (a coordinator reading a dropped subtrack as not started).
+2. The Lows in Part III, UX-11 first, since it alone holds a gate.
+3. Outside the audit: notarization credentials for a signed release (`SIDE_DISTRIBUTION.md`).
 
 Each fix should come with the test that would have caught it; several of these bugs shipped beside a test that passed.
 
@@ -525,6 +523,6 @@ Each fix should come with the test that would have caught it; several of these b
 - **CON-3, fixed.** A language server or debug adapter that ends or is stopped is freed with its pipes: the manager's `onTerminate` holds the client weakly, and stopping ends the client's inbox loop and drops its handlers (the loop, added for EDT-4, had held it too). Test: 20 servers started and lost, no descriptors left and the last client freed; it fails without the fix.
 - **CON-6, fixed.** The file-walk cache keeps the 3 most recent roots, drops a track's folder when it's removed, and keeps a walk cut short at 25,000 files instead of walking again every call.
 - **CON-7, fixed.** The caret's blink draws its one frame without waking Alloy's display link; anything else still wakes it. In Alloy, unreleased.
-- **Gate 5** now waits only on a live VoiceOver pass by a person.
+- **Gate 5, met.** The owner's live VoiceOver pass found nothing (2026-10-02).
 - **Open:**
   - The other Mediums and Lows.
