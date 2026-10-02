@@ -522,6 +522,9 @@ Each fix should come with the test that would have caught it; several of these b
 - **EDT-7, fixed.** Save As closes the old name on the language server and opens the new one; a saved untitled file is opened, and its edits reach the server and the breakpoints.
 - **UX-10, fixed.** Remove Provider, Remove Key and Remove Agent ask first. Add Provider says what's missing or wrong and keeps what was typed. A saved provider key is checked with the provider's model list (free) and the status line says whether it was accepted, refused or couldn't be checked; outside agents' keys aren't checked. A track whose provider was removed says so instead of "No API key".
 - **H15, CI, decided (owner, 2026-10-02): no hosted CI before launch.** `gazishahi/side` is private, where GitHub's macOS runners cost about ten times the free minutes, roughly ten full runs a month. The gate is local instead: every commit lands only after `scripts/test.sh` exits 0. Heron and Alloy keep their own CI, free as public repositories. Revisit after launch.
+- **CON-3, fixed.** A language server or debug adapter that ends or is stopped is freed with its pipes: the manager's `onTerminate` holds the client weakly, and stopping ends the client's inbox loop and drops its handlers (the loop, added for EDT-4, had held it too). Test: 20 servers started and lost, no descriptors left and the last client freed; it fails without the fix.
+- **CON-6, fixed.** The file-walk cache keeps the 3 most recent roots, drops a track's folder when it's removed, and keeps a walk cut short at 25,000 files instead of walking again every call.
+- **CON-7, fixed.** The caret's blink draws its one frame without waking Alloy's display link; anything else still wakes it. In Alloy, unreleased.
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - The other Mediums and Lows.

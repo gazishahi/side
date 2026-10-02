@@ -574,9 +574,11 @@ final class LSPManager: @unchecked Sendable {
                 // permanently disabling diagnostics/autocomplete for the language for the rest
                 // of the session. Evicting it here means the next call to `withClient` finds
                 // nothing cached and transparently spawns a fresh server instead.
-                await client.setOnTerminate { [weak self] in
+                // `client` weakly: the client keeps this closure, and a strong capture was a cycle
+                // that leaked every server's pipes (CON-3).
+                await client.setOnTerminate { [weak self, weak client] in
                     DispatchQueue.main.async {
-                        guard let self, self.clients[entry.binaryName] === client else { return }
+                        guard let self, let client, self.clients[entry.binaryName] === client else { return }
                         self.clients[entry.binaryName] = nil
                         // Freeze the queue and remember the death: the next spawn replays
                         // didOpen for every open document before anything else reaches it.

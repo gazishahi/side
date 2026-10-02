@@ -34,6 +34,8 @@ actor LSPClient {
         onApplyEdit = handler
     }
     private var onTerminate: (@Sendable () -> Void)?
+    /// Kept so `stop` can end its loop, which holds this client.
+    private var inbox: OrderedInbox?
 
     init(executableURL: URL, arguments: [String], environment: [String: String]?, currentDirectory: URL?) {
         transport = JSONRPCTransport(executableURL: executableURL, arguments: arguments, environment: environment, currentDirectory: currentDirectory)
@@ -67,6 +69,7 @@ actor LSPClient {
 
     private func startInternal<Options: Encodable>(rootURI: String, initializationOptions: Options?) async throws -> LSPServerCapabilities {
         let inbox = OrderedInbox(handle: { data in await self.handleMessage(data) }, ended: { await self.handleTermination() })
+        self.inbox = inbox
         await transport.setHandlers(onMessage: { data in inbox.receive(data) }, onTerminate: { inbox.end() })
         try await transport.start()
         isRunning = true
@@ -82,6 +85,19 @@ actor LSPClient {
         await transport.stop()
         await transport.clearHandlers()
         failAllPending(with: ClientError.notRunning)
+        letGo()
+    }
+
+    /// Drops everything that could hold this client: the inbox's loop and the handlers (the
+    /// manager's capture the client), so it and its three pipes are freed (CON-3: every server
+    /// leaked them, and a session of track switches ran into the 256-descriptor limit).
+    private func letGo() {
+        inbox?.close()
+        inbox = nil
+        onTerminate = nil
+        onDiagnostics = nil
+        onApplyEdit = nil
+        onConfiguration = nil
     }
 
     func didOpen(uri: String, languageId: String, text: String, version: Int) async throws {
@@ -247,6 +263,7 @@ actor LSPClient {
         failAllPending(with: ClientError.notRunning)
         let callback = onTerminate
         Task { await transport.clearHandlers() }
+        letGo()
         callback?()
     }
 

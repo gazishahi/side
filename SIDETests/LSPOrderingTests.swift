@@ -235,3 +235,36 @@ final class OrderedInboxTests: XCTestCase {
         XCTAssertTrue(ended)
     }
 }
+
+/// CON-3 (2026-09-30 audit): a language server that ends, or is stopped, leaves no client and no
+/// pipes behind. Every one leaked three descriptors, and the limit is 256.
+final class LanguageServerLeakTests: XCTestCase {
+    private func openDescriptors() -> Int { (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0 }
+
+    func testServersThatEndOrAreStoppedAreFreed() async throws {
+        weak var lastClient: LSPClient?
+        func cycle(stopping: Bool) async {
+            // `cat` answers nothing (its echo of `initialize` is no reply), so start waits until
+            // it's stopped; `true` exits at once, the way a crashed server ends.
+            let client = LSPClient(executableURL: URL(fileURLWithPath: stopping ? "/bin/cat" : "/usr/bin/true"), arguments: [], environment: nil, currentDirectory: nil)
+            lastClient = client
+            // As LSPManager wires it.
+            await client.setOnTerminate { [weak client] in _ = client }
+            let starting = Task { try? await client.start(rootURI: "file:///tmp") }
+            if stopping {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                await client.stop()
+            }
+            _ = await starting.value
+        }
+        await cycle(stopping: false)
+        await cycle(stopping: true)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let before = openDescriptors()
+        for index in 0..<20 { await cycle(stopping: index.isMultiple(of: 2)) }
+        let deadline = Date().addingTimeInterval(5)
+        while (lastClient != nil || openDescriptors() > before + 2), Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertNil(lastClient, "the client is freed")
+        XCTAssertLessThanOrEqual(openDescriptors(), before + 2, "20 servers later, their pipes are closed")
+    }
+}

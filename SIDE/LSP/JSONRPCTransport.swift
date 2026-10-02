@@ -26,6 +26,9 @@ final class OrderedInbox: Sendable {
 
     func receive(_ data: Data) { continuation.yield(.message(data)) }
     func end() { continuation.yield(.ended); continuation.finish() }
+    /// Stops the loop without `ended` (the client stopped it): what it holds is let go, so a
+    /// stopped client and its pipes are freed (2026-09-30 audit, CON-3).
+    func close() { continuation.finish() }
 }
 
 /// Frames JSON-RPC messages over a language server's stdin/stdout using the

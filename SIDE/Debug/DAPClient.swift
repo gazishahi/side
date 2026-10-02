@@ -26,6 +26,8 @@ actor DAPClient {
     typealias ReverseRequestHandler = @Sendable (String, LSPResult) async -> Result<LSPValue, DAPError>
     private var onReverseRequest: ReverseRequestHandler?
     private(set) var isRunning = false
+    /// Kept so `stop` can end its loop, which holds this client (CON-3).
+    private var inbox: OrderedInbox?
 
     init(executableURL: URL, arguments: [String], environment: [String: String]?, currentDirectory: URL?) {
         transport = JSONRPCTransport(executableURL: executableURL, arguments: arguments, environment: environment, currentDirectory: currentDirectory)
@@ -57,6 +59,7 @@ actor DAPClient {
 
     func start() async throws {
         let inbox = OrderedInbox(handle: { data in await self.handle(data) }, ended: { await self.terminated() })
+        self.inbox = inbox
         await transport.setHandlers(onMessage: { data in inbox.receive(data) }, onTerminate: { inbox.end() })
         try await transport.start()
         isRunning = true
@@ -69,6 +72,15 @@ actor DAPClient {
         await transport.stop()
         await transport.clearHandlers()
         fail(.notRunning)
+        letGo()
+    }
+
+    private func letGo() {
+        inbox?.close()
+        inbox = nil
+        onEvent = nil
+        onTerminate = nil
+        onReverseRequest = nil
     }
 
     /// A request and its response's `body` (an empty object when there's none).
@@ -148,7 +160,9 @@ actor DAPClient {
     private func terminated() {
         isRunning = false
         fail(.notRunning)
-        onTerminate?()
+        let callback = onTerminate
+        letGo()
+        callback?()
     }
 
     private func fail(_ error: DAPError) {

@@ -873,6 +873,7 @@ final class TrackStore {
             }
             if !alsoDeleteBranch {
                 _ = self.runGit(["worktree", "remove", "--force", path], cwd: self.projectRoot.path)
+                ProjectFileAccess.forget(root: URL(fileURLWithPath: path))
                 DispatchQueue.main.async {
                     self.tracks.removeAll { $0.id == track.id }
                     self.save()
@@ -892,6 +893,7 @@ final class TrackStore {
             let cwd = self.projectRoot.path
             if let path = worktreePath {
                 _ = self.runGit(["worktree", "remove", "--force", path], cwd: cwd)
+                ProjectFileAccess.forget(root: URL(fileURLWithPath: path))
             }
             let result = self.runGit(["branch", "-D", track.branchName], cwd: cwd)
             DispatchQueue.main.async {
@@ -930,6 +932,7 @@ final class TrackStore {
                 }
             }
             let result = self.runGit(["worktree", "remove", path], cwd: self.projectRoot.path)
+            if result.success { ProjectFileAccess.forget(root: URL(fileURLWithPath: path)) }
             DispatchQueue.main.async {
                 guard result.success else {
                     completion(.failure(TrackError.gitWorktreeFailed(result.output)))
@@ -1054,6 +1057,7 @@ final class TrackStore {
                         let bytes = Self.cachedDirectorySizeBytes(at: path) ?? 0
                         // No --force: a change made since the probe makes git refuse, and it stays.
                         if self.runGit(["worktree", "remove", path], cwd: cwd).success {
+                            ProjectFileAccess.forget(root: URL(fileURLWithPath: path))
                             report.freedFolders.append(name)
                             report.freedBytes += bytes
                             freed.append(track.id)
