@@ -944,12 +944,13 @@ public final class AgentRunner {
         let commitMessage = described.isEmpty ? "Agent checkpoint" : String(described.prefix(72))
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Self.stageAndCommit(
+            let (result, submodules) = Self.stageAndCommitReporting(
                 root: root, baseline: baseline, knownChanged: knownChanged, userSaved: userSaved, message: commitMessage
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return completion() }
                 self.recordCheckpoint(result, batch: batch, sessionId: session.id)
+                if let note = Self.uncommittedSubmoduleNote(submodules) { self.appendEntry(.failure(note)) }
                 completion()
             }
         }
@@ -961,6 +962,15 @@ public final class AgentRunner {
     public nonisolated static func stageAndCommit(
         root: String, baseline: Set<String>?, knownChanged: Set<String>, userSaved: Set<String> = [], message: String
     ) -> CheckpointCommitOutcome? {
+        stageAndCommitReporting(root: root, baseline: baseline, knownChanged: knownChanged, userSaved: userSaved, message: message).outcome
+    }
+
+    /// `stageAndCommit`, and the batch's submodules whose changes are inside them, uncommitted:
+    /// a checkpoint can't hold those, and the person is told (2026-09-30 audit, GIT-6: they got
+    /// "✓ Checkpoint … (no file changes)").
+    public nonisolated static func stageAndCommitReporting(
+        root: String, baseline: Set<String>?, knownChanged: Set<String>, userSaved: Set<String> = [], message: String
+    ) -> (outcome: CheckpointCommitOutcome?, uncommittedSubmodules: [String]) {
 
         // Stage only what this batch actually touched: paths a command left newly dirty (not
         // already dirty before the batch started — that's a concurrent manual edit sitting in
@@ -979,7 +989,7 @@ public final class AgentRunner {
         let indexModified = indexFile.flatMap { (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.modificationDate] as? Date }
         let indexBefore = indexFile.flatMap { try? Data(contentsOf: $0) }
         guard let status = GitPaths.status(cwd: root) else {
-            return .failed(step: "status", message: "git status failed in \(root)")
+            return (.failed(step: "status", message: "git status failed in \(root)"), [])
         }
         let indexAfter = indexFile.flatMap { try? Data(contentsOf: $0) }
         // Without a baseline (git status failed before the batch) nothing newly dirty can be
@@ -989,12 +999,21 @@ public final class AgentRunner {
         let pathsToStage = newlyDirty.union(knownChanged)
         // Everything the batch did left the tree exactly as it already was (e.g. a command that
         // ran but touched nothing) — nothing to checkpoint at all.
-        guard !pathsToStage.isEmpty else { return nil }
+        guard !pathsToStage.isEmpty else { return (nil, []) }
+        let submodules = status.submodulesWithUncommittedWork.intersection(pathsToStage).sorted()
         let realIndex: (url: URL, contents: Data, modified: Date)? = {
             guard let indexFile, let indexBefore, let indexModified, indexBefore == indexAfter, !status.hasStaged else { return nil }
             return (indexFile, indexBefore, indexModified)
         }()
-        return commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root, head: status.head, realIndex: realIndex)
+        return (commitPathsInIsolatedIndex(pathsToStage.sorted(), message: message, cwd: root, head: status.head, realIndex: realIndex), submodules)
+    }
+
+    /// What to say about a batch's submodule changes that a checkpoint couldn't hold.
+    public nonisolated static func uncommittedSubmoduleNote(_ paths: [String]) -> String? {
+        guard !paths.isEmpty else { return nil }
+        let names = paths.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", ")
+        let one = paths.count == 1
+        return "Not in the checkpoint: the changes inside the submodule\(one ? "" : "s") \(names). A checkpoint records a submodule's commit, not files changed inside it, so undoing it won't touch them. Commit them in the submodule to have them checkpointed."
     }
 
     /// The description a checkpoint is filed under. "no description" is the one thing a durable

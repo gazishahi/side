@@ -515,6 +515,8 @@ Each fix should come with the test that would have caught it; several of these b
 - **REL-2, fixed.** Side checks for git (any developer directory, no process run) before every git call. Without it, git isn't run (so macOS's dialog doesn't appear unasked); Tracks, Think, Review and first run say git is missing and offer Install Git…, which explains and then opens macOS's installer.
 - **HER-6 / PRV-3, fixed.** A reply that ends without its end (Stop, a stall, an error, a dropped connection) is counted in Usage and the budget: its input as `message_start` gave it, its output estimated from what streamed (`usageWithoutEnd`). Compaction's request, which counted nothing, is counted too. OpenAI-compatible servers send usage only at the end, so a stopped reply there still counts nothing. Tests: a stopped reply and one cut off by an error are each one request with its real input.
 - **DOC-2, fixed.** Each doc says what was built where it differs: Direction 02 (no first-run preset step; Review's line numbers in the gutter), IDE Essentials (no indexing progress, no watched-file notices), the editor plan (fold-all and column shortcuts as built, the table's size), Phase 10 (tasks from `.side/tasks.json` only; the debugger since built), the navigation ledger (the ceiling covers coordinator messages only, no `queued`).
+- **GIT-4, fixed.** A staged rename's source counts as dirty, so a `git mv` in a batch is checkpointed as a move and nothing is left staged.
+- **GIT-6, fixed.** Changes inside a submodule, which a checkpoint can't hold, are named in Think (and for outside agents) instead of passing as "(no file changes)".
 - **Gate 5** now waits only on a live VoiceOver pass by a person.
 - **Open:**
   - H15: CI for the app's tests.
