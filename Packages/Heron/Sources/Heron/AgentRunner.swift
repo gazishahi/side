@@ -320,8 +320,11 @@ public final class AgentRunner {
 
     /// The reason `isReadyToSend` is false, for the UI to show.
     public var notReadyReason: String {
-        let name = providerRegistry.provider(for: resolvedSelection().providerId)?.displayName ?? "the active provider"
-        return "No API key for \(name) yet. Add one in Settings (⌘,). It's stored in your Keychain."
+        // A provider removed in Settings isn't missing a key: it's gone (UX-10).
+        guard let provider = providerRegistry.provider(for: resolvedSelection().providerId) else {
+            return "This track's provider was removed in Settings. Choose another provider for it, or add it back in Settings (⌘,)."
+        }
+        return "No API key for \(provider.displayName) yet. Add one in Settings (⌘,). It's stored in your Keychain."
     }
 
     public func send(_ text: String, attachments: [AgentImageAttachment] = []) {

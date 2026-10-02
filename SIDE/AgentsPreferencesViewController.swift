@@ -148,11 +148,20 @@ final class AgentsPreferencesViewController: NSViewController {
         NSPasteboard.general.setString(command, forType: .string)
     }
 
+    /// Asked first (UX-10): tracks set to this agent go back to Heron.
     @objc private func removeAgent(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue else { return }
-        ACPAgent.removeCustom(id: id)
-        announce(id)
-        rebuild()
+        guard let id = sender.identifier?.rawValue, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove \u{201C}\(ACPAgent.agent(id: id)?.displayName ?? id)\u{201D}?"
+        alert.informativeText = "Side forgets how to start it. Its own install and sign-in are untouched; you can add it again."
+        alert.addButton(withTitle: "Remove Agent").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            ACPAgent.removeCustom(id: id)
+            self.announce(id)
+            self.rebuild()
+        }
     }
 
     @objc private func addAgent() {

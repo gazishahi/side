@@ -151,20 +151,31 @@ final class PreferencesViewController: NSViewController {
         reloadForSelectedProvider()
     }
 
-    @objc private func addProvider() {
+    /// `form` and `problem`: the sheet again, as filled in, saying what was missing (it closed
+    /// and added nothing, without a word; 2026-09-30 audit, UX-10).
+    @objc private func addProvider() { showAddProvider(AddProviderForm(), problem: nil) }
+
+    private func showAddProvider(_ form: AddProviderForm, problem: String?) {
         guard let window = view.window else { return }
-        let form = AddProviderForm()
         let alert = NSAlert()
         alert.messageText = "Add Provider"
-        alert.informativeText = "OpenAI-compatible only: covers OpenAI itself and local servers like Ollama or LM Studio."
+        alert.informativeText = problem ?? "OpenAI-compatible only: covers OpenAI itself and local servers like Ollama or LM Studio."
+        if problem != nil { alert.alertStyle = .warning }
         alert.accessoryView = form.view
         alert.addButton(withTitle: "Add")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = form.nameField
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self, response == .alertFirstButtonReturn, let definition = form.makeDefinition() else { return }
+            guard let self, response == .alertFirstButtonReturn else { return }
+            if let problem = form.problem {
+                return DispatchQueue.main.async { self.showAddProvider(form, problem: problem) }
+            }
+            guard let definition = form.makeDefinition() else { return }
             self.registry.addOrUpdate(definition)
-            if !form.apiKey.isEmpty { KeychainStore.set(secret: form.apiKey, account: definition.id) }
+            if !form.apiKey.isEmpty {
+                KeychainStore.set(secret: form.apiKey, account: definition.id)
+                self.checkKey(form.apiKey, for: definition)
+            }
             self.registry.refreshModels(providerId: definition.id, apiKey: form.apiKey.isEmpty ? nil : form.apiKey, force: true) { [weak self] changed in
                 if changed { self?.reloadForSelectedProvider() }
             }
@@ -174,12 +185,49 @@ final class PreferencesViewController: NSViewController {
         }
     }
 
+    /// Asked first: it also deletes the provider's key from the Keychain, and tracks using it
+    /// can't send until they pick another (UX-10).
     @objc private func removeProvider() {
         guard let provider = selectedProvider, provider.id != "anthropic" else { return }
-        KeychainStore.delete(account: provider.id)
-        registry.removeProvider(provider.id)
-        reloadProviderPopup()
-        reloadForSelectedProvider()
+        confirm("Remove \u{201C}\(provider.displayName)\u{201D}?",
+                detail: "Its API key is deleted from your Keychain, and tracks that use it will need another provider before they can send.",
+                button: "Remove Provider") { [weak self] in
+            guard let self else { return }
+            KeychainStore.delete(account: provider.id)
+            self.registry.removeProvider(provider.id)
+            self.reloadProviderPopup()
+            self.reloadForSelectedProvider()
+        }
+    }
+
+    private func confirm(_ message: String, detail: String, button: String, then action: @escaping () -> Void) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.addButton(withTitle: button).hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { action() }
+        }
+    }
+
+    /// The provider's answer to a key just saved, in the key's status line.
+    private func checkKey(_ key: String, for provider: ProviderDefinition) {
+        keyStatusLabel.stringValue = "Checking the key with \(provider.displayName)…"
+        registry.checkKey(providerId: provider.id, apiKey: key) { [weak self] result in
+            do {
+                guard let self, self.selectedProvider?.id == provider.id else { return }
+                switch result {
+                case .accepted:
+                    self.keyStatusLabel.stringValue = "A key is saved in your Keychain. \(provider.displayName) accepted it."
+                case .refused(let status):
+                    self.keyStatusLabel.stringValue = "Saved, but \(provider.displayName) refused it (HTTP \(status)). Check the key, or paste a new one."
+                case .unknown(let reason):
+                    self.keyStatusLabel.stringValue = "A key is saved in your Keychain. It couldn\u{2019}t be checked (\(reason)); a message in Think will tell."
+                }
+            }
+        }
     }
 
     @objc private func saveKey() {
@@ -188,6 +236,7 @@ final class PreferencesViewController: NSViewController {
         guard !secret.isEmpty else { return }
         if KeychainStore.set(secret: secret, account: provider.id) {
             keyField.stringValue = ""
+            defer { checkKey(secret, for: provider) }
             // A new key: ask the provider for its current models now.
             registry.refreshModels(providerId: provider.id, apiKey: secret, force: true) { [weak self] changed in
                 if changed { self?.reloadForSelectedProvider() }
@@ -200,8 +249,11 @@ final class PreferencesViewController: NSViewController {
 
     @objc private func removeKey() {
         guard let provider = selectedProvider else { return }
-        KeychainStore.delete(account: provider.id)
-        refreshKeyStatus(for: provider)
+        confirm("Remove the key for \(provider.displayName)?", detail: "It\u{2019}s deleted from your Keychain. Think can\u{2019}t reach \(provider.displayName) until you add one again.",
+                button: "Remove Key") { [weak self] in
+            KeychainStore.delete(account: provider.id)
+            self?.refreshKeyStatus(for: provider)
+        }
     }
 
     @objc private func modelChanged() {
@@ -249,7 +301,24 @@ private final class AddProviderForm {
         view = stack
     }
 
-    /// `nil` if the form's required fields aren't filled in — the caller shows nothing rather
+    /// What's missing or wrong, for the sheet to say; nil when the form is complete.
+    var problem: String? {
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlText = baseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelId = modelIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        var missing: [String] = []
+        if name.isEmpty { missing.append("a display name") }
+        if urlText.isEmpty { missing.append("a base URL") }
+        if modelId.isEmpty { missing.append("a model id") }
+        if !missing.isEmpty { return "Add \(ListFormatter.localizedString(byJoining: missing)) to add the provider." }
+        guard let url = URL(string: urlText), let scheme = url.scheme, ["http", "https"].contains(scheme.lowercased()), url.host != nil else {
+            return "The base URL needs to be a full address, like https://api.openai.com/v1 or http://localhost:11434/v1."
+        }
+        if requiresKeyCheckbox.state == .on, apiKey.isEmpty { return "Add the API key, or untick \u{201C}Requires an API key\u{201D} for a local server." }
+        return nil
+    }
+
+    /// `nil` if the form's required fields aren't filled in (`problem` says which) — rather
     /// than adding a half-configured provider that would just fail on first use.
     func makeDefinition() -> ProviderDefinition? {
         let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
