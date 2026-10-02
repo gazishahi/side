@@ -564,6 +564,28 @@ final class TrackStore {
         notifyChange()
     }
 
+    /// Tracks stacked on `parent` that haven't landed in it yet. A completed child has been
+    /// promoted into the parent, and an archived one was set aside; everything else would be
+    /// stranded if the parent were promoted on its own.
+    func unpromotedChildren(of parent: Track) -> [Track] {
+        tracks.filter { $0.parentTrackId == parent.id && $0.status != .completed && $0.status != .archived }
+    }
+
+    /// After `parent` has been promoted into its own base, its unpromoted children are stacked
+    /// on that base instead (the parent's parent, or the default branch for a root track).
+    /// Otherwise they'd keep promoting into the parent's branch, which has already landed, and
+    /// their work would never reach main. Their branches already contain the parent's commits,
+    /// which are now on the base, so only each child's own work is ahead of it.
+    func restackChildren(of parent: Track) {
+        let children = Set(unpromotedChildren(of: parent).map(\.id))
+        guard !children.isEmpty else { return }
+        for index in tracks.indices where children.contains(tracks[index].id) {
+            tracks[index].parentTrackId = parent.parentTrackId
+        }
+        save()
+        notifyChange()
+    }
+
     /// The per-track "auto-run commands" opt-in — off by default. Never touches anything else
     /// about the track; purely a policy toggle `AgentRunner` consults before pausing a
     /// `run_shell_command` proposal for approval.

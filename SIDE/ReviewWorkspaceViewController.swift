@@ -1064,6 +1064,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         let failedVerification = latestVerified?.verification.flatMap { $0.passed ? nil : $0 }
         let staleness = Self.verificationStalenessCaveat(checkpoints: checkpoints)
         let orphaned = Self.orphanedStackNote(for: track, trackStore: trackStore, checkpoints: checkpoints)
+        let unpromoted = trackStore.unpromotedChildren(of: track)
 
         let alert = NSAlert()
         alert.messageText = failedVerification == nil ? "Promote to \(baseRef)?" : "Promote work that failed \(failedVerification!.taskName)?"
@@ -1082,15 +1083,19 @@ final class ReviewWorkspaceViewController: NSViewController {
             alert.alertStyle = .warning
             detail += "\n\n" + orphaned
         }
+        if let stranded = Self.unpromotedStackNote(unpromoted, baseRef: baseRef) {
+            alert.alertStyle = .warning
+            detail += "\n\n" + stranded
+        }
         alert.informativeText = detail
-        alert.addButton(withTitle: "Promote")
+        alert.addButton(withTitle: unpromoted.isEmpty ? "Promote" : "Promote and Restack")
         alert.addButton(withTitle: "Cancel")
-        // Cancel is the safe default when the evidence says the work is broken, or isn't all
-        // this track's.
-        if failedVerification != nil || orphaned != nil { alert.buttons.last?.keyEquivalent = "\r"; alert.buttons.first?.keyEquivalent = "" }
+        // Cancel is the safe default when the evidence says the work is broken, isn't all this
+        // track's, or would leave stacked work behind.
+        if failedVerification != nil || orphaned != nil || !unpromoted.isEmpty { alert.buttons.last?.keyEquivalent = "\r"; alert.buttons.first?.keyEquivalent = "" }
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
-            self.promote(track: track, baseRef: baseRef, mergeRoot: target.root, trackStore: trackStore)
+            self.promote(track: track, baseRef: baseRef, mergeRoot: target.root, trackStore: trackStore, restack: !unpromoted.isEmpty)
         }
     }
 
@@ -1125,6 +1130,18 @@ final class ReviewWorkspaceViewController: NSViewController {
         return "This track was stacked on a track that has since been deleted, so its branch also carries that track\u{2019}s work: \(others) of its \(shas.count) commit\(shas.count == 1 ? "" : "s") ahead of \(baseRef) aren\u{2019}t this track\u{2019}s checkpoints. Promoting merges all of them into \(baseRef)."
     }
 
+    /// Promoting a track that still has stacked tracks on it: they promote into this track's
+    /// branch, and once this track has landed nothing would carry their work further. Names
+    /// them and says what Promote and Restack does. Nil when nothing is stacked and unpromoted.
+    static func unpromotedStackNote(_ children: [Track], baseRef: String) -> String? {
+        guard !children.isEmpty else { return nil }
+        let one = children.count == 1
+        let names = ListFormatter.localizedString(byJoining: children.map { "\u{201C}\($0.intent.isEmpty ? $0.branchName : $0.intent)\u{201D}" })
+        return "\(names) \(one ? "is" : "are") stacked on this track and \(one ? "hasn\u{2019}t" : "haven\u{2019}t") been promoted into it. "
+            + "Promote and Restack lands this track on \(baseRef) and stacks \(one ? "it" : "them") on \(baseRef) instead, so \(one ? "its" : "their") changes still reach \(baseRef) when promoted. "
+            + "To land \(one ? "it" : "them") with this track, cancel and promote \(one ? "it" : "them") first."
+    }
+
     static func baseRef(for track: Track, trackStore: TrackStore) -> String {
         guard let parentId = track.parentTrackId, let parent = trackStore.tracks.first(where: { $0.id == parentId }) else {
             return trackStore.defaultBranchName()
@@ -1137,7 +1154,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// never the track's own worktree, since promoting means moving the *base* forward, not the
     /// track's. Never leaves that working copy mid-merge: any conflict aborts immediately rather
     /// than leaving other windows/stages looking at a half-merged base.
-    private func promote(track: Track, baseRef: String, mergeRoot: URL, trackStore: TrackStore) {
+    private func promote(track: Track, baseRef: String, mergeRoot: URL, trackStore: TrackStore, restack: Bool = false) {
         setPromoteEnabled(false)
         setStatus("Promoting\u{2026}")
         let cwd = mergeRoot.path
@@ -1149,6 +1166,7 @@ final class ReviewWorkspaceViewController: NSViewController {
                 self.setStatus(outcome.message, outcome.succeeded ? DS.Color.statusVerified : DS.Color.statusNeedsYou)
                 self.setPromoteEnabled(true)
                 if outcome.succeeded {
+                    if restack { trackStore.restackChildren(of: track) }
                     trackStore.setStatus(.completed, for: track)
                     self.refresh()
                 }

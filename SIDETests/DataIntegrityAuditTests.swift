@@ -239,6 +239,55 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: worktree))
     }
 
+    // MARK: - Promoting a parent that still has stacked tracks on it
+
+    /// Promoting a parent left its unpromoted children pointed at its branch, which had already
+    /// landed, so their work silently never reached main. Now Promote names them, and Promote and
+    /// Restack stacks them on the parent's base, so only their own work is ahead of it.
+    @MainActor
+    func testPromotingAParentRestacksItsUnpromotedChildrenOnItsBase() throws {
+        makeRepo()
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        func create(_ intent: String, on base: Track?) -> Track? {
+            let done = expectation(description: intent)
+            let made = Captured<Track>()
+            store.createTrack(intent: intent, baseTrack: base) { result in
+                if case .success(let pair) = result { made.value = pair.0 }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 20)
+            return made.value
+        }
+        func commit(_ file: String, in track: Track) {
+            let path = track.workingDirectoryPath ?? root.path
+            try? file.write(toFile: (path as NSString).appendingPathComponent(file), atomically: true, encoding: .utf8)
+            XCTAssertTrue(GitPaths.runGit(["add", file], cwd: path).success)
+            XCTAssertTrue(GitPaths.runGit(["-c", "user.email=t@t", "-c", "user.name=T", "commit", "-q", "-m", file], cwd: path).success)
+        }
+        guard let parent = create("Search notes by title", on: nil) else { return XCTFail("no parent") }
+        commit("search.txt", in: parent)
+        guard let live = create("Search results UI", on: store.tracks.first(where: { $0.id == parent.id })),
+              let landed = create("Search tests", on: store.tracks.first(where: { $0.id == parent.id })) else { return XCTFail("no children") }
+        commit("ui.txt", in: live)
+        store.setStatus(.completed, for: landed)
+
+        let stranded = store.unpromotedChildren(of: parent)
+        XCTAssertEqual(stranded.map(\.id), [live.id], "a completed child has already landed in the parent")
+        let note = ReviewWorkspaceViewController.unpromotedStackNote(stranded, baseRef: "main")
+        XCTAssertTrue(note?.contains("\u{201C}Search results UI\u{201D} is stacked on this track") == true, note ?? "no note")
+        XCTAssertNil(ReviewWorkspaceViewController.unpromotedStackNote([], baseRef: "main"))
+
+        // The parent lands on main, then its child is restacked there.
+        XCTAssertTrue(ReviewWorkspaceViewController.performMerge(branchName: parent.branchName, baseRef: "main", intent: parent.intent, cwd: root.path).succeeded)
+        store.restackChildren(of: parent)
+        guard let restacked = store.tracks.first(where: { $0.id == live.id }) else { return XCTFail("child vanished") }
+        XCTAssertNil(restacked.parentTrackId)
+        XCTAssertEqual(store.tracks.first(where: { $0.id == landed.id })?.parentTrackId, parent.id, "a landed child keeps its history")
+        XCTAssertEqual(ReviewWorkspaceViewController.baseRef(for: restacked, trackStore: store), "main")
+        XCTAssertEqual(GitPaths.runGit(["rev-list", "--count", "main..\(restacked.branchName)"], cwd: root.path).output, "1",
+                       "only the child's own commit is ahead of main")
+    }
+
     // MARK: - 2026-09-30 audit, H14: a stacked track whose parent was deleted
 
     /// With its parent gone, a stacked track's base fell back to main and Promote merged the

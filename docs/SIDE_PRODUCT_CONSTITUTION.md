@@ -104,6 +104,8 @@ A track's base is not always `main`. A track may fork from another track's own b
 
 This is implemented. `Track.parentTrackId` records the relationship, "New Track…" offers a base-track picker, Tracks renders the hierarchy as a branch tree, and Review resolves each track's real base and promote target rather than assuming `main`. Propagation is `TrackStore.pullFromParent` — a `--no-ff` merge of the parent's branch into the child's own worktree, refused while that child's agent run is busy or its worktree is dirty, which is how a parent's landed changes reach children without corrupting an in-flight run. Deleting a track with live (non-archived) children is refused for the same reason.
 
+Promotion runs child-first: a stacked track lands in its parent, and the parent then lands in its own base. Promoting a parent that still has unpromoted children (anything not completed or archived) warns and names them, and the default is Cancel. **Promote and Restack** lands the parent, then stacks those children on the parent's own base (`TrackStore.restackChildren`), so their work still reaches `main` instead of promoting into a branch that has already landed (added 2026-10-02).
+
 Two known gaps remain: there is no policy yet for *archiving* (as opposed to deleting) a parent that still has live children, and `TrackStore.applyReconciliation`'s worktree-immunity logic has not been audited for hierarchy.
 
 ## First alpha
