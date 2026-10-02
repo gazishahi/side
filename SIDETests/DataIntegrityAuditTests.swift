@@ -408,6 +408,41 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent("landed.txt")))
     }
 
+    /// A new track's folder starts with the main checkout's node_modules, cloned: its own files
+    /// (a change in one doesn't reach the other), and nothing a virtualenv-style folder or a
+    /// tracked folder would have brought.
+    @MainActor
+    func testANewTrackStartsWithTheProjectsInstalledPackages() throws {
+        makeRepo()
+        try "node_modules/\n.venv/\n".write(to: root.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("packages/web"), withIntermediateDirectories: true)
+        try "{}".write(to: root.appendingPathComponent("packages/web/package.json"), atomically: true, encoding: .utf8)
+        git(["add", "."]); git(["commit", "-q", "-m", "workspace"])
+        for folder in ["node_modules/left-pad", "packages/web/node_modules/react", ".venv/bin"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: true)
+            try "installed".write(to: root.appendingPathComponent(folder + "/index.js"), atomically: true, encoding: .utf8)
+        }
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        let done = expectation(description: "track")
+        let made = Captured<Track>()
+        store.createTrack(intent: "Use packages", baseTrack: nil) { result in
+            if case .success(let pair) = result { made.value = pair.0 }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 20)
+        let worktree = URL(fileURLWithPath: try XCTUnwrap(made.value?.workingDirectoryPath))
+        let cloned = worktree.appendingPathComponent("node_modules/left-pad/index.js")
+        guard FileManager.default.fileExists(atPath: cloned.path) else {
+            throw XCTSkip("this disk doesn't clone files (not APFS)")
+        }
+        XCTAssertEqual(try String(contentsOf: cloned, encoding: .utf8), "installed")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: worktree.appendingPathComponent("packages/web/node_modules/react/index.js").path), "a workspace package's too")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktree.appendingPathComponent(".venv").path), "a virtualenv isn't cloned")
+        try "changed".write(to: cloned, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("node_modules/left-pad/index.js"), encoding: .utf8), "installed", "the clone is its own copy")
+        XCTAssertEqual(GitPaths.runGit(["status", "--porcelain"], cwd: worktree.path).output, "", "and git ignores it there too")
+    }
+
     // MARK: - 2026-09-30 audit, H14: a stacked track whose parent was deleted
 
     /// With its parent gone, a stacked track's base fell back to main and Promote merged the

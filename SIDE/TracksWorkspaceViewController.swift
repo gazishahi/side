@@ -1174,7 +1174,8 @@ final class TracksWorkspaceViewController: NSViewController {
         var parts: [String] = []
         if !report.freedFolders.isEmpty {
             let size = ByteCountFormatter.string(fromByteCount: Int64(report.freedBytes), countStyle: .file)
-            parts.append("Removed \(report.freedFolders.count) working cop\(report.freedFolders.count == 1 ? "y" : "ies") of finished tracks (\(size))")
+            // "Up to": a cloned node_modules counts in full but shares its blocks with the original.
+            parts.append("Removed \(report.freedFolders.count) working cop\(report.freedFolders.count == 1 ? "y" : "ies") (up to \(size))")
         }
         if !report.deletedBranches.isEmpty {
             parts.append("deleted \(report.deletedBranches.count) merged branch\(report.deletedBranches.count == 1 ? "" : "es")")

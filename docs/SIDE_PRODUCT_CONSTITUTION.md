@@ -116,6 +116,8 @@ A track's base changes in one place, `TrackStore.setBase`: **Change Base…** in
 - **Never removed:** a track a window shows, one whose agent is working or waiting, a parent with unpromoted children, or a folder with uncommitted changes or ignored files that aren't build output (`TrackStore.rebuildable`: dependencies, build output and caches go; a local `.env` doesn't). Those are kept and named.
 The sweep runs when a project opens, when a window moves to another track, and after Archive or Complete.
 
+A new track's folder starts with the main checkout's `node_modules` (at any depth, for a monorepo's packages) as APFS clones (`TrackStore.cloneDependencies`): instant, and no disk used until a file changes. Only `node_modules`: virtualenvs and build folders record absolute paths. On a disk without clones nothing is copied.
+
 One known gap remains: `TrackStore.applyReconciliation`'s worktree-immunity logic has not been audited for hierarchy.
 
 ## First alpha

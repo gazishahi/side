@@ -945,6 +945,34 @@ final class TrackStore {
         }
     }
 
+    // MARK: - Dependencies in a new folder
+
+    /// A new track's folder starts with the main checkout's installed packages, as APFS clones:
+    /// instant, and no disk used until a file in one changes. Without them each track needed its
+    /// own `npm install` before it could build or test, and kept a full copy of `node_modules`
+    /// (2026-10-02, the owner). Only `node_modules`, at any depth (a monorepo's packages): it's
+    /// position-independent, where a virtualenv or a build folder records absolute paths and a
+    /// copy in another folder would point back at, or break against, the original. A folder git
+    /// doesn't ignore, or one whose parent the track lacks, isn't touched; nor is a disk without
+    /// clones, where this does nothing rather than copy. `npm install` in the track reconciles
+    /// any difference from its own lockfile. Returns the folders cloned.
+    @discardableResult
+    nonisolated static func cloneDependencies(from main: URL, into worktree: URL) -> [String] {
+        guard let status = GitPaths.status(cwd: main.path, includeIgnored: true) else { return [] }
+        var cloned: [String] = []
+        for entry in status.ignored.sorted() {
+            let relative = entry.hasSuffix("/") ? String(entry.dropLast()) : entry
+            guard (relative as NSString).lastPathComponent == "node_modules" else { continue }
+            let source = main.appendingPathComponent(relative), target = worktree.appendingPathComponent(relative)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory), isDirectory.boolValue,
+                  FileManager.default.fileExists(atPath: target.deletingLastPathComponent().path),
+                  !FileManager.default.fileExists(atPath: target.path) else { continue }
+            if clonefile(source.path, target.path, UInt32(CLONE_NOFOLLOW)) == 0 { cloned.append(relative) }
+        }
+        return cloned
+    }
+
     // MARK: - Cleanup
 
     /// A track's branch is its record; its folder is where the work happens, and comes back from
@@ -1251,6 +1279,7 @@ final class TrackStore {
         }
         let result = runGit(args, cwd: cwd)
         guard result.success else { return .failure(.gitWorktreeFailed(result.output)) }
+        Self.cloneDependencies(from: projectRoot, into: path)
         return .success(path)
     }
 
@@ -1289,6 +1318,7 @@ final class TrackStore {
         try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         let addResult = runGit(["worktree", "add", path.path, track.branchName], cwd: cwd)
         guard addResult.success else { return .failure(.gitWorktreeFailed(addResult.output)) }
+        Self.cloneDependencies(from: projectRoot, into: path)
         if dirtyCount > 0 {
             let popResult = runGit(["stash", "pop"], cwd: path.path)
             outcome.restoredFileCount = dirtyCount
