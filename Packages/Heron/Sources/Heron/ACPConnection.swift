@@ -32,7 +32,8 @@ public final class ACPConnection {
     public init(launch: ACPLaunch, cwd: URL) throws {
         process.executableURL = launch.executable
         process.arguments = launch.arguments
-        process.environment = launch.environment
+        // The track's ports, for the servers the agent starts itself (TrackPorts).
+        process.environment = launch.environment.merging(TrackPorts.environment(forDirectory: cwd.path)) { _, port in port }
         process.currentDirectoryURL = cwd
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe

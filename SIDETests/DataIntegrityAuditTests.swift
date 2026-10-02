@@ -493,6 +493,35 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertEqual(report.value?.kept.map(\.intent), ["Changed its env"])
     }
 
+    /// Tracks running at once get their own ports: each its own block, published by folder, and
+    /// what a terminal in a track's folder starts with.
+    @MainActor
+    func testEachTrackHasItsOwnPorts() throws {
+        makeRepo()
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        defer { TrackPorts.set([:], forProject: root.standardizedFileURL.path) }
+        func create(_ intent: String) -> Track {
+            let done = expectation(description: intent)
+            let made = Captured<Track>()
+            store.createTrack(intent: intent, baseTrack: nil) { result in
+                if case .success(let pair) = result { made.value = pair.0 }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 20)
+            return store.tracks.first { $0.id == made.value!.id }!
+        }
+        let a = create("API"), b = create("Web")
+        let baseA = try XCTUnwrap(a.portBase), baseB = try XCTUnwrap(b.portBase)
+        XCTAssertNotEqual(baseA, baseB)
+        XCTAssertGreaterThanOrEqual(abs(baseA - baseB), TrackPorts.blockSize, "blocks don't overlap")
+        XCTAssertEqual(TrackPorts.environment(forDirectory: a.workingDirectoryPath)["PORT"], String(baseA))
+        XCTAssertTrue(TerminalViewController.portEnvironment(for: b.workingDirectoryPath).contains("PORT=\(baseB)"))
+        XCTAssertEqual(TrackPorts.environment(forDirectory: root.path), [:], "the main checkout keeps the usual ports")
+        // Kept across a reload, so a track's ports don't move.
+        let reloaded = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        XCTAssertEqual(reloaded.tracks.first { $0.id == a.id }?.portBase, baseA)
+    }
+
     // MARK: - 2026-09-30 audit, H14: a stacked track whose parent was deleted
 
     /// With its parent gone, a stacked track's base fell back to main and Promote merged the

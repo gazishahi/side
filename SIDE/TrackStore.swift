@@ -1231,10 +1231,35 @@ final class TrackStore {
 
     private func load() {
         tracks = JSONStore.read([Track].self, from: storeURL)?.payload ?? []
+        publishPorts()
     }
 
     private func save() {
+        assignPorts()
         JSONStore.write(tracks, to: storeURL)
+        publishPorts()
+    }
+
+    /// A port block for every track that's still in play and doesn't have one: free now, and no
+    /// other track's, in this project or another open one. A finished track keeps its block, so
+    /// resuming it gets the same ports.
+    private func assignPorts() {
+        var taken = TrackPorts.takenBases.union(tracks.compactMap(\.portBase))
+        for index in tracks.indices where tracks[index].portBase == nil && tracks[index].status != .completed && tracks[index].status != .archived {
+            guard let base = TrackPorts.freeBase(excluding: taken) else { return }
+            tracks[index].portBase = base
+            taken.insert(base)
+        }
+    }
+
+    /// The registry every process Side starts reads by folder (`TrackPorts`).
+    private func publishPorts() {
+        var blocks: [String: TrackPorts.Block] = [:]
+        for track in tracks {
+            guard let path = track.workingDirectoryPath, let base = track.portBase else { continue }
+            blocks[path] = TrackPorts.Block(base: base, trackName: track.intent.isEmpty ? track.branchName : track.intent)
+        }
+        TrackPorts.set(blocks, forProject: projectRoot.standardizedFileURL.path)
     }
 
     // MARK: - Git

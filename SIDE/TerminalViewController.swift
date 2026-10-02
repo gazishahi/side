@@ -415,6 +415,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
             if let path = LanguageServerRegistry.environmentForSpawning()["PATH"] { environment.append("PATH=\(path)") }
             environment += launch.environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
+            environment += Self.portEnvironment(for: workingDirectory)
             shellIntegration = .unavailable
             terminalView.startProcess(executable: "/usr/bin/env", args: [launch.command] + launch.arguments, environment: environment, currentDirectory: workingDirectory)
             return
@@ -433,8 +434,15 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             environment.append("SIDE_MARK_NONCE=\(markNonce)")
             integrationInstalledViaRc = true
         }
+        environment += Self.portEnvironment(for: workingDirectory)
         terminalView.startProcess(executable: shell, args: ["-l"], environment: environment, currentDirectory: workingDirectory)
         installShellIntegration(shell: shell)
+    }
+
+    /// A track's terminal gets its ports (`TrackPorts`): what runs in it, the agent's commands
+    /// included, starts servers on `PORT` without colliding with another track's.
+    static func portEnvironment(for directory: String?) -> [String] {
+        TrackPorts.environment(forDirectory: directory).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
     }
 
     /// Writes (once) and returns the wrapper ZDOTDIR whose startup files source the user's own

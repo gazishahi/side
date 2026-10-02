@@ -120,6 +120,8 @@ A new track's folder starts with the main checkout's `node_modules` (at any dept
 
 A new track's folder also gets the main checkout's env files, which git leaves out: every ignored `.env` and `.env.*`, and anything `.side/tracks.json` lists under `"copyFiles"` (paths inside the project), as real copies readable only by you (`TrackStore.copyEnvironmentFiles`). A copy the track left unchanged doesn't keep its folder from being cleaned up; one it changed does (decided with the owner 2026-10-02: copies, not links, so a track can change its own).
 
+**Each track has its own ports.** A track still in play gets a block of ten free ports (from 4100, never another open project's), kept for its life (`Track.portBase`, `TrackPorts`). Whatever Side starts inside a track's folder gets `PORT` (the block's first), `SIDE_PORT_BASE` and `SIDE_PORT_RANGE`: its terminals, so the agent's commands and tasks; the debugger's launches; an outside agent's process. Heron's agent is told the range. When a command says a port is already in use, the agent's result names the port, the process holding it, and that process's track. The main checkout keeps the usual ports. Tools that don't read `PORT` (Vite, a `docker-compose` file with fixed ports) still need a flag or their own setting.
+
 One known gap remains: `TrackStore.applyReconciliation`'s worktree-immunity logic has not been audited for hierarchy.
 
 ## First alpha

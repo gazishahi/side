@@ -418,8 +418,17 @@ final class DebugSession {
             if let terminal = configuration.terminal, configuration.launchArguments == nil {
                 arguments["preRunCommands"] = .array(["input", "output", "error"].map { .string("settings set target.\($0)-path \(terminal)") })
             }
-            if !configuration.environment.isEmpty, configuration.launchArguments == nil {
-                arguments["env"] = .array(configuration.environment.map { .string("\($0.key)=\($0.value)") })
+            // The track's ports, under whatever the launch sets itself (TrackPorts).
+            let ports = TrackPorts.environment(forDirectory: configuration.directory)
+            let environment = ports.merging(configuration.environment) { _, own in own }
+            if !environment.isEmpty, configuration.launchArguments == nil {
+                arguments["env"] = .array(environment.map { .string("\($0.key)=\($0.value)") })
+            } else if !ports.isEmpty, configuration.launchArguments != nil {
+                // A launch.json configuration (js-debug and the like): `env` is an object.
+                var env: [String: LSPValue] = [:]
+                if case .object(let own)? = arguments["env"] { env = own }
+                for (key, value) in ports where env[key] == nil { env[key] = .string(value) }
+                arguments["env"] = .object(env)
             }
             await client.send(configuration.request, .object(arguments)) { [weak self] result in
                 Task { @MainActor in

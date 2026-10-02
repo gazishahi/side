@@ -754,6 +754,12 @@ public final class AgentRunner {
         presentation.resolution = resolution
         updateEntry(at: entryIndex, .commandProposal(presentation))
 
+        // A port already taken is named, with who holds it and this track's own ports, so the
+        // agent doesn't guess (or kill another track's server).
+        var resultText = resultText
+        if case .executed(let output) = resolution, let conflict = PortConflict.explanation(for: output, directory: rootProvider().path) {
+            resultText += conflict
+        }
         batch.resultsById[toolUseId] = Self.toolResult(toolUseId: toolUseId, content: resultText, isError: isError)
         batch.unresolvedToolUseIds.remove(toolUseId)
         if case .executed(let output) = resolution {
@@ -1426,7 +1432,9 @@ public final class AgentRunner {
         if coordinatorProvider() != nil {
             tools += ToolExecutor.coordinationSpecs(for: mode.scope)
         }
-        return (Self.systemPrompt(for: mode.scope, projectRules: ProjectRules.load(projectRoot: rootProvider())), tools)
+        var system = Self.systemPrompt(for: mode.scope, projectRules: ProjectRules.load(projectRoot: rootProvider()))
+        if let ports = TrackPorts.promptSection(forDirectory: rootProvider().path) { system += "\n\n" + ports }
+        return (system, tools)
     }
 
     /// The one place a tool's output becomes part of the conversation — and so the one place

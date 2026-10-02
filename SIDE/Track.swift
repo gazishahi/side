@@ -59,6 +59,8 @@ struct Track: Codable, Identifiable {
     /// Created by a coordinator track's agent (multi-agent RFC): it can't create subtracks of
     /// its own (one level deep, M3), and counts toward its parent's cap of four.
     var spawnedByCoordinator = false
+    /// The first of this track's ten ports (`TrackPorts`): what its processes get as `PORT`.
+    var portBase: Int?
 
     /// The status rows and dots show. A subtrack is stored as Waiting (it must never become the
     /// active track, which is "the one you're switched to") but reads as Active: an idle
@@ -95,7 +97,7 @@ struct Track: Codable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands, parentTrackId
-        case providerId, modelId, effort, toolScope, autonomy, harnessId, harnessOptions, spawnedByCoordinator
+        case providerId, modelId, effort, toolScope, autonomy, harnessId, harnessOptions, spawnedByCoordinator, portBase
     }
 
     init(from decoder: Decoder) throws {
@@ -117,5 +119,6 @@ struct Track: Codable, Identifiable {
         harnessId = try container.decodeIfPresent(String.self, forKey: .harnessId)
         harnessOptions = try container.decodeIfPresent([String: String].self, forKey: .harnessOptions)
         spawnedByCoordinator = try container.decodeIfPresent(Bool.self, forKey: .spawnedByCoordinator) ?? false
+        portBase = try container.decodeIfPresent(Int.self, forKey: .portBase)
     }
 }
