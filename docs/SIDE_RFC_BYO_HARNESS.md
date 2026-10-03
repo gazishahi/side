@@ -119,6 +119,8 @@ user's subscription is used by the user's CLI. Agents are detected on the login-
 same resolution the language servers use); missing adapters get an install line to copy, never
 an automatic install. *Decide:* accept; confirm no bundling of third-party adapters.
 
+**D7 addendum 2: how a Claude subscription is used (owner, 2026-10-03).** Side does what T3 Code does: Claude Code runs through Anthropic's Agent SDK (`claude-agent-acp`), on the person's own `claude` login. Side runs no sign-in flow of its own, never reads or keeps credentials or tokens, and sends no headers pretending to be Claude Code; a missing login is sent to the agent's own CLI. Heron uses API keys only. Anthropic's terms (code.claude.com/docs/en/legal-and-compliance) ask Agent SDK products to use API keys and don't carve this case out, so Settings says so beside the subscription choice. Asking Anthropic in writing is the open step.
+
 **D7 addendum: subscription or API key, per agent (2026-09-23).** Every agent can run on
 the user's subscription or on an API key; Settings › Agents chooses, per agent.
 - *Subscription:* the agent's own sign-in (`claude` login, ChatGPT, Google). Every API-key

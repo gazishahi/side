@@ -101,9 +101,16 @@ final class AgentsPreferencesViewController: NSViewController {
                 : (inherited ? "No key saved. Using the \(variable) already in your environment." : "No key saved yet.")
             rows.append(SettingsForm.row("API key", detail: note, keyLine))
         } else {
-            let note = agent.acceptsAPIKey
+            var note = agent.acceptsAPIKey
                 ? "Uses its own sign-in. Keys in your environment (\(agent.apiKeyVariables.joined(separator: ", "))) aren't passed to it."
                 : "Uses its own sign-in."
+            // Claude Code runs through Anthropic's Agent SDK on the person's own `claude` login,
+            // as T3 Code does; Side never sees or keeps the sign-in. Anthropic's terms ask tools
+            // built on the Agent SDK to use API keys, which is said rather than hidden
+            // (decided with the owner 2026-10-03; code.claude.com/docs/en/legal-and-compliance).
+            if agent.id == "claude-code" {
+                note += " This is your own claude login, run through Anthropic\u{2019}s Agent SDK; Side never sees it. Anthropic\u{2019}s terms ask tools built on the Agent SDK to use API keys, so an API key is the choice that raises no question."
+            }
             rows.append(SettingsForm.row("Sign in with", detail: note, popup))
         }
         return SettingsForm.section(rows)
