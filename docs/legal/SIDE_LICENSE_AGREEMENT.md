@@ -1,6 +1,6 @@
 # Side License Agreement
 
-Status: draft, 2026-10-21, for the owner to review (launch gate 7). Not legal advice: have a lawyer read it before Side is widely distributed. The item marked [Decide] needs the owner's answer. Decided 2026-10-21: Side is free, and AI usage is always the user's own (owner).
+Status: draft, 2026-10-21, for the owner to review (launch gate 7). Not legal advice: have a lawyer read it before Side is widely distributed. Decided by the owner 2026-10-21: Side is free, AI usage is always the user's own, and New York law governs.
 
 Last updated: [date of release]
 
@@ -77,7 +77,7 @@ You can end this agreement at any time by deleting Side. It ends automatically i
 
 ## 12. General
 
-- **Governing law:** [Decide] the laws of the State of [state], United States, without regard to conflict-of-law rules. Disputes go to the courts of [county and state], unless the law where you live gives you the right to bring them where you live.
+- **Governing law:** the laws of the State of New York, United States, without regard to conflict-of-law rules. Disputes go to the state or federal courts located in New York, unless the law where you live gives you the right to bring them where you live.
 - **Export:** you won't use or export Side in violation of US export laws or sanctions.
 - **Changes:** if we change this agreement, the date at the top changes, and an update that brings new terms shows them before you continue.
 - **Whole agreement:** this agreement, with the Privacy Policy and Third-Party Notices, is the whole agreement about Side between you and us. If part of it can't be enforced, the rest still applies.

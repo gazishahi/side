@@ -29,7 +29,7 @@ Heron and Alloy version on their own (SemVer from 0.1.0); Side pins the versions
 4. Codex, Gemini CLI and Pi verified live, or labelled experimental.
 5. Dark mode, VoiceOver and text-size pass on the redesigned Preferences and Library.
 6. A clean-account first-run walkthrough.
-7. License, privacy note, crash-reporting decision, landing page.
+7. License, privacy note, crash-reporting decision, landing page. **2026-10-21:** license drafted (`docs/legal/SIDE_LICENSE_AGREEMENT.md`; free, New York law; for a lawyer's read), third-party notices ship in the app (About Side), privacy policy updated on the site, **no crash reporting in 0.1** (owner), landing page in progress.
 
 ## Side: signing and packaging
 
