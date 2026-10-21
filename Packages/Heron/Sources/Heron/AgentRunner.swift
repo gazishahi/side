@@ -863,11 +863,32 @@ public final class AgentRunner {
         }
     }
 
-    private func announceVerificationIfNeeded(_ batch: PendingToolBatch) {
+    /// Where a task's result was recorded: what the line after it says. It used to say "This
+    /// checkpoint is recorded as failed" whether or not a checkpoint had been made (2026-09-30
+    /// audit, UX-11).
+    enum VerificationRecord: Equatable {
+        case newCheckpoint
+        /// Nothing changed, so it's on the track's latest checkpoint.
+        case latestCheckpoint
+        /// Nothing changed and the track has no checkpoint yet, or the commit failed.
+        case nowhere
+    }
+
+    nonisolated static func verificationLine(_ verification: CheckpointVerification, recorded: VerificationRecord) -> String {
+        let verdict = verification.passed ? "\u{2713} Verified: \(verification.taskName) passed" : "\u{26A0}\u{FE0E} \(verification.taskName) failed"
+        switch recorded {
+        case .newCheckpoint:
+            return verification.passed ? verdict : verdict + ". This checkpoint is recorded as failed"
+        case .latestCheckpoint:
+            return verdict + ". Nothing changed, so it\u{2019}s recorded on the latest checkpoint"
+        case .nowhere:
+            return verdict + ". No checkpoint holds this result"
+        }
+    }
+
+    private func announceVerificationIfNeeded(_ batch: PendingToolBatch, recorded: VerificationRecord) {
         guard let verification = batch.verification else { return }
-        appendEntry(.meta(verification.passed
-            ? "\u{2713} Verified: \(verification.taskName) passed"
-            : "\u{26A0}\u{FE0E} \(verification.taskName) failed. This checkpoint is recorded as failed"))
+        appendEntry(.meta(Self.verificationLine(verification, recorded: recorded)))
     }
 
     /// The exit status a task reported, when the shell integration told us one.
@@ -1039,18 +1060,20 @@ public final class AgentRunner {
     }
 
     private func recordCheckpoint(_ outcome: CheckpointCommitOutcome?, batch: PendingToolBatch, sessionId: UUID) {
-        defer { announceVerificationIfNeeded(batch) }
+        var recorded = VerificationRecord.newCheckpoint
+        defer { announceVerificationIfNeeded(batch, recorded: recorded) }
         guard let outcome else {
             // Nothing was committed by this batch (a task ran, nothing changed): the verdict is
-            // about the code as it stands, which is the newest existing checkpoint.
+            // about the code as it stands, which is the newest existing checkpoint, if any.
             if let verification = batch.verification {
-                _ = sessionStore.attachVerification(verification, toLatestCheckpointFor: trackKey)
+                recorded = sessionStore.attachVerification(verification, toLatestCheckpointFor: trackKey) ? .latestCheckpoint : .nowhere
             }
             return
         }
         // A failed commit is not a checkpoint. Recording one anyway is what produced a card
         // claiming success for work that was never committed and could never be undone.
         if case .failed(let step, let message) = outcome {
+            recorded = .nowhere
             appendEntry(.failure("Couldn't create a checkpoint: git \(step) failed\(message.isEmpty ? "" : ": \(message)").\nThe agent's changes are still in your working copy, uncommitted."))
             return
         }

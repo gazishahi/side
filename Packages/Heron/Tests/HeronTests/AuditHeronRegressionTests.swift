@@ -241,3 +241,18 @@ final class AuditHeronRegressionTests: XCTestCase {
         }
     }
 }
+
+/// UX-11 (2026-09-30 audit): the line after a task says where its result was recorded, and never
+/// names a checkpoint that wasn't made.
+final class VerificationLineTests: XCTestCase {
+    func testTheLineSaysWhereTheResultWent() {
+        let failed = CheckpointVerification(taskName: "test", command: "swift test", exitCode: 1, output: "")
+        let passed = CheckpointVerification(taskName: "test", command: "swift test", exitCode: 0, output: "")
+        XCTAssertTrue(AgentRunner.verificationLine(failed, recorded: .newCheckpoint).hasSuffix("This checkpoint is recorded as failed"))
+        XCTAssertTrue(AgentRunner.verificationLine(failed, recorded: .latestCheckpoint).contains("recorded on the latest checkpoint"))
+        let nowhere = AgentRunner.verificationLine(failed, recorded: .nowhere)
+        XCTAssertTrue(nowhere.contains("No checkpoint holds this result"))
+        XCTAssertFalse(nowhere.contains("This checkpoint"))
+        XCTAssertEqual(AgentRunner.verificationLine(passed, recorded: .newCheckpoint), "\u{2713} Verified: test passed")
+    }
+}

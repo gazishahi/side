@@ -432,7 +432,7 @@ Re-checked 2026-10-02 against the fixes below. The verdicts as found on 09-30 ar
 |---|---|---|
 | Zero known unattended code-execution paths | **Met:** C1 and SEC-11 fixed. Low SEC-1 (subtracks without a card under Full) and SEC-15 (unpinned installers) remain. | C1 |
 | No data loss | **Met:** C2, H1, H2, H4 and GIT-5/R3/GIT-7 fixed, plus crash recovery (H14). Lows EDT-10 and EDT-11 (line endings changed on save) remain. | C2, H1, H2, H4, GIT-5/R3 |
-| No false success or misattribution | **Not met:** UX-11 (Low), the verification line naming a checkpoint that wasn't made. H4, H5 and GIT-6 fixed. | H4, H5, GIT-6, UX-11 |
+| No false success or misattribution | **Met:** H4, H5, GIT-6 and UX-11 fixed. | H4, H5, GIT-6, UX-11 |
 | Spend is bounded as promised | **Met:** H3, H5, H11 and HER-6/PRV-3 fixed; outside agents stop at the limit. | H3, H5, H11 |
 | Accessibility not blocking (gate 5) | **Met:** UX-6 to UX-9 fixed, and the owner's live VoiceOver pass found nothing (2026-10-02). | UX-6, UX-7, UX-8 |
 | A clean first run (gate 6) | **Met:** H10 fixed (with UX-1 and UX-2). | H10 |
@@ -442,7 +442,7 @@ Re-checked 2026-10-02 against the fixes below. The verdicts as found on 09-30 ar
 
 **Still open:**
 1. Mediums: EDT-9 (pasted CRLF and lone CR), PRV-5 (local providers' context window), HER-5 (a coordinator reading a dropped subtrack as not started).
-2. The Lows in Part III, UX-11 first, since it alone holds a gate.
+2. The Lows in Part III.
 3. Outside the audit: notarization credentials for a signed release (`SIDE_DISTRIBUTION.md`).
 
 Each fix should come with the test that would have caught it; several of these bugs shipped beside a test that passed.
@@ -523,6 +523,7 @@ Each fix should come with the test that would have caught it; several of these b
 - **CON-3, fixed.** A language server or debug adapter that ends or is stopped is freed with its pipes: the manager's `onTerminate` holds the client weakly, and stopping ends the client's inbox loop and drops its handlers (the loop, added for EDT-4, had held it too). Test: 20 servers started and lost, no descriptors left and the last client freed; it fails without the fix.
 - **CON-6, fixed.** The file-walk cache keeps the 3 most recent roots, drops a track's folder when it's removed, and keeps a walk cut short at 25,000 files instead of walking again every call.
 - **CON-7, fixed.** The caret's blink draws its one frame without waking Alloy's display link; anything else still wakes it. In Alloy, unreleased.
+- **UX-11, fixed.** The line after a task says where its result was recorded: the new checkpoint, the latest one (nothing changed), or no checkpoint (none yet, or the commit failed). It used to say "This checkpoint is recorded as failed" in every case.
 - **Gate 5, met.** The owner's live VoiceOver pass found nothing (2026-10-02).
 - **Open:**
   - The other Mediums and Lows.
