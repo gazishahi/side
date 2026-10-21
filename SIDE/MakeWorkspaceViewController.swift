@@ -4558,7 +4558,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // bound to it.
         let appItem = NSMenuItem(title: "Side", action: nil, keyEquivalent: "")
         let appMenu = NSMenu(title: "Side")
-        appMenu.addItem(withTitle: "About Side", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let about = appMenu.addItem(withTitle: "About Side", action: #selector(AppDelegate.showAboutPanel(_:)), keyEquivalent: "")
+        about.target = AppDelegate.shared
         let updates = appMenu.addItem(withTitle: "Check for Updates\u{2026}", action: #selector(Updates.checkForUpdates(_:)), keyEquivalent: "")
         updates.target = Updates.shared
         appMenu.addItem(NSMenuItem.separator())

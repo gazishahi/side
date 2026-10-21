@@ -407,3 +407,16 @@ final class SpawnEnvironmentTests: XCTestCase {
         XCTAssertNil(agent.launchEnvironment(from: base)["GH_TOKEN"])
     }
 }
+
+/// The open-source components' notices ship inside Side (their licenses require it) and name
+/// each component the generator found.
+@MainActor
+final class ThirdPartyNoticesTests: XCTestCase {
+    func testTheNoticesShipInTheApp() throws {
+        let notices = try XCTUnwrap(AppDelegate.thirdPartyNotices, "ThirdPartyNotices.txt is in the app's resources")
+        for component in ["Sparkle", "SwiftTerm", "SwiftTreeSitter", "tree-sitter-swift", "tree-sitter-yaml"] {
+            XCTAssertTrue(notices.contains(component), component)
+        }
+        XCTAssertTrue(notices.contains("Permission is hereby granted, free of charge"), "the license texts, not just names")
+    }
+}

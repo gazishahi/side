@@ -169,6 +169,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// a recent, or a cached probe — the first UI run did exactly that.
     nonisolated static let isUITesting = UserDefaults.standard.bool(forKey: "SideUITesting")
 
+    /// About Side, with the open-source components' notices (ThirdPartyNotices.txt, written by
+    /// scripts/third-party-notices.py): their MIT and BSD licenses require them to ship with the
+    /// app. In the label color, so they read in dark mode, where imported text stays black.
+    @objc func showAboutPanel(_ sender: Any?) {
+        var options: [NSApplication.AboutPanelOptionKey: Any] = [:]
+        if let notices = Self.thirdPartyNotices {
+            options[.credits] = NSAttributedString(string: notices, attributes: [
+                .font: DS.Text.caption(),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+        }
+        NSApp.orderFrontStandardAboutPanel(options: options)
+    }
+
+    static var thirdPartyNotices: String? {
+        Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt").flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+    }
+
     @objc func openProjectFromMenu() {
         if activeShell == nil { presentNewWindow() }
         activeShell?.presentOpenProject()

@@ -1,6 +1,6 @@
 # Side License Agreement
 
-Status: draft, 2026-10-21, for the owner to review (launch gate 7). Not legal advice: have a lawyer read it before Side is sold or widely distributed. Items marked [Decide] need the owner's answer.
+Status: draft, 2026-10-21, for the owner to review (launch gate 7). Not legal advice: have a lawyer read it before Side is widely distributed. The item marked [Decide] needs the owner's answer. Decided 2026-10-21: Side is free, and AI usage is always the user's own (owner).
 
 Last updated: [date of release]
 
@@ -20,7 +20,7 @@ It does not cover:
 
 We give you a personal, non-exclusive, non-transferable, revocable license to install and use Side on Macs you own or control, for personal or commercial work.
 
-[Decide] Price: Side is provided free of charge. If we ever offer paid plans, they will come with their own terms, and nothing will be charged without your agreement.
+Side is free. We don't charge for it, and we don't sell AI usage: you bring your own API key, subscription or local model, and the provider you choose bills you directly under its own terms.
 
 ## 3. What you may not do
 
