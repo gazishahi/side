@@ -28,7 +28,7 @@ Heron and Alloy version on their own (SemVer from 0.1.0); Side pins the versions
 3. A fresh audit since 2026-09-01 (outside agents, multi-agent, Integration, Library landed after). **Done 2026-09-30:** `SIDE_AUDIT_REPORT_2026-09-30.md` (2 Critical, 15 High); its blocking set stands between this gate and release.
 4. Codex, Gemini CLI and Pi verified live, or labelled experimental.
 5. Dark mode, VoiceOver and text-size pass on the redesigned Preferences and Library.
-6. A clean-account first-run walkthrough.
+6. A clean-account first-run walkthrough. **Not done at launch (owner, 2026-10-22):** the macOS VM wouldn't install, and the owner launched 0.1.0 anyway, fixing first-run issues as they're found. Still worth doing for a later release.
 7. License, privacy note, crash-reporting decision, landing page. **2026-10-21:** license drafted (`docs/legal/SIDE_LICENSE_AGREEMENT.md`; free, New York law; for a lawyer's read), third-party notices ship in the app (About Side), privacy policy updated on the site, **no crash reporting in 0.1** (owner), landing page in progress.
 
 ## Side: signing and packaging

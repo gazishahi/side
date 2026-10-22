@@ -114,6 +114,11 @@ cp "$DMG" "$UPDATES/"
   --download-url-prefix "https://github.com/$RELEASES_REPO/releases/download/v$VERSION/" \
   -o "$OUT/appcast.xml" "$UPDATES"
 
+# The same DMG under a name that doesn't change, so a link to
+# releases/latest/download/Side.dmg (the website's button) always gets the newest version.
+# The feed keeps the versioned name.
+cp "$DMG" "$OUT/Side.dmg"
+
 echo "Done: $DMG"
 echo "Publish (not run here; it's public):"
-echo "  gh release create v$VERSION -R $RELEASES_REPO --title \"Side $VERSION\" \"$DMG\" \"$OUT/appcast.xml\""
+echo "  gh release create v$VERSION -R $RELEASES_REPO --title \"Side $VERSION\" \"$DMG\" \"$OUT/Side.dmg\" \"$OUT/appcast.xml\""
