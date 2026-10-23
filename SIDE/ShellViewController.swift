@@ -293,7 +293,7 @@ final class ShellViewController: NSViewController {
         stageControl.setAccessibilityLabel("Stage")
         stageControl.menu = pinsMenu()
         searchButton.button.target = self
-        searchButton.button.action = #selector(showQuickOpen(_:))
+        searchButton.button.action = #selector(searchTapped(_:))
         searchButton.button.toolTip = "Search (⌘P)"
         trackPill.snapshotProvider = { [weak self] in self?.trackPillSnapshot() ?? .empty }
         trackPill.onSelectRow = { [weak self] row in self?.selectTrackRow(row) }
@@ -415,6 +415,10 @@ final class ShellViewController: NSViewController {
     }
 
     @objc func showQuickOpen(_ sender: Any?) { makeVC.presentPalette(.files) }
+    /// The bar's search button: files, unless Make isn't pinned, where opening a file would land
+    /// on a stage the bar doesn't show (2026-10-23, the owner). Then it starts in Commands;
+    /// ⌘P still finds files, and opening one still shows it in Make.
+    @objc func searchTapped(_ sender: Any?) { makeVC.presentPalette(StagePins.pinned.contains(.make) ? .files : .commands) }
     @objc func showCommandPalette(_ sender: Any?) { makeVC.presentPalette(.commands) }
     @objc func showFindInProject(_ sender: Any?) { makeVC.presentPalette(.text) }
     // Find in the file on screen: Make's, from Make.
