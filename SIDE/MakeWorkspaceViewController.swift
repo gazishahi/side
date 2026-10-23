@@ -318,6 +318,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Writer mode (see its section).
     private(set) var isWriting = false
     private let wordCountLabel = NSTextField(labelWithString: "")
+    /// The count sits on its own capsule, so text scrolling under it doesn't cover it.
+    private let wordCountPill = NSBox()
     private var wordCountWork: DispatchWorkItem?
     private var problemRows: [(url: URL, diagnostic: LSPDiagnostic)] = []
     /// The uses Find References found, with each line's text, and the rows the query keeps.
@@ -6262,15 +6264,26 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         gutterWidth?.constant = on ? 0 : AlloyGutterView.width
         gutter.alphaValue = on ? 0 : 1
         applyMinimapVisibility()
-        if wordCountLabel.superview == nil {
+        if wordCountPill.superview == nil {
             wordCountLabel.font = DS.Text.caption()
-            wordCountLabel.textColor = .tertiaryLabelColor
+            wordCountLabel.textColor = .secondaryLabelColor
             wordCountLabel.alignment = .center
             wordCountLabel.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(wordCountLabel)
+            wordCountPill.boxType = .custom
+            wordCountPill.fillColor = DS.Color.overlay
+            wordCountPill.borderWidth = 0
+            wordCountPill.cornerRadius = DS.Radius.capsule(height: 24)
+            wordCountPill.contentViewMargins = .zero
+            wordCountPill.translatesAutoresizingMaskIntoConstraints = false
+            wordCountPill.addSubview(wordCountLabel)
+            view.addSubview(wordCountPill)
             NSLayoutConstraint.activate([
-                wordCountLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                wordCountLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.m),
+                wordCountPill.heightAnchor.constraint(equalToConstant: 24),
+                wordCountLabel.centerYAnchor.constraint(equalTo: wordCountPill.centerYAnchor),
+                wordCountLabel.leadingAnchor.constraint(equalTo: wordCountPill.leadingAnchor, constant: DS.Spacing.m),
+                wordCountLabel.trailingAnchor.constraint(equalTo: wordCountPill.trailingAnchor, constant: -DS.Spacing.m),
+                wordCountPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                wordCountPill.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.m),
             ])
         }
         alloyView?.highlightsCurrentLine = !on
@@ -6279,7 +6292,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
             alloyView?.readingColumnWidth = nil
             alloyView?.focusedLines = nil
             alloyView?.documentPadding = nil
-            wordCountLabel.isHidden = true
+            wordCountPill.isHidden = true
         }
         applyWriterAids()
         view.window?.makeFirstResponder(editor.textView)
@@ -6294,7 +6307,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         let font = prose ? DS.Text.Fonts.font(.reading, size: AlloyEditorEngine.proseSize) : DS.Text.editor()
         let digit = ("0" as NSString).size(withAttributes: [.font: font]).width
         alloyView?.readingColumnWidth = min(760, (digit * 72).rounded())
-        wordCountLabel.isHidden = !WriterPreferences.isOn(.wordCount)
+        wordCountPill.isHidden = !WriterPreferences.isOn(.wordCount)
         if !WriterPreferences.isOn(.dimOthers) { alloyView?.focusedLines = nil }
         applyWriterInsets()
         followCaretWhileWriting()
@@ -6373,7 +6386,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
     /// Something Esc should close before it leaves Writer mode: completions, an Instruct popover.
     var hasTransientSurface: Bool { completionSession != nil || instructPopover?.isShown == true }
 
-        var wordCountForTesting: String? { wordCountLabel.isHidden ? nil : wordCountLabel.stringValue }
+        var wordCountForTesting: String? { wordCountPill.isHidden ? nil : wordCountLabel.stringValue }
 
     // MARK: - Live Markdown
 
