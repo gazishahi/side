@@ -1,7 +1,7 @@
 # RFC: Live Markdown in Alloy
 
-*2026-10-23. Status: **decisions pending**: the direction is decided (below); five questions at
-the end are open before step 1 starts. Writer Mode's first step (Make alone, the aids) is built:
+*2026-10-23. Status: **agreed**: the direction and the five questions below are decided (the
+owner, 2026-10-23); step 1 is next. Writer Mode's first step (Make alone, the aids) is built:
 `027f170`.*
 
 ## What the owner decided (2026-10-23)
@@ -70,16 +70,17 @@ the formatting commands (question 4).
 - Code files are untouched: no styler, no concealment, one height. The grid is the special case
   of the new layout, and the existing tests hold it to that.
 
-## Open questions
+## Decided questions
 
-1. **What reveals the marks:** the caret's line (Obsidian; recommended), the span the caret is in
-   (Typora: least noise, more surprise while moving), or the whole paragraph?
-2. **Live's font:** the reading font the preview uses (recommended: Live looks like the preview),
-   or the editor's monospaced font with only sizes and weights changing?
-3. **Tables in v1:** source with columns aligned (recommended for v1; editing a rendered grid is
-   its own project), or a rendered grid that turns back to source when the caret enters?
+Each took the recommendation (the owner, 2026-10-23).
+
+1. **What reveals the marks:** the caret's line (Obsidian). Not the span the caret is in
+   (Typora: least noise, more surprise while moving), nor the whole paragraph.
+2. **Live's font:** the reading font the preview uses, so Live looks like the preview; not the
+   editor's monospaced font with only sizes and weights changing.
+3. **Tables in v1:** source with columns aligned (editing a rendered grid is its own project,
+   later); not a rendered grid that turns back to source when the caret enters.
 4. **⌘B in Markdown:** Bold (and ⌘I italic, ⌘K link), with Build LaTeX keeping ⌘B in LaTeX files
-   only. That makes shortcuts depend on the file type, which Side doesn't do yet (recommended), or
-   other keys for formatting?
-5. **Images:** local images inline (recommended), and remote ones as a placeholder until clicked
-   (no network request just for opening a file), or remote ones fetched too?
+   only. Shortcuts start depending on the file type, which Side doesn't do yet.
+5. **Images:** local images inline, and remote ones as a placeholder until clicked (no
+   network request just for opening a file).
