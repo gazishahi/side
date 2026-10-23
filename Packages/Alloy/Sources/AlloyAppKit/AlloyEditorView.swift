@@ -42,6 +42,14 @@ public final class AlloyEditorView: NSView {
     public var foldedLineColor: SIMD4<Float> = [0.5, 0.5, 0.5, 0.12] { didSet { setNeedsRender() } }
     /// Wrap to the view's width (Make's default), or not.
     public var wrapsLines = true { didSet { updateWrapWidth() } }
+    /// The text set in a centered column this wide, for reading and writing prose; nil runs it
+    /// the full width.
+    public var readingColumnWidth: CGFloat? { didSet { if readingColumnWidth != oldValue { updateWrapWidth(); updateDocumentHeight(); setNeedsRender() } } }
+    /// The lines drawn at full strength, the rest faded; nil draws every line alike.
+    public var focusedLines: ClosedRange<Int>? { didSet { if focusedLines != oldValue { setNeedsRender() } } }
+    /// The band across the caret's line (on by default).
+    public var highlightsCurrentLine = true { didSet { if highlightsCurrentLine != oldValue { setNeedsRender() } } }
+    private static let standardInset = DocumentLayout.standardInsets.width
     public weak var delegate: AlloyEditorDelegate?
     /// Marks to draw (diagnostics, a matched bracket).
     public var decorations: [Decoration] = [] { didSet { setNeedsRender(); minimap.needsDisplay = true } }
@@ -405,7 +413,10 @@ public final class AlloyEditorView: NSView {
     }
 
     private func updateWrapWidth() {
-        let width = scrollView.contentView.bounds.width - documentLayout.insets.width * 2
+        let available = scrollView.contentView.bounds.width
+        let inset = readingColumnWidth.map { max(Self.standardInset, ((available - $0) / 2).rounded()) } ?? Self.standardInset
+        if documentLayout.insets.width != inset { documentLayout.insets.width = inset }
+        let width = available - documentLayout.insets.width * 2
         documentLayout.setWrapWidth(wrapsLines && width > 0 ? width : nil)
     }
 
@@ -615,6 +626,8 @@ public final class AlloyEditorView: NSView {
         frame.decorations = decorations + snippetDecorations
         frame.lineBackground = lineBackground
         frame.lineSuffixes = foldSuffixes
+        frame.focusedLines = focusedLines
+        frame.highlightsCurrentLine = highlightsCurrentLine
         if let marked = documentView.composingRange {
             frame.decorations.append(Decoration(range: marked, color: theme.text, style: .underline))
         }
@@ -646,6 +659,8 @@ public final class AlloyEditorView: NSView {
         frame.decorations = decorations + snippetDecorations
         frame.lineBackground = lineBackground
         frame.lineSuffixes = foldSuffixes
+        frame.focusedLines = focusedLines
+        frame.highlightsCurrentLine = highlightsCurrentLine
         guard let commands = renderer.draw(frame, layout: documentLayout, into: texture) else { return nil }
         if texture.storageMode == .managed, let sync = renderer.device.makeCommandQueue()?.makeCommandBuffer(), let blit = sync.makeBlitCommandEncoder() {
             commands.waitUntilCompleted()

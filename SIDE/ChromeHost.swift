@@ -238,6 +238,13 @@ final class ChromeHost {
     /// sheet: canvas for most stages, the terminal's tone for Run.
     func setRowBackground(_ color: NSColor) { topRowBackdrop.tint = color }
 
+    /// Writer mode: no top row and no bar, only the stage.
+    func setHidden(_ hidden: Bool) {
+        topRow.isHidden = hidden
+        topRowBackdrop.isHidden = hidden
+        for piece in barPieces { piece.isHidden = hidden }
+    }
+
     private var scrollObserver: NSObjectProtocol?
     private weak var watchedScroll: NSScrollView?
 

@@ -129,7 +129,8 @@ public final class DocumentLayout {
     public let ascent: CGFloat
     public let tabWidth: CGFloat
     /// Space around the text, in points.
-    public var insets = CGSize(width: 16, height: 12)
+    public static let standardInsets = CGSize(width: 16, height: 12)
+    public var insets = DocumentLayout.standardInsets
     /// nil: no wrapping.
     public private(set) var wrapWidth: CGFloat?
 

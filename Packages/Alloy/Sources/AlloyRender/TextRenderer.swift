@@ -84,6 +84,13 @@ public struct RenderFrame {
     public var lineBackground: ((Int) -> SIMD4<Float>?)?
     /// Text drawn after a line's own, on a pill: a folded region's "… }".
     public var lineSuffixes: [Int: LineSuffix] = [:]
+    /// The lines drawn at full strength; the rest are faded (a writer's focus on one
+    /// paragraph). Nil draws every line alike.
+    public var focusedLines: ClosedRange<Int>?
+    /// The band across the caret's line; off for prose, where the line is a sentence's middle.
+    public var highlightsCurrentLine = true
+    /// How strong a faded line's text is.
+    public static let fadedAlpha: Float = 0.3
 
     public init(scrollY: CGFloat, size: CGSize, scale: CGFloat, selections: [Selection], caretVisible: Bool = true,
                 theme: RenderTheme, styles: ((Int) -> [StyleSpan])? = nil) {
@@ -262,6 +269,8 @@ public final class TextRenderer {
         let textColor: SIMD4<Float>
         let scale: CGFloat
         let generation: Int
+        /// The left inset baked into the quads' x (a reading column moves it).
+        var inset: CGFloat = 0
         /// Quads with `rect.y` holding only the atlas entry's offset.
         var quads: [Quad] = []
         /// Each quad's pen y below the line's top, in pixels, unrounded.
@@ -273,12 +282,12 @@ public final class TextRenderer {
 
     private func cachedGlyphs(line: Int, laid: LaidOutLine, spans: [StyleSpan], frame: RenderFrame, layout: DocumentLayout) -> LineGlyphs {
         let key = ObjectIdentifier(laid)
-        if let known = lineGlyphs[line], known.layout == key, known.scale == frame.scale, known.generation == atlas.generation,
+        if let known = lineGlyphs[line], known.layout == key, known.scale == frame.scale, known.generation == atlas.generation, known.inset == layout.insets.width,
            known.textColor == frame.theme.text, known.spans == spans {
             return known
         }
         let scale = frame.scale
-        var built = LineGlyphs(layout: key, spans: spans, textColor: frame.theme.text, scale: scale, generation: atlas.generation)
+        var built = LineGlyphs(layout: key, spans: spans, textColor: frame.theme.text, scale: scale, generation: atlas.generation, inset: layout.insets.width)
         var spanIndex = 0
         for (index, row) in laid.rows.enumerated() {
             let baseline = CGFloat(index) * layout.lineHeight + layout.ascent
@@ -342,7 +351,7 @@ public final class TextRenderer {
         }
 
         // The current-line band: where a caret with no selection sits.
-        for selection in frame.selections where selection.isCaret {
+        for selection in frame.selections where selection.isCaret && frame.highlightsCurrentLine {
             let caret = layout.caretRect(at: selection.head)
             solids.append(Quad(rect: rect(0, caret.minY, viewportWidth, lineHeight), uv: .zero, color: frame.theme.currentLine, kind: 0))
         }
@@ -422,6 +431,7 @@ public final class TextRenderer {
             let built = cachedGlyphs(line: line, laid: laid, spans: spans, frame: frame, layout: layout)
             usedGlyphs[line] = built
             let lineTop = Float((top - frame.scrollY) * scale)
+            let faded = frame.focusedLines.map { !$0.contains(line) } ?? false
             var start = 0
             for row in built.rows {
                 defer { start = row.end }
@@ -430,6 +440,7 @@ public final class TextRenderer {
                 for index in start..<row.end {
                     var quad = built.quads[index]
                     quad.rect.y += (lineTop + built.penY[index]).rounded()
+                    if faded { quad.color.w *= RenderFrame.fadedAlpha }
                     glyphs.append(quad)
                 }
             }

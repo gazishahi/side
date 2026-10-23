@@ -38,6 +38,41 @@ final class FoldingViewTests: XCTestCase {
         XCTAssertGreaterThan(differing, 50, "glyphs drawn, not just the background")
     }
 
+    /// Writer mode: a centered reading column, and every line but the focused ones faded.
+    func testAReadingColumnAndFocusedLines() throws {
+        try open()
+        editor.readingColumnWidth = 300
+        editor.layout()
+        let width = editor.scrollView.contentView.bounds.width
+        XCTAssertEqual(editor.documentLayout.caretRect(at: 0).minX, ((width - 300) / 2).rounded(), accuracy: 1, "the text starts where the column does")
+        window.setContentSize(NSSize(width: 800, height: 400))
+        editor.layout()
+        XCTAssertEqual(editor.documentLayout.caretRect(at: 0).minX, ((editor.scrollView.contentView.bounds.width - 300) / 2).rounded(), accuracy: 1, "and stays centered as the window grows")
+
+        func ink(_ image: NSImage, line: Int) -> Int {
+            let rep = NSBitmapImageRep(data: image.tiffRepresentation!)!
+            let scale = CGFloat(rep.pixelsHigh) / image.size.height
+            let top = Int(editor.documentLayout.y(ofLine: line) * scale), bottom = Int((editor.documentLayout.y(ofLine: line) + editor.documentLayout.lineHeight) * scale)
+            let background = rep.colorAt(x: 2, y: 2)!
+            var total = 0
+            for y in stride(from: top, to: min(bottom, rep.pixelsHigh), by: 1) {
+                for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
+                    guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), let back = background.usingColorSpace(.sRGB) else { continue }
+                    total += Int(abs(color.redComponent - back.redComponent) * 100) + Int(abs(color.greenComponent - back.greenComponent) * 100)
+                }
+            }
+            return total
+        }
+        let plain = try XCTUnwrap(editor.snapshot())
+        editor.focusedLines = 1...1
+        let focused = try XCTUnwrap(editor.snapshot())
+        XCTAssertEqual(Double(ink(focused, line: 1)), Double(ink(plain, line: 1)), accuracy: Double(ink(plain, line: 1)) * 0.05, "the focused line as it was")
+        XCTAssertLessThan(ink(focused, line: 2), ink(plain, line: 2) / 2, "another faded")
+        editor.readingColumnWidth = nil
+        editor.layout()
+        XCTAssertEqual(editor.documentLayout.insets.width, DocumentLayout.standardInsets.width)
+    }
+
     func testFoldingHidesLinesAndUnfoldingBringsThemBack() throws {
         try open()
         let layout = editor.documentLayout

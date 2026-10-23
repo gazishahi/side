@@ -688,6 +688,9 @@ final class ShellViewController: NSViewController {
         show(stage)
     }
 
+    var chromeHiddenForTesting: Bool { chrome.topRow.isHidden }
+    var currentStageForTesting: String? { current.map { "\($0)" } }
+
     /// UI testing: a message sent in Think, as typed.
     func thinkSendForTesting(_ text: String) { thinkVC.sendAsTyped(text) }
 
@@ -698,6 +701,51 @@ final class ShellViewController: NSViewController {
         NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: makeVC.searchField)
     }
 
+    // MARK: Writer mode
+
+    /// Make alone: no top row, bar, tabs or window buttons; Esc or the menu item leaves.
+    private(set) var isWriting = false
+    private var escapeMonitor: Any?
+    private var enteredFullScreenToWrite = false
+
+    @objc func toggleWriterMode(_ sender: Any?) { setWriterMode(!isWriting) }
+
+    func setWriterMode(_ on: Bool) {
+        guard on != isWriting else { return }
+        if on { show(.make) }
+        isWriting = on
+        chrome.setHidden(on)
+        if !on { refreshStageControl() }
+        makeVC.setTopObstruction(on ? 0 : ChromeHost.rowHeight)
+        makeVC.setBottomObstruction(on ? 0 : chrome.bottomObstruction)
+        makeVC.setWriterMode(on)
+        if let window = view.window {
+            for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] { window.standardWindowButton(kind)?.isHidden = on }
+            let fullScreen = window.styleMask.contains(.fullScreen)
+            if on, WriterPreferences.isOn(.fullScreen), !fullScreen {
+                enteredFullScreenToWrite = true
+                window.toggleFullScreen(nil)
+            } else if !on, enteredFullScreenToWrite {
+                enteredFullScreenToWrite = false
+                if fullScreen { window.toggleFullScreen(nil) }
+            }
+        }
+        NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items)
+            .first { $0.action == #selector(toggleWriterMode(_:)) }?.state = on ? .on : .off
+        if on {
+            escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, self.isWriting, event.window === self.view.window, event.keyCode == 53,
+                      event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                      !self.makeVC.isPaletteOpen, !self.makeVC.hasTransientSurface else { return event }
+                self.setWriterMode(false)
+                return nil
+            }
+        } else if let monitor = escapeMonitor {
+            NSEvent.removeMonitor(monitor)
+            escapeMonitor = nil
+        }
+    }
+
     /// A tab torn out of another window landing here — jump to Make and show that file.
     func revealFile(_ url: URL) {
         show(.make)
@@ -706,6 +754,8 @@ final class ShellViewController: NSViewController {
 
     private func show(_ stage: Stage) {
         guard current != stage else { return }
+        // Writer mode is Make alone: going anywhere else leaves it.
+        if isWriting, stage != .make { setWriterMode(false) }
         // Transient surfaces never outlive the stage they were opened on (§5 acceptance).
         dismissCheckpointSheet()
         pendingAttach = nil

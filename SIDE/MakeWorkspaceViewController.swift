@@ -137,11 +137,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Settings or the View menu changed an editor preference: every window follows.
     @objc private func editorPreferencesChanged() {
         applyMinimapVisibility()
+        if isWriting { applyWriterAids() }
         (editor as? AlloyEditorEngine)?.view.isFoldingEnabled = EditorPreferences.foldingEnabled
     }
 
     private func applyMinimapVisibility() {
-        let show = minimapShown && !editorContainer.isHidden
+        let show = minimapShown && !editorContainer.isHidden && !isWriting
         minimap.isHidden = !show
         minimapWidth?.constant = show ? AlloyMinimapView.width : 0
         if show { minimap.needsDisplay = true }
@@ -214,6 +215,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private(set) lazy var debugger = MakeDebugger(host: self)
     /// The editor's edges, moved in while the debug inspector is beside it.
     private var gutterLeading: NSLayoutConstraint?
+    private var gutterWidth: NSLayoutConstraint?
     /// What covers the editor's top (the window's top row), and the debug bar below it.
     private var topObstruction = ChromeHost.rowHeight
     private var bottomObstruction: CGFloat = 0
@@ -313,6 +315,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var serverDiagnostics: [URL: [LSPDiagnostic]] = [:]
     private var buildDiagnostics: [URL: [LSPDiagnostic]] = [:]
     private lazy var latex: LaTeXSession = makeLaTeXSession()
+    /// Writer mode (see its section).
+    private(set) var isWriting = false
+    private let wordCountLabel = NSTextField(labelWithString: "")
+    private var wordCountWork: DispatchWorkItem?
     private var problemRows: [(url: URL, diagnostic: LSPDiagnostic)] = []
     /// The uses Find References found, with each line's text, and the rows the query keeps.
     private var referenceResults: [(location: LSPLocation, url: URL, line: Int, text: String)] = []
@@ -603,10 +609,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyState)
         gutterLeading = gutter.leadingAnchor.constraint(equalTo: view.leadingAnchor)
+        gutterWidth = gutter.widthAnchor.constraint(equalToConstant: AlloyGutterView.width)
         minimapTrailing = minimap.trailingAnchor.constraint(equalTo: view.trailingAnchor)
 
         NSLayoutConstraint.activate([
-            gutter.topAnchor.constraint(equalTo: view.topAnchor), gutterLeading!, gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutter.widthAnchor.constraint(equalToConstant: AlloyGutterView.width),
+            gutter.topAnchor.constraint(equalTo: view.topAnchor), gutterLeading!, gutter.bottomAnchor.constraint(equalTo: view.bottomAnchor), gutterWidth!,
             editorContainer.topAnchor.constraint(equalTo: view.topAnchor), editorContainer.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), editorContainer.trailingAnchor.constraint(equalTo: minimap.leadingAnchor), editorContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             // Clear of the top row and the bar: it's a map of the document, not text to read under glass.
             minimap.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight), minimapTrailing!,
@@ -3659,6 +3666,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     func editorTextDidChange(_ engine: EditorEngine) {
         guard !isLoadingTab else { return }
+        if isWriting { scheduleWordCount() }
         scheduleRecoverySync()
         dirty = true
         if let index = activeTabIndex, !openTabs[index].dirty {
@@ -4487,6 +4495,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let bracketHighlightColor = DS.Color.scrimMedium
 
     func editorSelectionDidChange(_ engine: EditorEngine) {
+        if isWriting { followCaretWhileWriting() }
         updateBracketHighlight()
         updateCaretPosition()
         editor.setNeedsDisplay()
@@ -4838,6 +4847,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         foldingItem.submenu = foldingMenu
         viewMenu.addItem(foldingItem)
         Shortcuts.bind(viewMenu.addItem(withTitle: "Show Minimap", action: #selector(toggleMinimap(_:)), keyEquivalent: ""), "view.minimap")
+        viewMenu.addItem(NSMenuItem.separator())
+        // The shell's: it hides its own chrome as well as Make's.
+        Shortcuts.bind(viewMenu.addItem(withTitle: "Writer Mode", action: #selector(ShellViewController.toggleWriterMode(_:)), keyEquivalent: ""), "view.writerMode")
         viewItem.submenu = viewMenu
 
         // The editing commands a keymap binds (Alloy's, reached through the responder chain).
@@ -6234,6 +6246,127 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         applyTopInsets()
     }
 
+    // MARK: - Writer mode
+
+    /// Writer mode (View → Writer Mode; the shell hides its own chrome): the text alone, in a
+    /// centered column, no gutter, minimap or explorer, with the aids Settings turns on.
+    private var alloyView: AlloyEditorView? { (editor as? AlloyEditorEngine)?.view }
+
+    func setWriterMode(_ on: Bool) {
+        loadViewIfNeeded()
+        guard on != isWriting else { return }
+        isWriting = on
+        if on { explorer.hide() }
+        gutterWidth?.constant = on ? 0 : AlloyGutterView.width
+        gutter.alphaValue = on ? 0 : 1
+        applyMinimapVisibility()
+        if wordCountLabel.superview == nil {
+            wordCountLabel.font = DS.Text.caption()
+            wordCountLabel.textColor = .tertiaryLabelColor
+            wordCountLabel.alignment = .center
+            wordCountLabel.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(wordCountLabel)
+            NSLayoutConstraint.activate([
+                wordCountLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                wordCountLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.m),
+            ])
+        }
+        alloyView?.highlightsCurrentLine = !on
+        if !on {
+            alloyView?.readingColumnWidth = nil
+            alloyView?.focusedLines = nil
+            wordCountLabel.isHidden = true
+        }
+        applyWriterAids()
+        view.window?.makeFirstResponder(editor.textView)
+    }
+
+    /// The column, and each aid as Settings has it.
+    private func applyWriterAids() {
+        guard isWriting else { applyTopInsets(); return }
+        let font = DS.Text.editor()
+        let digit = ("0" as NSString).size(withAttributes: [.font: font]).width
+        alloyView?.readingColumnWidth = min(760, (digit * 72).rounded())
+        wordCountLabel.isHidden = !WriterPreferences.isOn(.wordCount)
+        if !WriterPreferences.isOn(.dimOthers) { alloyView?.focusedLines = nil }
+        applyWriterInsets()
+        followCaretWhileWriting()
+        updateWordCount()
+    }
+
+    /// With typewriter scrolling the text can scroll until its first or last line is mid-screen;
+    /// without it, a margin above and below.
+    private func applyWriterInsets() {
+        guard isWriting else { return }
+        let height = editorScroll.contentView.bounds.height
+        let lineHeight = alloyView?.documentLayout.lineHeight ?? 20
+        let half = max(0, (height * 0.45 - lineHeight / 2).rounded())
+        let typewriter = WriterPreferences.isOn(.typewriter)
+        editorScroll.automaticallyAdjustsContentInsets = false
+        editorScroll.contentInsets = NSEdgeInsets(top: typewriter ? half : DS.Spacing.xxl, left: 0,
+                                                  bottom: typewriter ? max(0, height - half - lineHeight) : DS.Spacing.xxl, right: 0)
+    }
+
+    /// The caret's line held at the same height (typewriter), and its paragraph alone at full
+    /// strength (focus).
+    private func followCaretWhileWriting() {
+        guard isWriting, let view = alloyView, let document = editor.document else { return }
+        let caret = min(NSMaxRange(editor.selectedRange), document.rope.utf16Count)
+        if WriterPreferences.isOn(.typewriter) {
+            applyWriterInsets()
+            view.scrollY = view.rect(forCharacterRange: caret..<caret).minY
+        }
+        if WriterPreferences.isOn(.dimOthers) {
+            view.focusedLines = Self.paragraphLines(around: document.rope.position(of: caret).line, in: document.text)
+        }
+        if editor.selectedRange.length > 0 || wordCountLabel.stringValue.isEmpty { updateWordCount() }
+    }
+
+    /// The lines of the paragraph a line is in: up to the blank lines around it.
+    static func paragraphLines(around line: Int, in text: NSString) -> ClosedRange<Int> {
+        var lines: [NSRange] = []
+        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in lines.append(range) }
+        guard lines.indices.contains(line) else { return line...line }
+        func blank(_ index: Int) -> Bool { text.substring(with: lines[index]).trimmingCharacters(in: .whitespaces).isEmpty }
+        if blank(line) { return line...line }
+        var first = line, last = line
+        while first > 0, !blank(first - 1) { first -= 1 }
+        while last + 1 < lines.count, !blank(last + 1) { last += 1 }
+        return first...last
+    }
+
+    private func scheduleWordCount() {
+        wordCountWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.updateWordCount() }
+        wordCountWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    /// "1,204 words · 5 min read", or the selection's count of the whole.
+    private func updateWordCount() {
+        guard isWriting, WriterPreferences.isOn(.wordCount), let document = editor.document else { return }
+        let text = document.text
+        let total = Self.wordCount(text, in: NSRange(location: 0, length: text.length))
+        let selection = editor.selectedRange
+        if selection.length > 0, NSMaxRange(selection) <= text.length {
+            wordCountLabel.stringValue = "\(Self.wordCount(text, in: selection).formatted()) of \(total.formatted()) words"
+        } else {
+            let minutes = max(1, Int((Double(total) / 230).rounded()))
+            wordCountLabel.stringValue = "\(total.formatted()) word\(total == 1 ? "" : "s") \u{00B7} \(minutes) min read"
+        }
+    }
+
+    static func wordCount(_ text: NSString, in range: NSRange) -> Int {
+        var count = 0
+        text.enumerateSubstrings(in: range, options: [.byWords, .substringNotRequired]) { _, _, _, _ in count += 1 }
+        return count
+    }
+
+    /// Something Esc should close before it leaves Writer mode: completions, an Instruct popover.
+    var hasTransientSurface: Bool { completionSession != nil || instructPopover?.isShown == true }
+
+        var wordCountForTesting: String? { wordCountLabel.isHidden ? nil : wordCountLabel.stringValue }
+
     // MARK: - LaTeX
 
     /// The LaTeX source on screen.
@@ -6378,6 +6511,13 @@ extension MakeWorkspaceViewController: StageChromeProviding {
             scroll.automaticallyAdjustsContentInsets = false
             scroll.contentInsets.top = topObstruction + banners + (scroll === editorScroll ? debugTopInset : 0)
         }
+        if isWriting { applyWriterInsets() }
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // The window resized: typewriter scrolling keeps its line mid-screen.
+        if isWriting { applyWriterInsets() }
     }
 
     /// ⌃Tab / ⌃⇧Tab.
@@ -6567,6 +6707,45 @@ enum EditorPreferences {
             MakeWorkspaceViewController.preferences.set(!newValue, forKey: "SideCodeFoldingOff")
             NotificationCenter.default.post(name: didChangeNotification, object: nil)
         }
+    }
+}
+
+/// Writer mode's aids (Settings → General → Writer Mode), each a toggle: the word count, the
+/// typing line held in place, and the other paragraphs dimmed are on until turned off; full
+/// screen on entering is off until turned on (2026-10-23, the owner).
+enum WriterPreferences {
+    enum Aid: String, CaseIterable {
+        case wordCount, typewriter, dimOthers, fullScreen
+
+        var title: String {
+            switch self {
+            case .wordCount: return "Word count"
+            case .typewriter: return "Typewriter scrolling"
+            case .dimOthers: return "Dim other paragraphs"
+            case .fullScreen: return "Full screen on enter"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .wordCount: return "Words and reading time at the bottom, for the document or the selection."
+            case .typewriter: return "The line you're typing stays at the same height on screen."
+            case .dimOthers: return "Everything but the paragraph you're in fades back."
+            case .fullScreen: return "Entering Writer Mode also takes the window full screen."
+            }
+        }
+
+        fileprivate var key: String { "SideWriter.\(rawValue)" }
+        fileprivate var standard: Bool { self != .fullScreen }
+    }
+
+    static func isOn(_ aid: Aid) -> Bool {
+        MakeWorkspaceViewController.preferences.object(forKey: aid.key) as? Bool ?? aid.standard
+    }
+
+    static func set(_ aid: Aid, _ on: Bool) {
+        MakeWorkspaceViewController.preferences.set(on, forKey: aid.key)
+        NotificationCenter.default.post(name: EditorPreferences.didChangeNotification, object: nil)
     }
 }
 

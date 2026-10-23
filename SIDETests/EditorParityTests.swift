@@ -349,6 +349,77 @@ final class EditorParityTests: XCTestCase {
         }
     }
 
+    /// 2026-10-23, the owner: Writer mode, Make alone, with word count, typewriter scrolling
+    /// and the other paragraphs dimmed, each a toggle.
+    func testWriterModeLeavesTheTextAlone() throws {
+        let text = (1...60).map { "Paragraph \($0) has a few words in it." + ($0 % 3 == 0 ? "\n" : "") }.joined(separator: "\n")
+        _ = try open("essay.md", text)
+        let alloy = (make.editor as! AlloyEditorEngine).view
+        make.setWriterMode(true)
+        make.view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(make.isWriting)
+        XCTAssertNotNil(alloy.readingColumnWidth, "one centered column")
+        XCTAssertEqual(make.editor.gutterView.frame.width, 0, "no line numbers")
+        XCTAssertTrue(alloy.minimap.isHidden)
+        XCTAssertEqual(make.wordCountForTesting, "480 words \u{00B7} 2 min read")
+
+        // The caret in the 5th paragraph's line: that paragraph alone at full strength, held mid-screen.
+        let document = try XCTUnwrap(make.editor.document)
+        let target = (document.string as NSString).range(of: "Paragraph 14 has")
+        make.editor.selectedRange = NSRange(location: target.location, length: 0)
+        let line = document.rope.position(of: target.location).line
+        XCTAssertEqual(alloy.focusedLines, MakeWorkspaceViewController.paragraphLines(around: line, in: document.text))
+        XCTAssertEqual(alloy.focusedLines?.count, 3)
+        let caretY = alloy.rect(forCharacterRange: target.location..<target.location).minY - alloy.scrollView.contentView.bounds.minY
+        let height = alloy.scrollView.contentView.bounds.height
+        XCTAssertEqual(caretY / height, 0.45, accuracy: 0.06, "the typing line mid-screen")
+
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"], let image = make.tabPreviewContent(0) {
+            try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("writer-mode.png"))
+        }
+        make.editor.selectedRange = target
+        XCTAssertEqual(make.wordCountForTesting, "3 of 480 words")
+
+        WriterPreferences.set(.dimOthers, false)
+        WriterPreferences.set(.wordCount, false)
+        defer { WriterPreferences.set(.dimOthers, true); WriterPreferences.set(.wordCount, true) }
+        XCTAssertNil(alloy.focusedLines, "a toggle in Settings takes effect at once")
+        XCTAssertNil(make.wordCountForTesting)
+
+        make.setWriterMode(false)
+        make.view.layoutSubtreeIfNeeded()
+        XCTAssertNil(alloy.readingColumnWidth)
+        XCTAssertNil(alloy.focusedLines)
+        XCTAssertEqual(make.editor.gutterView.frame.width, AlloyGutterView.width, accuracy: 0.5)
+    }
+
+    func testParagraphsAndWords() {
+        let text = "One two.\nThree four\n\nFive\n" as NSString
+        XCTAssertEqual(MakeWorkspaceViewController.paragraphLines(around: 1, in: text), 0...1)
+        XCTAssertEqual(MakeWorkspaceViewController.paragraphLines(around: 3, in: text), 3...3)
+        XCTAssertEqual(MakeWorkspaceViewController.paragraphLines(around: 2, in: text), 2...2, "a blank line is its own")
+        XCTAssertEqual(MakeWorkspaceViewController.wordCount(text, in: NSRange(location: 0, length: text.length)), 5)
+        XCTAssertEqual(WriterPreferences.Aid.allCases.filter { !WriterPreferences.isOn($0) }, [.fullScreen], "full screen is the one off by default")
+    }
+
+    func testTheShellHidesItsChromeAndLeavesForOtherStages() throws {
+        let shell = ShellViewController()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { shell.setWriterMode(false); window.close() }
+        window.contentViewController = shell
+        shell.showStageForTesting("think")
+        shell.setWriterMode(true)
+        XCTAssertEqual(shell.currentStageForTesting, "make", "Writer mode is Make")
+        XCTAssertTrue(shell.chromeHiddenForTesting)
+        XCTAssertEqual(window.standardWindowButton(.closeButton)?.isHidden, true)
+        shell.showStageForTesting("think")
+        XCTAssertFalse(shell.isWriting, "going to another stage leaves it")
+        XCTAssertFalse(shell.chromeHiddenForTesting)
+        XCTAssertEqual(window.standardWindowButton(.closeButton)?.isHidden, false)
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

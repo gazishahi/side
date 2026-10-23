@@ -348,6 +348,7 @@ final class GeneralPreferencesViewController: NSViewController {
     private var switches: [NSSwitch] = []
     private let foldingSwitch = NSSwitch()
     private let minimapSwitch = NSSwitch()
+    private var writerSwitches: [WriterPreferences.Aid: NSSwitch] = [:]
     private var observer: NSObjectProtocol?
     private var sideObserver: NSObjectProtocol?
 
@@ -379,6 +380,14 @@ final class GeneralPreferencesViewController: NSViewController {
                 SettingsForm.row("Code folding", detail: "Fold regions from the gutter's arrows.", foldingSwitch),
                 SettingsForm.row("Minimap", detail: "The file drawn small beside the text; click or drag it to scroll.", minimapSwitch),
             ]),
+            SettingsForm.section("Writer Mode", footer: "View \u{2192} Writer Mode: Make alone, one column of text, nothing else on screen.",
+                                 WriterPreferences.Aid.allCases.map { aid in
+                                     let toggle = SettingsForm.toggle(WriterPreferences.isOn(aid), self, #selector(writerAidToggled(_:)))
+                                     toggle.identifier = NSUserInterfaceItemIdentifier(aid.rawValue)
+                                     toggle.setAccessibilityLabel(aid.title)
+                                     writerSwitches[aid] = toggle
+                                     return SettingsForm.row(aid.title, detail: aid.detail, toggle)
+                                 }),
             SettingsForm.section("Updates", [
                 SettingsForm.row("Check for updates automatically", detail: "Side \(Self.versionText). Updates are signed, and verified before they install.",
                                  SettingsForm.toggle(Updates.shared.checksAutomatically, self, #selector(autoUpdateToggled(_:)))),
@@ -404,6 +413,7 @@ final class GeneralPreferencesViewController: NSViewController {
         explorerPopup?.selectItem(withTitle: FileExplorer.Side.preferred.title)
         foldingSwitch.state = EditorPreferences.foldingEnabled ? .on : .off
         minimapSwitch.state = EditorPreferences.minimapShown ? .on : .off
+        for (aid, toggle) in writerSwitches { toggle.state = WriterPreferences.isOn(aid) ? .on : .off }
         let pinned = StagePins.pinned
         for toggle in switches {
             let isPinned = pinned.contains { $0.rawValue == toggle.identifier?.rawValue }
@@ -435,6 +445,10 @@ final class GeneralPreferencesViewController: NSViewController {
     @objc private func editorPreferencesChanged() { refresh() }
     @objc private func foldingToggled(_ sender: NSSwitch) { EditorPreferences.foldingEnabled = sender.state == .on }
     @objc private func minimapToggled(_ sender: NSSwitch) { EditorPreferences.minimapShown = sender.state == .on }
+    @objc private func writerAidToggled(_ sender: NSSwitch) {
+        guard let raw = sender.identifier?.rawValue, let aid = WriterPreferences.Aid(rawValue: raw) else { return }
+        WriterPreferences.set(aid, sender.state == .on)
+    }
 
     @objc private func toggled(_ sender: NSSwitch) {
         guard let raw = sender.identifier?.rawValue, let stage = ShellViewController.Stage(rawValue: raw) else { return }
