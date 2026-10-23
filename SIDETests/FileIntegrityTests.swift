@@ -358,6 +358,83 @@ final class FrontMatterTests: XCTestCase {
     }
 }
 
+/// 2026-10-23, the owner: spreadsheets shown as a spreadsheet: CSV, TSV and Excel workbooks.
+@MainActor
+final class SheetTests: XCTestCase {
+    func testDelimitersAreFoundAndQuotedFieldsKept() {
+        XCTAssertEqual(CSVParser.delimiter(forExtension: "tsv", text: "a,b"), "\t")
+        XCTAssertEqual(CSVParser.delimiter(forExtension: "csv", text: "a\tb\n1\t2"), "\t", "a tab file named .csv")
+        XCTAssertEqual(CSVParser.delimiter(forExtension: "csv", text: "a;b\n1;2"), ";")
+        XCTAssertEqual(CSVParser.delimiter(forExtension: "csv", text: "a,b"), ",")
+        XCTAssertEqual(CSVParser.parse("name\tnote\nAda\t\"says \"\"hi\"\"\"", delimiter: "\t"), [["name", "note"], ["Ada", "says \"hi\""]])
+    }
+
+    /// A workbook built here the way Excel writes one: two sheets, shared strings, an inline
+    /// string, a boolean, and a date-formatted number.
+    func testAWorkbooksSheetsAreRead() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("xlsx-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let files: [String: String] = [
+            "[Content_Types].xml": "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>",
+            "xl/workbook.xml": #"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Orders" sheetId="1" r:id="rId1"/><sheet name="Notes" sheetId="2" r:id="rId2"/></sheets></workbook>"#,
+            "xl/_rels/workbook.xml.rels": #"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>"#,
+            "xl/sharedStrings.xml": #"<sst><si><t>Item</t></si><si><t>Qty</t></si><si><t>Shipped</t></si><si><r><t>Wid</t></r><r><t>get</t></r></si></sst>"#,
+            "xl/styles.xml": #"<styleSheet><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>"#,
+            "xl/worksheets/sheet1.xml": #"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="inlineStr"><is><t>Paid</t></is></c></row><row r="2"><c r="A2" t="s"><v>3</v></c><c r="B2"><v>12</v></c><c r="C2" s="1"><v>45200</v></c><c r="D2" t="b"><v>1</v></c></row></sheetData></worksheet>"#,
+            "xl/worksheets/sheet2.xml": #"<worksheet><sheetData><row r="1"><c r="B1" t="inlineStr"><is><t>later</t></is></c></row></sheetData></worksheet>"#,
+        ]
+        for (path, text) in files {
+            let url = folder.appendingPathComponent("book/\(path)")
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.currentDirectoryURL = folder.appendingPathComponent("book")
+        zip.arguments = ["-q", "-r", "-X", folder.appendingPathComponent("orders.xlsx").path, "."]
+        try zip.run(); zip.waitUntilExit()
+        let sheets = try XLSXReader.read(folder.appendingPathComponent("orders.xlsx"))
+        XCTAssertEqual(sheets.map(\.name), ["Orders", "Notes"])
+        XCTAssertEqual(sheets[0].rows, [["Item", "Qty", "Shipped", "Paid"], ["Widget", "12", "2023-10-01", "TRUE"]], "rich text joined, the date as a date")
+        XCTAssertEqual(sheets[1].rows, [["", "later"]], "an empty first column kept")
+    }
+
+    func testTheViewAlignsSortsAndCopies() throws {
+        let view = SheetView(frame: NSRect(x: 0, y: 0, width: 800, height: 400))
+        view.show([Sheet(name: "s", rows: [["name", "score"], ["b", "10"], ["a", "9"], ["c", ""]])])
+        XCTAssertEqual(view.table.numberOfRows, 3)
+        XCTAssertTrue(SheetView.isNumeric(["10", "9", "", "1,200", "$3"]))
+        XCTAssertFalse(SheetView.isNumeric(["a", "9"]))
+        view.table.sortDescriptors = [NSSortDescriptor(key: "1", ascending: true)]
+        XCTAssertEqual(view.rows.map(\.cells[0]), ["a", "b", "c"], "numbers as numbers (9 before 10), blanks last")
+        XCTAssertEqual(view.rows.map(\.number), [2, 1, 3], "row numbers stay with their rows")
+        view.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        view.copySelection()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "a\t9")
+        XCTAssertEqual(SheetView.letter(0), "A")
+        XCTAssertEqual(SheetView.letter(27), "AB")
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] {
+            let regions = ["North", "South", "East", "West"], products = ["Widget", "Gadget", "Sprocket"]
+            var rows: [[String]] = [["Region", "Product", "Units", "Revenue", "Updated"]]
+            for i in 1...24 {
+                let day = String(format: "%02d", i)
+                rows.append([regions[i % 4], products[i % 3], String(i * 37), "$" + String(i * 1250), "2026-10-" + day])
+            }
+            for dark in [false, true] {
+                let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                let sheet = SheetView(frame: NSRect(x: 0, y: 0, width: 760, height: 420))
+                sheet.appearance = appearance
+                sheet.show([Sheet(name: "Sales", rows: rows), Sheet(name: "Notes", rows: [["a"]])])
+                sheet.layoutSubtreeIfNeeded()
+                let rep = sheet.bitmapImageRepForCachingDisplay(in: sheet.bounds)!
+                appearance.performAsCurrentDrawingAppearance { sheet.cacheDisplay(in: sheet.bounds, to: rep) }
+                try? rep.representation(using: NSBitmapImageRep.FileType.png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: directory).appendingPathComponent(dark ? "sheet-dark.png" : "sheet-light.png"))
+            }
+        }
+    }
+}
+
 /// 2026-10-01, the owner: scrolling the tab strip under a still pointer left the tabs it passed
 /// over highlighted, since AppKit sends no exit when the view moves rather than the pointer.
 @MainActor

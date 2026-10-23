@@ -77,7 +77,8 @@ private struct OpenTab {
     /// instead of leaving a file "edited" that matches disk.
     var savedStamp = ContentStamp("")
     var lastSelectedRange = NSRange(location: 0, length: 0)
-    var csvRows: [[String]] = []
+    /// A spreadsheet's sheets (CSV and TSV have one; a workbook its own).
+    var sheets: [Sheet] = []
     var diagnostics: [LSPDiagnostic] = []
     var isPreviewingMarkdown = false
     var cachedImage: NSImage?
@@ -216,8 +217,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var minimapTrailing: NSLayoutConstraint?
     private let imageScroll = NSScrollView()
     private let imageView = FocusableImageView()
-    private let csvScroll = NSScrollView()
-    private let csvTable = NSTableView()
+    /// CSV, TSV and Excel files (CSVParser.swift).
+    private let sheetView = SheetView()
+    private var csvScroll: NSScrollView { sheetView.scrollView }
     private let markdownPreviewScroll = NSScrollView()
     private let markdownPreviewView = MarkdownPreviewTextView.make()
     /// What the preview shows now (tab, text, style), so switching back to an unchanged document
@@ -543,19 +545,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         imageScroll.documentView = imageView
         view.addSubview(imageScroll)
 
-        csvTable.headerView = NSTableHeaderView()
-        csvTable.usesAlternatingRowBackgroundColors = true
-        csvTable.rowHeight = 22
-        csvTable.dataSource = self
-        csvTable.delegate = self
-        csvScroll.documentView = csvTable
-        csvScroll.hasVerticalScroller = true
-        csvScroll.hasHorizontalScroller = true
         csvScroll.backgroundColor = Self.editorBackground
         csvScroll.drawsBackground = true
-        csvScroll.isHidden = true
-        csvScroll.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(csvScroll)
+        sheetView.isHidden = true
+        sheetView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(sheetView)
 
         markdownPreviewView.isEditable = false
         markdownPreviewView.isSelectable = true
@@ -608,7 +602,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             // Clear of the top row and the bar: it's a map of the document, not text to read under glass.
             minimap.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight), minimapTrailing!,
             imageScroll.topAnchor.constraint(equalTo: view.topAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            csvScroll.topAnchor.constraint(equalTo: view.topAnchor), csvScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), csvScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), csvScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            sheetView.topAnchor.constraint(equalTo: view.topAnchor), sheetView.leadingAnchor.constraint(equalTo: view.leadingAnchor), sheetView.trailingAnchor.constraint(equalTo: view.trailingAnchor), sheetView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             markdownPreviewScroll.topAnchor.constraint(equalTo: view.topAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
@@ -1991,6 +1985,37 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return
         }
 
+        // An Excel workbook: its sheets' values, read-only, in the sheet view.
+        if ext == "xlsx" {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let stamp = DiskStamp(of: url)
+                let sheets = try? XLSXReader.read(url)
+                DispatchQueue.main.async {
+                    guard let self else { completion?(); return }
+                    guard let sheets, !sheets.isEmpty else {
+                        self.showAlert(title: "Couldn't open workbook", message: "\(url.lastPathComponent) couldn't be read as an Excel workbook.", window: window)
+                        completion?()
+                        return
+                    }
+                    if let existingIndex = self.openTabs.firstIndex(where: { $0.url == url }) {
+                        self.activeTabIndex = existingIndex
+                        self.loadActiveTabIntoEditor()
+                        self.finishOpenUI(url: url)
+                        completion?()
+                        return
+                    }
+                    var tab = OpenTab(url: url, kind: .csv, document: self.editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownDiskStamp: stamp)
+                    tab.sheets = sheets
+                    self.openTabs.append(tab)
+                    self.activeTabIndex = self.openTabs.count - 1
+                    self.loadActiveTabIntoEditor()
+                    self.finishOpenUI(url: url)
+                    completion?()
+                }
+            }
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             if size > Self.maxOpenableFileSize {
@@ -2017,8 +2042,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 return
             }
             let source = decoded.text
-            let isCSV = ext == "csv"
-            let rows = isCSV ? CSVParser.parse(source) : []
+            let isCSV = ["csv", "tsv", "tab"].contains(ext)
+            let rows = isCSV ? CSVParser.parse(source, delimiter: CSVParser.delimiter(forExtension: ext, text: source)) : []
             // Whole-file work, here rather than on the main thread.
             let savedStamp = ContentStamp(source)
             DispatchQueue.main.async {
@@ -2035,7 +2060,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     return
                 }
                 var tab = OpenTab(url: url, kind: isCSV ? .csv : .text, document: self.editor.makeDocument(source), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownDiskStamp: stamp)
-                tab.csvRows = rows
+                tab.sheets = isCSV ? [Sheet(name: url.deletingPathExtension().lastPathComponent, rows: rows)] : []
                 tab.format = decoded.format
                 tab.savedStamp = savedStamp
                 self.openTabs.append(tab)
@@ -2109,7 +2134,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .text where openTabs[index].isPreviewingMarkdown: view.window?.makeFirstResponder(markdownPreviewView)
         case .text: editor.focus()
         case .image: view.window?.makeFirstResponder(imageView)
-        case .csv: view.window?.makeFirstResponder(csvTable)
+        case .csv: view.window?.makeFirstResponder(sheetView.table)
         }
     }
 
@@ -2152,7 +2177,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         applyMinimapVisibility()
         gutter.isHidden = tab.kind != .text || showingMarkdownPreview
         imageScroll.isHidden = tab.kind != .image
-        csvScroll.isHidden = tab.kind != .csv
+        sheetView.isHidden = tab.kind != .csv
         if markdownPreviewScroll.isHidden == showingMarkdownPreview {
             markdownPreviewScroll.isHidden = !showingMarkdownPreview
             onScrollUnderTopRowChange?()
@@ -2184,9 +2209,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             view.window?.makeFirstResponder(imageView)  // see focusShownContent
         case .csv:
             editor.isEditable = false
-            rebuildCSVColumns(for: tab)
-            csvTable.reloadData()
-            view.window?.makeFirstResponder(csvTable)
+            if sheetView.sheets != tab.sheets { sheetView.show(tab.sheets) }
+            view.window?.makeFirstResponder(sheetView.table)
         }
 
         dirty = tab.dirty
@@ -2272,18 +2296,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         popover.behavior = .transient
         lspInstallPopover = popover
         popover.show(relativeTo: lspStatusButton.bounds, of: lspStatusButton, preferredEdge: .maxY)
-    }
-
-    private func rebuildCSVColumns(for tab: OpenTab) {
-        csvTable.tableColumns.forEach { csvTable.removeTableColumn($0) }
-        guard let columnCount = tab.csvRows.first?.count else { return }
-        let header = tab.csvRows.first ?? []
-        for i in 0..<columnCount {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("csv-\(i)"))
-            column.title = i < header.count ? header[i] : "Column \(i + 1)"
-            column.width = 140
-            csvTable.addTableColumn(column)
-        }
     }
 
     // MARK: - Markdown preview
@@ -3392,35 +3404,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === resultsTable { return resultCount }
-        if tableView === csvTable {
-            guard let index = activeTabIndex, openTabs.indices.contains(index) else { return 0 }
-            return max(0, openTabs[index].csvRows.count - 1)
-        }
         return 0
     }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if tableView === csvTable {
-            guard let index = activeTabIndex, openTabs.indices.contains(index), let tableColumn else { return nil }
-            let rows = openTabs[index].csvRows
-            let dataRow = row + 1
-            guard dataRow < rows.count, let colIndex = tableView.tableColumns.firstIndex(of: tableColumn) else { return nil }
-            let id = NSUserInterfaceItemIdentifier("csvCell")
-            let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
-            cell.identifier = id
-            let text = cell.textField ?? NSTextField(labelWithString: "")
-            if cell.textField == nil {
-                cell.textField = text
-                text.translatesAutoresizingMaskIntoConstraints = false
-                text.font = DS.Text.body()
-                text.lineBreakMode = .byTruncatingTail
-                cell.addSubview(text)
-                NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6), text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
-            }
-            text.stringValue = colIndex < rows[dataRow].count ? rows[dataRow][colIndex] : ""
-            text.textColor = NSColor.labelColor
-            return cell
-        }
-
         guard tableView === resultsTable else { return nil }
         let id = NSUserInterfaceItemIdentifier("paletteRow")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? PaletteCellView ?? PaletteCellView()
@@ -5959,7 +5945,8 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         // (and the caret on it — scroll-to-visible honours content insets) clears it.
         let inset = height > 0 ? height + DS.Spacing.l : 0
         minimapBottom?.constant = -inset
-        for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
+        sheetView.setBottomInset(height)
+        for scroll in [editorScroll, markdownPreviewScroll, imageScroll] {
             scroll.automaticallyAdjustsContentInsets = false
             scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: inset, right: 0)
         }
