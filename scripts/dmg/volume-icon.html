@@ -8,19 +8,18 @@
 <meta charset="utf-8">
 <style>
   html, body { margin: 0; width: 1024px; height: 1024px; background: transparent; overflow: hidden; }
+  .drive { position: absolute; inset: 0; filter: drop-shadow(0 26px 34px rgba(0, 0, 0, 0.32)) drop-shadow(0 6px 10px rgba(0, 0, 0, 0.2)); }
+  /* The body runs down behind the cap to its middle with square corners, so its sides flow
+     straight into the cap's rounded ends instead of showing a corner beside them. */
   .body {
-    position: absolute; left: 150px; top: 74px; width: 724px; height: 800px;
-    border-radius: 58px 58px 18px 18px / 46px 46px 18px 18px;
+    position: absolute; left: 150px; top: 74px; width: 724px; height: 814px;
+    border-radius: 58px 58px 0 0 / 46px 46px 0 0;
     /* Rounded sides: a bright rim just inside each edge, falling off toward the middle. */
     background:
       linear-gradient(90deg, rgba(0, 0, 0, 0.42) 0%, rgba(255, 255, 255, 0.16) 2.5%, rgba(255, 255, 255, 0.05) 8%,
                       rgba(255, 255, 255, 0.02) 50%, rgba(255, 255, 255, 0.04) 92%, rgba(255, 255, 255, 0.13) 97.5%, rgba(0, 0, 0, 0.45) 100%),
       linear-gradient(180deg, #41464e 0%, #2c3036 45%, #212429 100%);
-    box-shadow:
-      inset 0 4px 0 rgba(255, 255, 255, 0.20),
-      inset 0 0 0 2px rgba(255, 255, 255, 0.05),
-      0 30px 50px rgba(0, 0, 0, 0.35),
-      0 8px 14px rgba(0, 0, 0, 0.22);
+    box-shadow: inset 0 4px 0 rgba(255, 255, 255, 0.20), inset 0 0 0 2px rgba(255, 255, 255, 0.05);
   }
   /* The rounded top edge, catching the light. */
   .body::before {
@@ -34,18 +33,16 @@
     /* Set into the surface, as the system's arrow is: shadow above, light below. */
     filter: drop-shadow(0 -3px 0 rgba(0, 0, 0, 0.5)) drop-shadow(0 3px 0 rgba(255, 255, 255, 0.12));
   }
+  /* The drive's base, seen from the front: one flat face of the same object, with a fine
+     highlight where its top edge turns toward the light. */
   .cap {
     position: absolute; left: 150px; top: 832px; width: 724px; height: 112px;
     border-radius: 56px;
-    /* A cylinder: lit along its upper middle, dark at the rounded ends. */
-    background:
-      linear-gradient(90deg, rgba(0, 0, 0, 0.45) 0%, rgba(0, 0, 0, 0) 9%, rgba(0, 0, 0, 0) 91%, rgba(0, 0, 0, 0.5) 100%),
-      linear-gradient(180deg, #4a4f57 0%, #2b2f35 38%, #1a1c20 72%, #111315 100%);
+    /* A shade below the body, as Apple's base is, so it reads as its own face of one object. */
+    background: linear-gradient(180deg, #24272c 0%, #1b1d21 60%, #16181b 100%);
     box-shadow:
-      inset 0 3px 0 rgba(255, 255, 255, 0.16),
-      inset 0 -4px 8px rgba(0, 0, 0, 0.5),
-      0 0 0 2px rgba(255, 255, 255, 0.05),
-      0 18px 30px rgba(0, 0, 0, 0.35);
+      inset 0 2.5px 0 rgba(255, 255, 255, 0.30),
+      inset 0 0 0 1.5px rgba(0, 0, 0, 0.45);
   }
   .light {
     position: absolute; right: 54px; top: 44px; width: 24px; height: 24px; border-radius: 50%;
@@ -55,11 +52,13 @@
 </style>
 </head>
 <body>
+  <div class="drive">
   <div class="body"></div>
   <svg class="mark" viewBox="160 160 704 704" fill="currentColor">
     <path d="M256 192H736.804041A16 16 0 0 1 748.117749 219.313708L219.313708 748.117749A16 16 0 0 1 192 736.804041V256A64 64 0 0 1 256 192Z"/>
     <path d="M256 192H736.804041A16 16 0 0 1 748.117749 219.313708L219.313708 748.117749A16 16 0 0 1 192 736.804041V256A64 64 0 0 1 256 192Z" transform="rotate(180 512 512)"/>
   </svg>
   <div class="cap"><div class="light"></div></div>
+  </div>
 </body>
 </html>
