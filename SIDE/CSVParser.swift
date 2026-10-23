@@ -1368,6 +1368,18 @@ final class SheetHeaderCell: NSTableHeaderCell {
 
     required init(coder: NSCoder) { fatalError() }
 
+    /// The header view copies a column's cell to fill the space past the last column. NSCell's
+    /// own copy duplicates the object's memory, which doesn't retain Swift's stored strings, so
+    /// both copies later released them: the app crashed opening a workbook (2026-10-23, the
+    /// owner). A new cell instead.
+    override func copy(with zone: NSZone? = nil) -> Any {
+        let copy = SheetHeaderCell(letter: letter, title: heading, corner: corner)
+        copy.alignment = alignment
+        copy.lit = lit
+        copy.sort = sort
+        return copy
+    }
+
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
         let past = (controlView as? NSTableHeaderView)?.tableView.map { $0.column(at: NSPoint(x: cellFrame.midX, y: 0)) < 0 } ?? false
         DS.Color.hairline.setFill()

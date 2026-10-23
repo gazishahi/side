@@ -509,6 +509,22 @@ final class SheetTests: XCTestCase {
         XCTAssertEqual(view.selection?.rows, 2...2)
     }
 
+    /// The header view copies a header cell for the space past the last column; the copy must
+    /// own its strings (the app crashed when the copy and the column's cell both freed them).
+    func testAHeaderCellCopiesSafely() {
+        var copies: [SheetHeaderCell] = []
+        for index in 0..<200 {
+            autoreleasepool {
+                let cell = SheetHeaderCell(letter: SheetView.letter(index), title: "Column \(index) with a longer title", corner: false)
+                cell.lit = true
+                copies.append(cell.copy() as! SheetHeaderCell)
+            }
+        }
+        XCTAssertEqual(copies[42].heading, "Column 42 with a longer title")
+        XCTAssertEqual(copies[42].letter, "AQ")
+        XCTAssertTrue(copies[42].lit)
+    }
+
     /// Number format codes as Excel shows them.
     func testNumberFormats() {
         let formats = NumberFormatCode(locale: Locale(identifier: "en_US"))
