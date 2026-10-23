@@ -60,7 +60,20 @@ enum MarkdownPreview {
             builder.add(String(parsed[run.range].characters), intent: run.presentationIntent,
                         inline: run.inlinePresentationIntent ?? [], link: run.link, image: run.imageURL)
         }
-        return builder.finish()
+        return openedClear(of: builder.finish())
+    }
+
+    /// A card drawn around the document's first paragraph reaches above the text, where nothing
+    /// is drawn, and lost its top corners (2026-10-23, the owner): the first paragraph gets no
+    /// space before it. A short empty line ahead of the card gives it room.
+    static func openedClear(of rendered: NSAttributedString) -> NSAttributedString {
+        guard rendered.length > 0, rendered.attribute(codeBlockKey, at: 0, effectiveRange: nil) != nil else { return rendered }
+        let spacer = NSMutableParagraphStyle()
+        spacer.minimumLineHeight = codePadding
+        spacer.maximumLineHeight = codePadding
+        let out = NSMutableAttributedString(string: "\n", attributes: [.paragraphStyle: spacer, .font: DS.Text.caption()])
+        out.append(rendered)
+        return out
     }
 
     // MARK: Front matter

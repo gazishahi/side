@@ -185,6 +185,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var findShowsReplace = false
     /// The text the matches were found in, and the tab: a step or a replace uses these.
     private var findText: NSString = ""
+    /// Find in a sheet: each cell is a line of `findText`, in the order shown.
+    private var findSheetCells: [CellRef] = []
+    private var findSheetLineStarts: [Int] = []
     /// The list: one row per line with matches (the index of its first match, and the line,
     /// one-based), and each match's row, counted once per search.
     private var findRows: [(firstMatch: Int, line: Int)] = []
@@ -785,7 +788,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if mode == .symbols && activeTabIndex == nil { return }
         if mode == .text && projectURL == nil { return }
         let window = view.window ?? NSApp.keyWindow
-        if mode == .find && (activeTabIndex == nil || openTabs[activeTabIndex!].kind != .text) { return }
+        if mode == .find && (activeTabIndex == nil || openTabs[activeTabIndex!].kind == .image) { return }
         if !paletteIsOpen { paletteReturnResponder = window?.firstResponder }
         endHover()
         hideSignatureHelp()
@@ -870,19 +873,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// ⌘F, or ⌥⌘F with the replace row: find in the file on screen, starting from the
     /// selection when it's a short piece of one line.
     func presentFind(replace: Bool) {
-        guard let index = activeTabIndex, openTabs[index].kind == .text else { return }
+        guard let index = activeTabIndex, openTabs[index].kind != .image else { return }
         if let selected = selectedEditorText(), let query = InFileFind.query(fromSelection: selected) { find.query = query }
         presentPalette(.find)
-        // A preview finds but doesn't replace: it's the rendering, not the file.
-        let replace = replace && !findingInPreview
-        findReplaceToggle.isHidden = findingInPreview
-        setReplaceRowShown((replace || findShowsReplace) && !findingInPreview)
+        // A preview or a sheet finds but doesn't replace: neither is edited here.
+        let readOnly = findingInPreview || findingInSheet
+        let replace = replace && !readOnly
+        findReplaceToggle.isHidden = readOnly
+        setReplaceRowShown((replace || findShowsReplace) && !readOnly)
         if replace { searchField.window?.makeFirstResponder(find.query.isEmpty ? searchField : replaceField) }
     }
 
     /// ⌘G / ⇧⌘G: the next or previous match, with the palette open or not.
     func findNext(forward: Bool) {
-        guard !find.query.isEmpty, let index = activeTabIndex, openTabs[index].kind == .text else { presentFind(replace: false); return }
+        guard !find.query.isEmpty, let index = activeTabIndex, openTabs[index].kind != .image else { presentFind(replace: false); return }
         if !(paletteIsOpen && searchMode == .find) { performFindSearch(select: false) }
         findStep(forward: forward)
         if !(paletteIsOpen && searchMode == .find) { clearFindMarks() }
@@ -901,15 +905,44 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return openTabs[index].kind == .text && openTabs[index].isPreviewingMarkdown
     }
 
-    /// Where Find starts and what it selects: the editor's selection, or the preview's.
+    /// Find runs over a sheet's cells while a sheet is what's showing.
+    private var findingInSheet: Bool {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return false }
+        return openTabs[index].kind == .csv
+    }
+
+    /// The sheet cell a match is in.
+    private func findSheetCell(forMatch match: Int) -> CellRef? {
+        guard findMatches.indices.contains(match) else { return nil }
+        let location = findMatches[match].location
+        var low = 0, high = findSheetLineStarts.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if findSheetLineStarts[middle] <= location { low = middle } else { high = middle - 1 }
+        }
+        return findSheetCells.indices.contains(low) ? findSheetCells[low] : nil
+    }
+
+    /// Where Find starts and what it selects: the editor's selection, the preview's, or in a
+    /// sheet the active cell (the current match itself when that's the cell it's in).
     private var findSelection: NSRange {
-        get { findingInPreview ? markdownPreviewView.selectedRange() : editor.selectedRange }
+        get {
+            if findingInSheet {
+                guard let active = sheetView.anchor, !sheetView.header.isEmpty else { return NSRange(location: 0, length: 0) }
+                if let current = findCurrent, findSheetCell(forMatch: current) == active { return findMatches[current] }
+                let line = active.row * sheetView.header.count + active.column
+                return NSRange(location: findSheetLineStarts.indices.contains(line) ? findSheetLineStarts[line] : 0, length: 0)
+            }
+            return findingInPreview ? markdownPreviewView.selectedRange() : editor.selectedRange
+        }
         set {
+            if findingInSheet { return }
             if findingInPreview { markdownPreviewView.setSelectedRange(newValue) } else { editor.selectedRange = newValue }
         }
     }
 
     private func selectedEditorText() -> String? {
+        if findingInSheet { return nil }
         if findingInPreview {
             let range = markdownPreviewView.selectedRange()
             let text = markdownPreviewView.string as NSString
@@ -943,14 +976,34 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     /// Every match, marked in the editor and listed; the one at or after the caret is current.
     private func performFindSearch(select: Bool = true) {
-        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { return }
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind != .image else { return }
         if paletteIsOpen, searchMode == .find { find.query = searchField.stringValue }
         findCaseButton.state = find.options.caseSensitive ? .on : .off
         findWordButton.state = find.options.wholeWord ? .on : .off
         findRegexButton.state = find.options.regularExpression ? .on : .off
-        findText = findingInPreview ? (markdownPreviewView.string as NSString) : (openTabs[index].document.string as NSString)
+        if findingInSheet {
+            // One line per cell; a cell's own line breaks become spaces so a match stays in it.
+            let cells = sheetView.findableCells()
+            findSheetCells = cells.map(\.cell)
+            findSheetLineStarts = []
+            findSheetLineStarts.reserveCapacity(cells.count)
+            let text = NSMutableString()
+            for (offset, cell) in cells.enumerated() {
+                if offset > 0 { text.append("\n") }
+                findSheetLineStarts.append(text.length)
+                text.append(cell.text.replacingOccurrences(of: "\n", with: " "))
+            }
+            findText = text
+        } else {
+            findText = findingInPreview ? (markdownPreviewView.string as NSString) : (openTabs[index].document.string as NSString)
+        }
         let result = find.matches(in: findText)
         findMatches = result.ranges
+        if findingInSheet {
+            // Cells are lines here; a match that crosses a line break would span two cells.
+            let text = findText
+            findMatches = findMatches.filter { text.rangeOfCharacter(from: .newlines, options: [], range: $0).location == NSNotFound }
+        }
         findTruncated = result.truncated
         let lines = Self.lineNumbers(of: findMatches[...], in: findText)
         findRows = []
@@ -986,6 +1039,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func markFindMatches() {
+        if findingInSheet {
+            sheetView.setFindMarks(Set(findMatches.indices.compactMap(findSheetCell(forMatch:))), current: findCurrent.flatMap(findSheetCell(forMatch:)))
+            return
+        }
         let all = NSColor.controlAccentColor.withAlphaComponent(0.2)
         if findingInPreview, let layout = markdownPreviewView.layoutManager {
             let whole = NSRange(location: 0, length: (markdownPreviewView.string as NSString).length)
@@ -1005,6 +1062,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Stepping: only the current match's mark moves; the rest stay as they are (re-marking all
     /// of them was most of a step's cost in a file with thousands).
     private func markCurrentFindMatch(previous: Int?) {
+        if findingInSheet { markFindMatches(); return }
         let current = findCurrent.flatMap { findMatches.indices.contains($0) ? findMatches[$0] : nil }
         let currentColor = NSColor.findHighlightColor.withAlphaComponent(0.7)
         if findingInPreview, let layout = markdownPreviewView.layoutManager {
@@ -1019,6 +1077,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func clearFindMarks() {
+        sheetView.setFindMarks([], current: nil)
         if let layout = markdownPreviewView.layoutManager {
             layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: (markdownPreviewView.string as NSString).length))
         }
@@ -1050,6 +1109,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func revealFindMatch(_ index: Int) {
+        if findingInSheet {
+            if let cell = findSheetCell(forMatch: index) { sheetView.select(cell) }
+            return
+        }
         let range = findMatches[index]
         if findingInPreview {
             guard NSMaxRange(range) <= (markdownPreviewView.string as NSString).length else { return }
@@ -1141,7 +1204,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// While Find is open, the editor scrolls as if its bottom were the palette's top, so the
     /// match it's on is never under it.
     private func raiseEditorAbovePalette(_ paletteHeight: CGFloat) {
-        let scroll = findingInPreview ? markdownPreviewScroll : editorScroll
+        let scroll = findingInSheet ? csvScroll : findingInPreview ? markdownPreviewScroll : editorScroll
         if insetBeforeFind == nil || insetScroll !== scroll {
             restoreFindInset()
             insetBeforeFind = scroll.contentInsets.bottom
@@ -3479,7 +3542,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.configure(icon: FileIcon.image(for: match.url, isDirectory: false), title: match.text, detail: nil, trailing: "\(match.relativePath):\(match.line)")
         case .find:
             let (line, text) = findLine(at: row)
-            cell.configure(icon: Self.paletteSymbol("text.magnifyingglass"), title: text, detail: nil, trailing: "line \(line)")
+            let place = findingInSheet ? findSheetCell(forMatch: findRows[row].firstMatch).map(sheetView.name(of:)) ?? "" : "line \(line)"
+            cell.configure(icon: Self.paletteSymbol("text.magnifyingglass"), title: text, detail: nil, trailing: place)
         case .problems:
             let problem = problemRows[row]
             cell.configure(icon: Self.problemSymbol(problem.diagnostic.severity), title: problem.diagnostic.message,

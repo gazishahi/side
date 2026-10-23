@@ -125,6 +125,31 @@ final class FindTests: XCTestCase {
         XCTAssertEqual(make.editor.document?.string, "let count = 1\nprint(count)\nlet other = count + 1\n", "Replace All is one undo step")
     }
 
+    /// 2026-10-23, the owner: "Does Find work in a table?" It does: each cell is searched, the
+    /// matches are marked, and stepping moves the active cell; a sheet isn't edited, so no replace.
+    func testFindWorksInASheetWithoutReplace() throws {
+        let url = root.appendingPathComponent("people.csv")
+        try "name,city\nAda,London\nGrace,New York\nAlan,London\n".write(to: url, atomically: true, encoding: .utf8)
+        make.revealFile(url, line: nil)
+        let sheet = make.sheetViewForTesting
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, sheet.rows.count != 3 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        make.presentFind(replace: true)
+        XCTAssertTrue(make.isPaletteOpen)
+        XCTAssertFalse(make.findReplaceShownForTesting, "nothing to replace in")
+        type("london")
+        XCTAssertEqual(sheet.anchor, CellRef(row: 0, column: 1), "the first match is the active cell")
+        XCTAssertEqual(sheet.name(of: sheet.anchor!), "B2")
+        make.findNext(forward: true)
+        XCTAssertEqual(sheet.anchor, CellRef(row: 2, column: 1))
+        make.findNext(forward: true)
+        XCTAssertEqual(sheet.anchor, CellRef(row: 0, column: 1), "wraps")
+        type("new york")
+        XCTAssertEqual(sheet.anchor, CellRef(row: 1, column: 1), "a match across a space in one cell")
+        type("ada\nlondon")
+        XCTAssertEqual(sheet.anchor, CellRef(row: 1, column: 1), "no match across two cells: the active cell stays")
+    }
+
     func testFindWorksInAMarkdownPreviewWithoutReplace() throws {
         let url = root.appendingPathComponent("notes.md")
         try "# Launch plan\n\nBefore **launch**, check the list.\n".write(to: url, atomically: true, encoding: .utf8)

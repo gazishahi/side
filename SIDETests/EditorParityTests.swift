@@ -294,7 +294,7 @@ final class EditorParityTests: XCTestCase {
         while Date() < opened, sheet.rows.count != 2 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
         XCTAssertFalse(sheet.scrollView.isHiddenOrHasHiddenAncestor, "the grid shows, not just the footer")
         XCTAssertEqual(sheet.header, ["name", "score"], "tab-separated, sniffed from the extension")
-        sheet.table.sortDescriptors = [NSSortDescriptor(key: "1", ascending: true)]
+        sheet.sort(by: 1, ascending: true)
         XCTAssertEqual(sheet.rows.map(\.cells[0]), ["a", "b"])
         try "name\tscore\nb\t10\na\t9\nc\t1\n".write(to: url, atomically: true, encoding: .utf8)
         make.reconcileWithDiskForTesting()
