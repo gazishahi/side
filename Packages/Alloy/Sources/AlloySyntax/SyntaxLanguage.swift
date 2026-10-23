@@ -26,6 +26,7 @@ import TreeSitterMakeGrammar
 import TreeSitterSQLGrammar
 import TreeSitterSvelteGrammar
 import TreeSitterLaTeXGrammar
+import TreeSitterMarkdownInline
 
 /// A language Alloy highlights: its tree-sitter grammar and its highlight query
 /// (docs/DESIGN.md, A3). The queries are the grammars' own, kept in `Queries/` so they load
@@ -190,6 +191,8 @@ public final class SyntaxLanguage: @unchecked Sendable {
         "sql": Spec(language: { alloy_tree_sitter_sql() }, query: "sql"),
         "svelte": Spec(language: { alloy_tree_sitter_svelte() }, query: "svelte"),
         "latex": Spec(language: { alloy_tree_sitter_latex() }, query: "latex"),
+        // Markdown's inline syntax (emphasis, code spans, links): embedded in each paragraph.
+        "markdown_inline": Spec(language: { tree_sitter_markdown_inline() }, query: "markdown_inline"),
     ]
 
     private nonisolated(unsafe) static var cache: [String: SyntaxLanguage] = [:]

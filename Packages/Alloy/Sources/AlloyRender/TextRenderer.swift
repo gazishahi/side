@@ -27,13 +27,27 @@ public struct RenderTheme: Sendable {
                                          selection: [0.20, 0.33, 0.55, 1], caret: [0.25, 0.6, 1.0, 1], currentLine: [1, 1, 1, 0.045])
 }
 
-/// A color for a UTF-16 range of a line (syntax highlighting, step 4).
+/// How a span of prose is set, beyond its color: bold, italic, or in the code font. A client
+/// that lays text out in a reading font turns these into font runs (`FontSpan`); a code editor
+/// leaves them be.
+public struct Emphasis: OptionSet, Sendable, Hashable {
+    public let rawValue: UInt8
+    public init(rawValue: UInt8) { self.rawValue = rawValue }
+    public static let bold = Emphasis(rawValue: 1)
+    public static let italic = Emphasis(rawValue: 2)
+    public static let code = Emphasis(rawValue: 4)
+}
+
+/// A color, and an emphasis, for a UTF-16 range of a line (syntax highlighting). A span with
+/// no color leaves the text color; one with no emphasis leaves the font.
 public struct StyleSpan: Sendable, Equatable {
     public var range: Range<Int>
-    public var color: SIMD4<Float>
-    public init(range: Range<Int>, color: SIMD4<Float>) {
+    public var color: SIMD4<Float>?
+    public var emphasis: Emphasis
+    public init(range: Range<Int>, color: SIMD4<Float>?, emphasis: Emphasis = []) {
         self.range = range
         self.color = color
+        self.emphasis = emphasis
     }
 }
 
@@ -301,7 +315,7 @@ public final class TextRenderer {
                     var color = frame.theme.text
                     let at = run.indices[g]
                     while spanIndex < spans.count, spans[spanIndex].range.upperBound <= at { spanIndex += 1 }
-                    if spanIndex < spans.count, spans[spanIndex].range.contains(at) { color = spans[spanIndex].color }
+                    if spanIndex < spans.count, spans[spanIndex].range.contains(at), let spanColor = spans[spanIndex].color { color = spanColor }
                     built.quads.append(Quad(rect: SIMD4(Float(snappedX + entry.offset.x), Float(entry.offset.y), Float(entry.region.width), Float(entry.region.height)),
                                             uv: SIMD4(Float(entry.region.minX), Float(entry.region.minY), Float(entry.region.width), Float(entry.region.height)),
                                             color: color, kind: entry.isColor ? 2 : 1))

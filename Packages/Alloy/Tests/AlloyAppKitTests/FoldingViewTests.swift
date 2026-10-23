@@ -73,6 +73,25 @@ final class FoldingViewTests: XCTestCase {
         XCTAssertEqual(editor.documentLayout.insets.width, DocumentLayout.standardInsets.width)
     }
 
+    /// Font runs are laid out before measuring: a bold run is wider, a line with runs and the
+    /// same line without them don't share a layout, and changing the runs lays it out again.
+    func testFontRunsChangeTheLayout() throws {
+        try open()
+        let layout = editor.documentLayout
+        let plainWidth = layout.layout(line: 6).rows[0].width
+        // A proportional bold (the editor's font here is monospaced: its bold is no wider).
+        let bold = CTFontCreateWithName("Helvetica-Bold" as CFString, 13, nil)
+        var runs: [FontSpan] = [FontSpan(range: 0..<9, font: bold)]
+        editor.fontSpans = { line in line == 6 ? runs : [] }
+        let boldLine = layout.layout(line: 6)
+        XCTAssertNotEqual(boldLine.rows[0].width, plainWidth, "measured in the run's font")
+        XCTAssertEqual(boldLine.fontSpans, runs)
+        XCTAssertTrue(boldLine.rows[0].runs.contains { CTFontCopyPostScriptName($0.font) == CTFontCopyPostScriptName(bold) })
+        runs = []
+        XCTAssertEqual(layout.layout(line: 6).rows[0].width, plainWidth, accuracy: 0.01, "runs gone: laid out plain again")
+        editor.fontSpans = nil
+    }
+
     func testFoldingHidesLinesAndUnfoldingBringsThemBack() throws {
         try open()
         let layout = editor.documentLayout

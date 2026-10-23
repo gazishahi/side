@@ -469,6 +469,41 @@ final class EditorParityTests: XCTestCase {
                        "a click above the text lands on its first line; hit \(String(describing: window.contentView?.hitTest(marginPoint).map { v in sequence(first: v, next: { $0.superview }).map { String(describing: Swift.type(of: $0)) }.joined(separator: " < ") })), clip \(clip.bounds), insets \(clip.contentInsets), doc \(alloy.textView.frame)")
     }
 
+    /// Live Markdown, step 1: a Markdown file switched to Live (and any in Writer Mode) is set
+    /// in the reading font, its bold, italic and code in their own fonts; source otherwise.
+    func testLiveMarkdownSetsProseInTheReadingFont() throws {
+        let url = root.appendingPathComponent("live.md")
+        defer { MakeWorkspaceViewController.preferences.removeObject(forKey: MakeWorkspaceViewController.liveMarkdownKey) }
+        _ = try open("live.md", "# A title\n\nSome **bold** words, *slanted* ones, and `code`.\n")
+        let engine = make.editor as! AlloyEditorEngine
+        let layout = { engine.view.documentLayout }
+        XCTAssertFalse(engine.isProse, "source until switched")
+        make.toggleLiveMarkdown(nil)
+        XCTAssertTrue(engine.isProse)
+        XCTAssertEqual(CTFontGetSize(layout().font), AlloyEditorEngine.proseSize)
+        XCTAssertNotEqual(CTFontCopyFamilyName(layout().font) as String, CTFontCopyFamilyName(DS.Text.editor() as CTFont) as String, "the reading font, not code's")
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, layout().layout(line: 2).fontSpans.count < 3 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        let runs = layout().layout(line: 2).fontSpans
+        XCTAssertEqual(runs.count, 3, "bold, italic, code")
+        XCTAssertTrue(CTFontGetSymbolicTraits(runs[0].font).contains(.traitBold))
+        XCTAssertTrue(CTFontGetSymbolicTraits(runs[1].font).contains(.traitItalic))
+        XCTAssertTrue(CTFontGetSymbolicTraits(runs[2].font).contains(.traitMonoSpace))
+        XCTAssertTrue(CTFontGetSymbolicTraits(layout().layout(line: 0).fontSpans.first!.font).contains(.traitBold), "the heading")
+
+        make.toggleLiveMarkdown(nil)
+        XCTAssertFalse(engine.isProse, "back to source, remembered")
+        make.setWriterMode(true)
+        XCTAssertTrue(engine.isProse, "Writer Mode sets Markdown as prose")
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"], let image = make.tabPreviewContent(0) {
+            try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("live-step1.png"))
+        }
+        make.setWriterMode(false)
+        XCTAssertFalse(engine.isProse)
+        _ = url
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

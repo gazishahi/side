@@ -2328,6 +2328,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             refreshGitDiffMarks()
             renderDiagnosticsForActiveTab()
             if showingMarkdownPreview { renderMarkdownPreview(for: tab) }
+            applyLiveMarkdown()
         case .image:
             editor.isEditable = false
             imageView.image = tab.cachedImage
@@ -4848,6 +4849,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         viewMenu.addItem(foldingItem)
         Shortcuts.bind(viewMenu.addItem(withTitle: "Show Minimap", action: #selector(toggleMinimap(_:)), keyEquivalent: ""), "view.minimap")
         viewMenu.addItem(NSMenuItem.separator())
+        Shortcuts.bind(viewMenu.addItem(withTitle: "Live Markdown", action: #selector(toggleLiveMarkdown(_:)), keyEquivalent: ""), "view.liveMarkdown")
         // The shell's: it hides its own chrome as well as Make's.
         Shortcuts.bind(viewMenu.addItem(withTitle: "Writer Mode", action: #selector(ShellViewController.toggleWriterMode(_:)), keyEquivalent: ""), "view.writerMode")
         viewItem.submenu = viewMenu
@@ -6272,6 +6274,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
             ])
         }
         alloyView?.highlightsCurrentLine = !on
+        applyLiveMarkdown()
         if !on {
             alloyView?.readingColumnWidth = nil
             alloyView?.focusedLines = nil
@@ -6285,7 +6288,10 @@ extension MakeWorkspaceViewController: StageChromeProviding {
     /// The column, and each aid as Settings has it.
     private func applyWriterAids() {
         guard isWriting else { applyTopInsets(); return }
-        let font = DS.Text.editor()
+        // About 72 characters of whichever font the text is in (Live Markdown's reading font
+        // is narrower than code's).
+        let prose = (editor as? AlloyEditorEngine)?.isProse == true
+        let font = prose ? DS.Text.Fonts.font(.reading, size: AlloyEditorEngine.proseSize) : DS.Text.editor()
         let digit = ("0" as NSString).size(withAttributes: [.font: font]).width
         alloyView?.readingColumnWidth = min(760, (digit * 72).rounded())
         wordCountLabel.isHidden = !WriterPreferences.isOn(.wordCount)
@@ -6368,6 +6374,35 @@ extension MakeWorkspaceViewController: StageChromeProviding {
     var hasTransientSurface: Bool { completionSession != nil || instructPopover?.isShown == true }
 
         var wordCountForTesting: String? { wordCountLabel.isHidden ? nil : wordCountLabel.stringValue }
+
+    // MARK: - Live Markdown
+
+    static let liveMarkdownKey = "SideLiveMarkdownFiles"
+
+    static func isMarkdown(_ url: URL) -> Bool { ["md", "markdown", "mdx"].contains(url.pathExtension.lowercased()) }
+
+    /// Markdown set as prose (docs/SIDE_RFC_LIVE_MARKDOWN.md): the files switched to Live, and
+    /// every Markdown file in Writer Mode.
+    private func isLive(_ url: URL) -> Bool {
+        guard Self.isMarkdown(url) else { return false }
+        return isWriting || (Self.preferences.stringArray(forKey: Self.liveMarkdownKey) ?? []).contains(url.path)
+    }
+
+    /// View → Live Markdown: this file between source and Live, remembered.
+    @objc func toggleLiveMarkdown(_ sender: Any?) {
+        guard let index = activeTabIndex, Self.isMarkdown(openTabs[index].url) else { return }
+        let path = openTabs[index].url.path
+        var live = Self.preferences.stringArray(forKey: Self.liveMarkdownKey) ?? []
+        if let found = live.firstIndex(of: path) { live.remove(at: found) } else { live.append(path) }
+        Self.preferences.set(Array(live.suffix(500)), forKey: Self.liveMarkdownKey)
+        applyLiveMarkdown()
+    }
+
+    private func applyLiveMarkdown() {
+        guard let engine = editor as? AlloyEditorEngine else { return }
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { engine.isProse = false; return }
+        engine.isProse = isLive(openTabs[index].url)
+    }
 
     // MARK: - LaTeX
 
@@ -6683,6 +6718,10 @@ extension MakeWorkspaceViewController: NSMenuItemValidation {
             return debugCurrentFile != nil
         case #selector(buildLaTeX(_:)), #selector(showInPDF(_:)):
             return activeLaTeXSource != nil
+        case #selector(toggleLiveMarkdown(_:)):
+            let url = activeTabIndex.map { openTabs[$0].url }
+            item.state = url.map(isLive) == true ? .on : .off
+            return url.map(Self.isMarkdown) == true && !isWriting
         default:
             break
         }

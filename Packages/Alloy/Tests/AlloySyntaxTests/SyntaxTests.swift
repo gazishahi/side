@@ -82,6 +82,23 @@ final class SyntaxTests: XCTestCase {
         XCTAssertFalse(m.treeDescription.contains("ERROR"), m.treeDescription)
     }
 
+    /// Markdown's inline syntax (embedded in each paragraph) gives prose its emphasis: bold,
+    /// italic, code; they add up where they nest.
+    func testMarkdownGivesProseItsEmphasis() throws {
+        let source = "# Title\n\nSome **bold** and *italic* and `code` and ***both***."
+        let h = try XCTUnwrap(SyntaxHighlighter(fileExtension: "md", text: Rope(source), theme: theme))
+        func emphasis(line: Int, at column: Int) -> Emphasis {
+            h.spans(forLine: line).first { $0.range.contains(column) }?.emphasis ?? []
+        }
+        XCTAssertEqual(emphasis(line: 0, at: 3), .bold, "a heading")
+        XCTAssertEqual(emphasis(line: 2, at: 8), .bold, "**bold**")
+        XCTAssertEqual(emphasis(line: 2, at: 21), .italic, "*italic*")
+        XCTAssertEqual(emphasis(line: 2, at: 34), .code, "`code`")
+        XCTAssertEqual(emphasis(line: 2, at: 45), [.bold, .italic], "***both***")
+        XCTAssertEqual(emphasis(line: 2, at: 1), [], "plain prose")
+        XCTAssertNil(h.spans(forLine: 2).first { $0.range.contains(8) }?.color, "emphasis without a color keeps the text's")
+    }
+
     func testSwiftColorsLandOnTheirTokens() throws {
         let source = "struct Greeting {\n    let text = \"hello\" // note\n    func say() -> Int { 42 }\n}"
         let h = try XCTUnwrap(SyntaxHighlighter(fileExtension: "swift", text: Rope(source), theme: theme))

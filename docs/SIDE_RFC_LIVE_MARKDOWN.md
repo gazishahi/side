@@ -1,8 +1,8 @@
 # RFC: Live Markdown in Alloy
 
-*2026-10-23. Status: **agreed**: the direction and the five questions below are decided (the
-owner, 2026-10-23); step 1 is next. Writer Mode's first step (Make alone, the aids) is built:
-`027f170`.*
+*2026-10-23. Status: **in progress**: the direction and the five questions below are decided
+(the owner, 2026-10-23). Step 1 (font runs, View → Live Markdown) is built; step 2 is next.
+Writer Mode's first step (Make alone, the aids) is built: `027f170`.*
 
 ## What the owner decided (2026-10-23)
 
@@ -37,7 +37,9 @@ From a map of the engine (AlloyRender, AlloyAppKit), 2026-10-23:
 Each step lands behind the Live switch, keeps every existing Alloy test passing, and adds a
 budget to `SIDETests/Budgets.swift` (frame time on a long Markdown file).
 
-1. **Font runs.** A layout style per span (font role: body, heading 1 to 6, code; bold, italic;
+1. **Font runs.** *Built:* `Emphasis` on `StyleSpan` (from `SyntaxTheme.proseEmphasis`, with
+   Markdown's inline grammar embedded in each paragraph), `FontSpan` runs laid out before
+   measuring (`DocumentLayout.fontSpans`), and View → Live Markdown in Side. A layout style per span (font role: body, heading 1 to 6, code; bold, italic;
    size) applied to the attributed string *before* typesetting. A `TextStyler` per document
    supplies them; the Markdown one reads the tree-sitter tree Alloy already keeps. The layout
    cache key gains a style hash. Body text in Live uses the reading font (see question 2).

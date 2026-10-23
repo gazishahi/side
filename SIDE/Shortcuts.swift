@@ -130,6 +130,7 @@ enum Shortcuts {
         c("view.fileExplorer", "Toggle File Explorer", .view, "e", [.command, .shift]),
         c("view.minimap", "Show Minimap", .view, "m", [.command, .control]),
         c("view.writerMode", "Writer Mode", .view, "w", [.command, .control]),
+        c("view.liveMarkdown", "Live Markdown", .view, nil),
 
         c("navigate.quickOpen", "Quick Open", .navigate, "p"),
         c("navigate.commandPalette", "Command Palette", .navigate, "p", [.command, .shift]),

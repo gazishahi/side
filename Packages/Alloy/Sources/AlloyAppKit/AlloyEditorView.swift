@@ -19,6 +19,15 @@ public final class AlloyEditorView: NSView {
     public private(set) var documentLayout: DocumentLayout
     public var theme: RenderTheme = .light { didSet { setNeedsRender(); minimap.needsDisplay = true } }
     public var styles: ((Int) -> [StyleSpan])? { didSet { stylesChanged() } }
+    /// Font runs per line (prose in a reading font); see `DocumentLayout.fontSpans`. Nil: the
+    /// document's one font.
+    public var fontSpans: ((Int) -> [FontSpan])? {
+        didSet {
+            documentLayout.fontSpans = fontSpans
+            updateDocumentHeight()
+            setNeedsRender()
+        }
+    }
 
     /// The colors `styles` gives changed (a parse finished): the text and the minimap again.
     public func stylesChanged() {
@@ -498,6 +507,7 @@ public final class AlloyEditorView: NSView {
         let insets = documentLayout.insets
         documentLayout = DocumentLayout(text: buffer.text, font: font)  // keeps the padding and column below
         documentLayout.insets = insets
+        documentLayout.fontSpans = fontSpans
         updateWrapWidth()
         updateDocumentHeight()
         gutter.needsDisplay = true

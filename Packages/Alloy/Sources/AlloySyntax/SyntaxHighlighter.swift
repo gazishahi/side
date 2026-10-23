@@ -9,13 +9,31 @@ import QuartzCore
 /// under it as it was, as tree-sitter's own highlighter does.
 public struct SyntaxTheme: Sendable {
     public var colors: [String: SIMD4<Float>]
+    /// Emphasis by capture, found the same way; captures' emphases add up (bold inside italic).
+    public var emphasis: [String: Emphasis]
 
-    public init(colors: [String: SIMD4<Float>]) { self.colors = colors }
+    public init(colors: [String: SIMD4<Float>], emphasis: [String: Emphasis] = SyntaxTheme.proseEmphasis) {
+        self.colors = colors
+        self.emphasis = emphasis
+    }
 
-    public func color(for capture: String) -> SIMD4<Float>? {
+    /// Markdown's (and other markup's) captures, set as prose sets them.
+    public static let proseEmphasis: [String: Emphasis] = [
+        "text.strong": .bold, "markup.strong": .bold, "markup.bold": .bold,
+        "text.emphasis": .italic, "markup.italic": .italic,
+        "text.title": .bold, "markup.heading": .bold,
+        "text.literal": .code, "markup.raw": .code,
+    ]
+
+    public func color(for capture: String) -> SIMD4<Float>? { lookup(colors, capture) }
+    public func emphasis(for capture: String) -> Emphasis { lookup(emphasis, capture) ?? [] }
+    /// Whether a capture changes anything: a color or an emphasis.
+    func styles(_ capture: String) -> Bool { color(for: capture) != nil || !emphasis(for: capture).isEmpty }
+
+    private func lookup<Value>(_ table: [String: Value], _ capture: String) -> Value? {
         var name = Substring(capture)
         while true {
-            if let color = colors[String(name)] { return color }
+            if let value = table[String(name)] { return value }
             guard let dot = name.lastIndex(of: ".") else { return nil }
             name = name[..<dot]
         }
@@ -345,7 +363,7 @@ public final class SyntaxHighlighter {
             while let match = cursor.next() {
                 guard match.allowed(in: context) else { continue }
                 for capture in match.captures {
-                    guard let name = capture.name, theme.color(for: name) != nil else { continue }
+                    guard let name = capture.name, theme.styles(name) else { continue }
                     let range = capture.node.range
                     let lower = max(range.location, range.lowerBound)
                     let upper = min(range.location + range.length, range.upperBound)
@@ -369,7 +387,7 @@ public final class SyntaxHighlighter {
                     var node: Node? = capture.node
                     while let current = node, current.nodeType != entry.root { node = current.parent }
                     guard let rootNode = node, rootNode.byteRange == child.byteRange else { continue }
-                    guard let name = capture.name, theme.color(for: name) != nil else { continue }
+                    guard let name = capture.name, theme.styles(name) else { continue }
                     let range = capture.node.range
                     let lower = max(range.location, range.lowerBound)
                     let upper = min(range.location + range.length, range.upperBound)
@@ -445,7 +463,7 @@ public final class SyntaxHighlighter {
             while let match = cursor.next() {
                 guard match.allowed(in: context) else { continue }
                 for capture in match.captures {
-                    guard let name = capture.name, theme.color(for: name) != nil else { continue }
+                    guard let name = capture.name, theme.styles(name) else { continue }
                     let nodeRange = capture.node.range
                     let lower = max(nodeRange.location, range.lowerBound)
                     let upper = min(nodeRange.location + nodeRange.length, range.upperBound)
@@ -529,8 +547,9 @@ public final class SyntaxHighlighter {
         for capture in all where capture.lower < lineRange.upperBound && capture.upper > lineRange.lowerBound {
             captures.append((max(capture.lower, lineRange.lowerBound), min(capture.upper, lineRange.upperBound), capture.pattern, capture.order, capture.name))
         }
-        // One color slot per UTF-16 unit; captures paint in precedence order.
+        // One color slot per UTF-16 unit; captures paint in precedence order. Emphasis adds up.
         var paint = [Int16](repeating: -1, count: length)
+        var emphasis = [UInt8](repeating: 0, count: length)
         var palette: [SIMD4<Float>] = []
         var paletteIndex: [String: Int16] = [:]
         // Outer before inner (inner nodes win), then pattern order (later patterns win).
@@ -543,6 +562,10 @@ public final class SyntaxHighlighter {
             return a.order < b.order
         }
         for capture in captures {
+            let added = theme.emphasis(for: capture.name)
+            if !added.isEmpty {
+                for unit in (capture.lower - lineRange.lowerBound)..<(capture.upper - lineRange.lowerBound) { emphasis[unit] |= added.rawValue }
+            }
             guard let color = theme.color(for: capture.name) else { continue }
             let index: Int16
             if let existing = paletteIndex[capture.name] { index = existing } else {
@@ -555,10 +578,12 @@ public final class SyntaxHighlighter {
         var spans: [StyleSpan] = []
         var start = 0
         while start < length {
-            let value = paint[start]
+            let value = paint[start], stress = emphasis[start]
             var end = start + 1
-            while end < length, paint[end] == value { end += 1 }
-            if value >= 0 { spans.append(StyleSpan(range: start..<end, color: palette[Int(value)])) }
+            while end < length, paint[end] == value, emphasis[end] == stress { end += 1 }
+            if value >= 0 || stress != 0 {
+                spans.append(StyleSpan(range: start..<end, color: value >= 0 ? palette[Int(value)] : nil, emphasis: Emphasis(rawValue: stress)))
+            }
             start = end
         }
         return spans

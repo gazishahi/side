@@ -22,6 +22,45 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         didSet { applyAppearance(fontChanged: oldValue.font != appearance.font) }
     }
 
+    /// Live Markdown (docs/SIDE_RFC_LIVE_MARKDOWN.md, step 1): prose in the reading font, at the
+    /// preview's size, with bold, italic and code spans laid out in their own fonts.
+    var isProse = false { didSet { if isProse != oldValue { applyProse() } } }
+    private var proseFonts: [UInt8: CTFont] = [:]
+
+    /// The reading size the Markdown preview uses: a little larger than code.
+    static var proseSize: CGFloat { (DS.Text.CodeSize.editor * 1.15).rounded() }
+
+    private func applyProse() {
+        proseFonts = [:]
+        if isProse {
+            view.setFont(DS.Text.Fonts.font(.reading, size: Self.proseSize) as CTFont)
+            view.fontSpans = { [weak self] line in self?.proseSpans(line) ?? [] }
+        } else {
+            view.fontSpans = nil
+            view.setFont(appearance.font as CTFont)
+        }
+    }
+
+    /// A line's emphasis, as font runs over the reading font.
+    private func proseSpans(_ line: Int) -> [FontSpan] {
+        guard let highlighter = (document as? AlloyEditorDocument)?.highlighter else { return [] }
+        return highlighter.spans(forLine: line).compactMap { span in
+            span.emphasis.isEmpty ? nil : FontSpan(range: span.range, font: proseFont(span.emphasis))
+        }
+    }
+
+    /// The reading font with an emphasis: bold, italic, or code (the editor's font, a touch
+    /// smaller, as inline code is in the preview).
+    func proseFont(_ emphasis: Emphasis) -> CTFont {
+        if let known = proseFonts[emphasis.rawValue] { return known }
+        let size = Self.proseSize
+        var font: NSFont = emphasis.contains(.code) ? DS.Text.Fonts.font(.editor, size: (size * 0.88).rounded()) : DS.Text.Fonts.font(.reading, size: size)
+        if emphasis.contains(.bold) { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
+        if emphasis.contains(.italic) { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
+        proseFonts[emphasis.rawValue] = font as CTFont
+        return font as CTFont
+    }
+
     init(appearance: EditorAppearance) {
         self.appearance = appearance
         // TextRenderer needs a Metal device; every Mac Side runs on has one.
@@ -81,7 +120,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     }
 
     private func applyAppearance(fontChanged: Bool) {
-        if fontChanged { view.setFont(appearance.font as CTFont) }
+        if fontChanged { isProse ? applyProse() : view.setFont(appearance.font as CTFont) }
         // The chosen editor theme for this appearance (Settings → Appearance), or Side's own.
         if let theme = EditorThemes.current(dark: isDark) {
             view.theme = theme.renderTheme

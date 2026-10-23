@@ -565,7 +565,7 @@ enum MarkdownPreview {
                 if let highlighter {
                     let length = (line as NSString).length
                     for span in highlighter.spans(forLine: index) where span.range.upperBound <= length {
-                        let c = span.color
+                        guard let c = span.color else { continue }
                         piece.addAttribute(.foregroundColor, value: NSColor(srgbRed: CGFloat(c.x), green: CGFloat(c.y), blue: CGFloat(c.z), alpha: CGFloat(c.w)),
                                            range: NSRange(location: span.range.lowerBound, length: span.range.count))
                     }

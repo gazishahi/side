@@ -25,20 +25,45 @@ public struct LayoutRow {
     public let width: CGFloat
 }
 
+/// A run of a line set in another font than the document's (bold, italic, code), by UTF-16
+/// range within the line. Laid out before the line is measured, so it changes widths and wraps.
+public struct FontSpan: Equatable {
+    public let range: Range<Int>
+    public let font: CTFont
+    /// The font's name and size: what tells two runs apart.
+    let key: String
+
+    public init(range: Range<Int>, font: CTFont) {
+        self.range = range
+        self.font = font
+        key = "\(CTFontCopyPostScriptName(font) as String)@\(CTFontGetSize(font))"
+    }
+
+    public static func == (a: FontSpan, b: FontSpan) -> Bool { a.range == b.range && a.key == b.key }
+}
+
 /// A line laid out by CoreText, split into rows at the wrap width.
 public final class LaidOutLine {
     public let text: String
     public let rows: [LayoutRow]
+    /// The font runs it was laid out with.
+    public let fontSpans: [FontSpan]
 
-    init(text: String, font: CTFont, tabWidth: CGFloat, wrapWidth: CGFloat?) {
+    init(text: String, font: CTFont, tabWidth: CGFloat, wrapWidth: CGFloat?, fontSpans: [FontSpan] = []) {
         self.text = text
+        self.fontSpans = fontSpans
         let attributes = Self.attributes(font: font, tabWidth: tabWidth)
         // A UTF-16 string, made once: from a Swift string (UTF-8 inside), CoreText's character
         // and offset reads were converted and copied again for each row of a wrapped line
         // (2026-10-01, Review's 12,000-character HTML lines: 40% of the main thread's work).
-        let attributed = NSAttributedString(string: NSMutableString(string: text) as String, attributes: attributes)
+        let attributed = NSMutableAttributedString(string: NSMutableString(string: text) as String, attributes: attributes)
+        let length = attributed.length
+        for span in fontSpans where span.range.lowerBound < length && !span.range.isEmpty {
+            let upper = min(span.range.upperBound, length)
+            attributed.addAttribute(NSAttributedString.Key(kCTFontAttributeName as String), value: span.font,
+                                    range: NSRange(location: span.range.lowerBound, length: upper - span.range.lowerBound))
+        }
         let typesetter = CTTypesetterCreateWithAttributedString(attributed)
-        let length = text.utf16.count
         var rows: [LayoutRow] = []
         var start = 0
         repeat {
@@ -145,6 +170,9 @@ public final class DocumentLayout {
     /// it out of the rope and hashing it every time (2026-10-01).
     private var byLine: [Int: LaidOutLine] = [:]
     static let cacheLimit = 1_000
+    /// A line's font runs (prose set in a reading font: bold, italic, code), asked each time a
+    /// line's layout is wanted; a line whose runs changed is laid out again. Nil: one font.
+    public var fontSpans: ((Int) -> [FontSpan])? { didSet { byLine.removeAll(keepingCapacity: true) } }
 
     public init(text: Rope, font: CTFont, tabSize: Int = 4) {
         self.text = text
@@ -247,15 +275,18 @@ public final class DocumentLayout {
 
     /// A line's layout, measured now if it wasn't.
     public func layout(line: Int) -> LaidOutLine {
-        if let known = byLine[line] { return known }
+        let spans = fontSpans?(line) ?? []
+        if let known = byLine[line], known.fontSpans == spans { return known }
         let string = text.substring(text.range(ofLine: line))
+        // Equal lines share a layout only with equal runs.
+        let key = spans.isEmpty ? string : string + "\u{0}" + spans.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ",")
         let laid: LaidOutLine
-        if let cached = cache[string] {
+        if let cached = cache[key] {
             laid = cached
         } else {
-            laid = LaidOutLine(text: string, font: font, tabWidth: tabWidth, wrapWidth: wrapWidth)
-            cache[string] = laid
-            cacheOrder.append(string)
+            laid = LaidOutLine(text: string, font: font, tabWidth: tabWidth, wrapWidth: wrapWidth, fontSpans: spans)
+            cache[key] = laid
+            cacheOrder.append(key)
             if cacheOrder.count > Self.cacheLimit {
                 let evicted = cacheOrder.prefix(cacheOrder.count / 4)
                 for key in evicted { cache.removeValue(forKey: key) }
