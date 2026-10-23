@@ -280,6 +280,36 @@ final class EditorParityTests: XCTestCase {
         }
     }
 
+    /// 2026-10-23, the owner: a sheet didn't follow its file. A sheet can't be edited here, so a
+    /// change on disk reloads it, and the sheet keeps its sort.
+    func testASheetReloadsWhenItsFileChanges() throws {
+        let url = root.appendingPathComponent("scores.tsv")
+        try "name\tscore\nb\t10\na\t9\n".write(to: url, atomically: true, encoding: .utf8)
+        // From no tabs at all: closing the last tab once hid the grid for good (the owner saw
+        // the row count with no rows).
+        make.closeAllTabsForTesting()
+        make.revealFile(url, line: nil)
+        let sheet = make.sheetViewForTesting
+        let opened = Date().addingTimeInterval(10)
+        while Date() < opened, sheet.rows.count != 2 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertFalse(sheet.scrollView.isHiddenOrHasHiddenAncestor, "the grid shows, not just the footer")
+        XCTAssertEqual(sheet.header, ["name", "score"], "tab-separated, sniffed from the extension")
+        sheet.table.sortDescriptors = [NSSortDescriptor(key: "1", ascending: true)]
+        XCTAssertEqual(sheet.rows.map(\.cells[0]), ["a", "b"])
+        try "name\tscore\nb\t10\na\t9\nc\t1\n".write(to: url, atomically: true, encoding: .utf8)
+        make.reconcileWithDiskForTesting()
+        let reloaded = Date().addingTimeInterval(10)
+        while Date() < reloaded, sheet.rows.count != 3 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertEqual(sheet.rows.map(\.cells[0]), ["c", "a", "b"], "the new row, still sorted by score")
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] {
+            make.view.layoutSubtreeIfNeeded()
+            let rep = make.view.bitmapImageRepForCachingDisplay(in: make.view.bounds)!
+            make.view.cacheDisplay(in: make.view.bounds, to: rep)
+            try? rep.representation(using: NSBitmapImageRep.FileType.png, properties: [:])?
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("make-sheet.png"))
+        }
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

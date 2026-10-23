@@ -271,7 +271,7 @@ final class SheetView: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     private(set) var sheets: [Sheet] = []
     private(set) var current = 0
-    private var header: [String] = []
+    private(set) var header: [String] = []
     /// Data rows in the order shown, each with its original row number.
     private(set) var rows: [(number: Int, cells: [String])] = []
     private var numeric: [Bool] = []
@@ -344,7 +344,19 @@ final class SheetView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         sheetPicker.segmentCount = sheets.count
         for (index, sheet) in sheets.enumerated() { sheetPicker.setLabel(sheet.name, forSegment: index); sheetPicker.setWidth(0, forSegment: index) }
         sheetPicker.isHidden = sheets.count < 2
+        // The picker's segments sit close to the card's edge; the count alone gets the text's margin.
+        footer.edgeInsets.left = sheetPicker.isHidden ? DS.Spacing.m : 4
         select(sheet: min(current, max(0, sheets.count - 1)))
+    }
+
+    /// New contents for the same file: the sheet shown, the sort and the scroll stay.
+    func reload(_ sheets: [Sheet]) {
+        let sort = table.sortDescriptors
+        let origin = scrollView.contentView.bounds.origin
+        show(sheets)
+        if !sort.isEmpty { table.sortDescriptors = []; table.sortDescriptors = sort }
+        scrollView.contentView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     func select(sheet index: Int) {

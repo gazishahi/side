@@ -1640,9 +1640,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func reconcileTabWithDisk(_ index: Int) {
         guard openTabs.indices.contains(index) else { return }
         let tab = openTabs[index]
-        guard tab.kind == .text, !tab.isUntitled, !tab.isSaving else { return }
+        guard !tab.isUntitled, !tab.isSaving else { return }
         guard let onDisk = diskStamp(of: tab.url) else { return }
         if let known = tab.knownDiskStamp, onDisk == known { return }
+        if tab.kind != .text {
+            reloadReadOnlyTab(url: tab.url)
+            return
+        }
         if tab.dirty {
             openTabs[index].hasExternalChange = true
             if activeTabIndex == index { showExternalChangeBanner(for: tab.url) }
@@ -1681,6 +1685,48 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         rebuildTabBar()
         return true
+    }
+
+    /// A sheet or an image can't be edited here, so a change on disk always reloads it; the
+    /// sheet keeps its place (the sheet shown, the sort, the scroll). A read that fails, say a
+    /// file caught mid-write, leaves what's shown and the stamp alone, so the next event retries.
+    private func reloadReadOnlyTab(url: URL) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let stamp = DiskStamp(of: url)
+            let isImage = Self.imageExtensions.contains(url.pathExtension.lowercased())
+            let image = isImage ? NSImage(contentsOf: url) : nil
+            let sheets = isImage ? nil : Self.readSheets(url)
+            DispatchQueue.main.async {
+                guard let self, let index = self.openTabs.firstIndex(where: { $0.url == url }) else { return }
+                if isImage {
+                    guard let image else { return }
+                    self.openTabs[index].cachedImage = image
+                } else {
+                    guard let sheets else { return }
+                    self.openTabs[index].sheets = sheets
+                }
+                self.openTabs[index].knownDiskStamp = stamp
+                guard self.activeTabIndex == index else { return }
+                if isImage {
+                    self.imageView.image = image
+                    self.imageView.frame = NSRect(origin: .zero, size: image?.size ?? .zero)
+                } else if let sheets, self.sheetView.sheets != sheets {
+                    self.sheetView.reload(sheets)
+                }
+            }
+        }
+    }
+
+    /// A sheet file's sheets: an Excel workbook's, or one from delimited text.
+    nonisolated static func readSheets(_ url: URL) -> [Sheet]? {
+        let ext = url.pathExtension.lowercased()
+        if ext == "xlsx" {
+            guard let sheets = try? XLSXReader.read(url), !sheets.isEmpty else { return nil }
+            return sheets
+        }
+        guard let data = try? Data(contentsOf: url), let text = TextFileCodec.decode(data)?.text else { return nil }
+        let rows = CSVParser.parse(text, delimiter: CSVParser.delimiter(forExtension: ext, text: text))
+        return [Sheet(name: url.deletingPathExtension().lastPathComponent, rows: rows)]
     }
 
     /// Focus-in sweep — the cheap backstop the audit asked for, in case a stream was lost.
@@ -1956,6 +2002,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     }
                     return
                 }
+                let stamp = DiskStamp(of: url)
                 guard let image = NSImage(contentsOf: url) else {
                     DispatchQueue.main.async {
                         self?.showAlert(title: "Couldn't open image", message: "\(url.lastPathComponent) couldn't be read as an image.", window: window)
@@ -1973,7 +2020,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                         completion?()
                         return
                     }
-                    var tab = OpenTab(url: url, kind: .image, document: self.editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownDiskStamp: nil)
+                    var tab = OpenTab(url: url, kind: .image, document: self.editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownDiskStamp: stamp)
                     tab.cachedImage = image
                     self.openTabs.append(tab)
                     self.activeTabIndex = self.openTabs.count - 1
@@ -1989,7 +2036,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if ext == "xlsx" {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let stamp = DiskStamp(of: url)
-                let sheets = try? XLSXReader.read(url)
+                let sheets = Self.readSheets(url)
                 DispatchQueue.main.async {
                     guard let self else { completion?(); return }
                     guard let sheets, !sheets.isEmpty else {
@@ -2695,7 +2742,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.lineDiffMarks = [:]
         imageScroll.isHidden = true
         imageView.image = nil
-        csvScroll.isHidden = true
+        sheetView.isHidden = true
         if !markdownPreviewScroll.isHidden {
             markdownPreviewScroll.isHidden = true
             onScrollUnderTopRowChange?()
@@ -6286,6 +6333,7 @@ extension MakeWorkspaceViewController {
     /// Whether the language server has `url` open, and at which version (nil: not open).
     func languageServerVersionForTesting(_ url: URL) -> Int? { lspManager?.versionForTesting(url) }
     var activeTabURLForTesting: URL? { activeTabIndex.map { openTabs[$0].url } }
+    var sheetViewForTesting: SheetView { sheetView }
     /// As a batch of file events naming every open tab would.
     func reconcileWithDiskForTesting() { for index in openTabs.indices { reconcileTabWithDisk(index) } }
     var activeTabHasExternalChangeForTesting: Bool { activeTabIndex.map { openTabs[$0].hasExternalChange } ?? false }
