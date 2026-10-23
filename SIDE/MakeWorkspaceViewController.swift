@@ -1691,9 +1691,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// sheet keeps its place (the sheet shown, the sort, the scroll). A read that fails, say a
     /// file caught mid-write, leaves what's shown and the stamp alone, so the next event retries.
     private func reloadReadOnlyTab(url: URL) {
+        let isImage = Self.imageExtensions.contains(url.pathExtension.lowercased())
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let stamp = DiskStamp(of: url)
-            let isImage = Self.imageExtensions.contains(url.pathExtension.lowercased())
             let image = isImage ? NSImage(contentsOf: url) : nil
             let sheets = isImage ? nil : Self.readSheets(url)
             DispatchQueue.main.async {
@@ -3466,7 +3466,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let url = matches[row]
             let relative = relativePath(url)
             let folder = (relative as NSString).deletingLastPathComponent
-            cell.configure(icon: NSWorkspace.shared.icon(forFile: url.path), title: url.lastPathComponent, detail: folder.isEmpty ? nil : folder, trailing: nil)
+            cell.configure(icon: FileIcon.image(for: url, isDirectory: false), title: url.lastPathComponent, detail: folder.isEmpty ? nil : folder, trailing: nil)
         case .symbols:
             let symbol = symbolMatches[row]
             let outline = searchField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
@@ -3476,7 +3476,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.tintIcon(Outline.color(symbol.kind))
         case .text:
             let match = textMatches[row]
-            cell.configure(icon: NSWorkspace.shared.icon(forFile: match.url.path), title: match.text, detail: nil, trailing: "\(match.relativePath):\(match.line)")
+            cell.configure(icon: FileIcon.image(for: match.url, isDirectory: false), title: match.text, detail: nil, trailing: "\(match.relativePath):\(match.line)")
         case .find:
             let (line, text) = findLine(at: row)
             cell.configure(icon: Self.paletteSymbol("text.magnifyingglass"), title: text, detail: nil, trailing: "line \(line)")
@@ -3488,7 +3488,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.tintIcon(Self.problemColor(problem.diagnostic.severity))
         case .references:
             let reference = referenceRows[row]
-            cell.configure(icon: NSWorkspace.shared.icon(forFile: reference.url.path), title: reference.text, detail: nil,
+            cell.configure(icon: FileIcon.image(for: reference.url, isDirectory: false), title: reference.text, detail: nil,
                            trailing: "\(reference.url.lastPathComponent):\(reference.line + 1)")
             cell.toolTip = relativePath(reference.url)
         case .choices:

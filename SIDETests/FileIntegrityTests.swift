@@ -358,6 +358,59 @@ final class FrontMatterTests: XCTestCase {
     }
 }
 
+/// 2026-10-23, the owner: "get specific icons based on file type." Side's own set, by whole
+/// name first and then extension.
+@MainActor
+final class FileIconTests: XCTestCase {
+    func testFilesGetTheirLanguagesIcon() {
+        XCTAssertEqual(FileIcon.style(forName: "App.tsx", isDirectory: false).glyph, .letters("TSX"))
+        XCTAssertEqual(FileIcon.style(forName: "main.PY", isDirectory: false).glyph, .letters("PY"), "case doesn't matter")
+        XCTAssertEqual(FileIcon.style(forName: "+page.svelte", isDirectory: false).glyph, .letters("S"))
+        XCTAssertEqual(FileIcon.style(forName: "package.json", isDirectory: false).glyph, .symbol("shippingbox"), "the name wins over .json")
+        XCTAssertEqual(FileIcon.style(forName: ".env.local", isDirectory: false).glyph, .symbol("key"))
+        XCTAssertEqual(FileIcon.style(forName: "yarn.lock", isDirectory: false).glyph, .symbol("lock"))
+        XCTAssertEqual(FileIcon.style(forName: "README.md", isDirectory: false).glyph, .symbol("book"))
+        XCTAssertEqual(FileIcon.style(forName: "src", isDirectory: true).glyph, .symbol("folder.fill"))
+        XCTAssertFalse(FileIcon.style(forName: "notes", isDirectory: false).tiled, "an unknown file is a quiet page")
+        XCTAssertFalse(FileIcon.style(forName: ".bashrc", isDirectory: false).tiled, "a dotfile isn't read as an extension")
+        let image = FileIcon.image(for: URL(fileURLWithPath: "/x/a.ts"), isDirectory: false)
+        XCTAssertTrue(image === FileIcon.image(for: URL(fileURLWithPath: "/y/b.ts"), isDirectory: false), "one image per style")
+        XCTAssertEqual(image.size, NSSize(width: 16, height: 16))
+    }
+
+    func testSnapshot() throws {
+        guard let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] else { return }
+        let names = ["src", "App.swift", "index.ts", "App.tsx", "main.js", "app.py", "lib.rs", "main.go", "page.svelte", "App.vue",
+                     "index.html", "styles.css", "theme.scss", "data.json", "config.yaml", "Cargo.toml", "README.md", "notes.md",
+                     "paper.tex", "build.sh", "sales.csv", "logo.png", "spec.pdf", "package.json", "Dockerfile", ".gitignore",
+                     ".env", "yarn.lock", "main.c", "engine.cpp", "Main.kt", "Program.cs", "schema.sql", "notes.txt", "LICENSE", "Makefile"]
+        let columns = 3, rowHeight: CGFloat = 26, width: CGFloat = 180
+        let rows = (names.count + columns - 1) / columns
+        for dark in [false, true] {
+            let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+            let canvas = NSView(frame: NSRect(x: 0, y: 0, width: width * CGFloat(columns), height: rowHeight * CGFloat(rows) + 16))
+            canvas.appearance = appearance
+            canvas.wantsLayer = true
+            for (index, name) in names.enumerated() {
+                let x = CGFloat(index % columns) * width + 12, y = canvas.bounds.height - 8 - rowHeight * CGFloat(index / columns + 1)
+                let icon = NSImageView(frame: NSRect(x: x, y: y + 5, width: 16, height: 16))
+                icon.image = FileIcon.image(for: URL(fileURLWithPath: "/p/" + name), isDirectory: name == "src")
+                let label = NSTextField(labelWithString: name)
+                label.font = DS.Text.body()
+                label.frame = NSRect(x: x + 22, y: y + 3, width: width - 40, height: 18)
+                canvas.addSubview(icon); canvas.addSubview(label)
+            }
+            let rep = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds)!
+            appearance.performAsCurrentDrawingAppearance {
+                canvas.layer?.backgroundColor = DS.Color.canvas.cgColor
+                canvas.cacheDisplay(in: canvas.bounds, to: rep)
+            }
+            try rep.representation(using: NSBitmapImageRep.FileType.png, properties: [:])?
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent(dark ? "icons-dark.png" : "icons-light.png"))
+        }
+    }
+}
+
 /// 2026-10-23, the owner: spreadsheets shown as a spreadsheet: CSV, TSV and Excel workbooks.
 @MainActor
 final class SheetTests: XCTestCase {

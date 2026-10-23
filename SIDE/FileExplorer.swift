@@ -59,7 +59,6 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
     private var gitGeneration = 0
     private var pendingChanges: Set<String> = []
     private var pendingReload: DispatchWorkItem?
-    private var iconCache: [String: NSImage] = [:]
     private weak var hostWindow: NSWindow?
     private var localMonitor: Any?
     private var globalMonitor: Any?
@@ -371,15 +370,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         return cell
     }
 
-    private func icon(for node: Node) -> NSImage {
-        let key = node.isDirectory ? "/folder" : node.url.pathExtension.lowercased()
-        if let cached = iconCache[key] { return cached }
-        let type: UTType = node.isDirectory ? .folder : (UTType(filenameExtension: node.url.pathExtension) ?? .data)
-        let image = NSWorkspace.shared.icon(for: type)
-        image.size = NSSize(width: 16, height: 16)
-        iconCache[key] = image
-        return image
-    }
+    private func icon(for node: Node) -> NSImage { FileIcon.image(for: node.url, isDirectory: node.isDirectory) }
 
     // MARK: Git status
 
@@ -754,5 +745,147 @@ private final class ExplorerCellView: NSTableCellView {
             switch m { case .added: return "new"; case .modified: return "modified"; case .conflicted: return "conflicted" }
         }
         setAccessibilityLabel(spoken.map { "\(name), \($0)" } ?? name)
+    }
+}
+
+/// Side's file-type icons, for the explorer, Quick Open and search results: a code file is a
+/// soft tile in its language's colour carrying the language's letters (TS, PY) or a symbol
+/// (braces for JSON, a table for a sheet); a folder is a tinted folder; anything else is a
+/// quiet page, so the files you work in stand out. Drawn, never a product's logo.
+enum FileIcon {
+    enum Glyph: Equatable {
+        case letters(String)
+        case symbol(String)
+    }
+
+    struct Style {
+        let glyph: Glyph
+        let color: NSColor
+        /// A tile behind the glyph; plain files and folders go without.
+        let tiled: Bool
+    }
+
+    private typealias C = DS.Color.FileType
+    private static func letters(_ text: String, _ color: NSColor) -> Style { Style(glyph: .letters(text), color: color, tiled: true) }
+    private static func symbol(_ name: String, _ color: NSColor) -> Style { Style(glyph: .symbol(name), color: color, tiled: true) }
+
+    static let folder = Style(glyph: .symbol("folder.fill"), color: C.folder, tiled: false)
+    static let plain = Style(glyph: .symbol("doc"), color: C.plain, tiled: false)
+
+    /// Whole names first (package.json, Dockerfile, .env.local), then the extension.
+    static func style(forName name: String, isDirectory: Bool) -> Style {
+        if isDirectory { return folder }
+        let lower = name.lowercased()
+        switch lower {
+        case "package.swift": return symbol("swift", C.swift)
+        case "package.json", "package-lock.json", "pnpm-workspace.yaml", "bun.lockb": return symbol("shippingbox", C.ruby)
+        case "dockerfile", "containerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml": return symbol("shippingbox", C.typescript)
+        case "makefile", "gnumakefile", "justfile", "rakefile", "gemfile": return symbol("hammer", C.config)
+        case ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep": return symbol("arrow.triangle.branch", C.git)
+        case "license", "license.md", "license.txt", "copying", "notice": return symbol("checkmark.seal", C.data)
+        case "tsconfig.json", "jsconfig.json": return letters("TS", C.typescript)
+        default: break
+        }
+        if lower == ".env" || lower.hasPrefix(".env.") { return symbol("key", C.secret) }
+        if lower.hasPrefix("readme") { return symbol("book", C.markdown) }
+        if lower.hasSuffix(".lock") || lower.hasSuffix("-lock.json") || lower.hasSuffix(".lockb") { return symbol("lock", C.config) }
+        guard let dot = lower.lastIndex(of: "."), dot != lower.startIndex else { return plain }
+        return style(forExtension: String(lower[lower.index(after: dot)...]))
+    }
+
+    static func style(forExtension ext: String) -> Style {
+        switch ext {
+        case "swift": return symbol("swift", C.swift)
+        case "ts", "mts", "cts": return letters("TS", C.typescript)
+        case "tsx": return letters("TSX", C.typescript)
+        case "js", "mjs", "cjs": return letters("JS", C.javascript)
+        case "jsx": return letters("JSX", C.javascript)
+        case "py", "pyi", "ipynb": return letters("PY", C.python)
+        case "rs": return letters("RS", C.rust)
+        case "go": return letters("GO", C.go)
+        case "rb", "erb": return letters("RB", C.ruby)
+        case "java": return letters("JV", C.java)
+        case "kt", "kts": return letters("KT", C.kotlin)
+        case "cs": return letters("C#", C.csharp)
+        case "c": return letters("C", C.cFamily)
+        case "h": return letters("H", C.cFamily)
+        case "cpp", "cc", "cxx", "hpp", "hh", "hxx": return letters("C++", C.cFamily)
+        case "m", "mm": return letters("OC", C.cFamily)
+        case "php": return letters("PHP", C.php)
+        case "lua": return letters("LUA", C.cFamily)
+        case "zig": return letters("ZIG", C.data)
+        case "dart": return letters("DT", C.typescript)
+        case "ex", "exs", "heex": return letters("EX", C.kotlin)
+        case "hs": return letters("HS", C.kotlin)
+        case "scala", "sc": return letters("SC", C.ruby)
+        case "svelte": return letters("S", C.svelte)
+        case "vue": return letters("V", C.vue)
+        case "astro": return letters("A", C.astro)
+        case "html", "htm", "xhtml": return symbol("chevron.left.forwardslash.chevron.right", C.html)
+        case "xml", "xib", "storyboard", "svg": return symbol("chevron.left.forwardslash.chevron.right", C.config)
+        case "css": return symbol("paintbrush.pointed", C.css)
+        case "scss", "sass", "less": return symbol("paintbrush.pointed", C.sass)
+        case "json", "jsonc", "json5", "jsonl": return symbol("curlybraces", C.data)
+        case "yaml", "yml": return symbol("list.bullet.indent", C.ruby)
+        case "toml", "ini", "cfg", "conf", "plist", "xcconfig", "entitlements", "editorconfig", "properties": return symbol("gearshape", C.config)
+        case "sql", "sqlite", "db", "prisma": return symbol("cylinder", C.data)
+        case "graphql", "gql", "proto": return symbol("point.3.connected.trianglepath.dotted", C.media)
+        case "md", "markdown", "mdx", "rst": return letters("M↓", C.markdown)
+        case "tex", "ltx", "sty", "cls", "bib": return letters("TEX", C.tex)
+        case "sh", "bash", "zsh", "fish", "command": return symbol("terminal", C.shell)
+        case "csv", "tsv", "tab", "xlsx", "xls", "numbers": return symbol("tablecells", C.sheet)
+        case "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "webp", "ico", "icns": return symbol("photo", C.image)
+        case "mp4", "mov", "m4v", "webm", "mkv": return symbol("film", C.media)
+        case "mp3", "wav", "aiff", "m4a", "flac", "ogg": return symbol("waveform", C.media)
+        case "ttf", "otf", "woff", "woff2": return symbol("textformat", C.config)
+        case "pdf": return symbol("doc.richtext", C.document)
+        case "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "dmg", "pkg": return symbol("archivebox", C.archive)
+        case "pem", "key", "crt", "cer", "p12": return symbol("key", C.secret)
+        case "lock": return symbol("lock", C.config)
+        case "patch", "diff": return symbol("plusminus", C.shell)
+        default: return plain
+        }
+    }
+
+    @MainActor private static var cache: [String: NSImage] = [:]
+
+    /// The icon for a file or folder, `size` points square. The image draws itself each time
+    /// it's shown, so it follows the view's light or dark appearance.
+    @MainActor static func image(for url: URL, isDirectory: Bool, size: CGFloat = 16) -> NSImage {
+        let style = style(forName: url.lastPathComponent, isDirectory: isDirectory)
+        let key = "\(style.glyph)|\(size)|\(style.tiled)|\(ObjectIdentifier(style.color))"
+        if let cached = cache[key] { return cached }
+        let image = draw(style, size: size)
+        cache[key] = image
+        return image
+    }
+
+    static func draw(_ style: Style, size: CGFloat) -> NSImage {
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { bounds in
+            let scale = bounds.width / 16
+            if style.tiled {
+                let tile = NSBezierPath(roundedRect: bounds.insetBy(dx: 1 * scale, dy: 1 * scale), xRadius: 3.5 * scale, yRadius: 3.5 * scale)
+                style.color.withAlphaComponent(0.2).setFill()
+                tile.fill()
+            }
+            switch style.glyph {
+            case .letters(let text):
+                let fontSize = (text.count >= 3 ? 6 : text.count == 2 ? 7.4 : 9) * scale
+                let attributes: [NSAttributedString.Key: Any] = [.font: DS.Text.iconMonogram(fontSize), .foregroundColor: style.color, .kern: -0.2 * scale]
+                let string = NSAttributedString(string: text, attributes: attributes)
+                let measured = string.size()
+                string.draw(at: NSPoint(x: bounds.midX - measured.width / 2, y: bounds.midY - measured.height / 2 + 0.25 * scale))
+            case .symbol(let name):
+                let pointSize = (style.tiled ? 8.5 : 12) * scale
+                let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: style.tiled ? .bold : .regular)
+                    .applying(NSImage.SymbolConfiguration(paletteColors: [style.color]))
+                guard let glyph = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration) else { return true }
+                let fitted = min(1, (bounds.width - (style.tiled ? 5 : 1) * scale) / max(glyph.size.width, glyph.size.height))
+                let glyphSize = NSSize(width: glyph.size.width * fitted, height: glyph.size.height * fitted)
+                glyph.draw(in: NSRect(x: bounds.midX - glyphSize.width / 2, y: bounds.midY - glyphSize.height / 2, width: glyphSize.width, height: glyphSize.height))
+            }
+            return true
+        }
+        return image
     }
 }

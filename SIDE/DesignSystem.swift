@@ -107,6 +107,43 @@ enum DS {
         static let diffAdded = dynamic(dark: NSColor(red: 95/255, green: 191/255, blue: 122/255, alpha: 0.11), light: NSColor(red: 46/255, green: 139/255, blue: 87/255, alpha: 0.10))
         static let diffRemoved = dynamic(dark: NSColor(red: 224/255, green: 101/255, blue: 92/255, alpha: 0.11), light: NSColor(red: 201/255, green: 67/255, blue: 58/255, alpha: 0.09))
 
+        /// File-type icons (FileIcon in FileExplorer.swift): each language in its own colour,
+        /// a shade deeper in light mode so pale ones (JavaScript's yellow) still read on white.
+        enum FileType {
+            static let swift = hex(0xF4704F, 0xE0482A)
+            static let typescript = hex(0x5A9BE6, 0x2F6DB5)
+            static let javascript = hex(0xE8CF4A, 0xA88A00)
+            static let python = hex(0x5B9BD5, 0x2F6A9E)
+            static let rust = hex(0xE0915F, 0xB35E2A)
+            static let go = hex(0x3CC2E0, 0x0089AD)
+            static let ruby = hex(0xE5544C, 0xBF2E26)
+            static let java = hex(0xEE8A3A, 0xC2630F)
+            static let kotlin = hex(0xA47BFF, 0x7048E0)
+            static let csharp = hex(0xB872C2, 0x87478F)
+            static let cFamily = hex(0x7E8FE0, 0x4A5CB8)
+            static let php = hex(0x9A9DE0, 0x5F62A8)
+            static let svelte = hex(0xFF6A3D, 0xDD3A0B)
+            static let vue = hex(0x4FCB93, 0x23946A)
+            static let astro = hex(0xFF8048, 0xD85314)
+            static let html = hex(0xF07650, 0xCF4520)
+            static let css = hex(0x9C7FE0, 0x6A47B8)
+            static let sass = hex(0xE07AAE, 0xB54A82)
+            static let data = hex(0xD9B444, 0x9C7C0E)
+            static let config = hex(0x9AA3AF, 0x667080)
+            static let markdown = hex(0x6FB4D6, 0x2F7FA8)
+            static let tex = hex(0x7FBF6A, 0x3F7F2A)
+            static let shell = hex(0x6CCB5F, 0x34922A)
+            static let sheet = hex(0x4FBF7F, 0x1E7F4A)
+            static let image = hex(0xB592E0, 0x7E57B5)
+            static let media = hex(0xE08AB0, 0xB0517E)
+            static let document = hex(0xE86A6A, 0xC23A3A)
+            static let archive = hex(0xC9A574, 0x8F6B3A)
+            static let git = hex(0xF07A5A, 0xD04A2A)
+            static let secret = hex(0xE6C25A, 0xA6800E)
+            static let folder = hex(0x7D9CCF, 0x5B7DB5)
+            static let plain = NSColor.tertiaryLabelColor
+        }
+
         /// Scrims for hover, current-line, and bracket-match fills, by weight — fills, not text.
         static let scrimFaint = dynamic(dark: NSColor(white: 1, alpha: 0.045), light: NSColor(white: 0, alpha: 0.05))
         static let scrimSoft = dynamic(dark: NSColor(white: 1, alpha: 0.05), light: NSColor(white: 0, alpha: 0.06))
@@ -289,6 +326,12 @@ enum DS {
 
         /// Make's editor font, at the editor size setting.
         static func editor(_ weight: NSFont.Weight = .regular) -> NSFont { Fonts.font(.editor, size: CodeSize.editor, weight: weight) }
+        /// A file-type icon's letters (TS, PY): rounded and heavy, sized to the 16 pt icon rather
+        /// than the interface scale.
+        static func iconMonogram(_ size: CGFloat) -> NSFont {
+            let base = NSFont.systemFont(ofSize: size, weight: .heavy)
+            return base.fontDescriptor.withDesign(.rounded).flatMap { NSFont(descriptor: $0, size: size) } ?? base
+        }
 
         private static func scaled(_ size: CGFloat) -> CGFloat {
             (size * Scale.current.rawValue).rounded(.toNearestOrEven)
