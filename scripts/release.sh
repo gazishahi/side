@@ -91,10 +91,19 @@ if (( ! DRY_RUN )); then
 fi
 
 echo "==> Disk image"
-STAGE="$OUT/dmg"; mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Side $VERSION" -srcfolder "$STAGE" -format UDZO -ov "$DMG" >/dev/null
+# The window and the disk are designed (scripts/dmg): a background with Side, a track into
+# Applications and label pills that read in light and dark mode, and a drive icon with Side's
+# mark. dmgbuild writes the window layout into the image itself, with no Finder scripting.
+# It's pinned, in a virtual environment of its own under build/.
+DMGBUILD_VENV="build/dmgbuild-venv"
+if [[ ! -x "$DMGBUILD_VENV/bin/dmgbuild" ]]; then
+  python3 -m venv "$DMGBUILD_VENV" && "$DMGBUILD_VENV/bin/pip" install -q "dmgbuild==1.6.7"
+fi
+ART="$OUT/dmg-art"
+scripts/dmg/build-assets.sh "$ART" "$VERSION" >/dev/null
+"$DMGBUILD_VENV/bin/dmgbuild" -s scripts/dmg/settings.py \
+  -D app="$APP" -D background="$ART/background.tiff" -D volume_icon="$ART/VolumeIcon.icns" \
+  "Side" "$DMG" >/dev/null
 codesign --sign "Developer ID Application" --timestamp "$DMG"
 
 if (( ! DRY_RUN )); then
