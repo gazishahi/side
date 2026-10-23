@@ -490,6 +490,9 @@ final class EditorParityTests: XCTestCase {
         XCTAssertTrue(CTFontGetSymbolicTraits(runs[1].font).contains(.traitItalic))
         XCTAssertTrue(CTFontGetSymbolicTraits(runs[2].font).contains(.traitMonoSpace))
         XCTAssertTrue(CTFontGetSymbolicTraits(layout().layout(line: 0).fontSpans.first!.font).contains(.traitBold), "the heading")
+        let heading = layout().layout(line: 0).fontSpans.first!.font
+        XCTAssertEqual(CTFontGetSize(heading), (AlloyEditorEngine.proseSize * 1.75).rounded(), "a first-level heading at the preview's size")
+        XCTAssertGreaterThan(layout().layout(line: 0).height, layout().layout(line: 2).height, "and its line taller")
 
         make.toggleLiveMarkdown(nil)
         XCTAssertFalse(engine.isProse, "back to source, remembered")

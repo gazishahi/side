@@ -199,6 +199,7 @@ public final class AlloyEditorView: NSView {
 
     /// Shows another buffer (a tab switch).
     public func setBuffer(_ buffer: TextBuffer) {
+        anchorLine = nil
         // In the old buffer, where it was typed.
         documentView.endComposition()
         endSnippet()
@@ -504,6 +505,7 @@ public final class AlloyEditorView: NSView {
 
     /// Lays the text out in another font (the editor text size changed).
     public func setFont(_ font: CTFont) {
+        anchorLine = nil
         let insets = documentLayout.insets
         documentLayout = DocumentLayout(text: buffer.text, font: font)  // keeps the padding and column below
         documentLayout.insets = insets
@@ -638,6 +640,7 @@ public final class AlloyEditorView: NSView {
     /// Draws now.
     public func render() {
         needsRender = false
+        keepAnchorInPlace()
         let visible = drawingRect
         let size = visible.size
         guard size.width > 0, size.height > 0 else { return }
@@ -718,6 +721,29 @@ public final class AlloyEditorView: NSView {
                                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
                                   provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { return nil }
         return NSImage(cgImage: image, size: visible.size)
+    }
+
+    /// The line at the top of the screen last frame. Lines are counted at a plain row until
+    /// measured; when lines above it are measured on the way up (a heading, a wrapped paragraph)
+    /// and turn out taller, everything below would jump. Measuring them first and moving the
+    /// scroll by what they grew keeps the text that was on screen where it was.
+    private var anchorLine: Int?
+
+    private func keepAnchorInPlace() {
+        let top = viewport.minY
+        let first = documentLayout.line(atY: top).line
+        defer { anchorLine = documentLayout.line(atY: viewport.minY).line }
+        // Scrolling, not a jump: no more than a screen's lines between them.
+        let screen = Int(viewport.height / documentLayout.lineHeight) + 10
+        guard let anchor = anchorLine, anchor > first, anchor < documentLayout.lineCount, anchor - first <= screen else { return }
+        let before = documentLayout.y(ofLine: anchor)
+        for line in first..<anchor where !documentLayout.isHidden(line: line) { _ = documentLayout.layout(line: line) }
+        let grown = documentLayout.y(ofLine: anchor) - before
+        guard grown != 0 else { return }
+        updateDocumentHeight()
+        let clip = scrollView.contentView
+        clip.scroll(to: CGPoint(x: clip.bounds.minX, y: clip.bounds.minY + grown))
+        scrollView.reflectScrolledClipView(clip)
     }
 
     public var lastFrameStats: FrameStats { renderer.lastStats }

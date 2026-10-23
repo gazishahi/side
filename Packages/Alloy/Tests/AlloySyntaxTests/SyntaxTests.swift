@@ -90,7 +90,9 @@ final class SyntaxTests: XCTestCase {
         func emphasis(line: Int, at column: Int) -> Emphasis {
             h.spans(forLine: line).first { $0.range.contains(column) }?.emphasis ?? []
         }
-        XCTAssertEqual(emphasis(line: 0, at: 3), .bold, "a heading")
+        XCTAssertEqual(emphasis(line: 0, at: 3), [.bold, .heading(1)], "a heading, with its level")
+        XCTAssertEqual(emphasis(line: 0, at: 0), [.bold, .heading(1)], "its marker too")
+        XCTAssertEqual(emphasis(line: 0, at: 3).headingLevel, 1)
         XCTAssertEqual(emphasis(line: 2, at: 8), .bold, "**bold**")
         XCTAssertEqual(emphasis(line: 2, at: 21), .italic, "*italic*")
         XCTAssertEqual(emphasis(line: 2, at: 34), .code, "`code`")

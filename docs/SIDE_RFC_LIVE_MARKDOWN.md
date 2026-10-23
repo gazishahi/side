@@ -1,7 +1,8 @@
 # RFC: Live Markdown in Alloy
 
 *2026-10-23. Status: **in progress**: the direction and the five questions below are decided
-(the owner, 2026-10-23). Step 1 (font runs, View → Live Markdown) is built; step 2 is next.
+(the owner, 2026-10-23). Steps 1 (font runs, View → Live Markdown) and 2 (rows of their own height) are built; step 3
+is next.
 Writer Mode's first step (Make alone, the aids) is built: `027f170`.*
 
 ## What the owner decided (2026-10-23)
@@ -43,7 +44,11 @@ budget to `SIDETests/Budgets.swift` (frame time on a long Markdown file).
    size) applied to the attributed string *before* typesetting. A `TextStyler` per document
    supplies them; the Markdown one reads the tree-sitter tree Alloy already keeps. The layout
    cache key gains a style hash. Body text in Live uses the reading font (see question 2).
-2. **Lines of their own height.** `RowIndex` becomes a tree of heights in points, rows keep their
+2. **Lines of their own height.** *Built:* `RowIndex` counts points, `LaidOutLine` gives each row
+   its top, height and baseline (only a document with font runs varies: code is unchanged),
+   headings carry their level (`Emphasis.heading`), the view keeps the top line in place as lines
+   above it are measured, and the `editor.live.keystroke` budget holds Live to code's 8 ms.
+   The plan was: `RowIndex` becomes a tree of heights in points, rows keep their
    own height and baseline, and every `* lineHeight` site goes through the layout. Unmeasured
    lines are estimated at the body line height; when a measured line above the viewport changes
    height, the first visible line stays where it is on screen (scroll anchoring).

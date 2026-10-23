@@ -48,8 +48,25 @@ public final class LaidOutLine {
     public let rows: [LayoutRow]
     /// The font runs it was laid out with.
     public let fontSpans: [FontSpan]
+    /// Each row's top below the line's top, its height, and its baseline below its own top, in
+    /// whole points. One line height and the font's ascent each, unless the document's rows vary
+    /// (prose: a heading's taller row).
+    public private(set) var rowTops: [CGFloat] = []
+    public private(set) var rowHeights: [CGFloat] = []
+    public private(set) var rowBaselines: [CGFloat] = []
+    /// The line's height: its rows'.
+    public private(set) var height: CGFloat = 0
 
-    init(text: String, font: CTFont, tabWidth: CGFloat, wrapWidth: CGFloat?, fontSpans: [FontSpan] = []) {
+    /// A document's plain row: what every row is unless it varies.
+    struct Metrics {
+        let lineHeight: CGFloat
+        let ascent: CGFloat
+        let descent: CGFloat
+        /// Rows take the height their fonts need (prose); otherwise every row is one line height.
+        let varies: Bool
+    }
+
+    init(text: String, font: CTFont, tabWidth: CGFloat, wrapWidth: CGFloat?, fontSpans: [FontSpan] = [], metrics: Metrics? = nil) {
         self.text = text
         self.fontSpans = fontSpans
         let attributes = Self.attributes(font: font, tabWidth: tabWidth)
@@ -79,6 +96,32 @@ public final class LaidOutLine {
             start += count
         } while start < length
         self.rows = rows
+        let plain = metrics ?? Metrics(lineHeight: ceil(CTFontGetAscent(font) + CTFontGetDescent(font) + max(CTFontGetLeading(font), CTFontGetSize(font) * 0.25)),
+                                       ascent: ceil(CTFontGetAscent(font)), descent: ceil(CTFontGetDescent(font)), varies: false)
+        var top: CGFloat = 0
+        for row in rows {
+            var rowHeight = plain.lineHeight, baseline = plain.ascent
+            if plain.varies {
+                // A row with a bigger font is taller by what it reaches past the plain row's
+                // ascent and descent; a plain one stays exactly the plain height.
+                var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+                CTLineGetTypographicBounds(row.line, &ascent, &descent, &leading)
+                let above = max(0, ceil(ascent) - plain.ascent), below = max(0, ceil(descent) - plain.descent)
+                rowHeight += above + below
+                baseline += above
+            }
+            rowTops.append(top)
+            rowHeights.append(rowHeight)
+            rowBaselines.append(baseline)
+            top += rowHeight
+        }
+        height = top
+    }
+
+    /// The row a y within the line (from its top) falls in.
+    public func row(atY y: CGFloat) -> Int {
+        for index in rows.indices.reversed() where y >= rowTops[index] { return index }
+        return 0
     }
 
     static func attributes(font: CTFont, tabWidth: CGFloat) -> [NSAttributedString.Key: Any] {
@@ -172,21 +215,37 @@ public final class DocumentLayout {
     static let cacheLimit = 1_000
     /// A line's font runs (prose set in a reading font: bold, italic, code), asked each time a
     /// line's layout is wanted; a line whose runs changed is laid out again. Nil: one font.
-    public var fontSpans: ((Int) -> [FontSpan])? { didSet { byLine.removeAll(keepingCapacity: true) } }
+    public var fontSpans: ((Int) -> [FontSpan])? {
+        didSet {
+            guard (fontSpans == nil) != (oldValue == nil) || fontSpans != nil else { return }
+            // Rows vary with runs and not without: every layout and height is stale.
+            cache.removeAll()
+            cacheOrder.removeAll()
+            byLine.removeAll()
+            rowIndex = RowIndex(lineCount: text.lineCount, unit: Int(lineHeight))
+            hideFoldedRows()
+        }
+    }
 
     public init(text: Rope, font: CTFont, tabSize: Int = 4) {
         self.text = text
         self.font = font
         ascent = ceil(CTFontGetAscent(font))
         lineHeight = ceil(CTFontGetAscent(font) + CTFontGetDescent(font) + max(CTFontGetLeading(font), CTFontGetSize(font) * 0.25))
+        descent = ceil(CTFontGetDescent(font))
         var space: CGGlyph = 0
         var character: UniChar = 0x20
         CTFontGetGlyphsForCharacters(font, &character, &space, 1)
         var advance = CGSize.zero
         CTFontGetAdvancesForGlyphs(font, .horizontal, &space, &advance, 1)
         tabWidth = advance.width * CGFloat(tabSize)
-        rowIndex = RowIndex(lineCount: text.lineCount)
+        rowIndex = RowIndex(lineCount: text.lineCount, unit: Int(lineHeight))
     }
+
+    /// The font's descent, rounded up: a plain row's part below the baseline.
+    public let descent: CGFloat
+    /// What a row of `font` is, and whether rows vary (with font runs, a document's do).
+    var metrics: LaidOutLine.Metrics { LaidOutLine.Metrics(lineHeight: lineHeight, ascent: ascent, descent: descent, varies: fontSpans != nil) }
 
     /// Follows an edit. Rows of the lines it touched are re-measured when next drawn.
     public func update(_ newText: Rope, edits: [AppliedEdit]) {
@@ -209,7 +268,7 @@ public final class DocumentLayout {
         }
         text = newText
         byLine.removeAll(keepingCapacity: true)
-        if rowIndex.lineCount != text.lineCount { rowIndex = RowIndex(lineCount: text.lineCount) }
+        if rowIndex.lineCount != text.lineCount { rowIndex = RowIndex(lineCount: text.lineCount, unit: Int(lineHeight)) }
         hideFoldedRows()
     }
 
@@ -226,7 +285,7 @@ public final class DocumentLayout {
                 merged.append(clipped)
             }
         }
-        for range in hiddenLines { for line in range where !Self.contains(merged, line) { rowIndex.set(line: line, rows: 1) } }
+        for range in hiddenLines { for line in range where !Self.contains(merged, line) { rowIndex.set(line: line, rows: rowIndex.unit) } }
         hiddenLines = merged
         byLine.removeAll(keepingCapacity: true)
         hideFoldedRows()
@@ -254,7 +313,7 @@ public final class DocumentLayout {
     /// Replaces the text wholesale (a document swap).
     public func reset(_ newText: Rope) {
         text = newText
-        rowIndex = RowIndex(lineCount: text.lineCount)
+        rowIndex = RowIndex(lineCount: text.lineCount, unit: Int(lineHeight))
         hiddenLines = []
         byLine.removeAll(keepingCapacity: true)
     }
@@ -266,12 +325,12 @@ public final class DocumentLayout {
         cache.removeAll()
         cacheOrder.removeAll()
         byLine.removeAll()
-        rowIndex = RowIndex(lineCount: text.lineCount)
+        rowIndex = RowIndex(lineCount: text.lineCount, unit: Int(lineHeight))
         hideFoldedRows()
     }
 
     public var lineCount: Int { text.lineCount }
-    public var contentHeight: CGFloat { CGFloat(rowIndex.totalRows) * lineHeight + insets.height * 2 }
+    public var contentHeight: CGFloat { CGFloat(rowIndex.totalRows) + insets.height * 2 }
 
     /// A line's layout, measured now if it wasn't.
     public func layout(line: Int) -> LaidOutLine {
@@ -279,12 +338,13 @@ public final class DocumentLayout {
         if let known = byLine[line], known.fontSpans == spans { return known }
         let string = text.substring(text.range(ofLine: line))
         // Equal lines share a layout only with equal runs.
-        let key = spans.isEmpty ? string : string + "\u{0}" + spans.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ",")
+        let key = (spans.isEmpty ? string : string + "\u{0}" + spans.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ","))
+            + (fontSpans == nil ? "" : "\u{1}")
         let laid: LaidOutLine
         if let cached = cache[key] {
             laid = cached
         } else {
-            laid = LaidOutLine(text: string, font: font, tabWidth: tabWidth, wrapWidth: wrapWidth, fontSpans: spans)
+            laid = LaidOutLine(text: string, font: font, tabWidth: tabWidth, wrapWidth: wrapWidth, fontSpans: spans, metrics: metrics)
             cache[key] = laid
             cacheOrder.append(key)
             if cacheOrder.count > Self.cacheLimit {
@@ -293,7 +353,7 @@ public final class DocumentLayout {
                 cacheOrder.removeFirst(evicted.count)
             }
         }
-        rowIndex.set(line: line, rows: isHidden(line: line) ? 0 : laid.rows.count)
+        rowIndex.set(line: line, rows: isHidden(line: line) ? 0 : Int(laid.height))
         if byLine.count > 4_000 { byLine.removeAll(keepingCapacity: true) }
         byLine[line] = laid
         return laid
@@ -315,20 +375,24 @@ public final class DocumentLayout {
     public func suffixRect(line: Int, text: String) -> CGRect {
         let laid = layout(line: line)
         let endX = laid.caretX(at: (laid.text as NSString).length).x
-        let top = y(ofLine: line) + CGFloat(laid.rows.count - 1) * lineHeight
-        return CGRect(x: insets.width + endX + LineSuffix.gap, y: top, width: suffixLayout(text).width + LineSuffix.padding * 2, height: lineHeight)
+        let last = laid.rows.count - 1
+        let top = y(ofLine: line) + laid.rowTops[last]
+        return CGRect(x: insets.width + endX + LineSuffix.gap, y: top, width: suffixLayout(text).width + LineSuffix.padding * 2, height: laid.rowHeights[last])
     }
 
     /// The y of a line's first row (top), in points, document coordinates.
     public func y(ofLine line: Int) -> CGFloat {
-        insets.height + CGFloat(rowIndex.prefix(line)) * lineHeight
+        insets.height + CGFloat(rowIndex.prefix(line))
     }
 
     /// The line and row under a y.
     public func line(atY y: CGFloat) -> (line: Int, row: Int) {
-        let row = Int(floor(max(0, y - insets.height) / lineHeight))
-        let found = rowIndex.line(atRow: min(row, max(0, rowIndex.totalRows - 1)))
-        return (found.line, found.rowInLine)
+        let point = Int(floor(max(0, y - insets.height)))
+        let found = rowIndex.line(atRow: min(point, max(0, rowIndex.totalRows - 1)))
+        // Which of the line's rows: measured now if the line wasn't (its height may change, but
+        // the point within it is what was asked).
+        let laid = layout(line: found.line)
+        return (found.line, laid.row(atY: CGFloat(found.rowInLine)))
     }
 
     /// Lines that intersect a vertical span, with their tops, measured as they go (a line that
@@ -354,7 +418,7 @@ public final class DocumentLayout {
         let line = text.line(containing: clamped)
         let laid = layout(line: line)
         let (row, x) = laid.caretX(at: clamped - text.offset(ofLine: line))
-        return CGRect(x: insets.width + x, y: y(ofLine: line) + CGFloat(row) * lineHeight, width: 0, height: lineHeight)
+        return CGRect(x: insets.width + x, y: y(ofLine: line) + laid.rowTops[row], width: 0, height: laid.rowHeights[row])
     }
 
     /// The UTF-16 offset nearest a point, in document points.

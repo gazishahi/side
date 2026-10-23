@@ -23,6 +23,9 @@ enum Budgets {
         Row(id: "editor.open.swift", area: "Make", measure: "Open a 100k-line Swift file to first paint", limit: 50, unit: "ms"),
         Row(id: "editor.open.log", area: "Make", measure: "Open a 20 MB log to first paint", limit: 150, unit: "ms"),
         Row(id: "editor.keystroke", area: "Make", measure: "Keystroke to frame, main thread, p99", limit: 8, unit: "ms"),
+        // Live Markdown (docs/SIDE_RFC_LIVE_MARKDOWN.md): prose in the reading font, font runs,
+        // rows of their own height. Held to code's budget.
+        Row(id: "editor.live.keystroke", area: "Make", measure: "Live Markdown: keystroke to frame, a 20,000-line document, main thread, p99", limit: 8, unit: "ms"),
         Row(id: "editor.recolor", area: "Make", measure: "Recolor the edited line, p99", limit: 2, unit: "ms"),
         Row(id: "editor.scroll.cpu", area: "Make", measure: "Scrolling: a frame's CPU, p99, as a share of the frame", limit: 50, unit: "%"),
         Row(id: "editor.scroll.missed", area: "Make", measure: "Scrolling: frames missed beyond drawing nothing", limit: 0.5, unit: "%"),

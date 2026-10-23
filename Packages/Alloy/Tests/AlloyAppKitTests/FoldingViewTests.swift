@@ -92,6 +92,61 @@ final class FoldingViewTests: XCTestCase {
         editor.fontSpans = nil
     }
 
+    /// Step 2 of live Markdown: a row in a bigger font is taller, and everything that places
+    /// rows (positions, the caret, hit tests, moving up and down) follows it.
+    func testRowsTakeTheHeightTheirFontNeeds() throws {
+        try open()
+        let layout = editor.documentLayout
+        let plain = layout.lineHeight
+        let big = CTFontCreateWithName("Helvetica-Bold" as CFString, 30, nil)
+        editor.fontSpans = { line in line == 1 ? [FontSpan(range: 0..<14, font: big)] : [] }
+        let tall = layout.layout(line: 1)
+        XCTAssertGreaterThan(tall.height, plain * 1.5, "the big row is taller")
+        XCTAssertGreaterThan(tall.rowBaselines[0], layout.ascent, "and its baseline lower")
+        XCTAssertEqual(layout.layout(line: 0).height, plain, "a plain row stays one line height")
+        XCTAssertEqual(layout.y(ofLine: 2), layout.y(ofLine: 1) + tall.height, "the next line starts after it")
+        let lineOne = layout.text.offset(ofLine: 1)
+        XCTAssertEqual(layout.caretRect(at: lineOne + 2).height, tall.height, "the caret is the row's height")
+        XCTAssertEqual(layout.line(atY: layout.y(ofLine: 1) + tall.height - 2).line, 1, "a point low in the tall row is in it")
+        XCTAssertEqual(layout.line(atY: layout.y(ofLine: 2) + 1).line, 2)
+        XCTAssertEqual(layout.contentHeight, CGFloat(layout.lineCount - 1) * plain + tall.height + layout.insets.height * 2, accuracy: 0.5)
+
+        editor.setSelections([Selection(caret: 2)])
+        editor.textView.moveDown(nil)
+        XCTAssertEqual(layout.text.line(containing: editor.buffer.selections[0].head), 1, "down into the tall line")
+        editor.textView.moveDown(nil)
+        XCTAssertEqual(layout.text.line(containing: editor.buffer.selections[0].head), 2, "and out of it")
+        editor.textView.moveUp(nil)
+        XCTAssertEqual(layout.text.line(containing: editor.buffer.selections[0].head), 1)
+        editor.fontSpans = nil
+        XCTAssertEqual(layout.layout(line: 1).height, plain, "without runs, every row is plain again")
+    }
+
+    /// Scrolling up into lines not measured yet, which turn out taller: the text on screen stays
+    /// where it was instead of jumping.
+    func testScrollingUpKeepsTheTextInPlace() throws {
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device (a CI runner without a GPU)")
+        let source = (0..<400).map { $0 % 4 == 0 ? "# Heading \($0)" : "Line \($0) of some prose." }.joined(separator: "\n")
+        editor = try AlloyEditorView(buffer: TextBuffer(source), font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular) as CTFont)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = editor
+        window.layoutIfNeeded()
+        editor.layout()
+        let big = CTFontCreateWithName("Helvetica-Bold" as CFString, 26, nil)
+        editor.fontSpans = { [unowned self] line in
+            line % 4 == 0 ? [FontSpan(range: 0..<self.editor.documentLayout.text.range(ofLine: line).count, font: big)] : []
+        }
+        let layout = editor.documentLayout
+        editor.scrollY = 3_000
+        editor.render()
+        let top = layout.line(atY: editor.viewport.minY).line
+        let onScreen = layout.y(ofLine: top + 1) - editor.viewport.minY
+        editor.scrollY -= 120
+        editor.render()
+        XCTAssertEqual(layout.y(ofLine: top + 1) - editor.viewport.minY, onScreen + 120, accuracy: 1,
+                       "the line that was on screen moved by the scroll, not by the lines measured above it")
+    }
+
     func testFoldingHidesLinesAndUnfoldingBringsThemBack() throws {
         try open()
         let layout = editor.documentLayout

@@ -49,11 +49,15 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         }
     }
 
-    /// The reading font with an emphasis: bold, italic, or code (the editor's font, a touch
-    /// smaller, as inline code is in the preview).
+    /// A heading's size against the text's, by level: the Markdown preview's scale.
+    static let headingScale: [CGFloat] = [1.75, 1.4, 1.2, 1.05, 1, 0.92]
+
+    /// The reading font with an emphasis: bold, italic, a heading's size, or code (the editor's
+    /// font, a touch smaller, as inline code is in the preview).
     func proseFont(_ emphasis: Emphasis) -> CTFont {
         if let known = proseFonts[emphasis.rawValue] { return known }
-        let size = Self.proseSize
+        let level = emphasis.headingLevel
+        let size = (Self.proseSize * (level > 0 ? Self.headingScale[level - 1] : 1)).rounded()
         var font: NSFont = emphasis.contains(.code) ? DS.Text.Fonts.font(.editor, size: (size * 0.88).rounded()) : DS.Text.Fonts.font(.reading, size: size)
         if emphasis.contains(.bold) { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
         if emphasis.contains(.italic) { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }

@@ -36,6 +36,10 @@ public struct Emphasis: OptionSet, Sendable, Hashable {
     public static let bold = Emphasis(rawValue: 1)
     public static let italic = Emphasis(rawValue: 2)
     public static let code = Emphasis(rawValue: 4)
+
+    /// A heading's level (1 to 6), which a client sets larger; 0 for text that isn't one.
+    public static func heading(_ level: Int) -> Emphasis { Emphasis(rawValue: UInt8(min(max(level, 1), 6)) << 3) }
+    public var headingLevel: Int { Int((rawValue >> 3) & 7) }
 }
 
 /// A color, and an emphasis, for a UTF-16 range of a line (syntax highlighting). A span with
@@ -304,7 +308,7 @@ public final class TextRenderer {
         var built = LineGlyphs(layout: key, spans: spans, textColor: frame.theme.text, scale: scale, generation: atlas.generation, inset: layout.insets.width)
         var spanIndex = 0
         for (index, row) in laid.rows.enumerated() {
-            let baseline = CGFloat(index) * layout.lineHeight + layout.ascent
+            let baseline = laid.rowTops[index] + laid.rowBaselines[index]
             for run in row.runs {
                 for g in 0..<run.glyphs.count {
                     let penX = (layout.insets.width + run.positions[g].x) * scale
@@ -367,7 +371,7 @@ public final class TextRenderer {
         // The current-line band: where a caret with no selection sits.
         for selection in frame.selections where selection.isCaret && frame.highlightsCurrentLine {
             let caret = layout.caretRect(at: selection.head)
-            solids.append(Quad(rect: rect(0, caret.minY, viewportWidth, lineHeight), uv: .zero, color: frame.theme.currentLine, kind: 0))
+            solids.append(Quad(rect: rect(0, caret.minY, viewportWidth, caret.height), uv: .zero, color: frame.theme.currentLine, kind: 0))
         }
 
         // Only the decorations on screen, found once a frame: every line used to test every one
@@ -394,7 +398,7 @@ public final class TextRenderer {
             let lineRange = lineStart..<(lineStart + laid.text.utf16.count)
             let spans = frame.styles?(line) ?? []
             if let tint = frame.lineBackground?(line) {
-                solids.append(Quad(rect: rect(0, top, viewportWidth, CGFloat(laid.rows.count) * lineHeight), uv: .zero, color: tint, kind: 0))
+                solids.append(Quad(rect: rect(0, top, viewportWidth, laid.height), uv: .zero, color: tint, kind: 0))
             }
 
             // Selections: a band per row they cover, reaching the edge when they continue past it.
@@ -409,7 +413,7 @@ public final class TextRenderer {
                     guard lower < upper || (continues && lower <= upper && sel.lowerBound <= rowRange.upperBound) else { continue }
                     let x0 = laid.caretX(at: lower - lineStart).x
                     let x1 = continues ? viewportWidth - layout.insets.width : laid.caretX(at: upper - lineStart).x
-                    solids.append(Quad(rect: rect(layout.insets.width + x0, top + CGFloat(index) * lineHeight, max(2, x1 - x0), lineHeight),
+                    solids.append(Quad(rect: rect(layout.insets.width + x0, top + laid.rowTops[index], max(2, x1 - x0), laid.rowHeights[index]),
                                        uv: .zero, color: frame.theme.selection, kind: 0))
                 }
             }
@@ -425,16 +429,16 @@ public final class TextRenderer {
                     guard lower < upper else { continue }
                     let x0 = laid.caretX(at: lower - lineStart).x
                     let x1 = laid.caretX(at: upper - lineStart).x
-                    let rowTop = top + CGFloat(index) * lineHeight
+                    let rowTop = top + laid.rowTops[index], rowHeight = laid.rowHeights[index]
                     switch decoration.style {
                     case .background:
-                        solids.append(Quad(rect: rect(layout.insets.width + x0, rowTop, max(1, x1 - x0), lineHeight), uv: .zero, color: decoration.color, kind: 0))
+                        solids.append(Quad(rect: rect(layout.insets.width + x0, rowTop, max(1, x1 - x0), rowHeight), uv: .zero, color: decoration.color, kind: 0))
                     case .underline:
-                        underlines.append(Quad(rect: rect(layout.insets.width + x0, rowTop + lineHeight - 2, max(1, x1 - x0), 1), uv: .zero, color: decoration.color, kind: 0))
+                        underlines.append(Quad(rect: rect(layout.insets.width + x0, rowTop + rowHeight - 2, max(1, x1 - x0), 1), uv: .zero, color: decoration.color, kind: 0))
                     case .dottedUnderline:
                         var x = x0
                         while x < x1 {
-                            underlines.append(Quad(rect: rect(layout.insets.width + x, rowTop + lineHeight - 2, min(2, x1 - x), 1), uv: .zero, color: decoration.color, kind: 0))
+                            underlines.append(Quad(rect: rect(layout.insets.width + x, rowTop + rowHeight - 2, min(2, x1 - x), 1), uv: .zero, color: decoration.color, kind: 0))
                             x += 4
                         }
                     }
@@ -466,9 +470,9 @@ public final class TextRenderer {
                 let suffixLayout = layout.suffixLayout(suffix.text)
                 let width = suffixLayout.width
                 let x0 = layout.insets.width + endX + LineSuffix.gap
-                let rowTop = top + CGFloat(lastRow) * lineHeight
-                solids.append(Quad(rect: rect(x0, rowTop + 2, width + LineSuffix.padding * 2, lineHeight - 4), uv: .zero, color: suffix.background, kind: 0))
-                let baseline = rowTop + layout.ascent
+                let rowTop = top + laid.rowTops[lastRow]
+                solids.append(Quad(rect: rect(x0, rowTop + 2, width + LineSuffix.padding * 2, laid.rowHeights[lastRow] - 4), uv: .zero, color: suffix.background, kind: 0))
+                let baseline = rowTop + laid.rowBaselines[lastRow]
                 for run in suffixLayout.line.rows.first?.runs ?? [] {
                     for g in 0..<run.glyphs.count {
                         let penX = (x0 + LineSuffix.padding + run.positions[g].x) * scale
@@ -489,7 +493,7 @@ public final class TextRenderer {
             for selection in frame.selections {
                 let caret = layout.caretRect(at: selection.head)
                 guard caret.maxY >= frame.scrollY, caret.minY <= frame.scrollY + frame.size.height else { continue }
-                carets.append(Quad(rect: rect(caret.minX - 0.5, caret.minY + 1, 2 / scale * max(1, scale / 1.5), lineHeight - 2),
+                carets.append(Quad(rect: rect(caret.minX - 0.5, caret.minY + 1, 2 / scale * max(1, scale / 1.5), caret.height - 2),
                                    uv: .zero, color: frame.theme.caret, kind: 0))
             }
         }

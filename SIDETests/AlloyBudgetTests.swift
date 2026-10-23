@@ -176,6 +176,48 @@ final class AlloyBudgetTests: XCTestCase {
                                                                                     percentile(perKey, 0.5), percentile(keyWork, 0.99), percentile(frameWork, 0.99)))
     }
 
+    /// Live Markdown: typing into a long document set as prose, in places all over it (lines to
+    /// lay out in their fonts, rows to measure), each key timed to its frame.
+    func testLiveMarkdownKeystrokeToPixels() throws {
+        var blocks: [String] = []
+        for i in 0..<2_000 {
+            blocks.append(i % 5 == 0 ? "## Section \(i)" : "Some **bold** prose with *slanted* words, `code`, and a [link](https://example.com) in paragraph \(i), long enough to wrap across the column more than once on a normal window.")
+            blocks.append("")
+        }
+        let url = root.appendingPathComponent("Long.md")
+        try (blocks + Array(repeating: "Plain line.", count: 16_000)).joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        _ = open(url)
+        defer { MakeWorkspaceViewController.preferences.removeObject(forKey: MakeWorkspaceViewController.liveMarkdownKey) }
+        make.toggleLiveMarkdown(nil)
+        XCTAssertTrue(alloy.isProse)
+        window.makeFirstResponder(view.textView)
+        (alloy.document as? AlloyEditorDocument)?.highlighter?.waitForParse()
+        var generator = SystemRandomNumberGenerator()
+        var perKey: [Double] = []
+        var frame = 0, keys = 0
+        view.onFrame = { [weak self] _ in
+            guard let self else { return }
+            frame += 1
+            if keys % 30 == 0, frame % 2 == 1 {
+                let offset = self.view.buffer.text.offset(ofLine: Int.random(in: 0..<3_900, using: &generator))
+                self.view.setSelections([Selection(caret: offset)])
+                self.make.editor.scrollRangeToVisible(NSRange(location: offset, length: 0))
+                keys += 1
+                return
+            }
+            guard frame % 2 == 0, keys < 330 else { return }
+            let start = CACurrentMediaTime()
+            self.view.textView.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+            self.view.render()
+            perKey.append((CACurrentMediaTime() - start) * 1000 - (self.view.drawableWaitMilliseconds.last ?? 0))
+            keys += 1
+        }
+        waitUntil(40) { keys >= 330 }
+        view.onFrame = nil
+        XCTAssertGreaterThan(perKey.count, 250)
+        Budgets.check("editor.live.keystroke", percentile(perKey, 0.99), detail: String(format: "p50 %.2f ms", percentile(perKey, 0.5)))
+    }
+
     func testReHighlightAfterAnEdit() throws {
         _ = open(try swiftFile())
         let document = try XCTUnwrap(alloy.document as? AlloyEditorDocument)
