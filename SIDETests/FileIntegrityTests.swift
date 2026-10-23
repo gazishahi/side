@@ -434,6 +434,19 @@ final class ProjectTrustTests: XCTestCase {
         XCTAssertNil(make.trustBannerTextForTesting, "trusted: the banner goes")
     }
 
+    /// Svelte: a project with its own Svelte setup counts as project code (its server runs the
+    /// config), and .svelte files have a language server to offer.
+    func testSvelteProjectsWaitForTrust() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("svelte-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertFalse(ProjectTrust.hasSvelteProjectCode(root))
+        try "export default {}".write(to: root.appendingPathComponent("svelte.config.js"), atomically: true, encoding: .utf8)
+        XCTAssertTrue(ProjectTrust.hasSvelteProjectCode(root))
+        XCTAssertTrue(ProjectTrust.projectCode(in: root).contains("its Svelte setup"))
+        XCTAssertEqual(LanguageSettings.preset(forExtension: "svelte")?.servers.first?.binary, "svelteserver")
+    }
+
     /// 2026-10-23, the owner: the banner fell to the bottom, behind the floating bar. Its tab bar
     /// is moved into the window's top row, which dropped the constraint it hung from; it now
     /// hangs from the top row's height, and the text starts below it.

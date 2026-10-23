@@ -69,8 +69,15 @@ public final class SyntaxHighlighter {
     public var onInvalidate: (() -> Void)?
 
     private let parser = Parser()
-    private var tree: MutableTree?
+    private var tree: MutableTree? { didSet { injectionsStale = true } }
     private var lineCache: [Int: [StyleSpan]] = [:]
+    /// Languages embedded in this one (a `<script>`, a fenced code block), each parsed over just
+    /// its regions and kept current with every edit, as the main tree is. By language name.
+    private var layers: [String: InjectedLayer] = [:]
+    private var injectionsStale = true
+    /// Past this size, embedded languages aren't parsed: finding them walks the whole tree on
+    /// each change.
+    public static let injectionSizeLimit = 400_000
     /// Files smaller than this get their first parse on the spot; bigger ones in the background.
     public static let synchronousLimit = 1_000_000
     /// Reparses faster than this stay on the main thread (no frame of stale color); slower
@@ -166,6 +173,7 @@ public final class SyntaxHighlighter {
             }
         }
         isReady = true
+        _ = refreshInjections()
         onInvalidate?()
         // Edits came in meanwhile: their reparse is next.
         if needsParse || !caughtUp { parseInBackground() }
@@ -199,7 +207,10 @@ public final class SyntaxHighlighter {
         shiftCache(from: firstChangedLine, throughOld: lastOldLine, by: lineDelta, edited: edits.count > 1)
         // The current tree follows the edit at once (cheap), so colors stay on their text
         // until the reparse lands.
-        for input in inputs { tree?.edit(input) }
+        for input in inputs {
+            tree?.edit(input)
+            for layer in layers.values { layer.tree?.edit(input) }
+        }
 
         if parseInFlight {
             editsDuringParse += inputs
@@ -227,6 +238,7 @@ public final class SyntaxHighlighter {
             for line in lower...max(lower, upper) where lineCache.removeValue(forKey: line) != nil { farChange = true }
         }
         tree = reparsed
+        if refreshInjections() { farChange = true }
         if farChange { onInvalidate?() }
     }
 
@@ -234,6 +246,7 @@ public final class SyntaxHighlighter {
     public func reset(_ newText: Rope) {
         text = newText
         lineCache.removeAll()
+        layers.removeAll()
         tree = nil
         isReady = false
         editsDuringParse = []
@@ -291,7 +304,8 @@ public final class SyntaxHighlighter {
         guard isReady, let tree, let root = tree.rootNode else { return [] }
         let lineRange = text.range(ofLine: line)
         guard !lineRange.isEmpty else { lineCache[line] = []; return [] }
-        let spans = Self.paint(lineRange, captures: collectCaptures(in: lineRange, tree: tree, root: root), theme: theme)
+        if injectionsStale { _ = refreshInjections() }
+        let spans = Self.paint(lineRange, captures: collectCaptures(in: lineRange, tree: tree, root: root) + injectedCaptures(in: lineRange), theme: theme)
         lineCache[line] = spans
         return spans
     }
@@ -308,7 +322,8 @@ public final class SyntaxHighlighter {
         guard wanted.count > 2, let first = wanted.first, let last = wanted.last else { return }
         let union = text.range(ofLine: first).lowerBound..<text.range(ofLine: last).upperBound
         guard !union.isEmpty else { return }
-        let captures = collectCaptures(in: union, tree: tree, root: root)
+        if injectionsStale { _ = refreshInjections() }
+        let captures = collectCaptures(in: union, tree: tree, root: root) + injectedCaptures(in: union)
         for line in wanted {
             let lineRange = text.range(ofLine: line)
             lineCache[line] = lineRange.isEmpty ? [] : Self.paint(lineRange, captures: captures, theme: theme)
@@ -396,6 +411,114 @@ public final class SyntaxHighlighter {
             }
         }
         return captures
+    }
+
+    // MARK: Embedded languages
+
+    /// A language embedded in the document's, parsed over its regions only.
+    private final class InjectedLayer {
+        let language: SyntaxLanguage
+        let parser = Parser()
+        var tree: MutableTree?
+        init(language: SyntaxLanguage) {
+            self.language = language
+            try? parser.setLanguage(language.language)
+        }
+    }
+
+    /// Captures from the embedded languages over `range`. They're numbered after every host
+    /// pattern, so where both color the same text (a host marking `<script>`'s contents as
+    /// plain), the embedded language's color wins.
+    private func injectedCaptures(in range: Range<Int>) -> [Capture] {
+        guard !layers.isEmpty else { return [] }
+        let bytes = UInt32(range.lowerBound * 2)..<UInt32(range.upperBound * 2)
+        let text = self.text
+        let context = Predicate.Context(textProvider: { range, _ in text.substring(range.location..<(range.location + range.length)) })
+        var captures: [Capture] = []
+        var order = 0
+        let base = language.highlights.patternCount
+        for layer in layers.values {
+            guard let layerTree = layer.tree, let root = layerTree.rootNode,
+                  layerTree.includedRanges.contains(where: { $0.bytes.overlaps(bytes) }) else { continue }
+            let cursor = layer.language.highlights.execute(node: root, in: layerTree)
+            cursor.setByteRange(range: bytes)
+            while let match = cursor.next() {
+                guard match.allowed(in: context) else { continue }
+                for capture in match.captures {
+                    guard let name = capture.name, theme.color(for: name) != nil else { continue }
+                    let nodeRange = capture.node.range
+                    let lower = max(nodeRange.location, range.lowerBound)
+                    let upper = min(nodeRange.location + nodeRange.length, range.upperBound)
+                    guard lower < upper else { continue }
+                    captures.append((lower, upper, base + match.patternIndex, order, name))
+                    order += 1
+                }
+            }
+        }
+        return captures
+    }
+
+    /// Finds the embedded regions (the language's injections query over the tree), groups them
+    /// by language, and reparses each language over its regions, incrementally from its last
+    /// tree. Where a region is claimed by more than one pattern, the first pattern wins (a
+    /// `lang="ts"` script before the plain-script fallback). True when lines beyond the edit
+    /// changed color (a region appeared, went, or its own parse changed far away).
+    private func refreshInjections() -> Bool {
+        injectionsStale = false
+        guard let query = language.injections, let tree, let root = tree.rootNode, text.utf16Count <= Self.injectionSizeLimit else {
+            let had = !layers.isEmpty
+            layers.removeAll()
+            if had { lineCache.removeAll() }
+            return had
+        }
+        let text = self.text
+        let context = Predicate.Context(textProvider: { range, _ in text.substring(range.location..<(range.location + range.length)) })
+        var claims: [Range<UInt32>: (pattern: Int, language: String, range: TSRange)] = [:]
+        let cursor = query.execute(node: root, in: tree)
+        while let match = cursor.next() {
+            guard match.allowed(in: context), let content = match.captures(named: "injection.content").first?.node else { continue }
+            let named = match.metadata["injection.language"] ?? match.captures(named: "injection.language").first.map {
+                let r = $0.node.range
+                return text.substring(r.location..<(r.location + r.length))
+            }
+            guard let name = named, let embedded = SyntaxLanguage.named(name), content.byteRange.count > 0 else { continue }
+            let key = content.byteRange
+            if let claim = claims[key], claim.pattern <= match.patternIndex { continue }
+            claims[key] = (match.patternIndex, embedded.name, TSRange(points: content.pointRange, bytes: key))
+        }
+        var regions: [String: [TSRange]] = [:]
+        for claim in claims.values { regions[claim.language, default: []].append(claim.range) }
+
+        var farChange = false
+        func forget(_ ranges: [TSRange]) {
+            for range in ranges {
+                for line in Int(range.points.lowerBound.row)...Int(range.points.upperBound.row) where lineCache.removeValue(forKey: line) != nil { farChange = true }
+            }
+        }
+        for (name, layer) in layers where regions[name] == nil {
+            forget(layer.tree?.includedRanges ?? [])
+            layers[name] = nil
+        }
+        for (name, ranges) in regions {
+            guard let embedded = SyntaxLanguage.named(name) else { continue }
+            let layer = layers[name] ?? InjectedLayer(language: embedded)
+            layers[name] = layer
+            let sorted = ranges.sorted { $0.bytes.lowerBound < $1.bytes.lowerBound }
+            let old = layer.tree
+            let oldRanges = old?.includedRanges ?? []
+            layer.parser.includedRanges = sorted
+            guard let parsed = Self.parse(layer.parser, text: text, oldTree: oldRanges == sorted ? old : nil) else { continue }
+            if let old, oldRanges == sorted {
+                for range in parsed.changedRanges(from: old) {
+                    for line in Int(range.points.lowerBound.row)...Int(range.points.upperBound.row) where lineCache.removeValue(forKey: line) != nil { farChange = true }
+                }
+            } else {
+                forget(oldRanges)
+                forget(sorted)
+            }
+            layer.tree = parsed
+        }
+        return farChange
     }
 
     /// One line's spans from captures over it (or over more than it): clipped to the line, outer

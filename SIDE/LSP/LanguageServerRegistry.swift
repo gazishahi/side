@@ -275,7 +275,14 @@ enum ProjectTrust {
         if FileManager.default.fileExists(atPath: root.appendingPathComponent("node_modules/typescript/lib/tsserver.js").path) { found.append("its TypeScript") }
         if hasLocalPrettier(root) || hasCodePrettierConfig(root) { found.append("its formatter") }
         if FileManager.default.fileExists(atPath: root.appendingPathComponent("Cargo.toml").path) { found.append("its Rust build scripts and macros") }
+        if hasSvelteProjectCode(root) { found.append("its Svelte setup") }
         return found
+    }
+
+    /// Svelte's server runs the project's svelte.config (preprocessors) and its own Svelte.
+    static func hasSvelteProjectCode(_ root: URL) -> Bool {
+        let names = ["svelte.config.js", "svelte.config.cjs", "svelte.config.mjs", "svelte.config.ts", "node_modules/svelte/package.json"]
+        return names.contains { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }
     }
 
     static func hasLocalPrettier(_ root: URL) -> Bool {

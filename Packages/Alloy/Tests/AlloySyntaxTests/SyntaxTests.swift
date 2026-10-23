@@ -21,6 +21,7 @@ final class SyntaxTests: XCTestCase {
             "sh": "#!/bin/bash\nif [ -n \"$1\" ]; then echo hi; fi # c", "java": "class A { int x = 1; } // c",
             "php": "<?php\nfunction f() { return 'x'; } // c", "dockerfile": "FROM swift:6\nRUN echo hi # c",
             "mk": "# c\nall: build\n\t@echo done\n", "sql": "SELECT id, name FROM users WHERE id = 1; -- c",
+            "svelte": "<script>let n = 1</script>\n{#if n}<p class=\"a\">{n}</p>{/if}",
         ]
         for (ext, source) in samples {
             let highlighter = try XCTUnwrap(SyntaxHighlighter(fileExtension: ext, text: Rope(source), theme: theme), "\(ext) loads")
@@ -36,7 +37,7 @@ final class SyntaxTests: XCTestCase {
         // Alloy's split of each query into patterns agrees with tree-sitter's count, which the
         // container companions' precedence depends on.
         for ext in ["swift", "ts", "tsx", "js", "py", "rs", "go", "lua", "rb", "c", "cpp", "json", "md",
-                    "yaml", "toml", "html", "css", "scss", "sh", "java", "php", "dockerfile", "mk", "sql"] {
+                    "yaml", "toml", "html", "css", "scss", "sh", "java", "php", "dockerfile", "mk", "sql", "svelte"] {
             let language = try XCTUnwrap(SyntaxLanguage.forExtension(ext))
             XCTAssertEqual(language.splitPatternCount, language.highlights.patternCount, ext)
         }
@@ -256,5 +257,95 @@ extension String {
     func utf16Substring(_ range: Range<Int>) -> String {
         let units = Array(utf16)
         return String(decoding: units[max(0, range.lowerBound)..<min(units.count, range.upperBound)], as: UTF16.self)
+    }
+}
+
+/// Languages inside others: HTML's scripts and styles, Markdown's fenced code, Svelte.
+@MainActor
+final class InjectionTests: XCTestCase {
+    let theme = SyntaxTheme.side(dark: false)
+
+    private func color(_ highlighter: SyntaxHighlighter, line: Int, at column: Int) -> SIMD4<Float>? {
+        highlighter.spans(forLine: line).first { $0.range.contains(column) }?.color
+    }
+
+    private func color(_ h: SyntaxHighlighter, _ source: String, at needle: String, offset: Int = 0) -> SIMD4<Float>? {
+        let lines = source.components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() {
+            if let range = line.range(of: needle) {
+                return color(h, line: index, at: line.utf16.distance(from: line.utf16.startIndex, to: range.lowerBound.samePosition(in: line.utf16)!) + offset)
+            }
+        }
+        return nil
+    }
+
+    /// HTML's <script> is colored as JavaScript (TypeScript with lang="ts"), its <style> as CSS.
+    func testHTMLScriptsAndStylesAreColoredInTheirOwnLanguages() throws {
+        let source = "<div>hi</div>\n<script>\nconst total = 42\n</script>\n<script lang=\"ts\">\nlet n: number = 1\n</script>\n<style>\n.a { color: red; }\n</style>"
+        let h = try XCTUnwrap(SyntaxHighlighter(fileExtension: "html", text: Rope(source), theme: theme))
+        XCTAssertEqual(color(h, source, at: "const"), theme.color(for: "keyword"), "JavaScript's keyword")
+        XCTAssertEqual(color(h, source, at: "42"), theme.color(for: "number"))
+        XCTAssertEqual(color(h, source, at: "number = 1"), theme.color(for: "type"), "TypeScript's type, from lang=\"ts\"")
+        XCTAssertEqual(color(h, source, at: "color"), theme.color(for: "property"), "CSS colors the style")
+        XCTAssertEqual(color(h, source, at: "div"), theme.color(for: "tag"), "the HTML around them as before")
+    }
+
+    /// Markdown's fenced code takes its fence's language.
+    func testMarkdownFencedCodeIsColoredByItsLanguage() throws {
+        let source = "# Notes\n\n```python\ndef greet():\n    return 'hi'\n```\n\n```ts\nconst x = 1\n```\n"
+        let h = try XCTUnwrap(SyntaxHighlighter(fileExtension: "md", text: Rope(source), theme: theme))
+        XCTAssertEqual(color(h, source, at: "def"), theme.color(for: "keyword"))
+        XCTAssertEqual(color(h, source, at: "'hi'"), theme.color(for: "string"))
+        XCTAssertEqual(color(h, source, at: "const"), theme.color(for: "keyword"), "ts names TypeScript")
+    }
+
+    /// A Svelte component: its markup as HTML with Svelte's blocks, the script in TypeScript,
+    /// and the expressions in markup as JavaScript.
+    func testSvelteComponentsAreColoredThroughout() throws {
+        let source = "<script lang=\"ts\">\n  let count: number = 0\n</script>\n\n{#if count > 0}\n  <p class=\"note\">{count + 1}</p>\n{/if}\n<style>\n  p { color: red; }\n</style>"
+        let h = try XCTUnwrap(SyntaxHighlighter(fileExtension: "svelte", text: Rope(source), theme: theme))
+        XCTAssertEqual(color(h, source, at: "let"), theme.color(for: "keyword"))
+        XCTAssertEqual(color(h, source, at: "number"), theme.color(for: "type"), "TypeScript")
+        XCTAssertEqual(color(h, source, at: "if"), theme.color(for: "keyword"), "Svelte's block")
+        XCTAssertEqual(color(h, source, at: "p class"), theme.color(for: "tag"))
+        XCTAssertEqual(color(h, source, at: "1}"), theme.color(for: "number"), "the expression as JavaScript")
+        XCTAssertEqual(color(h, source, at: "0}"), theme.color(for: "number"), "and the block's condition")
+    }
+
+    /// Typing inside an embedded region recolors it, as typing in the document does.
+    func testEditsInsideAnEmbeddedRegionAreFollowed() throws {
+        let buffer = TextBuffer("<script>\nlet a = 1\n</script>\n")
+        let h = try XCTUnwrap(SyntaxHighlighter(fileExtension: "html", text: buffer.text, theme: theme))
+        buffer.onChange = { h.apply($0.edits, newText: buffer.text) }
+        XCTAssertEqual(color(h, line: 1, at: 0), theme.color(for: "keyword"))
+        buffer.apply([TextEdit(range: 9..<12, text: "const")])  // "let" -> "const"
+        h.waitForParse()
+        XCTAssertEqual(color(h, line: 1, at: 0), theme.color(for: "keyword"), "const")
+        XCTAssertEqual(color(h, line: 1, at: 10), theme.color(for: "number"))
+    }
+
+    /// Across random edits that make and break scripts and styles, the embedded colors match
+    /// a fresh parse of the same text, line for line.
+    func testEmbeddedColorsAfterEditsMatchAFreshParse() throws {
+        var generator = SplitMix(seed: 11)
+        let pieces = ["<script>", "</script>", "<style>", "</style>", "let x = 1\n", "const ", "42", "\"s\"", ".a { color: red }", "\n", "<p>", "</p>", "// c\n"]
+        let buffer = TextBuffer(String(repeating: "<div>\n<script>\nlet a = 1 // one\n</script>\n<style>\n.b { margin: 0 }\n</style>\n</div>\n", count: 8))
+        let h = try XCTUnwrap(SyntaxHighlighter(fileExtension: "html", text: buffer.text, theme: theme))
+        buffer.onChange = { h.apply($0.edits, newText: buffer.text) }
+        for step in 0..<120 {
+            let length = buffer.text.utf16Count
+            let at = Int(generator.next() % UInt64(length + 1))
+            let end = min(length, at + Int(generator.next() % 10))
+            let text = generator.next() % 4 == 0 ? "" : pieces[Int(generator.next() % UInt64(pieces.count))]
+            buffer.apply([TextEdit(range: at..<end, text: text)])
+            for line in stride(from: 0, to: buffer.text.lineCount, by: 13) { _ = h.spans(forLine: line) }
+            if step % 20 == 19 {
+                h.waitForParse()
+                let fresh = try XCTUnwrap(SyntaxHighlighter(fileExtension: "html", text: buffer.text, theme: theme))
+                for line in 0..<buffer.text.lineCount {
+                    XCTAssertEqual(h.spans(forLine: line), fresh.spans(forLine: line), "line \(line) after step \(step)")
+                }
+            }
+        }
     }
 }

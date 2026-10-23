@@ -511,6 +511,13 @@ final class LSPManager: @unchecked Sendable {
                     completion(nil)
                     return
                 }
+                // Svelte's server loads the project's svelte.config and Svelte: likewise.
+                if entry.binaryName == "svelteserver", !trusted, ProjectTrust.hasSvelteProjectCode(projectRoot) {
+                    print("[LSP] svelteserver: the project's Svelte setup waits for the project to be trusted")
+                    self.startingServers.remove(entry.binaryName)
+                    completion(nil)
+                    return
+                }
                 let tsserverPath: String? = if case .global(let path) = tsserver { path } else { nil }
                 let options: LSPValue? = entry.binaryName == "rust-analyzer" && !trusted ? ProjectTrust.rustAnalyzerUntrusted : nil
                 guard let executable else {

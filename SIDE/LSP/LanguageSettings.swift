@@ -237,6 +237,11 @@ final class LanguageSettings: @unchecked Sendable {
                        servers: [s("yaml-language-server", "YAML Language Server", "yaml-language-server", ["--stdio"], .brew("yaml-language-server"))], asksToInstall: false),
         LanguagePreset(id: "toml", name: "TOML", extensions: [("toml", "toml")],
                        servers: [s("taplo", "Taplo", "taplo", ["lsp", "stdio"], .brew("taplo"))], asksToInstall: false),
+        // svelteserver loads the project's own Svelte and svelte.config.js: it waits for the
+        // project to be trusted (LSPManager), as the project's TypeScript does.
+        LanguagePreset(id: "svelte", name: "Svelte", extensions: [("svelte", "svelte")],
+                       servers: [s("svelte-language-server", "Svelte Language Server", "svelteserver", ["--stdio"], .npm("svelte-language-server"))],
+                       asksToInstall: true),
         LanguagePreset(id: "html", name: "HTML", extensions: [("html", "html"), ("htm", "html")],
                        servers: [s("vscode-html", "VS Code's HTML server", "vscode-html-language-server", ["--stdio"], .npm("vscode-langservers-extracted"))], asksToInstall: false),
         LanguagePreset(id: "css", name: "CSS, SCSS and Less", extensions: [("css", "css"), ("scss", "scss"), ("less", "less")],
