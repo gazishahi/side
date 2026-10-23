@@ -68,6 +68,12 @@ public final class AlloyTextView: NSView, @preconcurrency NSTextInputClient, NSM
         return true
     }
 
+    /// A click into a window that isn't key (another app, a panel or another window had the
+    /// keyboard) places the caret as well as bringing the window forward, as a text view's
+    /// does. Without this AppKit used the click only to activate the window, and the caret
+    /// stayed put: clicking "didn't always work" (2026-10-23, the owner).
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     public override func resetCursorRects() {
         addCursorRect(visibleRect, cursor: .iBeam)
     }

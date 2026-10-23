@@ -45,6 +45,17 @@ public final class AlloyEditorView: NSView {
     /// The text set in a centered column this wide, for reading and writing prose; nil runs it
     /// the full width.
     public var readingColumnWidth: CGFloat? { didSet { if readingColumnWidth != oldValue { updateWrapWidth(); updateDocumentHeight(); setNeedsRender() } } }
+    /// Space above the first line and below the last, part of the document (so the scroller
+    /// counts it): a writer's typewriter margin lets the first and last lines reach mid-screen.
+    /// Nil is the standard margin.
+    public var documentPadding: CGFloat? {
+        didSet {
+            guard documentPadding != oldValue else { return }
+            documentLayout.insets.height = documentPadding ?? DocumentLayout.standardInsets.height
+            updateDocumentHeight()
+            setNeedsRender()
+        }
+    }
     /// The lines drawn at full strength, the rest faded; nil draws every line alike.
     public var focusedLines: ClosedRange<Int>? { didSet { if focusedLines != oldValue { setNeedsRender() } } }
     /// The band across the caret's line (on by default).
@@ -406,6 +417,23 @@ public final class AlloyEditorView: NSView {
         setNeedsRender()
     }
 
+    /// A click in the scroll view's margin, above the first line or below the last (a writer's
+    /// typewriter margins, the space under a short file), places the caret at the nearest line,
+    /// as the text view would: the margin isn't the text view, so the click came up to here.
+    public override func mouseDown(with event: NSEvent) { textView.mouseDown(with: event) }
+    /// The scroll view's margin is its clip and background views (which turn away a first click
+    /// into a window that isn't key): the editor takes those clicks itself. The text, the
+    /// scrollers and anything else keep theirs.
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point), hit !== textView, !hit.isDescendant(of: textView), hit.isDescendant(of: scrollView),
+              !(scrollView.verticalScroller.map { hit.isDescendant(of: $0) } ?? false),
+              !(scrollView.horizontalScroller.map { hit.isDescendant(of: $0) } ?? false) else { return super.hitTest(point) }
+        return self
+    }
+    public override func mouseDragged(with event: NSEvent) { textView.mouseDragged(with: event) }
+    public override func mouseUp(with event: NSEvent) { textView.mouseUp(with: event) }
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     public override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         canvas.metalLayer.contentsScale = window?.backingScaleFactor ?? 2
@@ -468,7 +496,7 @@ public final class AlloyEditorView: NSView {
     /// Lays the text out in another font (the editor text size changed).
     public func setFont(_ font: CTFont) {
         let insets = documentLayout.insets
-        documentLayout = DocumentLayout(text: buffer.text, font: font)
+        documentLayout = DocumentLayout(text: buffer.text, font: font)  // keeps the padding and column below
         documentLayout.insets = insets
         updateWrapWidth()
         updateDocumentHeight()

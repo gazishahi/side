@@ -373,6 +373,8 @@ final class EditorParityTests: XCTestCase {
         let caretY = alloy.rect(forCharacterRange: target.location..<target.location).minY - alloy.scrollView.contentView.bounds.minY
         let height = alloy.scrollView.contentView.bounds.height
         XCTAssertEqual(caretY / height, 0.45, accuracy: 0.06, "the typing line mid-screen")
+        XCTAssertEqual(alloy.scrollView.contentView.contentInsets.top, 0, "the margin is in the document, so the scroller spans the window")
+        XCTAssertGreaterThan(alloy.documentPadding ?? 0, height * 0.3)
 
         if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"], let image = make.tabPreviewContent(0) {
             try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?
@@ -418,6 +420,53 @@ final class EditorParityTests: XCTestCase {
         XCTAssertFalse(shell.isWriting, "going to another stage leaves it")
         XCTAssertFalse(shell.chromeHiddenForTesting)
         XCTAssertEqual(window.standardWindowButton(.closeButton)?.isHidden, false)
+    }
+
+    /// 2026-10-23, the owner: clicking doesn't always move the caret. Real clicks through the
+    /// window, at lines all over the screen, each must land the caret on the line clicked.
+    func testEveryClickMovesTheCaret() throws {
+        let text = (1...200).map { "line \($0) with some text on it" }.joined(separator: "\n")
+        _ = try open("clicks.txt", text)
+        window.makeKeyAndOrderFront(nil)
+        make.setTopObstruction(ChromeHost.rowHeight)
+        make.setBottomObstruction(52)
+        let alloy = (make.editor as! AlloyEditorEngine).view
+        var misses: [String] = []
+        func click(atWindow point: NSPoint) {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                window.sendEvent(event)
+            }
+        }
+        for scroll in [0.0, 1200.0] {
+            alloy.scrollY = scroll
+            alloy.layout()
+            for fraction in stride(from: 0.15, through: 0.8, by: 0.05) {
+                let clip = alloy.scrollView.contentView
+                let local = NSPoint(x: clip.bounds.minX + 120, y: clip.bounds.minY + clip.bounds.height * fraction)
+                let expected = alloy.documentLayout.line(atY: local.y).line
+                let inWindow = clip.convert(local, to: nil)
+                make.editor.selectedRange = NSRange(location: 0, length: 0)
+                click(atWindow: inWindow)
+                let line = (make.editor.document?.rope.position(of: make.editor.selectedRange.location).line) ?? -1
+                if line != expected { misses.append("scroll \(scroll), \(Int(fraction * 100))%: line \(line), expected \(expected), hit \(String(describing: window.contentView?.hitTest(inWindow).map { Swift.type(of: $0) }))") }
+            }
+        }
+        XCTAssertEqual(misses, [], misses.joined(separator: "\n"))
+
+        // Writer mode's typewriter margin above the first line: the caret goes to the first line.
+        make.setWriterMode(true)
+        defer { make.setWriterMode(false) }
+        make.editor.selectedRange = NSRange(location: 0, length: 0)
+        make.view.layoutSubtreeIfNeeded()
+        make.editor.selectedRange = NSRange(location: 500, length: 0)
+        alloy.scrollY = 0
+        let clip = alloy.scrollView.contentView
+        click(atWindow: clip.convert(NSPoint(x: clip.bounds.midX, y: clip.bounds.minY + 120), to: nil))
+        let marginPoint = clip.convert(NSPoint(x: clip.bounds.midX, y: clip.bounds.minY + 120), to: nil)
+        XCTAssertEqual(make.editor.document?.rope.position(of: make.editor.selectedRange.location).line, 0,
+                       "a click above the text lands on its first line; hit \(String(describing: window.contentView?.hitTest(marginPoint).map { v in sequence(first: v, next: { $0.superview }).map { String(describing: Swift.type(of: $0)) }.joined(separator: " < ") })), clip \(clip.bounds), insets \(clip.contentInsets), doc \(alloy.textView.frame)")
     }
 
     func testAReadOnlyEditorTakesNoTyping() throws {

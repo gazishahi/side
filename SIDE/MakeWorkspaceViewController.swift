@@ -6275,6 +6275,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         if !on {
             alloyView?.readingColumnWidth = nil
             alloyView?.focusedLines = nil
+            alloyView?.documentPadding = nil
             wordCountLabel.isHidden = true
         }
         applyWriterAids()
@@ -6295,16 +6296,16 @@ extension MakeWorkspaceViewController: StageChromeProviding {
     }
 
     /// With typewriter scrolling the text can scroll until its first or last line is mid-screen;
-    /// without it, a margin above and below.
+    /// without it, a margin above and below. Both are padding in the document rather than scroll
+    /// insets, so the scroller spans the window and its knob is the document's (insets this big
+    /// drew a stub of a scroller in the middle band: "the scrollbar looks weird", the owner).
     private func applyWriterInsets() {
         guard isWriting else { return }
         let height = editorScroll.contentView.bounds.height
         let lineHeight = alloyView?.documentLayout.lineHeight ?? 20
-        let half = max(0, (height * 0.45 - lineHeight / 2).rounded())
-        let typewriter = WriterPreferences.isOn(.typewriter)
         editorScroll.automaticallyAdjustsContentInsets = false
-        editorScroll.contentInsets = NSEdgeInsets(top: typewriter ? half : DS.Spacing.xxl, left: 0,
-                                                  bottom: typewriter ? max(0, height - half - lineHeight) : DS.Spacing.xxl, right: 0)
+        editorScroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        alloyView?.documentPadding = WriterPreferences.isOn(.typewriter) ? max(DS.Spacing.xxl, (height * 0.45 - lineHeight / 2).rounded()) : DS.Spacing.xxl
     }
 
     /// The caret's line held at the same height (typewriter), and its paragraph alone at full
@@ -6314,7 +6315,8 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         let caret = min(NSMaxRange(editor.selectedRange), document.rope.utf16Count)
         if WriterPreferences.isOn(.typewriter) {
             applyWriterInsets()
-            view.scrollY = view.rect(forCharacterRange: caret..<caret).minY
+            let height = editorScroll.contentView.bounds.height
+            view.scrollY = view.rect(forCharacterRange: caret..<caret).minY - (height * 0.45 - view.documentLayout.lineHeight / 2).rounded()
         }
         if WriterPreferences.isOn(.dimOthers) {
             view.focusedLines = Self.paragraphLines(around: document.rope.position(of: caret).line, in: document.text)
