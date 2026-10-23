@@ -1,3 +1,4 @@
+import PDFKit
 import XCTest
 @testable import Side
 @testable import Heron
@@ -356,6 +357,205 @@ final class FrontMatterTests: XCTestCase {
                     .write(to: URL(fileURLWithPath: directory).appendingPathComponent(dark ? "front-matter-dark.png" : "front-matter-light.png"))
             }
         }
+    }
+}
+
+/// LaTeX building: the document a source belongs to, latexmk's log read for problems, SyncTeX
+/// both ways, and Make building with stand-ins for latexmk and synctex (no TeX here to run).
+@MainActor
+final class LaTeXTests: XCTestCase {
+    private var folder: URL!
+
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("latex-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("chapters"), withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    private func write(_ name: String, _ text: String) throws -> URL {
+        let url = folder.appendingPathComponent(name)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    func testTheDocumentASourceBelongsTo() throws {
+        let main = try write("main.tex", "\\documentclass{article}\n\\begin{document}\\input{chapters/one}\\end{document}\n")
+        let one = try write("chapters/one.tex", "% !TEX root = ../main.tex\n\\section{One}\n")
+        let notes = try write("notes.tex", "Just text.\n")
+        XCTAssertEqual(LaTeX.rootDocument(for: main, text: nil), main, "it declares a document")
+        XCTAssertEqual(LaTeX.rootDocument(for: one, text: nil).path, main.path, "the magic comment")
+        XCTAssertEqual(LaTeX.rootDocument(for: notes, text: nil).path, main.path, "the one document beside it")
+        XCTAssertFalse(LaTeX.declaresDocument("% \\documentclass{article}"), "a commented-out one doesn't count")
+        XCTAssertEqual(LaTeX.arguments(root: main, text: "%!TEX program = xelatex\n").first, "-xelatex")
+        XCTAssertEqual(LaTeX.arguments(root: main, text: "").suffix(1), ["main.tex"])
+        XCTAssertTrue(LaTeX.arguments(root: main, text: "").contains("-synctex=1"))
+    }
+
+    func testTheLogBecomesProblems() {
+        let log = """
+        Latexmk: applying rule 'pdflatex'...
+        (./main.tex
+        ./main.tex:12: Undefined control sequence.
+        l.12 \\foo
+        ./chapters/one.tex:3: LaTeX Error: Environment itemze undefined.
+        LaTeX Warning: Reference `sec:missing' on page 1 undefined on input line 7.
+        Package natbib Warning: Citation `knuth' on page 1 undefined on input line 9.
+        Overfull \\hbox (12.3pt too wide) in paragraph at lines 20--21
+        ./main.tex:12: Undefined control sequence.
+        Output written on build/main.pdf (2 pages, 30411 bytes).
+        """
+        let root = folder.appendingPathComponent("main.tex")
+        let problems = LaTeX.problems(in: log, directory: folder, root: root)
+        XCTAssertEqual(problems.count, 4, "a repeat counted once, box warnings left out")
+        XCTAssertEqual(problems[0], LaTeX.Problem(file: root, line: 12, message: "Undefined control sequence.", isError: true))
+        XCTAssertEqual(problems[1].file.path, folder.appendingPathComponent("chapters/one.tex").path)
+        XCTAssertEqual(problems[2], LaTeX.Problem(file: root, line: 7, message: "Reference `sec:missing' on page 1 undefined", isError: false))
+        XCTAssertEqual(problems[3].message, "Citation `knuth' on page 1 undefined")
+        XCTAssertEqual(LaTeX.outputPDF(in: log, directory: folder, root: root).path, folder.appendingPathComponent("build/main.pdf").path)
+        XCTAssertEqual(LaTeX.outputPDF(in: "", directory: folder, root: root).lastPathComponent, "main.pdf")
+    }
+
+    func testSyncTeXBothWays() {
+        let view = "SyncTeX result begin\nOutput:/x/main.pdf\nPage:2\nx:133.7\ny:154.8\nh:133.768356\nv:157.215012\nW:343.711060\nH:9.464172\nbefore:\nPage:3\nSyncTeX result end\n"
+        let place = LaTeX.forwardResult(view) { _ in 792 }
+        XCTAssertEqual(place?.page, 2, "the first record")
+        XCTAssertEqual(Double(place?.box.minY ?? 0), 792 - 157.215012, accuracy: 0.01, "from the page's bottom, as PDFKit counts")
+        XCTAssertEqual(Double(place?.box.width ?? 0), 343.71106, accuracy: 0.01)
+        let edit = "SyncTeX result begin\nOutput:main.pdf\nInput:/x/./chapters/one.tex\nLine:12\nColumn:-1\nSyncTeX result end\n"
+        XCTAssertEqual(LaTeX.inverseResult(edit)?.file.path, "/x/chapters/one.tex")
+        XCTAssertEqual(LaTeX.inverseResult(edit)?.line, 12)
+        XCTAssertNil(LaTeX.inverseResult("SyncTeX result begin\nSyncTeX result end\n"))
+    }
+
+    /// Stand-ins: latexmk copies a PDF into place and prints a log (with an error when asked);
+    /// synctex prints a fixed answer. Returns the environment that finds them.
+    private func standIns(error: Bool) throws -> [String: String] {
+        let bin = folder.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let pdf = folder.appendingPathComponent("fixture.pdf")
+        let document = PDFDocument()
+        let image = NSImage(size: NSSize(width: 612, height: 792))
+        image.lockFocus(); NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 612, height: 792).fill(); image.unlockFocus()
+        document.insert(PDFPage(image: image)!, at: 0)
+        document.write(to: pdf)
+        let latexmk = """
+        #!/bin/sh
+        echo "args: $@" > "\(folder.path)/latexmk-args.txt"
+        echo "max_print_line=$max_print_line" >> "\(folder.path)/latexmk-args.txt"
+        cp "\(pdf.path)" main.pdf
+        echo "(./main.tex"
+        \(error ? "echo './main.tex:3: Undefined control sequence.'\nexit 12" : "echo 'Output written on main.pdf (1 page, 900 bytes).'\nexit 0")
+        """
+        let synctex = """
+        #!/bin/sh
+        if [ "$1" = "edit" ]; then printf 'SyncTeX result begin\\nInput:\(folder.path)/./main.tex\\nLine:2\\nSyncTeX result end\\n'
+        else printf 'SyncTeX result begin\\nPage:1\\nh:72\\nv:100\\nW:300\\nH:10\\nSyncTeX result end\\n'; fi
+        """
+        for (name, text) in [("latexmk", latexmk), ("synctex", synctex)] {
+            let url = bin.appendingPathComponent(name)
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        return ["PATH": bin.path + ":/usr/bin:/bin"]
+    }
+
+    private func makeWithDocument() throws -> (MakeWorkspaceViewController, NSWindow, URL) {
+        let main = try write("main.tex", "\\documentclass{article}\n\\begin{document}\nHello \\foo\n\\end{document}\n")
+        let make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = make.view
+        make.revealFile(main, line: nil)
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, make.activeTabURLForTesting?.lastPathComponent != "main.tex" { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        return (make, window, main)
+    }
+
+    private func build(_ make: MakeWorkspaceViewController) -> Bool? {
+        var finished: Bool?
+        make.latexForTesting.onBuildFinished = { _, ok in finished = ok }
+        make.buildLaTeX(nil)
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline, finished == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        return finished
+    }
+
+    func testABuildThatFailsPutsItsErrorInProblems() throws {
+        let (make, window, main) = try makeWithDocument()
+        defer { make.latexForTesting.preview(forRoot: main)?.close(); window.close() }
+        let environment = try standIns(error: true)
+        make.latexForTesting.environment = { environment }
+        XCTAssertEqual(build(make), false)
+        let problems = make.problemsForTesting(main)
+        XCTAssertEqual(problems.count, 1)
+        XCTAssertEqual(problems.first?.range.start.line, 2, "line 3, counted from 0")
+        XCTAssertEqual(problems.first?.severity, .error)
+        let preview = try XCTUnwrap(make.latexForTesting.preview(forRoot: main))
+        XCTAssertEqual(preview.statusText, "Build failed, 1 error in Problems")
+        XCTAssertNotNil(preview.pdfView.document, "TeX went on, so there's a PDF to show anyway")
+        let args = try String(contentsOf: folder.appendingPathComponent("latexmk-args.txt"), encoding: .utf8)
+        XCTAssertTrue(args.contains("-pdf -synctex=1 -interaction=nonstopmode -file-line-error main.tex"), args)
+        XCTAssertTrue(args.contains("max_print_line=100000"), "the log unwrapped")
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"], let content = preview.window?.contentView {
+            content.layoutSubtreeIfNeeded()
+            let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds)!
+            content.cacheDisplay(in: content.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("latex-preview.png"))
+        }
+    }
+
+    func testABuildThatWorksClearsProblemsAndShowsThePDF() throws {
+        let (make, window, main) = try makeWithDocument()
+        defer { make.latexForTesting.preview(forRoot: main)?.close(); window.close() }
+        make.latexForTesting.environment = { [unowned self] in (try? self.standIns(error: true)) ?? [:] }
+        XCTAssertEqual(build(make), false)
+        XCTAssertEqual(make.problemsForTesting(main).count, 1)
+        let fixed = try standIns(error: false)
+        make.latexForTesting.environment = { fixed }
+        XCTAssertEqual(build(make), true)
+        XCTAssertTrue(make.problemsForTesting(main).isEmpty, "the fixed error is gone")
+        let preview = try XCTUnwrap(make.latexForTesting.preview(forRoot: main))
+        XCTAssertEqual(preview.statusText, "Built")
+        XCTAssertEqual(preview.pdfView.document?.pageCount, 1)
+        XCTAssertTrue(preview.window?.isVisible ?? false)
+    }
+
+    func testShowInPDFAndBackToTheSource() throws {
+        let (make, window, main) = try makeWithDocument()
+        defer { make.latexForTesting.preview(forRoot: main)?.close(); window.close() }
+        let environment = try standIns(error: false)
+        make.latexForTesting.environment = { environment }
+        XCTAssertEqual(build(make), true)
+        let preview = try XCTUnwrap(make.latexForTesting.preview(forRoot: main))
+        let page = try XCTUnwrap(preview.pdfView.document?.page(at: 0))
+        make.showInPDF(nil)
+        let marked = Date().addingTimeInterval(5)
+        while Date() < marked, page.annotations.isEmpty { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        let mark = try XCTUnwrap(page.annotations.first, "the line's place, marked")
+        XCTAssertEqual(Double(mark.bounds.midY), 792 - 100 + 5, accuracy: 3, "synctex's box, from the page's bottom")
+
+        make.editor.selectedRange = NSRange(location: 0, length: 0)
+        preview.onInverseSearch?(0, CGPoint(x: 80, y: 95))
+        let back = Date().addingTimeInterval(5)
+        func caretLine() -> Int { (make.editor.document?.string as NSString?)?.substring(to: make.editor.selectedRange.location).components(separatedBy: "\n").count ?? 0 }
+        while Date() < back, caretLine() != 2 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertEqual(caretLine(), 2, "⌘-click lands on the source line")
+    }
+
+    func testAProjectWithALatexmkrcBuildsOnlyOnceTrusted() throws {
+        let (make, window, main) = try makeWithDocument()
+        defer { window.close() }
+        _ = try write(".latexmkrc", "system('echo hi');\n")
+        let environment = try standIns(error: false)
+        make.latexForTesting.environment = { environment }
+        make.latexForTesting.projectRoot = { [folder] in folder }
+        make.buildLaTeX(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertNil(make.latexForTesting.preview(forRoot: main), "no build: the latexmkrc would run")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("latexmk-args.txt").path))
+        window.attachedSheet.map { window.endSheet($0) }
     }
 }
 

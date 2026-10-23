@@ -107,6 +107,8 @@ enum Shortcuts {
         c("file.saveAs", "Save As\u{2026}", .file, "s", [.command, .shift]),
         c("file.revert", "Revert to Saved", .file, nil),
         c("file.closeTab", "Close Tab", .file, "w"),
+        c("file.buildLaTeX", "Build LaTeX Document", .file, "b"),
+        c("file.showInPDF", "Show in PDF", .file, "b", [.command, .option]),
 
         c("edit.undo", "Undo", .edit, "z"),
         c("edit.redo", "Redo", .edit, "z", [.command, .shift]),
@@ -304,6 +306,8 @@ enum Shortcuts {
             "debug.start": KeyChord("d", .control), "debug.pauseContinue": KeyChord("r", [.command, .option]), "debug.stop": KeyChord(f(2)),
             "debug.stepOver": KeyChord(f(8), []), "debug.stepIn": KeyChord(f(7), []), "debug.stepOut": KeyChord(f(8), .shift),
             "debug.toggleBreakpoint": KeyChord(f(8)),
+            // ⌘B is Go to Declaration there; ⌘F9 is its Build.
+            "file.buildLaTeX": KeyChord(f(9)),
         ],
     ]
 

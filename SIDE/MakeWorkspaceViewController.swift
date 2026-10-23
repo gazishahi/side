@@ -308,6 +308,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     /// Every problem the servers report, across the project (Show Problems, ⇧⌘M).
     private var allDiagnostics: [URL: [LSPDiagnostic]] = [:]
+    /// What the language servers last said per file, and what the last LaTeX build did: a
+    /// file's problems are both.
+    private var serverDiagnostics: [URL: [LSPDiagnostic]] = [:]
+    private var buildDiagnostics: [URL: [LSPDiagnostic]] = [:]
+    private lazy var latex: LaTeXSession = makeLaTeXSession()
     private var problemRows: [(url: URL, diagnostic: LSPDiagnostic)] = []
     /// The uses Find References found, with each line's text, and the rows the query keeps.
     private var referenceResults: [(location: LSPLocation, url: URL, line: Int, text: String)] = []
@@ -1673,12 +1678,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         lspManager?.prepareForClose()
         let manager = LSPManager(projectRoot: root)
         manager.onDiagnostics = { [weak self] fileURL, diagnostics in
-            self?.applyDiagnostics(diagnostics, to: fileURL)
-            self?.recordProblems(diagnostics, for: fileURL)
+            guard let self else { return }
+            self.serverDiagnostics[fileURL] = diagnostics
+            let diagnostics = diagnostics + (self.buildDiagnostics[fileURL] ?? [])
+            self.applyDiagnostics(diagnostics, to: fileURL)
+            self.recordProblems(diagnostics, for: fileURL)
             // Also published for Heron's read_diagnostics tool: an agent that can read the
             // errors its own edit just caused closes the loop inside one turn, instead of
             // waiting for the user to notice and paste them back.
-            self?.publishDiagnosticsForAgent(diagnostics, fileURL: fileURL, root: root)
+            self.publishDiagnosticsForAgent(diagnostics, fileURL: fileURL, root: root)
         }
         manager.onAvailabilityChanged = { [weak self] in self?.updateLSPIndicator() }
         manager.onApplyEdit = { [weak self] edit in self?.applyWorkspaceEdit(edit) ?? false }
@@ -4769,6 +4777,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Shortcuts.bind(fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(revertToSaved), keyEquivalent: ""), "file.revert")
         fileMenu.addItem(NSMenuItem.separator())
         Shortcuts.bind(fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab), keyEquivalent: ""), "file.closeTab")
+        fileMenu.addItem(NSMenuItem.separator())
+        Shortcuts.bind(fileMenu.addItem(withTitle: "Build LaTeX Document", action: #selector(buildLaTeX(_:)), keyEquivalent: ""), "file.buildLaTeX")
+        Shortcuts.bind(fileMenu.addItem(withTitle: "Show in PDF", action: #selector(showInPDF(_:)), keyEquivalent: ""), "file.showInPDF")
         fileItem.submenu = fileMenu
 
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
@@ -5002,7 +5013,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
     @objc private func save() {
         guard let index = activeTabIndex else { return }
-        performSave(tabID: openTabs[index].id) { _ in }
+        let url = openTabs[index].url
+        performSave(tabID: openTabs[index].id) { [weak self] saved in
+            // A LaTeX document with its preview open builds again.
+            guard saved, let self, let index = self.openTabs.firstIndex(where: { $0.url == url }) else { return }
+            self.latex.sourceSaved(url, text: self.openTabs[index].document.string)
+        }
     }
 
     @objc private func saveAs() {
@@ -6218,6 +6234,64 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         applyTopInsets()
     }
 
+    // MARK: - LaTeX
+
+    /// The LaTeX source on screen.
+    private var activeLaTeXSource: URL? {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text, !openTabs[index].isUntitled,
+              LaTeXSession.isSource(openTabs[index].url) else { return nil }
+        return openTabs[index].url
+    }
+
+    /// ⌘B: build the document this source belongs to; the PDF opens beside the editor.
+    @objc func buildLaTeX(_ sender: Any?) {
+        guard let url = activeLaTeXSource, let index = activeTabIndex else { NSSound.beep(); return }
+        latex.build(source: url, text: openTabs[index].document.string)
+    }
+
+    /// ⌥⌘B: where the caret's line is in the PDF.
+    @objc func showInPDF(_ sender: Any?) {
+        guard let url = activeLaTeXSource, let index = activeTabIndex else { NSSound.beep(); return }
+        let document = openTabs[index].document
+        let caret = min(editor.selectedRange.location, document.rope.utf16Count)
+        let position = document.rope.position(of: caret)
+        latex.showInPDF(source: url, text: document.string, line: position.line + 1, column: position.column)
+    }
+
+    private func makeLaTeXSession() -> LaTeXSession {
+        let session = LaTeXSession()
+        // Every unsaved LaTeX file (and its bibliography and packages) is saved first: the
+        // build reads them from disk.
+        session.saveSources = { [weak self] proceed in
+            guard let self else { return }
+            let kinds: Set<String> = ["tex", "ltx", "bib", "sty", "cls"]
+            let pending = self.openTabs.filter { $0.dirty && !$0.isUntitled && kinds.contains($0.url.pathExtension.lowercased()) }.map(\.id)
+            // One after another, then the build.
+            var step: () -> Void = proceed
+            for id in pending.reversed() {
+                let after = step
+                step = { [weak self] in self?.performSave(tabID: id) { _ in after() } }
+            }
+            step()
+        }
+        session.reportProblems = { [weak self] byFile in
+            guard let self else { return }
+            for (url, diagnostics) in byFile {
+                self.buildDiagnostics[url] = diagnostics.isEmpty ? nil : diagnostics
+                let all = (self.serverDiagnostics[url] ?? []) + diagnostics
+                self.applyDiagnostics(all, to: url)
+                self.recordProblems(all, for: url)
+            }
+        }
+        session.revealSource = { [weak self] url, line in self?.revealFile(url, line: line) }
+        session.projectRoot = { [weak self] in self?.focusedRoot }
+        session.window = { [weak self] in self?.view.window }
+        return session
+    }
+
+    var latexForTesting: LaTeXSession { latex }
+    func problemsForTesting(_ url: URL) -> [LSPDiagnostic] { allDiagnostics[url] ?? [] }
+
     // MARK: - A tab's preview
 
     /// What a tab shows, for the small window a tab turns into when dragged out of its window.
@@ -6465,6 +6539,8 @@ extension MakeWorkspaceViewController: NSMenuItemValidation {
             return debugger.isStopped
         case #selector(toggleBreakpoint(_:)):
             return debugCurrentFile != nil
+        case #selector(buildLaTeX(_:)), #selector(showInPDF(_:)):
+            return activeLaTeXSource != nil
         default:
             break
         }
