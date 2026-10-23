@@ -310,6 +310,45 @@ final class EditorParityTests: XCTestCase {
         }
     }
 
+    /// 2026-10-23, the owner: a tab dragged out should become a small window of itself, as
+    /// Safari's and Ghostty's do. Each kind of tab has something to show, active or not.
+    func testATabHasAPreviewForItsSmallWindow() throws {
+        let csv = root.appendingPathComponent("people.csv")
+        try "name,city\nAda,London\n".write(to: csv, atomically: true, encoding: .utf8)
+        make.revealFile(csv, line: nil)
+        let opened = Date().addingTimeInterval(10)
+        while Date() < opened, make.activeTabURLForTesting?.lastPathComponent != "people.csv" { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        _ = try open("notes.txt", "a background tab's first lines\n")
+        _ = try open("main.swift", (1...40).map { "let value\($0) = \($0) * 2  // a line long enough to see" }.joined(separator: "\n"))
+        make.setBottomObstruction(0)
+
+        let active = try XCTUnwrap(make.tabPreviewContent(2), "the tab on screen")
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: active.tiffRepresentation!))
+        let background = rep.colorAt(x: rep.pixelsWide - 4, y: rep.pixelsHigh - 4)
+        var drawn = 0
+        for y in stride(from: 0, to: rep.pixelsHigh / 3, by: 3) {
+            for x in stride(from: 0, to: rep.pixelsWide / 2, by: 3) where rep.colorAt(x: x, y: y) != background { drawn += 1 }
+        }
+        XCTAssertGreaterThan(drawn, 100, "the editor's text is in it, though Metal draws it")
+        XCTAssertNotNil(make.tabPreviewContent(0), "a sheet in the background")
+        XCTAssertNotNil(make.tabPreviewContent(1), "text in the background")
+
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] {
+            for (index, name) in [(2, "drag-window-text.png"), (0, "drag-window-sheet.png"), (1, "drag-window-background.png")] {
+                let url = make.activeTabURLForTesting!
+                let content = make.tabPreviewContent(index)!
+                let image = TabChipView.miniWindow(content: content, title: index == 2 ? url.lastPathComponent : "tab", icon: FileIcon.image(for: url, isDirectory: false))
+                let out = MakeWorkspaceViewController.rendered(NSSize(width: image.size.width + 40, height: image.size.height + 40), appearance: make.view.effectiveAppearance) {
+                    NSColor.windowBackgroundColor.setFill()
+                    NSRect(x: 0, y: 0, width: image.size.width + 40, height: image.size.height + 40).fill()
+                    image.draw(at: NSPoint(x: 20, y: 20), from: .zero, operation: .sourceOver, fraction: 1)
+                }
+                try? NSBitmapImageRep(data: out.tiffRepresentation!)?.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
+            }
+        }
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

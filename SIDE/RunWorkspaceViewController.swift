@@ -522,6 +522,16 @@ final class RunWorkspaceViewController: NSViewController {
             chip.isDead = !session.viewController.isAliveOrUnstarted
             chip.hasUnseenOutput = session.hasUnseenOutput
             chip.dragIcon = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+            // Its terminal as it stands, for the small window the tab becomes when dragged out.
+            let terminalView = session.viewController.terminalView
+            chip.dragPreview = { [weak terminalView] in
+                guard let terminalView, terminalView.bounds.width > 0, terminalView.bounds.height > 0,
+                      let rep = terminalView.bitmapImageRepForCachingDisplay(in: terminalView.bounds) else { return nil }
+                terminalView.cacheDisplay(in: terminalView.bounds, to: rep)
+                let image = NSImage(size: terminalView.bounds.size)
+                image.addRepresentation(rep)
+                return image
+            }
             chip.translatesAutoresizingMaskIntoConstraints = false
             chip.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
             chip.onSelect = { [weak self] i in self?.switchToSession(i) }

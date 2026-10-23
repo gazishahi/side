@@ -216,6 +216,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var gutterLeading: NSLayoutConstraint?
     /// What covers the editor's top (the window's top row), and the debug bar below it.
     private var topObstruction = ChromeHost.rowHeight
+    private var bottomObstruction: CGFloat = 0
     private var debugTopInset: CGFloat = 0
     private var minimapTrailing: NSLayoutConstraint?
     private let imageScroll = NSScrollView()
@@ -3003,7 +3004,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         container.title = tab.url.lastPathComponent
         container.detail = tabDetails[tab.id] ?? ""
         container.isDirty = tab.dirty
-        container.dragIcon = tab.isUntitled ? nil : NSWorkspace.shared.icon(forFile: tab.url.path)
+        container.dragIcon = tab.isUntitled ? nil : FileIcon.image(for: tab.url, isDirectory: false)
+        let id = tab.id
+        container.dragPreview = { [weak self] in
+            guard let self, let index = self.indexForTab(id: id) else { return nil }
+            return self.tabPreviewContent(index)
+        }
         container.toolTip = tab.isUntitled ? "Unsaved" : relativePath(tab.url)
         container.translatesAutoresizingMaskIntoConstraints = false
         container.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
@@ -5839,7 +5845,13 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
         let dragItem = NSDraggingItem(pasteboardWriter: item)
         let image = Self.dragImage(title: title, icon: dragIcon)
         let origin = convert(event.locationInWindow, from: nil)
-        dragItem.setDraggingFrame(NSRect(x: origin.x - image.size.width / 2, y: origin.y - image.size.height / 2, width: image.size.width, height: image.size.height), contents: image)
+        // What follows the pointer is drawn by a floating preview, which can grow into a small
+        // window of the tab and back; the system's drag image is left empty.
+        let floating = TabDragPreview(tab: image, window: dragPreview?().map { Self.miniWindow(content: $0, title: title, icon: dragIcon) })
+        floating.show(at: NSEvent.mouseLocation)
+        dragPreviewWindow = floating
+        dragItem.setDraggingFrame(NSRect(x: origin.x - image.size.width / 2, y: origin.y - image.size.height / 2, width: image.size.width, height: image.size.height),
+                                  contents: NSImage(size: image.size))
         let session = beginDraggingSession(with: [dragItem], event: event, source: self)
         // AppKit would slide the image back to where the session began, which is already below
         // the bar (a drag becomes a tear-out only once it leaves the strip), so it went toward
@@ -5849,6 +5861,52 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
     }
 
     private var tearImage: NSImage?
+    private var dragPreviewWindow: TabDragPreview?
+
+    /// Set by the owner: what the tab shows, for the small window it becomes once dragged out.
+    var dragPreview: (() -> NSImage?)?
+
+    /// The tab as its own small window: a title bar with its icon and name over its content,
+    /// cropped from the top to a window's proportions.
+    static func miniWindow(content: NSImage, title: String, icon: NSImage?, width: CGFloat = 400) -> NSImage {
+        let bar: CGFloat = 26
+        let aspect = min(0.78, max(0.5, content.size.height / max(1, content.size.width)))
+        let size = NSSize(width: width, height: (width * aspect).rounded() + bar)
+        return NSImage(size: size, flipped: false) { rect in
+            let shape = NSBezierPath(roundedRect: rect, xRadius: DS.Radius.surface, yRadius: DS.Radius.surface)
+            shape.addClip()
+            DS.Color.raised.setFill()
+            rect.fill()
+            // The content, scaled to the width and cut from its top.
+            let scale = rect.width / max(1, content.size.width)
+            let body = NSRect(x: 0, y: 0, width: rect.width, height: rect.height - bar)
+            let sourceHeight = body.height / scale
+            content.draw(in: body, from: NSRect(x: 0, y: content.size.height - sourceHeight, width: content.size.width, height: sourceHeight),
+                         operation: .sourceOver, fraction: 1)
+            DS.Color.hairline.setFill()
+            NSRect(x: 0, y: body.maxY, width: rect.width, height: 1).fill()
+            for offset in 0..<3 {
+                NSColor.tertiaryLabelColor.setFill()
+                NSBezierPath(ovalIn: NSRect(x: 12 + CGFloat(offset) * 14, y: rect.maxY - bar / 2 - 4, width: 8, height: 8)).fill()
+            }
+            let font = DS.Text.caption(.medium)
+            let label = title as NSString
+            let textSize = label.size(withAttributes: [.font: font])
+            var x = (rect.width - textSize.width - (icon == nil ? 0 : 20)) / 2
+            if let icon {
+                icon.draw(in: NSRect(x: x, y: rect.maxY - bar / 2 - 7, width: 14, height: 14))
+                x += 20
+            }
+            label.draw(at: NSPoint(x: x, y: rect.maxY - bar / 2 - textSize.height / 2), withAttributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
+            return true
+        }
+    }
+
+    /// Out of the window it would become one: the preview grows into it; back over the window, a tab again.
+    func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
+        dragPreviewWindow?.move(to: screenPoint)
+        dragPreviewWindow?.setExpanded(!(window?.frame.contains(screenPoint) ?? true))
+    }
 
     /// Released back in the window: a copy of the drag image glides from the pointer into this
     /// tab's slot while the ghosted tab fades back in, so the tab is seen going home.
@@ -5915,12 +5973,16 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
         didDrag = false
         dragOrigin = nil
         if !isHovered { window?.isMovable = true }
+        let floating = dragPreviewWindow
+        dragPreviewWindow = nil
         guard let window, !window.frame.contains(screenPoint) else {
+            floating?.close()
             animateReturn(from: screenPoint)
             return
         }
         alphaValue = 1
         tearImage = nil
+        floating?.fadeOut()
         onTearOut?(screenPoint)
     }
 
@@ -5935,6 +5997,97 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
         onSelect?(index)
         return true
     }
+}
+
+/// What follows the pointer while a tab is dragged out: the tab, or, once it's out of its
+/// window, a small window of it; it grows and shrinks between the two around the pointer.
+@MainActor
+final class TabDragPreview {
+    private let panel: NSPanel
+    private let card = NSView()
+    private let tabView = NSImageView()
+    private let windowView = NSImageView()
+    private let tabSize: NSSize
+    private let windowSize: NSSize?
+    private(set) var isExpanded = false
+    /// The pointer's place in the panel: over the small window's title bar.
+    private let anchor: NSPoint
+
+    init(tab: NSImage, window: NSImage?) {
+        tabSize = tab.size
+        windowSize = window?.size
+        let size = NSSize(width: max(tab.size.width, window?.size.width ?? 0) + 40, height: max(tab.size.height, window?.size.height ?? 0) + 40)
+        anchor = NSPoint(x: size.width / 2, y: size.height - 20 - 13)
+        panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.level = .popUpMenu
+        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
+        panel.isReleasedWhenClosed = false
+        let content = NSView(frame: NSRect(origin: .zero, size: size))
+        panel.contentView = content
+        card.wantsLayer = true
+        card.layer?.shadowColor = NSColor.black.cgColor
+        card.layer?.shadowOpacity = 0.28
+        card.layer?.shadowRadius = 14
+        card.layer?.shadowOffset = CGSize(width: 0, height: -6)
+        for (imageView, image) in [(tabView, tab), (windowView, window)] {
+            imageView.image = image
+            imageView.imageScaling = .scaleAxesIndependently
+            imageView.autoresizingMask = [.width, .height]
+            card.addSubview(imageView)
+        }
+        windowView.alphaValue = 0
+        content.addSubview(card)
+        layout(expanded: false)
+    }
+
+    private func frame(expanded: Bool) -> NSRect {
+        if expanded, let windowSize {
+            return NSRect(x: anchor.x - windowSize.width / 2, y: anchor.y + 13 - windowSize.height, width: windowSize.width, height: windowSize.height)
+        }
+        return NSRect(x: anchor.x - tabSize.width / 2, y: anchor.y - tabSize.height / 2, width: tabSize.width, height: tabSize.height)
+    }
+
+    private func layout(expanded: Bool) {
+        card.frame = frame(expanded: expanded)
+        tabView.frame = card.bounds
+        windowView.frame = card.bounds
+    }
+
+    func show(at screenPoint: NSPoint) {
+        move(to: screenPoint)
+        panel.orderFrontRegardless()
+    }
+
+    func move(to screenPoint: NSPoint) {
+        panel.setFrameOrigin(NSPoint(x: (screenPoint.x - anchor.x).rounded(), y: (screenPoint.y - anchor.y).rounded()))
+    }
+
+    func setExpanded(_ expanded: Bool) {
+        guard expanded != isExpanded, windowSize != nil || !expanded else { return }
+        isExpanded = expanded
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = DS.Motion.duration(0.2)
+            context.timingFunction = DS.Motion.curve
+            card.animator().frame = frame(expanded: expanded)
+            tabView.animator().alphaValue = expanded ? 0 : 1
+            windowView.animator().alphaValue = expanded ? 1 : 0
+        }
+    }
+
+    func fadeOut() {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = DS.Motion.duration(0.15)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [panel] in
+            panel.orderOut(nil)
+        }
+    }
+
+    func close() { panel.orderOut(nil) }
 }
 
 final class TabCloseButton: CircularIconButton {
@@ -6052,6 +6205,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
 
     func setBottomObstruction(_ height: CGFloat) {
         loadViewIfNeeded()
+        bottomObstruction = height
         // The editor scrolls beneath whatever covers the bottom, far enough that the last line
         // (and the caret on it — scroll-to-visible honours content insets) clears it.
         let inset = height > 0 ? height + DS.Spacing.l : 0
@@ -6062,6 +6216,77 @@ extension MakeWorkspaceViewController: StageChromeProviding {
             scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: inset, right: 0)
         }
         applyTopInsets()
+    }
+
+    // MARK: - A tab's preview
+
+    /// What a tab shows, for the small window a tab turns into when dragged out of its window.
+    /// The tab on screen: the stage as it is, between the top row and the bottom bar, with its
+    /// editor drawn again (Metal can't be read back from a view). Another tab: its image, its
+    /// sheet, or its text's first lines, at the stage's size.
+    func tabPreviewContent(_ index: Int) -> NSImage? {
+        guard openTabs.indices.contains(index), view.bounds.width > 0, view.bounds.height > topObstruction + bottomObstruction + 40 else { return nil }
+        let tab = openTabs[index]
+        let height = view.bounds.height - topObstruction - bottomObstruction
+        let stage = NSRect(x: 0, y: view.isFlipped ? topObstruction : bottomObstruction, width: view.bounds.width, height: height)
+        if index == activeTabIndex {
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: stage) else { return nil }
+            view.cacheDisplay(in: stage, to: rep)
+            let base = NSImage(size: stage.size)
+            base.addRepresentation(rep)
+            guard tab.kind == .text, !tab.isPreviewingMarkdown, let alloy = editor as? AlloyEditorEngine, let text = alloy.view.snapshot() else { return base }
+            let clip = alloy.view.scrollView.contentView
+            let frame = clip.convert(clip.bounds, to: view)
+            let flipped = view.isFlipped
+            return Self.rendered(stage.size, appearance: view.effectiveAppearance) {
+                base.draw(in: NSRect(origin: .zero, size: stage.size))
+                let y = flipped ? stage.maxY - frame.maxY : frame.minY - stage.minY
+                text.draw(in: NSRect(x: frame.minX - stage.minX, y: y, width: frame.width, height: frame.height))
+            }
+        }
+        switch tab.kind {
+        case .image:
+            return tab.cachedImage
+        case .csv:
+            let sheet = SheetView(frame: NSRect(origin: .zero, size: stage.size))
+            sheet.appearance = view.effectiveAppearance
+            sheet.scrollView.backgroundColor = Self.editorBackground
+            sheet.show(tab.sheets)
+            sheet.layoutSubtreeIfNeeded()
+            guard let rep = sheet.bitmapImageRepForCachingDisplay(in: sheet.bounds) else { return nil }
+            view.effectiveAppearance.performAsCurrentDrawingAppearance { sheet.cacheDisplay(in: sheet.bounds, to: rep) }
+            let image = NSImage(size: stage.size)
+            image.addRepresentation(rep)
+            return image
+        case .text:
+            var lines: [Substring] = []
+            tab.document.string.enumerateLines { line, stop in
+                lines.append(Substring(line.prefix(200)))
+                if lines.count >= 80 { stop = true }
+            }
+            let text = lines.joined(separator: "\n")
+            let attributes: [NSAttributedString.Key: Any] = [.font: DS.Text.editor(), .foregroundColor: NSColor.labelColor]
+            return Self.rendered(stage.size, appearance: view.effectiveAppearance) {
+                Self.editorBackground.setFill()
+                NSRect(origin: .zero, size: stage.size).fill()
+                (text as NSString).draw(with: NSRect(x: 64, y: 16, width: stage.width - 80, height: stage.height - 32),
+                                        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attributes)
+            }
+        }
+    }
+
+    /// An image drawn now, at 2x, in the given appearance (the drawing it holds is done once).
+    static func rendered(_ size: NSSize, appearance: NSAppearance, _ draw: () -> Void) -> NSImage {
+        let image = NSImage(size: size)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2), bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return image }
+        rep.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        appearance.performAsCurrentDrawingAppearance(draw)
+        NSGraphicsContext.restoreGraphicsState()
+        image.addRepresentation(rep)
+        return image
     }
 
     func setTopObstruction(_ height: CGFloat) {

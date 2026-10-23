@@ -629,6 +629,44 @@ public final class AlloyEditorView: NSView {
         updateDocumentHeight()
     }
 
+    /// What's on screen now, as an image: drawn again into an offscreen texture, since a Metal
+    /// layer's own drawables can't be read back, and a view snapshot leaves the text out. For
+    /// previews (a tab dragged out of its window shows its file). No caret.
+    public func snapshot() -> NSImage? {
+        let visible = drawingRect
+        let scale = canvas.metalLayer.contentsScale
+        let width = Int((visible.width * scale).rounded()), height = Int((visible.height * scale).rounded())
+        guard width > 0, height > 0, width <= 16_384, height <= 16_384 else { return nil }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = [.renderTarget]
+        descriptor.storageMode = renderer.device.hasUnifiedMemory ? .shared : .managed
+        guard let texture = renderer.device.makeTexture(descriptor: descriptor) else { return nil }
+        var frame = RenderFrame(scrollY: visible.minY, size: visible.size, scale: scale, selections: buffer.selections,
+                                caretVisible: false, theme: theme, styles: styles)
+        frame.decorations = decorations + snippetDecorations
+        frame.lineBackground = lineBackground
+        frame.lineSuffixes = foldSuffixes
+        guard let commands = renderer.draw(frame, layout: documentLayout, into: texture) else { return nil }
+        if texture.storageMode == .managed, let sync = renderer.device.makeCommandQueue()?.makeCommandBuffer(), let blit = sync.makeBlitCommandEncoder() {
+            commands.waitUntilCompleted()
+            blit.synchronize(resource: texture)
+            blit.endEncoding()
+            sync.commit()
+            sync.waitUntilCompleted()
+        } else {
+            commands.waitUntilCompleted()
+        }
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        texture.getBytes(&pixels, bytesPerRow: bytesPerRow, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { return nil }
+        return NSImage(cgImage: image, size: visible.size)
+    }
+
     public var lastFrameStats: FrameStats { renderer.lastStats }
     /// What its drawables hold, for measurements: window-sized, so it depends on the window,
     /// not the document.

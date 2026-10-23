@@ -24,6 +24,20 @@ final class FoldingViewTests: XCTestCase {
         editor.foldRegions = Folding.ranges(in: editor.buffer.text)
     }
 
+    /// A snapshot holds the text that's on screen (for previews of a file elsewhere).
+    func testASnapshotHoldsTheText() throws {
+        try open()
+        let image = try XCTUnwrap(editor.snapshot())
+        XCTAssertEqual(image.size, editor.drawingRect.size)
+        let rep = try XCTUnwrap(image.representations.first.flatMap { _ in NSBitmapImageRep(data: image.tiffRepresentation!) })
+        let background = rep.colorAt(x: rep.pixelsWide - 2, y: rep.pixelsHigh - 2)
+        var differing = 0
+        for y in stride(from: 0, to: min(rep.pixelsHigh, 120), by: 2) {
+            for x in stride(from: 0, to: min(rep.pixelsWide, 300), by: 2) where rep.colorAt(x: x, y: y) != background { differing += 1 }
+        }
+        XCTAssertGreaterThan(differing, 50, "glyphs drawn, not just the background")
+    }
+
     func testFoldingHidesLinesAndUnfoldingBringsThemBack() throws {
         try open()
         let layout = editor.documentLayout
