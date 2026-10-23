@@ -518,6 +518,13 @@ final class LSPManager: @unchecked Sendable {
                     completion(nil)
                     return
                 }
+                // texlab runs latexmk to find the output folder, which runs the project's latexmkrc.
+                if entry.binaryName == "texlab", !trusted, ProjectTrust.hasLaTeXProjectCode(projectRoot) {
+                    print("[LSP] texlab: the project's latexmkrc waits for the project to be trusted")
+                    self.startingServers.remove(entry.binaryName)
+                    completion(nil)
+                    return
+                }
                 let tsserverPath: String? = if case .global(let path) = tsserver { path } else { nil }
                 let options: LSPValue? = entry.binaryName == "rust-analyzer" && !trusted ? ProjectTrust.rustAnalyzerUntrusted : nil
                 guard let executable else {

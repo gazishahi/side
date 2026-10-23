@@ -25,6 +25,7 @@ import TreeSitterDockerfileGrammar
 import TreeSitterMakeGrammar
 import TreeSitterSQLGrammar
 import TreeSitterSvelteGrammar
+import TreeSitterLaTeXGrammar
 
 /// A language Alloy highlights: its tree-sitter grammar and its highlight query
 /// (docs/DESIGN.md, A3). The queries are the grammars' own, kept in `Queries/` so they load
@@ -137,6 +138,7 @@ public final class SyntaxLanguage: @unchecked Sendable {
         "mk": "make", "make": "make",
         "sql": "sql",
         "svelte": "svelte",
+        "tex": "latex", "ltx": "latex", "sty": "latex", "cls": "latex", "dtx": "latex",
     ]
 
     /// Files known by their whole name (they have no extension to go by), as the extension
@@ -187,6 +189,7 @@ public final class SyntaxLanguage: @unchecked Sendable {
         "make": Spec(language: { alloy_tree_sitter_make() }, query: "make"),
         "sql": Spec(language: { alloy_tree_sitter_sql() }, query: "sql"),
         "svelte": Spec(language: { alloy_tree_sitter_svelte() }, query: "svelte"),
+        "latex": Spec(language: { alloy_tree_sitter_latex() }, query: "latex"),
     ]
 
     private nonisolated(unsafe) static var cache: [String: SyntaxLanguage] = [:]

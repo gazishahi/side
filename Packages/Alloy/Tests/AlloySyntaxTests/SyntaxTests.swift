@@ -22,6 +22,7 @@ final class SyntaxTests: XCTestCase {
             "php": "<?php\nfunction f() { return 'x'; } // c", "dockerfile": "FROM swift:6\nRUN echo hi # c",
             "mk": "# c\nall: build\n\t@echo done\n", "sql": "SELECT id, name FROM users WHERE id = 1; -- c",
             "svelte": "<script>let n = 1</script>\n{#if n}<p class=\"a\">{n}</p>{/if}",
+            "tex": "\\section{Intro} % c\nSee $x^2$ and \\ref{a}.",
         ]
         for (ext, source) in samples {
             let highlighter = try XCTUnwrap(SyntaxHighlighter(fileExtension: ext, text: Rope(source), theme: theme), "\(ext) loads")
@@ -37,7 +38,7 @@ final class SyntaxTests: XCTestCase {
         // Alloy's split of each query into patterns agrees with tree-sitter's count, which the
         // container companions' precedence depends on.
         for ext in ["swift", "ts", "tsx", "js", "py", "rs", "go", "lua", "rb", "c", "cpp", "json", "md",
-                    "yaml", "toml", "html", "css", "scss", "sh", "java", "php", "dockerfile", "mk", "sql", "svelte"] {
+                    "yaml", "toml", "html", "css", "scss", "sh", "java", "php", "dockerfile", "mk", "sql", "svelte", "tex"] {
             let language = try XCTUnwrap(SyntaxLanguage.forExtension(ext))
             XCTAssertEqual(language.splitPatternCount, language.highlights.patternCount, ext)
         }
@@ -49,6 +50,36 @@ final class SyntaxTests: XCTestCase {
 
     private func color(_ highlighter: SyntaxHighlighter, line: Int, at column: Int) -> SIMD4<Float>? {
         highlighter.spans(forLine: line).first { $0.range.contains(column) }?.color
+    }
+
+    /// LaTeX: commands, sections, math (with the commands inside it still commands), labels,
+    /// packages and comments.
+    func testLaTeXColorsLandOnTheirTokens() throws {
+        let source = "\\usepackage{amsmath}\n\\section{Intro}\\label{s:i}\nText \\emph{a} $x + \\alpha$ % note\n\\begin{equation}\nE = mc^2\n\\end{equation}"
+        let h = try XCTUnwrap(SyntaxHighlighter(fileExtension: "tex", text: Rope(source), theme: theme))
+        XCTAssertEqual(color(h, line: 0, at: 1), theme.color(for: "include"), "\\usepackage")
+        XCTAssertEqual(color(h, line: 0, at: 13), theme.color(for: "string"), "amsmath")
+        XCTAssertEqual(color(h, line: 1, at: 1), theme.color(for: "keyword"), "\\section")
+        XCTAssertEqual(color(h, line: 1, at: 10), theme.color(for: "text.title"), "Intro")
+        XCTAssertEqual(color(h, line: 1, at: 22), theme.color(for: "text.reference"), "s:i")
+        XCTAssertEqual(color(h, line: 2, at: 6), theme.color(for: "function"), "\\emph")
+        XCTAssertEqual(color(h, line: 2, at: 15), theme.color(for: "string"), "x, in math")
+        XCTAssertEqual(color(h, line: 2, at: 20), theme.color(for: "function"), "\\alpha, a command in math")
+        XCTAssertEqual(color(h, line: 2, at: 29), theme.color(for: "comment"), "% note")
+        XCTAssertEqual(color(h, line: 3, at: 8), theme.color(for: "type"), "equation")
+        XCTAssertEqual(color(h, line: 4, at: 0), theme.color(for: "string"), "an equation's body is math")
+        XCTAssertEqual(SyntaxLanguage.forExtension("sty")?.name, SyntaxLanguage.forExtension("tex")?.name)
+
+        // The lean grammar reads these as commands with options and arguments, told apart by name.
+        let more = "\\usepackage[utf8]{inputenc}\n\\section[Short]{Long}\n\\cite[p.~3]{knuth}\n\\newcommand{\\R}{x}\n$\\left[ 0, 1 \\right)$ done"
+        let m = try XCTUnwrap(SyntaxHighlighter(fileExtension: "tex", text: Rope(more), theme: theme))
+        XCTAssertEqual(color(m, line: 0, at: 20), theme.color(for: "string"), "the package after its options")
+        XCTAssertEqual(color(m, line: 1, at: 17), theme.color(for: "text.title"), "the title after a short one")
+        XCTAssertEqual(color(m, line: 2, at: 15), theme.color(for: "text.reference"), "the key after a page note")
+        XCTAssertEqual(color(m, line: 3, at: 13), theme.color(for: "function.macro"), "the command defined")
+        XCTAssertEqual(color(m, line: 4, at: 4), theme.color(for: "string"), "\\left[ is a math delimiter: math")
+        XCTAssertNil(color(m, line: 4, at: 22), "math closed by a mismatched bracket: the text after is plain")
+        XCTAssertFalse(m.treeDescription.contains("ERROR"), m.treeDescription)
     }
 
     func testSwiftColorsLandOnTheirTokens() throws {

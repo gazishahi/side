@@ -27,10 +27,12 @@ Heron and Alloy, Side's own engines, are published under Apache-2.0 at github.co
 | [tree-sitter-dockerfile](https://github.com/camdencheek/tree-sitter-dockerfile) | 0.2.0 | MIT |
 | [tree-sitter-html](https://github.com/tree-sitter/tree-sitter-html) | 0.23.2 | MIT |
 | [tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java) | 0.23.5 | MIT |
+| [tree-sitter-latex](https://github.com/latex-lsp/tree-sitter-latex) | 0.6.0 | MIT |
 | [tree-sitter-make](https://github.com/tree-sitter-grammars/tree-sitter-make) | 1.1.1 | MIT |
 | [tree-sitter-php](https://github.com/tree-sitter/tree-sitter-php) | 0.25.0 | MIT |
 | [tree-sitter-scss](https://github.com/serenadeai/tree-sitter-scss) | 1.0.0 | MIT |
 | [tree-sitter-sql](https://github.com/DerekStride/tree-sitter-sql) | 0.3.11 | MIT |
+| [tree-sitter-svelte](https://github.com/tree-sitter-grammars/tree-sitter-svelte) | 1.0.2 | MIT |
 | [tree-sitter-toml](https://github.com/tree-sitter-grammars/tree-sitter-toml) | 0.7.0 | MIT |
 | [tree-sitter-yaml](https://github.com/tree-sitter-grammars/tree-sitter-yaml) | 0.7.2 | MIT |
 
@@ -745,6 +747,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## tree-sitter-latex
+
+https://github.com/latex-lsp/tree-sitter-latex
+
+```
+MIT License
+
+Copyright (c) 2021 Patrick Förster
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## tree-sitter-make
 
 https://github.com/tree-sitter-grammars/tree-sitter-make
@@ -838,6 +868,34 @@ https://github.com/DerekStride/tree-sitter-sql
 MIT License
 
 Copyright (c) 2021 Derek Stride
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## tree-sitter-svelte
+
+https://github.com/tree-sitter-grammars/tree-sitter-svelte
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2024 Amaan Qureshi <amaanq12@gmail.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

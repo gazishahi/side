@@ -276,7 +276,14 @@ enum ProjectTrust {
         if hasLocalPrettier(root) || hasCodePrettierConfig(root) { found.append("its formatter") }
         if FileManager.default.fileExists(atPath: root.appendingPathComponent("Cargo.toml").path) { found.append("its Rust build scripts and macros") }
         if hasSvelteProjectCode(root) { found.append("its Svelte setup") }
+        if hasLaTeXProjectCode(root) { found.append("its latexmkrc") }
         return found
+    }
+
+    /// A latexmkrc is Perl, and runs whenever latexmk does: when texlab asks it where the
+    /// output goes, and when the document is built.
+    static func hasLaTeXProjectCode(_ root: URL) -> Bool {
+        ["latexmkrc", ".latexmkrc"].contains { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }
     }
 
     /// Svelte's server runs the project's svelte.config (preprocessors) and its own Svelte.

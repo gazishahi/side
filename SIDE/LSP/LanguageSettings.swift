@@ -242,6 +242,12 @@ final class LanguageSettings: @unchecked Sendable {
         LanguagePreset(id: "svelte", name: "Svelte", extensions: [("svelte", "svelte")],
                        servers: [s("svelte-language-server", "Svelte Language Server", "svelteserver", ["--stdio"], .npm("svelte-language-server"))],
                        asksToInstall: true),
+        // texlab: completion, references, symbols and diagnostics for LaTeX and BibTeX. It runs
+        // latexmk to find the output folder, which runs a project's latexmkrc: with one, it
+        // waits for the project to be trusted (LSPManager).
+        LanguagePreset(id: "latex", name: "LaTeX",
+                       extensions: [("tex", "latex"), ("sty", "latex"), ("cls", "latex"), ("ltx", "latex"), ("dtx", "latex"), ("bib", "bibtex")],
+                       servers: [s("texlab", "TexLab", "texlab", [], .brew("texlab"))], asksToInstall: true),
         LanguagePreset(id: "html", name: "HTML", extensions: [("html", "html"), ("htm", "html")],
                        servers: [s("vscode-html", "VS Code's HTML server", "vscode-html-language-server", ["--stdio"], .npm("vscode-langservers-extracted"))], asksToInstall: false),
         LanguagePreset(id: "css", name: "CSS, SCSS and Less", extensions: [("css", "css"), ("scss", "scss"), ("less", "less")],
