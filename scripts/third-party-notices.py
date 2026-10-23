@@ -4,7 +4,7 @@
 Writes docs/legal/THIRD_PARTY_NOTICES.md and SIDE/ThirdPartyNotices.txt (shown in About Side),
 from each component's own LICENSE file: the Swift packages Xcode resolved (Package.resolved,
 checked out in DerivedData) and the grammars vendored in Packages/Alloy. Their licenses
-(MIT, BSD-3-Clause) require the notices to ship with the app. Run it after changing a
+(MIT, BSD-3-Clause, the GUST Font License) require the notices to ship with the app. Run it after changing a
 dependency, and commit what it writes.
 
     scripts/third-party-notices.py
@@ -83,6 +83,12 @@ def components():
         if any(entry[0].lower() == name.lower() for entry in entries):
             continue
         entries.append((name, version, "https://github.com/" + source if "/" in source else "", kind(text), text))
+    # Vendored outside Alloy: SwiftMath (Packages/SwiftMath), and the one math font it ships.
+    math = os.path.join(ROOT, "Packages/SwiftMath")
+    entries.append(("SwiftMath", "1.7.3", "https://github.com/mgriebling/SwiftMath", "MIT",
+                    open(os.path.join(math, "LICENSE"), encoding="utf-8").read().strip()))
+    entries.append(("Latin Modern Math (font)", "1.959", "https://www.gust.org.pl/projects/e-foundry/lm-math", "GUST Font License",
+                    open(os.path.join(math, "Sources/SwiftMath/mathFonts.bundle/GUST-FONT-LICENSE.txt"), encoding="utf-8", errors="replace").read().strip()))
     return entries
 
 

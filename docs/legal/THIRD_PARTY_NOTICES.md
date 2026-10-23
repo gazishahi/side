@@ -20,7 +20,6 @@ Heron and Alloy, Side's own engines, are published under Apache-2.0 at github.co
 | [tree-sitter-python](https://github.com/tree-sitter/tree-sitter-python) | 0.23.6 | MIT |
 | [tree-sitter-ruby](https://github.com/tree-sitter/tree-sitter-ruby) | 0.23.1 | MIT |
 | [tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust) | 0.24.2 | MIT |
-| [tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift) | 31d17fe | MIT |
 | [tree-sitter-typescript](https://github.com/tree-sitter/tree-sitter-typescript) | 0.23.2 | MIT |
 | [tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash) | 0.25.1 | MIT |
 | [tree-sitter-css](https://github.com/tree-sitter/tree-sitter-css) | 0.25.0 | MIT |
@@ -33,8 +32,11 @@ Heron and Alloy, Side's own engines, are published under Apache-2.0 at github.co
 | [tree-sitter-scss](https://github.com/serenadeai/tree-sitter-scss) | 1.0.0 | MIT |
 | [tree-sitter-sql](https://github.com/DerekStride/tree-sitter-sql) | 0.3.11 | MIT |
 | [tree-sitter-svelte](https://github.com/tree-sitter-grammars/tree-sitter-svelte) | 1.0.2 | MIT |
+| [tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift) | 0.7.3 | MIT |
 | [tree-sitter-toml](https://github.com/tree-sitter-grammars/tree-sitter-toml) | 0.7.0 | MIT |
 | [tree-sitter-yaml](https://github.com/tree-sitter-grammars/tree-sitter-yaml) | 0.7.2 | MIT |
+| [SwiftMath](https://github.com/mgriebling/SwiftMath) | 1.7.3 | MIT |
+| [Latin Modern Math (font)](https://www.gust.org.pl/projects/e-foundry/lm-math) | 1.959 | GUST Font License |
 
 ## Sparkle
 
@@ -551,34 +553,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## tree-sitter-swift
-
-https://github.com/alex-pinkus/tree-sitter-swift
-
-```
-MIT License
-
-Copyright (c) 2021 alex-pinkus
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
 ## tree-sitter-typescript
 
 https://github.com/tree-sitter/tree-sitter-typescript
@@ -916,6 +890,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## tree-sitter-swift
+
+https://github.com/alex-pinkus/tree-sitter-swift
+
+```
+MIT License
+
+Copyright (c) 2021 alex-pinkus
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## tree-sitter-toml
 
 https://github.com/tree-sitter-grammars/tree-sitter-toml
@@ -969,4 +971,68 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+## SwiftMath
+
+https://github.com/mgriebling/SwiftMath
+
+```
+MIT License
+
+Copyright (c) 2023 Computer Inspirations
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Latin Modern Math (font)
+
+https://www.gust.org.pl/projects/e-foundry/lm-math
+
+```
+% This is a preliminary version (2006-09-30), barring acceptance from
+% the LaTeX Project Team and other feedback, of the GUST Font License.
+% (GUST is the Polish TeX Users Group, http://www.gust.org.pl)
+%
+% For the most recent version of this license see
+% http://www.gust.org.pl/fonts/licenses/GUST-FONT-LICENSE.txt
+% or
+% http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt
+%
+% This work may be distributed and/or modified under the conditions
+% of the LaTeX Project Public License, either version 1.3c of this
+% license or (at your option) any later version.
+% 
+% Please also observe the following clause:
+% 1) it is requested, but not legally required, that derived works be
+%    distributed only after changing the names of the fonts comprising this
+%    work and given in an accompanying "manifest", and that the
+%    files comprising the Work, as listed in the manifest, also be given
+%    new names. Any exceptions to this request are also given in the
+%    manifest.
+%    
+%    We recommend the manifest be given in a separate file named
+%    MANIFEST-<fontid>.txt, where <fontid> is some unique identification
+%    of the font family. If a separate "readme" file accompanies the Work, 
+%    we recommend a name of the form README-<fontid>.txt.
+%
+% The latest version of the LaTeX Project Public License is in
+% http://www.latex-project.org/lppl.txt and version 1.3c or later
+% is part of all distributions of LaTeX version 2006/05/20 or later.
 ```

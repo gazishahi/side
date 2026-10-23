@@ -3,6 +3,7 @@ import AlloyRender
 import AlloySyntax
 import AppKit
 import Heron
+import SwiftMath
 
 /// Make's Markdown preview: a document to read, not a rendering of the source. CommonMark
 /// parsed by Foundation (`AttributedString(markdown:)`, so nesting, emphasis, tables and rules
@@ -48,7 +49,9 @@ enum MarkdownPreview {
         // Front matter isn't Markdown: the parser read it as a rule and run-on text. It's split
         // off and shown as a card of properties instead (2026-10-23, the owner).
         let front = frontMatter(markdown)
-        let markdown = front?.body ?? markdown
+        // Math out first: Markdown would read its _ and * as emphasis. Each formula leaves a
+        // marker, typeset back in once the rest is set.
+        let (markdown, formulas) = extractMath(front?.body ?? markdown)
         let options = AttributedString.MarkdownParsingOptions(allowsExtendedAttributes: true, interpretedSyntax: .full,
                                                               failurePolicy: .returnPartiallyParsedIfPossible)
         guard let parsed = try? AttributedString(markdown: markdown, options: options) else {
@@ -60,7 +63,189 @@ enum MarkdownPreview {
             builder.add(String(parsed[run.range].characters), intent: run.presentationIntent,
                         inline: run.inlinePresentationIntent ?? [], link: run.link, image: run.imageURL)
         }
-        return openedClear(of: builder.finish())
+        return openedClear(of: typesetMath(formulas, in: builder.finish(), style: style))
+    }
+
+    // MARK: Math
+
+    struct Formula: Equatable {
+        var latex: String
+        var display: Bool
+    }
+
+    private static let inlineOpen: Character = "\u{E000}", inlineClose: Character = "\u{E001}"
+    private static let displayOpen: Character = "\u{E002}", displayClose: Character = "\u{E003}"
+
+    /// `$…$` and `\(…\)` inline, `$$…$$` and `\[…\]` displayed, each replaced by a marker; never
+    /// inside code. An inline `$` opens only before a non-space and closes only after one, and
+    /// not before a digit, so prices stay text ("$5 and $10"); `\$` is a dollar.
+    static func extractMath(_ markdown: String) -> (String, [Formula]) {
+        let chars = Array(markdown)
+        var out = "", formulas: [Formula] = []
+        var i = 0, inFence = false, atLineStart = true
+        func marker(_ formula: Formula) -> String {
+            formulas.append(formula)
+            let index = String(formulas.count - 1)
+            return formula.display ? "\n\n\(displayOpen)\(index)\(displayClose)\n\n" : "\(inlineOpen)\(index)\(inlineClose)"
+        }
+        /// Where `close` next appears from `start` (before a blank line when `multiline`), or nil.
+        func find(_ close: String, from start: Int, multiline: Bool) -> Int? {
+            let target = Array(close)
+            var j = start
+            while j + target.count <= chars.count {
+                if chars[j] == "\n" {
+                    if !multiline { return nil }
+                    if j + 1 < chars.count, chars[j + 1] == "\n" { return nil }
+                }
+                if chars[j] == "\\", target[0] != "\\" { j += 2; continue }
+                if Array(chars[j..<(j + target.count)]) == target { return j }
+                j += 1
+            }
+            return nil
+        }
+        while i < chars.count {
+            let c = chars[i]
+            if atLineStart {
+                let rest = String(chars[i..<min(chars.count, i + 200)]).drop { $0 == " " }
+                if rest.hasPrefix("```") || rest.hasPrefix("~~~") { inFence.toggle() }
+            }
+            if inFence || c == "\n" {
+                out.append(c)
+                atLineStart = c == "\n"
+                i += 1
+                continue
+            }
+            atLineStart = false
+            // Inline code: through its closing run of backticks, untouched.
+            if c == "`" {
+                var run = 0
+                while i + run < chars.count, chars[i + run] == "`" { run += 1 }
+                let fence = String(repeating: "`", count: run)
+                if let end = find(fence, from: i + run, multiline: true) {
+                    out += String(chars[i..<(end + run)])
+                    i = end + run
+                } else {
+                    out += fence
+                    i += run
+                }
+                continue
+            }
+            if c == "\\", i + 1 < chars.count {
+                let next = chars[i + 1]
+                if next == "$" { out += "\\$"; i += 2; continue }
+                if next == "(" || next == "[", let end = find(next == "(" ? "\\)" : "\\]", from: i + 2, multiline: next == "[") {
+                    let latex = String(chars[(i + 2)..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !latex.isEmpty {
+                        out += marker(Formula(latex: latex, display: next == "["))
+                        i = end + 2
+                        continue
+                    }
+                }
+                out.append(c); out.append(next)
+                i += 2
+                continue
+            }
+            if c == "$" {
+                if i + 1 < chars.count, chars[i + 1] == "$", let end = find("$$", from: i + 2, multiline: true) {
+                    let latex = String(chars[(i + 2)..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !latex.isEmpty {
+                        out += marker(Formula(latex: latex, display: true))
+                        i = end + 2
+                        continue
+                    }
+                }
+                if i + 1 < chars.count, !chars[i + 1].isWhitespace, chars[i + 1] != "$" {
+                    var j = i + 1
+                    var end: Int?
+                    while j < chars.count, chars[j] != "\n" {
+                        if chars[j] == "\\" { j += 2; continue }
+                        if chars[j] == "$" {
+                            let after = j + 1 < chars.count ? chars[j + 1] : " "
+                            if !chars[j - 1].isWhitespace, !after.isNumber { end = j }
+                            break
+                        }
+                        j += 1
+                    }
+                    if let end {
+                        out += marker(Formula(latex: String(chars[(i + 1)..<end]), display: false))
+                        i = end + 1
+                        continue
+                    }
+                }
+            }
+            out.append(c)
+            i += 1
+        }
+        return (out, formulas)
+    }
+
+    /// A typeset formula, kept: a preview sets its text again on every edit.
+    private final class Typeset {
+        let image: NSImage
+        let descent: CGFloat
+        init(image: NSImage, descent: CGFloat) { self.image = image; self.descent = descent }
+    }
+    // NSCache is thread-safe.
+    nonisolated(unsafe) private static let typesetCache: NSCache<NSString, Typeset> = { let cache = NSCache<NSString, Typeset>(); cache.countLimit = 500; return cache }()
+
+    /// The markers replaced by their formulas, typeset in Latin Modern at the text's size and
+    /// color; a displayed one centered on its own line. One SwiftMath can't read stays as its
+    /// source, as code, with the reason on hover.
+    static func typesetMath(_ formulas: [Formula], in rendered: NSAttributedString, style: Style) -> NSAttributedString {
+        guard !formulas.isEmpty else { return rendered }
+        let out = NSMutableAttributedString(attributedString: rendered)
+        var color = NSColor.black
+        NSAppearance(named: style.dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
+            color = style.textColor.usingColorSpace(.sRGB) ?? color
+        }
+        let pattern = try! NSRegularExpression(pattern: "[\u{E000}\u{E002}](\\d+)[\u{E001}\u{E003}]")
+        let matches = pattern.matches(in: out.string, range: NSRange(location: 0, length: out.length))
+        for match in matches.reversed() {
+            guard let index = Int((out.string as NSString).substring(with: match.range(at: 1))), formulas.indices.contains(index) else { continue }
+            let formula = formulas[index]
+            var attributes = out.attributes(at: match.range.location, effectiveRange: nil)
+            attributes[.attachment] = nil
+            let size = (formula.display ? style.bodySize * 1.15 : style.bodySize).rounded()
+            let key = "\(formula.display)|\(size)|\(style.dark)|\(formula.latex)" as NSString
+            var typeset = typesetCache.object(forKey: key)
+            var problem: String?
+            if typeset == nil {
+                var image = MathImage(latex: formula.latex, fontSize: size, textColor: color, labelMode: formula.display ? .display : .text)
+                let (error, rendered, layout) = image.asImage()
+                if let rendered, error == nil {
+                    rendered.accessibilityDescription = formula.latex
+                    typeset = Typeset(image: rendered, descent: layout?.descent ?? 0)
+                    typesetCache.setObject(typeset!, forKey: key)
+                } else {
+                    problem = error?.localizedDescription ?? "This formula couldn't be typeset."
+                }
+            }
+            let replacement: NSAttributedString
+            if let typeset {
+                let attachment = NSTextAttachment()
+                attachment.image = typeset.image
+                attachment.bounds = NSRect(x: 0, y: -typeset.descent, width: typeset.image.size.width, height: typeset.image.size.height)
+                let piece = NSMutableAttributedString(attachment: attachment)
+                piece.addAttributes(attributes.filter { $0.key == .paragraphStyle || $0.key == .link }, range: NSRange(location: 0, length: piece.length))
+                replacement = piece
+            } else {
+                var code = attributes
+                code[.font] = style.code
+                code[inlineCodeKey] = true
+                code[.toolTip] = problem
+                let source = formula.display ? "$$\(formula.latex)$$" : "$\(formula.latex)$"
+                replacement = NSAttributedString(string: source, attributes: code)
+            }
+            out.replaceCharacters(in: match.range, with: replacement)
+            if formula.display {
+                let paragraph = (out.string as NSString).paragraphRange(for: NSRange(location: match.range.location, length: 0))
+                let centered = ((out.attribute(.paragraphStyle, at: match.range.location, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                centered.alignment = .center
+                centered.paragraphSpacingBefore = max(centered.paragraphSpacingBefore, style.bodySize * 0.4)
+                out.addAttribute(.paragraphStyle, value: centered, range: paragraph)
+            }
+        }
+        return out
     }
 
     /// A card drawn around the document's first paragraph reaches above the text, where nothing

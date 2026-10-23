@@ -360,6 +360,72 @@ final class FrontMatterTests: XCTestCase {
     }
 }
 
+/// Math in the Markdown preview: found outside code, kept from Markdown's emphasis, typeset by
+/// SwiftMath (Latin Modern), displayed formulas centered on their own line.
+@MainActor
+final class PreviewMathTests: XCTestCase {
+    private func formulas(_ markdown: String) -> [MarkdownPreview.Formula] { MarkdownPreview.extractMath(markdown).1 }
+
+    func testMathIsFoundAndPricesAreNot() {
+        XCTAssertEqual(formulas("Energy is $E = mc^2$, so."), [.init(latex: "E = mc^2", display: false)])
+        XCTAssertEqual(formulas("It costs $5 and $10."), [], "prices")
+        XCTAssertEqual(formulas("A \\$ sign and $x$"), [.init(latex: "x", display: false)], "an escaped dollar isn't math")
+        XCTAssertEqual(formulas("$$\n\\int_0^1 x\\,dx\n$$"), [.init(latex: "\\int_0^1 x\\,dx", display: true)])
+        XCTAssertEqual(formulas("Inline \\(a_1 + b_2\\) and\n\\[\n\\sum_i x_i\n\\]"), [.init(latex: "a_1 + b_2", display: false), .init(latex: "\\sum_i x_i", display: true)])
+        XCTAssertEqual(formulas("`$not math$` and\n```\n$also not$\n```\n$yes$"), [.init(latex: "yes", display: false)], "never in code")
+        XCTAssertEqual(formulas("$ spaced $"), [], "a $ before a space doesn't open")
+        XCTAssertEqual(formulas("$a\nb$"), [], "inline math stays on its line")
+    }
+
+    func testFormulasAreTypesetAndTheRestIsMarkdown() throws {
+        let rendered = MarkdownPreview.render("Let $a_1 * b_2$ be *given*.\n\n$$\\frac{1}{2}$$\n\nAnd $\\badcommand$ here.", style: .current(dark: false))
+        var attachments: [NSTextAttachment] = []
+        rendered.enumerateAttribute(.attachment, in: NSRange(location: 0, length: rendered.length)) { value, _, _ in
+            if let attachment = value as? NSTextAttachment { attachments.append(attachment) }
+        }
+        XCTAssertEqual(attachments.count, 2, "two formulas typeset")
+        XCTAssertLessThan(attachments[0].bounds.minY, 0, "an inline formula sits on the baseline, its subscripts below")
+        let text = rendered.string
+        XCTAssertFalse(text.contains("a_1"), "the formula isn't left as text")
+        let given = (text as NSString).range(of: "given")
+        let font = try XCTUnwrap(rendered.attribute(.font, at: given.location, effectiveRange: nil) as? NSFont)
+        XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.italic), "the * inside math didn't eat the emphasis after it")
+        let display = (text as NSString).range(of: "\u{FFFC}", options: .backwards, range: NSRange(location: 0, length: (text as NSString).length))
+        XCTAssertEqual((rendered.attribute(.paragraphStyle, at: display.location, effectiveRange: nil) as? NSParagraphStyle)?.alignment, .center)
+        XCTAssertTrue(text.contains("$\\badcommand$"), "what can't be typeset stays as source")
+        XCTAssertFalse(text.contains("\u{E000}") || text.contains("\u{E002}"), "no markers left")
+
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] {
+            let source = """
+            # Quadratics
+
+            The roots of $ax^2 + bx + c = 0$ are
+
+            $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
+
+            and the sum $\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$ holds for every $n \\geq 1$. A matrix:
+
+            $$\\begin{pmatrix} 1 & 0 \\\\ 0 & 1 \\end{pmatrix}$$
+            """
+            for dark in [false, true] {
+                let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                let view = MarkdownPreviewTextView.make()
+                view.appearance = appearance
+                view.drawsBackground = true
+                view.backgroundColor = DS.Color.canvas
+                let style = MarkdownPreview.Style(bodySize: 16, textColor: .labelColor, dark: dark)
+                view.columnWidth = style.columnWidth
+                view.frame = NSRect(x: 0, y: 0, width: 900, height: 520)
+                view.textStorage?.setAttributedString(MarkdownPreview.render(source, style: style))
+                view.layoutManager?.ensureLayout(for: view.textContainer!)
+                let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+                appearance.performAsCurrentDrawingAppearance { view.cacheDisplay(in: view.bounds, to: rep) }
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent(dark ? "math-dark.png" : "math-light.png"))
+            }
+        }
+    }
+}
+
 /// LaTeX building: the document a source belongs to, latexmk's log read for problems, SyncTeX
 /// both ways, and Make building with stand-ins for latexmk and synctex (no TeX here to run).
 @MainActor
