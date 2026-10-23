@@ -286,6 +286,78 @@ final class SaveAsLanguageServerTests: XCTestCase {
     }
 }
 
+/// 2026-10-23, the owner: two tabs with the same file name looked the same. Each gets the
+/// shortest folder suffix that tells it apart.
+final class TabNameTests: XCTestCase {
+    func testSameNamedTabsAreToldApartByTheirFolders() {
+        let urls = ["/p/api/index.ts", "/p/web/index.ts", "/p/README.md", "/p/src/api/util.ts", "/p/lib/api/util.ts", "/p/main.swift"]
+            .map(URL.init(fileURLWithPath:))
+        XCTAssertEqual(MakeWorkspaceViewController.disambiguatingFolders(for: urls), ["api", "web", "", "src/api", "lib/api", ""])
+        XCTAssertEqual(MakeWorkspaceViewController.disambiguatingFolders(for: [URL(fileURLWithPath: "/p/a.txt")]), [""], "a name that's alone has none")
+    }
+}
+
+/// 2026-10-23, the owner: a blog post's front matter rendered as a rule and run-on text. It's
+/// read as properties and shown as a card, with list values (tags) as chips.
+@MainActor
+final class FrontMatterTests: XCTestCase {
+    static let post = """
+    ---
+    title: The Case for Bottom Navigation Bars
+    description: "Utilizing familiar design patterns for agentic interfaces"
+    date: 2026-09-27
+    published: true
+    tags: [design, ux, ui, navigation, agentic, artificial intelligence]
+    authors:
+      - Gazi
+      - Claude
+    ---
+
+    # Hello
+
+    Body text.
+    """
+
+    func testFrontMatterIsReadAsProperties() throws {
+        let front = try XCTUnwrap(MarkdownPreview.frontMatter(Self.post))
+        XCTAssertEqual(front.properties.map(\.key), ["title", "description", "date", "published", "tags", "authors"])
+        XCTAssertEqual(front.properties[1].values, ["Utilizing familiar design patterns for agentic interfaces"], "quotes come off")
+        XCTAssertEqual(front.properties[4].values, ["design", "ux", "ui", "navigation", "agentic", "artificial intelligence"])
+        XCTAssertEqual(front.properties[5].values, ["Gazi", "Claude"], "a block list")
+        XCTAssertTrue(front.body.hasPrefix("\n# Hello"))
+        XCTAssertNil(MarkdownPreview.frontMatter("# No front matter\n\n---\n"), "a rule later on isn't front matter")
+    }
+
+    func testThePreviewShowsACardNotARule() {
+        let rendered = MarkdownPreview.render(Self.post, style: .current(dark: false))
+        let text = rendered.string
+        XCTAssertTrue(text.hasPrefix("title\tThe Case for Bottom Navigation Bars"), String(text.prefix(80)))
+        XCTAssertFalse(text.contains("title: The Case"), "not the raw YAML")
+        XCTAssertTrue(text.contains("Hello"))
+        let tags = (text as NSString).range(of: "artificial\u{00A0}intelligence")  // the tag, kept on one line
+        XCTAssertNotEqual(tags.location, NSNotFound)
+        XCTAssertNotNil(rendered.attribute(MarkdownPreview.inlineCodeKey, at: tags.location, effectiveRange: nil), "tags are chips")
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] {
+            for dark in [false, true] {
+                let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                let view = MarkdownPreviewTextView.make()
+                view.appearance = appearance
+                view.drawsBackground = true
+                view.backgroundColor = DS.Color.canvas
+                let style = MarkdownPreview.Style(bodySize: 16, textColor: .labelColor, dark: dark)
+                view.columnWidth = style.columnWidth
+                view.frame = NSRect(x: 0, y: 0, width: 900, height: 360)
+                view.textStorage?.setAttributedString(MarkdownPreview.render(Self.post, style: style))
+                view.layoutManager?.ensureLayout(for: view.textContainer!)
+                let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+                appearance.performAsCurrentDrawingAppearance { view.cacheDisplay(in: view.bounds, to: rep) }
+                try? rep.representation(using: NSBitmapImageRep.FileType.png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: directory).appendingPathComponent(dark ? "front-matter-dark.png" : "front-matter-light.png"))
+            }
+        }
+    }
+}
+
 /// 2026-10-01, the owner: scrolling the tab strip under a still pointer left the tabs it passed
 /// over highlighted, since AppKit sends no exit when the view moves rather than the pointer.
 @MainActor
@@ -360,6 +432,33 @@ final class ProjectTrustTests: XCTestCase {
         XCTAssertTrue(make.trustBannerTextForTesting?.contains("its TypeScript") == true, make.trustBannerTextForTesting ?? "no banner")
         ProjectTrust.trust(root)
         XCTAssertNil(make.trustBannerTextForTesting, "trusted: the banner goes")
+    }
+
+    /// 2026-10-23, the owner: the banner fell to the bottom, behind the floating bar. Its tab bar
+    /// is moved into the window's top row, which dropped the constraint it hung from; it now
+    /// hangs from the top row's height, and the text starts below it.
+    func testTheTrustBannerStaysUnderTheTopRowWhenTheTabsMoveOut() throws {
+        let root = try project()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let make = MakeWorkspaceViewController()
+        make.loadViewIfNeeded()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let container = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        window.contentView = container
+        container.addSubview(make.view)
+        make.view.frame = container.bounds
+        container.addSubview(make.topRowContent!)  // as the shell does: the tabs leave Make's view
+        make.viewDidAppear()  // where the banners are built, as the window showing would
+        make.setTopObstruction(52)
+        make.loadProject(at: root)
+        XCTAssertNotNil(make.trustBannerTextForTesting)
+        let layout = make.trustBannerLayoutForTesting
+        XCTAssertEqual(layout.top, 52, accuracy: 0.5, "right under the top row, not at the bottom: \(layout.detail)")
+        XCTAssertEqual(layout.editorInset, 52 + 28, accuracy: 0.5, "the text starts below the banner")
+        ProjectTrust.trust(root)
+        XCTAssertEqual(make.trustBannerLayoutForTesting.editorInset, 52, accuracy: 0.5, "and moves back up once it's gone")
     }
 }
 

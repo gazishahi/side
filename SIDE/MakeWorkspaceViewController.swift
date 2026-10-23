@@ -215,7 +215,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var debugTopInset: CGFloat = 0
     private var minimapTrailing: NSLayoutConstraint?
     private let imageScroll = NSScrollView()
-    private let imageView = NSImageView()
+    private let imageView = FocusableImageView()
     private let csvScroll = NSScrollView()
     private let csvTable = NSTableView()
     private let markdownPreviewScroll = NSScrollView()
@@ -268,11 +268,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var projectWatcher: ProjectWatcher?
     private var pendingReindex: DispatchWorkItem?
     private var keyWindowObserver: NSObjectProtocol?
-    private let externalChangeBanner = NSView()
+    private let externalChangeBanner: NSView = { let banner = NSView(); banner.isHidden = true; return banner }()
     /// Asks to trust a project whose own code would run (SEC-11); `trustBannerHeight` is 0 while hidden.
     private let trustBanner: NSView = { let banner = NSView(); banner.isHidden = true; return banner }()
     private let trustLabel = NSTextField(labelWithString: "")
     private var trustBannerHeight: NSLayoutConstraint?
+    /// The banners hang from the top row's height, not from the tab bar: the tab bar is handed to
+    /// the window's top row (`topRowContent`), and moving it out of this view dropped every
+    /// constraint to it, so the banner lost its position and fell behind the bottom bar.
+    private var trustBannerTop: NSLayoutConstraint?
     /// Projects whose banner was put away this session ("Not Now").
     private var trustDeferred: Set<String> = []
     private let externalChangeLabel = NSTextField(labelWithString: "")
@@ -1677,6 +1681,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let clamped = NSRange(location: min(selection.location, tab.document.length), length: 0)
             editor.selectedRange = clamped
             externalChangeBanner.isHidden = true
+            applyTopInsets()
             editor.invalidateGutter()
             refreshGitDiffMarks()
         }
@@ -1718,8 +1723,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(trustBanner)
         let height = trustBanner.heightAnchor.constraint(equalToConstant: 0)
         trustBannerHeight = height
+        let top = trustBanner.topAnchor.constraint(equalTo: view.topAnchor, constant: topObstruction)
+        trustBannerTop = top
         NSLayoutConstraint.activate([
-            trustBanner.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            top,
             trustBanner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             trustBanner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             height,
@@ -1744,6 +1751,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let wasHidden = trustBanner.isHidden
         trustBanner.isHidden = !show
         trustBannerHeight?.constant = show ? 28 : 0
+        applyTopInsets()
         if show, wasHidden { Spoken.announce(trustLabel.stringValue) }
     }
 
@@ -1766,12 +1774,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     var trustBannerTextForTesting: String? { trustBanner.isHidden ? nil : trustLabel.stringValue }
+    /// The banner's distance from the top of Make's view, and the editor's top inset.
+    var trustBannerLayoutForTesting: (top: CGFloat, editorInset: CGFloat, detail: String) {
+        view.layoutSubtreeIfNeeded()
+        let frame = trustBanner.frame
+        let top = view.isFlipped ? frame.minY : view.bounds.maxY - frame.maxY
+        return (top, editorScroll.contentInsets.top, "view \(view.frame), flipped \(view.isFlipped), banner \(frame)")
+    }
 
     private func configureExternalChangeBanner() {
         externalChangeBanner.wantsLayer = true
         externalChangeBanner.bindLayerBackground(DS.Color.overlay)
         externalChangeBanner.translatesAutoresizingMaskIntoConstraints = false
         externalChangeBanner.isHidden = true
+        applyTopInsets()
         externalChangeLabel.font = DS.Text.caption()
         externalChangeLabel.textColor = .secondaryLabelColor
         externalChangeLabel.lineBreakMode = .byTruncatingMiddle
@@ -1801,6 +1817,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func showExternalChangeBanner(for url: URL) {
         externalChangeLabel.stringValue = "\(url.lastPathComponent) changed on disk while you have unsaved edits."
         externalChangeBanner.isHidden = false
+        applyTopInsets()
         NSAccessibility.post(element: externalChangeBanner, notification: .announcementRequested, userInfo: [.announcement: externalChangeLabel.stringValue, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 
@@ -1813,6 +1830,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex else { return }
         openTabs[index].hasExternalChange = false
         externalChangeBanner.isHidden = true
+        applyTopInsets()
     }
 
     private func publishDiagnosticsForAgent(_ diagnostics: [LSPDiagnostic], fileURL: URL, root: URL) {
@@ -2079,7 +2097,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if paletteIsOpen { searchField.stringValue = "" }
         if let projectURL { rememberLastFile(url, forProject: projectURL) }
         hideQuickOpenPanel()
-        editor.focus()
+        focusShownContent()
+    }
+
+    /// Focus on what the active tab shows: the editor, the Markdown preview, the image or the
+    /// table. Focusing the editor while it was hidden left focus on the window, and ⌘W and the
+    /// other menu commands stopped reaching Make (2026-10-23, the owner: images wouldn't close).
+    private func focusShownContent() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return editor.focus() }
+        switch openTabs[index].kind {
+        case .text where openTabs[index].isPreviewingMarkdown: view.window?.makeFirstResponder(markdownPreviewView)
+        case .text: editor.focus()
+        case .image: view.window?.makeFirstResponder(imageView)
+        case .csv: view.window?.makeFirstResponder(csvTable)
+        }
     }
 
     private func showAlert(title: String, message: String, window: NSWindow, style: NSAlert.Style = .warning) {
@@ -2114,6 +2145,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         debugger.refreshEditor()
         DispatchQueue.main.async { [weak self] in self?.updateCaretPosition() }
         if tab.hasExternalChange { showExternalChangeBanner(for: tab.url) } else { externalChangeBanner.isHidden = true }
+        applyTopInsets()
 
         let showingMarkdownPreview = tab.kind == .text && tab.isPreviewingMarkdown
         editorContainer.isHidden = tab.kind != .text || showingMarkdownPreview
@@ -2149,10 +2181,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             editor.isEditable = false
             imageView.image = tab.cachedImage
             if let size = tab.cachedImage?.size { imageView.frame = NSRect(origin: .zero, size: size) }
+            view.window?.makeFirstResponder(imageView)  // see focusShownContent
         case .csv:
             editor.isEditable = false
             rebuildCSVColumns(for: tab)
             csvTable.reloadData()
+            view.window?.makeFirstResponder(csvTable)
         }
 
         dirty = tab.dirty
@@ -2759,7 +2793,36 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return manager
     }
 
+    /// For tabs with the same file name, the folder that tells them apart.
+    private var tabDetails: [UUID: String] = [:]
+
+    /// The shortest run of parent folders that tells each same-named file from the others
+    /// (`index.ts` in `api/` and `web/` read "api" and "web"; in `src/api` and `lib/api`,
+    /// "src/api" and "lib/api"). Empty for a name that's alone. (2026-10-23, the owner: two
+    /// tabs called index.ts looked the same.)
+    static func disambiguatingFolders(for urls: [URL]) -> [String] {
+        var result = Array(repeating: "", count: urls.count)
+        let byName = Dictionary(grouping: urls.indices, by: { urls[$0].lastPathComponent })
+        for indices in byName.values where indices.count > 1 {
+            let parents = indices.map { Array(urls[$0].deletingLastPathComponent().pathComponents.reversed()) }
+            let deepest = parents.map(\.count).max() ?? 0
+            var depth = 1
+            while depth < deepest {
+                let suffixes = parents.map { $0.prefix(depth).reversed().joined(separator: "/") }
+                if Set(suffixes).count == suffixes.count { break }
+                depth += 1
+            }
+            for (position, index) in indices.enumerated() {
+                result[index] = parents[position].prefix(depth).reversed().joined(separator: "/")
+            }
+        }
+        return result
+    }
+
     private func rebuildTabBar() {
+        let named = openTabs.filter { !$0.isUntitled }
+        let details = Self.disambiguatingFolders(for: named.map(\.url))
+        tabDetails = Dictionary(uniqueKeysWithValues: zip(named.map(\.id), details))
         // Whatever changed a tab's unsaved state (an edit, a save, a close) is followed by the
         // recovery copies catching up.
         scheduleRecoverySync()
@@ -2816,6 +2879,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         container.index = index
         container.isActive = isActive
         container.title = tab.url.lastPathComponent
+        container.detail = tabDetails[tab.id] ?? ""
         container.isDirty = tab.dirty
         container.dragIcon = tab.isUntitled ? nil : NSWorkspace.shared.icon(forFile: tab.url.path)
         container.toolTip = tab.isUntitled ? "Unsaved" : relativePath(tab.url)
@@ -4995,6 +5059,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             openTabs[index].knownDiskStamp = diskStamp(of: url)
             openTabs[index].hasExternalChange = false
             if activeTabIndex == index { externalChangeBanner.isHidden = true }
+            applyTopInsets()
             runFormatterIfNeeded(tabID: tabID, url: url, contentAtSaveTime: content, completion: completion)
         } catch {
             guard let window = view.window else { completion(false); return }
@@ -5377,6 +5442,8 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
     /// appear). Left nil by owners whose tabs can't become windows (Run's terminal sessions).
     var onTearOut: ((NSPoint) -> Void)?
     var title: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
+    /// After the title, quieter: the folder that tells this tab from another of the same name.
+    var detail: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
     var isActive: Bool = false {
         didSet {
             needsDisplay = true
@@ -5435,8 +5502,19 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
     /// width — the whole strip used to shuffle by a few points on every click.
     override var intrinsicContentSize: NSSize {
         let font = DS.Text.body(.medium)
-        let textWidth = min((title as NSString).size(withAttributes: [.font: font]).width, Self.maxTextWidth)
+        let textWidth = min(Self.label(title: title, detail: detail, attributes: [.font: font]).size().width, Self.maxTextWidth)
         return NSSize(width: max(Self.minWidth, textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2), height: Self.height)
+    }
+
+    /// The title, then the detail in a quieter color.
+    static func label(title: String, detail: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let label = NSMutableAttributedString(string: title, attributes: attributes)
+        guard !detail.isEmpty else { return label }
+        var quiet = attributes
+        quiet[.foregroundColor] = NSColor.tertiaryLabelColor
+        quiet[.font] = DS.Text.caption()
+        label.append(NSAttributedString(string: "  " + detail, attributes: quiet))
+        return label
     }
 
     override func updateTrackingAreas() {
@@ -5519,12 +5597,12 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
             .foregroundColor: (isActive ? NSColor.labelColor : NSColor.secondaryLabelColor).withAlphaComponent(dimmed),
             .font: DS.Text.body(isActive ? .medium : .regular)
         ]
-        let text = title as NSString
-        let size = text.size(withAttributes: attributes)
+        let text = Self.label(title: title, detail: detail, attributes: attributes)
+        let size = text.size()
         let textX = Self.flare + Self.textInset
         let maxWidth = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
         let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
-        text.draw(in: drawRect, withAttributes: attributes)
+        text.draw(with: drawRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
 
         if hasUnseenOutput {
             DS.Color.statusWorking.setFill()
@@ -5666,7 +5744,38 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
         let origin = convert(event.locationInWindow, from: nil)
         dragItem.setDraggingFrame(NSRect(x: origin.x - image.size.width / 2, y: origin.y - image.size.height / 2, width: image.size.width, height: image.size.height), contents: image)
         let session = beginDraggingSession(with: [dragItem], event: event, source: self)
-        session.animatesToStartingPositionsOnCancelOrFail = true
+        // AppKit would slide the image back to where the session began, which is already below
+        // the bar (a drag becomes a tear-out only once it leaves the strip), so it went toward
+        // the content. The return is drawn below instead, into the tab's own slot.
+        session.animatesToStartingPositionsOnCancelOrFail = false
+        tearImage = image
+    }
+
+    private var tearImage: NSImage?
+
+    /// Released back in the window: a copy of the drag image glides from the pointer into this
+    /// tab's slot while the ghosted tab fades back in, so the tab is seen going home.
+    private func animateReturn(from screenPoint: NSPoint) {
+        guard let window, let content = window.contentView, let image = tearImage else { alphaValue = 1; return }
+        tearImage = nil
+        let fromWindow = window.convertPoint(fromScreen: screenPoint)
+        let from = content.convert(fromWindow, from: nil)
+        let slot = convert(bounds, to: content)
+        let ghost = NSImageView(frame: NSRect(x: from.x - image.size.width / 2, y: from.y - image.size.height / 2,
+                                              width: image.size.width, height: image.size.height))
+        ghost.image = image
+        ghost.imageScaling = .scaleAxesIndependently
+        content.addSubview(ghost)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = DS.Motion.duration(0.22)
+            context.timingFunction = DS.Motion.curve
+            ghost.animator().frame = NSRect(x: slot.midX - image.size.width / 2, y: slot.midY - image.size.height / 2,
+                                            width: image.size.width, height: image.size.height)
+            ghost.animator().alphaValue = 0
+            animator().alphaValue = 1
+        } completionHandler: {
+            ghost.removeFromSuperview()
+        }
     }
 
     /// Set by the owner — the file's own icon, or Run's terminal glyph — for the drag image.
@@ -5708,9 +5817,13 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
         isTearArmed = false
         didDrag = false
         dragOrigin = nil
-        alphaValue = 1
         if !isHovered { window?.isMovable = true }
-        guard let window, !window.frame.contains(screenPoint) else { return }
+        guard let window, !window.frame.contains(screenPoint) else {
+            animateReturn(from: screenPoint)
+            return
+        }
+        alphaValue = 1
+        tearImage = nil
         onTearOut?(screenPoint)
     }
 
@@ -5719,7 +5832,7 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
     // selected one.
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .radioButton }
-    override func accessibilityLabel() -> String? { title }
+    override func accessibilityLabel() -> String? { detail.isEmpty ? title : "\(title), \(detail)" }
     override func accessibilityValue() -> Any? { isActive ? 1 : 0 }
     override func accessibilityPerformPress() -> Bool {
         onSelect?(index)
@@ -5814,7 +5927,7 @@ extension MakeWorkspaceViewController: MakeDebuggerHost {
         var origin = editorScroll.contentView.bounds.origin
         origin.y -= height - debugTopInset
         debugTopInset = height
-        editorScroll.contentInsets.top = topObstruction + height
+        applyTopInsets()
         editorScroll.contentView.scroll(to: editorScroll.contentView.constrainBoundsRect(NSRect(origin: origin, size: editorScroll.contentView.bounds.size)).origin)
         editorScroll.reflectScrolledClipView(editorScroll.contentView)
     }
@@ -5848,16 +5961,25 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         minimapBottom?.constant = -inset
         for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
             scroll.automaticallyAdjustsContentInsets = false
-            scroll.contentInsets = NSEdgeInsets(top: topObstruction + (scroll === editorScroll ? debugTopInset : 0), left: 0, bottom: inset, right: 0)
+            scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: inset, right: 0)
         }
+        applyTopInsets()
     }
 
     func setTopObstruction(_ height: CGFloat) {
         loadViewIfNeeded()
         topObstruction = height
+        trustBannerTop?.constant = height
+        applyTopInsets()
+    }
+
+    /// Content starts below the top row and whichever banners are showing (trust, a change on
+    /// disk), so neither covers the file's first lines; the debugger's bar adds to the editor's.
+    func applyTopInsets() {
+        let banners = (trustBanner.isHidden ? 0 : trustBannerHeight?.constant ?? 0) + (externalChangeBanner.isHidden ? 0 : 28)
         for scroll in [editorScroll, markdownPreviewScroll, imageScroll, csvScroll] {
             scroll.automaticallyAdjustsContentInsets = false
-            scroll.contentInsets.top = height + (scroll === editorScroll ? debugTopInset : 0)
+            scroll.contentInsets.top = topObstruction + banners + (scroll === editorScroll ? debugTopInset : 0)
         }
     }
 
@@ -6229,4 +6351,9 @@ extension MakeWorkspaceViewController {
             }
         }
     }
+}
+
+/// An image tab's view, able to hold keyboard focus so ⌘W and the other menu commands reach Make.
+final class FocusableImageView: NSImageView {
+    override var acceptsFirstResponder: Bool { true }
 }

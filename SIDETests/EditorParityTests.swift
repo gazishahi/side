@@ -249,6 +249,37 @@ final class EditorParityTests: XCTestCase {
         }
     }
 
+    /// 2026-10-23, the owner: ⌘W didn't close an image. An image or spreadsheet tab now takes
+    /// focus as it shows, so Close Tab finds Make in the responder chain.
+    func testAnImageOrSpreadsheetTabTakesFocusSoCloseTabWorks() throws {
+        try open("notes.md", "# Notes\n")
+        let png = root.appendingPathComponent("pixel.png")
+        let image = NSImage(size: NSSize(width: 4, height: 4))
+        image.lockFocus(); NSColor.red.setFill(); NSRect(x: 0, y: 0, width: 4, height: 4).fill(); image.unlockFocus()
+        let rep = NSBitmapImageRep(data: image.tiffRepresentation!)!
+        try rep.representation(using: .png, properties: [:])!.write(to: png)
+        try "a,b\n1,2\n".write(to: root.appendingPathComponent("table.csv"), atomically: true, encoding: .utf8)
+        window.makeKey()
+        for name in ["pixel.png", "table.csv"] {
+            make.revealFile(root.appendingPathComponent(name), line: nil)
+            let deadline = Date().addingTimeInterval(10)
+            while Date() < deadline, make.activeTabURLForTesting?.lastPathComponent != name { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+            let responder = try XCTUnwrap(window.firstResponder as? NSView, "\(name): focus is on a view, not the window")
+            XCTAssertTrue(responder.isDescendant(of: make.view), "\(name): inside Make")
+            XCTAssertFalse(responder.isHiddenOrHasHiddenAncestor, "\(name): the one showing")
+            // The menu's route: up the responder chain from the focused view to whoever answers.
+            let close = Selector(("closeActiveTab"))
+            var target: NSResponder? = responder
+            while let current = target, !current.responds(to: close) { target = current.nextResponder }
+            XCTAssertTrue(target === make, "\(name): Close Tab reaches Make")
+            make.perform(close)
+            let closed = Date().addingTimeInterval(5)
+            while Date() < closed, make.activeTabURLForTesting?.lastPathComponent == name { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+            XCTAssertNotEqual(make.activeTabURLForTesting?.lastPathComponent, name, "\(name) closed")
+        }
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

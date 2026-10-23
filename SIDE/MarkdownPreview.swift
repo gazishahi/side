@@ -45,17 +45,62 @@ enum MarkdownPreview {
     static let quoteIndent: CGFloat = 20
 
     @MainActor static func render(_ markdown: String, style: Style) -> NSAttributedString {
+        // Front matter isn't Markdown: the parser read it as a rule and run-on text. It's split
+        // off and shown as a card of properties instead (2026-10-23, the owner).
+        let front = frontMatter(markdown)
+        let markdown = front?.body ?? markdown
         let options = AttributedString.MarkdownParsingOptions(allowsExtendedAttributes: true, interpretedSyntax: .full,
                                                               failurePolicy: .returnPartiallyParsedIfPossible)
         guard let parsed = try? AttributedString(markdown: markdown, options: options) else {
             return NSAttributedString(string: markdown, attributes: [.font: style.body, .foregroundColor: style.textColor])
         }
         var builder = Builder(style: style)
+        if let front, !front.properties.isEmpty { builder.addProperties(front.properties) }
         for run in parsed.runs {
             builder.add(String(parsed[run.range].characters), intent: run.presentationIntent,
                         inline: run.inlinePresentationIntent ?? [], link: run.link, image: run.imageURL)
         }
         return builder.finish()
+    }
+
+    // MARK: Front matter
+
+    struct Property: Equatable {
+        var key: String
+        var values: [String]
+    }
+
+    /// YAML front matter at the very top (`---` lines around it), read as simple properties:
+    /// `key: value`, `key: [a, b]`, and `key:` followed by `- item` lines. Anything fancier keeps
+    /// its text as the value. Nil when the document doesn't start with front matter.
+    static func frontMatter(_ markdown: String) -> (properties: [Property], body: String)? {
+        let lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---",
+              let end = lines.indices.dropFirst().first(where: { ["---", "..."].contains(lines[$0].trimmingCharacters(in: .whitespaces)) }) else { return nil }
+        func unquoted(_ text: String) -> String {
+            let text = text.trimmingCharacters(in: .whitespaces)
+            guard text.count >= 2, let first = text.first, let last = text.last, first == last, first == "\"" || first == "'" else { return text }
+            return String(text.dropFirst().dropLast())
+        }
+        var properties: [Property] = []
+        for line in lines[1..<end] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            if trimmed.hasPrefix("- "), !properties.isEmpty {
+                properties[properties.count - 1].values.append(unquoted(String(trimmed.dropFirst(2))))
+                continue
+            }
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespaces)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if value.hasPrefix("["), value.hasSuffix("]") {
+                let items = value.dropFirst().dropLast().split(separator: ",").map { unquoted(String($0)) }.filter { !$0.isEmpty }
+                properties.append(Property(key: key, values: items))
+            } else {
+                properties.append(Property(key: key, values: value.isEmpty ? [] : [unquoted(value)]))
+            }
+        }
+        return (properties, lines[(end + 1)...].joined(separator: "\n"))
     }
 
     // MARK: Building
@@ -77,6 +122,41 @@ enum MarkdownPreview {
         private var previousWasList = false
 
         init(style: Style) { self.style = style }
+
+        /// The front matter as a card: each key in a quiet column, its value beside it, a list's
+        /// items (tags) as chips.
+        mutating func addProperties(_ properties: [Property]) {
+            let size = (style.bodySize * 0.86).rounded()
+            let valueFont = DS.Text.Fonts.font(.reading, size: size)
+            let keyFont = DS.Text.Fonts.font(.reading, size: (size * 0.92).rounded(), weight: .medium)
+            let padding = MarkdownPreview.codePadding
+            let keyColumn = (size * 7.5).rounded()
+            for (index, property) in properties.enumerated() {
+                let p = NSMutableParagraphStyle()
+                p.firstLineHeadIndent = padding
+                p.headIndent = padding + keyColumn
+                p.tailIndent = -padding
+                p.tabStops = [NSTextTab(textAlignment: .left, location: padding + keyColumn)]
+                p.lineHeightMultiple = 1.35
+                p.paragraphSpacingBefore = index == 0 ? padding : 0
+                p.paragraphSpacing = index == properties.count - 1 ? (style.bodySize * 1.2 + padding).rounded() : 2
+                let card: [NSAttributedString.Key: Any] = [.paragraphStyle: p, MarkdownPreview.codeBlockKey: -1, MarkdownPreview.codeCardIndentKey: CGFloat(0)]
+                let line = NSMutableAttributedString(string: property.key + "\t", attributes: card.merging([.font: keyFont, .foregroundColor: NSColor.secondaryLabelColor]) { $1 })
+                if property.values.count > 1 || property.key.lowercased() == "tags" {
+                    for (position, value) in property.values.enumerated() {
+                        if position > 0 { line.append(NSAttributedString(string: "  ", attributes: card.merging([.font: valueFont]) { $1 })) }
+                        line.append(NSAttributedString(string: value.replacingOccurrences(of: " ", with: "\u{00A0}"), attributes: card.merging([
+                            .font: valueFont, .foregroundColor: style.textColor, MarkdownPreview.inlineCodeKey: true,
+                        ]) { $1 }))
+                    }
+                } else {
+                    line.append(NSAttributedString(string: property.values.first ?? "", attributes: card.merging([.font: valueFont, .foregroundColor: style.textColor]) { $1 }))
+                }
+                line.append(NSAttributedString(string: "\n", attributes: card.merging([.font: valueFont]) { $1 }))
+                out.append(line)
+            }
+            paragraph = (out.attribute(.paragraphStyle, at: out.length - 1, effectiveRange: nil) as? NSParagraphStyle) ?? paragraph
+        }
 
         mutating func add(_ text: String, intent: PresentationIntent?, inline: InlinePresentationIntent, link: URL?, image: URL?) {
             let components = intent?.components ?? []
