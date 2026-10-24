@@ -67,7 +67,14 @@ enum Shortcuts {
     enum Area: String, CaseIterable {
         case app = "Side", file = "File", edit = "Edit", find = "Find", view = "View", navigate = "Navigate"
         case tabs = "Tabs", stages = "Stages", run = "Run", debug = "Debug", track = "Tracks", window = "Window"
-        case editor = "Editor", think = "Think", review = "Review", palette = "Palette"
+        case editor = "Editor", think = "Think", review = "Review", palette = "Palette", format = "Format"
+    }
+
+    /// A kind of file a command belongs to: its shortcut works only there, and there it wins
+    /// over a command for every file on the same keys (⌘K is Link in Markdown, Instruct
+    /// elsewhere; ⌘B is Bold in Markdown, Build in LaTeX).
+    enum Context: String {
+        case markdown, latex
     }
 
     struct Command: Equatable {
@@ -77,10 +84,15 @@ enum Shortcuts {
         let defaultChord: KeyChord?
         /// Handled inside a view (a text field, a list), not by a menu: shown, not rebindable.
         var isFixed = false
+        /// The kind of file it belongs to; nil for every file.
+        var context: Context?
     }
 
     private static func c(_ id: String, _ title: String, _ area: Area, _ key: String?, _ mods: NSEvent.ModifierFlags = .command) -> Command {
         Command(id: id, title: title, area: area, defaultChord: key.map { KeyChord($0, mods) })
+    }
+    private static func c(_ id: String, _ title: String, _ area: Area, _ key: String?, _ mods: NSEvent.ModifierFlags = .command, in context: Context) -> Command {
+        Command(id: id, title: title, area: area, defaultChord: key.map { KeyChord($0, mods) }, context: context)
     }
     private static func fixed(_ id: String, _ title: String, _ area: Area, _ key: String, _ mods: NSEvent.ModifierFlags = []) -> Command {
         Command(id: id, title: title, area: area, defaultChord: KeyChord(key, mods), isFixed: true)
@@ -107,8 +119,12 @@ enum Shortcuts {
         c("file.saveAs", "Save As\u{2026}", .file, "s", [.command, .shift]),
         c("file.revert", "Revert to Saved", .file, nil),
         c("file.closeTab", "Close Tab", .file, "w"),
-        c("file.buildLaTeX", "Build LaTeX Document", .file, "b"),
-        c("file.showInPDF", "Show in PDF", .file, "b", [.command, .option]),
+        c("file.buildLaTeX", "Build LaTeX Document", .file, "b", in: .latex),
+        c("file.showInPDF", "Show in PDF", .file, "b", [.command, .option], in: .latex),
+
+        c("format.bold", "Bold", .format, "b", in: .markdown),
+        c("format.italic", "Italic", .format, "i", in: .markdown),
+        c("format.link", "Link\u{2026}", .format, "k", in: .markdown),
 
         c("edit.undo", "Undo", .edit, "z"),
         c("edit.redo", "Redo", .edit, "z", [.command, .shift]),
@@ -321,7 +337,10 @@ enum Shortcuts {
     /// Another command already on this chord, if any (fixed ones included: they'd still win in
     /// their view).
     static func conflict(for chord: KeyChord, excluding id: String) -> Command? {
-        all.first { $0.id != id && self.chord($0.id) == chord }
+        // Commands for different kinds of file, or one for a kind and one for all (which it
+        // covers there), can share keys.
+        let context = command(id)?.context
+        return all.first { $0.id != id && $0.context == context && self.chord($0.id) == chord }
     }
 
     /// Rebinds a command (nil: no shortcut). Menus bound to it update at once.
@@ -364,12 +383,31 @@ enum Shortcuts {
         assert(command(id) != nil, "no shortcut command \(id)")
         bound[id, default: []].removeAll { $0.item == nil }
         bound[id, default: []].append(WeakItem(item))
-        apply(chord(id), to: item)
+        apply(effectiveChord(id), to: item)
         return item
     }
 
     private static func refreshBoundItems(_ id: String) {
-        for weak in bound[id] ?? [] { if let item = weak.item { apply(chord(id), to: item) } }
+        for weak in bound[id] ?? [] { if let item = weak.item { apply(effectiveChord(id), to: item) } }
+    }
+
+    /// The kind of file in front (Make sets it as tabs change): which contextual shortcuts
+    /// are live, and which global ones they cover.
+    static var activeContext: Context? {
+        didSet {
+            guard activeContext != oldValue else { return }
+            for id in bound.keys { refreshBoundItems(id) }
+        }
+    }
+
+    /// The chord a menu item carries now: a contextual command's only in its kind of file; a
+    /// global one's unless a live contextual command has taken the same keys.
+    static func effectiveChord(_ id: String) -> KeyChord? {
+        guard let chord = chord(id), let command = command(id) else { return nil }
+        if let context = command.context { return context == activeContext ? chord : nil }
+        guard let activeContext else { return chord }
+        let taken = all.contains { $0.context == activeContext && self.chord($0.id) == chord }
+        return taken ? nil : chord
     }
 
     private static func apply(_ chord: KeyChord?, to item: NSMenuItem) {

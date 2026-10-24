@@ -9,6 +9,10 @@ Symbols: `Shortcuts`, `ShortcutsViewController`, `ShortcutRecorder`, `EditorPref
 1. **One table of every shortcut.** Each command has an id, a title, an area (Window, Make,
    Find, Think, Review, Run, Tracks, Palette) and a default key. Menus and the palette take their
    keys from the table, never a literal.
+   *Added 2026-10-24:* a command can belong to a kind of file (`Shortcuts.Context`: Markdown,
+   LaTeX). Its keys are live only there, and there they cover a command for every file: in
+   Markdown ⌘B is Bold, ⌘I Italic and ⌘K Link (Instruct… stays in the Edit menu); in LaTeX ⌘B is
+   Build. Make sets the kind of file in front as tabs and windows change.
 2. **Settings → Shortcuts.** Every shortcut, by area, searchable. Click one and press the new
    keys to rebind it; a key another command uses is named and the change waits for a
    confirmation. Reset one, or all.

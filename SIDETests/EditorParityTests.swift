@@ -627,6 +627,50 @@ final class EditorParityTests: XCTestCase {
         }
     }
 
+    /// Markdown's formatting: ⌘B and ⌘I wrap or unwrap, ⌘K makes a link; their keys are live
+    /// in Markdown files only.
+    func testMarkdownFormattingCommands() throws {
+        _ = try open("notes.md", "Make this bold and that a link.\nSee https://example.com now.\n")
+        XCTAssertEqual(Shortcuts.activeContext, .markdown)
+        func text() -> String { make.editor.document!.string }
+        func select(_ word: String) { make.editor.selectedRange = (text() as NSString).range(of: word) }
+
+        select("bold")
+        make.formatBold(nil)
+        XCTAssertTrue(text().hasPrefix("Make this **bold** and"))
+        XCTAssertEqual((text() as NSString).substring(with: make.editor.selectedRange), "bold", "the word stays selected")
+        make.formatBold(nil)
+        XCTAssertTrue(text().hasPrefix("Make this bold and"), "again: unwrapped")
+
+        make.editor.selectedRange = NSRange(location: (text() as NSString).range(of: "this").location + 2, length: 0)
+        make.formatItalic(nil)
+        XCTAssertTrue(text().hasPrefix("Make *this* bold"), "nothing selected: the word under the caret")
+        select("*this*")
+        make.formatItalic(nil)
+        XCTAssertTrue(text().hasPrefix("Make this bold"), "the marks inside the selection come off too")
+
+        select("bold")
+        make.formatBold(nil)
+        select("bold")
+        make.formatItalic(nil)
+        XCTAssertTrue(text().hasPrefix("Make this ***bold*** and"), "italic inside bold")
+        select("bold")
+        make.formatItalic(nil)
+        XCTAssertTrue(text().hasPrefix("Make this **bold** and"), "and out again, the bold kept")
+
+        select("that a link")
+        make.formatLink(nil)
+        XCTAssertTrue(text().contains("[that a link](url)."))
+        XCTAssertEqual((text() as NSString).substring(with: make.editor.selectedRange), "url", "the address to type over")
+        select("https://example.com")
+        make.formatLink(nil)
+        XCTAssertTrue(text().contains("See [](https://example.com) now."), "a selected address becomes the target")
+        XCTAssertEqual(make.editor.selectedRange.length, 0)
+
+        _ = try open("code.swift", "let x = 1\n")
+        XCTAssertNil(Shortcuts.activeContext, "back to every file's shortcuts")
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

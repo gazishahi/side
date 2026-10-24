@@ -82,7 +82,9 @@ budget to `SIDETests/Budgets.swift` (frame time on a long Markdown file).
    anchor line takes the block's height; the source comes back when the caret enters it.
 
 Then in Side: the Source / Live switch (View menu, remembered per file), Writer Mode in Live, and
-the formatting commands (question 4).
+the formatting commands (question 4). *Built 2026-10-24, after the steps:* the Format menu's Bold,
+Italic and Link (⌘B, ⌘I, ⌘K in Markdown files), wrapping or unwrapping the selection or the word
+under the caret.
 
 ## What it costs
 

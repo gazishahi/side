@@ -440,7 +440,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             configureTrustBanner()
             configureExternalChangeBanner()
             keyWindowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.reconcileAllTabsWithDisk() }
+                MainActor.assumeIsolated {
+                    self?.reconcileAllTabsWithDisk()
+                    // Another of Side's windows in front brings its own kind of file's shortcuts.
+                    self?.updateShortcutContext()
+                }
             }
         }
         if let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text {
@@ -2345,6 +2349,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         dirty = tab.dirty
         rebuildTabBar()
         updateLSPIndicator()
+        updateShortcutContext()
         onFileOpened?(tab.url)
     }
 
@@ -2821,6 +2826,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editorContainer.isHidden = true
         applyMinimapVisibility()
         gutter.isHidden = true
+        Shortcuts.activeContext = nil
         editor.lineDiffMarks = [:]
         imageScroll.isHidden = true
         imageView.image = nil
@@ -4856,6 +4862,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Shortcuts.bind(viewMenu.addItem(withTitle: "Writer Mode", action: #selector(ShellViewController.toggleWriterMode(_:)), keyEquivalent: ""), "view.writerMode")
         viewItem.submenu = viewMenu
 
+        // Markdown's formatting (its shortcuts are live in Markdown files only).
+        let formatItem = NSMenuItem(title: "Format", action: nil, keyEquivalent: "")
+        let formatMenu = NSMenu(title: "Format")
+        Shortcuts.bind(formatMenu.addItem(withTitle: "Bold", action: #selector(formatBold(_:)), keyEquivalent: ""), "format.bold")
+        Shortcuts.bind(formatMenu.addItem(withTitle: "Italic", action: #selector(formatItalic(_:)), keyEquivalent: ""), "format.italic")
+        Shortcuts.bind(formatMenu.addItem(withTitle: "Link\u{2026}", action: #selector(formatLink(_:)), keyEquivalent: ""), "format.link")
+        formatItem.submenu = formatMenu
+
         // The editing commands a keymap binds (Alloy's, reached through the responder chain).
         let editorItem = NSMenuItem(title: "Editor", action: nil, keyEquivalent: "")
         let editorMenu = NSMenu(title: "Editor")
@@ -4992,7 +5006,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         windowItem.submenu = windowMenu
 
-        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(viewItem); main.addItem(editorItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(debugItem); main.addItem(trackItem); main.addItem(windowItem)
+        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(formatItem); main.addItem(viewItem); main.addItem(editorItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(debugItem); main.addItem(trackItem); main.addItem(windowItem)
         NSApp.mainMenu = main
         NSApp.windowsMenu = windowMenu
     }
@@ -6411,7 +6425,98 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         applyLiveMarkdown()
     }
 
+    /// Which kind of file is in front, for shortcuts that belong to one (⌘B: Bold in Markdown,
+    /// Build in LaTeX; ⌘K: Link in Markdown, Instruct elsewhere).
+    private func updateShortcutContext() {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { Shortcuts.activeContext = nil; return }
+        let url = openTabs[index].url
+        Shortcuts.activeContext = Self.isMarkdown(url) ? .markdown : LaTeXSession.isSource(url) ? .latex : nil
+    }
+
+    // MARK: - Markdown formatting
+
+    /// A Markdown file being edited as text (source or Live; not the preview).
+    private var activeMarkdownSource: Bool {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text,
+              !openTabs[index].isPreviewingMarkdown, editor.isEditable else { return false }
+        return Self.isMarkdown(openTabs[index].url)
+    }
+
+    @objc func formatBold(_ sender: Any?) { toggleMarkdownWrap("**") }
+    @objc func formatItalic(_ sender: Any?) { toggleMarkdownWrap("*") }
+
+    /// Wraps the selection in a mark, or unwraps it when it's already wrapped (the marks just
+    /// outside it, or at its ends). Nothing selected: the word under the caret, or an empty pair
+    /// with the caret between.
+    func toggleMarkdownWrap(_ mark: String) {
+        guard activeMarkdownSource, let document = editor.document else { return }
+        let text = document.text
+        var range = editor.selectedRange
+        let markLength = (mark as NSString).length
+        if range.length == 0 {
+            let word = Self.wordRange(at: range.location, in: text)
+            if word.length > 0 { range = word }
+        }
+        func marked(_ location: Int) -> Bool {
+            guard location >= 0, location + markLength <= text.length, text.substring(with: NSRange(location: location, length: markLength)) == mark else { return false }
+            // `*` isn't italic's when it's half of a bold's `**` (unless the text is both, `***`).
+            if mark == "*" {
+                // The whole run of stars it's in: an odd one (`*`, `***`) has an italic's mark.
+                var start = location, end = location + 1
+                while start > 0, text.character(at: start - 1) == 0x2A { start -= 1 }
+                while end < text.length, text.character(at: end) == 0x2A { end += 1 }
+                return (end - start) % 2 == 1
+            }
+            return true
+        }
+        if range.length >= markLength * 2, marked(range.location), marked(NSMaxRange(range) - markLength) {
+            // The selection includes its marks: take them off.
+            let inner = text.substring(with: NSRange(location: range.location + markLength, length: range.length - markLength * 2))
+            editor.applyEdits([(range: range, text: inner)])
+            editor.selectedRange = NSRange(location: range.location, length: (inner as NSString).length)
+        } else if marked(range.location - markLength), marked(NSMaxRange(range)) {
+            // The marks sit just outside it.
+            let outer = NSRange(location: range.location - markLength, length: range.length + markLength * 2)
+            editor.applyEdits([(range: outer, text: text.substring(with: range))])
+            editor.selectedRange = NSRange(location: outer.location, length: range.length)
+        } else {
+            editor.applyEdits([(range: range, text: mark + text.substring(with: range) + mark)])
+            editor.selectedRange = NSRange(location: range.location + markLength, length: range.length)
+        }
+    }
+
+    /// ⌘K: the selection as a link's text with "url" selected to type over; a selected address
+    /// as the link's target with the caret in its text; nothing selected, a link to fill in.
+    @objc func formatLink(_ sender: Any?) {
+        guard activeMarkdownSource, let document = editor.document else { return }
+        let range = editor.selectedRange
+        let selected = document.text.substring(with: range)
+        if let url = URL(string: selected.trimmingCharacters(in: .whitespaces)), let scheme = url.scheme, ["http", "https", "mailto"].contains(scheme.lowercased()) {
+            editor.applyEdits([(range: range, text: "[](\(selected))")])
+            editor.selectedRange = NSRange(location: range.location + 1, length: 0)
+        } else {
+            let label = selected.isEmpty ? "text" : selected
+            editor.applyEdits([(range: range, text: "[\(label)](url)")])
+            let labelLength = (label as NSString).length
+            editor.selectedRange = selected.isEmpty ? NSRange(location: range.location + 1, length: labelLength)
+                                                    : NSRange(location: range.location + labelLength + 3, length: 3)
+        }
+    }
+
+    /// The word around a location (letters, digits, apostrophes), or nothing.
+    static func wordRange(at location: Int, in text: NSString) -> NSRange {
+        func isWord(_ i: Int) -> Bool {
+            guard i >= 0, i < text.length, let scalar = UnicodeScalar(text.character(at: i)) else { return false }
+            return CharacterSet.alphanumerics.contains(scalar) || scalar == "'"
+        }
+        var start = location, end = location
+        while isWord(start - 1) { start -= 1 }
+        while isWord(end) { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
     private func applyLiveMarkdown() {
+        updateShortcutContext()
         guard let engine = editor as? AlloyEditorEngine else { return }
         guard let index = activeTabIndex, openTabs.indices.contains(index), openTabs[index].kind == .text else { engine.isProse = false; return }
         engine.isProse = isLive(openTabs[index].url)
@@ -6731,6 +6836,8 @@ extension MakeWorkspaceViewController: NSMenuItemValidation {
             return debugCurrentFile != nil
         case #selector(buildLaTeX(_:)), #selector(showInPDF(_:)):
             return activeLaTeXSource != nil
+        case #selector(formatBold(_:)), #selector(formatItalic(_:)), #selector(formatLink(_:)):
+            return activeMarkdownSource
         case #selector(toggleLiveMarkdown(_:)):
             let url = activeTabIndex.map { openTabs[$0].url }
             item.state = url.map(isLive) == true ? .on : .off

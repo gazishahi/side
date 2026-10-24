@@ -18,16 +18,42 @@ final class ShortcutsTests: XCTestCase {
     func testNoTwoMenuCommandsShareADefaultInAnyKeymap() {
         let menu = Shortcuts.all.filter { !$0.isFixed }
         for keymap in Shortcuts.Keymap.allCases {
-            var seen: [KeyChord: String] = [:]
+            // Within a kind of file (or among commands for every file), keys are one command's;
+            // a command for one kind of file may cover one for all.
+            var seen: [String: String] = [:]
             for command in menu {
                 guard let chord = Shortcuts.defaultChord(command.id, in: keymap) else { continue }
-                XCTAssertNil(seen[chord], "\(keymap.title): \(command.id) and \(seen[chord] ?? "") both default to \(chord.display)")
-                seen[chord] = command.id
+                let slot = "\(command.context?.rawValue ?? "all")|\(chord.display)"
+                XCTAssertNil(seen[slot], "\(keymap.title): \(command.id) and \(seen[slot] ?? "") both default to \(chord.display)")
+                seen[slot] = command.id
             }
             // A preset only names commands that exist.
             for id in Shortcuts.presets[keymap]?.keys ?? [:].keys { XCTAssertNotNil(Shortcuts.command(id), "\(keymap.title) names \(id)") }
         }
         XCTAssertEqual(Set(Shortcuts.all.map(\.id)).count, Shortcuts.all.count, "ids are unique")
+    }
+
+    /// In Markdown ⌘B, ⌘I and ⌘K format; ⌘K is Instruct again elsewhere, and ⌘B is Build in
+    /// LaTeX (2026-10-24, the owner's choice in docs/SIDE_RFC_LIVE_MARKDOWN.md).
+    func testShortcutsFollowTheKindOfFile() {
+        let instruct = NSMenuItem(), link = NSMenuItem(), bold = NSMenuItem(), build = NSMenuItem()
+        Shortcuts.bind(instruct, "edit.instruct"); Shortcuts.bind(link, "format.link")
+        Shortcuts.bind(bold, "format.bold"); Shortcuts.bind(build, "file.buildLaTeX")
+        defer { Shortcuts.activeContext = nil }
+        Shortcuts.activeContext = nil
+        XCTAssertEqual(instruct.keyEquivalent, "k")
+        XCTAssertEqual(link.keyEquivalent, "", "no formatting outside Markdown")
+        XCTAssertEqual(build.keyEquivalent, "", "no Build outside LaTeX")
+        Shortcuts.activeContext = .markdown
+        XCTAssertEqual(link.keyEquivalent, "k")
+        XCTAssertEqual(instruct.keyEquivalent, "", "Link covers Instruct in Markdown")
+        XCTAssertEqual(bold.keyEquivalent, "b")
+        Shortcuts.activeContext = .latex
+        XCTAssertEqual(build.keyEquivalent, "b")
+        XCTAssertEqual(bold.keyEquivalent, "")
+        XCTAssertEqual(instruct.keyEquivalent, "k")
+        XCTAssertNil(Shortcuts.conflict(for: KeyChord("k"), excluding: "format.link"), "Link may share Instruct's keys")
+        XCTAssertEqual(Shortcuts.conflict(for: KeyChord("k"), excluding: "format.bold")?.id, "format.link", "but not another Markdown command's")
     }
 
     func testAKeymapChangesDefaultsAndKeepsThePersonsOwn() {
