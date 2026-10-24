@@ -27,6 +27,10 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     /// preview's size, with bold, italic and code spans laid out in their own fonts.
     var isProse = false { didSet { if isProse != oldValue { applyProse() } } }
     private var proseFonts: [UInt8: CTFont] = [:]
+    /// Live Markdown's blocks (pictures, rules, tables, front matter), and an edit count they
+    /// follow.
+    private let blocks = LiveMarkdownBlocks()
+    private var textGeneration = 0
 
     /// The reading size the Markdown preview uses: a little larger than code.
     static var proseSize: CGFloat { (DS.Text.CodeSize.editor * 1.15).rounded() }
@@ -37,13 +41,14 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
             view.setFont(DS.Text.Fonts.font(.reading, size: Self.proseSize) as CTFont)
             view.fontSpans = { [weak self] line in self?.proseSpans(line) ?? [] }
             view.concealment = { [weak self] line in self?.proseHidden(line) ?? [] }
-            view.inlineReplacements = { [weak self] line in self?.proseMath(line) ?? [] }
+            view.inlineReplacements = { [weak self] line in self?.proseReplacements(line) ?? [] }
         } else {
             view.inlineReplacements = nil
             view.concealment = nil
             view.fontSpans = nil
             view.setFont(appearance.font as CTFont)
         }
+        applyLineBackground()
     }
 
     /// A line's emphasis, as font runs over the reading font.
@@ -63,6 +68,41 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         return runs.map { FontSpan(range: $0.range, font: proseFont($0.emphasis)) }
     }
 
+    /// The debugger's stopped line, and Live Markdown's front matter band.
+    private func applyLineBackground() {
+        let stopped = stoppedLine.map { ($0, components(DS.Color.statusVerified.withAlphaComponent(0.22))) }
+        guard stopped != nil || isProse else { view.lineBackground = nil; return }
+        view.lineBackground = { [weak self] line in
+            if let stopped, stopped.0 == line { return stopped.1 }
+            guard let self, self.isProse, let document = self.document as? AlloyEditorDocument, let context = self.blockContext else { return nil }
+            return self.blocks.tint(line: line, text: document.buffer.text, context: context)
+        }
+    }
+
+    /// What Live Markdown's blocks are drawn for: the column, the screen, the text's font and color.
+    private var blockContext: LiveMarkdownBlocks.Context? {
+        guard let document = document as? AlloyEditorDocument else { return nil }
+        let layout = view.documentLayout
+        let column = layout.wrapWidth ?? max(200, view.scrollView.contentView.bounds.width - layout.insets.width * 2)
+        let text = view.theme.text
+        return LiveMarkdownBlocks.Context(documentURL: document.url, columnWidth: column, scale: view.window?.backingScaleFactor ?? 2,
+                                          appearance: view.effectiveAppearance, font: DS.Text.Fonts.font(.reading, size: Self.proseSize),
+                                          lineHeight: layout.lineHeight,
+                                          textColor: NSColor(srgbRed: CGFloat(text.x), green: CGFloat(text.y), blue: CGFloat(text.z), alpha: CGFloat(text.w)))
+    }
+
+    /// A line's replacements in Live Markdown: a block for the whole line (a picture, a rule),
+    /// or a table's padding and the line's math.
+    private func proseReplacements(_ line: Int) -> [InlineReplacement] {
+        guard let document = document as? AlloyEditorDocument, let context = blockContext else { return [] }
+        blocks.textChanged(textGeneration)
+        let text = document.buffer.text
+        let lineText = text.substring(text.range(ofLine: line))
+        let block = blocks.replacements(line: line, lineText: lineText, text: text, context: context)
+        if block.whole { return block.items }
+        return (block.items + proseMath(line, columnWidth: context.columnWidth)).sorted { $0.range.lowerBound < $1.range.lowerBound }
+    }
+
     /// A typeset formula, kept: lines are laid out again as the caret moves.
     private struct Formula {
         let image: CGImage
@@ -74,7 +114,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     /// The line's TeX math (`$…$` inline, `$$…$$` displayed), typeset (step 4): drawn in its
     /// place away from the caret, in Latin Modern at the text's size and color, as the preview
     /// sets it. A formula SwiftMath can't read stays as its source.
-    private func proseMath(_ line: Int) -> [InlineReplacement] {
+    private func proseMath(_ line: Int, columnWidth: CGFloat) -> [InlineReplacement] {
         guard let document = document as? AlloyEditorDocument, let highlighter = document.highlighter else { return [] }
         var ranges: [Range<Int>] = []
         for span in highlighter.spans(forLine: line) where span.emphasis.contains(.math) {
@@ -117,6 +157,11 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
                 formulas[key] = formula
             }
             guard let formula else { return nil }
+            // A displayed formula alone on its line: centered in the column.
+            if display, range.lowerBound == 0, range.upperBound == lineText.length, formula.size.width < columnWidth {
+                return InlineReplacement(range: range, image: formula.image, size: CGSize(width: columnWidth, height: formula.size.height),
+                                         descent: formula.descent, key: key, drawSize: formula.size)
+            }
             return InlineReplacement(range: range, image: formula.image, size: formula.size, descent: formula.descent, key: key)
         }
     }
@@ -217,8 +262,15 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         }
         view.onCommandClick = { [weak self] offset in
             guard let self else { return false }
+            // Live Markdown: ⌘-click a remote picture's placeholder to load it.
+            if self.isProse, let document = self.document as? AlloyEditorDocument {
+                let text = document.buffer.text
+                let line = text.substring(text.range(ofLine: text.line(containing: offset)))
+                if let url = self.blocks.remoteAddress(line) { self.blocks.loadRemote(url); return true }
+            }
             return self.delegate?.editor(self, commandClickedAt: offset) ?? false
         }
+        blocks.onChange = { [weak self] in self?.view.stylesChanged() }
         applyAppearance(fontChanged: false)
         NotificationCenter.default.addObserver(self, selector: #selector(editorThemeChanged), name: EditorThemes.didChangeNotification, object: nil)
     }
@@ -380,12 +432,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     var stoppedLine: Int? {
         didSet {
             guard stoppedLine != oldValue else { return }
-            if let line = stoppedLine {
-                let tint = components(DS.Color.statusVerified.withAlphaComponent(0.22))
-                view.lineBackground = { $0 == line ? tint : nil }
-            } else {
-                view.lineBackground = nil
-            }
+            applyLineBackground()
         }
     }
 
@@ -435,7 +482,10 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         delegate?.editor(self, doCommandBy: selector) ?? false
     }
 
-    func editorTextDidChange(_ editor: AlloyEditorView) { delegate?.editorTextDidChange(self) }
+    func editorTextDidChange(_ editor: AlloyEditorView) {
+        textGeneration += 1
+        delegate?.editorTextDidChange(self)
+    }
     func editorSelectionDidChange(_ editor: AlloyEditorView) { delegate?.editorSelectionDidChange(self) }
 
     func editor(_ editor: AlloyEditorView, menu: NSMenu, forCharacterAt offset: Int) -> NSMenu {
@@ -467,6 +517,8 @@ final class AlloyEditorDocument: EditorDocument {
     /// A highlighter arrived after the document was shown (its language was still building).
     var onHighlighterChange: (() -> Void)?
     var isDarkProvider: () -> Bool = { false }
+    /// Where the file is (Live Markdown finds its pictures from here).
+    private(set) var url: URL?
 
     init(_ text: String) { buffer = TextBuffer(text) }
 
@@ -491,6 +543,7 @@ final class AlloyEditorDocument: EditorDocument {
     /// when the file's extension changes (a tab saved under a new name). A language not built yet
     /// is built off the main thread first: the text paints now and its colors follow.
     func highlight(url: URL, appearance: EditorAppearance) {
+        self.url = url
         let ext = url.languageExtension
         guard ext != highlightedExtension else { return }
         highlightedExtension = ext

@@ -548,6 +548,85 @@ final class EditorParityTests: XCTestCase {
         XCTAssertEqual(layout().layout(line: 2).replacements, [], "the caret's line shows the TeX")
     }
 
+    /// Live Markdown, step 5: whole lines as blocks (a local picture, a remote one's placeholder,
+    /// a rule, a centered formula), a table's columns lined up, front matter as a band.
+    func testLiveMarkdownBlocks() throws {
+        defer { MakeWorkspaceViewController.preferences.removeObject(forKey: MakeWorkspaceViewController.liveMarkdownKey) }
+        let picture = NSImage(size: NSSize(width: 320, height: 160))
+        picture.lockFocus()
+        NSColor.systemTeal.setFill(); NSRect(x: 0, y: 0, width: 320, height: 160).fill()
+        NSColor.white.setFill(); NSBezierPath(ovalIn: NSRect(x: 120, y: 40, width: 80, height: 80)).fill()
+        picture.unlockFocus()
+        try NSBitmapImageRep(data: picture.tiffRepresentation!)!.representation(using: .png, properties: [:])!.write(to: root.appendingPathComponent("diagram.png"))
+        let text = """
+        ---
+        title: Blocks
+        tags: [a, b]
+        ---
+
+        # Blocks
+
+        ![A diagram](diagram.png)
+
+        ![Remote](https://example.com/cat.png)
+
+        ---
+
+        $$\\int_0^1 x\\,dx = \\frac{1}{2}$$
+
+        | Name | Role |
+        |---|---|
+        | Ada | Engineer |
+        | Grace Hopper | Admiral |
+
+        End.
+        """
+        _ = try open("blocks.md", text)
+        let engine = make.editor as! AlloyEditorEngine
+        make.toggleLiveMarkdown(nil)
+        make.editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        let layout = { engine.view.documentLayout }
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, layout().layout(line: 14).replacements.isEmpty { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+
+        XCTAssertEqual(layout().layout(line: 7).replacements.count, 1, "the local picture")
+        XCTAssertEqual(layout().layout(line: 7).replacements.first?.size.height, 160, "at its size (it fits the column)")
+        XCTAssertLessThan(layout().layout(line: 7).height, 160 + layout().lineHeight, "its row holds it, and the line's space below")
+        XCTAssertTrue(layout().layout(line: 9).replacements.first?.key.hasPrefix("placeholder|Image from example.com") ?? false, "the remote one waits")
+        XCTAssertTrue(layout().layout(line: 11).replacements.first?.key.hasPrefix("rule|") ?? false, "a rule")
+        let formula = try XCTUnwrap(layout().layout(line: 13).replacements.first)
+        XCTAssertNotNil(formula.drawSize, "a displayed formula alone on its line is centered")
+        XCTAssertEqual(layout().layout(line: 0).replacements.count, 1, "front matter's --- takes no room")
+        XCTAssertNotNil(engine.view.lineBackground?(1), "its band")
+        XCTAssertNil(engine.view.lineBackground?(6))
+
+        // The table: the pipe after each cell at its column's edge, so every row's lines up.
+        func pipeXs(_ line: Int) -> [CGFloat] {
+            let laid = layout().layout(line: line)
+            let units = Array(laid.text.utf16)
+            return units.indices.filter { units[$0] == 0x7C }.dropFirst().map { laid.caretX(at: $0 + 1).x }
+        }
+        XCTAssertEqual(layout().layout(line: 16).replacements.count, 1, "the |---| row is a line")
+        let header = pipeXs(15), ada = pipeXs(17), grace = pipeXs(18)
+        XCTAssertEqual(header.count, 2)
+        for (a, b) in zip(header, ada) { XCTAssertEqual(a, b, accuracy: 1, "columns line up") }
+        for (a, b) in zip(header, grace) { XCTAssertEqual(a, b, accuracy: 1) }
+        make.editor.selectedRange = NSRange(location: (text as NSString).range(of: "Ada").location, length: 0)
+        for (a, b) in zip(header, pipeXs(17)) { XCTAssertEqual(a, b, accuracy: 1, "and stay lined up on the caret's line") }
+        make.editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"], let image = make.tabPreviewContent(0) {
+            try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("live-step5.png"))
+            engine.view.scrollY = layout().y(ofLine: 11)
+            engine.view.render()
+            if let lower = make.tabPreviewContent(0) {
+                try? NSBitmapImageRep(data: lower.tiffRepresentation!)?.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: directory).appendingPathComponent("live-step5-table.png"))
+            }
+        }
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

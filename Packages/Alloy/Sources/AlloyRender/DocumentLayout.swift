@@ -58,16 +58,24 @@ public struct InlineReplacement: Equatable {
     public let descent: CGFloat
     /// What it shows (two equal keys are the same image).
     public let key: String
+    /// The image's own size when it's drawn smaller than its box, centered in it (a displayed
+    /// formula centered in the column). Nil: the box's size.
+    public var drawSize: CGSize?
+    /// Shown on a line a selection touches too (a table's column padding, which keeps the
+    /// columns lined up while a row is edited).
+    public var persistent: Bool
 
-    public init(range: Range<Int>, image: CGImage, size: CGSize, descent: CGFloat, key: String) {
+    public init(range: Range<Int>, image: CGImage, size: CGSize, descent: CGFloat, key: String, drawSize: CGSize? = nil, persistent: Bool = false) {
         self.range = range
         self.image = image
         self.size = size
         self.descent = descent
         self.key = key
+        self.drawSize = drawSize
+        self.persistent = persistent
     }
 
-    public static func == (a: InlineReplacement, b: InlineReplacement) -> Bool { a.range == b.range && a.key == b.key }
+    public static func == (a: InlineReplacement, b: InlineReplacement) -> Bool { a.range == b.range && a.key == b.key && a.size == b.size }
 }
 
 /// A line laid out by CoreText, split into rows at the wrap width.
@@ -426,7 +434,7 @@ public final class DocumentLayout {
         let spans = fontSpans?(line) ?? []
         let revealed = revealedLines.contains(line)
         let hidden = revealed ? [] : (concealment?(line) ?? [])
-        let images = revealed ? [] : (replacements?(line) ?? [])
+        let images = (replacements?(line) ?? []).filter { !revealed || $0.persistent }
         if let known = byLine[line], known.fontSpans == spans, known.concealed == hidden, known.replacements == images { return known }
         let string = text.substring(text.range(ofLine: line))
         // Equal lines share a layout only with equal runs.
@@ -434,7 +442,7 @@ public final class DocumentLayout {
         if !spans.isEmpty { key += "\u{0}" + spans.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ",") }
         if fontSpans != nil { key += "\u{1}" }
         if !hidden.isEmpty { key += "\u{2}" + hidden.map { "\($0.lowerBound)-\($0.upperBound)" }.joined(separator: ",") }
-        if !images.isEmpty { key += "\u{3}" + images.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ",") }
+        if !images.isEmpty { key += "\u{3}" + images.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key):\($0.size.width)x\($0.size.height)" }.joined(separator: ",") }
         let laid: LaidOutLine
         if let cached = cache[key] {
             laid = cached

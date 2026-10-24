@@ -1,9 +1,10 @@
 # RFC: Live Markdown in Alloy
 
-*2026-10-23. Status: **in progress**: the direction and the five questions below are decided
-(the owner, 2026-10-23). Steps 1 (font runs, View → Live Markdown), 2 (rows of their own height), 3 (markup hidden
-away from the caret) and 4 (math typeset in place) are built; step 5 is next.
-Writer Mode's first step (Make alone, the aids) is built: `027f170`.*
+*2026-10-23. Status: **built**: the direction and the five questions below were decided by the
+owner on 2026-10-23, and all five steps are built (font runs, rows of their own height, markup
+hidden away from the caret, math typeset in place, blocks). Writer Mode's first step (Make
+alone, the aids) is built too: `027f170`. In Alloy: `FontSpan`, `Emphasis`, `InlineReplacement`.*
+Symbols: `LiveMarkdownBlocks`, `WriterPreferences`, `AlloyEditorEngine`.
 
 ## What the owner decided (2026-10-23)
 
@@ -70,7 +71,13 @@ budget to `SIDETests/Budgets.swift` (frame time on a long Markdown file).
    most sit on a line of their own. The plan was: a range drawn as an image of the client's (a formula, an inline image):
    a `CTRunDelegate` placeholder sized to it, and a second texture beside the glyph atlas for the
    images. Alloy stays free of math and networking: Side supplies the images (SwiftMath for math).
-5. **Block replacements.** Lines replaced by one drawn block: an image on its own line, a rule,
+5. **Block replacements.** *Built, as whole-line replacements rather than hidden lines:* a local
+   picture fitted to the column (its own texture, not the atlas), a remote one's placeholder
+   until ⌘-clicked, a rule, a displayed formula centered (`InlineReplacement.drawSize`), the
+   `|---|` row as a line, a table's pipes padded so its columns line up and kept on the caret's
+   line (`InlineReplacement.persistent`), and front matter as a tinted band with its `---` lines
+   taking no room (a card shorter than its lines would need rows below a plain line's height).
+   The plan was: lines replaced by one drawn block: an image on its own line, a rule,
    the front matter card, a table (question 3). The lines are hidden as folding hides them, and an
    anchor line takes the block's height; the source comes back when the caret enters it.
 

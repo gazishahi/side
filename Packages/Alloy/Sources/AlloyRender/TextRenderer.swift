@@ -270,6 +270,21 @@ public final class TextRenderer {
             encoder.setFragmentBytes(&atlasSize, length: MemoryLayout<Float>.size, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: quads.count)
         }
+        // Pictures, each from its own texture (uv in 0...1, so a size of 1).
+        if !imageDraws.isEmpty {
+            var viewport = SIMD2<Float>(Float(target.width), Float(target.height))
+            var one: Float = 1
+            encoder.setRenderPipelineState(pipeline)
+            encoder.setVertexBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.size, index: 1)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.setFragmentBytes(&one, length: MemoryLayout<Float>.size, index: 0)
+            for draw in imageDraws {
+                var quad = draw.quad
+                encoder.setVertexBytes(&quad, length: MemoryLayout<Quad>.stride, index: 0)
+                encoder.setFragmentTexture(draw.texture, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: 1)
+            }
+        }
         encoder.endEncoding()
         if let drawable { buffer.present(drawable) }
         if let completion { buffer.addCompletedHandler(completion) }
@@ -281,6 +296,35 @@ public final class TextRenderer {
     }
 
     private var atlasRestarted = false
+
+    /// Client images bigger than this many pixels get a texture of their own.
+    static let atlasImageLimit = 256 * 256
+    /// The frame's pictures, each with its texture, drawn after the rest.
+    private var imageDraws: [(texture: MTLTexture, quad: Quad)] = []
+    private var imageTextures: [String: MTLTexture] = [:]
+    private var usedImageKeys: Set<String> = []
+
+    private func texture(for image: CGImage, key: String) -> MTLTexture? {
+        usedImageKeys.insert(key)
+        if let known = imageTextures[key] { return known }
+        let width = image.width, height = image.height
+        guard width > 0, height > 0, width <= 16_384, height <= 16_384 else { return nil }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = .shaderRead
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: pixels, bytesPerRow: bytesPerRow)
+        imageTextures[key] = texture
+        return texture
+    }
 
     /// A line's glyphs, built once and placed by every frame that shows it: scrolling used to
     /// rebuild every glyph on screen each frame (an atlas lookup, its subpixel position, its
@@ -296,6 +340,8 @@ public final class TextRenderer {
         var inset: CGFloat = 0
         /// Quads with `rect.y` holding only the atlas entry's offset.
         var quads: [Quad] = []
+        /// Pictures drawn from textures of their own: x final, y below the line's top, in pixels.
+        var images: [(key: String, image: CGImage, rect: SIMD4<Float>)] = []
         /// Each quad's pen y below the line's top, in pixels, unrounded.
         var penY: [Float] = []
         /// Each row's baseline below the line's top, in points, and where its quads end.
@@ -319,8 +365,18 @@ public final class TextRenderer {
                 if run.isConcealed { continue }
                 if let index = run.replacement, laid.replacements.indices.contains(index), let position = run.positions.first {
                     let replacement = laid.replacements[index]
-                    let penX = ((layout.insets.width + position.x) * scale).rounded()
-                    if let entry = atlas.entry(image: replacement.image, key: replacement.key, ascent: replacement.size.height - replacement.descent, scale: scale) {
+                    let ascent = replacement.size.height - replacement.descent
+                    let draw = replacement.drawSize ?? replacement.size
+                    // Centered in its box when drawn smaller than it.
+                    let inset = CGPoint(x: (replacement.size.width - draw.width) / 2, y: (replacement.size.height - draw.height) / 2)
+                    let penX = ((layout.insets.width + position.x + inset.x) * scale).rounded()
+                    // A picture gets a texture of its own: in the atlas, a few would fill it.
+                    if replacement.image.width * replacement.image.height > Self.atlasImageLimit {
+                        built.images.append((replacement.key, replacement.image,
+                                             SIMD4(Float(penX), Float(((baseline - ascent + inset.y) * scale).rounded()), Float((draw.width * scale).rounded()), Float((draw.height * scale).rounded()))))
+                        continue
+                    }
+                    if let entry = atlas.entry(image: replacement.image, key: replacement.key, ascent: ascent - inset.y, scale: scale) {
                         built.quads.append(Quad(rect: SIMD4(Float(penX), Float(entry.offset.y), Float(entry.region.width), Float(entry.region.height)),
                                                 uv: SIMD4(Float(entry.region.minX), Float(entry.region.minY), Float(entry.region.width), Float(entry.region.height)),
                                                 color: frame.theme.text, kind: 2))
@@ -366,6 +422,12 @@ public final class TextRenderer {
     func buildQuads(_ frame: RenderFrame, layout: DocumentLayout) -> [Quad] {
         let scale = frame.scale
         let generation = atlas.generation
+        imageDraws.removeAll(keepingCapacity: true)
+        usedImageKeys.removeAll(keepingCapacity: true)
+        defer {
+            // Pictures off screen give their textures back once there are a few.
+            if imageTextures.count > 24 { imageTextures = imageTextures.filter { usedImageKeys.contains($0.key) } }
+        }
         var solids: [Quad] = []
         var glyphs: [Quad] = []
         var carets: [Quad] = []
@@ -479,6 +541,12 @@ public final class TextRenderer {
                     if faded { quad.color.w *= RenderFrame.fadedAlpha }
                     glyphs.append(quad)
                 }
+            }
+            for picture in built.images {
+                guard let texture = texture(for: picture.image, key: picture.key) else { continue }
+                var rect = picture.rect
+                rect.y += lineTop.rounded()
+                imageDraws.append((texture, Quad(rect: rect, uv: SIMD4(0, 0, 1, 1), color: SIMD4(1, 1, 1, 1), kind: 2)))
             }
 
             // A suffix after the line's last row, on its pill.

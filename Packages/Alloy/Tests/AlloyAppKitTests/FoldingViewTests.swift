@@ -210,6 +210,46 @@ final class FoldingViewTests: XCTestCase {
         editor.fontSpans = nil
     }
 
+    /// Step 5: a picture (its own texture), drawn centered in a wider box; and a box that stays
+    /// on the caret's line too.
+    func testPicturesCenteredBoxesAndPersistentOnes() throws {
+        try open()
+        let layout = editor.documentLayout
+        let scale = editor.window?.backingScaleFactor ?? 2
+        func solid(_ width: CGFloat, _ height: CGFloat, red: CGFloat, blue: CGFloat) -> CGImage {
+            let context = CGContext(data: nil, width: Int(width * scale), height: Int(height * scale), bitsPerComponent: 8, bytesPerRow: 0,
+                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)!
+            context.setFillColor(CGColor(red: red, green: 0, blue: blue, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: context.width, height: context.height))
+            return context.makeImage()!
+        }
+        let lineLength = layout.text.range(ofLine: 2).count
+        let picture = InlineReplacement(range: 0..<lineLength, image: solid(300, 150, red: 0, blue: 1), size: CGSize(width: 500, height: 150), descent: 0,
+                                        key: "blue", drawSize: CGSize(width: 300, height: 150))
+        editor.fontSpans = { _ in [] }
+        editor.setSelections([Selection(caret: 0)])
+        editor.inlineReplacements = { line in line == 2 ? [picture] : [] }
+        XCTAssertGreaterThan(layout.layout(line: 2).height, 150, "the row holds the picture")
+        let snapshot = try XCTUnwrap(editor.snapshot())
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: snapshot.tiffRepresentation!))
+        var blueColumns = Set<Int>()
+        for y in stride(from: 0, to: rep.pixelsHigh, by: 4) {
+            for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
+                if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), c.blueComponent > 0.85, c.redComponent < 0.3 { blueColumns.insert(x) }
+            }
+        }
+        XCTAssertFalse(blueColumns.isEmpty, "the picture is drawn, from its own texture")
+        let left = CGFloat(blueColumns.min() ?? 0) / CGFloat(rep.pixelsWide) * snapshot.size.width
+        XCTAssertEqual(left, layout.insets.width + 100, accuracy: 3, "centered in its 500-point box")
+
+        let padding = InlineReplacement(range: 4..<5, image: solid(1, 1, red: 0, blue: 0), size: CGSize(width: 40, height: 1), descent: 0, key: "pad", persistent: true)
+        editor.inlineReplacements = { line in line == 1 ? [padding] : [] }
+        editor.setSelections([Selection(caret: layout.text.offset(ofLine: 1) + 2)])
+        XCTAssertEqual(layout.layout(line: 1).replacements.count, 1, "a persistent box stays on the caret's line")
+        editor.inlineReplacements = nil
+        editor.fontSpans = nil
+    }
+
     func testFoldingHidesLinesAndUnfoldingBringsThemBack() throws {
         try open()
         let layout = editor.documentLayout

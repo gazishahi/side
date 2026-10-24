@@ -766,3 +766,272 @@ final class MarkdownPreviewLayoutManager: NSLayoutManager {
         }
     }
 }
+
+// MARK: - Live Markdown blocks (docs/SIDE_RFC_LIVE_MARKDOWN.md, step 5)
+
+/// What a whole line of a Live Markdown document becomes away from the caret, as Alloy draws it
+/// (each an `InlineReplacement`): a picture, a rule, the `|---|` under a table's header as a
+/// line; a table's pipes padded so its columns line up (kept on the caret's line too); front
+/// matter as a tinted band. Pictures are local files; a remote one is a placeholder until
+/// ⌘-clicked, so opening a file never asks the network for anything.
+@MainActor
+final class LiveMarkdownBlocks {
+    struct Context {
+        var documentURL: URL?
+        var columnWidth: CGFloat
+        var scale: CGFloat
+        var appearance: NSAppearance
+        var font: NSFont
+        var lineHeight: CGFloat
+        var textColor: NSColor
+    }
+
+    /// A remote picture arrived: lay the lines out again.
+    var onChange: (() -> Void)?
+    private var pictures: [String: (image: CGImage, size: CGSize)] = [:]
+    private var remote: [URL: NSImage] = [:]
+    private var loading: Set<URL> = []
+    private var generation = -1
+    private var tables: [Int: [InlineReplacement]] = [:]
+    private var frontMatter: ClosedRange<Int>??
+
+    /// Forgets what depended on the text (a table's widths, where front matter ends).
+    func textChanged(_ generation: Int) {
+        guard generation != self.generation else { return }
+        self.generation = generation
+        tables.removeAll()
+        frontMatter = nil
+    }
+
+    static let imageLine = try! NSRegularExpression(pattern: #"^\s*!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)\s*$"#)
+    static let ruleLine = try! NSRegularExpression(pattern: #"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$"#)
+    static let delimiterRow = try! NSRegularExpression(pattern: #"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$"#)
+
+    /// The picture a line shows, if it's one alone: its address.
+    static func pictureAddress(_ line: String) -> String? {
+        let ns = line as NSString
+        guard let match = imageLine.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        return ns.substring(with: match.range(at: 1))
+    }
+
+    /// A remote picture's address on this line, to load on ⌘-click.
+    func remoteAddress(_ line: String) -> URL? {
+        guard let address = Self.pictureAddress(line), let url = URL(string: address), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return remote[url] == nil ? url : nil
+    }
+
+    func loadRemote(_ url: URL) {
+        guard !loading.contains(url) else { return }
+        loading.insert(url)
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            let image = data.flatMap(NSImage.init(data:))
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.loading.remove(url)
+                if let image { self.remote[url] = image }
+                self.onChange?()
+            }
+        }.resume()
+    }
+
+    /// The line's replacements, and whether they're the whole line (a block: math isn't added).
+    func replacements(line: Int, lineText: String, text: Rope, context: Context) -> (whole: Bool, items: [InlineReplacement]) {
+        let length = (lineText as NSString).length
+        let range = NSRange(location: 0, length: length)
+        if let span = frontMatterLines(text), span.contains(line) {
+            // Its `---` lines take no room in the band; its keys and values stay as text.
+            return lineText.trimmingCharacters(in: .whitespaces) == "---" && length > 0
+                ? (true, [blank(range: 0..<length, context: context)]) : (false, [])
+        }
+        if let address = Self.pictureAddress(lineText) {
+            return (true, [picture(address, range: 0..<length, context: context)])
+        }
+        if Self.ruleLine.firstMatch(in: lineText, range: range) != nil, line == 0 || text.substring(text.range(ofLine: line - 1)).trimmingCharacters(in: .whitespaces).isEmpty {
+            return (true, [rule(width: context.columnWidth, range: 0..<length, context: context)])
+        }
+        if lineText.contains("|") {
+            if tables[line] == nil { layOutTable(around: line, text: text, context: context) }
+            if let items = tables[line], !items.isEmpty { return (items.count == 1 && items[0].range == 0..<length, items) }
+        }
+        return (false, [])
+    }
+
+    /// Front matter's band, tinted (nil: not front matter).
+    func tint(line: Int, text: Rope, context: Context) -> SIMD4<Float>? {
+        guard let span = frontMatterLines(text), span.contains(line) else { return nil }
+        var color = SIMD4<Float>(0, 0, 0, 0)
+        context.appearance.performAsCurrentDrawingAppearance {
+            if let c = context.textColor.withAlphaComponent(0.05).usingColorSpace(.sRGB) {
+                color = SIMD4(Float(c.redComponent), Float(c.greenComponent), Float(c.blueComponent), Float(c.alphaComponent))
+            }
+        }
+        return color
+    }
+
+    private func frontMatterLines(_ text: Rope) -> ClosedRange<Int>? {
+        if let known = frontMatter { return known }
+        var found: ClosedRange<Int>?
+        if text.lineCount > 2, text.substring(text.range(ofLine: 0)).trimmingCharacters(in: .whitespaces) == "---" {
+            for line in 1..<min(text.lineCount, 120) where text.substring(text.range(ofLine: line)).trimmingCharacters(in: .whitespaces) == "---" {
+                let head = (1..<line).map { text.substring(text.range(ofLine: $0)) }.joined(separator: "\n")
+                if MarkdownPreview.frontMatter("---\n" + head + "\n---\n") != nil { found = 0...line }
+                break
+            }
+        }
+        frontMatter = .some(found)
+        return found
+    }
+
+    // MARK: Drawing
+
+    private func render(_ size: CGSize, _ context: Context, _ draw: () -> Void) -> CGImage? {
+        let width = max(1, Int((size.width * context.scale).rounded())), height = max(1, Int((size.height * context.scale).rounded()))
+        guard let bitmap = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: bitmap, flipped: false)
+        bitmap.scaleBy(x: context.scale, y: context.scale)
+        context.appearance.performAsCurrentDrawingAppearance(draw)
+        NSGraphicsContext.restoreGraphicsState()
+        return bitmap.makeImage()
+    }
+
+    private func blank(range: Range<Int>, context: Context) -> InlineReplacement {
+        let key = "blank|\(context.scale)"
+        let image = pictures[key]?.image ?? render(CGSize(width: 1, height: 1), context) {}!
+        pictures[key] = (image, CGSize(width: 1, height: 1))
+        return InlineReplacement(range: range, image: image, size: CGSize(width: 1, height: 1), descent: 0, key: key)
+    }
+
+    private func rule(width: CGFloat, range: Range<Int>, context: Context) -> InlineReplacement {
+        let size = CGSize(width: max(40, width), height: context.lineHeight)
+        let key = "rule|\(size.width)|\(context.scale)|\(context.textColor)"
+        if pictures[key] == nil, let image = render(size, context, {
+            context.textColor.withAlphaComponent(0.2).setFill()
+            NSRect(x: 0, y: (size.height / 2).rounded(), width: size.width, height: 1).fill()
+        }) { pictures[key] = (image, size) }
+        let made = pictures[key]!
+        return InlineReplacement(range: range, image: made.image, size: made.size, descent: 0, key: key)
+    }
+
+    private func picture(_ address: String, range: Range<Int>, context: Context) -> InlineReplacement {
+        let url: URL?
+        if let parsed = URL(string: address), let scheme = parsed.scheme?.lowercased(), ["http", "https"].contains(scheme) {
+            url = parsed
+        } else if address.hasPrefix("file://") {
+            url = URL(string: address)
+        } else if let folder = context.documentURL?.deletingLastPathComponent() {
+            let path = address.removingPercentEncoding ?? address
+            url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : folder.appendingPathComponent(path).standardizedFileURL
+        } else {
+            url = nil
+        }
+        let isRemote = url.map { ["http", "https"].contains($0.scheme?.lowercased() ?? "") } ?? false
+        let image: NSImage? = isRemote ? url.flatMap { remote[$0] } : url.flatMap { NSImage(contentsOf: $0) }
+        guard let image, image.size.width > 0, image.size.height > 0 else {
+            let note = isRemote ? "Image from \(url?.host ?? "the web") \u{00B7} \u{2318}-click to load" : "Image not found: \(address)"
+            return placeholder(note, range: range, context: context)
+        }
+        let fit = min(1, context.columnWidth / image.size.width, 480 / image.size.height)
+        let size = CGSize(width: (image.size.width * fit).rounded(), height: (image.size.height * fit).rounded())
+        let stamp = url.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }?.timeIntervalSince1970 ?? 0
+        let key = "picture|\(url?.absoluteString ?? address)|\(stamp)|\(size.width)x\(size.height)|\(context.scale)"
+        if pictures[key] == nil, let rendered = render(size, context, { image.draw(in: NSRect(origin: .zero, size: size)) }) {
+            if pictures.count > 60 { pictures.removeAll() }
+            pictures[key] = (rendered, size)
+        }
+        guard let made = pictures[key] else { return placeholder("Image couldn't be drawn: \(address)", range: range, context: context) }
+        return InlineReplacement(range: range, image: made.image, size: made.size, descent: 0, key: key)
+    }
+
+    private func placeholder(_ note: String, range: Range<Int>, context: Context) -> InlineReplacement {
+        let font = DS.Text.caption()
+        let textSize = (note as NSString).size(withAttributes: [.font: font])
+        let size = CGSize(width: min(context.columnWidth, ceil(textSize.width) + 28), height: 30)
+        let key = "placeholder|\(note)|\(size.width)|\(context.scale)|\(context.textColor)"
+        if pictures[key] == nil, let image = render(size, context, {
+            context.textColor.withAlphaComponent(0.06).setFill()
+            NSBezierPath(roundedRect: NSRect(origin: .zero, size: size), xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
+            (note as NSString).draw(at: NSPoint(x: 14, y: (size.height - textSize.height) / 2),
+                                    withAttributes: [.font: font, .foregroundColor: context.textColor.withAlphaComponent(0.6)])
+        }) { pictures[key] = (image, size) }
+        let made = pictures[key]!
+        return InlineReplacement(range: range, image: made.image, size: made.size, descent: 0, key: key)
+    }
+
+    // MARK: Tables
+
+    /// The table a line is in (a header row, then a `|---|` row, then rows), laid out once per
+    /// edit: each column as wide as its widest cell, every pipe padded to its column's edge.
+    private func layOutTable(around line: Int, text: Rope, context: Context) {
+        func row(_ index: Int) -> String? {
+            guard index >= 0, index < text.lineCount else { return nil }
+            let string = text.substring(text.range(ofLine: index))
+            return string.contains("|") ? string : nil
+        }
+        var first = line, last = line
+        while first > 0, line - first < 500, row(first - 1) != nil { first -= 1 }
+        while last + 1 < text.lineCount, last - line < 500, row(last + 1) != nil { last += 1 }
+        guard last > first, let delimiter = row(first + 1),
+              Self.delimiterRow.firstMatch(in: delimiter, range: NSRange(location: 0, length: (delimiter as NSString).length)) != nil else {
+            tables[line] = []
+            return
+        }
+        let attributes: [NSAttributedString.Key: Any] = [.font: context.font]
+        let pipeWidth = ("|" as NSString).size(withAttributes: attributes).width
+        // Each row's cells: (start, end) of the text between pipes, and its pipes' offsets.
+        struct Row { var pipes: [Int]; var widths: [CGFloat]; var leading: Bool }
+        var rows: [Int: Row] = [:]
+        var columns: [CGFloat] = []
+        for index in first...last {
+            let units = Array(text.substring(text.range(ofLine: index)).utf16)
+            var pipes: [Int] = []
+            for (offset, unit) in units.enumerated() where unit == 0x7C && (offset == 0 || units[offset - 1] != 0x5C) { pipes.append(offset) }
+            let leading = String(utf16CodeUnits: units, count: units.count).trimmingCharacters(in: .whitespaces).hasPrefix("|")
+            // The text before each pipe; a leading pipe's (indent) isn't a cell.
+            var widths: [CGFloat] = []
+            var start = 0
+            for pipe in pipes {
+                let cell = String(utf16CodeUnits: Array(units[start..<pipe]), count: pipe - start)
+                widths.append((cell as NSString).size(withAttributes: attributes).width)
+                start = pipe + 1
+            }
+            if leading, !widths.isEmpty { widths.removeFirst() }
+            rows[index] = Row(pipes: pipes, widths: widths, leading: leading)
+            guard index != first + 1 else { continue }
+            for (column, width) in widths.enumerated() {
+                if column < columns.count { columns[column] = max(columns[column], width) } else { columns.append(width) }
+            }
+        }
+        let ascent = ceil(context.font.ascender), descent = ceil(-context.font.descender)
+        let tableWidth = columns.reduce(0, +) + pipeWidth * CGFloat(columns.count + 1)
+        for index in first...last {
+            guard let row = rows[index] else { continue }
+            if index == first + 1 {
+                let length = text.range(ofLine: index).count
+                tables[index] = [rule(width: min(context.columnWidth, tableWidth), range: 0..<length, context: context)]
+                continue
+            }
+            var items: [InlineReplacement] = []
+            // The pipe after each cell sits at its column's edge: padded by what the cell lacks.
+            // A leading pipe has no cell before it (no padding), but is drawn as quietly.
+            let closing = row.leading ? Array(row.pipes.dropFirst()) : row.pipes
+            var pipes: [(pipe: Int, pad: CGFloat)] = row.leading && !row.pipes.isEmpty ? [(row.pipes[0], 0)] : []
+            for (column, pipe) in closing.enumerated() where column < row.widths.count && column < columns.count {
+                pipes.append((pipe, max(0, (columns[column] - row.widths[column]).rounded())))
+            }
+            for (pipe, pad) in pipes {
+                let size = CGSize(width: pad + pipeWidth, height: ascent + descent)
+                let key = "pipe|\(pad)|\(context.scale)|\(context.textColor)|\(context.font.pointSize)"
+                if pictures[key] == nil, let image = render(size, context, {
+                    ("|" as NSString).draw(at: NSPoint(x: pad, y: descent - ceil(-context.font.descender)),
+                                           withAttributes: [.font: context.font, .foregroundColor: context.textColor.withAlphaComponent(0.35)])
+                }) { pictures[key] = (image, size) }
+                guard let made = pictures[key] else { continue }
+                items.append(InlineReplacement(range: pipe..<(pipe + 1), image: made.image, size: made.size, descent: descent, key: key, persistent: true))
+            }
+            tables[index] = items
+        }
+        if tables[line] == nil { tables[line] = [] }
+    }
+}
