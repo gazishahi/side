@@ -1,8 +1,8 @@
 # RFC: Live Markdown in Alloy
 
 *2026-10-23. Status: **in progress**: the direction and the five questions below are decided
-(the owner, 2026-10-23). Steps 1 (font runs, View → Live Markdown), 2 (rows of their own height) and 3 (markup hidden
-away from the caret) are built; step 4 is next.
+(the owner, 2026-10-23). Steps 1 (font runs, View → Live Markdown), 2 (rows of their own height), 3 (markup hidden
+away from the caret) and 4 (math typeset in place) are built; step 5 is next.
 Writer Mode's first step (Make alone, the aids) is built: `027f170`.*
 
 ## What the owner decided (2026-10-23)
@@ -62,7 +62,12 @@ budget to `SIDETests/Budgets.swift` (frame time on a long Markdown file).
    steps over hidden marks; copying copies the source. Which marks show depends on where the caret
    is (question 1), so the reveal state joins the cache key and only the lines that change reveal
    are laid out again.
-4. **Inline replacements.** A range drawn as an image of the client's (a formula, an inline image):
+4. **Inline replacements.** *Built for math:* `InlineReplacement` (a range, the client's image,
+   its size and descent) is laid out as one sized run delegate (the rest of its text at no
+   width) and drawn from the glyph atlas, which now also holds client images. Side typesets
+   Markdown's `$…$` and `$$…$$` (found by the inline grammar's `latex_block`, `Emphasis.math`)
+   with SwiftMath, keeping the preview's rule that prices aren't math. Images move to step 5:
+   most sit on a line of their own. The plan was: a range drawn as an image of the client's (a formula, an inline image):
    a `CTRunDelegate` placeholder sized to it, and a second texture beside the glyph atlas for the
    images. Alloy stays free of math and networking: Side supplies the images (SwiftMath for math).
 5. **Block replacements.** Lines replaced by one drawn block: an image on its own line, a rule,

@@ -30,9 +30,20 @@ public final class AlloyEditorView: NSView {
         }
     }
 
+    /// Ranges each line draws as images (typeset formulas) unless a selection touches it; see
+    /// `DocumentLayout.replacements`. Nil: none.
+    public var inlineReplacements: ((Int) -> [InlineReplacement])? {
+        didSet {
+            documentLayout.replacements = inlineReplacements
+            updateRevealedLines()
+            updateDocumentHeight()
+            setNeedsRender()
+        }
+    }
+
     /// The lines whose markup shows: every line a selection touches.
     func updateRevealedLines() {
-        guard concealment != nil else { documentLayout.revealedLines = []; return }
+        guard concealment != nil || inlineReplacements != nil else { documentLayout.revealedLines = []; return }
         let text = buffer.text
         var lines = Set<Int>()
         for selection in buffer.selections {
@@ -276,7 +287,7 @@ public final class AlloyEditorView: NSView {
     func selectionChanged() {
         if isExpandingSelection { isExpandingSelection = false } else { selectionHistory.removeAll() }
         updateRevealedLines()
-        if concealment != nil { updateDocumentHeight() }
+        if concealment != nil || inlineReplacements != nil { updateDocumentHeight() }
         snippetCheckSelection()
         revealFoldedSelections()
         restartBlink()
@@ -548,6 +559,7 @@ public final class AlloyEditorView: NSView {
         documentLayout.insets = insets
         documentLayout.fontSpans = fontSpans
         documentLayout.concealment = concealment
+        documentLayout.replacements = inlineReplacements
         updateRevealedLines()
         updateWrapWidth()
         updateDocumentHeight()

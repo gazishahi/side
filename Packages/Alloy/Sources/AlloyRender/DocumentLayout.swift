@@ -16,6 +16,8 @@ public struct GlyphRun {
     public let isColor: Bool
     /// Hidden markup (concealed): laid out at no width, not drawn.
     public var isConcealed = false
+    /// The line's replacement this run stands for (its box), if any.
+    public var replacement: Int?
 }
 
 /// A visual row: all of a line, or one wrapped piece of it.
@@ -44,6 +46,30 @@ public struct FontSpan: Equatable {
     public static func == (a: FontSpan, b: FontSpan) -> Bool { a.range == b.range && a.key == b.key }
 }
 
+/// A range of a line drawn as an image instead of its text (a typeset formula): laid out as one
+/// box its size on the baseline, `descent` below it. Where a selection touches the line, its
+/// text shows instead.
+public struct InlineReplacement: Equatable {
+    public let range: Range<Int>
+    /// Pixels at the screen's scale.
+    public let image: CGImage
+    /// In points.
+    public let size: CGSize
+    public let descent: CGFloat
+    /// What it shows (two equal keys are the same image).
+    public let key: String
+
+    public init(range: Range<Int>, image: CGImage, size: CGSize, descent: CGFloat, key: String) {
+        self.range = range
+        self.image = image
+        self.size = size
+        self.descent = descent
+        self.key = key
+    }
+
+    public static func == (a: InlineReplacement, b: InlineReplacement) -> Bool { a.range == b.range && a.key == b.key }
+}
+
 /// A line laid out by CoreText, split into rows at the wrap width.
 public final class LaidOutLine {
     public let text: String
@@ -70,11 +96,15 @@ public final class LaidOutLine {
 
     /// The ranges it hides (laid out at no width).
     public let concealed: [Range<Int>]
+    /// The ranges it draws as images.
+    public let replacements: [InlineReplacement]
 
-    init(text: String, font: CTFont, tabWidth: CGFloat, wrapWidth: CGFloat?, fontSpans: [FontSpan] = [], concealed: [Range<Int>] = [], metrics: Metrics? = nil) {
+    init(text: String, font: CTFont, tabWidth: CGFloat, wrapWidth: CGFloat?, fontSpans: [FontSpan] = [], concealed: [Range<Int>] = [],
+         replacements: [InlineReplacement] = [], metrics: Metrics? = nil) {
         self.text = text
         self.fontSpans = fontSpans
         self.concealed = concealed
+        self.replacements = replacements
         let attributes = Self.attributes(font: font, tabWidth: tabWidth)
         // A UTF-16 string, made once: from a Swift string (UTF-8 inside), CoreText's character
         // and offset reads were converted and copied again for each row of a wrapped line
@@ -90,6 +120,15 @@ public final class LaidOutLine {
             let upper = min(range.upperBound, length)
             attributed.addAttribute(NSAttributedString.Key(kCTRunDelegateAttributeName as String), value: Self.nothing,
                                     range: NSRange(location: range.lowerBound, length: upper - range.lowerBound))
+        }
+        // A replacement: its first character is a box the image's size, the rest take no room.
+        for (index, replacement) in replacements.enumerated() where replacement.range.lowerBound < length && !replacement.range.isEmpty {
+            let upper = min(replacement.range.upperBound, length)
+            let delegateKey = NSAttributedString.Key(kCTRunDelegateAttributeName as String)
+            attributed.addAttribute(delegateKey, value: Self.nothing, range: NSRange(location: replacement.range.lowerBound, length: upper - replacement.range.lowerBound))
+            attributed.addAttribute(delegateKey, value: Self.box(width: replacement.size.width, ascent: replacement.size.height - replacement.descent, descent: replacement.descent),
+                                    range: NSRange(location: replacement.range.lowerBound, length: 1))
+            attributed.addAttribute(Self.replacementKey, value: index, range: NSRange(location: replacement.range.lowerBound, length: 1))
         }
         let typesetter = CTTypesetterCreateWithAttributedString(attributed)
         var rows: [LayoutRow] = []
@@ -150,6 +189,23 @@ public final class LaidOutLine {
                 NSAttributedString.Key(kCTParagraphStyleAttributeName as String): paragraph]
     }
 
+    static let replacementKey = NSAttributedString.Key("AlloyReplacement")
+
+    private final class Box {
+        let width: CGFloat, ascent: CGFloat, descent: CGFloat
+        init(width: CGFloat, ascent: CGFloat, descent: CGFloat) { self.width = width; self.ascent = ascent; self.descent = descent }
+    }
+
+    /// A run delegate of a given size: the room a replacement's image takes.
+    static func box(width: CGFloat, ascent: CGFloat, descent: CGFloat) -> CTRunDelegate {
+        var callbacks = CTRunDelegateCallbacks(version: kCTRunDelegateVersion1,
+                                               dealloc: { Unmanaged<Box>.fromOpaque($0).release() },
+                                               getAscent: { Unmanaged<Box>.fromOpaque($0).takeUnretainedValue().ascent },
+                                               getDescent: { Unmanaged<Box>.fromOpaque($0).takeUnretainedValue().descent },
+                                               getWidth: { Unmanaged<Box>.fromOpaque($0).takeUnretainedValue().width })
+        return CTRunDelegateCreate(&callbacks, Unmanaged.passRetained(Box(width: width, ascent: ascent, descent: descent)).toOpaque())!
+    }
+
     /// A run delegate of no width, ascent or descent: what hidden markup is laid out as.
     nonisolated(unsafe) static let nothing: CTRunDelegate = {
         var callbacks = CTRunDelegateCallbacks(version: kCTRunDelegateVersion1, dealloc: { _ in }, getAscent: { _ in 0 },
@@ -174,7 +230,8 @@ public final class LaidOutLine {
             let rowOffset = positions.first.map { _ in CGFloat(CTLineGetOffsetForStringIndex(line, rowStart, nil)) } ?? 0
             var glyphRun = GlyphRun(font: font, glyphs: glyphs, positions: positions.map { CGPoint(x: $0.x - rowOffset, y: $0.y) },
                                     indices: indices.map { Int($0) }, isColor: isColor)
-            glyphRun.isConcealed = attributes[kCTRunDelegateAttributeName as String] != nil
+            glyphRun.replacement = (attributes[replacementKey.rawValue] as? NSNumber)?.intValue
+            glyphRun.isConcealed = glyphRun.replacement == nil && attributes[kCTRunDelegateAttributeName as String] != nil
             return glyphRun
         }
     }
@@ -238,9 +295,11 @@ public final class DocumentLayout {
     /// Markup a line hides (ranges within it), and the lines that show theirs anyway (where the
     /// caret or a selection is). Nil: nothing hidden.
     public var concealment: ((Int) -> [Range<Int>])? { didSet { byLine.removeAll(keepingCapacity: true) } }
+    /// Ranges a line draws as images (formulas), except where a selection touches it. Nil: none.
+    public var replacements: ((Int) -> [InlineReplacement])? { didSet { byLine.removeAll(keepingCapacity: true) } }
     public var revealedLines: Set<Int> = [] {
         didSet {
-            guard revealedLines != oldValue, concealment != nil else { return }
+            guard revealedLines != oldValue, concealment != nil || replacements != nil else { return }
             for line in revealedLines.symmetricDifference(oldValue) { byLine[line] = nil }
         }
     }
@@ -365,18 +424,23 @@ public final class DocumentLayout {
     /// A line's layout, measured now if it wasn't.
     public func layout(line: Int) -> LaidOutLine {
         let spans = fontSpans?(line) ?? []
-        let hidden = revealedLines.contains(line) ? [] : (concealment?(line) ?? [])
-        if let known = byLine[line], known.fontSpans == spans, known.concealed == hidden { return known }
+        let revealed = revealedLines.contains(line)
+        let hidden = revealed ? [] : (concealment?(line) ?? [])
+        let images = revealed ? [] : (replacements?(line) ?? [])
+        if let known = byLine[line], known.fontSpans == spans, known.concealed == hidden, known.replacements == images { return known }
         let string = text.substring(text.range(ofLine: line))
         // Equal lines share a layout only with equal runs.
-        let key = (spans.isEmpty ? string : string + "\u{0}" + spans.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ","))
-            + (fontSpans == nil ? "" : "\u{1}")
-            + (hidden.isEmpty ? "" : "\u{2}" + hidden.map { "\($0.lowerBound)-\($0.upperBound)" }.joined(separator: ","))
+        var key = string
+        if !spans.isEmpty { key += "\u{0}" + spans.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ",") }
+        if fontSpans != nil { key += "\u{1}" }
+        if !hidden.isEmpty { key += "\u{2}" + hidden.map { "\($0.lowerBound)-\($0.upperBound)" }.joined(separator: ",") }
+        if !images.isEmpty { key += "\u{3}" + images.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ",") }
         let laid: LaidOutLine
         if let cached = cache[key] {
             laid = cached
         } else {
-            laid = LaidOutLine(text: string, font: font, tabWidth: tabWidth, wrapWidth: wrapWidth, fontSpans: spans, concealed: hidden, metrics: metrics)
+            laid = LaidOutLine(text: string, font: font, tabWidth: tabWidth, wrapWidth: wrapWidth, fontSpans: spans, concealed: hidden,
+                               replacements: images, metrics: metrics)
             cache[key] = laid
             cacheOrder.append(key)
             if cacheOrder.count > Self.cacheLimit {

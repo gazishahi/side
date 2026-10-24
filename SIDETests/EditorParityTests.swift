@@ -522,6 +522,32 @@ final class EditorParityTests: XCTestCase {
         _ = url
     }
 
+    /// Live Markdown, step 4: TeX math typeset in its place away from the caret.
+    func testLiveMarkdownTypesetsMath() throws {
+        defer { MakeWorkspaceViewController.preferences.removeObject(forKey: MakeWorkspaceViewController.liveMarkdownKey) }
+        let text = "# Quadratics\n\nThe roots of $ax^2 + bx + c = 0$ are\n\n$$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$\n\nand it costs $5 to $10.\n\nBroken: $\\notacommand{x}$\n"
+        _ = try open("math.md", text)
+        let engine = make.editor as! AlloyEditorEngine
+        make.toggleLiveMarkdown(nil)
+        make.editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        let layout = { engine.view.documentLayout }
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, layout().layout(line: 2).replacements.isEmpty { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        let inline = layout().layout(line: 2)
+        XCTAssertEqual(inline.replacements.count, 1, "the inline formula")
+        XCTAssertEqual(inline.replacements.first?.range, 13..<32)
+        XCTAssertEqual(layout().layout(line: 4).replacements.count, 1, "the displayed one")
+        XCTAssertGreaterThan(layout().layout(line: 4).height, layout().layout(line: 2).height, "a fraction needs a taller row")
+        XCTAssertEqual(layout().layout(line: 6).replacements, [], "prices aren't math")
+        XCTAssertEqual(layout().layout(line: 8).replacements, [], "what can't be typeset stays as source")
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"], let image = make.tabPreviewContent(0) {
+            try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("live-step4.png"))
+        }
+        make.editor.selectedRange = NSRange(location: (text as NSString).range(of: "roots").location, length: 0)
+        XCTAssertEqual(layout().layout(line: 2).replacements, [], "the caret's line shows the TeX")
+    }
+
     func testAReadOnlyEditorTakesNoTyping() throws {
         try open("ro.swift", "fixed\n")
         make.editor.isEditable = false

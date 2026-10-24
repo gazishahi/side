@@ -69,3 +69,6 @@
 
 (inline_link (link_destination) @conceal)
 (inline_link (link_title) @conceal)
+
+; TeX math, `$…$` and `$$…$$`: a client can typeset it and draw it in its place.
+(latex_block) @markup.math

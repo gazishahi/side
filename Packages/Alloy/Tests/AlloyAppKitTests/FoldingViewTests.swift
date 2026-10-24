@@ -175,6 +175,41 @@ final class FoldingViewTests: XCTestCase {
         editor.concealment = nil
     }
 
+    /// Step 4 of live Markdown: a range drawn as the client's image (a formula), as a box its
+    /// size; where a selection touches the line, its text instead.
+    func testAnInlineReplacementDrawsItsImage() throws {
+        try open()
+        let layout = editor.documentLayout
+        let scale = editor.window?.backingScaleFactor ?? 2
+        let red = CGContext(data: nil, width: Int(60 * scale), height: Int(40 * scale), bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)!
+        red.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        red.fill(CGRect(x: 0, y: 0, width: red.width, height: red.height))
+        let image = InlineReplacement(range: 4..<8, image: red.makeImage()!, size: CGSize(width: 60, height: 40), descent: 10, key: "red")
+        editor.fontSpans = { _ in [] }   // rows vary, as prose's do
+        editor.setSelections([Selection(caret: 0)])
+        editor.inlineReplacements = { line in line == 1 ? [image] : [] }
+        let laid = layout.layout(line: 1)
+        XCTAssertEqual(laid.caretX(at: 8).x - laid.caretX(at: 4).x, 60, accuracy: 0.5, "the box is the image's width")
+        XCTAssertGreaterThan(laid.height, layout.lineHeight + 15, "the row grows to hold it")
+        XCTAssertTrue(laid.rows[0].runs.contains { $0.replacement == 0 })
+
+        let snapshot = try XCTUnwrap(editor.snapshot())
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: snapshot.tiffRepresentation!))
+        var redPixels = 0
+        for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+            for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
+                if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), c.redComponent > 0.85, c.greenComponent < 0.45, c.blueComponent < 0.3 { redPixels += 1 }
+            }
+        }
+        XCTAssertGreaterThan(redPixels, 300, "the image is drawn")
+
+        editor.setSelections([Selection(caret: layout.text.offset(ofLine: 1) + 2)])
+        XCTAssertEqual(layout.layout(line: 1).replacements, [], "the caret's line shows the source")
+        editor.inlineReplacements = nil
+        editor.fontSpans = nil
+    }
+
     func testFoldingHidesLinesAndUnfoldingBringsThemBack() throws {
         try open()
         let layout = editor.documentLayout

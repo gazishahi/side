@@ -26,6 +26,7 @@ public struct SyntaxTheme: Sendable {
         "text.title.4": [.bold, .heading(4)], "text.title.5": [.bold, .heading(5)], "text.title.6": [.bold, .heading(6)],
         "text.literal": .code, "markup.raw": .code,
         "conceal": .concealed,
+        "markup.math": .math,
     ]
 
     public func color(for capture: String) -> SIMD4<Float>? { lookup(colors, capture) }

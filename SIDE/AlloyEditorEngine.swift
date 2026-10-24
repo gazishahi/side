@@ -4,6 +4,7 @@ import AlloyRender
 import AlloySyntax
 import AppKit
 import Heron
+import SwiftMath
 
 /// Make's editor (SIDE_RFC_ALLOY.md): Alloy behind the `EditorEngine` seam.
 @MainActor
@@ -36,7 +37,9 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
             view.setFont(DS.Text.Fonts.font(.reading, size: Self.proseSize) as CTFont)
             view.fontSpans = { [weak self] line in self?.proseSpans(line) ?? [] }
             view.concealment = { [weak self] line in self?.proseHidden(line) ?? [] }
+            view.inlineReplacements = { [weak self] line in self?.proseMath(line) ?? [] }
         } else {
+            view.inlineReplacements = nil
             view.concealment = nil
             view.fontSpans = nil
             view.setFont(appearance.font as CTFont)
@@ -58,6 +61,80 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
             }
         }
         return runs.map { FontSpan(range: $0.range, font: proseFont($0.emphasis)) }
+    }
+
+    /// A typeset formula, kept: lines are laid out again as the caret moves.
+    private struct Formula {
+        let image: CGImage
+        let size: CGSize
+        let descent: CGFloat
+    }
+    private var formulas: [String: Formula?] = [:]
+
+    /// The line's TeX math (`$…$` inline, `$$…$$` displayed), typeset (step 4): drawn in its
+    /// place away from the caret, in Latin Modern at the text's size and color, as the preview
+    /// sets it. A formula SwiftMath can't read stays as its source.
+    private func proseMath(_ line: Int) -> [InlineReplacement] {
+        guard let document = document as? AlloyEditorDocument, let highlighter = document.highlighter else { return [] }
+        var ranges: [Range<Int>] = []
+        for span in highlighter.spans(forLine: line) where span.emphasis.contains(.math) {
+            if let last = ranges.last, last.upperBound == span.range.lowerBound {
+                ranges[ranges.count - 1] = last.lowerBound..<span.range.upperBound
+            } else {
+                ranges.append(span.range)
+            }
+        }
+        guard !ranges.isEmpty else { return [] }
+        let text = document.buffer.text
+        let lineText = text.substring(text.range(ofLine: line)) as NSString
+        let scale = view.window?.backingScaleFactor ?? 2
+        let color = view.theme.text
+        return ranges.compactMap { range in
+            guard range.upperBound <= lineText.length else { return nil }
+            let source = lineText.substring(with: NSRange(location: range.lowerBound, length: range.count))
+            // Math that starts and ends on this line: a block running over lines stays source.
+            guard source.count >= 3, source.hasPrefix("$"), source.hasSuffix("$") else { return nil }
+            let display = source.hasPrefix("$$") && source.hasSuffix("$$") && source.count >= 5
+            // Prices aren't math (the preview's rule): an inline $ opens before a non-space and
+            // closes after one, not before a digit ("$5 to $10").
+            if !display {
+                let units = Array(source.utf16)
+                let after = range.upperBound < lineText.length ? lineText.character(at: range.upperBound) : 0x20
+                func space(_ unit: UInt16) -> Bool { unit == 0x20 || unit == 0x09 }
+                if space(units[1]) || space(units[units.count - 2]) || (0x30...0x39).contains(after) { return nil }
+            }
+            let latex = String(source.dropFirst(display ? 2 : 1).dropLast(display ? 2 : 1)).trimmingCharacters(in: .whitespaces)
+            guard !latex.isEmpty else { return nil }
+            let size = (Self.proseSize * (display ? 1.15 : 1)).rounded()
+            let key = "\(display)|\(size)|\(scale)|\(color)|\(latex)"
+            let formula: Formula?
+            if let known = formulas[key] {
+                formula = known
+            } else {
+                formula = Self.typeset(latex, size: size, display: display, scale: scale,
+                                       color: NSColor(srgbRed: CGFloat(color.x), green: CGFloat(color.y), blue: CGFloat(color.z), alpha: CGFloat(color.w)))
+                if formulas.count > 500 { formulas.removeAll() }
+                formulas[key] = formula
+            }
+            guard let formula else { return nil }
+            return InlineReplacement(range: range, image: formula.image, size: formula.size, descent: formula.descent, key: key)
+        }
+    }
+
+    private static func typeset(_ latex: String, size: CGFloat, display: Bool, scale: CGFloat, color: NSColor) -> Formula? {
+        var math = MathImage(latex: latex, fontSize: size, textColor: color, labelMode: display ? .display : .text)
+        let (error, image, layout) = math.asImage()
+        guard error == nil, let image, image.size.width > 0, image.size.height > 0 else { return nil }
+        let width = Int(ceil(image.size.width * scale)), height = Int(ceil(image.size.height * scale))
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        context.scaleBy(x: scale, y: scale)
+        image.draw(in: NSRect(origin: .zero, size: image.size))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let pixels = context.makeImage() else { return nil }
+        return Formula(image: pixels, size: image.size, descent: layout?.descent ?? 0)
     }
 
     /// The markup a line hides away from the caret (step 3): `**`, `` ` ``, a link's URL, a

@@ -43,6 +43,8 @@ public struct Emphasis: OptionSet, Sendable, Hashable {
 
     /// Markup prose hides away from the caret: `**`, a heading's `#`, a link's URL.
     public static let concealed = Emphasis(rawValue: 64)
+    /// TeX math (`$…$`, `$$…$$`), which a client can typeset and draw in its place.
+    public static let math = Emphasis(rawValue: 128)
 }
 
 /// A color, and an emphasis, for a UTF-16 range of a line (syntax highlighting). A span with
@@ -313,8 +315,19 @@ public final class TextRenderer {
         for (index, row) in laid.rows.enumerated() {
             let baseline = laid.rowTops[index] + laid.rowBaselines[index]
             for run in row.runs {
-                // Hidden markup takes no room and draws nothing.
+                // Hidden markup takes no room and draws nothing; a replacement draws its image.
                 if run.isConcealed { continue }
+                if let index = run.replacement, laid.replacements.indices.contains(index), let position = run.positions.first {
+                    let replacement = laid.replacements[index]
+                    let penX = ((layout.insets.width + position.x) * scale).rounded()
+                    if let entry = atlas.entry(image: replacement.image, key: replacement.key, ascent: replacement.size.height - replacement.descent, scale: scale) {
+                        built.quads.append(Quad(rect: SIMD4(Float(penX), Float(entry.offset.y), Float(entry.region.width), Float(entry.region.height)),
+                                                uv: SIMD4(Float(entry.region.minX), Float(entry.region.minY), Float(entry.region.width), Float(entry.region.height)),
+                                                color: frame.theme.text, kind: 2))
+                        built.penY.append(Float(baseline * scale))
+                    }
+                    continue
+                }
                 for g in 0..<run.glyphs.count {
                     let penX = (layout.insets.width + run.positions[g].x) * scale
                     let snappedX = floor(penX)
