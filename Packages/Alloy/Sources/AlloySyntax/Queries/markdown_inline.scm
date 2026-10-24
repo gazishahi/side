@@ -51,3 +51,21 @@
     "["
     "]"
   ] @punctuation.delimiter)
+
+; Markup prose hides away from the caret (live Markdown): emphasis and code delimiters, and a
+; link's brackets, URL and title (its text stays).
+[
+  (emphasis_delimiter)
+  (code_span_delimiter)
+] @conceal
+
+(inline_link
+  [
+    "["
+    "]"
+    "("
+    ")"
+  ] @conceal)
+
+(inline_link (link_destination) @conceal)
+(inline_link (link_title) @conceal)

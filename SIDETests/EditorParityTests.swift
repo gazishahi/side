@@ -494,6 +494,21 @@ final class EditorParityTests: XCTestCase {
         XCTAssertEqual(CTFontGetSize(heading), (AlloyEditorEngine.proseSize * 1.75).rounded(), "a first-level heading at the preview's size")
         XCTAssertGreaterThan(layout().layout(line: 0).height, layout().layout(line: 2).height, "and its line taller")
 
+        // Step 3: the markup hides away from the caret.
+        make.editor.selectedRange = NSRange(location: (make.editor.document!.string as NSString).length, length: 0)
+        let hiddenDeadline = Date().addingTimeInterval(5)
+        while Date() < hiddenDeadline, layout().layout(line: 2).concealed.count < 6 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        let line2 = make.editor.document!.string.components(separatedBy: "\n")[2] as NSString
+        XCTAssertEqual(layout().layout(line: 2).concealed.map { line2.substring(with: NSRange($0)) }, ["**", "**", "*", "*", "`", "`"])
+        XCTAssertEqual(layout().layout(line: 0).concealed, [0..<2], "the heading's # and its space")
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"], let image = make.tabPreviewContent(0) {
+            try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("live-step3.png"))
+        }
+        make.editor.selectedRange = NSRange(location: (make.editor.document!.string as NSString).range(of: "bold").location, length: 0)
+        XCTAssertEqual(layout().layout(line: 2).concealed, [], "the caret's line shows its markup")
+        XCTAssertEqual(layout().layout(line: 0).concealed, [0..<2], "the others keep theirs hidden")
+
         make.toggleLiveMarkdown(nil)
         XCTAssertFalse(engine.isProse, "back to source, remembered")
         make.setWriterMode(true)

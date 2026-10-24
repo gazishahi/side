@@ -40,6 +40,9 @@ public struct Emphasis: OptionSet, Sendable, Hashable {
     /// A heading's level (1 to 6), which a client sets larger; 0 for text that isn't one.
     public static func heading(_ level: Int) -> Emphasis { Emphasis(rawValue: UInt8(min(max(level, 1), 6)) << 3) }
     public var headingLevel: Int { Int((rawValue >> 3) & 7) }
+
+    /// Markup prose hides away from the caret: `**`, a heading's `#`, a link's URL.
+    public static let concealed = Emphasis(rawValue: 64)
 }
 
 /// A color, and an emphasis, for a UTF-16 range of a line (syntax highlighting). A span with
@@ -310,6 +313,8 @@ public final class TextRenderer {
         for (index, row) in laid.rows.enumerated() {
             let baseline = laid.rowTops[index] + laid.rowBaselines[index]
             for run in row.runs {
+                // Hidden markup takes no room and draws nothing.
+                if run.isConcealed { continue }
                 for g in 0..<run.glyphs.count {
                     let penX = (layout.insets.width + run.positions[g].x) * scale
                     let snappedX = floor(penX)

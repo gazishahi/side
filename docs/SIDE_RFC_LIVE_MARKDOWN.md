@@ -1,8 +1,8 @@
 # RFC: Live Markdown in Alloy
 
 *2026-10-23. Status: **in progress**: the direction and the five questions below are decided
-(the owner, 2026-10-23). Steps 1 (font runs, View → Live Markdown) and 2 (rows of their own height) are built; step 3
-is next.
+(the owner, 2026-10-23). Steps 1 (font runs, View → Live Markdown), 2 (rows of their own height) and 3 (markup hidden
+away from the caret) are built; step 4 is next.
 Writer Mode's first step (Make alone, the aids) is built: `027f170`.*
 
 ## What the owner decided (2026-10-23)
@@ -52,7 +52,12 @@ budget to `SIDETests/Budgets.swift` (frame time on a long Markdown file).
    own height and baseline, and every `* lineHeight` site goes through the layout. Unmeasured
    lines are estimated at the body line height; when a measured line above the viewport changes
    height, the first visible line stays where it is on screen (scroll anchoring).
-3. **Concealment.** Ranges hidden inside a line: laid out from a display string with an offset map
+3. **Concealment.** *Built, more simply than planned:* hidden ranges keep their characters and
+   are laid out at no width (a zero-width run delegate) and not drawn, so every offset stays the
+   source's and nothing needs mapping. The caret's line always shows its markup, so the caret
+   never sits among hidden characters. A click beside an opening mark lands after it, beside a
+   closing one before it. The queries mark what hides (`@conceal`: emphasis and code delimiters,
+   a link's brackets, URL and title, a heading's `#`). The plan was: ranges hidden inside a line: laid out from a display string with an offset map
    back to the source, so the caret, hit-testing and selection work in source offsets. The caret
    steps over hidden marks; copying copies the source. Which marks show depends on where the caret
    is (question 1), so the reveal state joins the cache key and only the lines that change reveal

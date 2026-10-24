@@ -14,6 +14,8 @@ public struct GlyphRun {
     public let indices: [Int]
     /// Apple Color Emoji and friends: drawn in their own colors, not the text color.
     public let isColor: Bool
+    /// Hidden markup (concealed): laid out at no width, not drawn.
+    public var isConcealed = false
 }
 
 /// A visual row: all of a line, or one wrapped piece of it.
@@ -66,9 +68,13 @@ public final class LaidOutLine {
         let varies: Bool
     }
 
-    init(text: String, font: CTFont, tabWidth: CGFloat, wrapWidth: CGFloat?, fontSpans: [FontSpan] = [], metrics: Metrics? = nil) {
+    /// The ranges it hides (laid out at no width).
+    public let concealed: [Range<Int>]
+
+    init(text: String, font: CTFont, tabWidth: CGFloat, wrapWidth: CGFloat?, fontSpans: [FontSpan] = [], concealed: [Range<Int>] = [], metrics: Metrics? = nil) {
         self.text = text
         self.fontSpans = fontSpans
+        self.concealed = concealed
         let attributes = Self.attributes(font: font, tabWidth: tabWidth)
         // A UTF-16 string, made once: from a Swift string (UTF-8 inside), CoreText's character
         // and offset reads were converted and copied again for each row of a wrapped line
@@ -79,6 +85,11 @@ public final class LaidOutLine {
             let upper = min(span.range.upperBound, length)
             attributed.addAttribute(NSAttributedString.Key(kCTFontAttributeName as String), value: span.font,
                                     range: NSRange(location: span.range.lowerBound, length: upper - span.range.lowerBound))
+        }
+        for range in concealed where range.lowerBound < length && !range.isEmpty {
+            let upper = min(range.upperBound, length)
+            attributed.addAttribute(NSAttributedString.Key(kCTRunDelegateAttributeName as String), value: Self.nothing,
+                                    range: NSRange(location: range.lowerBound, length: upper - range.lowerBound))
         }
         let typesetter = CTTypesetterCreateWithAttributedString(attributed)
         var rows: [LayoutRow] = []
@@ -139,6 +150,13 @@ public final class LaidOutLine {
                 NSAttributedString.Key(kCTParagraphStyleAttributeName as String): paragraph]
     }
 
+    /// A run delegate of no width, ascent or descent: what hidden markup is laid out as.
+    nonisolated(unsafe) static let nothing: CTRunDelegate = {
+        var callbacks = CTRunDelegateCallbacks(version: kCTRunDelegateVersion1, dealloc: { _ in }, getAscent: { _ in 0 },
+                                               getDescent: { _ in 0 }, getWidth: { _ in 0 })
+        return CTRunDelegateCreate(&callbacks, nil)!
+    }()
+
     private static func runs(of line: CTLine, rowStart: Int) -> [GlyphRun] {
         let ctRuns = CTLineGetGlyphRuns(line) as? [CTRun] ?? []
         return ctRuns.map { run in
@@ -154,8 +172,10 @@ public final class LaidOutLine {
             let isColor = CTFontGetSymbolicTraits(font).contains(.traitColorGlyphs)
             // Positions are relative to the whole line's start; make them relative to this row.
             let rowOffset = positions.first.map { _ in CGFloat(CTLineGetOffsetForStringIndex(line, rowStart, nil)) } ?? 0
-            return GlyphRun(font: font, glyphs: glyphs, positions: positions.map { CGPoint(x: $0.x - rowOffset, y: $0.y) },
-                            indices: indices.map { Int($0) }, isColor: isColor)
+            var glyphRun = GlyphRun(font: font, glyphs: glyphs, positions: positions.map { CGPoint(x: $0.x - rowOffset, y: $0.y) },
+                                    indices: indices.map { Int($0) }, isColor: isColor)
+            glyphRun.isConcealed = attributes[kCTRunDelegateAttributeName as String] != nil
+            return glyphRun
         }
     }
 
@@ -215,6 +235,16 @@ public final class DocumentLayout {
     static let cacheLimit = 1_000
     /// A line's font runs (prose set in a reading font: bold, italic, code), asked each time a
     /// line's layout is wanted; a line whose runs changed is laid out again. Nil: one font.
+    /// Markup a line hides (ranges within it), and the lines that show theirs anyway (where the
+    /// caret or a selection is). Nil: nothing hidden.
+    public var concealment: ((Int) -> [Range<Int>])? { didSet { byLine.removeAll(keepingCapacity: true) } }
+    public var revealedLines: Set<Int> = [] {
+        didSet {
+            guard revealedLines != oldValue, concealment != nil else { return }
+            for line in revealedLines.symmetricDifference(oldValue) { byLine[line] = nil }
+        }
+    }
+
     public var fontSpans: ((Int) -> [FontSpan])? {
         didSet {
             guard (fontSpans == nil) != (oldValue == nil) || fontSpans != nil else { return }
@@ -335,16 +365,18 @@ public final class DocumentLayout {
     /// A line's layout, measured now if it wasn't.
     public func layout(line: Int) -> LaidOutLine {
         let spans = fontSpans?(line) ?? []
-        if let known = byLine[line], known.fontSpans == spans { return known }
+        let hidden = revealedLines.contains(line) ? [] : (concealment?(line) ?? [])
+        if let known = byLine[line], known.fontSpans == spans, known.concealed == hidden { return known }
         let string = text.substring(text.range(ofLine: line))
         // Equal lines share a layout only with equal runs.
         let key = (spans.isEmpty ? string : string + "\u{0}" + spans.map { "\($0.range.lowerBound)-\($0.range.upperBound):\($0.key)" }.joined(separator: ","))
             + (fontSpans == nil ? "" : "\u{1}")
+            + (hidden.isEmpty ? "" : "\u{2}" + hidden.map { "\($0.lowerBound)-\($0.upperBound)" }.joined(separator: ","))
         let laid: LaidOutLine
         if let cached = cache[key] {
             laid = cached
         } else {
-            laid = LaidOutLine(text: string, font: font, tabWidth: tabWidth, wrapWidth: wrapWidth, fontSpans: spans, metrics: metrics)
+            laid = LaidOutLine(text: string, font: font, tabWidth: tabWidth, wrapWidth: wrapWidth, fontSpans: spans, concealed: hidden, metrics: metrics)
             cache[key] = laid
             cacheOrder.append(key)
             if cacheOrder.count > Self.cacheLimit {
@@ -426,6 +458,15 @@ public final class DocumentLayout {
         let (line, row) = line(atY: point.y)
         let laid = layout(line: line)
         let rowInLine = min(row, laid.rows.count - 1)
-        return text.offset(ofLine: line) + laid.offset(row: rowInLine, x: point.x - insets.width)
+        var inLine = laid.offset(row: rowInLine, x: point.x - insets.width)
+        // Hidden markup has no width, so a click beside it could go either side. An opening mark
+        // (at the line's start or after a space: `**` before a word, `#`, `[`) puts the caret
+        // after it, in what it marks; a closing one (`**` after a word, `](url)`) before it.
+        let units = Array(laid.text.utf16)
+        if let range = laid.concealed.first(where: { $0.lowerBound == inLine && !$0.isEmpty }) {
+            let before = range.lowerBound == 0 ? nil : units[range.lowerBound - 1]
+            if before == nil || before == 0x20 || before == 0x09 { inLine = min(range.upperBound, units.count) }
+        }
+        return text.offset(ofLine: line) + inLine
     }
 }

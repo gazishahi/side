@@ -147,6 +147,34 @@ final class FoldingViewTests: XCTestCase {
                        "the line that was on screen moved by the scroll, not by the lines measured above it")
     }
 
+    /// Step 3 of live Markdown: hidden markup takes no width and draws nothing, except on the
+    /// lines a selection touches; offsets stay the source's.
+    func testHiddenMarkupShowsOnlyWhereTheCaretIs() throws {
+        try open()
+        let layout = editor.documentLayout
+        // "    func b() {": hide the four spaces of indent.
+        let plain = layout.layout(line: 1)
+        let plainX = plain.caretX(at: 4).x
+        editor.setSelections([Selection(caret: 0)])
+        editor.concealment = { line in line == 1 ? [0..<4] : [] }
+        let hidden = layout.layout(line: 1)
+        XCTAssertEqual(hidden.concealed, [0..<4])
+        XCTAssertEqual(hidden.caretX(at: 4).x, 0, accuracy: 0.01, "the hidden spaces take no room")
+        XCTAssertGreaterThan(plainX, 10)
+        XCTAssertTrue(hidden.rows[0].runs.contains { $0.isConcealed }, "and are drawn as nothing")
+        XCTAssertEqual(layout.offset(at: CGPoint(x: layout.insets.width + 1, y: layout.y(ofLine: 1) + 2)) - layout.text.offset(ofLine: 1), 4,
+                       "a click at the line's start lands after what's hidden, in source offsets")
+
+        editor.setSelections([Selection(caret: layout.text.offset(ofLine: 1) + 6)])
+        XCTAssertEqual(layout.layout(line: 1).concealed, [], "the caret's line shows its markup")
+        XCTAssertEqual(layout.layout(line: 1).caretX(at: 4).x, plainX, accuracy: 0.01)
+        editor.setSelections([Selection(anchor: 0, head: layout.text.offset(ofLine: 2))])
+        XCTAssertEqual(layout.layout(line: 1).concealed, [], "so does every line a selection touches")
+        editor.setSelections([Selection(caret: layout.text.offset(ofLine: 3))])
+        XCTAssertEqual(layout.layout(line: 1).concealed, [0..<4], "and hides it again once the caret leaves")
+        editor.concealment = nil
+    }
+
     func testFoldingHidesLinesAndUnfoldingBringsThemBack() throws {
         try open()
         let layout = editor.documentLayout

@@ -55,3 +55,14 @@
 (atx_heading (atx_h6_marker)) @text.title.6
 (setext_heading (setext_h1_underline)) @text.title.1
 (setext_heading (setext_h2_underline)) @text.title.2
+
+; A heading's marker hides away from the caret (live Markdown; the space after it too).
+(atx_heading
+  [
+    (atx_h1_marker)
+    (atx_h2_marker)
+    (atx_h3_marker)
+    (atx_h4_marker)
+    (atx_h5_marker)
+    (atx_h6_marker)
+  ] @conceal)

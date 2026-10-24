@@ -35,7 +35,9 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         if isProse {
             view.setFont(DS.Text.Fonts.font(.reading, size: Self.proseSize) as CTFont)
             view.fontSpans = { [weak self] line in self?.proseSpans(line) ?? [] }
+            view.concealment = { [weak self] line in self?.proseHidden(line) ?? [] }
         } else {
+            view.concealment = nil
             view.fontSpans = nil
             view.setFont(appearance.font as CTFont)
         }
@@ -44,9 +46,43 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     /// A line's emphasis, as font runs over the reading font.
     private func proseSpans(_ line: Int) -> [FontSpan] {
         guard let highlighter = (document as? AlloyEditorDocument)?.highlighter else { return [] }
-        return highlighter.spans(forLine: line).compactMap { span in
-            span.emphasis.isEmpty ? nil : FontSpan(range: span.range, font: proseFont(span.emphasis))
+        // Neighbors in the same font are one run (hiding splits `**bold**` into three spans).
+        var runs: [(range: Range<Int>, emphasis: Emphasis)] = []
+        for span in highlighter.spans(forLine: line) {
+            let emphasis = span.emphasis.subtracting(.concealed)
+            guard !emphasis.isEmpty else { continue }
+            if let last = runs.last, last.range.upperBound == span.range.lowerBound, last.emphasis == emphasis {
+                runs[runs.count - 1].range = last.range.lowerBound..<span.range.upperBound
+            } else {
+                runs.append((span.range, emphasis))
+            }
         }
+        return runs.map { FontSpan(range: $0.range, font: proseFont($0.emphasis)) }
+    }
+
+    /// The markup a line hides away from the caret (step 3): `**`, `` ` ``, a link's URL, a
+    /// heading's `#` with the space after it.
+    private func proseHidden(_ line: Int) -> [Range<Int>] {
+        guard let document = document as? AlloyEditorDocument, let highlighter = document.highlighter else { return [] }
+        var ranges: [Range<Int>] = []
+        for span in highlighter.spans(forLine: line) where span.emphasis.contains(.concealed) {
+            if let last = ranges.last, last.upperBound == span.range.lowerBound {
+                ranges[ranges.count - 1] = last.lowerBound..<span.range.upperBound
+            } else {
+                ranges.append(span.range)
+            }
+        }
+        // A heading's marker takes the space after it along.
+        if let first = ranges.first, first.lowerBound == 0 {
+            let text = document.buffer.text
+            let units = Array(text.substring(text.range(ofLine: line)).utf16)
+            if units.first == 0x23 {  // #
+                var end = first.upperBound
+                while end < units.count, units[end] == 0x20 { end += 1 }
+                ranges[0] = 0..<end
+            }
+        }
+        return ranges
     }
 
     /// A heading's size against the text's, by level: the Markdown preview's scale.

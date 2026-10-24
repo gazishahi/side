@@ -19,6 +19,30 @@ public final class AlloyEditorView: NSView {
     public private(set) var documentLayout: DocumentLayout
     public var theme: RenderTheme = .light { didSet { setNeedsRender(); minimap.needsDisplay = true } }
     public var styles: ((Int) -> [StyleSpan])? { didSet { stylesChanged() } }
+    /// Markup each line hides unless a selection touches it (live Markdown's `**`, `#`, a link's
+    /// URL); see `DocumentLayout.concealment`. Nil: nothing hidden.
+    public var concealment: ((Int) -> [Range<Int>])? {
+        didSet {
+            documentLayout.concealment = concealment
+            updateRevealedLines()
+            updateDocumentHeight()
+            setNeedsRender()
+        }
+    }
+
+    /// The lines whose markup shows: every line a selection touches.
+    func updateRevealedLines() {
+        guard concealment != nil else { documentLayout.revealedLines = []; return }
+        let text = buffer.text
+        var lines = Set<Int>()
+        for selection in buffer.selections {
+            let first = text.line(containing: selection.range.lowerBound), last = text.line(containing: selection.range.upperBound)
+            if last - first > 2_000 { lines.insert(text.line(containing: selection.head)); continue }
+            for line in first...last { lines.insert(line) }
+        }
+        documentLayout.revealedLines = lines
+    }
+
     /// Font runs per line (prose in a reading font); see `DocumentLayout.fontSpans`. Nil: the
     /// document's one font.
     public var fontSpans: ((Int) -> [FontSpan])? {
@@ -209,6 +233,7 @@ public final class AlloyEditorView: NSView {
         self.buffer = buffer
         buffer.onChange = { [weak self] change in self?.textChanged(change) }
         documentLayout.reset(buffer.text)
+        updateRevealedLines()
         restoreFolds()
         updateDocumentHeight()
         setNeedsRender()
@@ -228,6 +253,7 @@ public final class AlloyEditorView: NSView {
         onTextChange?(change)
         snippetFollow(change)
         documentLayout.update(buffer.text, edits: change.edits)
+        updateRevealedLines()
         scheduleFoldRegions()
         updateDocumentHeight()
         restartBlink()
@@ -249,6 +275,8 @@ public final class AlloyEditorView: NSView {
 
     func selectionChanged() {
         if isExpandingSelection { isExpandingSelection = false } else { selectionHistory.removeAll() }
+        updateRevealedLines()
+        if concealment != nil { updateDocumentHeight() }
         snippetCheckSelection()
         revealFoldedSelections()
         restartBlink()
@@ -458,7 +486,16 @@ public final class AlloyEditorView: NSView {
         documentLayout.setWrapWidth(wrapsLines && width > 0 ? width : nil)
     }
 
+    /// The content height the gutter last placed its numbers for.
+    private var gutterContentHeight: CGFloat = -1
+
     func updateDocumentHeight() {
+        // Lines measured taller (a wrap, a heading) move the numbers after them, even when the
+        // document view's frame stays the window's height (a short file).
+        if documentLayout.contentHeight != gutterContentHeight {
+            gutterContentHeight = documentLayout.contentHeight
+            gutter.layoutTiles()
+        }
         let insets = scrollView.contentView.contentInsets
         let height = max(documentLayout.contentHeight, scrollView.contentView.bounds.height - insets.top - insets.bottom)
         let width = scrollView.contentView.bounds.width
@@ -510,6 +547,8 @@ public final class AlloyEditorView: NSView {
         documentLayout = DocumentLayout(text: buffer.text, font: font)  // keeps the padding and column below
         documentLayout.insets = insets
         documentLayout.fontSpans = fontSpans
+        documentLayout.concealment = concealment
+        updateRevealedLines()
         updateWrapWidth()
         updateDocumentHeight()
         gutter.needsDisplay = true

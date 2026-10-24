@@ -91,7 +91,10 @@ final class SyntaxTests: XCTestCase {
             h.spans(forLine: line).first { $0.range.contains(column) }?.emphasis ?? []
         }
         XCTAssertEqual(emphasis(line: 0, at: 3), [.bold, .heading(1)], "a heading, with its level")
-        XCTAssertEqual(emphasis(line: 0, at: 0), [.bold, .heading(1)], "its marker too")
+        XCTAssertEqual(emphasis(line: 0, at: 0), [.bold, .heading(1), .concealed], "its marker too, and hidden away from the caret")
+        XCTAssertTrue(emphasis(line: 2, at: 5).contains(.concealed), "the ** before bold")
+        XCTAssertFalse(emphasis(line: 2, at: 8).contains(.concealed), "not the word")
+        XCTAssertTrue(emphasis(line: 2, at: 31).contains(.concealed), "a code span's backtick")
         XCTAssertEqual(emphasis(line: 0, at: 3).headingLevel, 1)
         XCTAssertEqual(emphasis(line: 2, at: 8), .bold, "**bold**")
         XCTAssertEqual(emphasis(line: 2, at: 21), .italic, "*italic*")
