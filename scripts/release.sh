@@ -119,6 +119,9 @@ echo "==> Appcast"
 # Sparkle's own tool: signs the DMG's EdDSA signature into the feed with the "side" key.
 UPDATES="$OUT/updates"; mkdir -p "$UPDATES"
 cp "$DMG" "$UPDATES/"
+# The update window's notes: an HTML file named as the DMG beside it goes into the feed.
+NOTES="scripts/release-notes/$VERSION.html"
+[[ -f "$NOTES" ]] && cp "$NOTES" "$UPDATES/Side-$VERSION.html"
 "$SPM/artifacts/sparkle/Sparkle/bin/generate_appcast" --account side \
   --download-url-prefix "https://github.com/$RELEASES_REPO/releases/download/v$VERSION/" \
   -o "$OUT/appcast.xml" "$UPDATES"
@@ -130,4 +133,4 @@ cp "$DMG" "$OUT/Side.dmg"
 
 echo "Done: $DMG"
 echo "Publish (not run here; it's public):"
-echo "  gh release create v$VERSION -R $RELEASES_REPO --title \"Side $VERSION\" \"$DMG\" \"$OUT/Side.dmg\" \"$OUT/appcast.xml\""
+echo "  gh release create v$VERSION -R $RELEASES_REPO --title \"Side $VERSION\" --notes-file scripts/release-notes/$VERSION.md \"$DMG\" \"$OUT/Side.dmg\" \"$OUT/appcast.xml\""
