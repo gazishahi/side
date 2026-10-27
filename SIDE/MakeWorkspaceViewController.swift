@@ -5719,6 +5719,9 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
     /// on that surface, not a silhouette pouring into the content below (that shape drew a seam
     /// across the whole window once there was no title bar above it). The active tab takes the
     /// `overlay` tone and full-strength text; the rest recede.
+    /// Picked up and being dragged along the strip.
+    private var isLifted = false { didSet { if isLifted != oldValue { needsDisplay = true } } }
+
     override func draw(_ dirtyRect: NSRect) {
         guard bounds.width > Self.flare * 2 + 16, bounds.height > 4 else { return }
         // A capsule on the strip's glass, drawn exactly like the stage control's selection:
@@ -5726,7 +5729,14 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
         // hovered. The glass track is what says "these are tabs".
         let body = bounds.insetBy(dx: Self.flare - 2, dy: 0)
         let pill = NSBezierPath(roundedRect: body, xRadius: body.height / 2, yRadius: body.height / 2)
-        if isActive {
+        if isLifted {
+            DS.Color.raised.setFill()
+            pill.fill()
+            DS.Color.hairline.setStroke()
+            let edge = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5), xRadius: body.height / 2 - 0.5, yRadius: body.height / 2 - 0.5)
+            edge.lineWidth = 1
+            edge.stroke()
+        } else if isActive {
             NSGraphicsContext.saveGraphicsState()
             let shadow = NSShadow()
             shadow.shadowColor = NSColor.black.withAlphaComponent(0.12)
@@ -5797,14 +5807,13 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
         let totalDX = event.locationInWindow.x - dragOrigin.x
         if abs(totalDX) > 4, !didDrag {
             didDrag = true
-            // The pickup: lift the chip — shadow and a slight grow — so the drag reads as
-            // physically holding something, not sliding a flat rectangle.
+            // The pickup: lift the chip so the drag reads as holding something, not sliding a
+            // flat rectangle. It's drawn as the drag image is, a solid capsule with a hairline:
+            // a layer shadow was cast by the text through the glass pill, and the strip's
+            // rounded mask cut it off.
             wantsLayer = true
             layer?.zPosition = 10
-            layer?.shadowColor = NSColor.black.cgColor
-            layer?.shadowOpacity = 0.5
-            layer?.shadowRadius = 6
-            layer?.shadowOffset = CGSize(width: 0, height: -2)
+            isLifted = true
         }
         guard didDrag else { return }
 
@@ -5854,7 +5863,7 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
                 alphaValue = 1
                 layer?.setAffineTransform(.identity)
                 layer?.zPosition = 0
-                layer?.shadowOpacity = 0
+                isLifted = false
                 onTearOut?(NSEvent.mouseLocation)
                 return
             }
@@ -5866,7 +5875,7 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
                 layer?.setAffineTransform(.identity)
             } completionHandler: { [weak self] in
                 self?.layer?.zPosition = 0
-                self?.layer?.shadowOpacity = 0
+                self?.isLifted = false
             }
             onDragEnded?()
         } else {
@@ -5883,7 +5892,7 @@ final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
         isTearingOut = true
         layer?.setAffineTransform(.identity)
         layer?.zPosition = 0
-        layer?.shadowOpacity = 0
+        isLifted = false
         alphaValue = 0.35  // the tab's slot stays, ghosted, until the drop decides
         // A private type, never a file URL: dropping a tab on Finder must not move the file.
         let item = NSPasteboardItem()
@@ -6056,14 +6065,18 @@ final class TabDragPreview {
     private let tabSize: NSSize
     private let windowSize: NSSize?
     private(set) var isExpanded = false
+    private static let shadowRadius: CGFloat = 16
+    private static let shadowDrop: CGFloat = 6
     /// The pointer's place in the panel: over the small window's title bar.
     private let anchor: NSPoint
 
     init(tab: NSImage, window: NSImage?) {
         tabSize = tab.size
         windowSize = window?.size
-        let size = NSSize(width: max(tab.size.width, window?.size.width ?? 0) + 40, height: max(tab.size.height, window?.size.height ?? 0) + 40)
-        anchor = NSPoint(x: size.width / 2, y: size.height - 20 - 13)
+        // Room for the shadow on every side: with 20 points the panel's edge cut it off.
+        let margin = Self.shadowRadius * 2 + Self.shadowDrop
+        let size = NSSize(width: max(tab.size.width, window?.size.width ?? 0) + margin * 2, height: max(tab.size.height, window?.size.height ?? 0) + margin * 2)
+        anchor = NSPoint(x: size.width / 2, y: size.height - margin - 13)
         panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -6075,14 +6088,20 @@ final class TabDragPreview {
         let content = NSView(frame: NSRect(origin: .zero, size: size))
         panel.contentView = content
         card.wantsLayer = true
-        card.layer?.shadowColor = NSColor.black.cgColor
-        card.layer?.shadowOpacity = 0.28
-        card.layer?.shadowRadius = 14
-        card.layer?.shadowOffset = CGSize(width: 0, height: -6)
+        // Each image casts its own shadow, from its own shape, and fades it with itself: one
+        // shadow on the card was cast by both while they crossfaded.
         for (imageView, image) in [(tabView, tab), (windowView, window)] {
             imageView.image = image
             imageView.imageScaling = .scaleAxesIndependently
             imageView.autoresizingMask = [.width, .height]
+            imageView.wantsLayer = true
+            imageView.shadow = {
+                let shadow = NSShadow()
+                shadow.shadowColor = NSColor.black.withAlphaComponent(image === tab ? 0.22 : 0.3)
+                shadow.shadowBlurRadius = image === tab ? Self.shadowRadius / 2 : Self.shadowRadius
+                shadow.shadowOffset = NSSize(width: 0, height: image === tab ? -2 : -Self.shadowDrop)
+                return shadow
+            }()
             card.addSubview(imageView)
         }
         windowView.alphaValue = 0
@@ -6134,6 +6153,32 @@ final class TabDragPreview {
     }
 
     func close() { panel.orderOut(nil) }
+
+    /// The panel as drawn, shadows included, over a backdrop (snapshots in tests).
+    func renderedForTesting(expanded: Bool, backdrop: NSColor) -> NSImage? {
+        isExpanded = expanded
+        layout(expanded: expanded)
+        tabView.alphaValue = expanded ? 0 : 1
+        windowView.alphaValue = expanded ? 1 : 0
+        guard let content = panel.contentView else { return nil }
+        // Off every screen: layers get their contents only in a window that's ordered in.
+        panel.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
+        panel.orderFrontRegardless()
+        defer { panel.orderOut(nil) }
+        content.layoutSubtreeIfNeeded()
+        content.displayIfNeeded()
+        CATransaction.flush()
+        guard let layer = content.layer else { return nil }
+        let scale: CGFloat = 2
+        let size = content.bounds.size
+        guard let context = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.scaleBy(x: scale, y: scale)
+        context.setFillColor(backdrop.cgColor)
+        context.fill(CGRect(origin: .zero, size: size))
+        layer.render(in: context)
+        return context.makeImage().map { NSImage(cgImage: $0, size: size) }
+    }
 }
 
 final class TabCloseButton: CircularIconButton {

@@ -45,9 +45,11 @@ echo "==> Archive"
 # Xcode), library validation refuses Sparkle, which has no team either, and Side ends at launch.
 # SwiftTerm 1.19+ runs a build plugin (SwiftTermBuildInfoPlugin); xcodebuild refuses an
 # untrusted plugin unless told to skip validation. Xcode itself asks once.
+# The dSYM is what turns a crash report's addresses into lines: the project's Release settings
+# made none, and 0.2.0's first crash had to be read from a rebuild (2026-10-27).
 xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -destination 'generic/platform=macOS' -skipPackagePluginValidation \
   -archivePath "$ARCHIVE" -clonedSourcePackagesDirPath "$SPM" archive \
-  DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" OTHER_CODE_SIGN_FLAGS="--timestamp" ENABLE_HARDENED_RUNTIME=YES \
+  DEBUG_INFORMATION_FORMAT=dwarf-with-dsym DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" OTHER_CODE_SIGN_FLAGS="--timestamp" ENABLE_HARDENED_RUNTIME=YES \
   | grep -E ":[0-9]+:[0-9]+: error:|error: .*sign|ARCHIVE (SUCCEEDED|FAILED)" || true
 [[ -d "$ARCHIVE" ]] || { echo "archive failed" >&2; exit 1; }
 

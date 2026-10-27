@@ -346,6 +346,16 @@ final class EditorParityTests: XCTestCase {
                 try? NSBitmapImageRep(data: out.tiffRepresentation!)?.representation(using: .png, properties: [:])?
                     .write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
             }
+            // What follows the pointer, both shapes, with their shadows.
+            let url = make.activeTabURLForTesting!
+            let icon = FileIcon.image(for: url, isDirectory: false)
+            let window = TabChipView.miniWindow(content: make.tabPreviewContent(2)!, title: url.lastPathComponent, icon: icon)
+            let preview = TabDragPreview(tab: TabChipView.dragImage(title: url.lastPathComponent, icon: icon), window: window)
+            for (expanded, name) in [(false, "drag-preview-tab.png"), (true, "drag-preview-window.png")] {
+                let image = preview.renderedForTesting(expanded: expanded, backdrop: .white)!
+                try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
+            }
         }
     }
 
