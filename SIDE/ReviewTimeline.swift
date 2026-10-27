@@ -112,9 +112,10 @@ struct CheckpointTimeline: Equatable {
 final class CheckpointTimelineView: NSView, NSViewToolTipOwner {
     var timeline = CheckpointTimeline(nodes: []) {
         didSet {
-            needsLayout = true
+            // Placed now, not at the next layout: drawing, tooltips and accessibility read the
+            // positions by node index, and a shorter timeline (another track) ran past its end.
+            placeNodes()
             needsDisplay = true
-            rebuildAccessibility()
         }
     }
     /// The range changed from here (click, drag, keys).
@@ -138,6 +139,10 @@ final class CheckpointTimelineView: NSView, NSViewToolTipOwner {
 
     override func layout() {
         super.layout()
+        placeNodes()
+    }
+
+    private func placeNodes() {
         positions = Self.positions(count: timeline.nodes.count, width: bounds.width)
         removeAllToolTips()
         for (_, x) in positions {

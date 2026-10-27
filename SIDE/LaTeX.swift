@@ -423,7 +423,8 @@ final class LaTeXPreviewController: NSWindowController {
 
     /// Where a source line landed: scrolled to, and marked for a moment.
     func reveal(page index: Int, box: CGRect) {
-        guard let page = pdfView.document?.page(at: index) else { return }
+        // SyncTeX answers for the PDF it read, which a build may have replaced with a shorter one.
+        guard let document = pdfView.document, (0..<document.pageCount).contains(index), let page = document.page(at: index) else { return }
         pdfView.go(to: box.insetBy(dx: 0, dy: -80), on: page)
         let mark = PDFAnnotation(bounds: box.insetBy(dx: -3, dy: -2), forType: .highlight, withProperties: nil)
         mark.color = NSColor.findHighlightColor.withAlphaComponent(0.55)

@@ -87,6 +87,17 @@ final class ReviewLayoutTests: XCTestCase {
         XCTAssertTrue(fresh.isEverything, "an empty old timeline (the first load) keeps nothing")
     }
 
+    /// Another track with fewer checkpoints: the view's nodes follow at once, before the next
+    /// layout (accessibility read the old positions and ran past the end, 2026-10-27's sweep).
+    func testAShorterTimelineReplacesALongerOne() {
+        let view = CheckpointTimelineView(frame: NSRect(x: 0, y: 0, width: 400, height: CheckpointTimelineView.height))
+        view.timeline = timeline()
+        view.layoutSubtreeIfNeeded()
+        view.timeline = CheckpointTimeline.build(baseRef: "main", branch: "feature", checkpoints: [], tipSHA: "x")
+        XCTAssertEqual(view.accessibilityChildren()?.count, 2)
+        view.display()
+    }
+
     func testTheOldestNodesFoldBehindAnEllipsisWhenNarrow() {
         let wide = CheckpointTimelineView.positions(count: 5, width: 400)
         XCTAssertEqual(wide.map(\.index), [0, 1, 2, 3, 4])
