@@ -1084,3 +1084,66 @@ final class ThirdPartyNoticesTests: XCTestCase {
 private extension NSRect {
     var center: NSPoint { NSPoint(x: midX, y: midY) }
 }
+
+/// 2026-10-27, the owner: after a crash, the next launch offers a GitHub issue with a summary.
+@MainActor
+final class CrashReportTests: XCTestCase {
+    private func report(path: String = "/Applications/Side.app/Contents/MacOS/Side", bundle: String = "com.shahi.side") -> String {
+        let header: [String: Any] = ["bug_type": "309", "bundleID": bundle, "app_version": "0.2.0", "build_version": "2", "os_version": "macOS 26.4.1 (25E253)"]
+        let body: [String: Any] = [
+            "exception": ["type": "EXC_BREAKPOINT", "signal": "SIGTRAP"],
+            "faultingThread": 0,
+            "usedImages": [
+                ["name": "Side", "uuid": "359ac36d-ddb9-3fa7-ae4f-599c0be38253", "arch": "arm64", "path": path],
+                ["name": "QuartzCore", "path": "/System/Library/Frameworks/QuartzCore.framework/QuartzCore"],
+            ],
+            "threads": [["queue": "com.apple.main-thread", "frames": [
+                ["imageIndex": 0, "imageOffset": 0x6d4a70],
+                ["imageIndex": 1, "imageOffset": 0x23590, "symbol": "CABackingStoreUpdate_", "symbolLocation": 264],
+            ]]],
+        ]
+        func json(_ object: Any) -> String { String(data: try! JSONSerialization.data(withJSONObject: object), encoding: .utf8)! }
+        return json(header) + "\n" + json(body)
+    }
+
+    func testTheSummaryHoldsVersionsAndFramesButNoPaths() throws {
+        let summary = try XCTUnwrap(CrashReports.summary(ofReport: report(path: "/Users/someone/Applications/Side.app/Contents/MacOS/Side")))
+        XCTAssertTrue(summary.hasPrefix("Side 0.2.0 (2), macOS 26.4.1 (25E253), arm64"))
+        XCTAssertTrue(summary.contains("Exception: EXC_BREAKPOINT (SIGTRAP)"))
+        XCTAssertTrue(summary.contains("0 Side +0x6d4a70"), "Side's frame as an offset, for the dSYM")
+        XCTAssertTrue(summary.contains("1 QuartzCore +0x23590 CABackingStoreUpdate_ + 264"))
+        XCTAssertFalse(summary.contains("/Users/"), "no paths")
+        XCTAssertFalse(summary.contains("someone"))
+        XCTAssertNil(CrashReports.summary(ofReport: report(bundle: "com.example.other")), "another app's crash")
+        XCTAssertNil(CrashReports.summary(ofReport: report(path: "/Users/someone/Library/Developer/Xcode/DerivedData/SIDE-x/Build/Products/Debug/Side.app/Contents/MacOS/Side")),
+                     "a development build's crash")
+    }
+
+    func testEachCrashIsOfferedOnce() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("crashes-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("Retired"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "crash-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (oldDirectory, oldDefaults) = (CrashReports.directory, CrashReports.defaults)
+        CrashReports.directory = directory
+        CrashReports.defaults = defaults
+        defer { CrashReports.directory = oldDirectory; CrashReports.defaults = oldDefaults }
+
+        XCTAssertNil(CrashReports.unseen())
+        // Retired: macOS moves a report there after a while.
+        try report().write(to: directory.appendingPathComponent("Retired/Side-2026-10-27-175710.ips"), atomically: true, encoding: .utf8)
+        try report().write(to: directory.appendingPathComponent("Other-2026-10-27-175710.ips"), atomically: true, encoding: .utf8)
+        let found = try XCTUnwrap(CrashReports.unseen())
+        XCTAssertEqual(found.file.lastPathComponent, "Side-2026-10-27-175710.ips")
+        CrashReports.markSeen(found)
+        XCTAssertNil(CrashReports.unseen(), "offered once")
+
+        let url = CrashReports.issueURL(for: found)
+        XCTAssertTrue(url.absoluteString.hasPrefix("https://github.com/gazishahi/side-releases/issues/new?"))
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first { $0.name == "title" }?.value, "Crash: Side 0.2.0 (2), macOS 26.4.1 (25E253), arm64")
+        XCTAssertTrue(items.first { $0.name == "body" }?.value?.contains("0 Side +0x6d4a70") ?? false)
+    }
+}

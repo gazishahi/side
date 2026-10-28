@@ -133,6 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             LaunchSignposts.end("restoreSession")
             (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded()
             self?.didFinishRestoring = true
+            // Not while hosting unit tests: a real crash on this Mac would put a sheet over them.
+            if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { CrashReports.offer(in: window) }
         }
     }
 
