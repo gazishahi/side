@@ -688,4 +688,90 @@ final class EditorParityTests: XCTestCase {
         XCTAssertEqual(make.editor.document?.string, "fixed\n")
         make.editor.isEditable = true
     }
+
+    /// Pictures of each editor theme in each appearance: Make with a file and with none, and
+    /// Review's diff. Only with SIDE_THEME_GALLERY set (a folder), to look at by eye.
+    func testThemeGallery() throws {
+        guard let directory = ProcessInfo.processInfo.environment["SIDE_THEME_GALLERY"] else { throw XCTSkip("SIDE_THEME_GALLERY not set") }
+        let code = """
+        import Foundation
+
+        /// A track's state, as the sidebar shows it.
+        struct Track: Codable {
+            let name: String
+            var count = 42 // checkpoints
+            func label(_ prefix: String) -> String { "\\(prefix): \\(name)" }
+        }
+        """
+        let diffText = """
+        diff --git a/a.swift b/a.swift
+        --- a/a.swift
+        +++ b/a.swift
+        @@ -1,4 +1,4 @@
+         import Foundation
+        -let count = 1
+        +let count = 2 // more
+         func run() { print("hi") }
+        """
+        let diffWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        diffWindow.isReleasedWhenClosed = false
+        let diff = DiffDocumentView(frame: diffWindow.contentRect(forFrameRect: diffWindow.frame))
+        diff.autoresizingMask = [.width, .height]
+        diffWindow.contentView = diff
+        diffWindow.orderFront(nil)
+        defer { diffWindow.close(); DS.Appearance.preference = .system; EditorThemes.lightThemeID = EditorThemes.sideID; EditorThemes.darkThemeID = EditorThemes.sideID }
+        func settle() { let end = Date().addingTimeInterval(0.4); while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) } }
+        func picture(_ root: NSView, _ name: String) {
+            root.layoutSubtreeIfNeeded()
+            root.displayIfNeeded()
+            let image = NSImage(size: root.bounds.size)
+            image.lockFocusFlipped(root.isFlipped)
+            // The layer tree, not cacheDisplay: layer backgrounds (the gutter's, a header's) are
+            // only in the layers.
+            if let context = NSGraphicsContext.current?.cgContext, let layer = root.layer {
+                func display(_ layer: CALayer) { layer.displayIfNeeded(); layer.sublayers?.forEach(display) }
+                display(layer)
+                layer.render(in: context)
+            }
+            // Metal draws the text, which a view snapshot leaves out: each editor drawn over its place.
+            func editors(_ view: NSView) -> [AlloyEditorView] { (view as? AlloyEditorView).map { [$0] } ?? view.subviews.flatMap(editors) }
+            for editor in editors(root) where !editor.isHiddenOrHasHiddenAncestor {
+                guard let shot = editor.snapshot() else { continue }
+                let clip = editor.scrollView.contentView
+                var frame = clip.convert(clip.bounds, to: root)
+                frame = frame.intersection(root.bounds)
+                if !root.isFlipped { frame.origin.y = root.bounds.height - frame.maxY }
+                shot.draw(in: frame, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
+            image.unlockFocus()
+            let out = NSBitmapImageRep(data: image.tiffRepresentation!)!
+            try? out.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name + ".png"))
+        }
+        let url = root.appendingPathComponent("Track.swift")
+        try code.write(to: url, atomically: true, encoding: .utf8)
+        for dark in [false, true] {
+            DS.Appearance.preference = dark ? .dark : .light
+            NotificationCenter.default.post(name: DS.Appearance.didChangeNotification, object: nil)
+            for theme in [EditorThemes.sideID] + EditorThemes.builtIn.map(\.id) {
+                if dark { EditorThemes.darkThemeID = theme } else { EditorThemes.lightThemeID = theme }
+                let name = "\(dark ? "dark" : "light")-\(theme)"
+                make.closeAllTabsForTesting()
+                settle()
+                picture(window.contentView!, name + "-empty")
+                _ = try open("Track.swift", code)
+                make.editor.selectedRange = NSRange(location: 60, length: 12)
+                settle()
+                picture(window.contentView!, name + "-make")
+                if let tabs = make.topRowContent { picture(tabs, name + "-tabs") }
+                _ = try open("Notes.md", "# Notes\n\nSome *text*, `code` and a [link](https://example.com).\n\n```swift\nlet x = 1\n```\n")
+                make.toggleMarkdownPreviewForTesting()
+                settle()
+                picture(window.contentView!, name + "-preview")
+                make.toggleMarkdownPreviewForTesting()
+                diff.render(diffText: diffText)
+                settle()
+                picture(diff, name + "-diff")
+            }
+        }
+    }
 }

@@ -10,7 +10,8 @@ import Heron
 enum ChromeBackground {
     static let color = DS.Color.canvas
 
-    static func install(in view: NSView) {
+    @discardableResult
+    static func install(in view: NSView) -> NSView {
         let fill = NSView()
         fill.wantsLayer = true
         fill.bindLayerBackground(color)
@@ -22,5 +23,6 @@ enum ChromeBackground {
             fill.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             fill.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+        return fill
     }
 }

@@ -170,10 +170,19 @@ final class DiffDocumentView: NSView {
 
     private func rebuild(keepingPosition: Bool) {
         guard !diff.files.isEmpty else { return }
+        // A theme of the other appearance: the headers and numbers take its appearance, as
+        // Make's chrome does, so they read on its background. First: the change of appearance
+        // may rebuild at once.
+        let chrome = EditorThemes.chromeAppearance()
+        if appearance?.name != chrome?.name {
+            appearance = chrome
+            DS.LayerBindings.reapplyAll()
+        }
         let keep = keepingPosition ? anchor() : nil
         tearDownColumns()
         columnsGeneration += 1
-        layer?.backgroundColor = DS.Color.raised.cgColor
+        layer?.backgroundColor = backdrop.cgColor
+        for header in Array(headers.values) + headerPool { header.bindLayerBackground(backdrop) }
         let sides: [DiffBody.Side?] = diffLayout == .sideBySide ? [.left, .right] : [nil]
         for side in sides {
             guard let column = makeColumn(side: side) else { return }
@@ -268,18 +277,22 @@ final class DiffDocumentView: NSView {
         let rows = column.rows
         let side = column.side
         let lengths = column.lengths
-        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        // The system's appearance picks the theme; this view may wear the theme's own.
+        let dark = DS.Appearance.isDark
         func tint(_ color: NSColor) -> SIMD4<Float> {
             var resolved = color
             effectiveAppearance.performAsCurrentDrawingAppearance { resolved = color.usingColorSpace(.sRGB) ?? color }
             return [Float(resolved.redComponent), Float(resolved.greenComponent), Float(resolved.blueComponent), Float(resolved.alphaComponent)]
         }
+        editor.gutter.font = DS.Text.code(11, weight: .regular)
         if let theme = EditorThemes.current(dark: dark) {
             editor.theme = RenderTheme(background: theme.background.simd, text: theme.text.simd, selection: theme.selection.simd,
                                        caret: [0, 0, 0, 0], currentLine: [0, 0, 0, 0])
             editor.gutter.backgroundColor = theme.background.nsColor
             editor.gutter.numberColor = theme.lineNumbers.nsColor
         } else {
+            editor.gutter.numberColor = .quaternaryLabelColor
+            editor.gutter.backgroundColor = DS.Color.raised
             editor.theme = RenderTheme(background: tint(DS.Color.raised), text: tint(.labelColor), selection: tint(.selectedTextBackgroundColor),
                                        caret: [0, 0, 0, 0], currentLine: [0, 0, 0, 0])
         }
@@ -326,9 +339,6 @@ final class DiffDocumentView: NSView {
             case nil: return pad(line.oldNumber) + " " + pad(line.newNumber)
             }
         }
-        editor.gutter.font = DS.Text.code(11, weight: .regular)
-        editor.gutter.numberColor = .quaternaryLabelColor
-        editor.gutter.backgroundColor = DS.Color.raised
         // What the eye gets from color, in words.
         let paths = diff.files.map(\.path)
         editor.accessibilityLinePrefix = { row in
@@ -539,6 +549,9 @@ final class DiffDocumentView: NSView {
     /// Headers out of view, kept to reuse (a handful: as many as were on screen at once).
     private var headerPool: [DiffFileHeader] = []
 
+    /// The document's color: the editor theme's background, or Side's raised surface.
+    private var backdrop: NSColor { EditorThemes.current(dark: DS.Appearance.isDark)?.background.nsColor ?? DS.Color.raised }
+
     private func makeHeader(_ index: Int) -> DiffFileHeader {
         let file = diff.files[index]
         let header: DiffFileHeader
@@ -549,6 +562,7 @@ final class DiffDocumentView: NSView {
             header = DiffFileHeader()
             headerLayer.addSubview(header)
         }
+        header.bindLayerBackground(backdrop)
         header.configure(file: file, folded: folded.contains(index))
         header.onToggle = { [weak self] in self?.toggleFold(index) }
         header.showsTopRule = index > 0

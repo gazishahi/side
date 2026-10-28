@@ -115,6 +115,24 @@ final class DiffDocumentViewTests: XCTestCase {
         XCTAssertEqual(right.scrollY, left.scrollY, "they scroll together")
     }
 
+    /// 2026-10-27, the themes pass: the diff's gutter kept Side's colors under any theme (set,
+    /// then set again to Side's), and its headers sat on Side's surface.
+    func testTheGutterAndHeadersTakeTheEditorTheme() throws {
+        let dark = DS.Appearance.isDark
+        let theme = try XCTUnwrap(EditorThemes.builtIn.first { $0.id == "one-dark" })
+        if dark { EditorThemes.darkThemeID = theme.id } else { EditorThemes.lightThemeID = theme.id }
+        defer { EditorThemes.lightThemeID = EditorThemes.sideID; EditorThemes.darkThemeID = EditorThemes.sideID }
+        view.diffLayout = .unified
+        view.render(diffText: diff)
+        settle()
+        let editor = try XCTUnwrap(view.editors.first)
+        XCTAssertEqual(editor.gutter.backgroundColor, theme.background.nsColor)
+        XCTAssertEqual(editor.gutter.numberColor, theme.lineNumbers.nsColor)
+        XCTAssertEqual(view.layer?.backgroundColor, theme.background.nsColor.cgColor)
+        // One Dark is dark: in light appearance the diff wears dark so its labels read.
+        XCTAssertEqual(view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]), .darkAqua)
+    }
+
     func testEmptyAndLoading() {
         view.renderLoading()
         XCTAssertEqual(view.rowCount, 0)

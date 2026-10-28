@@ -68,6 +68,24 @@ final class AppearanceTests: XCTestCase {
         XCTAssertNotEqual(dark.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB)?.redComponent }, light.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB)?.redComponent })
     }
 
+    /// 2026-10-27, the themes pass: a dark editor theme in light appearance puts Make's chrome in
+    /// dark, and its bound colors resolved in the window's light one (white labels on light).
+    func testBoundLayerColorsFollowTheViewsOwnAppearance() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .aqua)
+        let parent = NSView(frame: window.contentView!.bounds)
+        let view = NSView(frame: parent.bounds)
+        parent.addSubview(view)
+        window.contentView?.addSubview(parent)
+        view.bindLayerBackground(DS.Color.raised)
+        let light = view.layer?.backgroundColor
+        parent.appearance = NSAppearance(named: .darkAqua)
+        DS.LayerBindings.reapplyAll()
+        let dark = view.layer?.backgroundColor
+        func red(_ color: CGColor?) -> CGFloat? { color.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB)?.redComponent } }
+        XCTAssertLessThan(red(dark) ?? 1, red(light) ?? 0, "the parent's dark appearance, not the window's light one")
+    }
+
     func testThePreferenceRoundTripsAndMapsToAnAppAppearance() {
         let original = DS.Appearance.preference
         defer { DS.Appearance.preference = original }

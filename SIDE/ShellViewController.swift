@@ -308,6 +308,12 @@ final class ShellViewController: NSViewController {
         }
 
         chrome.install(in: view, content: container)
+        // Make's surface is the editor theme's: the top row follows it.
+        for name in [EditorThemes.didChangeNotification, DS.Appearance.didChangeNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.applyRowBackground() }
+            }
+        }
         NotificationCenter.default.addObserver(forName: StagePins.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -462,6 +468,12 @@ final class ShellViewController: NSViewController {
     }
 
     /// Recomputes which stages the control shows and each one's dot.
+    /// The top row takes the stage's surface (and, for Make under an editor theme, its appearance).
+    private func applyRowBackground() {
+        let stage = children.first as? StageChromeProviding
+        chrome.setRowBackground(stage?.topRowBackground ?? DS.Color.canvas, appearance: stage?.topRowAppearance)
+    }
+
     private func refreshStageControl() {
         let attention = stagesNeedingAttention()
         // A stage whose attention cleared can come back the next time it has something.
@@ -791,7 +803,7 @@ final class ShellViewController: NSViewController {
         ])
 
         chrome.setStageContent((next as? StageChromeProviding)?.topRowContent)
-        chrome.setRowBackground((next as? StageChromeProviding)?.topRowBackground ?? DS.Color.canvas)
+        applyRowBackground()
         // Think's changes and session pills join the bar row when there is one (the spread-row
         // decision, 2026-09-22); anywhere else — or with no bar — they stay above the composer.
         // Only when they fit — a narrow window keeps them there rather than being widened.

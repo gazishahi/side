@@ -85,6 +85,15 @@ enum EditorThemes {
     /// The syntax colors for an appearance: the theme's, or Side's own.
     static func syntax(dark: Bool) -> SyntaxTheme { current(dark: dark)?.syntaxTheme ?? .side(dark: dark) }
 
+    /// A dark theme in light appearance (or the other way round): the appearance Side's own
+    /// views over the editor take, so their labels read on the theme's background. Nil when the
+    /// theme matches the system, or Side's own is in use.
+    static func chromeAppearance() -> NSAppearance? {
+        let systemDark = DS.Appearance.isDark
+        guard let theme = current(dark: systemDark), theme.isDark != systemDark else { return nil }
+        return NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+    }
+
     static var all: [EditorTheme] { builtIn + imported }
 
     private static func announce() { NotificationCenter.default.post(name: didChangeNotification, object: nil) }

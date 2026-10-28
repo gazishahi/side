@@ -26,6 +26,9 @@ protocol StageChromeProviding: AnyObject {
     func setTopObstruction(_ height: CGFloat)
     /// The stage's own surface, which the top row takes on so the two read as one sheet.
     var topRowBackground: NSColor { get }
+    /// The appearance the top row's frosting takes when the stage wears another (Make under an
+    /// editor theme of the other appearance); nil for the window's.
+    var topRowAppearance: NSAppearance? { get }
     /// Stage controls that belong beside the bar when there is one (Think's changes and session
     /// pills): leading sits after the track pill, trailing before search.
     var barAccessories: (leading: NSView?, trailing: NSView?) { get }
@@ -40,6 +43,7 @@ extension StageChromeProviding {
     func setBottomObstruction(_ height: CGFloat) {}
     func setTopObstruction(_ height: CGFloat) {}
     var topRowBackground: NSColor { DS.Color.canvas }
+    var topRowAppearance: NSAppearance? { nil }
     var barAccessories: (leading: NSView?, trailing: NSView?) { (nil, nil) }
     func setAccessoriesDocked(_ docked: Bool) {}
     var scrollViewUnderTopRow: NSScrollView? { nil }
@@ -236,7 +240,10 @@ final class ChromeHost {
 
     /// The row takes the stage's own surface, so the top of the window and the stage are one
     /// sheet: canvas for most stages, the terminal's tone for Run.
-    func setRowBackground(_ color: NSColor) { topRowBackdrop.tint = color }
+    func setRowBackground(_ color: NSColor, appearance: NSAppearance? = nil) {
+        topRowBackdrop.appearance = appearance
+        topRowBackdrop.tint = color
+    }
 
     /// Writer mode: no top row and no bar, only the stage.
     func setHidden(_ hidden: Bool) {

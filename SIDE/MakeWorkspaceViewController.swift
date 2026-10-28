@@ -148,6 +148,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if show { minimap.needsDisplay = true }
     }
     private let tabBar = TabStripView()
+    /// Make's backdrop (ChromeBackground), the editor theme's background when one is chosen.
+    private var chromeFill: NSView?
     /// Shown when a project is open but nothing is — the charter's empty-state rule: one quiet
     /// sentence plus the action that fixes it.
     private let noFileLabel = NSTextField(labelWithString: "No file open. Press ⌘P to find one.")
@@ -367,7 +369,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let maxRecentProjects = 8
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
-    private static let editorBackground = DS.Color.canvas
+    /// Under the editor and what stands in for it (an image, a sheet, a preview, no file): the
+    /// editor theme's background, or Side's canvas.
+    private static var editorBackground: NSColor { EditorThemes.current(dark: DS.Appearance.isDark)?.background.nsColor ?? DS.Color.canvas }
     /// At the editor text-size setting (Appearance), not the interface scale.
     private static var editorFont: NSFont { DS.Text.editor() }
     private static let editorTextColor = NSColor.labelColor
@@ -455,7 +459,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func buildView() {
         view.wantsLayer = true
-        ChromeBackground.install(in: view)
+        chromeFill = ChromeBackground.install(in: view)
 
         searchField.placeholderString = "Open file, symbol, or command"
         searchField.delegate = self
@@ -1670,11 +1674,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// the editor (the tab strip, Ln/Col, the language chip) takes the theme's appearance, so its
     /// labels stay legible on the theme's background.
     @objc private func matchChromeToEditorTheme() {
-        let systemDark = DS.Appearance.isDark
-        let theme = EditorThemes.current(dark: systemDark)
-        let appearance = theme.flatMap { $0.isDark == systemDark ? nil : NSAppearance(named: $0.isDark ? .darkAqua : .aqua) }
+        let appearance = EditorThemes.chromeAppearance()
         view.appearance = appearance
         topRowContent?.appearance = appearance
+        // With no file open (or a banner over the editor) Side's canvas showed, in the system's
+        // appearance, under labels in the theme's.
+        chromeFill?.bindLayerBackground(Self.editorBackground)
+        // Layer colors bound to tokens resolve in the view's appearance, which just changed.
+        DS.LayerBindings.reapplyAll()
+        minimap.backgroundColor = Self.editorBackground
+        imageScroll.backgroundColor = Self.editorBackground
+        csvScroll.backgroundColor = Self.editorBackground
+        markdownPreviewView.backgroundColor = Self.editorBackground
+        markdownPreviewScroll.backgroundColor = Self.editorBackground
     }
 
     /// Settings → Languages changed: the servers start again as now chosen, and every open
@@ -6293,6 +6305,9 @@ extension MakeWorkspaceViewController: StageChromeProviding {
     var scrollViewUnderTopRow: NSScrollView? { loadViewIfNeeded(); return markdownPreviewScroll.isHidden ? editorScroll : markdownPreviewScroll }
     /// The file tabs (with the language-server indicator trailing) live in the window's top row.
     var topRowContent: NSView? { loadViewIfNeeded(); return tabBar }
+    /// The editor theme's background, so the tabs sit on the file's own color.
+    var topRowBackground: NSColor { Self.editorBackground }
+    var topRowAppearance: NSAppearance? { EditorThemes.chromeAppearance() }
 
     func setBottomObstruction(_ height: CGFloat) {
         loadViewIfNeeded()

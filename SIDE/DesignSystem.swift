@@ -849,7 +849,9 @@ extension NSView {
     /// has a window.
     private func resolvedCGColor(_ color: NSColor) -> CGColor {
         var resolved = color.cgColor
-        (window?.effectiveAppearance ?? NSApp.effectiveAppearance).performAsCurrentDrawingAppearance {
+        // The view's own appearance: under an editor theme of the other appearance, Make's chrome
+        // and Review's diff take the theme's, and the window's would be the wrong one.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
             resolved = color.cgColor
         }
         return resolved
