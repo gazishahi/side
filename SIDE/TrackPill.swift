@@ -418,7 +418,10 @@ private final class TrackPopoverRow: NSView {
         var isCurrent = false
         switch item {
         case .track(let row):
-            leading = DS.StatusDot(state: row.state)
+            let dot = DS.StatusDot(state: row.state)
+            // A dot alone still says its word (Direction 03 §3.2).
+            dot.toolTip = row.state.name
+            leading = dot
             titleText = row.title
             detailText = row.detail
             isCurrent = row.isCurrent

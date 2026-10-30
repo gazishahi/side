@@ -689,14 +689,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
             text.draw(with: drawRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
         }
 
-        if hasUnseenOutput {
-            DS.Color.statusWorking.setFill()
-            let dotSize: CGFloat = 5
-            NSBezierPath(ovalIn: NSRect(x: Self.flare + 3, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
-        }
-        if isDirty && !isHovered && !drawsLifted {
+        // Unsaved edits and unseen output are marks, not states (Direction 03 §3.1): one quiet
+        // 5 pt dot in the trailing slot, where the close button goes, until hover swaps it for ×.
+        if (isDirty || hasUnseenOutput) && !isHovered && !drawsLifted && closeButton?.isHidden != false {
             NSColor.secondaryLabelColor.setFill()
-            let dotSize: CGFloat = 7
+            let dotSize: CGFloat = 5
             let x = bounds.width - Self.flare - 5 - 8 - dotSize / 2
             NSBezierPath(ovalIn: NSRect(x: x, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
         }
@@ -1019,7 +1016,13 @@ final class TabChipView: NSView, PointerHoverSyncing {
     // the selected one.
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .radioButton }
-    override func accessibilityLabel() -> String? { detail.isEmpty ? title : "\(title), \(detail)" }
+    override func accessibilityLabel() -> String? {
+        var parts = [title]
+        if !detail.isEmpty { parts.append(detail) }
+        if isDirty { parts.append("unsaved") }
+        if hasUnseenOutput { parts.append("new output") }
+        return parts.joined(separator: ", ")
+    }
     override func accessibilityValue() -> Any? { isActive ? 1 : 0 }
     override func accessibilityPerformPress() -> Bool {
         strip?.chipSelected(self)

@@ -20,13 +20,6 @@ private final class FocusableContainerView: NSView {
     }
 }
 
-/// Colors for the grouped-card ledger. Deliberately restrained: one neutral card surface, one
-/// hairline, no per-status color coding — the section label already says the status in words, so
-/// a colored dot repeating it would just be noise. The app's own accent shows up only on buttons.
-/// Thin forwarding layer onto `DS` (the charter's token file) — kept so Tracks' many call sites
-/// didn't all churn in the migration, but every value now has exactly one definition.
-
-
 final class TracksWorkspaceViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let documentContainer = FocusableContainerView()
@@ -2043,8 +2036,10 @@ private final class TrackRowView: NSView {
         case .working: return ("Working", DS.Color.statusWorking)
         case .needsYou: return ("Needs you", DS.Color.statusNeedsYou)
         case .failed: return ("Failed", DS.Color.statusFailed)
-        case .doneUnread: return ("Done", DS.Color.statusVerified)
-        case .doneSeen: return ("Done", DS.Color.statusIdle)
+        // One word per state (Direction 03 §3.1): a finished turn with changes is ready for review;
+        // once seen, the track's own lifecycle says what it is.
+        case .doneUnread: return ("Ready for review", DS.Color.statusVerified)
+        case .doneSeen: return nil
         }
     }
 }
@@ -2054,7 +2049,7 @@ private func trackStatusText(for status: TrackStatus) -> String {
     switch status {
     case .active: return "Active"
     case .waiting: return "Waiting"
-    case .reviewReady: return "Review Ready"
+    case .reviewReady: return "Ready for review"
     case .parked: return "Parked"
     case .completed: return "Completed"
     case .archived: return "Archived"

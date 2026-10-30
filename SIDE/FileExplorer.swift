@@ -708,9 +708,11 @@ private final class ClosureMenuItem: NSMenuItem {
     @objc private func run() { handler() }
 }
 
-/// Icon, name, and a git dot trailing when the file (or something inside the folder) changed.
+/// Icon, name, and a git letter trailing when the file (or something inside the folder) changed.
+/// Letters, not dots: a dot means an agent's state, and one in the explorer read as one
+/// (Direction 03 §3.1).
 private final class ExplorerCellView: NSTableCellView {
-    private let dot = DS.StatusDot(state: .idle)
+    private let dot = NSTextField(labelWithString: "")
 
     init() {
         super.init(frame: .zero)
@@ -722,6 +724,9 @@ private final class ExplorerCellView: NSTableCellView {
         text.isEditable = false
         text.focusRingType = .none
         for view in [icon, text] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        dot.font = DS.Text.code(11, weight: .semibold)
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.setContentCompressionResistancePriority(.required, for: .horizontal)
         addSubview(dot)
         imageView = icon
         textField = text
@@ -742,11 +747,15 @@ private final class ExplorerCellView: NSTableCellView {
         textField?.stringValue = name
         textField?.isEditable = false
         imageView?.image = icon
+        // The diff's colours, never the status ones: amber would read as "needs you".
         switch mark {
-        case .added: dot.state = .verified
-        case .modified: dot.state = .needsYou
-        case .conflicted: dot.state = .failed
-        case nil: break
+        case .added: dot.stringValue = "A"; dot.textColor = DiffBody.addedText
+        case .modified: dot.stringValue = "M"; dot.textColor = .secondaryLabelColor
+        case .conflicted: dot.stringValue = "U"; dot.textColor = DiffBody.removedText
+        case nil: dot.stringValue = ""
+        }
+        dot.toolTip = mark.map { m -> String in
+            switch m { case .added: return "New"; case .modified: return "Modified"; case .conflicted: return "Conflicted" }
         }
         dot.isHidden = mark == nil
         let spoken = mark.map { m -> String in

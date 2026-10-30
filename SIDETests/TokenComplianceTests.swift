@@ -103,6 +103,28 @@ final class TokenComplianceTests: XCTestCase {
         XCTAssertEqual(DS.StatusState.verified.name, "Ready for review")
     }
 
+    /// Direction 03 §3: a dot means an agent's or a process's state, in one word and one look.
+    /// New output is a mark with no status colour; a status label's word is caption-sized; no tab,
+    /// row or explorer entry draws a status colour of its own.
+    @MainActor
+    func testStatusSpeaksOneVocabulary() throws {
+        XCTAssertEqual(DS.StatusState.unread.color, .secondaryLabelColor, "new output is a mark, not a state")
+        let label = DS.StatusLabel(state: .needsYou)
+        XCTAssertEqual(label.label.font?.pointSize, DS.Text.caption().pointSize)
+        XCTAssertEqual(label.label.stringValue, "Needs you")
+        for state: DS.StatusState in [.needsYou, .working, .verified, .failed, .idle] {
+            XCTAssertFalse(state.name.isEmpty)
+        }
+        // Status colours are the status dot's alone.
+        let drawers = ["TabStrip.swift", "FileExplorer.swift"]
+        for file in sourceFiles where drawers.contains(file.lastPathComponent) {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for token in ["statusWorking", "statusNeedsYou", "statusVerified", "statusFailed"] {
+                XCTAssertFalse(text.contains("DS.Color.\(token)"), "\(file.lastPathComponent) draws \(token) itself")
+            }
+        }
+    }
+
     func testStatusStateMapsActivityWithoutLosingFailure() {
         XCTAssertEqual(DS.StatusState(.failed), .failed)
         XCTAssertEqual(DS.StatusState(.needsYou), .needsYou)

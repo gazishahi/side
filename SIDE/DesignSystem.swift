@@ -1028,7 +1028,8 @@ extension DS {
             case .verified: return Color.statusVerified
             case .failed: return Color.statusFailed
             case .idle: return Color.statusIdle
-            case .unread: return Color.statusWorking
+            // New output is a mark, not a state: no status colour (Direction 03 §3.1).
+            case .unread: return .secondaryLabelColor
             }
         }
 
@@ -1168,7 +1169,7 @@ extension DS {
             alignment = .centerY
             spacing = Spacing.s
             translatesAutoresizingMaskIntoConstraints = false
-            label.font = Text.custom(12)
+            label.font = Text.caption()
             label.textColor = .secondaryLabelColor
             label.stringValue = text ?? state.name
             addArrangedSubview(dot)
