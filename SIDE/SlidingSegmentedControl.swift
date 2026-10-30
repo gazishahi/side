@@ -86,13 +86,15 @@ final class SlidingSegmentedControl: NSView {
         rebuildContents()
     }
 
-    /// A 5 pt dot trailing the segment's title, and the state spoken with its name.
+    /// The status dot trailing the segment's title, and the state spoken with its name. A dot
+    /// alone still says its word, as a tooltip (Direction 03 §3.2).
     func setBadge(_ state: DS.StatusState?, spokenState: String?, at index: Int) {
         guard badgeStates.indices.contains(index) else { return }
         badgeStates[index] = state
         accessibilityStates[index] = spokenState
         if let state { badges[index].state = state }
         badges[index].isHidden = state == nil
+        badges[index].toolTip = state.map { spokenState ?? $0.name }
         refreshAccessibility()
     }
 
@@ -114,7 +116,7 @@ final class SlidingSegmentedControl: NSView {
             button.setAccessibilityRole(.radioButton)
             addSubview(button)
             buttons.append(button)
-            let badge = DS.StatusDot(state: badgeStates.indices.contains(index) ? (badgeStates[index] ?? .idle) : .idle, diameter: 5)
+            let badge = DS.StatusDot(state: badgeStates.indices.contains(index) ? (badgeStates[index] ?? .idle) : .idle)
             badge.translatesAutoresizingMaskIntoConstraints = true
             badge.isHidden = !(badgeStates.indices.contains(index) && badgeStates[index] != nil)
             badge.setAccessibilityElement(false)
@@ -151,7 +153,8 @@ final class SlidingSegmentedControl: NSView {
             let titleWidth = min(button.intrinsicContentSize.width, width)
             // On the title's centre line, just after it — a dot riding up like a superscript read
             // as misaligned.
-            badges[index].frame = NSRect(x: min((width + titleWidth) / 2 + 4, width - 8), y: (bounds.height - 5) / 2, width: 5, height: 5)
+            let dot = DS.StatusDot.diameter
+            badges[index].frame = NSRect(x: min((width + titleWidth) / 2 + DS.Spacing.s, width - dot - 3), y: (bounds.height - dot) / 2, width: dot, height: dot)
         }
         // Snap the thumb only when the control actually resized — selecting re-tints a label,
         // which schedules a layout pass that would otherwise teleport the thumb mid-slide.

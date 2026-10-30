@@ -70,7 +70,7 @@ final class FirstRunSheetController: NSViewController {
         let next = steps.first { !done.contains($0.0) }?.0
         for (step, label, action) in steps {
             let isDone = done.contains(step)
-            let mark = DS.StatusDot(state: isDone ? .verified : .idle, diameter: 8)
+            let mark = DS.StatusDot(state: isDone ? .verified : .idle)
             let text = NSTextField(labelWithString: label)
             text.font = DS.Text.body(isDone ? .regular : .medium)
             text.textColor = isDone ? .secondaryLabelColor : .labelColor

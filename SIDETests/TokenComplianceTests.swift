@@ -55,6 +55,54 @@ final class TokenComplianceTests: XCTestCase {
         )
     }
 
+    /// Direction 03 §2.2: an `animator()` change outside an animation group runs at AppKit's
+    /// implicit 0.25 s, on no curve, past Reduce Motion. Every one sits inside
+    /// `DS.Motion.animate`, `DS.Motion.fade` or a `runAnimationGroup` whose timing comes from
+    /// `DS.Motion`, within the few lines above it.
+    func testEveryAnimatorChangeRunsInsideAMotionGroup() throws {
+        var bare: [String] = []
+        for file in sourceFiles {
+            var lastGroup = Int.min / 2
+            for (index, line) in try String(contentsOf: file, encoding: .utf8).components(separatedBy: "\n").enumerated() {
+                if line.contains("runAnimationGroup") || line.contains("Motion.animate(") || line.contains("Motion.fade") { lastGroup = index }
+                if line.contains(".animator()"), index - lastGroup > 12 { bare.append("\(file.lastPathComponent):\(index + 1)") }
+            }
+        }
+        XCTAssertEqual(bare, [])
+    }
+
+    func testTheSpringsOvershootALittleAndFadesNever() {
+        // Direction 03 §2.2: fluid and a little springy, as the owner asked (2026-10-30).
+        for spring in [DS.Motion.snappy, DS.Motion.smooth] {
+            XCTAssertLessThan(spring.damping, 0.85, "below 0.85 a spring visibly settles")
+            XCTAssertGreaterThan(spring.damping, 0.7, "but never wobbles")
+            var points = [Float](repeating: 0, count: 2)
+            spring.curve.getControlPoint(at: 1, values: &points)
+            XCTAssertGreaterThan(points[1], 1, "the curve overshoots, as the spring does")
+        }
+        XCTAssertGreaterThan(DS.Motion.smooth.response, DS.Motion.snappy.response)
+        let settle = DS.Motion.spring(DS.Motion.snappy, keyPath: "position.x", velocity: 800, distance: 200)
+        XCTAssertEqual(settle.initialVelocity, 4, accuracy: 0.001, "a flick's speed carries into the settle")
+    }
+
+    @MainActor
+    func testEveryStatusDotIsOneSizeAndQuietIsAStillRing() {
+        for state: DS.StatusState in [.needsYou, .working, .verified, .failed, .idle] {
+            XCTAssertEqual(DS.StatusDot(state: state).fittingSize, NSSize(width: 6, height: 6))
+        }
+        let quiet = DS.StatusDot(state: .idle)
+        XCTAssertEqual(quiet.layer?.borderWidth, 1.5)
+        XCTAssertNil(quiet.layer?.backgroundColor, "a ring, not a grey fill")
+        XCTAssertNil(quiet.layer?.animation(forKey: "breathe"), "still: only Working moves")
+        quiet.state = .failed
+        XCTAssertEqual(quiet.layer?.borderWidth, 0)
+        DS.LayerBindings.reapplyAll()
+        quiet.state = .idle
+        DS.LayerBindings.reapplyAll()
+        XCTAssertNil(quiet.layer?.backgroundColor, "the fill's binding went with it")
+        XCTAssertEqual(DS.StatusState.verified.name, "Ready for review")
+    }
+
     func testStatusStateMapsActivityWithoutLosingFailure() {
         XCTAssertEqual(DS.StatusState(.failed), .failed)
         XCTAssertEqual(DS.StatusState(.needsYou), .needsYou)

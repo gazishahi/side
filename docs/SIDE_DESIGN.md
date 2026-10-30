@@ -20,9 +20,9 @@ priority order:
 2. **Restraint** — fewer boxes, fewer borders, fewer labels. Hierarchy comes from spacing and
    type weight before it comes from lines and fills. If a border and a
    background tint say the same thing, drop one.
-3. **Motion with purpose** — things that appear, animate in; things that move, glide. Never
-   animate layout the user is waiting on. 0.2–0.3s, ease-out, subtle. (Think's
-   bubble arrival is the reference implementation.)
+3. **Motion with purpose** — motion is for change of place, never for waiting: what moves
+   shows its path, what appears comes from where it was summoned. Fluid and a little springy,
+   never animating layout the user is waiting on (Direction 03, 2026-10-30).
 4. **Depth** — the active thing reads as physically closer: attached to its content, brighter,
    lifted. The inactive recedes. An active tab should feel *part of the editor*,
    not a chip floating above it.
@@ -56,10 +56,12 @@ for line numbers, archived rows). Never a hand-mixed gray.
 **Accent:** `controlAccentColor`, for focus, selection and the *one* primary action per screen.
 Never status.
 
-**Status — dot + text, never a filled pill.** `DS.StatusDot(state:)` (6 pt) and
-`DS.StatusLabel(state:text:)`, states `needsYou` (amber), `working` (hollow ring, breathing —
-the only animated indicator), `verified` (green), `failed` (red), `idle` (quaternary), `unread`
-(a quiet dot for new terminal output). Meaning is carried by the word; colour reinforces.
+**Status — dot + text, never a filled pill.** `DS.StatusDot(state:)`, one size (6 pt, 6 pt
+before its word), and `DS.StatusLabel(state:text:)`. A dot means an agent's or process's state
+and nothing else: Needs you (amber, the only colour that asks for you), Working (a ring,
+breathing, the only thing that moves on its own), Ready for review (green), Failed (red), Idle
+(a still quaternary ring). A dot shown without its word carries it as a tooltip. Unsaved and
+unseen output are marks, not states, and never take a status colour (Direction 03 §3).
 
 **Type — five roles** on `DS.Text`, each scaled by `DS.Text.Scale` (Compact / Default / Large /
 Larger, Settings › Appearance): `title` 20, `heading` 15, `body` 13, `caption` 11, `code`
@@ -77,19 +79,24 @@ whose radius is always half their height.
 
 ## Motion
 
-One curve (`DS.Motion.curve`), durations through `DS.Motion.duration(_:)` so Reduce Motion
-shortens every one of them. Nothing the user is waiting on animates: expansion, folding,
-full re-renders and reattaching all lay out instantly.
+Direction 03 (2026-10-30) holds the reasoning; these are the rules.
 
-- **Press:** glass controls swell and spring back (`DS.Motion.press`) — 1.08 on the search
-  button, a gentler 1.035 on the bar's chips and pills (`ChipButton.pressScale`). Promote alone
-  keeps one ~300 ms settle (`settlesOnRelease`).
-- **Hover reveals:** alpha, ~0.15 s.
-- **Appearance:** a new chip, tab or bubble fades in with a short rise (`DS.Motion.appear`).
-  Think's bubble arrival is a **documented exception** to "only the working ring moves": it marks
-  where the new message is, and it never plays on a full re-render.
-- **Streaming:** agent text grows in place as it arrives; the bubble never rebuilds per token.
-- **The working ring** breathes on a 2 s ease-in-out — the only indicator that moves on its own.
+- **Motion is for change of place, never for waiting.** Expanding, folding, re-rendering and
+  reattaching lay out at once.
+- **Three tokens.** `DS.Motion.snappy` (0.26 s, damping 0.80) settles direct manipulation;
+  `DS.Motion.smooth` (0.40 s, 0.76) presents panels, popovers, pills and the tab preview;
+  `DS.Motion.fade` (0.15 s, ease-out) is for opacity only. The springs overshoot a little and
+  settle: fluid, never wobbly. Opacity never springs, and text never stretches with a spring.
+- **Direct manipulation is 1:1** while the pointer is down; springs start on release and carry
+  the pointer's velocity (`DS.Motion.spring(_:keyPath:velocity:distance:)`).
+- **Everything is interruptible:** animations start from the presentation state.
+- **Through the helpers:** `DS.Motion.animate`, `DS.Motion.fade`, or a group timed by
+  `DS.Motion`. No bare `animator()`, no literal duration (`TokenComplianceTests`).
+- **Reduce Motion** turns movement into a 0.1 s crossfade (`animate(_:crossfading:)`); fades
+  stay. Consulted only in the token file.
+- **Press:** glass controls swell and spring back (`DS.Motion.press`). **Appearance:**
+  `DS.Motion.appear` (rise and fade), never on a full re-render. **The working ring** breathes on
+  a 2 s cycle, the only thing that moves on its own.
 
 ## Component canon
 

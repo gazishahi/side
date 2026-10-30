@@ -710,7 +710,7 @@ private final class ClosureMenuItem: NSMenuItem {
 
 /// Icon, name, and a git dot trailing when the file (or something inside the folder) changed.
 private final class ExplorerCellView: NSTableCellView {
-    private let dot = DS.StatusDot(state: .idle, diameter: 6)
+    private let dot = DS.StatusDot(state: .idle)
 
     init() {
         super.init(frame: .zero)

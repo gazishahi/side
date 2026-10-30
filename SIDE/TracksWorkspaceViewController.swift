@@ -1250,9 +1250,10 @@ final class TracksWorkspaceViewController: NSViewController {
     private func showStatus(_ message: String) {
         statusLabelHideWorkItem?.cancel()
         statusLabel.stringValue = message
-        statusLabel.animator().alphaValue = 1
+        DS.Motion.fade { statusLabel.animator().alphaValue = 1 }
         let hideWorkItem = DispatchWorkItem { [weak self] in
-            self?.statusLabel.animator().alphaValue = 0
+            guard let self else { return }
+            DS.Motion.fade { self.statusLabel.animator().alphaValue = 0 }
         }
         statusLabelHideWorkItem = hideWorkItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: hideWorkItem)
@@ -1756,12 +1757,12 @@ private final class BaseRowView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         bindLayerBackground(DS.Color.raised)
-        action.animator().alphaValue = 1
+        DS.Motion.fade { action.animator().alphaValue = 1 }
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = nil
-        action.animator().alphaValue = 0
+        unbindLayerBackground()
+        DS.Motion.fade { action.animator().alphaValue = 0 }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -1958,19 +1959,23 @@ private final class TrackRowView: NSView {
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
         applyBackground()
-        hoverActions.animator().alphaValue = 1
-        primaryButton.animator().alphaValue = 1
+        DS.Motion.fade {
+            hoverActions.animator().alphaValue = 1
+            primaryButton.animator().alphaValue = 1
+        }
     }
 
     override func mouseExited(with event: NSEvent) {
         isHovered = false
         applyBackground()
-        hoverActions.animator().alphaValue = 0
-        primaryButton.animator().alphaValue = verb.alwaysVisible ? 1 : 0
+        DS.Motion.fade {
+            hoverActions.animator().alphaValue = 0
+            primaryButton.animator().alphaValue = verb.alwaysVisible ? 1 : 0
+        }
     }
 
     private func applyBackground() {
-        if isSelected { bindLayerBackground(DS.Color.selectedCapsule) } else if isHovered { bindLayerBackground(hoverTone) } else { layer?.backgroundColor = nil }
+        if isSelected { bindLayerBackground(DS.Color.selectedCapsule) } else if isHovered { bindLayerBackground(hoverTone) } else { unbindLayerBackground() }
     }
 
     override func mouseUp(with event: NSEvent) {

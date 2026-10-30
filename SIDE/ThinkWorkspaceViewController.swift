@@ -3000,8 +3000,8 @@ private final class BubbleRowView: NSView {
         guard let window else { return false }
         return bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
     }
-    override func mouseEntered(with event: NSEvent) { actions.animator().alphaValue = pointerIsInside ? 1 : 0 }
-    override func mouseExited(with event: NSEvent) { actions.animator().alphaValue = 0 }
+    override func mouseEntered(with event: NSEvent) { DS.Motion.fade { actions.animator().alphaValue = pointerIsInside ? 1 : 0 } }
+    override func mouseExited(with event: NSEvent) { DS.Motion.fade { actions.animator().alphaValue = 0 } }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         actions.alphaValue = 0

@@ -795,7 +795,7 @@ final class DiffFileHeader: NSView {
     func setHovered(_ hovered: Bool, animated: Bool = true) {
         let alpha: CGFloat = hovered ? 1 : 0
         guard instructButton.alphaValue != alpha else { return }
-        if animated { instructButton.animator().alphaValue = alpha } else { instructButton.alphaValue = alpha }
+        if animated { DS.Motion.fade { instructButton.animator().alphaValue = alpha } } else { instructButton.alphaValue = alpha }
     }
     @objc private func instructTapped() { onInstruct?(instructButton) }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }

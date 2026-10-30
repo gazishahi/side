@@ -415,15 +415,87 @@ enum DS {
         /// response 0.30, damping 0.86 — the same feel macOS 26 uses for its own controls.
         static var curve: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.2, 0.85, 0.25, 1.0) }
 
-        /// `CASpringAnimation` for the same spring, when a layer animation needs one.
-        static func spring(keyPath: String) -> CASpringAnimation {
+        /// A spring by feel (Direction 03 §2.2): `response` is how quickly it gets there, `damping`
+        /// how much it gives. Below about 0.85 it visibly overshoots and settles, which is the
+        /// fluid feel Side aims for; at 0.88 and up it reads as a plain ease-out.
+        struct Spring: Equatable, Sendable {
+            let response: Double
+            let damping: Double
+            /// Bézier control points for `curve`; the second's y above 1 is the overshoot.
+            let controlPoints: [Float]
+            /// The spring as a curve with its overshoot, for `NSAnimationContext` (view frames and
+            /// anything else animated through `animator()`), which can't run a real spring.
+            var curve: CAMediaTimingFunction {
+                CAMediaTimingFunction(controlPoints: controlPoints[0], controlPoints[1], controlPoints[2], controlPoints[3])
+            }
+            /// How long `curve` runs: about when the spring looks settled.
+            var duration: TimeInterval { response * 1.3 }
+        }
+
+        /// Settling after direct manipulation: a tab set down, neighbours sliding aside, a press
+        /// releasing. About 1% overshoot.
+        static let snappy = Spring(response: 0.26, damping: 0.80, controlPoints: [0.25, 1.1, 0.35, 1])
+        /// Presentations: panels, Side's own popovers, the tab's preview morph, a pill growing.
+        /// About 2% overshoot.
+        static let smooth = Spring(response: 0.40, damping: 0.76, controlPoints: [0.28, 1.18, 0.38, 1])
+        /// Opacity only, never a spring: alpha that overshoots flashes.
+        static let fadeDuration: TimeInterval = 0.15
+        static var fadeCurve: CAMediaTimingFunction { CAMediaTimingFunction(name: .easeOut) }
+
+        /// `CASpringAnimation` for a spring. `velocity` and `distance` (in the animated value's
+        /// units, per second) carry a gesture's speed into the settle, so a flick lands with
+        /// momentum instead of stopping and starting again.
+        static func spring(_ spring: Spring, keyPath: String, velocity: CGFloat = 0, distance: CGFloat = 0) -> CASpringAnimation {
             let animation = CASpringAnimation(keyPath: keyPath)
-            let response = 0.30, damping = 0.86
             animation.mass = 1
-            animation.stiffness = pow(2 * .pi / response, 2)
-            animation.damping = 4 * .pi * damping / response
+            animation.stiffness = pow(2 * .pi / spring.response, 2)
+            animation.damping = 4 * .pi * spring.damping / spring.response
+            // CASpringAnimation wants velocity as a fraction of the distance it travels.
+            animation.initialVelocity = distance != 0 ? velocity / distance : 0
             animation.duration = animation.settlingDuration
             return animation
+        }
+
+        /// The snappy spring for a layer animation (the press, and older call sites).
+        static func spring(keyPath: String) -> CASpringAnimation { spring(snappy, keyPath: keyPath) }
+
+        /// Animates changes made through `animator()` on a spring. Under Reduce Motion nothing
+        /// moves: the changes land at once, and `crossfading`'s layer fades from the old look to
+        /// the new over 0.1 s, so the change still reads as one (Direction 03 §2.2).
+        @MainActor
+        static func animate(_ spring: Spring, crossfading view: NSView? = nil, _ changes: () -> Void, completion: (@MainActor () -> Void)? = nil) {
+            if reduceMotion {
+                if let layer = view?.layer {
+                    let fade = CATransition()
+                    fade.type = .fade
+                    fade.duration = 0.1
+                    layer.add(fade, forKey: "dsCrossfade")
+                }
+                changes()
+                completion?()
+                return
+            }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = spring.duration
+                context.timingFunction = spring.curve
+                context.allowsImplicitAnimation = true
+                changes()
+            } completionHandler: {
+                MainActor.assumeIsolated { completion?() }
+            }
+        }
+
+        /// Opacity changes through `animator()`: hover reveals, crossfades. Fades stay under
+        /// Reduce Motion, which is about movement.
+        @MainActor
+        static func fade(_ changes: () -> Void, completion: (@MainActor () -> Void)? = nil) {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = fadeDuration
+                context.timingFunction = fadeCurve
+                changes()
+            } completionHandler: {
+                MainActor.assumeIsolated { completion?() }
+            }
         }
 
         /// The Liquid Glass press: the control swells under the finger and springs back. Scales
@@ -839,6 +911,18 @@ extension NSView {
         layer?.borderColor = resolvedCGColor(color)
     }
 
+    /// No background, and none restored by the next appearance change: setting
+    /// `layer?.backgroundColor = nil` left the binding in place to paint it back.
+    func unbindLayerBackground() {
+        objc_setAssociatedObject(self, &boundBackgroundKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        layer?.backgroundColor = nil
+    }
+
+    func unbindLayerBorder() {
+        objc_setAssociatedObject(self, &boundBorderKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        layer?.borderColor = nil
+    }
+
     fileprivate func reapplyBoundLayerColors() {
         if let color = objc_getAssociatedObject(self, &boundBackgroundKey) as? NSColor { layer?.backgroundColor = resolvedCGColor(color) }
         if let color = objc_getAssociatedObject(self, &boundBorderKey) as? NSColor { layer?.borderColor = resolvedCGColor(color) }
@@ -872,7 +956,7 @@ extension DS {
             switch self {
             case .needsYou: return "Needs you"
             case .working: return "Working"
-            case .verified: return "Verified"
+            case .verified: return "Ready for review"
             case .failed: return "Failed"
             case .idle: return "Idle"
             case .unread: return "New output"
@@ -923,12 +1007,13 @@ extension DS {
     /// whose label is the state's name, so the colour is never the only carrier.
     final class StatusDot: NSView {
         var state: StatusState { didSet { if state != oldValue { apply() } } }
-        private let diameter: CGFloat
+        /// One size everywhere (Direction 03 §3.2): four sizes made the same state look different.
+        static let diameter: CGFloat = 6
+        private var diameter: CGFloat { Self.diameter }
 
-        init(state: StatusState, diameter: CGFloat = 6) {
+        init(state: StatusState) {
             self.state = state
-            self.diameter = diameter
-            super.init(frame: NSRect(x: 0, y: 0, width: diameter, height: diameter))
+            super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
             wantsLayer = true
             translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([widthAnchor.constraint(equalToConstant: diameter), heightAnchor.constraint(equalToConstant: diameter)])
@@ -943,8 +1028,14 @@ extension DS {
         private func apply() {
             setAccessibilityLabel(state.name)
             layer?.removeAnimation(forKey: "breathe")
-            if state == .working {
-                layer?.backgroundColor = nil
+            if state == .idle {
+                // Quiet is a still ring: a filled grey dot read as a dimmed state of the others.
+                unbindLayerBackground()
+                layer?.borderWidth = 1.5
+                layer?.opacity = 1
+                bindLayerBorder(state.color)
+            } else if state == .working {
+                unbindLayerBackground()
                 layer?.borderWidth = 1.5
                 bindLayerBorder(state.color)
                 guard !Motion.reduceMotion else { return }
@@ -957,6 +1048,7 @@ extension DS {
                 breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 layer?.add(breathe, forKey: "breathe")
             } else {
+                unbindLayerBorder()
                 layer?.borderWidth = 0
                 layer?.opacity = 1
                 bindLayerBackground(state.color)

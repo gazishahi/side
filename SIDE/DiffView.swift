@@ -264,8 +264,8 @@ final class DiffFileCardView: NSView {
         addTrackingArea(area)
         headerTracking = area
     }
-    override func mouseEntered(with event: NSEvent) { instructButton.animator().alphaValue = 1 }
-    override func mouseExited(with event: NSEvent) { instructButton.animator().alphaValue = 0 }
+    override func mouseEntered(with event: NSEvent) { DS.Motion.fade { instructButton.animator().alphaValue = 1 } }
+    override func mouseExited(with event: NSEvent) { DS.Motion.fade { instructButton.animator().alphaValue = 0 } }
     @objc private func instructTapped() { onInstruct?(instructButton) }
 
     init(file: UnifiedDiff.File, layout: DiffLayout = .unified) {
