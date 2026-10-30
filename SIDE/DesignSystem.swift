@@ -700,7 +700,7 @@ enum TabSelection {
 
 final class TabStripView: NSView {
     /// The chips to publish, in visual order. Set on every strip rebuild.
-    var accessibleTabs: [NSView] = [] { didSet { glassTrack?.isHidden = accessibleTabs.isEmpty } }
+    var accessibleTabs: [NSView] = []
     private var glassTrack: NSView?
 
     /// The strip's tabs sit in one Liquid Glass capsule — the same family as the bar's stage
@@ -726,18 +726,76 @@ final class TabStripView: NSView {
 
     @objc private func tabsResized() { needsLayout = true }
 
+    /// The track shown or not with the strip (one tab needs no strip), fading when animated.
+    func showTrack(_ shown: Bool, animated: Bool) {
+        guard let glass = glassTrack else { return }
+        guard animated else {
+            glass.alphaValue = shown ? 1 : 0
+            glass.isHidden = !shown
+            return
+        }
+        if shown {
+            if glass.isHidden { glass.alphaValue = 0 }
+            glass.isHidden = false
+        }
+        DS.Motion.fade({ glass.animator().alphaValue = shown ? 1 : 0 }, completion: { [weak glass] in
+            guard let glass, !shown, glass.alphaValue == 0 else { return }
+            glass.isHidden = true
+        })
+    }
+
+    /// How wide the tabs are, set by the strip from their laid-out frames; nil until it says.
+    private var trackWidth: CGFloat?
+
+    /// The track to `width`, on `spring` from `from` (or from what's on screen) when given. The
+    /// strip drives it: sized inside this view's layout pass, the track never moved on a spring
+    /// and jumped again once the tabs' frames caught up (2026-10-31).
+    func setTrackWidth(_ width: CGFloat, spring: DS.Motion.Spring?, from: CGFloat? = nil) {
+        guard let glass = glassTrack else { return }
+        let shown = from ?? (glass.layer?.presentation() ?? glass.layer)?.bounds.width ?? glass.frame.width
+        trackWidth = width
+        applyTrack()
+        guard let spring, !DS.Motion.reduceMotion, let layer = glass.layer else { return }
+        let target = glass.frame.width
+        guard abs(shown - target) > 0.5 else { return }
+        // The left edge stays put (an AppKit view's layer grows from its origin); only the width
+        // moves, additively, so a second change mid-spring carries on from where it is.
+        let grow = DS.Motion.spring(spring, keyPath: "bounds.size.width")
+        grow.isAdditive = true
+        grow.fromValue = shown - target
+        grow.toValue = 0
+        layer.add(grow, forKey: nil)
+    }
+
     override func layout() {
         super.layout()
+        applyTrack()
+    }
+
+    private func applyTrack() {
         guard let glass = glassTrack, let scroll = trackScroll, let stack = trackStack else { return }
-        let width = min(stack.frame.width, scroll.frame.width)
-        glass.frame = NSRect(x: scroll.frame.minX, y: (bounds.height - Self.trackHeight) / 2, width: width, height: Self.trackHeight)
+        // The tabs' width as the strip last laid them out, else from their constraints: this
+        // layout runs before the scroll view gives the stack its new frame, and sizing from that
+        // frame left the track, and the mask below, at the old width. A new tab (or one dropped
+        // back from its card) was then cut off by the mask, there in every record but blank on
+        // screen until another layout (the owner, 2026-10-31).
+        let width = min(trackWidth ?? stack.fittingSize.width, scroll.frame.width)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            glass.frame = NSRect(x: scroll.frame.minX, y: (bounds.height - Self.trackHeight) / 2, width: width, height: Self.trackHeight)
+        }
         // The tabs are cut off at the track's round ends, not the scroll view's square ones: a
-        // selected tab half scrolled out used to poke its pill past the curve.
+        // selected tab half scrolled out used to poke its pill past the curve. The mask takes its
+        // shape at once, never on an animation: a mask that lags the tabs hides them.
         scroll.wantsLayer = true
         let mask = (scroll.layer?.mask as? CAShapeLayer) ?? CAShapeLayer()
-        let track = convert(glass.frame, to: scroll)
+        let track = NSRect(x: 0, y: (scroll.bounds.height - Self.trackHeight) / 2, width: width, height: Self.trackHeight)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         mask.frame = scroll.bounds
         mask.path = CGPath(roundedRect: track, cornerWidth: Self.trackHeight / 2, cornerHeight: Self.trackHeight / 2, transform: nil)
+        CATransaction.commit()
         scroll.layer?.mask = mask
     }
     var accessibilityGroupLabel: String = "Tabs"

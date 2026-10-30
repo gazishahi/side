@@ -659,6 +659,7 @@ final class ShellViewController: NSViewController {
 
     /// UI testing's measurement scripts: close every Make tab without asking.
     func closeAllMakeTabsForTesting() { makeVC.closeAllTabsForTesting() }
+    var makeForTesting: MakeWorkspaceViewController { makeVC }
     /// UI testing: a new track on the given agent, shown in Think.
     func thinkTrackForTesting(agentId: String) {
         guard let store = trackStore else { return }

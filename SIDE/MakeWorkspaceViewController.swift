@@ -2971,6 +2971,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // worth keeping over the whole set.
         if let projectURL, !isRestoringTabs { rememberOpenTabs(forProject: projectURL) }
         noFileLabel.isHidden = !openTabs.isEmpty || projectURL == nil
+        // A file open with no project (from Finder, a link): "Open a project" sat over it and
+        // took the clicks meant for the text.
+        if !openTabs.isEmpty { emptyState.isHidden = true }
         tabStrip.reload(openTabs.map(tabItem), active: activeTabIndex)
     }
 
@@ -6420,6 +6423,9 @@ extension MakeWorkspaceViewController {
     func languageServerVersionForTesting(_ url: URL) -> Int? { lspManager?.versionForTesting(url) }
     var activeTabURLForTesting: URL? { activeTabIndex.map { openTabs[$0].url } }
     var openTabURLsForTesting: [URL] { openTabs.map(\.url) }
+    func closeTabForTesting(named name: String) {
+        if let index = openTabs.firstIndex(where: { $0.url.lastPathComponent == name }) { closeTab(at: index) }
+    }
     var sheetViewForTesting: SheetView { sheetView }
     /// As a batch of file events naming every open tab would.
     func reconcileWithDiskForTesting() { for index in openTabs.indices { reconcileTabWithDisk(index) } }

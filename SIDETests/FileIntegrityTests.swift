@@ -1217,9 +1217,128 @@ final class TabStripTests: XCTestCase {
             stack.heightAnchor.constraint(equalToConstant: 30),
         ])
         bar.layoutSubtreeIfNeeded()
+        let unchanged = strip.selectionFrameForTesting
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         let tint = try XCTUnwrap(strip.selectionFrameForTesting, "shown")
+        XCTAssertNotEqual(unchanged, tint, "placed after the layout, never during it: moving it mid-layout left new tabs undrawn")
         XCTAssertEqual(tint.midX, strip.chips[2].frame.midX, accuracy: 1, "under the selected tab, after layout")
         XCTAssertGreaterThan(tint.width, 80)
+    }
+
+    /// The cause of the blank new tab (2026-10-31): a selected chip with no width yet gave the tint
+    /// an infinite frame. With no size, the tint waits; it never takes a frame that isn't finite.
+    func testTheTintNeverTakesAnInfiniteFrame() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let bar = TabStripView(frame: window.contentView!.bounds)
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(stack)
+        window.contentView = bar
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor), stack.topAnchor.constraint(equalTo: bar.topAnchor),
+            stack.heightAnchor.constraint(equalToConstant: 30),
+        ])
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        strip.reload((1...2).map { TabStrip.Item(id: UUID(), title: "file \($0).swift") }, active: 1)
+        // The selected chip placed with no width, as a new one is before layout.
+        let chip = strip.chips[1]
+        chip.frame = NSRect(x: 120, y: 3, width: 0, height: 24)
+        if let frame = strip.intendedSelectionFrameForTesting {
+            XCTAssertTrue(frame.minX.isFinite && frame.minY.isFinite && !frame.isNull, "a finite frame, not \(frame)")
+        }
+        bar.needsLayout = true
+        bar.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let settled = try XCTUnwrap(strip.selectionFrameForTesting, "laid out, the tint finds it")
+        XCTAssertEqual(settled.midX, chip.frame.midX, accuracy: 1)
+    }
+
+    /// 2026-10-31, the owner: the strip should open out when a second tab opens, not just
+    /// appear. The track starts at the first tab and springs to both while the tabs fade in;
+    /// back to one tab, it fades away.
+    func testTheStripOpensOutWithASecondTabAndFadesWithOne() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let bar = TabStripView(frame: window.contentView!.bounds)
+        window.contentView = bar
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = TabStripScrollView()
+        scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = stack
+        bar.addSubview(scroll)
+        bar.installGlassTrack(behind: scroll, hugging: stack)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: bar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: bar.topAnchor), scroll.heightAnchor.constraint(equalToConstant: 38),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor), stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.heightAnchor),
+        ])
+        window.orderFront(nil)
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        let glass = try XCTUnwrap(bar.subviews.first { $0 !== scroll })
+        XCTAssertTrue(glass.isHidden, "no strip for one tab")
+        strip.reload((1...2).map { TabStrip.Item(id: UUID(), title: "file \($0).swift") }, active: 1)
+        XCTAssertFalse(glass.isHidden)
+        XCTAssertFalse(strip.chips[1].layer?.animationKeys()?.isEmpty ?? true, "the tabs fade in")
+        let startWidth = (glass.layer?.presentation() ?? glass.layer)?.bounds.width ?? 0
+        XCTAssertLessThan(startWidth, strip.chips[1].frame.maxX, "the track starts from the first tab")
+        RunLoop.main.run(until: Date().addingTimeInterval(1))
+        XCTAssertEqual(strip.chips[1].alphaValue, 1, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(glass.frame.width, strip.chips[1].frame.maxX, "and opens out to both")
+
+        strip.reload([TabStrip.Item(id: UUID(), title: "only.swift")], active: 0)
+        XCTAssertTrue(strip.chips.isEmpty)
+        RunLoop.main.run(until: Date().addingTimeInterval(1))
+        XCTAssertTrue(glass.isHidden, "faded away")
+        XCTAssertEqual(stack.arrangedSubviews.count, 0)
+    }
+
+    /// The blank new tab, at its root (2026-10-31): the strip's mask, shaped to the glass track,
+    /// was sized from the tabs' frame, which the scroll view updates only after the strip's own
+    /// layout. A new tab past the old width was masked out. The mask covers every tab, whatever
+    /// the frame says yet.
+    func testTheMaskCoversEveryTabBeforeTheirFrameCatchesUp() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let bar = TabStripView(frame: window.contentView!.bounds)
+        window.contentView = bar
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = TabStripScrollView()
+        scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = stack
+        bar.addSubview(scroll)
+        bar.installGlassTrack(behind: scroll, hugging: stack)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: bar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: bar.topAnchor), scroll.heightAnchor.constraint(equalToConstant: 38),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor), stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.heightAnchor),
+        ])
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        strip.reload((1...3).map { TabStrip.Item(id: UUID(), title: "file \($0).swift") }, active: 2)
+        bar.layoutSubtreeIfNeeded()
+        // The tabs' frame not yet caught up: as wide as two of them, while three are there.
+        stack.setFrameSize(NSSize(width: strip.chips[1].frame.maxX, height: stack.frame.height))
+        bar.needsLayout = true
+        bar.layout()
+        let mask = try XCTUnwrap(scroll.layer?.mask as? CAShapeLayer)
+        let covered = try XCTUnwrap(mask.path).boundingBox
+        XCTAssertGreaterThanOrEqual(covered.maxX, strip.chips[2].frame.maxX - 1, "the third tab isn't masked out")
+        XCTAssertNil(mask.animation(forKey: "path"), "the mask takes its shape at once")
     }
 
     /// 2026-10-31, the owner: a new tab's title didn't show until it was clicked. It was drawn

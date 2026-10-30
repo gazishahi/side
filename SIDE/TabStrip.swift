@@ -67,9 +67,18 @@ final class TabStrip: NSObject {
     }
 
     /// Where the tint sits: under the selected chip's capsule.
+    ///
+    /// Nil until the chip has a real size. A new chip is first placed with no width, and
+    /// insetting that gives the null rect, whose origin is infinite: set as the tint's frame it
+    /// broke the strip's layout ("Invalid view geometry: y is infinity"), and the new tab went
+    /// undrawn until a click laid the strip out again (the owner, 2026-10-31).
     private func selectionFrame() -> NSRect? {
         guard !selectionHeld, let chip = chips.first(where: \.isActive) else { return nil }
-        return chip.frame.insetBy(dx: TabChipView.flare - 2, dy: 0)
+        let inset = TabChipView.flare - 2
+        guard chip.frame.width > inset * 2 + 1, chip.frame.height > 0 else { return nil }
+        let frame = chip.frame.insetBy(dx: inset, dy: 0)
+        guard !frame.isNull, frame.minX.isFinite, frame.minY.isFinite else { return nil }
+        return frame
     }
 
     private func placeSelection() {
@@ -83,10 +92,17 @@ final class TabStrip: NSObject {
     /// chip all move together.
     private func relayout(_ spring: DS.Motion.Spring, _ changes: () -> Void = {}, completion: (@MainActor () -> Void)? = nil) {
         isRelayingOut = true
+        changes()
+        // The tabs live in a scroll view, which draws only what its content covered when an
+        // animation began: a strip growing inside the animation left its new part, where a new
+        // tab arrives, undrawn until the next layout (the owner, 2026-10-31: blank new tabs,
+        // sometimes). The content takes its new width at once; the tabs and the track move on
+        // the spring inside it.
+        growContentToFit()
         DS.Motion.animate(spring, crossfading: bar, {
-            changes()
             bar.needsLayout = true
             bar.layoutSubtreeIfNeeded()
+            bar.setTrackWidth(tabsWidth(), spring: spring)
             keepTabsInView()
             if let frame = selectionFrame() {
                 if selection.isHidden {
@@ -116,30 +132,60 @@ final class TabStrip: NSObject {
         stack.enclosingScrollView?.reflectScrolledClipView(clip)
     }
 
+    /// The tabs' width as laid out: the last chip's end and the stack's inset after it.
+    private func tabsWidth() -> CGFloat {
+        guard let last = chips.last else { return 0 }
+        return last.frame.maxX + stack.edgeInsets.right
+    }
+
+    /// The scroll view's content takes a new, larger width at once, never on a spring.
+    private func growContentToFit() {
+        let fitting = stack.fittingSize.width
+        guard fitting > stack.frame.width else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            stack.setFrameSize(NSSize(width: fitting, height: stack.frame.height))
+        }
+    }
+
     /// Set while `relayout` moves things itself.
     private var isRelayingOut = false
 
     /// A chip moved or resized outside an animation of the strip's own (the first layout after
     /// launch, a window resize): the tint follows it at once. On launch it was placed before
     /// the strip had its size, and stayed off the selected tab.
+    ///
+    /// Never during the layout that moved the chip: placing a sibling view from inside a layout
+    /// pass could leave part of the strip undrawn, and new tabs sometimes showed blank (the owner,
+    /// 2026-10-31). One update, just after the layout.
     func chipFrameChanged(_ chip: TabChipView) {
-        guard chip.isActive, !isRelayingOut else { return }
-        placeSelection()
+        guard chip.isActive, !isRelayingOut, !selectionSyncQueued else { return }
+        selectionSyncQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.selectionSyncQueued = false
+            guard !self.isRelayingOut else { return }
+            self.placeSelection()
+        }
     }
+
+    private var selectionSyncQueued = false
 
     // MARK: Items
 
     /// Shows `items`, the one at `active` selected. One tab needs no strip: a single tab is only a
     /// label with a close button for the one thing you're looking at, so the strip shows from two.
     func reload(_ items: [Item], active: Int?) {
+        // A strip still fading out goes now: what comes next is drawn fresh.
+        leaving.forEach { $0.removeFromSuperview() }
+        leaving = []
+        selection.alphaValue = 1
         guard items.count > 1 else {
-            chips.forEach { $0.removeFromSuperview() }
-            chips = []
-            ids = []
-            bar.accessibleTabs = []
-            selection.isHidden = true
+            dismiss()
             return
         }
+        let appearing = chips.isEmpty && bar.window?.isVisible == true && !bar.isHiddenOrHasHiddenAncestor
         let wasActive = chips.first(where: \.isActive)?.id
         let newIDs = items.map(\.id)
         let previous = Dictionary(uniqueKeysWithValues: zip(ids, chips))
@@ -161,15 +207,94 @@ final class TabStrip: NSObject {
         chips = next
         ids = newIDs
         bar.accessibleTabs = chips
-        if let arriving, let chip = chips.first(where: { $0.id == arriving }) {
+        if appearing {
+            appear()
+        } else if previous.isEmpty {
+            bar.showTrack(true, animated: false)
+            bar.layoutSubtreeIfNeeded()
+            bar.setTrackWidth(tabsWidth(), spring: nil)
+            keepTabsInView()
+            placeSelection()
+        } else if let arriving, let chip = chips.first(where: { $0.id == arriving }) {
             grow(chip)
         } else if let wasActive, wasActive != active.flatMap({ newIDs.indices.contains($0) ? newIDs[$0] : nil }), !selection.isHidden {
             // Another tab selected: the tint slides to it.
             relayout(DS.Motion.snappy)
         } else {
             bar.layoutSubtreeIfNeeded()
+            bar.setTrackWidth(tabsWidth(), spring: nil)
             keepTabsInView()
             placeSelection()
+        }
+    }
+
+    /// Chips fading out with the strip, removed when the fade ends or the next reload comes.
+    private var leaving: [TabChipView] = []
+
+    /// A second tab opened: the strip opens out from the first tab. The track grows from its
+    /// width to both on a spring while the tabs and the tint fade in (the owner, 2026-10-31: it
+    /// used to just appear).
+    private func appear() {
+        growContentToFit()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            stack.layoutSubtreeIfNeeded()
+        }
+        bar.layoutSubtreeIfNeeded()
+        placeSelection()
+        let first = chips.first.map { $0.frame.maxX + stack.edgeInsets.right } ?? 0
+        bar.showTrack(true, animated: true)
+        bar.setTrackWidth(tabsWidth(), spring: DS.Motion.smooth, from: first)
+        // The first tab is the one that was already there (its title stood alone in the top row):
+        // it's in place at once; the rest fade in as the track reaches them.
+        for chip in chips.dropFirst() { chip.alphaValue = 0 }
+        selection.alphaValue = 0
+        DS.Motion.fade {
+            for chip in chips.dropFirst() { chip.animator().alphaValue = 1 }
+            selection.animator().alphaValue = 1
+        }
+    }
+
+    /// Down to one tab: the strip fades away, rather than vanishing.
+    private func dismiss() {
+        guard !chips.isEmpty else { return }
+        let gone = chips
+        chips = []
+        ids = []
+        bar.accessibleTabs = []
+        guard bar.window != nil, !bar.isHiddenOrHasHiddenAncestor else {
+            gone.forEach { $0.removeFromSuperview() }
+            selection.isHidden = true
+            bar.showTrack(false, animated: false)
+            return
+        }
+        leaving = gone
+        // The open reversed: the track closes back toward the first tab as it fades.
+        if let first = gone.first { bar.setTrackWidth(first.frame.maxX + stack.edgeInsets.right, spring: DS.Motion.smooth) }
+        // It closes most of the way before it fades: fading at once hid the close.
+        DispatchQueue.main.asyncAfter(deadline: .now() + DS.Motion.smooth.duration * 0.45) { [weak self] in
+            guard let self, self.chips.isEmpty else { return }
+            self.bar.showTrack(false, animated: true)
+        }
+        DS.Motion.fade({
+            gone.dropFirst().forEach { $0.animator().alphaValue = 0 }
+            selection.animator().alphaValue = 0
+        })
+        // The first tab goes with the track.
+        DispatchQueue.main.asyncAfter(deadline: .now() + DS.Motion.smooth.duration * 0.45) {
+            DS.Motion.fade {
+                gone.first?.animator().alphaValue = 0
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + DS.Motion.smooth.duration * 0.45 + DS.Motion.fadeDuration + 0.05) { [weak self] in
+            guard let self, self.leaving.contains(where: { gone.contains($0) }) else { return }
+            gone.forEach { $0.removeFromSuperview() }
+            self.leaving.removeAll { gone.contains($0) }
+            if self.chips.isEmpty {
+                self.selection.isHidden = true
+                self.selection.alphaValue = 1
+            }
         }
     }
 
@@ -220,17 +345,19 @@ final class TabStrip: NSObject {
 
     // MARK: Arriving and leaving (§4.4)
 
-    /// A new tab grows from nothing at its slot while it fades in, and its neighbours make room.
+    /// A new tab is laid out at its place at once and only fades in; the glass track and the tint
+    /// glide to it. Arrivals that moved the tab itself (growing from no width, rising and scaling
+    /// in) sometimes left it blank on screen though laid out and drawn (the owner, 2026-10-31:
+    /// only opening a tab, never closing or dragging); a fade is all an arrival needs.
     private func grow(_ chip: TabChipView) {
-        let width = chip.intrinsicContentSize.width
-        let constraint = chip.widthAnchor.constraint(equalToConstant: 0)
-        constraint.isActive = true
+        growContentToFit()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            stack.layoutSubtreeIfNeeded()
+        }
         chip.alphaValue = 0
-        bar.layoutSubtreeIfNeeded()
-        relayout(DS.Motion.smooth, { constraint.constant = width }, completion: { [weak chip] in
-            constraint.isActive = false
-            chip?.needsDisplay = true
-        })
+        relayout(DS.Motion.smooth)
         DS.Motion.fade { chip.animator().alphaValue = 1 }
     }
 
@@ -299,6 +426,14 @@ final class TabStrip: NSObject {
     }
 
     var selectionFrameForTesting: NSRect? { selection.isHidden ? nil : selection.frame }
+    /// Whether the tint is drawn under every chip, as it must be.
+    var tintIsUnderTheChipsForTesting: Bool {
+        guard let tint = stack.subviews.firstIndex(of: selection) else { return false }
+        return chips.allSatisfy { (stack.subviews.firstIndex(of: $0) ?? -1) > tint }
+    }
+
+    /// The frame the tint would be given now.
+    var intendedSelectionFrameForTesting: NSRect? { selectionFrame() }
 
     var canTearOut: Bool { onTearOut != nil }
 
@@ -1175,6 +1310,10 @@ final class TabDragOverlay {
     /// Dropped outside the window: the card grows into the new window as it opens, then gives
     /// way to it. If no window comes (the tab couldn't close), the card fades where it is.
     func landInNewWindow(from source: NSWindow?) {
+        // Held until it has faded and closed its panel: the tab lets go of it at the drop, and
+        // with only weak references left the overlay went away mid-landing and its panel stayed
+        // over every app (the owner, 2026-10-31).
+        Self.landing.append(self)
         landingSource = source
         landingObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.windowBecameKey() }
@@ -1182,6 +1321,7 @@ final class TabDragOverlay {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.finishLanding() }
     }
 
+    private static var landing: [TabDragOverlay] = []
     private var landingObserver: NSObjectProtocol?
     private weak var landingSource: NSWindow?
     private var landed = false
@@ -1210,7 +1350,12 @@ final class TabDragOverlay {
 
     private func fadeAway() {
         CATransaction.begin()
-        CATransaction.setCompletionBlock { [panel] in MainActor.assumeIsolated { panel.orderOut(nil) } }
+        CATransaction.setCompletionBlock { [self] in
+            MainActor.assumeIsolated {
+                panel.orderOut(nil)
+                Self.landing.removeAll { $0 === self }
+            }
+        }
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 1
         fade.toValue = 0
@@ -1222,6 +1367,8 @@ final class TabDragOverlay {
 
     // MARK: Tests
 
+    /// Drag panels still on screen.
+    static var panelsOnScreenForTesting: Int { NSApp.windows.filter { $0 is NSPanel && $0.level == .popUpMenu && $0.isVisible }.count }
     var cardFrameForTesting: NSRect { card.frame.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY) }
     var isShowingCardForTesting: Bool { cardLayer.opacity > 0.5 }
 

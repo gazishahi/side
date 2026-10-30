@@ -400,6 +400,122 @@ final class EditorParityTests: XCTestCase {
         XCTAssertEqual(make.openTabURLsForTesting.map(\.lastPathComponent), ["a.swift", "b.swift", "c.swift"])
     }
 
+    /// 2026-10-31, the owner's sequence that left new tabs blank: open, close, open in the same
+    /// slot. The tint stays under every chip.
+    func testOpeningAndClosingKeepsTheTintUnderTheTabs() throws {
+        _ = try open("greeter.ts", "a\n")
+        _ = try open("AGENTS.md", "b\n")
+        let strip = make.tabStripForTesting
+        var order: [String] = []
+        for name in ["README.md", "mathUtils.ts", "README.md"] {
+            _ = try open(name, name)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            order.append("\(name) open: \(strip.tintIsUnderTheChipsForTesting)")
+            make.closeTabForTesting(named: name)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            order.append("\(name) closed: \(strip.tintIsUnderTheChipsForTesting)")
+        }
+        _ = try open("README.md", "README.md")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        XCTAssertTrue(strip.tintIsUnderTheChipsForTesting, order.joined(separator: "; "))
+        XCTAssertFalse(order.contains { $0.hasSuffix("false") }, order.joined(separator: "; "))
+    }
+
+    /// 2026-10-31, the owner: a new tab, or one dropped back from its card, sometimes showed
+    /// blank until clicked. In every record it was laid out and drawn; on screen the strip's mask,
+    /// shaped to the glass track from the tabs' old width, cut it off. Only the window server's
+    /// pixels show that, so this reads them, in a window made as the app makes it.
+    func testANewTabAndATabDroppedBackShowOnScreen() throws {
+        typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { throw XCTSkip("no window capture") }
+        let capture = unsafeBitCast(symbol, to: Capture.self)
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1300, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let shell = ShellViewController()
+        window.contentViewController = shell
+        shell.installChrome(in: window)
+        window.makeKeyAndOrderFront(nil)
+        let names = ["greeter.ts", "AGENTS.md", "README.md"]
+        for name in names { try "// \(name)\n".write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+        shell.openProject(at: root, focusingTrackKey: nil)
+        func settle(_ seconds: Double) { let end = Date().addingTimeInterval(seconds); while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.016)) } }
+        settle(1.5)
+        window.setFrame(NSRect(x: 100, y: 100, width: 1300, height: 800), display: true)
+        settle(0.5)
+        let make = shell.makeForTesting
+        /// Dark pixels where a chip's title is, in what's actually on screen.
+        func ink(_ chip: TabChipView) throws -> Int {
+            guard let image = capture(.null, 8, UInt32(window.windowNumber), 1)?.takeRetainedValue() else { throw XCTSkip("window capture refused") }
+            let rep = NSBitmapImageRep(cgImage: image)
+            let scale = CGFloat(image.width) / window.frame.width
+            let frame = chip.convert(chip.bounds, to: nil)
+            var dark = 0
+            for x in stride(from: Int((frame.minX + 14) * scale), to: Int((frame.maxX - 24) * scale), by: 2) {
+                for y in stride(from: Int((window.frame.height - frame.maxY) * scale), to: Int((window.frame.height - frame.minY) * scale), by: 2) {
+                    if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), c.brightnessComponent < 0.45 { dark += 1 }
+                }
+            }
+            return dark
+        }
+        for name in names.dropLast() {
+            make.revealFile(root.appendingPathComponent(name), line: nil)
+            settle(0.8)
+        }
+        let strip = make.tabStripForTesting
+        // Intermittent: opened and closed again and again, as the owner did.
+        var blank: [Int] = []
+        for round in 0..<6 {
+            make.revealFile(root.appendingPathComponent("README.md"), line: nil)
+            settle(0.8)
+            let arrived = try XCTUnwrap(strip.chips.last)
+            if try ink(arrived) <= 20 { blank.append(round) }
+            if round < 5 {
+                make.closeTabForTesting(named: "README.md")
+                settle(0.8)
+            }
+        }
+        XCTAssertEqual(blank, [], "every new tab's title on screen")
+        let arrived = try XCTUnwrap(strip.chips.last)
+
+        // Torn out into its card and dropped back in the strip.
+        func mouse(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        let start = arrived.convert(NSPoint(x: arrived.bounds.midX, y: arrived.bounds.midY), to: nil)
+        arrived.mouseDown(with: mouse(.leftMouseDown, start))
+        arrived.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 10)))
+        arrived.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 200)))
+        XCTAssertEqual(arrived.phase, .torn)
+        settle(0.6)
+        arrived.mouseDragged(with: mouse(.leftMouseDragged, start))
+        arrived.mouseUp(with: mouse(.leftMouseUp, start))
+        settle(1)
+        let back = try XCTUnwrap(strip.chips.first { $0.title == "README.md" })
+        XCTAssertGreaterThan(try ink(back), 20, "dropped back, its title is on screen")
+    }
+
+    /// 2026-10-31, the owner: after a tab was dropped outside its window, its card stayed over
+    /// every app. The card goes once the landing is over, window or not.
+    func testADroppedCardLeavesTheScreen() throws {
+        for name in ["a.swift", "b.swift"] { _ = try open(name, "let \(name.first!) = 1\n") }
+        let chip = make.tabStripForTesting.chips[1]
+        let before = TabDragOverlay.panelsOnScreenForTesting
+        let start = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
+        chip.mouseDown(with: mouse(.leftMouseDown, start))
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 10)))
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 200)))
+        // Released outside the window.
+        let outside = NSPoint(x: window.frame.width + 300, y: start.y - 200)
+        chip.mouseDragged(with: mouse(.leftMouseDragged, outside))
+        chip.mouseUp(with: mouse(.leftMouseUp, outside))
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline, TabDragOverlay.panelsOnScreenForTesting > before { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertEqual(TabDragOverlay.panelsOnScreenForTesting, before, "the card is gone")
+    }
+
     /// The drag's two looks, for the eye (SIDE_PREVIEW_SNAPSHOT): the lifted chip and the card.
     func testTheDragLayerSnapshots() throws {
         guard let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] else { throw XCTSkip("snapshot not asked for") }
