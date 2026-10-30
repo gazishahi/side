@@ -1222,6 +1222,39 @@ final class TabStripTests: XCTestCase {
         XCTAssertGreaterThan(tint.width, 80)
     }
 
+    /// 2026-10-31, the owner: tabs disappeared after a tear-out, until moved. The strip got
+    /// narrower and kept its scroll position, past the end of the tabs.
+    func testANarrowerStripScrollsBackToItsTabs() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let bar = TabStripView(frame: window.contentView!.bounds)
+        window.contentView = bar
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = TabStripScrollView()
+        scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = stack
+        bar.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: bar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: bar.topAnchor), scroll.heightAnchor.constraint(equalToConstant: 30),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor), stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.heightAnchor),
+        ])
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        let items = (1...8).map { TabStrip.Item(id: UUID(), title: "file \($0).swift") }
+        strip.reload(items, active: 7)
+        bar.layoutSubtreeIfNeeded()
+        scroll.contentView.setBoundsOrigin(NSPoint(x: stack.frame.width - scroll.contentView.bounds.width, y: 0))
+        XCTAssertGreaterThan(scroll.contentView.bounds.minX, 300, "scrolled to the end")
+        strip.reload(Array(items.prefix(2)), active: 1)
+        XCTAssertEqual(scroll.contentView.bounds.minX, 0, accuracy: 0.5, "back to where the two tabs are")
+    }
+
     /// 2026-10-31, the owner: after a close, the next tab looked selected only a moment later.
     /// The tint is one capsule; it's on the next tab from the start of the close.
     func testTheTintMovesToTheNextTabAsTheClosedOneLeaves() throws {
