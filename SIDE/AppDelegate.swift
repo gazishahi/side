@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
         TextScaleFollower.start()
+        SystemNotifier.shared.start()
         // Persistence failures used to be swallowed by `try?` — a full disk or a revoked
         // permission lost the user's tracks and conversations without a word. They arrive here
         // now and get said out loud, once per file.

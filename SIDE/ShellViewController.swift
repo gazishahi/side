@@ -2,50 +2,173 @@ import AppKit
 import Heron
 import UserNotifications
 
-/// One system notification per transition into "needs you", decided by `AttentionCenter`. Authorization is requested
-/// lazily on first use and never blocks the notification attempt — if the user hasn't granted it
-/// yet (or denies it), `add` just silently no-ops, which is the right degrade for something this
-/// non-essential.
-@MainActor
-private enum AgentAttentionNotifier {
-    private static var didRequestAuthorization = false
-
-    static func notify(trackIntent: String) {
-        let center = UNUserNotificationCenter.current()
-        if !didRequestAuthorization {
-            didRequestAuthorization = true
-            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        }
-        let content = UNMutableNotificationContent()
-        content.title = "Needs your attention"
-        content.body = trackIntent
-        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
-    }
-}
-
-/// The two sound settings (Direction 03 §3.3), in Settings › Notifications.
+/// The alert settings (Direction 03 §3.3), in Settings › Notifications.
 enum AttentionPreferences {
     static let didChangeNotification = Notification.Name("SideAttentionPreferencesDidChange")
+    private static let notifyKey = "attention.notifyWhenNeedsYou"
     private static let needsYouKey = "attention.soundWhenNeedsYou"
     private static let finishedKey = "attention.soundWhenFinished"
+
+    /// A banner when an agent needs you or a run fails. On unless turned off.
+    static var notifyWhenNeedsYou: Bool {
+        get { UserDefaults.standard.object(forKey: notifyKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: notifyKey); changed() }
+    }
 
     /// Glass when an agent waits on you, Funk when a run fails. On unless turned off.
     static var soundWhenNeedsYou: Bool {
         get { UserDefaults.standard.object(forKey: needsYouKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: needsYouKey); NotificationCenter.default.post(name: didChangeNotification, object: nil) }
+        set { UserDefaults.standard.set(newValue, forKey: needsYouKey); changed() }
     }
 
-    /// Tink when a turn finishes with something to review. Off unless turned on.
-    static var soundWhenFinished: Bool {
+    /// A turn finishing with something to review alerts too (Tink, and a banner if banners are
+    /// on). Off unless turned on.
+    static var alsoWhenFinished: Bool {
         get { UserDefaults.standard.bool(forKey: finishedKey) }
-        set { UserDefaults.standard.set(newValue, forKey: finishedKey); NotificationCenter.default.post(name: didChangeNotification, object: nil) }
+        set { UserDefaults.standard.set(newValue, forKey: finishedKey); changed() }
+    }
+
+    private static func changed() { NotificationCenter.default.post(name: didChangeNotification, object: nil) }
+}
+
+/// One banner, as `AttentionCenter` decided it.
+struct AttentionNotification: Equatable {
+    /// One per track: a newer state replaces the banner instead of stacking another.
+    let id: String
+    let title: String
+    let subtitle: String
+    let body: String
+    let projectRoot: URL
+    let trackKey: String
+}
+
+@MainActor
+protocol AttentionNotifying: AnyObject {
+    /// Posts the banner. True when it carries `sound` itself, so the app doesn't play it too.
+    @discardableResult func post(_ notification: AttentionNotification, sound: NSSound.Name?) -> Bool
+    /// The state passed (approved, answered, looked at): its banner leaves Notification Center.
+    func withdraw(id: String)
+}
+
+/// Side's system notifications. Permission is asked the first time there's something to say,
+/// and that first banner waits for the answer instead of being lost. A banner carries its own
+/// sound when notifications may play sounds, which is what lets Focus silence it; otherwise the
+/// app plays the sound. Clicking one brings its window to that track's Think.
+@MainActor
+final class SystemNotifier: NSObject, AttentionNotifying, @preconcurrency UNUserNotificationCenterDelegate {
+    static let shared = SystemNotifier()
+
+    static let projectKey = "projectRoot"
+    static let trackKey = "trackKey"
+
+    private var center: UNUserNotificationCenter { UNUserNotificationCenter.current() }
+    private var authorization: UNAuthorizationStatus = .notDetermined
+    private var soundsAllowed = false
+    private var asking = false
+    private var waiting: [(AttentionNotification, NSSound.Name?)] = []
+
+    /// At launch: the delegate, and what the person has allowed so far.
+    func start() {
+        center.delegate = self
+        refreshSettings()
+        NotificationCenter.default.addObserver(self, selector: #selector(appBecameActive), name: NSApplication.didBecomeActiveNotification, object: nil)
+    }
+
+    /// System Settings may have changed what's allowed while Side was in the background.
+    @objc private func appBecameActive() { refreshSettings() }
+
+    private func refreshSettings() {
+        center.getNotificationSettings { settings in
+            let status = settings.authorizationStatus
+            let sounds = settings.soundSetting == .enabled
+            Task { @MainActor in
+                self.authorization = status
+                self.soundsAllowed = sounds
+            }
+        }
+    }
+
+    func post(_ notification: AttentionNotification, sound: NSSound.Name?) -> Bool {
+        switch authorization {
+        case .denied:
+            return false
+        case .notDetermined:
+            waiting.append((notification, sound))
+            ask()
+            // Unknown until the answer: the app plays the sound now, and the banner goes silent.
+            return false
+        default:
+            add(notification, sound: soundsAllowed ? sound : nil)
+            return sound != nil && soundsAllowed
+        }
+    }
+
+    func withdraw(id: String) {
+        center.removeDeliveredNotifications(withIdentifiers: [id])
+        waiting.removeAll { $0.0.id == id }
+    }
+
+    private func ask() {
+        guard !asking else { return }
+        asking = true
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            Task { @MainActor in
+                self.asking = false
+                self.authorization = granted ? .authorized : .denied
+                let pending = self.waiting
+                self.waiting = []
+                guard granted else { return }
+                // Their sound already played when they happened.
+                for (notification, _) in pending { self.add(notification, sound: nil) }
+                self.refreshSettings()
+            }
+        }
+    }
+
+    private func add(_ notification: AttentionNotification, sound: NSSound.Name?) {
+        let content = UNMutableNotificationContent()
+        content.title = notification.title
+        content.subtitle = notification.subtitle
+        content.body = notification.body
+        content.threadIdentifier = notification.projectRoot.path
+        content.userInfo = [Self.projectKey: notification.projectRoot.path, Self.trackKey: notification.trackKey]
+        if let sound { content.sound = UNNotificationSound(named: UNNotificationSoundName(sound)) }
+        center.add(UNNotificationRequest(identifier: notification.id, content: content, trigger: nil))
+    }
+
+    // MARK: UNUserNotificationCenterDelegate
+
+    /// Side in front but on another window, track or stage: still out of view, so the banner
+    /// shows. `AttentionCenter` already left out what you were looking at.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .list])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let info = response.notification.request.content.userInfo
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           let root = info[Self.projectKey] as? String, let trackKey = info[Self.trackKey] as? String {
+            Self.reveal(projectRoot: URL(fileURLWithPath: root), trackKey: trackKey)
+        }
+        completionHandler()
+    }
+
+    /// The window already on that track if there is one, else any window on the project.
+    static func reveal(projectRoot: URL, trackKey: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let shells = AppDelegate.shared?.shellViewControllers.filter { $0.isOnProject(projectRoot) } ?? []
+        guard let shell = shells.first(where: { $0.currentTrackKeyForAttention == trackKey }) ?? shells.first else { return }
+        shell.revealAgent(of: trackKey)
     }
 }
 
 /// The app's one decision about reaching the user (Direction 03 §3.3). Every window reports its
 /// tracks' activity here; the center diffs per project and track, so two windows on one project
-/// produce one event, not two. An event out of view plays its sound (at most one every 3 s across
-/// the app) and, for one that wants attention, posts the notification.
+/// produce one event, not two. An event out of view posts its banner and its sound (at most one
+/// sound every 3 s across the app; the banners still go, silently). A banner carries the sound
+/// itself when it can, so nothing plays twice.
 @MainActor
 final class AttentionCenter {
     static let shared = AttentionCenter()
@@ -61,10 +184,26 @@ final class AttentionCenter {
             }
         }
 
+        /// The status word (Direction 03 §3.1).
+        var word: String {
+            switch self {
+            case .needsYou: DS.StatusState.needsYou.name
+            case .failed: DS.StatusState.failed.name
+            case .finished: DS.StatusState.verified.name
+            }
+        }
+
         var soundEnabled: Bool {
             switch self {
             case .needsYou, .failed: AttentionPreferences.soundWhenNeedsYou
-            case .finished: AttentionPreferences.soundWhenFinished
+            case .finished: AttentionPreferences.alsoWhenFinished
+            }
+        }
+
+        var notifies: Bool {
+            switch self {
+            case .needsYou, .failed: AttentionPreferences.notifyWhenNeedsYou
+            case .finished: AttentionPreferences.notifyWhenNeedsYou && AttentionPreferences.alsoWhenFinished
             }
         }
     }
@@ -78,7 +217,7 @@ final class AttentionCenter {
     static let soundInterval: TimeInterval = 3
 
     var play: (NSSound.Name) -> Void = { NSSound(named: $0)?.play() }
-    var notify: (String) -> Void = { AgentAttentionNotifier.notify(trackIntent: $0) }
+    var notifier: any AttentionNotifying = SystemNotifier.shared
     var now: () -> Date = Date.init
     /// Whether some key window is already showing this track's agent. Asked once per event.
     var isLooking: (URL, String) -> Bool = { root, trackKey in
@@ -88,6 +227,10 @@ final class AttentionCenter {
     private var known: [String: AgentActivity] = [:]
     private var lastSound: Date?
 
+    static func notificationID(projectRoot: URL, trackKey: String) -> String {
+        "track\u{0}" + projectRoot.standardizedFileURL.path + "\u{0}" + trackKey
+    }
+
     /// A window's view of its project's tracks. The first sight of a track only records where it
     /// stands: a state already there when Side opens isn't news.
     func report(projectRoot: URL, _ tracks: [TrackActivity]) {
@@ -96,27 +239,43 @@ final class AttentionCenter {
             let key = root.path + "\u{0}" + track.trackKey
             let previous = known.updateValue(track.activity, forKey: key)
             guard let previous, previous != track.activity else { continue }
+            let id = Self.notificationID(projectRoot: root, trackKey: track.trackKey)
             let event: Event? = switch track.activity {
             case .needsYou: .needsYou
             case .failed: .failed
             case .doneUnread where previous == .working: .finished
             default: nil
             }
-            guard let event, !isLooking(root, track.trackKey) else { continue }
-            if event != .finished { notify(track.title) }
-            sound(event)
+            guard let event else {
+                // What the banner said is over: approved, answered, retried or seen.
+                if previous.wantsAttention || previous == .doneUnread { notifier.withdraw(id: id) }
+                continue
+            }
+            guard !isLooking(root, track.trackKey) else { continue }
+            let sound = soundAllowed(event) ? event.sound : nil
+            var carried = false
+            if event.notifies {
+                carried = notifier.post(AttentionNotification(id: id, title: track.title, subtitle: root.lastPathComponent, body: event.word,
+                                                              projectRoot: root, trackKey: track.trackKey), sound: sound)
+            }
+            if let sound {
+                lastSound = now()
+                if !carried { play(sound) }
+            }
         }
     }
 
     /// A typed command in Run that failed while its window wasn't in front.
-    func commandFailed() { sound(.failed) }
+    func commandFailed() {
+        guard soundAllowed(.failed) else { return }
+        lastSound = now()
+        play(Event.failed.sound)
+    }
 
-    private func sound(_ event: Event) {
-        guard event.soundEnabled else { return }
-        let time = now()
-        if let lastSound, time.timeIntervalSince(lastSound) < Self.soundInterval { return }
-        lastSound = time
-        play(event.sound)
+    private func soundAllowed(_ event: Event) -> Bool {
+        guard event.soundEnabled else { return false }
+        if let lastSound, now().timeIntervalSince(lastSound) < Self.soundInterval { return false }
+        return true
     }
 }
 
@@ -1323,6 +1482,20 @@ final class ShellViewController: NSViewController {
     /// surfaces every needs-you track in its pinned section, so being on it at all counts; Think
     /// only counts for the one track it's attached to. A non-key window (app in the background,
     /// another window in front) is never looking, however visible its stage is.
+    func isOnProject(_ root: URL) -> Bool { projectURL?.standardizedFileURL == root.standardizedFileURL }
+    var currentTrackKeyForAttention: String? { currentTrackKey }
+
+    /// A banner clicked: this window comes forward on that track's Think, where an approval or a
+    /// question waits.
+    func revealAgent(of trackKey: String) {
+        view.window?.makeKeyAndOrderFront(nil)
+        guard trackKey != currentTrackKey, let track = trackStore?.tracks.first(where: { $0.branchName == trackKey }) else {
+            show(.think)
+            return
+        }
+        switchToTrack(track, landOn: .think, completion: { _ in })
+    }
+
     func isShowingAgent(of trackKey: String, in root: URL) -> Bool {
         view.window?.isKeyWindow == true && projectURL?.standardizedFileURL == root.standardizedFileURL
             && (current == .tracks || (current == .think && trackKey == currentTrackKey))

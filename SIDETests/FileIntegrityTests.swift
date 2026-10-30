@@ -1457,31 +1457,43 @@ final class TabStripTests: XCTestCase {
 /// Direction 03 §3.3: one decision app-wide about sound and notifications.
 @MainActor
 final class AttentionCenterTests: XCTestCase {
+    private final class Notifier: AttentionNotifying {
+        var posted: [(AttentionNotification, NSSound.Name?)] = []
+        var withdrawn: [String] = []
+        /// Whether a banner may carry its sound (notifications allowed, with sounds).
+        var carriesSound = false
+        func post(_ notification: AttentionNotification, sound: NSSound.Name?) -> Bool {
+            posted.append((notification, sound))
+            return carriesSound && sound != nil
+        }
+        func withdraw(id: String) { withdrawn.append(id) }
+    }
+
     private var center: AttentionCenter!
+    private var notifier: Notifier!
     private var played: [NSSound.Name] = []
-    private var notified: [String] = []
+    private var notified: [String] { notifier.posted.map(\.0.title) }
     private var clock = Date(timeIntervalSince1970: 1_000)
     private var looking = false
     private let root = URL(fileURLWithPath: "/tmp/attention-project")
-    private var savedNeedsYou = true
-    private var savedFinished = false
+    private var saved: (Bool, Bool, Bool) = (true, true, false)
 
     override func setUp() {
         super.setUp()
-        savedNeedsYou = AttentionPreferences.soundWhenNeedsYou
-        savedFinished = AttentionPreferences.soundWhenFinished
+        saved = (AttentionPreferences.notifyWhenNeedsYou, AttentionPreferences.soundWhenNeedsYou, AttentionPreferences.alsoWhenFinished)
+        AttentionPreferences.notifyWhenNeedsYou = true
         AttentionPreferences.soundWhenNeedsYou = true
-        AttentionPreferences.soundWhenFinished = false
+        AttentionPreferences.alsoWhenFinished = false
         center = AttentionCenter()
+        notifier = Notifier()
+        center.notifier = notifier
         center.play = { [unowned self] in played.append($0) }
-        center.notify = { [unowned self] in notified.append($0) }
         center.now = { [unowned self] in clock }
         center.isLooking = { [unowned self] _, _ in looking }
     }
 
     override func tearDown() {
-        AttentionPreferences.soundWhenNeedsYou = savedNeedsYou
-        AttentionPreferences.soundWhenFinished = savedFinished
+        (AttentionPreferences.notifyWhenNeedsYou, AttentionPreferences.soundWhenNeedsYou, AttentionPreferences.alsoWhenFinished) = saved
         super.tearDown()
     }
 
@@ -1501,12 +1513,29 @@ final class AttentionCenterTests: XCTestCase {
         report(.needsYou)
         XCTAssertEqual(played, ["Glass"])
         XCTAssertEqual(notified, ["Track a"])
+        let banner = notifier.posted[0].0
+        XCTAssertEqual(banner.subtitle, "attention-project", "which project")
+        XCTAssertEqual(banner.body, "Needs you", "in the status vocabulary")
+        XCTAssertEqual(banner.trackKey, "a")
+    }
+
+    func testABannerThatCanCarryTheSoundCarriesItAlone() {
+        notifier.carriesSound = true
+        report(.working)
+        report(.needsYou)
+        XCTAssertEqual(notifier.posted.first?.1, "Glass", "the banner carries it, so Focus can silence it")
+        XCTAssertEqual(played, [], "nothing plays twice")
+        clock += 1
+        report(.working, track: "b")
+        report(.failed, track: "b")
+        XCTAssertNil(notifier.posted.last?.1, "the throttle holds for carried sounds too")
     }
 
     func testAFailurePlaysFunk() {
         report(.working)
         report(.failed)
         XCTAssertEqual(played, ["Funk"])
+        XCTAssertEqual(notifier.posted.first?.0.body, "Failed")
     }
 
     func testTwoWindowsOnOneProjectMakeOneEvent() {
@@ -1540,19 +1569,20 @@ final class AttentionCenterTests: XCTestCase {
         XCTAssertEqual(played, ["Glass", "Funk"])
     }
 
-    func testFinishingIsSilentUntilTurnedOn() {
+    func testFinishingIsQuietUntilTurnedOn() {
         report(.working)
         report(.doneUnread)
         XCTAssertEqual(played, [])
-        AttentionPreferences.soundWhenFinished = true
+        XCTAssertEqual(notified, [])
+        AttentionPreferences.alsoWhenFinished = true
         clock += 10
         report(.working)
         report(.doneUnread)
         XCTAssertEqual(played, ["Tink"])
-        XCTAssertEqual(notified, [], "finishing doesn't notify")
+        XCTAssertEqual(notifier.posted.last?.0.body, "Ready for review")
     }
 
-    func testTurningOffNeedsYouSilencesItAndFailures() {
+    func testTurningOffSoundsKeepsTheBanners() {
         AttentionPreferences.soundWhenNeedsYou = false
         report(.working, track: "a")
         report(.working, track: "b")
@@ -1561,6 +1591,23 @@ final class AttentionCenterTests: XCTestCase {
         report(.failed, track: "b")
         XCTAssertEqual(played, [])
         XCTAssertEqual(notified.count, 2)
+        XCTAssertTrue(notifier.posted.allSatisfy { $0.1 == nil })
+    }
+
+    func testTurningOffBannersKeepsTheSounds() {
+        AttentionPreferences.notifyWhenNeedsYou = false
+        report(.working)
+        report(.needsYou)
+        XCTAssertEqual(notified, [])
+        XCTAssertEqual(played, ["Glass"])
+    }
+
+    func testABannerLeavesWhenItsMomentPasses() {
+        report(.working)
+        report(.needsYou)
+        report(.working)
+        XCTAssertEqual(notifier.withdrawn, [AttentionCenter.notificationID(projectRoot: root, trackKey: "a")], "approved: the banner goes")
+        XCTAssertEqual(notifier.posted.first?.0.id, notifier.withdrawn.first)
     }
 
     func testTheSameTrackNameInTwoProjectsIsTwoTracks() {
@@ -1570,6 +1617,7 @@ final class AttentionCenterTests: XCTestCase {
         report(.needsYou)
         report(.needsYou, root: other)
         XCTAssertEqual(notified.count, 2)
+        XCTAssertNotEqual(notifier.posted[0].0.id, notifier.posted[1].0.id)
     }
 }
 
