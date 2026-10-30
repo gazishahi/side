@@ -172,4 +172,17 @@ final class AccessibilityTests: XCTestCase {
         control.setBadge(nil, spokenState: nil, at: 1)
         XCTAssertEqual(control.segmentAccessibilityLabels[1], "Think")
     }
+
+    func testAStageDotCentresWithItsTitle() {
+        // The dot trailed a centred title, so on the widest title it sat against the capsule's rim.
+        let control = SlidingSegmentedControl(titles: ["Make", "Think", "Review", "Run"], style: .capsule)
+        control.frame = NSRect(origin: .zero, size: control.fittingSize)
+        control.setBadge(.failed, spokenState: "failed", at: 2)
+        control.layoutSubtreeIfNeeded()
+        let segment = control.bounds.width / 4
+        let group = control.badgeGroupForTesting(2)
+        let leading = group.titleMinX - segment * 2, trailing = segment * 3 - group.dotMaxX
+        XCTAssertEqual(leading, trailing, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(trailing, DS.Spacing.s)
+    }
 }

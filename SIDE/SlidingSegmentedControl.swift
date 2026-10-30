@@ -95,6 +95,7 @@ final class SlidingSegmentedControl: NSView {
         if let state { badges[index].state = state }
         badges[index].isHidden = state == nil
         badges[index].toolTip = state.map { spokenState ?? $0.name }
+        needsLayout = true
         refreshAccessibility()
     }
 
@@ -149,12 +150,13 @@ final class SlidingSegmentedControl: NSView {
         track.frame = bounds
         let width = bounds.width / CGFloat(max(buttons.count, 1))
         for (index, button) in buttons.enumerated() {
-            button.frame = NSRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
             let titleWidth = min(button.intrinsicContentSize.width, width)
             // On the title's centre line, just after it — a dot riding up like a superscript read
-            // as misaligned.
+            // as misaligned. Title and dot centre as one group, so the dot never crowds the edge.
             let dot = DS.StatusDot.diameter
-            badges[index].frame = NSRect(x: min((width + titleWidth) / 2 + DS.Spacing.s, width - dot - 3), y: (bounds.height - dot) / 2, width: dot, height: dot)
+            let shift = badges[index].isHidden ? 0 : (DS.Spacing.s + dot) / 2
+            button.frame = NSRect(x: CGFloat(index) * width - shift, y: 0, width: width, height: bounds.height)
+            badges[index].frame = NSRect(x: (width + titleWidth) / 2 + DS.Spacing.s, y: (bounds.height - dot) / 2, width: dot, height: dot)
         }
         // Snap the thumb only when the control actually resized — selecting re-tints a label,
         // which schedules a layout pass that would otherwise teleport the thumb mid-slide.
@@ -164,6 +166,13 @@ final class SlidingSegmentedControl: NSView {
             thumbContainer.subviews.first?.frame = thumbContainer.bounds
         }
         thumbContainer.isHidden = selectedIndex < 0
+    }
+
+    /// Where a segment's title starts and its dot ends, in the control's coordinates.
+    func badgeGroupForTesting(_ index: Int) -> (titleMinX: CGFloat, dotMaxX: CGFloat) {
+        let button = buttons[index]
+        let titleWidth = min(button.intrinsicContentSize.width, button.frame.width)
+        return (button.frame.minX + (button.frame.width - titleWidth) / 2, button.frame.minX + badges[index].frame.maxX)
     }
 
     /// No segment selected (the window is on a stage the control doesn't show): no thumb.

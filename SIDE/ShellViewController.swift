@@ -1,6 +1,7 @@
 import AppKit
 import Heron
 import UserNotifications
+import os
 
 /// The alert settings (Direction 03 §3.3), in Settings › Notifications.
 enum AttentionPreferences {
@@ -61,6 +62,7 @@ final class SystemNotifier: NSObject, AttentionNotifying, @preconcurrency UNUser
     static let projectKey = "projectRoot"
     static let trackKey = "trackKey"
 
+    private static let log = Logger(subsystem: "com.shahi.side", category: "SystemNotifier")
     private var center: UNUserNotificationCenter { UNUserNotificationCenter.current() }
     private var authorization: UNAuthorizationStatus = .notDetermined
     private var soundsAllowed = false
@@ -89,6 +91,7 @@ final class SystemNotifier: NSObject, AttentionNotifying, @preconcurrency UNUser
     }
 
     func post(_ notification: AttentionNotification, sound: NSSound.Name?) -> Bool {
+        Self.log.notice("post \(notification.body, privacy: .public), authorization \(self.authorization.rawValue, privacy: .public), sounds \(self.soundsAllowed, privacy: .public)")
         switch authorization {
         case .denied:
             return false
@@ -111,7 +114,8 @@ final class SystemNotifier: NSObject, AttentionNotifying, @preconcurrency UNUser
     private func ask() {
         guard !asking else { return }
         asking = true
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            Self.log.notice("authorization granted \(granted, privacy: .public), error \(String(describing: error), privacy: .public)")
             Task { @MainActor in
                 self.asking = false
                 self.authorization = granted ? .authorized : .denied
@@ -159,7 +163,7 @@ final class SystemNotifier: NSObject, AttentionNotifying, @preconcurrency UNUser
     static func reveal(projectRoot: URL, trackKey: String) {
         NSApp.activate(ignoringOtherApps: true)
         let shells = AppDelegate.shared?.shellViewControllers.filter { $0.isOnProject(projectRoot) } ?? []
-        guard let shell = shells.first(where: { $0.currentTrackKeyForAttention == trackKey }) ?? shells.first else { return }
+        guard let shell = shells.first(where: { ($0.currentTrackKeyForAttention ?? "") == trackKey }) ?? shells.first else { return }
         shell.revealAgent(of: trackKey)
     }
 }
@@ -215,6 +219,7 @@ final class AttentionCenter {
     }
 
     static let soundInterval: TimeInterval = 3
+    private static let log = Logger(subsystem: "com.shahi.side", category: "AttentionCenter")
 
     var play: (NSSound.Name) -> Void = { NSSound(named: $0)?.play() }
     var notifier: any AttentionNotifying = SystemNotifier.shared
@@ -239,6 +244,7 @@ final class AttentionCenter {
             let key = root.path + "\u{0}" + track.trackKey
             let previous = known.updateValue(track.activity, forKey: key)
             guard let previous, previous != track.activity else { continue }
+            Self.log.notice("\(track.trackKey, privacy: .public): \(String(describing: previous), privacy: .public) -> \(String(describing: track.activity), privacy: .public), looking \(self.isLooking(root, track.trackKey), privacy: .public)")
             let id = Self.notificationID(projectRoot: root, trackKey: track.trackKey)
             let event: Event? = switch track.activity {
             case .needsYou: .needsYou
@@ -1472,10 +1478,15 @@ final class ShellViewController: NSViewController {
     /// What `AttentionCenter` diffs: every track of this window's project and its agent's state.
     private func reportAttention() {
         guard let projectURL, let trackStore, let runnerManager = projectContext?.runnerManager else { return }
-        AttentionCenter.shared.report(projectRoot: projectURL, trackStore.tracks.map { track in
+        var tracks = trackStore.tracks.map { track in
             AttentionCenter.TrackActivity(trackKey: track.branchName, title: track.intent.isEmpty ? track.branchName : track.intent,
                                           activity: runnerManager.existingRunner(forTrackKey: track.branchName)?.activity ?? .none)
-        })
+        }
+        // Think on the base branch, with no track, runs under the empty key.
+        if let base = runnerManager.existingRunner(forTrackKey: "") {
+            tracks.append(AttentionCenter.TrackActivity(trackKey: "", title: trackStore.defaultBranchName(), activity: base.activity))
+        }
+        AttentionCenter.shared.report(projectRoot: projectURL, tracks)
     }
 
     /// Already looking: this window is key *and* showing the track's agent. The Tracks stage
@@ -1489,16 +1500,15 @@ final class ShellViewController: NSViewController {
     /// question waits.
     func revealAgent(of trackKey: String) {
         view.window?.makeKeyAndOrderFront(nil)
-        guard trackKey != currentTrackKey, let track = trackStore?.tracks.first(where: { $0.branchName == trackKey }) else {
-            show(.think)
-            return
-        }
+        guard trackKey != (currentTrackKey ?? "") else { show(.think); return }
+        if trackKey.isEmpty { switchToBase(landOn: .think); return }
+        guard let track = trackStore?.tracks.first(where: { $0.branchName == trackKey }) else { show(.think); return }
         switchToTrack(track, landOn: .think, completion: { _ in })
     }
 
     func isShowingAgent(of trackKey: String, in root: URL) -> Bool {
         view.window?.isKeyWindow == true && projectURL?.standardizedFileURL == root.standardizedFileURL
-            && (current == .tracks || (current == .think && trackKey == currentTrackKey))
+            && (current == .tracks || (current == .think && trackKey == (currentTrackKey ?? "")))
     }
 
     // MARK: - Window chrome (title, git info)
