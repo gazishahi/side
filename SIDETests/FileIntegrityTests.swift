@@ -1452,3 +1452,122 @@ final class TabStripTests: XCTestCase {
         XCTAssertEqual(moved.midX, strip.chips[2].frame.midX, accuracy: 1, "the tint went with it")
     }
 }
+
+/// Direction 03 §3.3: one decision app-wide about sound and notifications.
+@MainActor
+final class AttentionCenterTests: XCTestCase {
+    private var center: AttentionCenter!
+    private var played: [NSSound.Name] = []
+    private var notified: [String] = []
+    private var clock = Date(timeIntervalSince1970: 1_000)
+    private var looking = false
+    private let root = URL(fileURLWithPath: "/tmp/attention-project")
+    private var savedNeedsYou = true
+    private var savedFinished = false
+
+    override func setUp() {
+        super.setUp()
+        savedNeedsYou = AttentionPreferences.soundWhenNeedsYou
+        savedFinished = AttentionPreferences.soundWhenFinished
+        AttentionPreferences.soundWhenNeedsYou = true
+        AttentionPreferences.soundWhenFinished = false
+        center = AttentionCenter()
+        center.play = { [unowned self] in played.append($0) }
+        center.notify = { [unowned self] in notified.append($0) }
+        center.now = { [unowned self] in clock }
+        center.isLooking = { [unowned self] _, _ in looking }
+    }
+
+    override func tearDown() {
+        AttentionPreferences.soundWhenNeedsYou = savedNeedsYou
+        AttentionPreferences.soundWhenFinished = savedFinished
+        super.tearDown()
+    }
+
+    private func report(_ activity: AgentActivity, track: String = "a", root: URL? = nil) {
+        center.report(projectRoot: root ?? self.root, [.init(trackKey: track, title: "Track \(track)", activity: activity)])
+    }
+
+    func testTheFirstSightIsntNews() {
+        report(.needsYou)
+        XCTAssertEqual(played, [])
+        XCTAssertEqual(notified, [])
+    }
+
+    func testNeedingYouPlaysGlassAndNotifiesOnce() {
+        report(.working)
+        report(.needsYou)
+        report(.needsYou)
+        XCTAssertEqual(played, ["Glass"])
+        XCTAssertEqual(notified, ["Track a"])
+    }
+
+    func testAFailurePlaysFunk() {
+        report(.working)
+        report(.failed)
+        XCTAssertEqual(played, ["Funk"])
+    }
+
+    func testTwoWindowsOnOneProjectMakeOneEvent() {
+        report(.working)
+        report(.needsYou)
+        clock += 10
+        // The second window's observer reports the same change.
+        report(.needsYou)
+        XCTAssertEqual(played, ["Glass"])
+        XCTAssertEqual(notified.count, 1)
+    }
+
+    func testNothingWhenYoureLooking() {
+        looking = true
+        report(.working)
+        report(.needsYou)
+        XCTAssertEqual(played, [])
+        XCTAssertEqual(notified, [])
+    }
+
+    func testAtMostOneSoundEveryThreeSeconds() {
+        report(.working, track: "a")
+        report(.working, track: "b")
+        report(.needsYou, track: "a")
+        clock += 1
+        report(.failed, track: "b")
+        XCTAssertEqual(played, ["Glass"], "throttled")
+        XCTAssertEqual(notified.count, 2, "the notifications still go")
+        clock += 3
+        center.commandFailed()
+        XCTAssertEqual(played, ["Glass", "Funk"])
+    }
+
+    func testFinishingIsSilentUntilTurnedOn() {
+        report(.working)
+        report(.doneUnread)
+        XCTAssertEqual(played, [])
+        AttentionPreferences.soundWhenFinished = true
+        clock += 10
+        report(.working)
+        report(.doneUnread)
+        XCTAssertEqual(played, ["Tink"])
+        XCTAssertEqual(notified, [], "finishing doesn't notify")
+    }
+
+    func testTurningOffNeedsYouSilencesItAndFailures() {
+        AttentionPreferences.soundWhenNeedsYou = false
+        report(.working, track: "a")
+        report(.working, track: "b")
+        report(.needsYou, track: "a")
+        clock += 10
+        report(.failed, track: "b")
+        XCTAssertEqual(played, [])
+        XCTAssertEqual(notified.count, 2)
+    }
+
+    func testTheSameTrackNameInTwoProjectsIsTwoTracks() {
+        let other = URL(fileURLWithPath: "/tmp/attention-other")
+        report(.working)
+        report(.working, root: other)
+        report(.needsYou)
+        report(.needsYou, root: other)
+        XCTAssertEqual(notified.count, 2)
+    }
+}

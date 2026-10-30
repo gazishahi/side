@@ -188,12 +188,14 @@ final class PaneHostController: NSViewController {
 @MainActor
 final class SettingsSplitViewController: NSSplitViewController {
     enum Pane: String, CaseIterable {
-        case general, providers, agents, usage, appearance, languages, shortcuts, history
+        case general, notifications, providers, agents, usage, appearance, languages, shortcuts, history
     }
 
     static let items: [SidebarItem] = [
         SidebarItem(id: Pane.general.rawValue, title: "General", symbol: "gearshape.fill", tint: .systemGray,
                     keywords: ["stages", "pin", "file explorer", "library"], summary: "Which stages the stage control shows, where Make's file explorer opens, and the Library."),
+        SidebarItem(id: Pane.notifications.rawValue, title: "Notifications", symbol: "bell.badge.fill", tint: .systemRed,
+                    keywords: ["sound", "alert", "glass", "funk", "tink", "needs you", "attention"], summary: "When Side plays a sound: only for what happens while you're looking elsewhere."),
         SidebarItem(id: Pane.providers.rawValue, title: "Providers", symbol: "cpu.fill", tint: .systemBlue,
                     keywords: ["model", "api key", "key", "anthropic", "openai", "ollama", "endpoint"], summary: "The model provider Heron talks to, its API key, and the default model."),
         SidebarItem(id: Pane.agents.rawValue, title: "Agents", symbol: "person.2.fill", tint: .systemIndigo,
@@ -258,6 +260,7 @@ final class SettingsSplitViewController: NSSplitViewController {
     private func make(_ pane: Pane) -> NSViewController {
         switch pane {
         case .general: GeneralPreferencesViewController()
+        case .notifications: NotificationsPreferencesViewController()
         case .providers: PreferencesViewController()
         case .agents: AgentsPreferencesViewController()
         case .usage: UsageViewController()

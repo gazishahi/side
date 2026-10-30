@@ -2,8 +2,7 @@ import AppKit
 import Heron
 import UserNotifications
 
-/// One system notification per transition into "needs you" — no queueing or coalescing across
-/// several tracks in quick succession; good enough for a first pass. Authorization is requested
+/// One system notification per transition into "needs you", decided by `AttentionCenter`. Authorization is requested
 /// lazily on first use and never blocks the notification attempt — if the user hasn't granted it
 /// yet (or denies it), `add` just silently no-ops, which is the right degrade for something this
 /// non-essential.
@@ -21,6 +20,103 @@ private enum AgentAttentionNotifier {
         content.title = "Needs your attention"
         content.body = trackIntent
         center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+}
+
+/// The two sound settings (Direction 03 §3.3), in Settings › Notifications.
+enum AttentionPreferences {
+    static let didChangeNotification = Notification.Name("SideAttentionPreferencesDidChange")
+    private static let needsYouKey = "attention.soundWhenNeedsYou"
+    private static let finishedKey = "attention.soundWhenFinished"
+
+    /// Glass when an agent waits on you, Funk when a run fails. On unless turned off.
+    static var soundWhenNeedsYou: Bool {
+        get { UserDefaults.standard.object(forKey: needsYouKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: needsYouKey); NotificationCenter.default.post(name: didChangeNotification, object: nil) }
+    }
+
+    /// Tink when a turn finishes with something to review. Off unless turned on.
+    static var soundWhenFinished: Bool {
+        get { UserDefaults.standard.bool(forKey: finishedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: finishedKey); NotificationCenter.default.post(name: didChangeNotification, object: nil) }
+    }
+}
+
+/// The app's one decision about reaching the user (Direction 03 §3.3). Every window reports its
+/// tracks' activity here; the center diffs per project and track, so two windows on one project
+/// produce one event, not two. An event out of view plays its sound (at most one every 3 s across
+/// the app) and, for one that wants attention, posts the notification.
+@MainActor
+final class AttentionCenter {
+    static let shared = AttentionCenter()
+
+    enum Event: Equatable {
+        case needsYou, failed, finished
+
+        var sound: NSSound.Name {
+            switch self {
+            case .needsYou: "Glass"
+            case .failed: "Funk"
+            case .finished: "Tink"
+            }
+        }
+
+        var soundEnabled: Bool {
+            switch self {
+            case .needsYou, .failed: AttentionPreferences.soundWhenNeedsYou
+            case .finished: AttentionPreferences.soundWhenFinished
+            }
+        }
+    }
+
+    struct TrackActivity {
+        let trackKey: String
+        let title: String
+        let activity: AgentActivity
+    }
+
+    static let soundInterval: TimeInterval = 3
+
+    var play: (NSSound.Name) -> Void = { NSSound(named: $0)?.play() }
+    var notify: (String) -> Void = { AgentAttentionNotifier.notify(trackIntent: $0) }
+    var now: () -> Date = Date.init
+    /// Whether some key window is already showing this track's agent. Asked once per event.
+    var isLooking: (URL, String) -> Bool = { root, trackKey in
+        AppDelegate.shared?.shellViewControllers.contains { $0.isShowingAgent(of: trackKey, in: root) } ?? false
+    }
+
+    private var known: [String: AgentActivity] = [:]
+    private var lastSound: Date?
+
+    /// A window's view of its project's tracks. The first sight of a track only records where it
+    /// stands: a state already there when Side opens isn't news.
+    func report(projectRoot: URL, _ tracks: [TrackActivity]) {
+        let root = projectRoot.standardizedFileURL
+        for track in tracks {
+            let key = root.path + "\u{0}" + track.trackKey
+            let previous = known.updateValue(track.activity, forKey: key)
+            guard let previous, previous != track.activity else { continue }
+            let event: Event? = switch track.activity {
+            case .needsYou: .needsYou
+            case .failed: .failed
+            case .doneUnread where previous == .working: .finished
+            default: nil
+            }
+            guard let event, !isLooking(root, track.trackKey) else { continue }
+            if event != .finished { notify(track.title) }
+            sound(event)
+        }
+    }
+
+    /// A typed command in Run that failed while its window wasn't in front.
+    func commandFailed() { sound(.failed) }
+
+    private func sound(_ event: Event) {
+        guard event.soundEnabled else { return }
+        let time = now()
+        if let lastSound, time.timeIntervalSince(lastSound) < Self.soundInterval { return }
+        lastSound = time
+        play(event.sound)
     }
 }
 
@@ -124,6 +220,7 @@ final class ShellViewController: NSViewController {
             self.refreshRunTasks()
         }
         runVC.onUserCommandFinished = { [weak self] command, exitCode, screen in
+            if exitCode != 0, self?.view.window?.isKeyWindow != true { AttentionCenter.shared.commandFailed() }
             self?.offerAttach(command: command, exitCode: exitCode, screen: screen)
         }
         runVC.onResolveAttachOffer = { [weak self] attach in
@@ -1189,6 +1286,7 @@ final class ShellViewController: NSViewController {
         let newlyNeedsYou = currentNeedsYou.subtracting(lastKnownNeedsYouTrackIDs)
         lastKnownNeedsYouTrackIDs = currentNeedsYou
         AppDelegate.shared?.refreshDockBadge()
+        reportAttention()
 
         guard !newlyNeedsYou.isEmpty else { return }
         let tracks = (trackStore?.tracks ?? []).filter { newlyNeedsYou.contains($0.id) }
@@ -1206,18 +1304,24 @@ final class ShellViewController: NSViewController {
                 userInfo: [.announcement: announcement, .priority: NSAccessibilityPriorityLevel.high.rawValue]
             )
         }
-        for track in tracks {
-            // Suppressed only when this window is both key (frontmost/focused) *and* already
-            // showing the relevant thing — the Tracks stage surfaces every needs-you track in
-            // its pinned section, so being on that stage at all counts as "already looking,"
-            // regardless of which track it is; Think only counts for the one track it's
-            // actually attached to. A non-key window (app backgrounded, another window
-            // focused) is never "already looking," however visible its own stage happens to be.
-            let alreadyLooking = view.window?.isKeyWindow == true
-                && (current == .tracks || (current == .think && track.branchName == currentTrackKey))
-            guard !alreadyLooking else { continue }
-            AgentAttentionNotifier.notify(trackIntent: track.intent)
-        }
+    }
+
+    /// What `AttentionCenter` diffs: every track of this window's project and its agent's state.
+    private func reportAttention() {
+        guard let projectURL, let trackStore, let runnerManager = projectContext?.runnerManager else { return }
+        AttentionCenter.shared.report(projectRoot: projectURL, trackStore.tracks.map { track in
+            AttentionCenter.TrackActivity(trackKey: track.branchName, title: track.intent.isEmpty ? track.branchName : track.intent,
+                                          activity: runnerManager.existingRunner(forTrackKey: track.branchName)?.activity ?? .none)
+        })
+    }
+
+    /// Already looking: this window is key *and* showing the track's agent. The Tracks stage
+    /// surfaces every needs-you track in its pinned section, so being on it at all counts; Think
+    /// only counts for the one track it's attached to. A non-key window (app in the background,
+    /// another window in front) is never looking, however visible its stage is.
+    func isShowingAgent(of trackKey: String, in root: URL) -> Bool {
+        view.window?.isKeyWindow == true && projectURL?.standardizedFileURL == root.standardizedFileURL
+            && (current == .tracks || (current == .think && trackKey == currentTrackKey))
     }
 
     // MARK: - Window chrome (title, git info)

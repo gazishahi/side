@@ -339,6 +339,45 @@ private final class AddProviderForm {
     }
 }
 
+/// Notifications → the two sounds (Direction 03 §3.3). System sounds people already know, played
+/// only for what changes out of view, at most one every few seconds.
+final class NotificationsPreferencesViewController: NSViewController {
+    private let needsYouSwitch = NSSwitch()
+    private let finishedSwitch = NSSwitch()
+    private var observer: NSObjectProtocol?
+
+    override func loadView() {
+        view = NSView()
+        for (toggle, label, action) in [(needsYouSwitch, "Sound when an agent needs you", #selector(needsYouToggled(_:))),
+                                        (finishedSwitch, "Sound when a turn finishes", #selector(finishedToggled(_:)))] {
+            toggle.target = self
+            toggle.action = action
+            toggle.controlSize = .small
+            toggle.setAccessibilityLabel(label)
+        }
+        let page = SettingsForm.page([
+            SettingsSplitViewController.hero(.notifications),
+            SettingsForm.section("Sounds", footer: "Only when it happens out of view: Side is in the background, or the window shows another track or stage.", [
+                SettingsForm.row("Play a sound when an agent needs you", detail: "Glass when it waits on an approval or an answer, Funk when a run fails.", needsYouSwitch),
+                SettingsForm.row("Also when a turn finishes", detail: "Tink when an agent is done with changes to review.", finishedSwitch),
+            ]),
+        ])
+        SettingsForm.install(page, in: view)
+        refresh()
+        observer = NotificationCenter.default.addObserver(forName: AttentionPreferences.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+    }
+
+    private func refresh() {
+        needsYouSwitch.state = AttentionPreferences.soundWhenNeedsYou ? .on : .off
+        finishedSwitch.state = AttentionPreferences.soundWhenFinished ? .on : .off
+    }
+
+    @objc private func needsYouToggled(_ sender: NSSwitch) { AttentionPreferences.soundWhenNeedsYou = sender.state == .on }
+    @objc private func finishedToggled(_ sender: NSSwitch) { AttentionPreferences.soundWhenFinished = sender.state == .on }
+}
+
 /// The Preferences window's shell. Preferences was a single flat pane while providers were the
 /// only thing configurable; usage accounting is a second, unrelated concern, so the two get
 /// their own tabs rather than one scrolling wall.
