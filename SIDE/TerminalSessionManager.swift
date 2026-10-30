@@ -7,6 +7,9 @@ import Heron
 final class TerminalSession {
     let id = UUID()
     var label: String
+    /// The person's own name for the tab (Direction 03 §4.3); nil for the automatic `label`.
+    var customName: String?
+    var title: String { customName ?? label }
     let viewController: TerminalViewController
     var hasUnseenOutput = false
 
@@ -265,8 +268,25 @@ final class TerminalSessionManager {
     /// ours to persist. Keyed by project *and* track; the old per-window key was the track alone,
     /// so every project's "no track" bucket shared one entry.
     private static let rememberedSessionsKey = "side.run-sessions-by-track"
+    /// Tabs' own names, in the same order as the directories; "" for an automatic name.
+    private static let rememberedNamesKey = "side.run-session-names-by-track"
 
     private func rememberedKey(_ trackKey: String) -> String { "\(projectRoot.path)#\(trackKey)" }
+
+    /// Each remembered tab's own name, nil where it had none.
+    func rememberedNames(forTrackKey key: String) -> [String?] {
+        let map = HeronDefaults.store.dictionary(forKey: Self.rememberedNamesKey) as? [String: [String]] ?? [:]
+        return (map[rememberedKey(key)] ?? []).map { $0.isEmpty ? nil : $0 }
+    }
+
+    /// The person named a tab, or gave it back its automatic name.
+    func rename(_ session: TerminalSession, to name: String?) {
+        session.customName = name
+        for pool in sessionsByPool.keys where sessionsByPool[pool]?.contains(where: { $0 === session }) == true {
+            remember(forTrackKey: pool.trackKey)
+        }
+        post(origin: nil)
+    }
 
     func rememberedDirectories(forTrackKey key: String) -> [String] {
         let map = HeronDefaults.store.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
@@ -277,10 +297,15 @@ final class TerminalSessionManager {
         guard !AppDelegate.isUITesting else { return }
         var map = HeronDefaults.store.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
         // Command tabs are an agent's one-off programs, not terminals to reopen.
-        let directories = allSessions(forTrackKey: key).filter { !$0.viewController.isCommandSession }.compactMap { $0.viewController.workingDirectory }
+        let kept = allSessions(forTrackKey: key).filter { !$0.viewController.isCommandSession && $0.viewController.workingDirectory != nil }
+        let directories = kept.compactMap { $0.viewController.workingDirectory }
         map.removeValue(forKey: key)
         if directories.isEmpty { map.removeValue(forKey: rememberedKey(key)) } else { map[rememberedKey(key)] = directories }
         HeronDefaults.store.set(map, forKey: Self.rememberedSessionsKey)
+        var names = HeronDefaults.store.dictionary(forKey: Self.rememberedNamesKey) as? [String: [String]] ?? [:]
+        let named = kept.map { $0.customName ?? "" }
+        if named.allSatisfy(\.isEmpty) { names.removeValue(forKey: rememberedKey(key)) } else { names[rememberedKey(key)] = named }
+        HeronDefaults.store.set(names, forKey: Self.rememberedNamesKey)
     }
 
     private func post(origin: AnyObject?) {

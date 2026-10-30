@@ -35,7 +35,6 @@ final class RunWorkspaceViewController: NSViewController {
     private var statusRowShows: Bool { hasProject && displayedSession != nil }
     private var terminalBottomConstant: CGFloat { -(bottomObstruction > 0 ? bottomObstruction + DS.Spacing.s : terminalBottomInset) }
     private let container = NSView()
-    private var tabChips: [TabChipView] = []
 
     var onActivityChanged: (() -> Void)?
     var onOpenFileRequested: ((URL, Int?) -> Void)?
@@ -379,7 +378,11 @@ final class RunWorkspaceViewController: NSViewController {
         // Created, not started: a shell starts when its tab is first shown. Starting all of them
         // here made every background tab's first prompt count as unseen output, so reopening a
         // project with three remembered tabs lit Run's badge for nothing.
-        for directory in remembered { createSession(inDirectory: directory, show: false) }
+        let names = terminals?.rememberedNames(forTrackKey: trackKey) ?? []
+        for (index, directory) in remembered.enumerated() {
+            createSession(inDirectory: directory, show: false)
+            if names.indices.contains(index) { sessions.last?.customName = names[index] }
+        }
         activeSessionIndex = 0
         rebuildTabBar()
         showActiveSession()
@@ -402,7 +405,7 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func closeSession(at index: Int) {
         guard sessions.indices.contains(index) else { return }
-        animateChipClosed(at: index) { [weak self] in
+        tabStrip.animateClose(at: index) { [weak self] in
             guard let self, self.sessions.indices.contains(index) else { return }
             let wasActive = self.activeSessionIndex == index
             let next = TabSelection.indexAfterClosing(index, active: self.activeSessionIndex, countBefore: self.sessions.count)
@@ -516,32 +519,32 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func clearUnseenOutput(at index: Int) {
         guard sessions.indices.contains(index), sessions[index].hasUnseenOutput else { return }
-        if tabChips.indices.contains(index) { tabChips[index].hasUnseenOutput = false }
+        if tabStrip.chips.indices.contains(index) { tabStrip.chips[index].hasUnseenOutput = false }
         terminals?.clearUnseenOutput(sessions[index])
     }
 
     // MARK: - Tab bar
 
-    private var lastKnownSessionCount = 0
+    /// The terminal tabs: the shared strip (Direction 03 §4). Run's can be renamed.
+    private lazy var tabStrip: TabStrip = {
+        let strip = TabStrip(bar: tabBar, stack: tabBarStack, accessibilityLabel: "Terminal sessions")
+        strip.onSelect = { [weak self] index in self?.switchToSession(index) }
+        strip.onClose = { [weak self] index in self?.closeSession(at: index) }
+        strip.onMove = { [weak self] from, to in self?.moveSession(from: from, to: to) }
+        strip.onTearOut = { [weak self] index, screenPoint in self?.tearOutSession(at: index, to: screenPoint) }
+        strip.onRename = { [weak self] index, name in self?.renameSession(at: index, to: name) }
+        return strip
+    }()
 
     private func rebuildTabBar() {
-        let previousCount = lastKnownSessionCount
-        lastKnownSessionCount = sessions.count
-        tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        tabChips.removeAll()
-        // One terminal needs no tabs; the strip appears once there's a second.
-        guard sessions.count > 1 else { tabBar.accessibleTabs = []; return }
-        for (index, session) in sessions.enumerated() {
-            let chip = TabChipView()
-            chip.index = index
-            chip.isActive = index == activeSessionIndex
-            chip.title = session.label
-            chip.isDead = !session.viewController.isAliveOrUnstarted
-            chip.hasUnseenOutput = session.hasUnseenOutput
-            chip.dragIcon = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
-            // Its terminal as it stands, for the small window the tab becomes when dragged out.
+        let items = sessions.map { session -> TabStrip.Item in
+            var item = TabStrip.Item(id: session.id, title: session.title)
+            item.isDead = !session.viewController.isAliveOrUnstarted
+            item.hasUnseenOutput = session.hasUnseenOutput
+            item.icon = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+            // Its terminal as it stands, for the card the tab becomes when dragged out.
             let terminalView = session.viewController.terminalView
-            chip.dragPreview = { [weak terminalView] in
+            item.preview = { [weak terminalView] in
                 guard let terminalView, terminalView.bounds.width > 0, terminalView.bounds.height > 0,
                       let rep = terminalView.bitmapImageRepForCachingDisplay(in: terminalView.bounds) else { return nil }
                 terminalView.cacheDisplay(in: terminalView.bounds, to: rep)
@@ -549,77 +552,52 @@ final class RunWorkspaceViewController: NSViewController {
                 image.addRepresentation(rep)
                 return image
             }
-            chip.translatesAutoresizingMaskIntoConstraints = false
-            chip.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
-            chip.onSelect = { [weak self] i in self?.switchToSession(i) }
-            chip.onDragging = { [weak self, weak chip] windowX in
-                guard let self, let chip else { return }
-                self.handleTabDragging(chip, toWindowX: windowX)
-            }
-            chip.onTearOut = { [weak self, weak chip] screenPoint in
-                guard let self, let chip else { return }
-                self.tearOutSession(at: chip.index, to: screenPoint)
-            }
-
-            let closeButton = TabCloseButton()
-            closeButton.tag = index
-            closeButton.target = self
-            closeButton.action = #selector(closeSessionButton(_:))
-            closeButton.translatesAutoresizingMaskIntoConstraints = false
-            closeButton.isHidden = true
-            chip.addSubview(closeButton)
-            chip.closeButton = closeButton
-            chip.updateCloseVisibility()
-            NSLayoutConstraint.activate([
-                closeButton.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: chip.centerYAnchor)
-            ])
-
-            // Items carry the session's id, not its index — the menu can outlive a reorder.
-            let menu = NSMenu()
-            func item(_ title: String, _ action: Selector) {
-                let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
-                item.target = self
-                item.representedObject = session.id
-            }
-            item("Close", #selector(closeSessionFromMenu(_:)))
-            item("Close Others", #selector(closeOtherSessionsFromMenu(_:)))
-            menu.addItem(NSMenuItem.separator())
-            item("Move to New Window", #selector(moveSessionToNewWindowFromMenu(_:)))
-            chip.menu = menu
-
-            tabBarStack.addArrangedSubview(chip)
-            tabChips.append(chip)
+            item.menu = sessionMenu(for: session.id)
+            return item
         }
-        tabBar.accessibilityGroupLabel = "Terminal sessions"
-        tabBar.accessibleTabs = tabChips
-        // Same arrival as Make's file tabs — a new session's chip animates in on live creation,
-        // full rebuilds (track switches, reorders) lay out instantly.
-        if sessions.count == previousCount + 1, let newest = activeSessionIndex.flatMap({ tabChips.indices.contains($0) ? tabChips[$0] : nil }) {
-            tabBarStack.layoutSubtreeIfNeeded()
-            DS.Motion.appear(newest, distance: 8)
-        }
+        tabStrip.reload(items, active: activeSessionIndex)
     }
 
-    /// Mirrors Make's close animation: the chip shrinks and fades, siblings glide together,
-    /// then the model removes the session.
-    private func animateChipClosed(at index: Int, completion: @escaping () -> Void) {
-        guard tabChips.indices.contains(index), sessions.count > 1 else { completion(); return }
-        let chip = tabChips[index]
-        let widthConstraint = chip.widthAnchor.constraint(equalToConstant: chip.frame.width)
-        widthConstraint.isActive = true
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.14)
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
-            chip.animator().alphaValue = 0
-            widthConstraint.constant = 0
-            tabBarStack.layoutSubtreeIfNeeded()
-        } completionHandler: {
-            completion()
+    /// Items carry the session's id, not its index: the menu can outlive a reorder.
+    private func sessionMenu(for id: UUID) -> NSMenu {
+        let menu = NSMenu()
+        func item(_ title: String, _ action: Selector) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
         }
+        item("Rename\u{2026}", #selector(renameSessionFromMenu(_:)))
+        menu.addItem(NSMenuItem.separator())
+        item("Close", #selector(closeSessionFromMenu(_:)))
+        item("Close Others", #selector(closeOtherSessionsFromMenu(_:)))
+        menu.addItem(NSMenuItem.separator())
+        item("Move to New Window", #selector(moveSessionToNewWindowFromMenu(_:)))
+        return menu
     }
 
-    @objc private func closeSessionButton(_ sender: NSButton) { closeSession(at: sender.tag) }
+    /// A tab dragged to a new place: the sessions follow the strip, the shown one with them.
+    private func moveSession(from: Int, to: Int) {
+        guard sessions.indices.contains(from), sessions.indices.contains(to) else { return }
+        let activeID = activeSessionIndex.flatMap { sessions.indices.contains($0) ? sessions[$0].id : nil }
+        var reordered = sessions
+        reordered.insert(reordered.remove(at: from), at: to)
+        sessions = reordered
+        if let activeID { activeSessionIndex = sessions.firstIndex(where: { $0.id == activeID }) }
+    }
+
+    /// A name of the person's own, or nil to go back to the automatic one (the folder).
+    private func renameSession(at index: Int, to name: String?) {
+        guard sessions.indices.contains(index) else { return }
+        terminals?.rename(sessions[index], to: name)
+        rebuildTabBar()
+    }
+
+    @objc private func renameSessionFromMenu(_ sender: NSMenuItem) {
+        guard let index = sessionIndex(from: sender), tabStrip.chips.indices.contains(index) else { return }
+        tabStrip.chips[index].beginRename()
+    }
+
+
 
     // MARK: - Tab context-menu actions (sender.representedObject is the session's UUID)
 
@@ -645,46 +623,6 @@ final class RunWorkspaceViewController: NSViewController {
 
     @objc private func moveSessionToNewWindowFromMenu(_ sender: NSMenuItem) {
         if let index = sessionIndex(from: sender) { tearOutSession(at: index, to: NSEvent.mouseLocation) }
-    }
-
-    private func handleTabDragging(_ chip: TabChipView, toWindowX x: CGFloat) {
-        guard let draggedIndex = tabChips.firstIndex(where: { $0 === chip }) else { return }
-        // The drop index is "how many siblings sit left of the cursor" — counting, not the
-        // sibling's own index. The old code assigned the *last passed sibling's index*, which
-        // after a swap pointed one slot short, so the next mouse event swapped straight back:
-        // the tab oscillated between two slots for as long as you dragged past the end.
-        var dropIndex = 0
-        for sibling in tabChips where sibling !== chip {
-            let siblingMidXInWindow = sibling.convert(NSPoint(x: sibling.bounds.midX, y: 0), to: nil).x
-            if x > siblingMidXInWindow { dropIndex += 1 }
-        }
-        guard dropIndex != draggedIndex else { return }
-
-        let activeID = activeSessionIndex.flatMap { sessions.indices.contains($0) ? sessions[$0].id : nil }
-        var reordered = sessions
-        reordered.insert(reordered.remove(at: draggedIndex), at: dropIndex)
-        sessions = reordered
-        tabChips.remove(at: draggedIndex)
-        tabChips.insert(chip, at: dropIndex)
-        tabBarStack.removeArrangedSubview(chip)
-        tabBarStack.insertArrangedSubview(chip, at: dropIndex)
-        if let activeID { activeSessionIndex = sessions.firstIndex(where: { $0.id == activeID }) }
-        reindexTabChips()
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.16)
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
-            tabBarStack.layoutSubtreeIfNeeded()
-        }
-    }
-
-    private func reindexTabChips() {
-        for (i, chip) in tabChips.enumerated() {
-            chip.index = i
-            chip.isActive = (i == activeSessionIndex)
-            chip.closeButton?.tag = i
-        }
     }
 
     // MARK: - Task row

@@ -1147,3 +1147,53 @@ final class CrashReportTests: XCTestCase {
         XCTAssertTrue(items.first { $0.name == "body" }?.value?.contains("0 Side +0x6d4a70") ?? false)
     }
 }
+
+/// Direction 03 §4: one strip for Make and Run. A tab that's still there keeps its chip (Run used
+/// to rebuild every chip on every terminal event), one more tab arrives, and a rename reaches
+/// the owner.
+@MainActor
+final class TabStripTests: XCTestCase {
+    func testChipsAreKeptByIdAndARenameReachesTheOwner() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let bar = TabStripView(frame: window.contentView!.bounds)
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        bar.addSubview(stack)
+        window.contentView = bar
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        var items = [TabStrip.Item(id: UUID(), title: "one"), TabStrip.Item(id: UUID(), title: "two")]
+        strip.reload(items, active: 0)
+        let first = strip.chips
+        XCTAssertEqual(first.map(\.title), ["one", "two"])
+        items[1].title = "zsh"
+        strip.reload(items, active: 1)
+        XCTAssertTrue(strip.chips[0] === first[0] && strip.chips[1] === first[1], "the same chips, updated")
+        XCTAssertEqual(strip.chips[1].title, "zsh")
+        XCTAssertTrue(strip.chips[1].isActive)
+        items.append(TabStrip.Item(id: UUID(), title: "three"))
+        strip.reload(items, active: 2)
+        XCTAssertEqual(strip.chips.count, 3)
+        XCTAssertTrue(strip.chips[0] === first[0])
+        strip.reload([items[0]], active: 0)
+        XCTAssertEqual(strip.chips.count, 0, "one tab needs no strip")
+
+        strip.reload(items, active: 0)
+        var renamed: (Int, String?)?
+        strip.onRename = { renamed = ($0, $1) }
+        let chip = strip.chips[1]
+        chip.beginRename()
+        let field = try XCTUnwrap(chip.subviews.compactMap { $0 as? NSTextField }.first)
+        field.stringValue = "  dev server "
+        chip.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        XCTAssertEqual(renamed?.0, 1)
+        XCTAssertEqual(renamed?.1, "dev server")
+        chip.beginRename()
+        let again = try XCTUnwrap(chip.subviews.compactMap { $0 as? NSTextField }.first)
+        again.stringValue = ""
+        chip.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: again))
+        XCTAssertEqual(renamed?.0, 1)
+        XCTAssertNil(renamed?.1, "empty: back to the automatic name")
+    }
+}

@@ -341,7 +341,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var outlineGeneration = 0
     private var openTabs: [OpenTab] = []
     private var activeTabIndex: Int?
-    private var tabChips: [TabChipView] = []
     private var dirty = false { didSet { onDirtyChanged?(dirty) } }
     var onProjectOpened: ((URL) -> Void)?
     var onFileOpened: ((URL?) -> Void)?
@@ -2751,7 +2750,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         editor.focus()
     }
 
-    @objc private func closeTabButton(_ sender: NSButton) { closeTab(at: sender.tag) }
     @objc private func closeTabFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID, let index = indexForTab(id: id) else { return }
         closeTab(at: index)
@@ -2812,7 +2810,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func finishCloseTab(id tabID: UUID) {
         guard let index = indexForTab(id: tabID) else { return }
-        animateChipClosed(at: index) { [weak self] in
+        tabStrip.animateClose(at: index) { [weak self] in
             guard let self, let index = self.indexForTab(id: tabID) else { return }
             let closedTab = self.openTabs[index]
             let wasActive = self.activeTabIndex == index
@@ -2898,56 +2896,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     var hasUnsavedChanges: Bool { openTabs.contains { $0.dirty } }
     func confirmCloseAllUnsaved(completion: @escaping (Bool) -> Void) { confirmAllUnsavedChanges(completion: completion) }
 
-    private func handleTabDragging(_ chip: TabChipView, toWindowX x: CGFloat) {
-        guard let draggedIndex = tabChips.firstIndex(where: { $0 === chip }) else { return }
-        // The drop index is "how many siblings sit left of the cursor" — counting, not the
-        // sibling's own index. The old code assigned the *last passed sibling's index*, which
-        // after a swap pointed one slot short, so the next mouse event swapped straight back:
-        // the tab oscillated between two slots for as long as you dragged past the end.
-        var dropIndex = 0
-        for sibling in tabChips where sibling !== chip {
-            let siblingMidXInWindow = sibling.convert(NSPoint(x: sibling.bounds.midX, y: 0), to: nil).x
-            if x > siblingMidXInWindow { dropIndex += 1 }
-        }
-        guard dropIndex != draggedIndex else { return }
-
-        let activeURL = activeTabIndex.flatMap { openTabs.indices.contains($0) ? openTabs[$0].url : nil }
-        let movedTab = openTabs.remove(at: draggedIndex)
-        openTabs.insert(movedTab, at: dropIndex)
-        tabChips.remove(at: draggedIndex)
-        tabChips.insert(chip, at: dropIndex)
-        tabBarStack.removeArrangedSubview(chip)
-        tabBarStack.insertArrangedSubview(chip, at: dropIndex)
-        if let activeURL { activeTabIndex = openTabs.firstIndex(where: { $0.url == activeURL }) }
-        reindexTabChips()
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.16)
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
-            tabBarStack.layoutSubtreeIfNeeded()
-        }
-    }
-
-    private func reindexTabChips() {
-        for (i, chip) in tabChips.enumerated() {
-            chip.index = i
-            chip.isActive = (i == activeTabIndex)
-            chip.closeButton?.tag = i
-        }
-    }
-
-    private var lastKnownTabCount = 0
-
-    /// Publishes the current chips as the tab bar's accessibility children. Required because the
-    /// chips live inside the overflow `NSScrollView`, which otherwise hides them from the AX tree
-    /// entirely — an audit found the chips absent despite `TabChipView`'s own AX overrides being
-    /// correct, and adding the scroll view for tab overflow is what put them out of reach.
-    private func publishTabAccessibility() {
-        tabBar.accessibilityGroupLabel = "Editor tabs"
-        tabBar.accessibleTabs = tabChips
-    }
-
     /// UndoManager's default `levelsOfUndo` is 0, meaning *unlimited* — and every typing burst
     /// registers a group retaining the text it replaced, with nothing clearing the stack on
     /// save. Across a long session in many tabs that grows without bound. 200 levels is far
@@ -2984,6 +2932,31 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return result
     }
 
+    /// The file tabs: the shared strip (Direction 03 §4), told what Make has open.
+    private lazy var tabStrip: TabStrip = {
+        let strip = TabStrip(bar: tabBar, stack: tabBarStack, accessibilityLabel: "Editor tabs")
+        strip.onSelect = { [weak self] index in self?.switchToTab(index) }
+        strip.onClose = { [weak self] index in self?.closeTab(at: index) }
+        strip.onMove = { [weak self] from, to in self?.moveTab(from: from, to: to) }
+        // The order is remembered once a drag sets the tab down (it waited for the next rebuild).
+        strip.onMoveEnded = { [weak self] in
+            guard let self, let projectURL = self.projectURL else { return }
+            self.rememberOpenTabs(forProject: projectURL)
+        }
+        strip.onTearOut = { [weak self] index, screenPoint in self?.tearOutTab(at: index, to: screenPoint) }
+        return strip
+    }()
+
+    var tabStripForTesting: TabStrip { tabStrip }
+
+    /// A tab dragged to a new place: the model follows the strip, the active file with it.
+    private func moveTab(from: Int, to: Int) {
+        guard openTabs.indices.contains(from), openTabs.indices.contains(to) else { return }
+        let activeID = activeTabIndex.flatMap { openTabs.indices.contains($0) ? openTabs[$0].id : nil }
+        openTabs.insert(openTabs.remove(at: from), at: to)
+        if let activeID { activeTabIndex = openTabs.firstIndex(where: { $0.id == activeID }) }
+    }
+
     private func rebuildTabBar() {
         let named = openTabs.filter { !$0.isUntitled }
         let details = Self.disambiguatingFolders(for: named.map(\.url))
@@ -2992,102 +2965,39 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // recovery copies catching up.
         scheduleRecoverySync()
         updateCaretPosition()
-        // The tab bar is rebuilt on every open, close, and reorder, which is exactly the set of
-        // moments the remembered tab list should change — except during a restore, where the
-        // intermediate states are not worth persisting over the complete set.
+        // Every open, close and reorder comes through here, which is the set of moments the
+        // remembered tab list should change, except mid-restore, whose in-between states aren't
+        // worth keeping over the whole set.
         if let projectURL, !isRestoringTabs { rememberOpenTabs(forProject: projectURL) }
         noFileLabel.isHidden = !openTabs.isEmpty || projectURL == nil
-        let previousCount = lastKnownTabCount
-        lastKnownTabCount = openTabs.count
-        tabBarStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        tabChips.removeAll()
-        // One file needs no tabs: a single tab is only a label with a close button that closes
-        // the one thing you're looking at. The strip appears once there's a second.
-        guard openTabs.count > 1 else { publishTabAccessibility(); return }
-        for (index, tab) in openTabs.enumerated() {
-            let chip = makeTabChip(index: index, tab: tab, isActive: index == activeTabIndex)
-            tabBarStack.addArrangedSubview(chip)
-            tabChips.append(chip)
-        }
-        publishTabAccessibility()
-        // A freshly opened tab (always appended, always becomes active) arrives, not appears —
-        // the standard entrance, scaled down for a 30pt element. Full rebuilds for any other
-        // reason lay out instantly.
-        if openTabs.count == previousCount + 1, let newest = tabChips.last {
-            tabBarStack.layoutSubtreeIfNeeded()
-            DS.Motion.appear(newest, distance: 8)
-        }
+        tabStrip.reload(openTabs.map(tabItem), active: activeTabIndex)
     }
 
-    /// The closing chip shrinks and fades out, its siblings gliding into the gap, before the
-    /// model actually removes it — the counterpart to the arrival above.
-    private func animateChipClosed(at index: Int, completion: @escaping () -> Void) {
-        guard tabChips.indices.contains(index), openTabs.count > 2 else { completion(); return }
-        let chip = tabChips[index]
-        let width = chip.frame.width
-        let widthConstraint = chip.widthAnchor.constraint(equalToConstant: width)
-        widthConstraint.isActive = true
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.14)
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
-            chip.animator().alphaValue = 0
-            widthConstraint.constant = 0
-            tabBarStack.layoutSubtreeIfNeeded()
-        } completionHandler: {
-            completion()
-        }
-    }
-
-    private func makeTabChip(index: Int, tab: OpenTab, isActive: Bool) -> TabChipView {
-        let container = TabChipView()
-        container.index = index
-        container.isActive = isActive
-        container.title = tab.url.lastPathComponent
-        container.detail = tabDetails[tab.id] ?? ""
-        container.isDirty = tab.dirty
-        container.dragIcon = tab.isUntitled ? nil : FileIcon.image(for: tab.url, isDirectory: false)
+    private func tabItem(_ tab: OpenTab) -> TabStrip.Item {
         let id = tab.id
-        container.dragPreview = { [weak self] in
+        var item = TabStrip.Item(id: id, title: tab.url.lastPathComponent)
+        item.detail = tabDetails[id] ?? ""
+        item.toolTip = tab.isUntitled ? "Unsaved" : relativePath(tab.url)
+        item.icon = tab.isUntitled ? nil : FileIcon.image(for: tab.url, isDirectory: false)
+        item.isDirty = tab.dirty
+        item.preview = { [weak self] in
             guard let self, let index = self.indexForTab(id: id) else { return nil }
             return self.tabPreviewContent(index)
         }
-        container.toolTip = tab.isUntitled ? "Unsaved" : relativePath(tab.url)
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.heightAnchor.constraint(equalToConstant: TabChipView.height).isActive = true
-        container.onSelect = { [weak self] i in self?.switchToTab(i) }
-        container.onDragging = { [weak self, weak container] windowX in
-            guard let self, let container else { return }
-            self.handleTabDragging(container, toWindowX: windowX)
-        }
-        container.onTearOut = { [weak self, weak container] screenPoint in
-            guard let self, let container else { return }
-            self.tearOutTab(at: container.index, to: screenPoint)
-        }
+        item.menu = tabMenu(for: id)
+        return item
+    }
 
-        let closeButton = TabCloseButton()
-        closeButton.tag = index
-        closeButton.target = self
-        closeButton.action = #selector(closeTabButton(_:))
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.isHidden = true
-        container.addSubview(closeButton)
-        container.closeButton = closeButton
-        container.updateCloseVisibility()
-        NSLayoutConstraint.activate([
-            closeButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -(5 + TabChipView.flare)), closeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor)
-        ])
-
-        // Every item carries the tab's stable id, not its index — the menu can outlive several
-        // reorders/closes between being built and being clicked.
+    /// Every item carries the tab's stable id, not its index: the menu can outlive reorders and
+    /// closes between being built and being clicked.
+    private func tabMenu(for id: UUID) -> NSMenu {
         let menu = NSMenu()
-        func item(_ title: String, _ action: Selector) -> NSMenuItem {
+        func item(_ title: String, _ action: Selector) {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             item.target = self
-            item.representedObject = tab.id
-            return item
+            item.representedObject = id
         }
-        container.closeMenuItem = item("Close", #selector(closeTabFromMenu(_:)))
+        item("Close", #selector(closeTabFromMenu(_:)))
         item("Close Others", #selector(closeOtherTabsFromMenu(_:)))
         item("Close to the Right", #selector(closeTabsToRightFromMenu(_:)))
         item("Close Saved", #selector(closeSavedTabsFromMenu(_:)))
@@ -3099,10 +3009,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         item("Reveal in Finder", #selector(revealTabInFinderFromMenu(_:)))
         menu.addItem(NSMenuItem.separator())
         item("Move to New Window", #selector(moveTabToNewWindowFromMenu(_:)))
-        container.menu = menu
-
-        return container
+        return menu
     }
+
 
     // MARK: - Tab context-menu actions (sender.representedObject is the tab's stable UUID)
 
@@ -5616,620 +5525,6 @@ private final class MarkdownPreviewLinks: NSObject, NSTextViewDelegate {
 /// responder the whole time it's visible so arrow keys/Tab/Return/Escape keep landing in
 /// NSTextViewDelegate for interception instead of needing the popup to handle input itself.
 
-final class TabChipView: NSView, NSDraggingSource, PointerHoverSyncing {
-    weak var closeButton: TabCloseButton?
-    weak var closeMenuItem: NSMenuItem?
-    var index: Int = 0
-    var onSelect: ((Int) -> Void)?
-    var onDragging: ((CGFloat) -> Void)?
-    var onDragEnded: (() -> Void)?
-    /// Fired instead of `onDragEnded` when a drag ends far enough below/above the tab strip —
-    /// the tear-out gesture. The point is in screen coordinates (where the new window should
-    /// appear). Left nil by owners whose tabs can't become windows (Run's terminal sessions).
-    var onTearOut: ((NSPoint) -> Void)?
-    var title: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
-    /// After the title, quieter: the folder that tells this tab from another of the same name.
-    var detail: String = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
-    var isActive: Bool = false {
-        didSet {
-            needsDisplay = true
-            updateCloseVisibility()
-            if isActive { revealWhenLaidOut() }
-        }
-    }
-
-    /// The active tab is always in view: in an overflowing strip it's scrolled to, after
-    /// layout has placed it (a new chip has no frame yet).
-    private func revealWhenLaidOut() {
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.isActive, self.window != nil else { return }
-                self.scrollToVisible(self.bounds.insetBy(dx: -16, dy: 0))
-            }
-        }
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if isActive { revealWhenLaidOut() }
-    }
-    /// Used by Run's terminal tabs (unused by Make's file tabs, which never set these) to show
-    /// an exited-process state and an unseen-output dot without needing a separate chip type.
-    var isDead: Bool = false { didSet { needsDisplay = true } }
-    var hasUnseenOutput: Bool = false { didSet { needsDisplay = true } }
-
-    private static let textInset: CGFloat = 12
-    private static let trailingReserve: CGFloat = 26
-    private static let maxTextWidth: CGFloat = 200
-    /// A capsule inside the strip's 30 pt glass track.
-    static let height: CGFloat = 24
-    private static let minWidth: CGFloat = 96
-    /// Horizontal margin reserved on each side for the active tab's bottom flares — the outward
-    /// curves that let the tab pour into the content surface below instead of meeting it at a
-    /// hard corner. Reserved on every chip (not just the active one) so activating a tab never
-    /// changes its width and shuffles the whole row.
-    static let flare: CGFloat = 4
-
-    private var trackingArea: NSTrackingArea?
-    private var dragOrigin: NSPoint?
-    private var grabOffsetX: CGFloat = 0
-    private var didDrag = false
-    private var isTearArmed = false
-    private static let tearThreshold: CGFloat = 36
-    private(set) var isHovered = false { didSet { needsDisplay = true } }
-
-    override var isFlipped: Bool { true }
-
-    /// In the title-bar region AppKit moves the window for any transparent view that doesn't
-    /// say otherwise — which swallowed every tab drag once the tabs moved up there.
-    override var mouseDownCanMoveWindow: Bool { false }
-
-    /// Measured at the heavier weight whatever the state, so selecting a tab never changes its
-    /// width — the whole strip used to shuffle by a few points on every click.
-    override var intrinsicContentSize: NSSize {
-        let font = DS.Text.body(.medium)
-        let textWidth = min(Self.label(title: title, detail: detail, attributes: [.font: font]).size().width, Self.maxTextWidth)
-        return NSSize(width: max(Self.minWidth, textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2), height: Self.height)
-    }
-
-    /// The title, then the detail in a quieter color.
-    static func label(title: String, detail: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
-        let label = NSMutableAttributedString(string: title, attributes: attributes)
-        guard !detail.isEmpty else { return label }
-        var quiet = attributes
-        quiet[.foregroundColor] = NSColor.tertiaryLabelColor
-        quiet[.font] = DS.Text.caption()
-        label.append(NSAttributedString(string: "  " + detail, attributes: quiet))
-        return label
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        isHovered = true
-        setWindowMovable(false)
-        updateCloseVisibility()
-    }
-    override func mouseExited(with event: NSEvent) {
-        isHovered = false
-        if dragOrigin == nil { window?.isMovable = true }
-        updateCloseVisibility()
-    }
-
-    /// The strip scrolled under a still pointer (`TabStripScrollView`).
-    func syncHover(pointerInWindow pointer: NSPoint) {
-        // Its own bounds, as shown: `visibleRect` alone can reach past them (views don't clip by
-        // default), over the next tab.
-        let inside = bounds.intersection(visibleRect).contains(convert(pointer, from: nil))
-        guard inside != isHovered else { return }
-        if inside {
-            isHovered = true
-            setWindowMovable(false)
-        } else {
-            isHovered = false
-            if dragOrigin == nil { window?.isMovable = true }
-        }
-        updateCloseVisibility()
-    }
-    override func viewWillMove(toWindow newWindow: NSWindow?) {
-        // A chip removed while hovered (closed, strip rebuilt) must not leave the window stuck.
-        if isHovered { window?.isMovable = true }
-        super.viewWillMove(toWindow: newWindow)
-    }
-
-    /// Unsaved edits: a dot where the close button sits, until hover swaps it for the ×.
-    var isDirty: Bool = false { didSet { needsDisplay = true; updateCloseVisibility() } }
-
-    /// The active tab always offers its ×; others on hover. A dirty tab shows its dot there
-    /// instead until hovered.
-    func updateCloseVisibility() {
-        closeButton?.isHidden = !(isHovered || (isActive && !isDirty))
-    }
-
-    /// Tabs live in the window's top row now, on the stage's own surface — so a tab is a pill
-    /// on that surface, not a silhouette pouring into the content below (that shape drew a seam
-    /// across the whole window once there was no title bar above it). The active tab takes the
-    /// `overlay` tone and full-strength text; the rest recede.
-    /// Picked up and being dragged along the strip.
-    private var isLifted = false { didSet { if isLifted != oldValue { needsDisplay = true } } }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard bounds.width > Self.flare * 2 + 16, bounds.height > 4 else { return }
-        // A capsule on the strip's glass, drawn exactly like the stage control's selection:
-        // the active tab is the soft selected capsule, the rest are the glass itself until
-        // hovered. The glass track is what says "these are tabs".
-        let body = bounds.insetBy(dx: Self.flare - 2, dy: 0)
-        let pill = NSBezierPath(roundedRect: body, xRadius: body.height / 2, yRadius: body.height / 2)
-        if isLifted {
-            DS.Color.raised.setFill()
-            pill.fill()
-            DS.Color.hairline.setStroke()
-            let edge = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5), xRadius: body.height / 2 - 0.5, yRadius: body.height / 2 - 0.5)
-            edge.lineWidth = 1
-            edge.stroke()
-        } else if isActive {
-            NSGraphicsContext.saveGraphicsState()
-            let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.12)
-            shadow.shadowBlurRadius = 2
-            shadow.shadowOffset = NSSize(width: 0, height: -0.5)
-            shadow.set()
-            DS.Color.selectedCapsule.setFill()
-            pill.fill()
-            NSGraphicsContext.restoreGraphicsState()
-        } else if isHovered {
-            DS.Color.scrimSoft.setFill()
-            pill.fill()
-        }
-
-        let dimmed = isDead ? 0.35 : 1.0
-        let attributes: [NSAttributedString.Key: Any] = [
-            .foregroundColor: (isActive ? NSColor.labelColor : NSColor.secondaryLabelColor).withAlphaComponent(dimmed),
-            .font: DS.Text.body(isActive ? .medium : .regular)
-        ]
-        let text = Self.label(title: title, detail: detail, attributes: attributes)
-        let size = text.size()
-        let textX = Self.flare + Self.textInset
-        let maxWidth = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
-        let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
-        text.draw(with: drawRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-
-        if hasUnseenOutput {
-            DS.Color.statusWorking.setFill()
-            let dotSize: CGFloat = 5
-            NSBezierPath(ovalIn: NSRect(x: Self.flare + 3, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
-        }
-        if isDirty && !isHovered {
-            NSColor.secondaryLabelColor.setFill()
-            let dotSize: CGFloat = 7
-            let x = bounds.width - Self.flare - 5 - 8 - dotSize / 2
-            NSBezierPath(ovalIn: NSRect(x: x, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
-        }
-    }
-
-    /// In the title-bar strip the window server decides a press is a window drag before any
-    /// view sees it, whatever the view says — so the window is unmovable only while the pointer
-    /// is over a tab, and the drag is the tab's. Never left off: an unmovable window also
-    /// refuses window managers and tiling.
-    private func setWindowMovable(_ movable: Bool) {
-        guard dragOrigin == nil || movable == false else { return }
-        window?.isMovable = movable
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        window?.isMovable = false
-        dragOrigin = event.locationInWindow
-        grabOffsetX = event.locationInWindow.x - convert(NSPoint.zero, to: nil).x
-        didDrag = false
-    }
-
-    /// While dragged, this chip's own frame changes must land instantly: the cursor-glue
-    /// transform in `mouseDragged` is computed against the *final* frame, so letting the
-    /// reorder's animation group also animate this chip's frame slid it off the cursor for
-    /// 0.16s and the next mouse event yanked it back — a rubber-band "snapping" feel.
-    /// Siblings still animate; only the held chip opts out.
-    override func animation(forKey key: NSAnimatablePropertyKey) -> Any? {
-        if didDrag, key == "frameOrigin" || key == "frame" || key == "frameSize" { return nil }
-        return super.animation(forKey: key)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let dragOrigin else { return }
-        let totalDX = event.locationInWindow.x - dragOrigin.x
-        if abs(totalDX) > 4, !didDrag {
-            didDrag = true
-            // The pickup: lift the chip so the drag reads as holding something, not sliding a
-            // flat rectangle. It's drawn as the drag image is, a solid capsule with a hairline:
-            // a layer shadow was cast by the text through the glass pill, and the strip's
-            // rounded mask cut it off.
-            wantsLayer = true
-            layer?.zPosition = 10
-            isLifted = true
-        }
-        guard didDrag else { return }
-
-        // Pulled far enough off the strip, the gesture stops being a reorder and becomes a
-        // tear-out — the chip follows the cursor vertically and fades to signal "this is about
-        // to become its own window." Dragging back within range re-arms reordering.
-        let dy = event.locationInWindow.y - dragOrigin.y
-        isTearArmed = onTearOut != nil && abs(dy) > Self.tearThreshold
-        // Pulled off the strip: from here it's a system drag, so an image of the tab follows the
-        // cursor anywhere on screen — out of the window, over other apps — instead of the chip
-        // stopping at the window's edge with nothing to show where the file is going.
-        if isTearArmed && !isTearingOut {
-            beginTearOut(with: event)
-            return
-        }
-
-        if !isTearArmed {
-            // Reorder the model/stack first (siblings animate into their new slots)...
-            onDragging?(event.locationInWindow.x)
-        }
-
-        // ...then keep this chip glued to the cursor regardless of where that reorder
-        // just placed it in the stack, by transforming relative to its *current* laid-out
-        // position rather than the position at mouseDown.
-        let naturalXInWindow = convert(NSPoint.zero, to: nil).x
-        // Held inside the strip's glass track: a tab can't be dragged out of its container, over
-        // the traffic lights or past the last tab.
-        var desiredXInWindow = event.locationInWindow.x - grabOffsetX
-        if !isTearArmed, let track = superview {
-            let trackFrame = track.convert(track.bounds, to: nil).insetBy(dx: 3, dy: 0)
-            desiredXInWindow = min(max(desiredXInWindow, trackFrame.minX), trackFrame.maxX - bounds.width)
-        }
-        // Flipped view: window +y is up, layer translation follows view coords (down-positive).
-        let liftY = isTearArmed ? -dy : 0
-        layer?.setAffineTransform(CGAffineTransform(translationX: desiredXInWindow - naturalXInWindow, y: liftY).scaledBy(x: 1.04, y: 1.04))
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        defer {
-            dragOrigin = nil
-            if !isHovered { window?.isMovable = true }
-        }
-        guard dragOrigin != nil else { return }
-        if didDrag {
-            if isTearArmed {
-                isTearArmed = false
-                alphaValue = 1
-                layer?.setAffineTransform(.identity)
-                layer?.zPosition = 0
-                isLifted = false
-                onTearOut?(NSEvent.mouseLocation)
-                return
-            }
-            // The set-down: glide into the slot instead of snapping.
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = DS.Motion.duration(0.18)
-                context.timingFunction = DS.Motion.curve
-                context.allowsImplicitAnimation = true
-                layer?.setAffineTransform(.identity)
-            } completionHandler: { [weak self] in
-                self?.layer?.zPosition = 0
-                self?.isLifted = false
-            }
-            onDragEnded?()
-        } else {
-            onSelect?(index)
-        }
-    }
-
-    // MARK: Tear-out
-
-    private var isTearingOut = false
-    static let tabPasteboardType = NSPasteboard.PasteboardType("com.shahi.side.tab")
-
-    private func beginTearOut(with event: NSEvent) {
-        isTearingOut = true
-        layer?.setAffineTransform(.identity)
-        layer?.zPosition = 0
-        isLifted = false
-        alphaValue = 0.35  // the tab's slot stays, ghosted, until the drop decides
-        // A private type, never a file URL: dropping a tab on Finder must not move the file.
-        let item = NSPasteboardItem()
-        item.setString(title, forType: Self.tabPasteboardType)
-        let dragItem = NSDraggingItem(pasteboardWriter: item)
-        let image = Self.dragImage(title: title, icon: dragIcon)
-        let origin = convert(event.locationInWindow, from: nil)
-        // What follows the pointer is drawn by a floating preview, which can grow into a small
-        // window of the tab and back; the system's drag image is left empty.
-        let floating = TabDragPreview(tab: image, window: dragPreview?().map { Self.miniWindow(content: $0, title: title, icon: dragIcon) })
-        floating.show(at: NSEvent.mouseLocation)
-        dragPreviewWindow = floating
-        dragItem.setDraggingFrame(NSRect(x: origin.x - image.size.width / 2, y: origin.y - image.size.height / 2, width: image.size.width, height: image.size.height),
-                                  contents: NSImage(size: image.size))
-        let session = beginDraggingSession(with: [dragItem], event: event, source: self)
-        // AppKit would slide the image back to where the session began, which is already below
-        // the bar (a drag becomes a tear-out only once it leaves the strip), so it went toward
-        // the content. The return is drawn below instead, into the tab's own slot.
-        session.animatesToStartingPositionsOnCancelOrFail = false
-        tearImage = image
-    }
-
-    private var tearImage: NSImage?
-    private var dragPreviewWindow: TabDragPreview?
-
-    /// Set by the owner: what the tab shows, for the small window it becomes once dragged out.
-    var dragPreview: (() -> NSImage?)?
-
-    /// The tab as its own small window: a title bar with its icon and name over its content,
-    /// cropped from the top to a window's proportions.
-    static func miniWindow(content: NSImage, title: String, icon: NSImage?, width: CGFloat = 400) -> NSImage {
-        let bar: CGFloat = 26
-        let aspect = min(0.78, max(0.5, content.size.height / max(1, content.size.width)))
-        let size = NSSize(width: width, height: (width * aspect).rounded() + bar)
-        return NSImage(size: size, flipped: false) { rect in
-            let shape = NSBezierPath(roundedRect: rect, xRadius: DS.Radius.surface, yRadius: DS.Radius.surface)
-            shape.addClip()
-            DS.Color.raised.setFill()
-            rect.fill()
-            // The content, scaled to the width and cut from its top.
-            let scale = rect.width / max(1, content.size.width)
-            let body = NSRect(x: 0, y: 0, width: rect.width, height: rect.height - bar)
-            let sourceHeight = body.height / scale
-            content.draw(in: body, from: NSRect(x: 0, y: content.size.height - sourceHeight, width: content.size.width, height: sourceHeight),
-                         operation: .sourceOver, fraction: 1)
-            DS.Color.hairline.setFill()
-            NSRect(x: 0, y: body.maxY, width: rect.width, height: 1).fill()
-            for offset in 0..<3 {
-                NSColor.tertiaryLabelColor.setFill()
-                NSBezierPath(ovalIn: NSRect(x: 12 + CGFloat(offset) * 14, y: rect.maxY - bar / 2 - 4, width: 8, height: 8)).fill()
-            }
-            let font = DS.Text.caption(.medium)
-            let label = title as NSString
-            let textSize = label.size(withAttributes: [.font: font])
-            var x = (rect.width - textSize.width - (icon == nil ? 0 : 20)) / 2
-            if let icon {
-                icon.draw(in: NSRect(x: x, y: rect.maxY - bar / 2 - 7, width: 14, height: 14))
-                x += 20
-            }
-            label.draw(at: NSPoint(x: x, y: rect.maxY - bar / 2 - textSize.height / 2), withAttributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
-            return true
-        }
-    }
-
-    /// Out of the window it would become one: the preview grows into it; back over the window, a tab again.
-    func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
-        dragPreviewWindow?.move(to: screenPoint)
-        dragPreviewWindow?.setExpanded(!(window?.frame.contains(screenPoint) ?? true))
-    }
-
-    /// Released back in the window: a copy of the drag image glides from the pointer into this
-    /// tab's slot while the ghosted tab fades back in, so the tab is seen going home.
-    private func animateReturn(from screenPoint: NSPoint) {
-        guard let window, let content = window.contentView, let image = tearImage else { alphaValue = 1; return }
-        tearImage = nil
-        let fromWindow = window.convertPoint(fromScreen: screenPoint)
-        let from = content.convert(fromWindow, from: nil)
-        let slot = convert(bounds, to: content)
-        let ghost = NSImageView(frame: NSRect(x: from.x - image.size.width / 2, y: from.y - image.size.height / 2,
-                                              width: image.size.width, height: image.size.height))
-        ghost.image = image
-        ghost.imageScaling = .scaleAxesIndependently
-        content.addSubview(ghost)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.22)
-            context.timingFunction = DS.Motion.curve
-            ghost.animator().frame = NSRect(x: slot.midX - image.size.width / 2, y: slot.midY - image.size.height / 2,
-                                            width: image.size.width, height: image.size.height)
-            ghost.animator().alphaValue = 0
-            animator().alphaValue = 1
-        } completionHandler: {
-            ghost.removeFromSuperview()
-        }
-    }
-
-    /// Set by the owner — the file's own icon, or Run's terminal glyph — for the drag image.
-    var dragIcon: NSImage?
-
-    /// The tab as it would look alone: a capsule with the file's icon and name.
-    static func dragImage(title: String, icon: NSImage?) -> NSImage {
-        let font = DS.Text.body(.medium)
-        let textSize = (title as NSString).size(withAttributes: [.font: font])
-        let size = NSSize(width: ceil(textSize.width) + (icon == nil ? 28 : 50), height: 30)
-        return NSImage(size: size, flipped: false) { rect in
-            let capsule = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: rect.height / 2, yRadius: rect.height / 2)
-            NSColor.windowBackgroundColor.withAlphaComponent(0.96).setFill()
-            capsule.fill()
-            NSColor.separatorColor.setStroke()
-            capsule.stroke()
-            var x: CGFloat = 14
-            if let icon {
-                // A symbol (Run's terminal glyph) is a template: tint it, or it draws black in dark.
-                let glyph = icon.isTemplate ? NSImage(size: icon.size, flipped: false) { r in
-                    icon.draw(in: r); NSColor.labelColor.set(); r.fill(using: .sourceAtop); return true
-                } : icon
-                glyph.draw(in: NSRect(x: x, y: (rect.height - 16) / 2, width: 16, height: 16))
-                x += 22
-            }
-            (title as NSString).draw(at: NSPoint(x: x, y: (rect.height - textSize.height) / 2), withAttributes: [.font: font, .foregroundColor: NSColor.labelColor])
-            return true
-        }
-    }
-
-    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        .move
-    }
-
-    /// Released outside the window: the tab becomes its own window there. Back inside: it
-    /// returns to its slot.
-    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-        isTearingOut = false
-        isTearArmed = false
-        didDrag = false
-        dragOrigin = nil
-        if !isHovered { window?.isMovable = true }
-        let floating = dragPreviewWindow
-        dragPreviewWindow = nil
-        guard let window, !window.frame.contains(screenPoint) else {
-            floating?.close()
-            animateReturn(from: screenPoint)
-            return
-        }
-        alphaValue = 1
-        tearImage = nil
-        floating?.fadeOut()
-        onTearOut?(screenPoint)
-    }
-
-    // Hand-drawn view — invisible to accessibility without saying what it is ourselves.
-    // A tab is a radio button inside its strip's tab group, and must announce whether it's the
-    // selected one.
-    override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityRole() -> NSAccessibility.Role? { .radioButton }
-    override func accessibilityLabel() -> String? { detail.isEmpty ? title : "\(title), \(detail)" }
-    override func accessibilityValue() -> Any? { isActive ? 1 : 0 }
-    override func accessibilityPerformPress() -> Bool {
-        onSelect?(index)
-        return true
-    }
-}
-
-/// What follows the pointer while a tab is dragged out: the tab, or, once it's out of its
-/// window, a small window of it; it grows and shrinks between the two around the pointer.
-@MainActor
-final class TabDragPreview {
-    private let panel: NSPanel
-    private let card = NSView()
-    private let tabView = NSImageView()
-    private let windowView = NSImageView()
-    private let tabSize: NSSize
-    private let windowSize: NSSize?
-    private(set) var isExpanded = false
-    private static let shadowRadius: CGFloat = 16
-    private static let shadowDrop: CGFloat = 6
-    /// The pointer's place in the panel: over the small window's title bar.
-    private let anchor: NSPoint
-
-    init(tab: NSImage, window: NSImage?) {
-        tabSize = tab.size
-        windowSize = window?.size
-        // Room for the shadow on every side: with 20 points the panel's edge cut it off.
-        let margin = Self.shadowRadius * 2 + Self.shadowDrop
-        let size = NSSize(width: max(tab.size.width, window?.size.width ?? 0) + margin * 2, height: max(tab.size.height, window?.size.height ?? 0) + margin * 2)
-        anchor = NSPoint(x: size.width / 2, y: size.height - margin - 13)
-        panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.ignoresMouseEvents = true
-        panel.level = .popUpMenu
-        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
-        panel.isReleasedWhenClosed = false
-        let content = NSView(frame: NSRect(origin: .zero, size: size))
-        panel.contentView = content
-        card.wantsLayer = true
-        // Each image casts its own shadow, from its own shape, and fades it with itself: one
-        // shadow on the card was cast by both while they crossfaded.
-        for (imageView, image) in [(tabView, tab), (windowView, window)] {
-            imageView.image = image
-            imageView.imageScaling = .scaleAxesIndependently
-            imageView.autoresizingMask = [.width, .height]
-            imageView.wantsLayer = true
-            imageView.shadow = {
-                let shadow = NSShadow()
-                shadow.shadowColor = NSColor.black.withAlphaComponent(image === tab ? 0.22 : 0.3)
-                shadow.shadowBlurRadius = image === tab ? Self.shadowRadius / 2 : Self.shadowRadius
-                shadow.shadowOffset = NSSize(width: 0, height: image === tab ? -2 : -Self.shadowDrop)
-                return shadow
-            }()
-            card.addSubview(imageView)
-        }
-        windowView.alphaValue = 0
-        content.addSubview(card)
-        layout(expanded: false)
-    }
-
-    private func frame(expanded: Bool) -> NSRect {
-        if expanded, let windowSize {
-            return NSRect(x: anchor.x - windowSize.width / 2, y: anchor.y + 13 - windowSize.height, width: windowSize.width, height: windowSize.height)
-        }
-        return NSRect(x: anchor.x - tabSize.width / 2, y: anchor.y - tabSize.height / 2, width: tabSize.width, height: tabSize.height)
-    }
-
-    private func layout(expanded: Bool) {
-        card.frame = frame(expanded: expanded)
-        tabView.frame = card.bounds
-        windowView.frame = card.bounds
-    }
-
-    func show(at screenPoint: NSPoint) {
-        move(to: screenPoint)
-        panel.orderFrontRegardless()
-    }
-
-    func move(to screenPoint: NSPoint) {
-        panel.setFrameOrigin(NSPoint(x: (screenPoint.x - anchor.x).rounded(), y: (screenPoint.y - anchor.y).rounded()))
-    }
-
-    func setExpanded(_ expanded: Bool) {
-        guard expanded != isExpanded, windowSize != nil || !expanded else { return }
-        isExpanded = expanded
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.2)
-            context.timingFunction = DS.Motion.curve
-            card.animator().frame = frame(expanded: expanded)
-            tabView.animator().alphaValue = expanded ? 0 : 1
-            windowView.animator().alphaValue = expanded ? 1 : 0
-        }
-    }
-
-    func fadeOut() {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.15)
-            panel.animator().alphaValue = 0
-        } completionHandler: { [panel] in
-            panel.orderOut(nil)
-        }
-    }
-
-    func close() { panel.orderOut(nil) }
-
-    /// The panel as drawn, shadows included, over a backdrop (snapshots in tests).
-    func renderedForTesting(expanded: Bool, backdrop: NSColor) -> NSImage? {
-        isExpanded = expanded
-        layout(expanded: expanded)
-        tabView.alphaValue = expanded ? 0 : 1
-        windowView.alphaValue = expanded ? 1 : 0
-        guard let content = panel.contentView else { return nil }
-        // Off every screen: layers get their contents only in a window that's ordered in.
-        panel.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
-        panel.orderFrontRegardless()
-        defer { panel.orderOut(nil) }
-        content.layoutSubtreeIfNeeded()
-        content.displayIfNeeded()
-        CATransaction.flush()
-        guard let layer = content.layer else { return nil }
-        let scale: CGFloat = 2
-        let size = content.bounds.size
-        guard let context = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        context.scaleBy(x: scale, y: scale)
-        context.setFillColor(backdrop.cgColor)
-        context.fill(CGRect(origin: .zero, size: size))
-        layer.render(in: context)
-        return context.makeImage().map { NSImage(cgImage: $0, size: size) }
-    }
-}
-
-final class TabCloseButton: CircularIconButton {
-    init() {
-        super.init(diameter: 16)
-        setSymbol("xmark", pointSize: 9, weight: .bold, color: NSColor.secondaryLabelColor, accessibilityLabel: "Close Tab")
-        // Stronger than the selected tab it sits on: in dark mode the old hover (white 16 %) sat
-        // on an active tab of white 18 % and disappeared.
-        hoverBackgroundColor = DS.Color.tabCloseHover
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
-
 final class QuickOpenSearchField: NSTextField {
     var onMove: ((Int) -> Void)?
     var onConfirm: (() -> Void)?
@@ -7123,6 +6418,7 @@ extension MakeWorkspaceViewController {
     /// Whether the language server has `url` open, and at which version (nil: not open).
     func languageServerVersionForTesting(_ url: URL) -> Int? { lspManager?.versionForTesting(url) }
     var activeTabURLForTesting: URL? { activeTabIndex.map { openTabs[$0].url } }
+    var openTabURLsForTesting: [URL] { openTabs.map(\.url) }
     var sheetViewForTesting: SheetView { sheetView }
     /// As a batch of file events naming every open tab would.
     func reconcileWithDiskForTesting() { for index in openTabs.indices { reconcileTabWithDisk(index) } }

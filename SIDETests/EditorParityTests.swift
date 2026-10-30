@@ -334,10 +334,11 @@ final class EditorParityTests: XCTestCase {
         XCTAssertNotNil(make.tabPreviewContent(1), "text in the background")
 
         if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] {
+            let size = TabDragOverlay.cardSize(for: window.frame.size, outside: true)
             for (index, name) in [(2, "drag-window-text.png"), (0, "drag-window-sheet.png"), (1, "drag-window-background.png")] {
                 let url = make.activeTabURLForTesting!
-                let content = make.tabPreviewContent(index)!
-                let image = TabChipView.miniWindow(content: content, title: index == 2 ? url.lastPathComponent : "tab", icon: FileIcon.image(for: url, isDirectory: false))
+                let image = TabChipView.miniWindow(content: make.tabPreviewContent(index)!, title: index == 2 ? url.lastPathComponent : "tab",
+                                                   icon: FileIcon.image(for: url, isDirectory: false), size: size)
                 let out = MakeWorkspaceViewController.rendered(NSSize(width: image.size.width + 40, height: image.size.height + 40), appearance: make.view.effectiveAppearance) {
                     NSColor.windowBackgroundColor.setFill()
                     NSRect(x: 0, y: 0, width: image.size.width + 40, height: image.size.height + 40).fill()
@@ -346,17 +347,82 @@ final class EditorParityTests: XCTestCase {
                 try? NSBitmapImageRep(data: out.tiffRepresentation!)?.representation(using: .png, properties: [:])?
                     .write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
             }
-            // What follows the pointer, both shapes, with their shadows.
-            let url = make.activeTabURLForTesting!
-            let icon = FileIcon.image(for: url, isDirectory: false)
-            let window = TabChipView.miniWindow(content: make.tabPreviewContent(2)!, title: url.lastPathComponent, icon: icon)
-            let preview = TabDragPreview(tab: TabChipView.dragImage(title: url.lastPathComponent, icon: icon), window: window)
-            for (expanded, name) in [(false, "drag-preview-tab.png"), (true, "drag-preview-window.png")] {
-                let image = preview.renderedForTesting(expanded: expanded, backdrop: .white)!
-                try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?
-                    .write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
-            }
         }
+    }
+
+    private func mouse(_ type: NSEvent.EventType, _ point: NSPoint, clicks: Int = 1) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                           windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: clicks, pressure: 1)!
+    }
+
+    /// Direction 03 §4.2: a tab lifts after 3 pt in any direction, follows the pointer along the
+    /// strip as its neighbours make way, stretches across the strip's edge, tears into a big card
+    /// past it, comes back a chip over the strip, and sets down where it's dropped.
+    func testATabLiftsReordersTearsIntoACardAndSetsDown() throws {
+        for name in ["a.swift", "b.swift", "c.swift"] { _ = try open(name, "let \(name.first!) = 1\n") }
+        let strip = make.tabStripForTesting
+        make.view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(strip.chips.map(\.title), ["a.swift", "b.swift", "c.swift"])
+        let chip = strip.chips[0]
+        let start = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
+        chip.mouseDown(with: mouse(.leftMouseDown, start))
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 2)))
+        XCTAssertEqual(chip.phase, .pressed, "2 pt isn't a drag")
+        // Straight down, inside the strip's band: lifted, and stretching, not torn.
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 10)))
+        XCTAssertEqual(chip.phase, .lifted, "a pull straight down lifts it too")
+        let overlay = try XCTUnwrap(chip.overlayForTesting)
+        let held = overlay.cardFrameForTesting
+        XCTAssertLessThan(held.midY, window.convertPoint(toScreen: start).y, "it stretches toward the pointer")
+        XCTAssertGreaterThan(held.midY, window.convertPoint(toScreen: start).y - 12, "but never further than the stretch")
+
+        // Along the strip past the third tab: it takes the last place.
+        let third = strip.chips[2].convert(NSPoint(x: strip.chips[2].bounds.maxX - 2, y: 0), to: nil)
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: third.x, y: start.y)))
+        XCTAssertEqual(strip.chips.map(\.title), ["b.swift", "c.swift", "a.swift"])
+        XCTAssertEqual(make.openTabURLsForTesting.map(\.lastPathComponent), ["b.swift", "c.swift", "a.swift"], "the model follows")
+
+        // Down past the strip: a card, the window's proportions.
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: third.x, y: start.y - 120)))
+        XCTAssertEqual(chip.phase, .torn)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        let card = overlay.cardFrameForTesting
+        XCTAssertEqual(card.size, TabDragOverlay.cardSize(for: window.frame.size, outside: false))
+        XCTAssertGreaterThanOrEqual(card.width, 420, "big, as Rex's is")
+        XCTAssertTrue(overlay.isShowingCardForTesting)
+
+        // Back over the strip: a chip again, then set down there.
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y)))
+        XCTAssertEqual(chip.phase, .lifted)
+        chip.mouseUp(with: mouse(.leftMouseUp, NSPoint(x: start.x, y: start.y)))
+        XCTAssertEqual(chip.phase, .idle)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        XCTAssertEqual(chip.alphaValue, 1, "the tab is back in its slot")
+        XCTAssertEqual(strip.chips.first?.title, "a.swift", "dropped at the front")
+        XCTAssertEqual(make.openTabURLsForTesting.map(\.lastPathComponent), ["a.swift", "b.swift", "c.swift"])
+    }
+
+    /// The drag's two looks, for the eye (SIDE_PREVIEW_SNAPSHOT): the lifted chip and the card.
+    func testTheDragLayerSnapshots() throws {
+        guard let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] else { throw XCTSkip("snapshot not asked for") }
+        _ = try open("one.swift", (1...30).map { "let value\($0) = \($0)" }.joined(separator: "\n"))
+        _ = try open("two.swift", "let two = 2\n")
+        let chip = make.tabStripForTesting.chips[1]
+        let start = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
+        chip.mouseDown(with: mouse(.leftMouseDown, start))
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x - 20, y: start.y - 6)))
+        let overlay = try XCTUnwrap(chip.overlayForTesting)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        for (name, image) in [("drag-chip.png", overlay.renderedForTesting(backdrop: .white))] {
+            try? NSBitmapImageRep(data: image!.tiffRepresentation!)?.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
+        }
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 140)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        if let image = overlay.renderedForTesting(backdrop: .white) {
+            try? NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("drag-card.png"))
+        }
+        chip.mouseUp(with: mouse(.leftMouseUp, start))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
     }
 
     /// 2026-10-23, the owner: Writer mode, Make alone, with word count, typewriter scrolling

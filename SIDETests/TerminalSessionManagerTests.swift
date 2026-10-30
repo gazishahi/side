@@ -57,4 +57,23 @@ final class TerminalSessionManagerTests: XCTestCase {
         XCTAssertTrue(manager.sessions(forTrackKey: "t").elementsEqual([a, c, b], by: ===))
         XCTAssertTrue(manager.sessions(forTrackKey: "t", holder: window).isEmpty)
     }
+
+    /// Direction 03 §4.3: a Run tab takes a name of the person's own, kept with the track's tabs,
+    /// and an empty name gives it back the automatic one.
+    func testARenamedTabKeepsItsNameAcrossAReopen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("terminals-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let manager = TerminalSessionManager(projectRoot: root) { _ in root }
+        defer { manager.teardownAll() }
+        let first = manager.makeSession(forTrackKey: "feature")
+        let second = manager.makeSession(forTrackKey: "feature")
+        manager.setSessions([first, second], forTrackKey: "feature")
+        let automatic = second.title
+        manager.rename(second, to: "dev server")
+        XCTAssertEqual(second.title, "dev server")
+        XCTAssertEqual(manager.rememberedNames(forTrackKey: "feature"), [nil, "dev server"])
+        manager.rename(second, to: nil)
+        XCTAssertEqual(second.title, automatic)
+        XCTAssertEqual(manager.rememberedNames(forTrackKey: "feature"), [], "no names, nothing kept")
+    }
 }
