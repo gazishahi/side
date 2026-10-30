@@ -369,8 +369,9 @@ final class ShellViewController: NSViewController {
     /// which §2.8 allows to move, on the one curve and gone under Reduce Motion.
     private func animatePalette(_ host: NSView, in appearing: Bool) {
         guard let layer = host.layer else { host.isHidden = !appearing; return }
-        let duration = DS.Motion.duration(appearing ? 0.28 : 0.18)
-        guard duration > 0 else { host.isHidden = !appearing; return }
+        // Out of the bar on the smooth spring, back in on the snappy one.
+        let spring = appearing ? DS.Motion.smooth : DS.Motion.snappy
+        guard !DS.Motion.reduceMotion else { host.isHidden = !appearing; return }
         // It grows out of the stage bar — the collapsed state *is* the bar's rectangle — so the
         // palette reads as the bar opening up rather than something zooming in from a corner.
         // Layer-backed NSViews transform about their origin.
@@ -382,13 +383,19 @@ final class ShellViewController: NSViewController {
         let transform = CABasicAnimation(keyPath: "transform")
         transform.fromValue = appearing ? collapsed : CATransform3DIdentity
         transform.toValue = appearing ? CATransform3DIdentity : collapsed
+        transform.duration = spring.duration
+        transform.timingFunction = spring.curve
+        // Opacity never springs: its own fade, inside the group's time.
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = appearing ? 0 : 1
         fade.toValue = appearing ? 1 : 0
+        fade.duration = DS.Motion.fadeDuration
+        fade.timingFunction = DS.Motion.fadeCurve
+        if !appearing { fade.beginTime = spring.duration - DS.Motion.fadeDuration }
+        fade.fillMode = .both
         let group = CAAnimationGroup()
         group.animations = [transform, fade]
-        group.duration = duration
-        group.timingFunction = DS.Motion.curve
+        group.duration = spring.duration
         group.fillMode = .forwards
         group.isRemovedOnCompletion = false
         CATransaction.begin()
@@ -785,6 +792,8 @@ final class ShellViewController: NSViewController {
         if lastAttention.contains(stage) { dismissedAttention.insert(stage) }
         refreshStageControl()
 
+        // Stages are places, not pages: the content crossfades, nothing slides (Direction 03 §2.3).
+        if !children.isEmpty { DS.Motion.crossfade(container) }
         for child in children {
             child.view.removeFromSuperview()
             child.removeFromParent()

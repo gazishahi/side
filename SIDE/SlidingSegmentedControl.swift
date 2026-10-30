@@ -2,7 +2,7 @@ import AppKit
 import Heron
 
 /// A segmented control whose selection *slides*: the thumb moves between segments on
-/// `DS.Motion.curve` instead of the stock control's instant swap. Shared by Think's session
+/// the snappy spring instead of the stock control's instant swap. Shared by Think's session
 /// popover (glass thumb) and the window's stage control (`overlay` thumb, Direction 02 §3.6).
 ///
 /// Built from real subviews rather than `NSSegmentedControl` because the stock control exposes
@@ -191,12 +191,9 @@ final class SlidingSegmentedControl: NSView {
             thumbContainer.subviews.first?.frame = thumbContainer.bounds
             return
         }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.2)
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
+        DS.Motion.animate(DS.Motion.snappy, crossfading: self, {
             thumbContainer.animator().frame = thumbFrame(for: index)
-        }
+        })
     }
 
     private func refreshTitles() {

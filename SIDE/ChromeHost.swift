@@ -509,11 +509,7 @@ final class TopRowBackdrop: NSView {
         guard on != frosted else { return }
         frosted = on
         guard animated else { alphaValue = on ? 1 : 0; return }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.15)
-            context.timingFunction = DS.Motion.curve
-            animator().alphaValue = on ? 1 : 0
-        }
+        DS.Motion.fade { animator().alphaValue = on ? 1 : 0 }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }

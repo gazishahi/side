@@ -143,16 +143,15 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         refreshGitStatus()
         revealCurrentFile()
         installDismissMonitors()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.24)
-            context.timingFunction = DS.Motion.curve
+        // In from its edge on the smooth spring; its opacity on the fade, which never springs.
+        DS.Motion.fade { panel.animator().alphaValue = 1 }
+        DS.Motion.animate(DS.Motion.smooth, {
             panel.animator().setFrame(target, display: true)
-            panel.animator().alphaValue = 1
-        } completionHandler: { [weak self] in
+        }, completion: { [weak self] in
             guard let self, self.isShown else { return }
             self.panel.makeKey()
             self.panel.makeFirstResponder(self.outline)
-        }
+        })
     }
 
     func hide() {
@@ -160,17 +159,16 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         guard isShown else { return }
         isShown = false
         let end = panel.frame.offsetBy(dx: Side.preferred == .left ? -20 : 20, dy: 0)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.16)
-            context.timingFunction = DS.Motion.curve
+        // Out the way it came, quicker: leaving shouldn't hold the eye.
+        DS.Motion.animate(DS.Motion.snappy, {
             panel.animator().setFrame(end, display: true)
-            panel.animator().alphaValue = 0
-        } completionHandler: { [weak self] in
+        })
+        DS.Motion.fade({ panel.animator().alphaValue = 0 }, completion: { [weak self] in
             guard let self, !self.isShown else { return }
             self.hostWindow?.removeChildWindow(self.panel)
             self.panel.orderOut(nil)
             self.panel.alphaValue = 1
-        }
+        })
         onHidden?()
     }
 
@@ -323,11 +321,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         let frame = window.frame
         var target = panel.frame
         target.origin.x = Side.preferred == .left ? frame.minX + 10 : frame.maxX - Self.width - 10
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.24)
-            context.timingFunction = DS.Motion.curve
-            panel.animator().setFrame(target, display: true)
-        }
+        DS.Motion.animate(DS.Motion.smooth, { panel.animator().setFrame(target, display: true) })
     }
 
     override init() {

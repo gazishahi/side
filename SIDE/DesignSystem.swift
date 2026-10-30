@@ -403,18 +403,11 @@ enum DS {
         return effect
     }
 
-    /// One curve, few uses (Direction 02 §2.8). Every animation in the app takes its timing from
-    /// here, and every duration passes through `duration(_:)` so Reduce Motion is honoured in one
-    /// place rather than forgotten in thirty.
-    ///
-    /// Decision 2026-09-04 (option B): two named exceptions run on this curve and this duration
-    /// helper — Promote's single settle on release, and streaming bubble growth, which is feedback
-    /// on live content rather than layout the user waits on. Nothing else is exempt.
+    /// Motion (Direction 03 §2): two springs and a fade, and nothing else. Movement goes on
+    /// `snappy` or `smooth` through `animate`, opacity on `fade`, and Reduce Motion is consulted
+    /// here alone. The old single curve and its duration helper are gone (step 4, 2026-10-31):
+    /// every animation in the app now takes one of these three.
     enum Motion {
-        /// The system default spring, expressed as a timing curve for `NSAnimationContext`:
-        /// response 0.30, damping 0.86 — the same feel macOS 26 uses for its own controls.
-        static var curve: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.2, 0.85, 0.25, 1.0) }
-
         /// A spring by feel (Direction 03 §2.2): `response` is how quickly it gets there, `damping`
         /// how much it gives. Below about 0.85 it visibly overshoots and settles, which is the
         /// fluid feel Side aims for; at 0.88 and up it reads as a plain ease-out.
@@ -518,11 +511,21 @@ enum DS {
         /// The only place Reduce Motion is consulted. Zero means "just set the final state".
         static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
-        static func duration(_ base: TimeInterval) -> TimeInterval { reduceMotion ? 0 : base }
+        /// What `view` shows next replaces what it shows now in a crossfade: for a change of
+        /// content that isn't a change of place (a stage switch). Stays under Reduce Motion,
+        /// which is about movement.
+        static func crossfade(_ view: NSView) {
+            view.wantsLayer = true
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = fadeDuration
+            fade.timingFunction = fadeCurve
+            view.layer?.add(fade, forKey: "dsCrossfade")
+        }
 
-        /// The standard arrival: rise, fade, slight scale — Think's bubbles set the reference
-        /// feel, everything else that appears reuses it. Purely a layer animation over the
-        /// view's settled Auto Layout position, so it can't fight layout.
+        /// The standard arrival: rise and a slight scale on the smooth spring, and a fade, which
+        /// never springs. Think's bubbles set the reference feel. Purely a layer animation over
+        /// the view's settled Auto Layout position, so it can't fight layout.
         static func appear(_ view: NSView, distance: CGFloat = 16) {
             guard !reduceMotion else { return }
             view.wantsLayer = true
@@ -530,16 +533,22 @@ enum DS {
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = 0
             fade.toValue = 1
+            fade.duration = fadeDuration
+            fade.timingFunction = fadeCurve
+            fade.fillMode = .backwards
             let rise = CABasicAnimation(keyPath: "transform.translation.y")
             rise.fromValue = distance
             rise.toValue = 0
             let scale = CABasicAnimation(keyPath: "transform.scale")
             scale.fromValue = 0.96
             scale.toValue = 1
+            for move in [rise, scale] {
+                move.duration = smooth.duration
+                move.timingFunction = smooth.curve
+            }
             let group = CAAnimationGroup()
             group.animations = [fade, rise, scale]
-            group.duration = duration(0.3)
-            group.timingFunction = curve
+            group.duration = smooth.duration
             layer.add(group, forKey: "dsAppear")
         }
     }

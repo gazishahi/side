@@ -1289,10 +1289,7 @@ final class OverlayScrollThumb: NSView {
         hideWork?.cancel()
         if isHidden || alphaValue < 1 {
             isHidden = false
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = DS.Motion.duration(0.1)
-                animator().alphaValue = 1
-            }
+            DS.Motion.fade { animator().alphaValue = 1 }
         }
         scheduleHide()
     }
@@ -1300,13 +1297,10 @@ final class OverlayScrollThumb: NSView {
     private func scheduleHide() {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.dragOffset == nil else { return }
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = DS.Motion.duration(0.3)
-                self.animator().alphaValue = 0
-            } completionHandler: { [weak self] in
+            DS.Motion.fade({ self.animator().alphaValue = 0 }, completion: { [weak self] in
                 guard let self, self.alphaValue == 0 else { return }
                 self.isHidden = true
-            }
+            })
         }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: work)

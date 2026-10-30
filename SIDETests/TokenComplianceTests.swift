@@ -39,6 +39,7 @@ final class TokenComplianceTests: XCTestCase {
             ("no font sizes outside the token file", #"ofSize:"#, "pointSize"),
             ("Reduce Motion is consulted only in the token file", "accessibilityDisplayShouldReduceMotion", nil),
             ("every animation duration goes through the motion helper", #"context\.duration = 0\."#, nil),
+            ("the old single curve and its durations are gone (Direction 03 step 4)", #"Motion\.duration\(|Motion\.curve\b"#, nil),
             ("every timing function goes through the motion helper", #"timingFunction = CAMediaTimingFunction\("#, "easeInEaseOut"),
             ("nothing is enclosed by a border (borderWidth)", #"borderWidth = 1"#, nil),
             ("nothing is enclosed by a border (bindLayerBorder)", #"bindLayerBorder\("#, nil),

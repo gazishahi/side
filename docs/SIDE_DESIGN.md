@@ -90,8 +90,9 @@ Direction 03 (2026-10-30) holds the reasoning; these are the rules.
 - **Direct manipulation is 1:1** while the pointer is down; springs start on release and carry
   the pointer's velocity (`DS.Motion.spring(_:keyPath:velocity:distance:)`).
 - **Everything is interruptible:** animations start from the presentation state.
-- **Through the helpers:** `DS.Motion.animate`, `DS.Motion.fade`, or a group timed by
-  `DS.Motion`. No bare `animator()`, no literal duration (`TokenComplianceTests`).
+- **Through the helpers:** `DS.Motion.animate`, `DS.Motion.fade`, `DS.Motion.crossfade` (a
+  change of content in place: the stage switch), or a layer animation on a spring's curve. No
+  bare `animator()`, no literal duration, no old single curve (`TokenComplianceTests`).
 - **Reduce Motion** turns movement into a 0.1 s crossfade (`animate(_:crossfading:)`); fades
   stay. Consulted only in the token file.
 - **Press:** glass controls swell and spring back (`DS.Motion.press`). **Appearance:**

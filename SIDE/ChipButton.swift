@@ -23,7 +23,7 @@ final class ChipButton: NSButton {
     /// Hover pill for bare chips; off for buttons that sit on their own glass, where a
     /// rounded-rect hover inside a capsule reads as a seam (the exact complaint).
     var showsHover = false
-    /// Option B (Direction 02 §2.8): release normally returns straight to rest on `DS.Motion.curve`.
+    /// Release normally returns straight to rest on the snappy spring (`DS.Motion.press`).
     /// The one control allowed a ceremonial settle — Promote — sets this.
     var settlesOnRelease = false
     private var tracking: NSTrackingArea?

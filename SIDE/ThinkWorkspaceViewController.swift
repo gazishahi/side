@@ -1278,13 +1278,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // changes) and animating a no-op layout pass would fight other in-flight animations.
         let labelChanged = sessionPill.title != " \(title) "
         if labelChanged, view.window != nil {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = DS.Motion.duration(0.22)
-                context.timingFunction = DS.Motion.curve
-                context.allowsImplicitAnimation = true
+            DS.Motion.animate(DS.Motion.smooth, {
                 sessionPill.setLabel(title, tint: tint)
                 view.layoutSubtreeIfNeeded()
-            }
+            })
         } else {
             sessionPill.setLabel(title, tint: tint)
         }
@@ -1742,17 +1739,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             let sizeBefore = bubble.bodySize
             bubble.setBody(text, streaming: true)
             guard bubble.bodySize != sizeBefore else { return }
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = DS.Motion.duration(0.14)
-                context.timingFunction = DS.Motion.curve
-                context.allowsImplicitAnimation = true
+            DS.Motion.animate(DS.Motion.snappy, {
                 // The whole transcript's layout, not just the bubble's subtree — the rows below
                 // have to glide down in the same animation as the bubble's growth.
                 self.transcriptContainer.layoutSubtreeIfNeeded()
                 if wasAtBottom {
                     clip.animator().setBoundsOrigin(NSPoint(x: 0, y: self.bottomScrollOrigin()))
                 }
-            }
+            })
             if wasAtBottom { transcriptScroll.reflectScrolledClipView(clip) }
             return  // scrollToBottom below would snap; the animated follow above replaces it.
         case .proposal(let presentation):
@@ -2817,23 +2811,18 @@ final class WorkGroupView: NSView {
         if expanded { buildOrReleaseLazyLines() }
         onToggle?(expanded)
         NSAccessibility.post(element: headerRow, notification: .valueChanged)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.2)
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
+        DS.Motion.animate(DS.Motion.snappy, {
             // Clockwise: on macOS a layer's positive rotation is counter-clockwise, so pointing
             // a right-facing chevron *down* is a negative angle. The first version used +90 and
             // pointed it up.
             chevron.layer?.transform = CATransform3DMakeRotation(expanded ? -.pi / 2 : 0, 0, 0, 1)
             content.isHidden = !expanded
             enclosingScrollView?.documentView?.layoutSubtreeIfNeeded()
-        } completionHandler: { [weak self] in
+        }, completion: { [weak self] in
             // Closed: its lines go once they're out of sight.
-            MainActor.assumeIsolated {
-                guard let self, !self.expanded else { return }
-                self.buildOrReleaseLazyLines()
-            }
-        }
+            guard let self, !self.expanded else { return }
+            self.buildOrReleaseLazyLines()
+        })
     }
 }
 
@@ -3023,34 +3012,22 @@ private final class BubbleRowView: NSView {
         // Quick confirmation: the icon crossfades to a green check, then back — the "it worked"
         // beat every copy affordance owes the user.
         let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.12)
-            copyButton.animator().alphaValue = 0
-        } completionHandler: { [weak self] in
+        DS.Motion.fade({ copyButton.animator().alphaValue = 0 }, completion: { [weak self] in
             guard let self else { return }
             self.copyButton.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied")?.withSymbolConfiguration(config)
             self.copyButton.contentTintColor = .systemGreen
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = DS.Motion.duration(0.12)
-                self.copyButton.animator().alphaValue = 1
-            }
+            DS.Motion.fade { self.copyButton.animator().alphaValue = 1 }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak self] in
                 guard let self else { return }
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = DS.Motion.duration(0.15)
-                    self.copyButton.animator().alphaValue = 0
-                } completionHandler: { [weak self] in
+                DS.Motion.fade({ self.copyButton.animator().alphaValue = 0 }, completion: { [weak self] in
                     guard let self else { return }
                     let normalConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
                     self.copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")?.withSymbolConfiguration(normalConfig)
                     self.copyButton.contentTintColor = .tertiaryLabelColor
-                    NSAnimationContext.runAnimationGroup { context in
-                        context.duration = DS.Motion.duration(0.15)
-                        self.copyButton.animator().alphaValue = 1
-                    }
-                }
+                    DS.Motion.fade { self.copyButton.animator().alphaValue = 1 }
+                })
             }
-        }
+        })
     }
 }
 
@@ -4210,10 +4187,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         }
         // The object leaves, then the space closes — a short fade first, so the collapse never
         // shows a band of empty strip where the chip just was.
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = DS.Motion.duration(0.12)
-            chip.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        DS.Motion.fade({ chip.animator().alphaValue = 0 }, completion: { [weak self] in
             chip.removeFromSuperview()
             self?.updateStripSpace(animated: true)
         })
@@ -4230,14 +4204,11 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             stripTopConstraint.constant = targetTop
             return
         }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = DS.Motion.duration(0.18)
-            context.timingFunction = DS.Motion.curve
-            context.allowsImplicitAnimation = true
+        DS.Motion.animate(DS.Motion.snappy, {
             stripHeightConstraint.constant = targetHeight
             stripTopConstraint.constant = targetTop
             superview?.layoutSubtreeIfNeeded()
-        }
+        })
     }
 
     /// Longest side capped at 1568px (the API's documented sweet spot — anything bigger is
