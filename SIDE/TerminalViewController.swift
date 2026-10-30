@@ -33,6 +33,70 @@ final class SideTerminalView: LocalProcessTerminalView {
     }
     private static let voiceOver = VoiceOverState()
 
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL, .png, .tiff])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // MARK: Drops
+
+    /// Files dropped on the terminal type their paths, escaped for the shell, as other terminals
+    /// do: it's how Claude Code takes a dragged image (the owner, 2026-10-29). A picture with no
+    /// file behind it (a browser's, a screenshot's thumbnail) is saved to a temporary file first.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        Self.canDrop(sender.draggingPasteboard) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let paths = Self.droppedPaths(sender.draggingPasteboard)
+        guard !paths.isEmpty else { return false }
+        window?.makeFirstResponder(self)
+        paste(text: paths.map(Self.shellEscaped).joined(separator: " ") + " ")
+        return true
+    }
+
+    /// As a paste: bracketed when the program asked for it, so it arrives as one paste.
+    func paste(text: String) {
+        if terminal.bracketedPasteMode {
+            send(txt: "\u{1B}[200~" + text + "\u{1B}[201~")
+        } else {
+            send(txt: text)
+        }
+    }
+
+    static func canDrop(_ pasteboard: NSPasteboard) -> Bool {
+        pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+            || pasteboard.availableType(from: [.png, .tiff]) != nil
+    }
+
+    static func droppedPaths(_ pasteboard: NSPasteboard) -> [String] {
+        let files = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        if !files.isEmpty { return files.map(\.path) }
+        guard let type = pasteboard.availableType(from: [.png, .tiff]), let data = pasteboard.data(forType: type) else { return [] }
+        let png = type == .png ? data : NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:])
+        guard let png else { return [] }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Side Drops", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("Image \(Self.dropStamp.string(from: Date())).png")
+        guard (try? png.write(to: file)) != nil else { return [] }
+        return [file.path]
+    }
+
+    private static let dropStamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return formatter
+    }()
+
+    /// A backslash before each character the shell would read as syntax, as Terminal and iTerm
+    /// escape a dropped path.
+    static func shellEscaped(_ path: String) -> String {
+        let special = Set(" \t\n\\'\"`$&*()[]{}<>|;!?#~=%^")
+        return String(path.flatMap { special.contains($0) ? ["\\", $0] : [$0] })
+    }
+
     override func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         if onFileLinkRequested?(link) == true { return }
         super.requestOpenLink(source: source, link: link, params: params)

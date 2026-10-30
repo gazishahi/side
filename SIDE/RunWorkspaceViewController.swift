@@ -30,8 +30,6 @@ final class RunWorkspaceViewController: NSViewController {
     /// was the prompt itself (owner, 2026-09-23). The sheet's own tone still runs to the edge
     /// under the bar, so the window keeps its full-bleed look without a footer seam.
     private var bottomObstruction: CGFloat = 0
-    private var terminalBottom: NSLayoutConstraint?
-    private var terminalTop: NSLayoutConstraint?
     /// The grid starts under the task/status row when it shows.
     private var terminalTopConstant: CGFloat { ChromeHost.rowHeight + 4 + (statusRowShows ? Self.taskRowHeight + 4 : 0) }
     private var statusRowShows: Bool { hasProject && displayedSession != nil }
@@ -305,14 +303,25 @@ final class RunWorkspaceViewController: NSViewController {
         container.subviews.forEach { $0.removeFromSuperview() }
     }
 
-    /// Lets go of the shown terminal without ending it — only its view leaves this window.
+    /// Lets go of the terminals without ending them — only their views leave this window.
     private func detachDisplayedSession() {
-        if let displayed = displayedSession, displayed.viewController.parent === self {
-            displayed.viewController.view.removeFromSuperview()
-            displayed.viewController.removeFromParent()
-        }
+        for key in Array(mounted.keys) { unmount(key) }
         displayedSession = nil
         terminals?.markDisplayed(nil, by: self)
+    }
+
+    /// The terminals this view has shown, kept in the container with the inactive ones hidden:
+    /// a view taken out of the window loses what it drew, and every tab switch showed a blank
+    /// terminal until it drew again (the owner, 2026-10-29).
+    private var mounted: [ObjectIdentifier: (session: TerminalSession, top: NSLayoutConstraint, bottom: NSLayoutConstraint)] = [:]
+
+    private func unmount(_ key: ObjectIdentifier) {
+        guard let entry = mounted.removeValue(forKey: key) else { return }
+        let vc = entry.session.viewController
+        if vc.parent === self {
+            vc.view.removeFromSuperview()
+            vc.removeFromParent()
+        }
     }
 
     @objc func newSession() {
@@ -436,25 +445,33 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func showActiveSession() {
         guard let index = activeSessionIndex, sessions.indices.contains(index) else { return }
-        clearContainer()
         let session = sessions[index]
         let vc = session.viewController
+        // Terminals of closed tabs, or taken by another window, are let go; placeholders go.
+        for (key, entry) in mounted where !sessions.contains(where: { $0 === entry.session }) || entry.session.viewController.parent !== self {
+            unmount(key)
+        }
+        let kept = Set(mounted.values.map { ObjectIdentifier($0.session.viewController.view) })
+        for subview in container.subviews where !kept.contains(ObjectIdentifier(subview)) { subview.removeFromSuperview() }
         // Taken from another window if it was showing there; that window shows a placeholder.
-        if vc.parent != nil { vc.view.removeFromSuperview(); vc.removeFromParent() }
+        if vc.parent != nil, vc.parent !== self { vc.view.removeFromSuperview(); vc.removeFromParent() }
         vc.onFileLinkRequested = { [weak self] link in self?.handleFileLink(link) ?? false }
         displayedSession = session
         terminals?.markDisplayed(session, by: self)
-        addChild(vc)
-        vc.view.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(vc.view)
-        let bottom = vc.view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: terminalBottomConstant)
-        terminalBottom = bottom
-        let top = vc.view.topAnchor.constraint(equalTo: container.topAnchor, constant: terminalTopConstant)
-        terminalTop = top
-        NSLayoutConstraint.activate([
-            top, vc.view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16), bottom
-        ])
+        let key = ObjectIdentifier(vc)
+        if mounted[key] == nil {
+            addChild(vc)
+            vc.view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(vc.view)
+            let bottom = vc.view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: terminalBottomConstant)
+            let top = vc.view.topAnchor.constraint(equalTo: container.topAnchor, constant: terminalTopConstant)
+            NSLayoutConstraint.activate([
+                top, vc.view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+                vc.view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16), bottom
+            ])
+            mounted[key] = (session, top, bottom)
+        }
+        for (other, entry) in mounted { entry.session.viewController.view.isHidden = other != key }
         vc.activate()
         updateStatusLine()
         reportUserCommandIfFinished()
@@ -464,7 +481,7 @@ final class RunWorkspaceViewController: NSViewController {
     /// track's worktree is flagged, and agent commands there always ask (audit D-10).
     private func updateStatusLine() {
         guard isViewLoaded else { return }
-        terminalTop?.constant = terminalTopConstant
+        for entry in mounted.values { entry.top.constant = terminalTopConstant }
         guard statusRowShows, let session = displayedSession, let terminals else { statusLine.stringValue = ""; return }
         let vc = session.viewController
         let worktree = terminals.workingDirectory(forTrackKey: trackKey).path
@@ -808,7 +825,7 @@ extension RunWorkspaceViewController: StageChromeProviding {
     /// above the bar so the prompt is never under it (2026-09-23) — see `bottomObstruction`.
     func setBottomObstruction(_ height: CGFloat) {
         bottomObstruction = height
-        terminalBottom?.constant = terminalBottomConstant
+        for entry in mounted.values { entry.bottom.constant = terminalBottomConstant }
     }
 
     func selectAdjacentTab(_ offset: Int) {

@@ -176,6 +176,7 @@ final class ShellViewController: NSViewController {
             guard track.status != .active else { self.show(stage); return }
             self.switchToTrack(track, landOn: stage, completion: { _ in })
         }
+        tracksVC.onBaseRequested = { [weak self] stage in self?.switchToBase(landOn: stage) }
         tracksVC.onCreateTrackRequested = { [weak self] completion in
             self?.confirmCloseAllUnsaved(completion: completion)
         }
@@ -543,14 +544,17 @@ final class ShellViewController: NSViewController {
         }
         let currentTrack = store.tracks.first { $0.branchName == currentTrackKey }
         var snapshot = TrackPill.Snapshot(
-            title: currentTrack.map { $0.intent.isEmpty ? $0.branchName : $0.intent } ?? "\(gitBranch ?? store.defaultBranchName()) · No track",
+            title: currentTrack.map { $0.intent.isEmpty ? $0.branchName : $0.intent } ?? "\(gitBranch ?? store.defaultBranchName()) · Base",
             state: currentTrack.map(state) ?? .idle,
-            stateName: currentTrack.map { state($0).name } ?? "No track"
+            stateName: currentTrack.map { state($0).name } ?? "Base"
         )
         snapshot.projectName = projectURL?.lastPathComponent
         snapshot.isTornOut = isTornOut
         snapshot.branch = gitBranch.map { gitDirtyCount > 0 ? "\($0) · \(gitDirtyCount) changed" : $0 }
         if current == .make, let projectURL, let currentFileURL { snapshot.filePath = humanePath(for: currentFileURL, projectURL: projectURL) }
+        // The base branch first: where every track forks from and lands, and where you work
+        // with no track.
+        snapshot.base = TrackPill.Row(key: "", title: store.defaultBranchName(), detail: "base", state: .idle, isCurrent: currentTrackKey == nil)
         for track in store.tracks where track.status != .archived {
             let rowState = state(track)
             var row = TrackPill.Row(key: track.branchName, title: track.intent.isEmpty ? track.branchName : track.intent, detail: track.branchName, state: rowState, isCurrent: track.branchName == currentTrackKey)
@@ -596,6 +600,7 @@ final class ShellViewController: NSViewController {
 
     /// Switches this window to a track without changing stage.
     func focusTrack(key: String) {
+        if key.isEmpty { switchToBase(landOn: current ?? .make); return }
         guard key != currentTrackKey, let track = trackStore?.tracks.first(where: { $0.branchName == key }) else { return }
         switchToTrack(track, landOn: current ?? .make, completion: { _ in })
     }
@@ -1373,6 +1378,36 @@ final class ShellViewController: NSViewController {
                     completion(nil)
                 }
             }
+        }
+    }
+
+    /// The file explorer belongs to Make: from another stage, Make comes forward with it open.
+    func toggleFileExplorer() {
+        guard current == .make else {
+            show(.make)
+            makeVC.showFileExplorer()
+            return
+        }
+        makeVC.toggleFileExplorer()
+    }
+
+    /// Working on the base branch itself, in the main checkout, with no track (the base row in
+    /// Tracks and the switcher). The same guard as a track switch: Make's tabs reopen there.
+    func switchToBase(landOn: Stage = .make) {
+        guard currentTrackKey != nil else { show(landOn); return }
+        confirmCloseAllUnsaved { [weak self] proceed in
+            guard let self, proceed, let store = self.trackStore else { return }
+            store.switchToBase()
+            let workingDirectory = self.workingDirectoryURL(for: nil)
+            self.focusedRoot = workingDirectory
+            self.refreshGitInfo(for: workingDirectory)
+            self.currentTrackKey = nil
+            self.makeVC.reloadForTrackSwitch(trackKey: nil, workingDirectory: workingDirectory)
+            self.runVC.reloadForTrackSwitch(trackKey: nil)
+            self.reloadProjectTasks()
+            self.thinkVC.reloadForTrackSwitch(trackKey: nil)
+            self.reviewVC.reloadForTrackSwitch(trackKey: nil, workingDirectory: workingDirectory)
+            self.show(landOn)
         }
     }
 

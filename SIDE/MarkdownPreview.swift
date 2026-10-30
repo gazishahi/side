@@ -45,7 +45,24 @@ enum MarkdownPreview {
     static let listIndent: CGFloat = 26
     static let quoteIndent: CGFloat = 20
 
-    @MainActor static func render(_ markdown: String, style: Style) -> NSAttributedString {
+    // MARK: Pictures
+
+    /// A remote picture loads only when asked (as in the editor's live mode): Side contacts no
+    /// server the person didn't. Its placeholder links here.
+    static let loadImageScheme = "side-load-image"
+    /// Remote pictures loaded this session, by address.
+    @MainActor static var remoteImages: [URL: NSImage] = [:]
+
+    /// A picture's file or address: relative paths are the Markdown file's folder's.
+    static func resolve(_ image: URL, folder: URL?) -> URL? {
+        if let scheme = image.scheme?.lowercased(), ["http", "https", "file"].contains(scheme) { return image }
+        let path = image.relativeString.removingPercentEncoding ?? image.relativeString
+        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
+        // Appended, not `relativeTo:`: a folder URL without a trailing slash resolves against its parent.
+        return folder.map { $0.appendingPathComponent(path).standardizedFileURL }
+    }
+
+    @MainActor static func render(_ markdown: String, style: Style, folder: URL? = nil) -> NSAttributedString {
         // Front matter isn't Markdown: the parser read it as a rule and run-on text. It's split
         // off and shown as a card of properties instead (2026-10-23, the owner).
         let front = frontMatter(markdown)
@@ -58,6 +75,7 @@ enum MarkdownPreview {
             return NSAttributedString(string: markdown, attributes: [.font: style.body, .foregroundColor: style.textColor])
         }
         var builder = Builder(style: style)
+        builder.folder = folder
         if let front, !front.properties.isEmpty { builder.addProperties(front.properties) }
         for run in parsed.runs {
             builder.add(String(parsed[run.range].characters), intent: run.presentationIntent,
@@ -319,6 +337,9 @@ enum MarkdownPreview {
         private var headingStart: Int?
         private var previousWasList = false
 
+        /// The Markdown file's folder, for pictures at relative paths.
+        var folder: URL?
+
         init(style: Style) { self.style = style }
 
         /// The front matter as a card: each key in a quiet column, its value beside it, a list's
@@ -528,12 +549,35 @@ enum MarkdownPreview {
                     attributes[.link] = link
                 }
             }
-            if image != nil {
-                text = text.isEmpty ? "image" : text
+            if let image {
+                if let picture = picture(image, alt: text) { return picture }
                 attributes[.foregroundColor] = NSColor.secondaryLabelColor
+                let alt = text.isEmpty ? "Image" : text
+                if let url = MarkdownPreview.resolve(image, folder: folder), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                    // Loaded on a click, never by opening the file.
+                    text = "\(alt) \u{00B7} Load from \(url.host ?? "the web")"
+                    attributes[.link] = URL(string: "\(MarkdownPreview.loadImageScheme):\(url.absoluteString)") as Any
+                } else {
+                    text = "\(alt) (not found)"
+                }
             }
             attributes[.font] = font
             return NSAttributedString(string: text, attributes: attributes)
+        }
+
+        /// A local picture, or a remote one already loaded, at its own size up to the column's
+        /// width; nil when there's nothing to show yet.
+        private func picture(_ image: URL, alt: String) -> NSAttributedString? {
+            guard let url = MarkdownPreview.resolve(image, folder: folder) else { return nil }
+            let loaded = url.isFileURL ? NSImage(contentsOf: url) : MarkdownPreview.remoteImages[url]
+            guard let loaded, loaded.size.width > 0, loaded.size.height > 0 else { return nil }
+            let scale = min(1, style.columnWidth / loaded.size.width)
+            let attachment = NSTextAttachment()
+            attachment.image = loaded
+            attachment.bounds = NSRect(x: 0, y: 0, width: (loaded.size.width * scale).rounded(), height: (loaded.size.height * scale).rounded())
+            let picture = NSMutableAttributedString(attachment: attachment)
+            if !alt.isEmpty { picture.addAttribute(.toolTip, value: alt, range: NSRange(location: 0, length: picture.length)) }
+            return picture
         }
 
         /// A code block: its own paragraphs (one per line) inset in a card, colored by Alloy's

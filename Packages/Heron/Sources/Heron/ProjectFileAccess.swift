@@ -22,8 +22,18 @@ public enum ProjectFileAccess {
     public static let ignoredDirectories: Set<String> = [
         ".git", ".build", "DerivedData", "node_modules", ".next", "Pods", "dist", "build",
         ".venv", "venv", "vendor", "Carthage", "target", "out", ".cache", "coverage",
-        "__pycache__", ".tox", ".mypy_cache", ".pytest_cache",
+        "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", ".side", ".swiftpm", ".gradle",
     ]
+
+    /// Files nobody opens: Finder's folder records. Every other dotfile is a project file
+    /// (`.env`, `.gitignore`, `.github/`), as other editors show them.
+    public static let ignoredFiles: Set<String> = [".DS_Store"]
+
+    /// Whether a directory entry is listed: dotfiles are (they were all skipped, `.env` with
+    /// them, 2026-10-29), the ignored directories and files aren't.
+    public static func isListed(name: String, isDirectory: Bool) -> Bool {
+        isDirectory ? !ignoredDirectories.contains(name) : !ignoredFiles.contains(name)
+    }
 
     /// The project's files, from the last walk when it still holds (SIDE_RFC_HERON_EFFICIENCY.md,
     /// D7): `list_files` and `search_files` walked the whole tree on every call, 400 ms in a
@@ -85,7 +95,7 @@ public enum ProjectFileAccess {
     private nonisolated static func walk(root: URL, directories: inout [(path: String, time: Int)]) -> [ScannedFile] {
         if let time = modificationTime(root.path) { directories.append((root.path, time)) }
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey]
-        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return [] }
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys), options: []) else { return [] }
         // Every spelling the enumerator might use for the root. It hands back *resolved* paths
         // when the root sits behind a symlink — /var/… is /private/var/… on macOS — and the old
         // `replacingOccurrences(of: root.path + "/")` then found nothing to replace and reported
@@ -103,9 +113,14 @@ public enum ProjectFileAccess {
         var scanned: [ScannedFile] = []
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: keys)
-            if values?.isDirectory == true && ignoredDirectories.contains(url.lastPathComponent) { enumerator.skipDescendants(); continue }
-            if values?.isDirectory == true, let time = modificationTime(url.path) { directories.append((url.path, time)) }
-            if values?.isRegularFile == true && !url.pathExtension.isEmpty {
+            let isDirectory = values?.isDirectory == true
+            guard isListed(name: url.lastPathComponent, isDirectory: isDirectory) else {
+                if isDirectory { enumerator.skipDescendants() }
+                continue
+            }
+            if isDirectory, let time = modificationTime(url.path) { directories.append((url.path, time)) }
+            // Files without an extension too: a Dockerfile, a Makefile, `.env`.
+            if values?.isRegularFile == true {
                 scanned.append(ScannedFile(url: url, relativePath: relativePath(of: url)))
             }
             if scanned.count >= maxIndexedFiles { break }

@@ -26,6 +26,28 @@ final class MarkdownPreviewTests: XCTestCase {
         XCTAssertTrue(bold?.fontDescriptor.symbolicTraits.contains(.bold) ?? false)
     }
 
+    /// 2026-10-29, the owner: the preview showed no pictures. A local one (relative to the file)
+    /// shows, fitted to the column; a remote one waits for a click; a missing one says so.
+    func testPicturesShowAndRemoteOnesWaitForAClick() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("preview-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("img"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let wide = NSImage(size: NSSize(width: 4000, height: 1000), flipped: false) { rect in NSColor.red.setFill(); rect.fill(); return true }
+        let png = NSBitmapImageRep(data: wide.tiffRepresentation!)!.representation(using: .png, properties: [:])!
+        try png.write(to: folder.appendingPathComponent("img/wide.png"))
+        let style = MarkdownPreview.Style(bodySize: 16, textColor: .labelColor, dark: false)
+        let out = MarkdownPreview.render("![A chart](img/wide.png)\n\n![Logo](https://example.com/logo.png)\n\n![Gone](nope.png)\n", style: style, folder: folder)
+        var attachment: NSTextAttachment?
+        out.enumerateAttribute(.attachment, in: NSRange(location: 0, length: out.length)) { value, _, _ in attachment = attachment ?? value as? NSTextAttachment }
+        let picture = try XCTUnwrap(attachment, "the local picture is drawn")
+        XCTAssertEqual(picture.bounds.width, style.columnWidth, "no wider than the column")
+        XCTAssertEqual(picture.bounds.height, (style.columnWidth / 4).rounded())
+        XCTAssertTrue(out.string.contains("Logo \u{00B7} Load from example.com"), out.string)
+        let linkAt = (out.string as NSString).range(of: "Load from").location
+        XCTAssertEqual((out.attribute(.link, at: linkAt, effectiveRange: nil) as? URL)?.scheme, MarkdownPreview.loadImageScheme)
+        XCTAssertTrue(out.string.contains("Gone (not found)"))
+    }
+
     func testOrderedAndNestedLists() {
         let text = render("1. first\n2. second\n   - inner\n").string
         XCTAssertTrue(text.contains("1.\tfirst"), text)

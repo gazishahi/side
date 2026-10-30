@@ -369,6 +369,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// window/stage to already be in view. Summed across every open window; two windows on the
     /// same project double-count its tracks, an acceptable imprecision for a cosmetic badge.
     /// Every window's shell — the track pill's "Other projects" section reads across them.
+    /// View › Toggle File Explorer, for the window in front, wherever its focus is.
+    @objc func toggleFileExplorer(_ sender: Any?) {
+        // The main window: with the explorer focused, the key window is its panel.
+        (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleFileExplorer()
+    }
+
     var shellViewControllers: [ShellViewController] { windows.compactMap { $0.contentViewController as? ShellViewController } }
 
     func refreshDockBadge() {

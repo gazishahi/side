@@ -584,6 +584,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // For `textView(_:clickedOnLink:at:)` — in-document `#anchor` links scroll the preview
         // instead of being handed to the OS as if they were web URLs.
         markdownPreviewView.delegate = markdownLinks
+        markdownLinks.onPictureLoaded = { [weak self] in self?.restyleMarkdownPreview() }
         markdownPreviewScroll.documentView = markdownPreviewView
         markdownPreviewScroll.hasVerticalScroller = true
         markdownPreviewScroll.backgroundColor = Self.editorBackground
@@ -1254,9 +1255,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     // MARK: - File explorer
 
 
-    @objc private func toggleFileExplorer() {
+    @objc func toggleFileExplorer() {
         guard let window = view.window else { return }
         explorer.toggle(in: window)
+    }
+
+    func showFileExplorer() {
+        guard let window = view.window, !explorer.isShown else { return }
+        explorer.show(in: window)
     }
 
     /// The explorer reports what it did to the files; Make keeps its tabs and index true to it.
@@ -2482,7 +2488,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let dark = markdownPreviewView.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let style = MarkdownPreview.Style.current(dark: dark)
         markdownPreviewView.columnWidth = style.columnWidth
-        markdownPreviewView.textStorage?.setAttributedString(MarkdownPreview.render(text, style: style))
+        markdownPreviewView.textStorage?.setAttributedString(MarkdownPreview.render(text, style: style, folder: tab.isUntitled ? nil : tab.url.deletingLastPathComponent()))
         markdownPreviewShown = (tab.id, stamp, markdownPreviewGeneration)
         // Code blocks in a language not built yet render plain; they color when it's ready.
         MarkdownPreview.prepareLanguages { [weak self] in self?.restyleMarkdownPreview() }
@@ -4854,7 +4860,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // ⇧⌘V, not ⌘M — ⌘M is the system's Minimize, which this used to shadow.
         let markdownPreview = viewMenu.addItem(withTitle: "Toggle Markdown Preview", action: #selector(toggleMarkdownPreview), keyEquivalent: "")
         Shortcuts.bind(markdownPreview, "view.markdownPreview")
-        let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(toggleFileExplorer), keyEquivalent: "")
+        // The app's, not Make's: Make is in the responder chain only while it has focus, and the
+        // explorer is a panel of its own, so with focus there, in the top row or in another stage
+        // the shortcut did nothing (2026-10-29).
+        let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(AppDelegate.toggleFileExplorer(_:)), keyEquivalent: "")
+        explorer.target = AppDelegate.shared
         Shortcuts.bind(explorer, "view.fileExplorer")
         // Folding lives in the editor (Alloy), which is in the responder chain while it has focus.
         let foldingItem = NSMenuItem(title: "Code Folding", action: nil, keyEquivalent: "")
@@ -5566,7 +5576,22 @@ private final class MarkdownPreviewLinks: NSObject, NSTextViewDelegate {
     /// these under its own scheme, and every rendered header carries its slug as a custom
     /// attribute, so resolving a click is just "find the first header run with this slug and
     /// scroll to it." Real web links return false and keep the default open-in-browser behavior.
+    /// A remote picture the person asked for arrived: the preview renders again with it.
+    var onPictureLoaded: (() -> Void)?
+
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        if let url = link as? URL, url.scheme == MarkdownPreview.loadImageScheme,
+           let address = URL(string: String(url.absoluteString.dropFirst(MarkdownPreview.loadImageScheme.count + 1))) {
+            URLSession.shared.dataTask(with: address) { [weak self] data, _, _ in
+                let image = data.flatMap(NSImage.init(data:))
+                DispatchQueue.main.async {
+                    guard let image else { NSSound.beep(); return }
+                    MarkdownPreview.remoteImages[address] = image
+                    self?.onPictureLoaded?()
+                }
+            }.resume()
+            return true
+        }
         guard let url = link as? URL, url.scheme == MarkdownRenderer.anchorScheme,
               let storage = textView.textStorage else { return false }
         let targetSlug = url.absoluteString.dropFirst(MarkdownRenderer.anchorScheme.count + 1)

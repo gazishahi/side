@@ -125,4 +125,26 @@ final class VerificationStalenessTests: XCTestCase {
             XCTAssertEqual(ReviewWorkspaceViewController.verificationStalenessCaveat(checkpoints: c.checkpoints), c.caveat, c.name)
         }
     }
+
+    /// 2026-10-29, the owner: dragging an image into Claude Code in Run did nothing. A dropped
+    /// file types its escaped path; a picture with no file is saved first.
+    @MainActor
+    func testADroppedFileOrPictureBecomesAnEscapedPath() throws {
+        XCTAssertEqual(SideTerminalView.shellEscaped("/Users/me/Screen Shot (1).png"), "/Users/me/Screen\\ Shot\\ \\(1\\).png")
+        let files = NSPasteboard(name: .init("side-drop-files-\(UUID().uuidString)"))
+        files.clearContents()
+        files.writeObjects([URL(fileURLWithPath: "/tmp/a b.png") as NSURL])
+        XCTAssertTrue(SideTerminalView.canDrop(files))
+        XCTAssertEqual(SideTerminalView.droppedPaths(files), ["/tmp/a b.png"])
+
+        let picture = NSPasteboard(name: .init("side-drop-picture-\(UUID().uuidString)"))
+        picture.clearContents()
+        let image = NSImage(size: NSSize(width: 2, height: 2), flipped: false) { rect in NSColor.blue.setFill(); rect.fill(); return true }
+        picture.setData(image.tiffRepresentation, forType: .tiff)
+        let saved = try XCTUnwrap(SideTerminalView.droppedPaths(picture).first)
+        defer { try? FileManager.default.removeItem(atPath: saved) }
+        XCTAssertTrue(saved.hasSuffix(".png"))
+        XCTAssertNotNil(NSImage(contentsOfFile: saved), "a picture Claude Code can open")
+        files.releaseGlobally(); picture.releaseGlobally()
+    }
 }

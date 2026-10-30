@@ -38,4 +38,18 @@ final class ProjectFileAccessGuardTests: XCTestCase {
             XCTAssertEqual(ProjectFileAccess.isReadable(url(path), root: root), readable, "\(readable ? "not readable" : "readable"): \(path)")
         }
     }
+
+    /// 2026-10-29, the owner: `.env` files didn't show (Zed shows them). Dotfiles and files
+    /// without an extension are the project's; `.git`, `.side` and `.DS_Store` aren't listed.
+    func testTheScanListsDotfilesAndFilesWithoutAnExtension() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("side-scan-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for path in [".env", "web/.env.local", "Dockerfile", ".github/workflows/ci.yml", "src/a.swift", ".git/HEAD", ".side/tracks.json", ".DS_Store", "node_modules/x/index.js"] {
+            let file = folder.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "x".write(to: file, atomically: true, encoding: .utf8)
+        }
+        let listed = Set(ProjectFileAccess.scan(root: folder).map(\.relativePath))
+        XCTAssertEqual(listed, [".env", "web/.env.local", "Dockerfile", ".github/workflows/ci.yml", "src/a.swift"])
+    }
 }

@@ -73,15 +73,18 @@ public final class ProjectFileIndex {
         var paths: [String] = []
         let rootPath = root.standardizedFileURL.path
         guard let enumerator = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: []
         ) else { return [] }
 
         for case let url as URL in enumerator {
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            if isDirectory {
-                if skippedDirectories.contains(url.lastPathComponent) { enumerator.skipDescendants() }
+            // The same rule as the explorer and Quick Open: dotfiles are project files.
+            guard ProjectFileAccess.isListed(name: url.lastPathComponent, isDirectory: isDirectory),
+                  !(isDirectory && skippedDirectories.contains(url.lastPathComponent)) else {
+                if isDirectory { enumerator.skipDescendants() }
                 continue
             }
+            if isDirectory { continue }
             let path = url.standardizedFileURL.path
             guard path.hasPrefix(rootPath + "/") else { continue }
             paths.append(String(path.dropFirst(rootPath.count + 1)))

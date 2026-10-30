@@ -459,7 +459,9 @@ final class TrackStore {
         // Snapshotted here, on the main actor, and captured by value. Reading `self.tracks`
         // inside the background block — as this used to — was a genuine unsynchronized read of
         // state the main actor mutates.
-        let trackedNames = Set(tracks.map(\.branchName))
+        // The default branch is the base row, not a branch to adopt: adopting it was undone by
+        // the next reconcile, and a track then named after it became `main-2` (2026-10-29).
+        let trackedNames = Set(tracks.map(\.branchName)).union([defaultBranchName()])
         let cwd = projectRoot.path
         let runGit = self.runGit
         DispatchQueue.global(qos: .userInitiated).async {
@@ -548,6 +550,17 @@ final class TrackStore {
                 }
             }
         }
+    }
+
+    /// Back to the base branch: the main checkout, with no track active. The tracks are set
+    /// down where they were; nothing is checked out, so there's nothing to wait on.
+    func switchToBase() {
+        epoch += 1
+        demoteActiveTrack()
+        untrackedBranch = nil
+        untrackedBranchWorkingDirectoryPath = nil
+        save()
+        notifyChange()
     }
 
     private func markActive(_ track: Track) {

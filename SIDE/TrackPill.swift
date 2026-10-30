@@ -21,7 +21,9 @@ final class TrackPill: NSView {
     }
 
     struct Snapshot: Equatable {
-        var title: String                 // intent, or "<default branch> · No track"
+        var title: String                 // intent, or "<default branch> · Base"
+        /// The base branch (key ""): heads the recent tracks, so working on it is one pick away.
+        var base: Row?
         var state: DS.StatusState
         var stateName: String
         var projectName: String?
@@ -344,7 +346,7 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
         }
         let recent = { (rows: [TrackPill.Row]) in rows.sorted { ($0.lastActive ?? .distantPast) > ($1.lastActive ?? .distantPast) } }
         let groups: [(String, [TrackPill.Row])] = [
-            ("Needs you", snapshot.needsYou), ("Recent", recent(snapshot.active)), ("Parked", recent(snapshot.parked)),
+            ("Needs you", snapshot.needsYou), ("Recent", (snapshot.base.map { [$0] } ?? []) + recent(snapshot.active)), ("Parked", recent(snapshot.parked)),
             ("Other projects", snapshot.otherProjects),
         ]
         for (title, rows) in groups {
@@ -355,7 +357,7 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
         }
         let exact = groups.flatMap(\.1).contains { $0.title.compare(query, options: .caseInsensitive) == .orderedSame }
         if !query.isEmpty, !exact { addRow(.newTrack(query)) }
-        if items.isEmpty {
+        if !items.contains(where: { if case .track(let row) = $0 { return !row.key.isEmpty } else { return true } }) {
             let empty = NSTextField(labelWithString: "No tracks yet. Type what you're working on to start one.")
             empty.font = DS.Text.caption()
             empty.textColor = .tertiaryLabelColor

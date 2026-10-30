@@ -70,6 +70,30 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("b.txt").path))
     }
 
+    // MARK: - 2026-10-29: main is the base row, not a branch to adopt
+
+    /// The owner adopted main as a track and got `main-2`: adopting the default branch was undone
+    /// by the next reconcile. It isn't offered now, and working on it is the base row's switch.
+    @MainActor
+    func testTheDefaultBranchIsTheBaseNotABranchToAdopt() throws {
+        makeRepo()
+        git(["branch", "teammate"])
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        let listed = expectation(description: "branches")
+        let branches = Captured<[String]>()
+        store.availableBranchesToAdopt { branches.value = $0; listed.fulfill() }
+        wait(for: [listed], timeout: 20)
+        XCTAssertEqual(branches.value, ["teammate"], "main is the base, not a candidate")
+
+        let created = expectation(description: "create")
+        store.createTrack(intent: "some work") { _ in created.fulfill() }
+        wait(for: [created], timeout: 20)
+        XCTAssertNotNil(store.activeTrack)
+        store.switchToBase()
+        XCTAssertNil(store.activeTrack, "on the base branch, no track is active")
+        XCTAssertEqual(store.tracks.first?.status, .waiting, "the track is set down, not lost")
+    }
+
     // MARK: - 2026-09-30 audit, H10: a first track in a repository with no commits
 
     @MainActor

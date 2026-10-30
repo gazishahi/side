@@ -98,14 +98,14 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         return loaded
     }
 
-    /// One directory, the same exclusions as Quick Open and the agent's file tools: hidden
-    /// files and the generated/vendored folders nobody browses.
+    /// One directory, the same exclusions as Quick Open and the agent's file tools: `.git`,
+    /// the generated/vendored folders nobody browses, and Finder's `.DS_Store`. Dotfiles show.
     nonisolated static func listDirectory(_ url: URL) -> [(url: URL, isDirectory: Bool)] {
         let keys: [URLResourceKey] = [.isDirectoryKey]
-        let urls = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
+        let urls = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: [])) ?? []
         return urls.compactMap { url -> (URL, Bool)? in
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            if isDirectory && ProjectFileAccess.ignoredDirectories.contains(url.lastPathComponent) { return nil }
+            guard ProjectFileAccess.isListed(name: url.lastPathComponent, isDirectory: isDirectory) else { return nil }
             return (url, isDirectory)
         }
         .sorted { a, b in
@@ -116,13 +116,19 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
 
     // MARK: Showing
 
+    /// Whether it's showing or on its way in: the panel stays visible while it slides out, and
+    /// toggling by that made a quick second press hide it again, or the slide-out's end take
+    /// away a panel just shown (2026-10-29).
+    private(set) var isShown = false
+
     func toggle(in window: NSWindow) {
-        isVisible ? hide() : show(in: window)
+        isShown ? hide() : show(in: window)
     }
 
     /// Slides in from the leading edge, under the top row and above the floating bar.
     func show(in window: NSWindow) {
         guard rootNode != nil else { return }
+        isShown = true
         hostWindow = window
         let frame = window.frame
         let top = frame.maxY - ChromeHost.rowHeight - 8
@@ -143,7 +149,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
             panel.animator().setFrame(target, display: true)
             panel.animator().alphaValue = 1
         } completionHandler: { [weak self] in
-            guard let self else { return }
+            guard let self, self.isShown else { return }
             self.panel.makeKey()
             self.panel.makeFirstResponder(self.outline)
         }
@@ -151,7 +157,8 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
 
     func hide() {
         removeDismissMonitors()
-        guard panel.isVisible else { return }
+        guard isShown else { return }
+        isShown = false
         let end = panel.frame.offsetBy(dx: Side.preferred == .left ? -20 : 20, dy: 0)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = DS.Motion.duration(0.16)
@@ -159,7 +166,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
             panel.animator().setFrame(end, display: true)
             panel.animator().alphaValue = 0
         } completionHandler: { [weak self] in
-            guard let self else { return }
+            guard let self, !self.isShown else { return }
             self.hostWindow?.removeChildWindow(self.panel)
             self.panel.orderOut(nil)
             self.panel.alphaValue = 1
@@ -169,6 +176,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
 
     func tearDown() {
         removeDismissMonitors()
+        isShown = false
         if panel.parent != nil { hostWindow?.removeChildWindow(panel) }
         panel.orderOut(nil)
     }

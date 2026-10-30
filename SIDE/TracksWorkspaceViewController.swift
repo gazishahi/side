@@ -98,6 +98,9 @@ final class TracksWorkspaceViewController: NSViewController {
     /// A verb that lands on a specific stage — Review's "Review" goes to Review, not Think.
     var onOpenStageRequested: ((Track, ShellViewController.Stage) -> Void)?
 
+    /// Work on the base branch itself, with no track (the base row).
+    var onBaseRequested: ((ShellViewController.Stage) -> Void)?
+
     /// ShellViewController resolves unsaved Make edits before letting a new track's checkout
     /// proceed — same guard `onSwitchRequested` uses, since creating a track moves `HEAD` just
     /// like switching to an existing one does.
@@ -479,6 +482,16 @@ final class TracksWorkspaceViewController: NSViewController {
             )
             contentStack.addArrangedSubview(banner)
             banner.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+        }
+
+        // The base branch heads the ledger: every track forks from it and lands in it, and
+        // with no track it's where you work. Not a track: it can't land, park or be archived.
+        if searchQuery.isEmpty, let store = trackStore {
+            let landing = store.tracks.filter { $0.parentTrackId == nil && ![.completed, .archived].contains($0.status) }.count
+            let base = BaseRowView(branch: store.defaultBranchName(), isCurrent: store.activeTrack == nil && store.untrackedBranch == nil, landingCount: landing)
+            base.onWorkOnBase = { [weak self] in self?.onBaseRequested?(.make) }
+            contentStack.addArrangedSubview(base)
+            base.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
         }
 
         let needsYou = needsYouTracks()
@@ -1672,6 +1685,105 @@ enum TrackRowVerb: Equatable {
 /// One row inside a status card: intent (primary), branch chip + relative time + agent activity
 /// (secondary), and a primary-action/kebab pair. The kebab always only appears on hover; the
 /// primary button does too *unless* it's `.review`/`.markReviewReady`, per `alwaysVisible` above.
+/// The base branch's row at the head of the ledger: its name, whether you're on it, and how many
+/// tracks land in it. Laid out as a track's row is, with one verb: work on it.
+private final class BaseRowView: NSView {
+    var onWorkOnBase: (() -> Void)?
+    private let action = NSButton(title: "", target: nil, action: nil)
+    private let isCurrent: Bool
+    private let branch: String
+    private var trackingArea: NSTrackingArea?
+
+    init(branch: String, isCurrent: Bool, landingCount: Int) {
+        self.isCurrent = isCurrent
+        self.branch = branch
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = DS.Radius.control
+
+        let name = NSTextField(labelWithString: branch)
+        name.font = DS.Text.body(.semibold)
+        name.lineBreakMode = .byTruncatingTail
+        let status = DS.StatusLabel(state: .idle, text: isCurrent ? "You\u{2019}re here" : "Base")
+        let sep = NSTextField(labelWithString: "\u{00B7}")
+        sep.font = DS.Text.caption()
+        sep.textColor = .tertiaryLabelColor
+        let meta = NSTextField(labelWithString: landingCount == 0 ? "Tracks fork from here and land here" : "\(landingCount) track\(landingCount == 1 ? "" : "s") land\(landingCount == 1 ? "s" : "") here")
+        meta.font = DS.Text.caption()
+        meta.textColor = .secondaryLabelColor
+        let metaRow = NSStackView(views: [status, sep, meta])
+        metaRow.orientation = .horizontal
+        metaRow.alignment = .centerY
+        metaRow.spacing = DS.Spacing.s
+        let text = NSStackView(views: [name, metaRow])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = DS.Spacing.xxs
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        TrackRowView.styleTextAction(action, title: "Work on \(branch)", emphasized: false)
+        action.target = self
+        action.action = #selector(workTapped)
+        action.isHidden = isCurrent
+        action.alphaValue = 0
+        action.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(text)
+        addSubview(action)
+        NSLayoutConstraint.activate([
+            text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 6),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: action.leadingAnchor, constant: -12),
+            action.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            action.centerYAnchor.constraint(equalTo: centerYAnchor),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 52),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func workTapped() { onWorkOnBase?() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        bindLayerBackground(DS.Color.raised)
+        action.animator().alphaValue = 1
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = nil
+        action.animator().alphaValue = 0
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        if event.clickCount == 2, !isCurrent { onWorkOnBase?() }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let result = super.hitTest(point) else { return nil }
+        return result === action ? result : self
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { isCurrent ? "\(branch), the base branch, current" : "\(branch), the base branch" }
+    override func accessibilityPerformPress() -> Bool {
+        guard !isCurrent else { return false }
+        onWorkOnBase?()
+        return true
+    }
+}
+
 private final class TrackRowView: NSView {
     var onVerb: ((TrackRowVerb) -> Void)?
     var onClick: (() -> Void)?
@@ -1910,7 +2022,7 @@ private final class TrackRowView: NSView {
     @objc private func handleWatchTapped() { onWatch?() }
     @objc private func handleMenuTapped() { onMenuButtonTapped?(menuButton) }
 
-    private static func styleTextAction(_ button: NSButton, title: String, emphasized: Bool) {
+    fileprivate static func styleTextAction(_ button: NSButton, title: String, emphasized: Bool) {
         button.isBordered = false
         button.attributedTitle = NSAttributedString(string: title, attributes: [
             .font: DS.Text.body(emphasized ? .semibold : .regular),
