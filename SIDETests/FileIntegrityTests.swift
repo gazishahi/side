@@ -1196,4 +1196,62 @@ final class TabStripTests: XCTestCase {
         XCTAssertEqual(renamed?.0, 1)
         XCTAssertNil(renamed?.1, "empty: back to the automatic name")
     }
+
+    /// 2026-10-31, the owner: on launch the strip didn't show which file was selected. Tabs are
+    /// restored before the strip has its size; the tint follows the chip once it's laid out.
+    func testTheTintFindsTheSelectedTabOnceTheStripIsLaidOut() throws {
+        let bar = TabStripView(frame: .zero)
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(stack)
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        strip.reload((1...3).map { TabStrip.Item(id: UUID(), title: "file \($0).swift") }, active: 2)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = bar
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor), stack.topAnchor.constraint(equalTo: bar.topAnchor),
+            stack.heightAnchor.constraint(equalToConstant: 30),
+        ])
+        bar.layoutSubtreeIfNeeded()
+        let tint = try XCTUnwrap(strip.selectionFrameForTesting, "shown")
+        XCTAssertEqual(tint.midX, strip.chips[2].frame.midX, accuracy: 1, "under the selected tab, after layout")
+        XCTAssertGreaterThan(tint.width, 80)
+    }
+
+    /// 2026-10-31, the owner: after a close, the next tab looked selected only a moment later.
+    /// The tint is one capsule; it's on the next tab from the start of the close.
+    func testTheTintMovesToTheNextTabAsTheClosedOneLeaves() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let bar = TabStripView(frame: window.contentView!.bounds)
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(stack)
+        window.contentView = bar
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor), stack.topAnchor.constraint(equalTo: bar.topAnchor),
+            stack.heightAnchor.constraint(equalToConstant: 30),
+        ])
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        strip.reload((1...3).map { TabStrip.Item(id: UUID(), title: "tab \($0)") }, active: 1)
+        let tint = try XCTUnwrap(strip.selectionFrameForTesting)
+        XCTAssertEqual(tint.midX, strip.chips[1].frame.midX, accuracy: 1, "under the selected tab")
+        var closed = false
+        // Closing the second: the third (index 1 once it's gone) is selected next.
+        strip.animateClose(at: 1, activeAfter: 1) { closed = true }
+        XCTAssertTrue(strip.chips[2].isActive, "selected from the start of the close, not its end")
+        XCTAssertFalse(strip.chips[1].isActive)
+        let deadline = Date().addingTimeInterval(2)
+        while !closed, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        XCTAssertTrue(closed)
+        let moved = try XCTUnwrap(strip.selectionFrameForTesting)
+        XCTAssertEqual(moved.midX, strip.chips[2].frame.midX, accuracy: 1, "the tint went with it")
+    }
 }

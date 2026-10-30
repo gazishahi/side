@@ -2810,7 +2810,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func finishCloseTab(id tabID: UUID) {
         guard let index = indexForTab(id: tabID) else { return }
-        tabStrip.animateClose(at: index) { [weak self] in
+        let after = TabSelection.indexAfterClosing(index, active: activeTabIndex, countBefore: openTabs.count)
+        tabStrip.animateClose(at: index, activeAfter: after) { [weak self] in
             guard let self, let index = self.indexForTab(id: tabID) else { return }
             let closedTab = self.openTabs[index]
             let wasActive = self.activeTabIndex == index

@@ -405,7 +405,8 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func closeSession(at index: Int) {
         guard sessions.indices.contains(index) else { return }
-        tabStrip.animateClose(at: index) { [weak self] in
+        let after = TabSelection.indexAfterClosing(index, active: activeSessionIndex, countBefore: sessions.count)
+        tabStrip.animateClose(at: index, activeAfter: after) { [weak self] in
             guard let self, self.sessions.indices.contains(index) else { return }
             let wasActive = self.activeSessionIndex == index
             let next = TabSelection.indexAfterClosing(index, active: self.activeSessionIndex, countBefore: self.sessions.count)

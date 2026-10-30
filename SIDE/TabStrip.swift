@@ -42,11 +42,74 @@ final class TabStrip: NSObject {
     /// A new name, or nil for the automatic one. Nil: tabs can't be renamed.
     var onRename: ((Int, String?) -> Void)?
 
+    /// The selected tab's tint: one capsule behind the chips that slides to whichever tab is
+    /// selected. Each chip drew its own, so after a close the tint appeared on the next tab only
+    /// once the closing animation had ended (the owner, 2026-10-31); now it moves as the gap
+    /// closes, and on every switch.
+    private let selection = NSView()
+    /// Held off while the selected tab is lifted out of its slot.
+    private var selectionHeld = false
+
     init(bar: TabStripView, stack: NSStackView, accessibilityLabel: String) {
         self.bar = bar
         self.stack = stack
         super.init()
         bar.accessibilityGroupLabel = accessibilityLabel
+        selection.wantsLayer = true
+        selection.bindLayerBackground(DS.Color.selectedCapsule)
+        selection.layer?.cornerRadius = TabChipView.height / 2
+        selection.layer?.shadowColor = NSColor.black.cgColor
+        selection.layer?.shadowOpacity = 0.12
+        selection.layer?.shadowRadius = 2
+        selection.layer?.shadowOffset = CGSize(width: 0, height: -0.5)
+        selection.isHidden = true
+        stack.addSubview(selection, positioned: .below, relativeTo: nil)
+    }
+
+    /// Where the tint sits: under the selected chip's capsule.
+    private func selectionFrame() -> NSRect? {
+        guard !selectionHeld, let chip = chips.first(where: \.isActive) else { return nil }
+        return chip.frame.insetBy(dx: TabChipView.flare - 2, dy: 0)
+    }
+
+    private func placeSelection() {
+        guard let frame = selectionFrame() else { selection.isHidden = true; return }
+        selection.frame = frame
+        selection.isHidden = false
+    }
+
+    /// Lays the strip out on a spring: the chips, the glass track around them (it used to
+    /// jump to its new width while the chips slid, 2026-10-31) and the tint under the selected
+    /// chip all move together.
+    private func relayout(_ spring: DS.Motion.Spring, _ changes: () -> Void = {}, completion: (@MainActor () -> Void)? = nil) {
+        isRelayingOut = true
+        DS.Motion.animate(spring, crossfading: bar, {
+            changes()
+            bar.needsLayout = true
+            bar.layoutSubtreeIfNeeded()
+            if let frame = selectionFrame() {
+                if selection.isHidden {
+                    selection.frame = frame
+                    selection.isHidden = false
+                } else {
+                    selection.animator().frame = frame
+                }
+            } else {
+                selection.isHidden = true
+            }
+        }, completion: completion)
+        isRelayingOut = false
+    }
+
+    /// Set while `relayout` moves things itself.
+    private var isRelayingOut = false
+
+    /// A chip moved or resized outside an animation of the strip's own (the first layout after
+    /// launch, a window resize): the tint follows it at once. On launch it was placed before
+    /// the strip had its size, and stayed off the selected tab.
+    func chipFrameChanged(_ chip: TabChipView) {
+        guard chip.isActive, !isRelayingOut else { return }
+        placeSelection()
     }
 
     // MARK: Items
@@ -59,8 +122,10 @@ final class TabStrip: NSObject {
             chips = []
             ids = []
             bar.accessibleTabs = []
+            selection.isHidden = true
             return
         }
+        let wasActive = chips.first(where: \.isActive)?.id
         let newIDs = items.map(\.id)
         let previous = Dictionary(uniqueKeysWithValues: zip(ids, chips))
         // One tab more than before, everything else the same: that one arrives. Anything else (a
@@ -81,12 +146,21 @@ final class TabStrip: NSObject {
         chips = next
         ids = newIDs
         bar.accessibleTabs = chips
-        if let arriving, let chip = chips.first(where: { $0.id == arriving }) { grow(chip) }
+        if let arriving, let chip = chips.first(where: { $0.id == arriving }) {
+            grow(chip)
+        } else if let wasActive, wasActive != active.flatMap({ newIDs.indices.contains($0) ? newIDs[$0] : nil }), !selection.isHidden {
+            // Another tab selected: the tint slides to it.
+            relayout(DS.Motion.snappy)
+        } else {
+            bar.layoutSubtreeIfNeeded()
+            placeSelection()
+        }
     }
 
     /// The selected tab changed, nothing else.
     func setActive(_ active: Int?) {
         for (index, chip) in chips.enumerated() { chip.isActive = index == active }
+        relayout(DS.Motion.snappy)
     }
 
     private func configure(_ chip: TabChipView, _ item: Item, index: Int, isActive: Bool) {
@@ -136,28 +210,26 @@ final class TabStrip: NSObject {
         let constraint = chip.widthAnchor.constraint(equalToConstant: 0)
         constraint.isActive = true
         chip.alphaValue = 0
-        stack.layoutSubtreeIfNeeded()
-        DS.Motion.animate(DS.Motion.smooth, crossfading: bar, {
-            constraint.animator().constant = width
-            stack.layoutSubtreeIfNeeded()
-        }, completion: {
+        bar.layoutSubtreeIfNeeded()
+        relayout(DS.Motion.smooth, { constraint.constant = width }, completion: {
             constraint.isActive = false
         })
         DS.Motion.fade { chip.animator().alphaValue = 1 }
     }
 
     /// The closing tab fades and narrows to nothing, and its neighbours close the gap, before
-    /// the owner removes it.
-    func animateClose(at index: Int, completion: @escaping @MainActor () -> Void) {
+    /// the owner removes it. `activeAfter` is the tab selected once it's gone (indexed after the
+    /// close): it takes the selection now, the tint sliding over as the gap closes.
+    func animateClose(at index: Int, activeAfter: Int?, completion: @escaping @MainActor () -> Void) {
         guard chips.indices.contains(index), chips.count > 2 else { completion(); return }
         let chip = chips[index]
+        let next = activeAfter.map { $0 >= index ? $0 + 1 : $0 }
+        for (position, each) in chips.enumerated() where each !== chip { each.isActive = position == next }
+        chip.isActive = false
         let constraint = chip.widthAnchor.constraint(equalToConstant: chip.frame.width)
         constraint.isActive = true
         DS.Motion.fade { chip.animator().alphaValue = 0 }
-        DS.Motion.animate(DS.Motion.snappy, crossfading: bar, {
-            constraint.animator().constant = 0
-            stack.layoutSubtreeIfNeeded()
-        }, completion: completion)
+        relayout(DS.Motion.snappy, { constraint.constant = 0 }, completion: completion)
     }
 
     // MARK: Drag (§4.2), called by the chip being dragged
@@ -183,8 +255,8 @@ final class TabStrip: NSObject {
         stack.removeArrangedSubview(chip)
         stack.insertArrangedSubview(chip, at: to)
         onMove?(from, to)
-        guard animated else { stack.layoutSubtreeIfNeeded(); return }
-        DS.Motion.animate(DS.Motion.snappy, crossfading: bar, { stack.layoutSubtreeIfNeeded() })
+        guard animated else { bar.layoutSubtreeIfNeeded(); placeSelection(); return }
+        relayout(DS.Motion.snappy)
     }
 
     /// Back where a cancelled drag started.
@@ -193,7 +265,23 @@ final class TabStrip: NSObject {
         move(chip, from: from, to: min(index, chips.count - 1), animated: true)
     }
 
+    /// The selected tab lifted out of its slot takes its tint with it.
+    func chipLifted(_ chip: TabChipView) {
+        guard chip.isActive else { return }
+        selectionHeld = true
+        selection.isHidden = true
+    }
+
     func chipSetDown(_ chip: TabChipView) { onMoveEnded?() }
+
+    /// Settled in its slot: the tint comes back under it.
+    func chipSettled(_ chip: TabChipView) {
+        guard selectionHeld else { return }
+        selectionHeld = false
+        placeSelection()
+    }
+
+    var selectionFrameForTesting: NSRect? { selection.isHidden ? nil : selection.frame }
 
     var canTearOut: Bool { onTearOut != nil }
 
@@ -203,10 +291,7 @@ final class TabStrip: NSObject {
         let constraint = chip.widthAnchor.constraint(equalToConstant: chip.frame.width)
         constraint.isActive = true
         chip.slotWidth = constraint
-        DS.Motion.animate(DS.Motion.snappy, crossfading: bar, {
-            constraint.animator().constant = 0
-            stack.layoutSubtreeIfNeeded()
-        })
+        relayout(DS.Motion.snappy, { constraint.constant = 0 })
     }
 
     /// Back over the strip: a slot opens where the pointer is.
@@ -214,10 +299,7 @@ final class TabStrip: NSObject {
         chipMoved(chip, toWindowX: x)
         guard let constraint = chip.slotWidth else { return }
         let width = chip.intrinsicContentSize.width
-        DS.Motion.animate(DS.Motion.snappy, crossfading: bar, {
-            constraint.animator().constant = width
-            stack.layoutSubtreeIfNeeded()
-        }, completion: { [weak chip] in
+        relayout(DS.Motion.snappy, { constraint.constant = width }, completion: { [weak chip] in
             guard let chip, chip.slotWidth === constraint else { return }
             constraint.isActive = false
             chip.slotWidth = nil
@@ -326,6 +408,16 @@ final class TabChipView: NSView, PointerHoverSyncing {
         if isActive { revealWhenLaidOut() }
     }
 
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        super.setFrameOrigin(newOrigin)
+        strip?.chipFrameChanged(self)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        strip?.chipFrameChanged(self)
+    }
+
     // MARK: Hover
 
     override func updateTrackingAreas() {
@@ -391,21 +483,13 @@ final class TabChipView: NSView, PointerHoverSyncing {
             DS.Color.raised.setFill()
             pill.fill()
         } else if isActive {
-            NSGraphicsContext.saveGraphicsState()
-            let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.12)
-            shadow.shadowBlurRadius = 2
-            shadow.shadowOffset = NSSize(width: 0, height: -0.5)
-            shadow.set()
-            DS.Color.selectedCapsule.setFill()
-            pill.fill()
-            NSGraphicsContext.restoreGraphicsState()
+            // The strip's sliding tint is under it (`TabStrip.selection`).
         } else if isHovered || phase == .pressed {
             (phase == .pressed ? DS.Color.scrimMedium : DS.Color.scrimSoft).setFill()
             pill.fill()
         }
 
-        if renameField == nil {
+        if renameField == nil, !drawsLifted {
             let dimmed = isDead ? 0.35 : 1.0
             let attributes: [NSAttributedString.Key: Any] = [
                 .foregroundColor: (isActive || drawsLifted ? NSColor.labelColor : NSColor.secondaryLabelColor).withAlphaComponent(dimmed),
@@ -435,7 +519,8 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// Drawn as it looks lifted, for the floating layer's picture of it.
     private var drawsLifted = false
 
-    /// The chip as it looks lifted: a solid capsule with its title, no shadow (the layer adds it).
+    /// The chip as it looks lifted: a solid capsule, no shadow and no title (the floating layer
+    /// adds both: the title as a layer of its own, which travels into the card).
     func liftedImage() -> NSImage {
         drawsLifted = true
         defer { drawsLifted = false; needsDisplay = true }
@@ -541,13 +626,14 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let image = liftedImage()
         let content = dragPreview?()
         let card = TabDragOverlay.cardSize(for: window.frame.size, outside: true)
-        let windowImage = content.map { Self.miniWindow(content: $0, title: title, icon: dragIcon, size: card) }
+        let windowImage = content.map { Self.miniWindow(content: $0, size: card) }
         let frame = window.convertToScreen(convert(bounds, to: nil))
-        let overlay = TabDragOverlay(chip: image, card: windowImage, sourceWindow: window, chipFrame: frame,
+        let overlay = TabDragOverlay(chip: image, title: titleImage(), icon: cardIcon(), card: windowImage, sourceWindow: window, chipFrame: frame,
                                      grab: NSPoint(x: grabOffset.x / max(1, bounds.width), y: grabOffset.y))
         overlay.show()
         self.overlay = overlay
         alphaValue = 0
+        strip?.chipLifted(self)
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53, let self, self.phase == .lifted || self.phase == .torn else { return event }
             self.returnHome(to: self.startIndex)
@@ -580,7 +666,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
     }
 
     private func slotFrameOnScreen() -> NSRect {
-        strip?.stack.layoutSubtreeIfNeeded()
+        strip?.bar.layoutSubtreeIfNeeded()
         guard let window else { return .zero }
         return window.convertToScreen(convert(bounds, to: nil))
     }
@@ -592,8 +678,10 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let overlay = self.overlay
         self.overlay = nil
         overlay?.settle(into: slotFrameOnScreen(), velocity: velocity) { [weak self] in
-            self?.alphaValue = 1
+            guard let self else { return }
+            self.alphaValue = 1
             overlay?.close()
+            self.strip?.chipSettled(self)
         }
         strip?.chipSetDown(self)
     }
@@ -612,8 +700,10 @@ final class TabChipView: NSView, PointerHoverSyncing {
             let overlay = self.overlay
             self.overlay = nil
             overlay?.settle(into: self.slotFrameOnScreen(), velocity: .zero) { [weak self] in
-                self?.alphaValue = 1
+                guard let self else { return }
+                self.alphaValue = 1
                 overlay?.close()
+                self.strip?.chipSettled(self)
             }
             strip.chipSetDown(self)
         }
@@ -670,42 +760,72 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
     // MARK: The card's picture
 
-    /// The tab as the window it would become: a title bar with its icon and name over its
-    /// content, cut from the top to the card's proportions.
-    static func miniWindow(content: NSImage, title: String, icon: NSImage?, size: NSSize) -> NSImage {
-        let bar: CGFloat = 28
+    /// The card's picture: the tab's content under a plain title bar. No traffic lights (it isn't
+    /// a window yet), and no title: the tab's own title travels into the bar (`TabDragOverlay`).
+    static func miniWindow(content: NSImage, size: NSSize) -> NSImage {
+        let bar = TabDragOverlay.titleBarHeight
         return NSImage(size: size, flipped: false) { rect in
             let shape = NSBezierPath(roundedRect: rect, xRadius: DS.Radius.surface, yRadius: DS.Radius.surface)
             shape.addClip()
             DS.Color.raised.setFill()
             rect.fill()
-            // The content fills the body, scaled to cover it and cut from its top-left, as the
-            // window would show it.
+            // The content's whole width, from its top; cropping to cover the card cut off its
+            // right side (2026-10-31). Below a short content, its own background carries on.
             let body = NSRect(x: 0, y: 0, width: rect.width, height: rect.height - bar)
-            let scale = max(body.width / max(1, content.size.width), body.height / max(1, content.size.height))
-            let source = NSSize(width: body.width / scale, height: body.height / scale)
-            content.draw(in: body, from: NSRect(x: 0, y: content.size.height - source.height, width: source.width, height: source.height),
+            if let rep = content.representations.first as? NSBitmapImageRep ?? content.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
+               let below = rep.colorAt(x: 2, y: rep.pixelsHigh - 2) {
+                below.setFill()
+                body.fill()
+            }
+            let scale = body.width / max(1, content.size.width)
+            let sourceHeight = min(content.size.height, body.height / scale)
+            content.draw(in: NSRect(x: 0, y: body.maxY - sourceHeight * scale, width: body.width, height: sourceHeight * scale),
+                         from: NSRect(x: 0, y: content.size.height - sourceHeight, width: content.size.width, height: sourceHeight),
                          operation: .sourceOver, fraction: 1)
             DS.Color.hairline.setFill()
             NSRect(x: 0, y: body.maxY, width: rect.width, height: 1).fill()
-            for offset in 0..<3 {
-                NSColor.tertiaryLabelColor.setFill()
-                NSBezierPath(ovalIn: NSRect(x: 12 + CGFloat(offset) * 14, y: rect.maxY - bar / 2 - 4, width: 8, height: 8)).fill()
-            }
-            let font = DS.Text.caption(.medium)
-            let label = title as NSString
-            let textSize = label.size(withAttributes: [.font: font])
-            var x = (rect.width - textSize.width - (icon == nil ? 0 : 20)) / 2
-            if let icon {
-                let glyph = icon.isTemplate ? NSImage(size: icon.size, flipped: false) { r in
-                    icon.draw(in: r); NSColor.secondaryLabelColor.set(); r.fill(using: .sourceAtop); return true
-                } : icon
-                glyph.draw(in: NSRect(x: x, y: rect.maxY - bar / 2 - 7, width: 14, height: 14))
-                x += 20
-            }
-            label.draw(at: NSPoint(x: x, y: rect.maxY - bar / 2 - textSize.height / 2), withAttributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
             return true
         }
+    }
+
+    /// The title alone, as the chip draws it lifted: the layer that travels into the card.
+    func titleImage() -> NSImage {
+        let attributes: [NSAttributedString.Key: Any] = [.font: DS.Text.body(.medium), .foregroundColor: NSColor.labelColor]
+        let text = Self.label(title: title, detail: "", attributes: attributes)
+        let size = NSSize(width: ceil(min(text.size().width, Self.maxTextWidth)) + 1, height: ceil(text.size().height))
+        return Self.drawnNow(size: size, appearance: effectiveAppearance) {
+            text.draw(with: NSRect(origin: .zero, size: size), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        }
+    }
+
+    /// The icon for the card's title bar: a symbol (Run's terminal) is a template, tinted to
+    /// read as the title does, or it draws black in dark.
+    func cardIcon() -> NSImage? {
+        guard let icon = dragIcon else { return nil }
+        guard icon.isTemplate else { return icon }
+        let size = NSSize(width: 14, height: 14)
+        return Self.drawnNow(size: size, appearance: effectiveAppearance) {
+            icon.draw(in: NSRect(origin: .zero, size: size))
+            NSColor.secondaryLabelColor.set()
+            NSRect(origin: .zero, size: size).fill(using: .sourceAtop)
+        }
+    }
+
+    /// Drawn at once, in `appearance`: an image's drawing handler would run later, in whatever
+    /// appearance is current then, and a layer's contents never redraw.
+    private static func drawnNow(size: NSSize, appearance: NSAppearance, _ draw: () -> Void) -> NSImage {
+        let image = NSImage(size: size)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2), bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return image }
+        rep.size = size
+        appearance.performAsCurrentDrawingAppearance {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            draw()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        image.addRepresentation(rep)
+        return image
     }
 
     // MARK: Accessibility
@@ -758,6 +878,12 @@ final class TabDragOverlay {
     private let card = CALayer()
     private let chipLayer = CALayer()
     private let cardLayer = CALayer()
+    /// The tab's title, one layer that travels from its place in the tab to the card's title
+    /// bar, so the card grows out of the tab rather than fading in a second label (the owner,
+    /// 2026-10-31, as Rex does).
+    private let titleLayer = CALayer()
+    private let iconLayer = CALayer()
+    private let titleSize: NSSize
     private let chipSize: NSSize
     private let hasCard: Bool
     private weak var sourceWindow: NSWindow?
@@ -766,17 +892,25 @@ final class TabDragOverlay {
     private(set) var isCard = false
     private(set) var isOutside = false
 
-    /// The card: the window's proportions at 45% of its size, 420 to 640 pt wide, as Rex's is
-    /// (the owner, 2026-10-30); outside the window it grows to 55%, the window it will become.
+    /// The card: the window's proportions at a third of its size, 340 to 500 pt wide, big as
+    /// Rex's is without crowding the window (the owner, 2026-10-30 and 10-31); outside the window
+    /// it grows to 42%, toward the window it will become.
     static func cardSize(for windowSize: NSSize, outside: Bool) -> NSSize {
-        let scale: CGFloat = outside ? 0.55 : 0.45
-        let width = min(max(windowSize.width * scale, outside ? 520 : 420), outside ? 780 : 640)
+        let scale: CGFloat = outside ? 0.42 : 0.34
+        let width = min(max(windowSize.width * scale, outside ? 420 : 340), outside ? 620 : 500)
         let aspect = windowSize.height / max(1, windowSize.width)
         return NSSize(width: width.rounded(), height: (width * aspect).rounded())
     }
 
-    init(chip: NSImage, card cardImage: NSImage?, sourceWindow: NSWindow, chipFrame: NSRect, grab: NSPoint) {
+    /// The card's title bar, where the title lands.
+    /// Tall enough to leave room under the title (the owner, 2026-10-31).
+    static let titleBarHeight: CGFloat = 36
+    /// Where the title sits in the chip: its text inset.
+    static let chipTitleInset: CGFloat = 16
+
+    init(chip: NSImage, title: NSImage, icon: NSImage?, card cardImage: NSImage?, sourceWindow: NSWindow, chipFrame: NSRect, grab: NSPoint) {
         chipSize = chipFrame.size
+        titleSize = title.size
         hasCard = cardImage != nil
         self.sourceWindow = sourceWindow
         self.grab = grab
@@ -806,6 +940,15 @@ final class TabDragOverlay {
         cardLayer.contents = cardImage
         cardLayer.contentsGravity = .resizeAspectFill
         cardLayer.opacity = 0
+        titleLayer.contents = title
+        titleLayer.contentsScale = sourceWindow.backingScaleFactor
+        titleLayer.bounds = CGRect(origin: .zero, size: title.size)
+        card.addSublayer(titleLayer)
+        iconLayer.contents = icon
+        iconLayer.contentsScale = sourceWindow.backingScaleFactor
+        iconLayer.bounds = CGRect(x: 0, y: 0, width: 14, height: 14)
+        iconLayer.opacity = 0
+        card.addSublayer(iconLayer)
         content.layer?.addSublayer(card)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -855,6 +998,11 @@ final class TabDragOverlay {
             layer.frame = CGRect(origin: .zero, size: frame.size)
             layer.cornerRadius = radius
         }
+        let titleAt = titlePosition(in: frame.size, chip: chip)
+        let fromTitle = (titleLayer.presentation() ?? titleLayer).position
+        let fromIcon = (iconLayer.presentation() ?? iconLayer).position
+        titleLayer.position = titleAt
+        iconLayer.position = CGPoint(x: titleAt.x - titleSize.width / 2 - 10, y: titleAt.y)
         // A pill casts a small, close shadow; a card a deeper one.
         card.shadowOpacity = chip ? 0.18 : 0.3
         card.shadowRadius = chip ? 5 : 18
@@ -880,6 +1028,14 @@ final class TabDragOverlay {
             corner.toValue = radius
             layer.add(corner, forKey: "corner")
         }
+        // The title (and the card's icon beside it) travel on the same spring.
+        for (layer, from) in [(titleLayer, fromTitle), (iconLayer, fromIcon)] {
+            let travel = DS.Motion.spring(spring, keyPath: "position")
+            travel.isAdditive = true
+            travel.fromValue = NSValue(point: NSPoint(x: from.x - layer.position.x, y: from.y - layer.position.y))
+            travel.toValue = NSValue(point: .zero)
+            layer.add(travel, forKey: nil)
+        }
         for layer in [chipLayer, cardLayer] {
             // The sublayers' centres follow the size; additive, like the card's own.
             let centre = DS.Motion.spring(spring, keyPath: "position")
@@ -888,6 +1044,15 @@ final class TabDragOverlay {
             centre.toValue = NSValue(point: .zero)
             layer.add(centre, forKey: nil)
         }
+    }
+
+    /// The title's centre in the card's own coordinates (origin bottom-left): at its inset in
+    /// the chip, centred in the card's title bar beside the icon.
+    private func titlePosition(in size: NSSize, chip: Bool) -> CGPoint {
+        if chip || !hasCard {
+            return CGPoint(x: Self.chipTitleInset + titleSize.width / 2, y: size.height / 2)
+        }
+        return CGPoint(x: size.width / 2 + 10, y: size.height - Self.titleBarHeight / 2)
     }
 
     private func crossfade(toCard: Bool) {
@@ -902,6 +1067,7 @@ final class TabDragOverlay {
         }
         fade(chipLayer, toCard ? 0 : 1)
         fade(cardLayer, toCard && hasCard ? 1 : 0)
+        fade(iconLayer, toCard && hasCard ? 1 : 0)
     }
 
     /// Along the strip: exactly where the chip is held, no spring.

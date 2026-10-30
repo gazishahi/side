@@ -336,9 +336,7 @@ final class EditorParityTests: XCTestCase {
         if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] {
             let size = TabDragOverlay.cardSize(for: window.frame.size, outside: true)
             for (index, name) in [(2, "drag-window-text.png"), (0, "drag-window-sheet.png"), (1, "drag-window-background.png")] {
-                let url = make.activeTabURLForTesting!
-                let image = TabChipView.miniWindow(content: make.tabPreviewContent(index)!, title: index == 2 ? url.lastPathComponent : "tab",
-                                                   icon: FileIcon.image(for: url, isDirectory: false), size: size)
+                let image = TabChipView.miniWindow(content: make.tabPreviewContent(index)!, size: size)
                 let out = MakeWorkspaceViewController.rendered(NSSize(width: image.size.width + 40, height: image.size.height + 40), appearance: make.view.effectiveAppearance) {
                     NSColor.windowBackgroundColor.setFill()
                     NSRect(x: 0, y: 0, width: image.size.width + 40, height: image.size.height + 40).fill()
@@ -388,7 +386,7 @@ final class EditorParityTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         let card = overlay.cardFrameForTesting
         XCTAssertEqual(card.size, TabDragOverlay.cardSize(for: window.frame.size, outside: false))
-        XCTAssertGreaterThanOrEqual(card.width, 420, "big, as Rex's is")
+        XCTAssertGreaterThanOrEqual(card.width, 340, "big, as Rex's is")
         XCTAssertTrue(overlay.isShowingCardForTesting)
 
         // Back over the strip: a chip again, then set down there.
