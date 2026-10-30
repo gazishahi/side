@@ -718,7 +718,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             scroll.trailingAnchor.constraint(equalTo: body.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: body.bottomAnchor, constant: -Self.paletteListPadding),
         ])
-        paletteSurface = Self.makeFloatingPanelSurface(embedding: body, cornerRadius: 16, padding: 0)
+        paletteSurface = Self.makeFloatingPanelSurface(embedding: body, cornerRadius: DS.Radius.palette, padding: 0)
         paletteSurface.setAccessibilityElement(true)
         paletteSurface.setAccessibilityRole(.group)
         paletteSurface.setAccessibilityLabel("Palette")

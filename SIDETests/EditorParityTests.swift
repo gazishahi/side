@@ -497,6 +497,98 @@ final class EditorParityTests: XCTestCase {
         XCTAssertGreaterThan(try ink(back), 20, "dropped back, its title is on screen")
     }
 
+    /// 2026-10-31, the owner: the strip's reveal with a second tab played only sometimes. Every
+    /// time, the track springs open from the first tab.
+    func testTheStripOpensOutEveryTime() throws {
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1300, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let shell = ShellViewController()
+        window.contentViewController = shell
+        shell.installChrome(in: window)
+        window.makeKeyAndOrderFront(nil)
+        for name in ["one.swift", "two.swift"] { try "// \(name)\n".write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+        shell.openProject(at: root, focusingTrackKey: nil)
+        func settle(_ seconds: Double) { let end = Date().addingTimeInterval(seconds); while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.004)) } }
+        settle(1.5)
+        let make = shell.makeForTesting
+        make.revealFile(root.appendingPathComponent("one.swift"), line: nil)
+        settle(0.8)
+        let strip = make.tabStripForTesting
+        var notes: [String] = []
+        for round in 0..<5 {
+            let before = strip.appearCountForTesting
+            make.revealFile(root.appendingPathComponent("two.swift"), line: nil)
+            let deadline = Date().addingTimeInterval(3)
+            while strip.chips.count < 2, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.002)) }
+            let glass = strip.bar.subviews.first { String(describing: Swift.type(of: $0)).contains("Glass") }
+            let springing = !(glass?.layer?.animationKeys()?.isEmpty ?? true)
+            notes.append("round \(round): appear ran \(strip.appearCountForTesting > before), track springing \(springing), chips \(strip.chips.count)")
+            settle(0.8)
+            make.closeTabForTesting(named: "two.swift")
+            settle(0.8)
+        }
+        XCTAssertEqual(notes.filter { $0.contains("appear ran true") }.count, 5, notes.joined(separator: "\n"))
+        XCTAssertEqual(notes.filter { $0.contains("track springing true") }.count, 5, notes.joined(separator: "\n"))
+    }
+
+    /// 2026-10-31, the owner: the palette looked squeezed into the bar. It grows out of the nav's
+    /// capsule evenly, keeping its proportions, and back into it.
+    func testThePaletteMorphsOutOfTheNavAndBack() throws {
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1300, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let shell = ShellViewController()
+        window.contentViewController = shell
+        shell.installChrome(in: window)
+        window.makeKeyAndOrderFront(nil)
+        try "x".write(to: root.appendingPathComponent("a.swift"), atomically: true, encoding: .utf8)
+        shell.openProject(at: root, focusingTrackKey: nil)
+        func settle(_ seconds: Double) { let end = Date().addingTimeInterval(seconds); while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.004)) } }
+        settle(1.5)
+        window.setFrame(NSRect(x: 100, y: 100, width: 1300, height: 800), display: true)
+        settle(0.5)
+        var notes = ["nav capsule \(shell.paletteOriginForTesting())"]
+        shell.makeForTesting.presentPalette(.files)
+        let t0 = Date()
+        for ms in [0, 30, 80, 150, 250, 400, 600] {
+            while Date().timeIntervalSince(t0) * 1000 < Double(ms) { RunLoop.main.run(until: Date().addingTimeInterval(0.004)) }
+            let layer = shell.paletteLayerForTesting
+            let shown = layer?.presentation() ?? layer
+            notes.append("open \(ms)ms frame \(String(describing: shown?.frame)) radius \(shown?.cornerRadius ?? -1) opacity \(shown?.opacity ?? -1) model \(String(describing: layer?.frame))")
+        }
+        shell.makeForTesting.dismissPaletteForTesting()
+        let t1 = Date()
+        for ms in [0, 60, 150, 300, 500] {
+            while Date().timeIntervalSince(t1) * 1000 < Double(ms) { RunLoop.main.run(until: Date().addingTimeInterval(0.004)) }
+            let layer = shell.paletteLayerForTesting
+            let shown = layer?.presentation() ?? layer
+            notes.append("close \(ms)ms frame \(String(describing: shown?.frame)) radius \(shown?.cornerRadius ?? -1) opacity \(shown?.opacity ?? -1)")
+        }
+        func frame(_ line: String) -> NSRect {
+            let inside = line.components(separatedBy: "frame Optional(")[1].components(separatedBy: ")")[0].replacingOccurrences(of: "(", with: "")
+            let n = inside.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            return NSRect(x: n[0], y: n[1], width: n[2], height: n[3])
+        }
+        let capsule = shell.paletteOriginForTesting()
+        // Sample times stretch under load, so judge the curve's shape, not its clock: every
+        // in-flight frame sits on the capsule's centre line at the settled proportions, and the
+        // close ends at the capsule's width.
+        let all = notes.filter { $0.contains("frame Optional(") }.map { ($0, frame($0)) }.filter { $0.1.width > 0 }
+        let settled = frame(notes.first { $0.hasPrefix("open 600ms") }!)
+        XCTAssertGreaterThan(settled.width, capsule.width * 1.5, "to its own size")
+        let moving = all.filter { $0.1.width < settled.width - 1 }
+        XCTAssertFalse(moving.isEmpty, "it grows rather than appearing: \(notes.joined(separator: "\n"))")
+        for (line, f) in moving {
+            XCTAssertGreaterThanOrEqual(f.width, capsule.width - 4, "never smaller than the capsule: \(line)")
+            XCTAssertEqual(f.midX, capsule.midX, accuracy: 6, "out of the capsule, evenly: \(line)")
+            XCTAssertEqual(f.width / f.height, settled.width / settled.height, accuracy: 0.05, "never squeezed: \(line)")
+        }
+        XCTAssertTrue(shell.paletteLayerForTesting.map { _ in true } ?? false)
+    }
+
     /// 2026-10-31, the owner: after a tab was dropped outside its window, its card stayed over
     /// every app. The card goes once the landing is over, window or not.
     func testADroppedCardLeavesTheScreen() throws {

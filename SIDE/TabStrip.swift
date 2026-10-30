@@ -180,6 +180,7 @@ final class TabStrip: NSObject {
         // A strip still fading out goes now: what comes next is drawn fresh.
         leaving.forEach { $0.removeFromSuperview() }
         leaving = []
+        selection.layer?.removeAnimation(forKey: "stripSlide")
         selection.alphaValue = 1
         guard items.count > 1 else {
             dismiss()
@@ -231,10 +232,12 @@ final class TabStrip: NSObject {
     /// Chips fading out with the strip, removed when the fade ends or the next reload comes.
     private var leaving: [TabChipView] = []
 
-    /// A second tab opened: the strip opens out from the first tab. The track grows from its
-    /// width to both on a spring while the tabs and the tint fade in (the owner, 2026-10-31: it
-    /// used to just appear).
+    /// A second tab opened: the strip opens out of the first tab (the owner, 2026-10-31: a
+    /// plain fade was dull). The track and the first tab come in together; the track springs
+    /// open from the first tab's width while the others slide out from under it, the tint riding
+    /// with its tab.
     private func appear() {
+        appearCountForTesting += 1
         growContentToFit()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
@@ -243,58 +246,82 @@ final class TabStrip: NSObject {
         }
         bar.layoutSubtreeIfNeeded()
         placeSelection()
-        let first = chips.first.map { $0.frame.maxX + stack.edgeInsets.right } ?? 0
+        guard let first = chips.first else { return }
+        let firstEnd = first.frame.maxX + stack.edgeInsets.right
         bar.showTrack(true, animated: true)
-        bar.setTrackWidth(tabsWidth(), spring: DS.Motion.smooth, from: first)
-        // The first tab is the one that was already there (its title stood alone in the top row):
-        // it's in place at once; the rest fade in as the track reaches them.
+        // Quick: it's chrome making room, not a presentation (the owner: faster).
+        bar.setTrackWidth(tabsWidth(), spring: DS.Motion.snappy, from: firstEnd)
+        guard !DS.Motion.reduceMotion else { return }
+        first.alphaValue = 0
         for chip in chips.dropFirst() { chip.alphaValue = 0 }
         selection.alphaValue = 0
         DS.Motion.fade {
+            first.animator().alphaValue = 1
             for chip in chips.dropFirst() { chip.animator().alphaValue = 1 }
             selection.animator().alphaValue = 1
         }
+        // From under the first tab: each starts where the first one is.
+        let activeChip = chips.first(where: \.isActive)
+        for chip in chips.dropFirst() {
+            slide(chip, from: first.frame.minX - chip.frame.minX, to: 0, spring: DS.Motion.snappy)
+            if chip === activeChip { slide(selection, from: first.frame.minX - chip.frame.minX, to: 0, spring: DS.Motion.snappy) }
+        }
     }
 
-    /// Down to one tab: the strip fades away, rather than vanishing.
+    /// A horizontal offset that springs away (or in), additively, over the view's laid-out place.
+    private func slide(_ view: NSView, from: CGFloat, to: CGFloat, spring: DS.Motion.Spring) {
+        guard let layer = view.layer, from != to else { return }
+        let move = DS.Motion.spring(spring, keyPath: "transform.translation.x")
+        move.isAdditive = true
+        move.fromValue = from
+        move.toValue = to
+        move.fillMode = .forwards
+        move.isRemovedOnCompletion = to == 0
+        layer.add(move, forKey: "stripSlide")
+    }
+
+    var appearCountForTesting = 0
+
+    /// Down to one tab: the open reversed, tight, with no pause (the owner: it lingered). The
+    /// others slide back under the first tab as the track closes to it; the whole strip fades
+    /// as they arrive.
     private func dismiss() {
         guard !chips.isEmpty else { return }
         let gone = chips
         chips = []
         ids = []
         bar.accessibleTabs = []
-        guard bar.window != nil, !bar.isHiddenOrHasHiddenAncestor else {
+        guard bar.window != nil, !bar.isHiddenOrHasHiddenAncestor, !DS.Motion.reduceMotion, let first = gone.first else {
             gone.forEach { $0.removeFromSuperview() }
             selection.isHidden = true
             bar.showTrack(false, animated: false)
             return
         }
         leaving = gone
-        // The open reversed: the track closes back toward the first tab as it fades.
-        if let first = gone.first { bar.setTrackWidth(first.frame.maxX + stack.edgeInsets.right, spring: DS.Motion.smooth) }
-        // It closes most of the way before it fades: fading at once hid the close.
-        DispatchQueue.main.asyncAfter(deadline: .now() + DS.Motion.smooth.duration * 0.45) { [weak self] in
+        bar.setTrackWidth(first.frame.maxX + stack.edgeInsets.right, spring: DS.Motion.snappy)
+        let activeChip = gone.first(where: \.isActive)
+        for chip in gone.dropFirst() {
+            slide(chip, from: 0, to: first.frame.minX - chip.frame.minX, spring: DS.Motion.snappy)
+            if chip === activeChip { slide(selection, from: 0, to: first.frame.minX - chip.frame.minX, spring: DS.Motion.snappy) }
+        }
+        // The fade starts as the slide is most of the way home and ends with it.
+        let fadeAt = max(0, DS.Motion.snappy.duration - DS.Motion.fadeDuration * 1.3)
+        DispatchQueue.main.asyncAfter(deadline: .now() + fadeAt) { [weak self] in
             guard let self, self.chips.isEmpty else { return }
             self.bar.showTrack(false, animated: true)
-        }
-        DS.Motion.fade({
-            gone.dropFirst().forEach { $0.animator().alphaValue = 0 }
-            selection.animator().alphaValue = 0
-        })
-        // The first tab goes with the track.
-        DispatchQueue.main.asyncAfter(deadline: .now() + DS.Motion.smooth.duration * 0.45) {
-            DS.Motion.fade {
-                gone.first?.animator().alphaValue = 0
-            }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + DS.Motion.smooth.duration * 0.45 + DS.Motion.fadeDuration + 0.05) { [weak self] in
-            guard let self, self.leaving.contains(where: { gone.contains($0) }) else { return }
-            gone.forEach { $0.removeFromSuperview() }
-            self.leaving.removeAll { gone.contains($0) }
-            if self.chips.isEmpty {
-                self.selection.isHidden = true
-                self.selection.alphaValue = 1
-            }
+            DS.Motion.fade({
+                gone.forEach { $0.animator().alphaValue = 0 }
+                self.selection.animator().alphaValue = 0
+            }, completion: { [weak self] in
+                guard let self, self.leaving.contains(where: { gone.contains($0) }) else { return }
+                gone.forEach { $0.layer?.removeAnimation(forKey: "stripSlide"); $0.removeFromSuperview() }
+                self.leaving.removeAll { gone.contains($0) }
+                self.selection.layer?.removeAnimation(forKey: "stripSlide")
+                if self.chips.isEmpty {
+                    self.selection.isHidden = true
+                    self.selection.alphaValue = 1
+                }
+            })
         }
     }
 

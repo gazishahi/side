@@ -189,6 +189,8 @@ enum DS {
         static let control: CGFloat = 6
         /// Cards, the terminal, the diff body, popovers.
         static let surface: CGFloat = 10
+        /// The palette (⌘P, Find): the floating panel the nav morphs into.
+        static let palette: CGFloat = 16
         /// Think's message bubbles — the single exception, kept at 17.
         static let bubble: CGFloat = 17
         /// A true capsule: half its height. For glass pills whose height is fixed.
@@ -431,6 +433,9 @@ enum DS {
         /// Presentations: panels, Side's own popovers, the tab's preview morph, a pill growing.
         /// About 2% overshoot.
         static let smooth = Spring(response: 0.40, damping: 0.76, controlPoints: [0.28, 1.18, 0.38, 1])
+        /// A presentation's ease without a spring's overshoot: the palette growing out of the nav,
+        /// which the owner wanted as it was (2026-10-31).
+        static var easeOut: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.2, 0.85, 0.25, 1.0) }
         /// Opacity only, never a spring: alpha that overshoots flashes.
         static let fadeDuration: TimeInterval = 0.15
         static var fadeCurve: CAMediaTimingFunction { CAMediaTimingFunction(name: .easeOut) }

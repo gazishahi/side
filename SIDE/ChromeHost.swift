@@ -328,6 +328,19 @@ final class ChromeHost {
         return searchButton.convert(searchButton.bounds, to: root)
     }
 
+    /// The piece the palette morphs out of and back into: the nav's stage capsule, or the
+    /// search button when the nav is hidden (one stage) or in the top row. It hides while the
+    /// palette is out: it became the palette.
+    func paletteOriginPiece() -> NSView {
+        if let bar, !bar.isHidden, bar.window != nil { return bar }
+        return searchButton
+    }
+
+    func paletteOrigin(in root: NSView) -> NSRect {
+        let piece = paletteOriginPiece()
+        return piece.convert(piece.bounds, to: root)
+    }
+
     /// While Think's composer holds text, the bar recedes (still operable) so there aren't two
     /// equally loud things at the bottom of the window.
     func setBarRecessed(_ recessed: Bool) {

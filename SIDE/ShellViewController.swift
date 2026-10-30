@@ -352,61 +352,72 @@ final class ShellViewController: NSViewController {
         paletteHost = host
         makeVC.onPaletteShow = { [weak self, weak host] size in
             guard let self, let host else { return }
-            let appearing = host.isHidden
+            // Hidden, or on its way back into the nav: either way it opens out again.
+            let appearing = host.isHidden || self.paletteClosing
             host.frame = self.chrome.paletteFrame(size: size, in: self.view)
             host.isHidden = false
             if appearing { self.animatePalette(host, in: true) }
         }
         makeVC.onPaletteHide = { [weak self, weak host] in
-            guard let self, let host, !host.isHidden else { return }
+            guard let self, let host, !host.isHidden, !self.paletteClosing else { return }
             self.animatePalette(host, in: false)
         }
         makeVC.onPaletteNavigated = { [weak self] in self?.show(.make) }
         makeVC.commandsProvider = { [weak self] in self?.paletteCommands() ?? [] }
     }
 
-    /// The palette grows out of the search button and shrinks back into it — presentation,
-    /// which §2.8 allows to move, on the one curve and gone under Reduce Motion.
+    /// The palette grows out of the nav and shrinks back into it: the collapsed state is the
+    /// nav's capsule (or search, with one stage). Kept as it was, with three things the owner
+    /// asked for (2026-10-31): it opens quicker; it scales evenly, so it no longer looks squeezed
+    /// into the bar (the collapsed state took the capsule's proportions); and a dismiss during the
+    /// open turns it around from where it is, rather than ending it at once.
     private func animatePalette(_ host: NSView, in appearing: Bool) {
         guard let layer = host.layer else { host.isHidden = !appearing; return }
-        // Out of the bar on the smooth spring, back in on the snappy one.
-        let spring = appearing ? DS.Motion.smooth : DS.Motion.snappy
-        guard !DS.Motion.reduceMotion else { host.isHidden = !appearing; return }
-        // It grows out of the stage bar — the collapsed state *is* the bar's rectangle — so the
-        // palette reads as the bar opening up rather than something zooming in from a corner.
-        // Layer-backed NSViews transform about their origin.
-        let source = chrome.paletteSource(in: view)
-        let sx = max(source.width / max(host.bounds.width, 1), 0.05), sy = max(source.height / max(host.bounds.height, 1), 0.05)
+        guard !DS.Motion.reduceMotion else { host.isHidden = !appearing; paletteClosing = false; return }
+        paletteAnimationGeneration += 1
+        let generation = paletteAnimationGeneration
+        paletteClosing = !appearing
+        let source = chrome.paletteOrigin(in: view)
+        // Evenly, to the capsule's width, about its centre. Layer-backed views transform about
+        // their origin, so the scale is placed by hand.
+        let scale = max(min(source.width / max(host.bounds.width, 1), 1), 0.05)
+        let collapsedSize = NSSize(width: host.bounds.width * scale, height: host.bounds.height * scale)
         let collapsed = CATransform3DConcat(
-            CATransform3DMakeScale(sx, sy, 1),
-            CATransform3DMakeTranslation(source.minX - host.frame.minX, source.minY - host.frame.minY, 0))
+            CATransform3DMakeScale(scale, scale, 1),
+            CATransform3DMakeTranslation(source.midX - collapsedSize.width / 2 - host.frame.minX,
+                                         source.midY - collapsedSize.height / 2 - host.frame.minY, 0))
+        // From what's on screen when it's turned around mid-way.
+        let shown = layer.presentation()
+        let inFlight = layer.animation(forKey: "palette") != nil && shown != nil
         let transform = CABasicAnimation(keyPath: "transform")
-        transform.fromValue = appearing ? collapsed : CATransform3DIdentity
+        transform.fromValue = inFlight ? shown!.transform : (appearing ? collapsed : CATransform3DIdentity)
         transform.toValue = appearing ? CATransform3DIdentity : collapsed
-        transform.duration = spring.duration
-        transform.timingFunction = spring.curve
-        // Opacity never springs: its own fade, inside the group's time.
         let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = appearing ? 0 : 1
+        fade.fromValue = inFlight ? shown!.opacity : (appearing ? 0 : 1)
         fade.toValue = appearing ? 1 : 0
-        fade.duration = DS.Motion.fadeDuration
-        fade.timingFunction = DS.Motion.fadeCurve
-        if !appearing { fade.beginTime = spring.duration - DS.Motion.fadeDuration }
-        fade.fillMode = .both
         let group = CAAnimationGroup()
         group.animations = [transform, fade]
-        group.duration = spring.duration
+        group.duration = appearing ? 0.22 : 0.18
+        group.timingFunction = DS.Motion.easeOut
         group.fillMode = .forwards
         group.isRemovedOnCompletion = false
         CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak host] in
-            guard let host else { return }
-            if !appearing { host.isHidden = true }
-            host.layer?.removeAnimation(forKey: "palette")
+        CATransaction.setCompletionBlock { [weak self, weak host] in
+            MainActor.assumeIsolated {
+                guard let self, let host, self.paletteAnimationGeneration == generation else { return }
+                if !appearing { host.isHidden = true }
+                self.paletteClosing = false
+                host.layer?.removeAnimation(forKey: "palette")
+            }
         }
         layer.add(group, forKey: "palette")
         CATransaction.commit()
     }
+
+    private var paletteAnimationGeneration = 0
+    private var paletteClosing = false
+    var paletteLayerForTesting: CALayer? { paletteHost?.layer }
+    func paletteOriginForTesting() -> NSRect { chrome.paletteOrigin(in: view) }
 
     /// Every stage — pinned or not — and every Navigate menu item, by name.
     private func paletteCommands() -> [PaletteCommand] {
