@@ -1222,6 +1222,51 @@ final class TabStripTests: XCTestCase {
         XCTAssertGreaterThan(tint.width, 80)
     }
 
+    /// 2026-10-31, the owner: a new tab's title didn't show until it was clicked. It was drawn
+    /// at no width as it began to grow, and never again.
+    func testANewTabDrawsItsTitleOnceItHasGrown() throws {
+        // As in Make and Run: the chips in a scroll view in the top row.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let bar = TabStripView(frame: window.contentView!.bounds)
+        window.contentView = bar
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = DS.Spacing.xxs
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = TabStripScrollView()
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = stack
+        bar.addSubview(scroll)
+        bar.installGlassTrack(behind: scroll, hugging: stack)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: bar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: bar.topAnchor), scroll.heightAnchor.constraint(equalToConstant: 30),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor), stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.heightAnchor),
+        ])
+        window.orderFront(nil)
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        var items = (1...2).map { TabStrip.Item(id: UUID(), title: "file \($0).swift") }
+        strip.reload(items, active: 1)
+        bar.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        items.append(TabStrip.Item(id: UUID(), title: "new.swift"))
+        strip.reload(items, active: 2)
+        let chip = strip.chips[2]
+        let deadline = Date().addingTimeInterval(1.2)
+        while Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.016))
+            window.displayIfNeeded()
+        }
+        XCTAssertGreaterThan(chip.frame.width, 90)
+        XCTAssertGreaterThan(chip.lastDrawnWidthForTesting, 90, "drawn again at its full width, title and all")
+    }
+
     /// 2026-10-31, the owner: tabs disappeared after a tear-out, until moved. The strip got
     /// narrower and kept its scroll position, past the end of the tabs.
     func testANarrowerStripScrollsBackToItsTabs() throws {

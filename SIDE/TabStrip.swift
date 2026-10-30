@@ -227,8 +227,9 @@ final class TabStrip: NSObject {
         constraint.isActive = true
         chip.alphaValue = 0
         bar.layoutSubtreeIfNeeded()
-        relayout(DS.Motion.smooth, { constraint.constant = width }, completion: {
+        relayout(DS.Motion.smooth, { constraint.constant = width }, completion: { [weak chip] in
             constraint.isActive = false
+            chip?.needsDisplay = true
         })
         DS.Motion.fade { chip.animator().alphaValue = 1 }
     }
@@ -398,6 +399,16 @@ final class TabChipView: NSView, PointerHoverSyncing {
     private var trackingArea: NSTrackingArea?
     private(set) var isHovered = false { didSet { needsDisplay = true } }
 
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // Drawn when asked, never stretched or redrawn per frame by an animation: a resize asks
+        // (`setFrameSize`), so what's drawn always matches the size it ends at.
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     override var isFlipped: Bool { true }
 
     /// In the title-bar region AppKit moves the window for any transparent view that doesn't
@@ -444,8 +455,13 @@ final class TabChipView: NSView, PointerHoverSyncing {
         strip?.chipFrameChanged(self)
     }
 
+    /// Redrawn at every new size: a new tab is first drawn at no width, where its title is
+    /// skipped, and as it grew the title never came until a click or a drag redrew it (the owner,
+    /// 2026-10-31).
     override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize != frame.size
         super.setFrameSize(newSize)
+        if changed { needsDisplay = true }
         strip?.chipFrameChanged(self)
     }
 
@@ -503,7 +519,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
     // MARK: Drawing
 
+    /// The width it was last drawn at (tests).
+    private(set) var lastDrawnWidthForTesting: CGFloat = 0
+
     override func draw(_ dirtyRect: NSRect) {
+        lastDrawnWidthForTesting = bounds.width
         guard bounds.width > Self.flare * 2 + 16, bounds.height > 4 else { return }
         // A capsule on the strip's glass, drawn like the stage control's selection: the active
         // tab is the soft selected capsule, the rest are the glass itself until hovered.
