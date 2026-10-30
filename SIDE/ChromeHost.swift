@@ -71,6 +71,11 @@ final class ChromeHost {
     private var stageContent: NSView?
     private var bar: NSView?
     private var barPieces: [NSView] = []
+    /// The update pill, beside search (Direction 03 §5.1).
+    private(set) var updatePill: UpdatePill?
+    /// Search and the update pill, as one trailing piece of the bar.
+    private var trailingCluster: NSView?
+    private var updateObserver: NSObjectProtocol?
     private var leadingInset: NSLayoutConstraint?
 
     init(placement: ChromePlacement, pill: TrackPill, stageControl: SlidingSegmentedControl, searchButton: GlassCircleButton) {
@@ -104,7 +109,9 @@ final class ChromeHost {
         switch placement {
         case .topRow:
             searchButton.setGlass(false)
-            for view in [pill, stageSlot, stageControl, searchButton] as [NSView] { row.addArrangedSubview(view) }
+            let update = UpdatePill(glass: false, height: 28)
+            updatePill = update
+            for view in [pill, stageSlot, stageControl, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
             row.setCustomSpacing(DS.Spacing.l, after: stageSlot)
         case .floatingBar:
             row.addArrangedSubview(stageSlot)
@@ -146,19 +153,35 @@ final class ChromeHost {
         let pillCapsule = Self.glassCapsule(around: pill, insets: NSEdgeInsets(top: 0, left: DS.Spacing.xs, bottom: 0, right: DS.Spacing.xs))
         let stagesCapsule = Self.glassCapsule(around: stageControl, insets: NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4))
         searchButton.setGlass(true)
-        for piece in [pillCapsule, stagesCapsule, searchButton] as [NSView] { root.addSubview(piece) }
+        let update = UpdatePill(glass: true, height: Self.barHeight)
+        updatePill = update
+        let cluster = NSStackView(views: [update.view, searchButton])
+        cluster.orientation = .horizontal
+        cluster.alignment = .centerY
+        cluster.spacing = DS.Spacing.m
+        cluster.detachesHiddenViews = true
+        cluster.translatesAutoresizingMaskIntoConstraints = false
+        trailingCluster = cluster
+        for piece in [pillCapsule, stagesCapsule, cluster] as [NSView] { root.addSubview(piece) }
         NSLayoutConstraint.activate([
             pillCapsule.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Self.barMargin),
             pillCapsule.trailingAnchor.constraint(lessThanOrEqualTo: stagesCapsule.leadingAnchor, constant: -DS.Spacing.m),
             stagesCapsule.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            searchButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -Self.barMargin),
-            searchButton.leadingAnchor.constraint(greaterThanOrEqualTo: stagesCapsule.trailingAnchor, constant: DS.Spacing.m),
+            cluster.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -Self.barMargin),
+            cluster.leadingAnchor.constraint(greaterThanOrEqualTo: stagesCapsule.trailingAnchor, constant: DS.Spacing.m),
             pillCapsule.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.barGap),
             stagesCapsule.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.barGap),
-            searchButton.centerYAnchor.constraint(equalTo: stagesCapsule.centerYAnchor),
+            cluster.centerYAnchor.constraint(equalTo: stagesCapsule.centerYAnchor),
         ])
         bar = stagesCapsule
-        barPieces = [pillCapsule, stagesCapsule, searchButton]
+        barPieces = [pillCapsule, stagesCapsule, cluster]
+        // The pill coming or going changes what fits beside the stage control.
+        updateObserver = NotificationCenter.default.addObserver(forName: UpdateDriver.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let root = self.barRoot, self.accessoryStage != nil else { return }
+                self.placeAccessories(of: self.accessoryStage, width: root.bounds.width)
+            }
+        }
         barRoot = root
         pillPiece = pillCapsule
     }
@@ -198,7 +221,7 @@ final class ChromeHost {
             trailing.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(trailing)
             constraints += [
-                trailing.trailingAnchor.constraint(equalTo: searchButton.leadingAnchor, constant: -DS.Spacing.m),
+                trailing.trailingAnchor.constraint(equalTo: (trailingCluster ?? searchButton).leadingAnchor, constant: -DS.Spacing.m),
                 Self.yieldingToResize(trailing.leadingAnchor.constraint(greaterThanOrEqualTo: bar.trailingAnchor, constant: DS.Spacing.m)),
                 trailing.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             ]
@@ -416,7 +439,7 @@ final class ChromeHost {
         func piece(_ view: NSView?) -> CGFloat { view.map { $0.fittingSize.width + DS.Spacing.m } ?? 0 }
         let pillWidth = min(pillPiece?.fittingSize.width ?? 0, 180)
         let left = Self.barMargin + pillWidth + DS.Spacing.m + piece(leading)
-        let right = Self.barMargin + searchButton.fittingSize.width + DS.Spacing.m + piece(trailing)
+        let right = Self.barMargin + (trailingCluster ?? searchButton).fittingSize.width + DS.Spacing.m + piece(trailing)
         return bar.fittingSize.width + 2 * max(left, right)
     }
 

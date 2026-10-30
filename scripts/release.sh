@@ -121,9 +121,11 @@ echo "==> Appcast"
 # Sparkle's own tool: signs the DMG's EdDSA signature into the feed with the "side" key.
 UPDATES="$OUT/updates"; mkdir -p "$UPDATES"
 cp "$DMG" "$UPDATES/"
-# The update window's notes: an HTML file named as the DMG beside it goes into the feed.
-NOTES="scripts/release-notes/$VERSION.html"
-[[ -f "$NOTES" ]] && cp "$NOTES" "$UPDATES/Side-$VERSION.html"
+# The update's notes: the release's Markdown, named as the DMG beside it, goes into the feed
+# as sparkle:descriptionFormat="markdown". Side's update popover renders it in the reading type
+# of Markdown previews; Sparkle's own window (in builds before 0.3.0) renders Markdown too.
+NOTES="scripts/release-notes/$VERSION.md"
+[[ -f "$NOTES" ]] && cp "$NOTES" "$UPDATES/Side-$VERSION.md"
 "$SPM/artifacts/sparkle/Sparkle/bin/generate_appcast" --account side --embed-release-notes \
   --download-url-prefix "https://github.com/$RELEASES_REPO/releases/download/v$VERSION/" \
   -o "$OUT/appcast.xml" "$UPDATES"

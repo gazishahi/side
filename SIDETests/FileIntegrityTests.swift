@@ -1,4 +1,5 @@
 import PDFKit
+import Sparkle
 import XCTest
 @testable import Side
 @testable import Heron
@@ -1569,5 +1570,149 @@ final class AttentionCenterTests: XCTestCase {
         report(.needsYou)
         report(.needsYou, root: other)
         XCTAssertEqual(notified.count, 2)
+    }
+}
+
+/// Direction 03 §5: the update pill and Side's own Sparkle user driver.
+@MainActor
+final class UpdatePillTests: XCTestCase {
+    private func settle(_ seconds: TimeInterval = 0.05) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+
+    func testAQuietCheckSaysNothingAndAnAskedOneSaysUpToDate() {
+        let driver = UpdateDriver()
+        var acknowledged = 0
+        driver.showUpdateNotFoundWithError(NSError(domain: "t", code: 0)) { acknowledged += 1 }
+        XCTAssertEqual(driver.stage, .none, "a background check that finds nothing is silent")
+        driver.showUserInitiatedUpdateCheck {}
+        XCTAssertEqual(driver.stage, .checking)
+        driver.showUpdateNotFoundWithError(NSError(domain: "t", code: 0)) { acknowledged += 1 }
+        XCTAssertEqual(driver.stage, .upToDate)
+        XCTAssertEqual(acknowledged, 2, "Sparkle is answered at once either way")
+    }
+
+    func testABackgroundCheckThatFailsIsSilentButAnAskedOneSays() {
+        let driver = UpdateDriver()
+        var acknowledged = 0
+        driver.showUpdaterError(NSError(domain: "t", code: 1, userInfo: [NSLocalizedDescriptionKey: "Offline"])) { acknowledged += 1 }
+        XCTAssertEqual(driver.stage, .none)
+        XCTAssertEqual(acknowledged, 1)
+        driver.showUserInitiatedUpdateCheck {}
+        driver.showUpdaterError(NSError(domain: "t", code: 1, userInfo: [NSLocalizedDescriptionKey: "Offline"])) { acknowledged += 1 }
+        XCTAssertEqual(driver.stage, .failed(reason: "Offline"))
+        XCTAssertEqual(acknowledged, 1, "held until Try Again")
+    }
+
+    func testTheDownloadCountsUpInWholePercents() {
+        let driver = UpdateDriver()
+        var cancelled = false
+        driver.showDownloadInitiated { cancelled = true }
+        XCTAssertEqual(driver.stage.title, "Downloading")
+        driver.showDownloadDidReceiveExpectedContentLength(1000)
+        driver.showDownloadDidReceiveData(ofLength: 425)
+        XCTAssertEqual(driver.stage, .downloading(fraction: 0.42))
+        XCTAssertEqual(driver.stage.title, "Downloading 42%")
+        driver.cancelDownload()
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(driver.stage, .none)
+    }
+
+    func testInstallAndRelaunchDoesntAskTwice() {
+        let driver = UpdateDriver()
+        var replies: [SPUUserUpdateChoice] = []
+        driver.setStageForTesting(.available(version: "0.3.0"))
+        driver.install()
+        driver.showDownloadInitiated {}
+        driver.showDownloadDidStartExtractingUpdate()
+        XCTAssertEqual(driver.stage, .preparing)
+        driver.showReady { replies.append($0) }
+        XCTAssertEqual(replies, [.install], "clicked once: it relaunches when ready")
+    }
+
+    func testDownloadedInTheBackgroundWaitsForRelaunch() {
+        let driver = UpdateDriver()
+        var replies: [SPUUserUpdateChoice] = []
+        driver.showReady { replies.append($0) }
+        XCTAssertEqual(driver.stage, .ready)
+        XCTAssertEqual(driver.stage.title, "Relaunch to Update")
+        XCTAssertEqual(replies, [])
+        driver.relaunch()
+        XCTAssertEqual(replies, [.install])
+    }
+
+    func testThePillGrowsSaysWhatsHappeningAndLeaves() {
+        let driver = UpdateDriver()
+        let pill = UpdatePill(driver: driver, glass: true, height: ChromeHost.barHeight)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView?.addSubview(pill.view)
+        XCTAssertTrue(pill.view.isHidden, "nothing to say, no pill")
+        driver.setStageForTesting(.available(version: "0.3.0"))
+        XCTAssertTrue(pill.view.isShown)
+        XCTAssertEqual(pill.view.title, "Update to 0.3.0")
+        XCTAssertEqual(pill.view.mark, .none)
+        driver.setStageForTesting(.downloading(fraction: 0.5))
+        XCTAssertEqual(pill.view.mark, .ring(fraction: 0.5))
+        driver.setStageForTesting(.preparing)
+        XCTAssertEqual(pill.view.mark, .ring(fraction: nil))
+        if !DS.Motion.reduceMotion { XCTAssertTrue(pill.view.ringForTesting.isSpinningForTesting) }
+        driver.setStageForTesting(.failed(reason: "The signature didn't match."))
+        XCTAssertEqual(pill.view.mark, .dot(.failed))
+        XCTAssertEqual(pill.view.toolTip, "The signature didn't match.")
+        driver.setStageForTesting(.none)
+        XCTAssertFalse(pill.view.isShown)
+        settle(DS.Motion.fadeDuration + 0.2)
+        XCTAssertTrue(pill.view.isHidden)
+    }
+
+    func testThePopoverOffersTheRightChoices() {
+        let driver = UpdateDriver()
+        driver.setStageForTesting(.available(version: "0.3.0"), notes: ("## New\n\n- A pill for updates.", "markdown"))
+        let available = UpdatePopoverViewController(driver: driver)
+        available.loadView()
+        XCTAssertEqual(available.buttonTitlesForTesting, ["Later", "Install and Relaunch"])
+        XCTAssertTrue(available.notesForTesting.contains("A pill for updates."))
+        XCTAssertFalse(available.notesForTesting.contains("##"), "rendered, not shown as source")
+        driver.setStageForTesting(.downloading(fraction: 0.1))
+        let downloading = UpdatePopoverViewController(driver: driver)
+        downloading.loadView()
+        XCTAssertEqual(downloading.buttonTitlesForTesting, ["Cancel"])
+        driver.setStageForTesting(.failed(reason: "Offline"))
+        let failed = UpdatePopoverViewController(driver: driver)
+        failed.loadView()
+        XCTAssertEqual(failed.buttonTitlesForTesting, ["Close", "Try Again"])
+    }
+
+    func testOlderFeedsHTMLNotesReadAsText() {
+        let driver = UpdateDriver()
+        driver.setStageForTesting(.available(version: "0.2.1"), notes: ("<h2>Fixes</h2><ul><li>Line numbers follow.</li></ul>", "html"))
+        let popover = UpdatePopoverViewController(driver: driver)
+        popover.loadView()
+        XCTAssertTrue(popover.notesForTesting.contains("Line numbers follow."))
+        XCTAssertFalse(popover.notesForTesting.contains("<li>"))
+    }
+
+    func testLaterPutsItAway() {
+        let driver = UpdateDriver()
+        driver.setStageForTesting(.available(version: "0.3.0"))
+        driver.later()
+        XCTAssertEqual(driver.stage, .none)
+    }
+
+    func testThePillSitsBesideSearchInTheBar() {
+        let shell = ShellViewController()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentViewController = shell
+        guard let pill = shell.updatePillForTesting else { return XCTFail("no pill") }
+        Updates.shared.driver.setStageForTesting(.available(version: "9.9.9"))
+        defer { Updates.shared.driver.setStageForTesting(.none) }
+        shell.view.layoutSubtreeIfNeeded()
+        let search = shell.searchFrameForTesting
+        let frame = pill.view.convert(pill.view.bounds, to: shell.view)
+        XCTAssertFalse(pill.view.isHidden)
+        XCTAssertLessThan(frame.maxX, search.minX, "before search")
+        XCTAssertEqual(frame.midY, search.midY, accuracy: 1, "on the bar's line")
     }
 }

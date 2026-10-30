@@ -515,6 +515,8 @@ final class ShellViewController: NSViewController {
     private var paletteClosing = false
     var paletteLayerForTesting: CALayer? { paletteHost?.layer }
     func paletteOriginForTesting() -> NSRect { chrome.paletteOrigin(in: view) }
+    var updatePillForTesting: UpdatePill? { chrome.updatePill }
+    var searchFrameForTesting: NSRect { searchButton.convert(searchButton.bounds, to: view) }
 
     /// Every stage — pinned or not — and every Navigate menu item, by name.
     private func paletteCommands() -> [PaletteCommand] {

@@ -442,6 +442,8 @@ enum DS {
         /// A view of the same content changing form (the editor and its Markdown preview, Writer
         /// mode): just enough to soften the cut, short enough to barely register.
         static let glanceDuration: TimeInterval = 0.09
+        /// One turn of an indeterminate progress ring: steady, never urgent.
+        static let spinDuration: TimeInterval = 1.0
 
         /// `CASpringAnimation` for a spring. `velocity` and `distance` (in the animated value's
         /// units, per second) carry a gesture's speed into the settle, so a flick lands with
