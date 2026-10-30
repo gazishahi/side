@@ -439,6 +439,9 @@ enum DS {
         /// Opacity only, never a spring: alpha that overshoots flashes.
         static let fadeDuration: TimeInterval = 0.15
         static var fadeCurve: CAMediaTimingFunction { CAMediaTimingFunction(name: .easeOut) }
+        /// A view of the same content changing form (the editor and its Markdown preview, Writer
+        /// mode): just enough to soften the cut, short enough to barely register.
+        static let glanceDuration: TimeInterval = 0.09
 
         /// `CASpringAnimation` for a spring. `velocity` and `distance` (in the animated value's
         /// units, per second) carry a gesture's speed into the settle, so a flick lands with
@@ -486,9 +489,9 @@ enum DS {
         /// Opacity changes through `animator()`: hover reveals, crossfades. Fades stay under
         /// Reduce Motion, which is about movement.
         @MainActor
-        static func fade(_ changes: () -> Void, completion: (@MainActor () -> Void)? = nil) {
+        static func fade(duration: TimeInterval = fadeDuration, _ changes: () -> Void, completion: (@MainActor () -> Void)? = nil) {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = fadeDuration
+                context.duration = duration
                 context.timingFunction = fadeCurve
                 changes()
             } completionHandler: {
@@ -519,11 +522,11 @@ enum DS {
         /// What `view` shows next replaces what it shows now in a crossfade: for a change of
         /// content that isn't a change of place (a stage switch). Stays under Reduce Motion,
         /// which is about movement.
-        static func crossfade(_ view: NSView) {
+        static func crossfade(_ view: NSView, duration: TimeInterval = fadeDuration) {
             view.wantsLayer = true
             let fade = CATransition()
             fade.type = .fade
-            fade.duration = fadeDuration
+            fade.duration = duration
             fade.timingFunction = fadeCurve
             view.layer?.add(fade, forKey: "dsCrossfade")
         }

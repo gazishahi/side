@@ -246,11 +246,26 @@ final class ChromeHost {
     }
 
     /// Writer mode: no top row and no bar, only the stage.
-    func setHidden(_ hidden: Bool) {
-        topRow.isHidden = hidden
-        topRowBackdrop.isHidden = hidden
-        for piece in barPieces { piece.isHidden = hidden }
+    /// `animated`: the glass fades in a glance (Writer mode). Glass is drawn by the window
+    /// server, so a crossfade of the window's layers can't carry it; its own alpha does.
+    func setHidden(_ hidden: Bool, animated: Bool = false) {
+        isChromeHidden = hidden
+        let pieces: [NSView] = [topRow, topRowBackdrop] + barPieces
+        guard animated, topRow.window != nil else {
+            for piece in pieces { piece.isHidden = hidden; piece.alphaValue = 1 }
+            return
+        }
+        if !hidden {
+            for piece in pieces where piece.isHidden { piece.alphaValue = 0; piece.isHidden = false }
+        }
+        DS.Motion.fade(duration: DS.Motion.glanceDuration, {
+            for piece in pieces { piece.animator().alphaValue = hidden ? 0 : 1 }
+        }, completion: { [weak self] in
+            guard let self, hidden, self.isChromeHidden else { return }
+            for piece in pieces { piece.isHidden = true; piece.alphaValue = 1 }
+        })
     }
+    private(set) var isChromeHidden = false
 
     private var scrollObserver: NSObjectProtocol?
     private weak var watchedScroll: NSScrollView?

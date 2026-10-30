@@ -2462,6 +2462,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let index = activeTabIndex, openTabs.indices.contains(index),
               openTabs[index].kind == .text, openTabs[index].url.pathExtension.lowercased() == "md" else { return }
         openTabs[index].isPreviewingMarkdown.toggle()
+        DS.Motion.crossfade(view, duration: DS.Motion.glanceDuration)
         loadActiveTabIntoEditor()
         // Find follows to what's showing: the preview's text or the file's.
         if paletteIsOpen, searchMode == .find {

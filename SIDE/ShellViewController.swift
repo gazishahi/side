@@ -821,7 +821,8 @@ final class ShellViewController: NSViewController {
         show(stage)
     }
 
-    var chromeHiddenForTesting: Bool { chrome.topRow.isHidden }
+    var chromeHiddenForTesting: Bool { chrome.isChromeHidden }
+    var topRowHiddenForTesting: Bool { chrome.topRow.isHidden }
     var currentStageForTesting: String? { current.map { "\($0)" } }
 
     /// UI testing: a message sent in Think, as typed.
@@ -847,7 +848,8 @@ final class ShellViewController: NSViewController {
         guard on != isWriting else { return }
         if on { show(.make) }
         isWriting = on
-        chrome.setHidden(on)
+        DS.Motion.crossfade(view, duration: DS.Motion.glanceDuration)
+        chrome.setHidden(on, animated: true)
         if !on { refreshStageControl() }
         makeVC.setTopObstruction(on ? 0 : ChromeHost.rowHeight)
         makeVC.setBottomObstruction(on ? 0 : chrome.bottomObstruction)

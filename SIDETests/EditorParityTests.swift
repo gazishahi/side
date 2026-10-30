@@ -698,7 +698,11 @@ final class EditorParityTests: XCTestCase {
         XCTAssertEqual(shell.currentStageForTesting, "make", "Writer mode is Make")
         XCTAssertTrue(shell.chromeHiddenForTesting)
         XCTAssertEqual(window.standardWindowButton(.closeButton)?.isHidden, true)
+        // The glass fades in a glance, then is gone.
+        RunLoop.main.run(until: Date().addingTimeInterval(DS.Motion.glanceDuration + 0.2))
+        XCTAssertTrue(shell.topRowHiddenForTesting)
         shell.showStageForTesting("think")
+        XCTAssertFalse(shell.topRowHiddenForTesting, "back at once, fading in")
         XCTAssertFalse(shell.isWriting, "going to another stage leaves it")
         XCTAssertFalse(shell.chromeHiddenForTesting)
         XCTAssertEqual(window.standardWindowButton(.closeButton)?.isHidden, false)
