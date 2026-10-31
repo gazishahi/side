@@ -249,12 +249,14 @@ final class AttentionCenter {
             let event: Event? = switch track.activity {
             case .needsYou: .needsYou
             case .failed: .failed
-            case .doneUnread where previous == .working: .finished
+            // Seen or not: Think marks a turn seen when it's on screen, even in a window behind
+            // another app, so `isLooking` decides, not the unseen flag.
+            case .doneUnread where previous == .working, .doneSeen where previous == .working: .finished
             default: nil
             }
             guard let event else {
                 // What the banner said is over: approved, answered, retried or seen.
-                if previous.wantsAttention || previous == .doneUnread { notifier.withdraw(id: id) }
+                if previous.wantsAttention || previous == .doneUnread || previous == .doneSeen { notifier.withdraw(id: id) }
                 continue
             }
             guard !isLooking(root, track.trackKey) else { continue }

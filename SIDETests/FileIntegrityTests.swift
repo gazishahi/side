@@ -1582,6 +1582,20 @@ final class AttentionCenterTests: XCTestCase {
         XCTAssertEqual(notifier.posted.last?.0.body, "Ready for review")
     }
 
+    func testATurnSeenOnAWindowBehindAnotherAppStillCounts() {
+        // Think marks the turn seen while it's on screen, even with Side in the background.
+        AttentionPreferences.alsoWhenFinished = true
+        report(.working)
+        report(.doneSeen)
+        XCTAssertEqual(played, ["Tink"])
+        report(.working)
+        XCTAssertEqual(notifier.withdrawn.count, 1, "the banner goes once the next turn starts")
+        looking = true
+        clock += 10
+        report(.doneSeen)
+        XCTAssertEqual(played, ["Tink"], "watching it finish isn't news")
+    }
+
     func testTurningOffSoundsKeepsTheBanners() {
         AttentionPreferences.soundWhenNeedsYou = false
         report(.working, track: "a")
