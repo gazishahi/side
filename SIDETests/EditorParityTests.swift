@@ -1050,4 +1050,42 @@ final class EditorParityTests: XCTestCase {
             }
         }
     }
+
+    func testDraggingTheWindowByTheTopRowLeavesTheEditorScrolled() throws {
+        // Grabbing the top row to move the window sent the drag on to the editor, which
+        // autoscrolled toward the pointer above it: the file jumped to its top.
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1100, height: 700), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let shell = ShellViewController()
+        window.contentViewController = shell
+        shell.installChrome(in: window)
+        window.makeKeyAndOrderFront(nil)
+        let text = (1...400).map { "let line\($0) = \($0)" }.joined(separator: "\n")
+        try text.write(to: root.appendingPathComponent("long.swift"), atomically: true, encoding: .utf8)
+        shell.openProject(at: root, focusingTrackKey: nil)
+        func settle(_ seconds: Double) { let end = Date().addingTimeInterval(seconds); while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.016)) } }
+        settle(1.5)
+        let make = shell.makeForTesting
+        make.revealFile(root.appendingPathComponent("long.swift"), line: nil)
+        settle(1)
+        let view = (make.editor as! AlloyEditorEngine).view
+        let clip = view.scrollView.contentView
+        clip.scroll(to: NSPoint(x: 0, y: 3000)); view.scrollView.reflectScrolledClipView(clip)
+        settle(0.2)
+        window.setFrameOrigin(NSPoint(x: 200, y: 150))
+        window.resignKey()
+        window.makeKeyAndOrderFront(nil)
+        settle(0.3)
+        let frameView = try XCTUnwrap(window.contentView?.superview)
+        let press = NSPoint(x: 300, y: window.frame.height - 14)
+        XCTAssertTrue(frameView.hitTest(frameView.convert(press, from: nil)) is TopRowView)
+        for (type, point) in [(NSEvent.EventType.leftMouseDown, press), (.leftMouseDragged, NSPoint(x: press.x + 20, y: press.y - 5)), (.leftMouseUp, NSPoint(x: press.x + 20, y: press.y - 5))] {
+            window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))
+        }
+        settle(0.3)
+        XCTAssertEqual(clip.bounds.origin.y, 3000)
+    }
 }
