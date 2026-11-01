@@ -37,7 +37,6 @@ enum MarkdownPreview {
     static let inlineCodeKey = NSAttributedString.Key("SidePreviewInlineCode")
     static let quoteKey = NSAttributedString.Key("SidePreviewQuote")
     static let ruleKey = NSAttributedString.Key("SidePreviewRule")
-    static let tableHeaderKey = NSAttributedString.Key("SidePreviewTableHeader")
 
     /// The indent a code block's card starts at (its text sits `codePadding` inside).
     static let codeCardIndentKey = NSAttributedString.Key("SidePreviewCodeCardIndent")
@@ -619,35 +618,72 @@ enum MarkdownPreview {
             paragraph = (out.attribute(.paragraphStyle, at: out.length - 1, effectiveRange: nil) as? NSParagraphStyle) ?? paragraph
         }
 
-        /// A table: cells on tab stops at their widest, the header bold over a rule.
+        /// A table: a text table, so columns size to their cells and a long cell wraps inside its
+        /// column instead of running past the next one. The header is bold over a rule.
         private mutating func flushTable() {
             guard var table else { return }
             self.table = nil
             table.rows.removeAll { $0.allSatisfy { $0.length == 0 } }
             let columns = table.rows.map(\.count).max() ?? 0
-            var widths = [CGFloat](repeating: 0, count: columns)
-            for row in table.rows { for (c, cell) in row.enumerated() { widths[c] = max(widths[c], ceil(cell.size().width)) } }
-            var stops: [NSTextTab] = []
-            var x = table.indent
-            for width in widths.dropLast() { x += width + 28; stops.append(NSTextTab(textAlignment: .left, location: x)) }
-            for (r, row) in table.rows.enumerated() {
-                let p = NSMutableParagraphStyle()
-                p.tabStops = stops
-                p.firstLineHeadIndent = table.indent
-                p.headIndent = table.indent
-                p.lineHeightMultiple = 1.3
-                p.paragraphSpacingBefore = r == 0 ? (style.bodySize * 0.3).rounded() : (r == 1 && table.header != nil ? 6 : 0)
-                p.paragraphSpacing = r == table.rows.count - 1 ? (style.bodySize * 0.8).rounded() : 4
-                let line = NSMutableAttributedString()
-                for (c, cell) in row.enumerated() {
-                    if c > 0 { line.append(NSAttributedString(string: "\t", attributes: [.font: style.body])) }
-                    line.append(cell)
+            guard columns > 0 else { return }
+            // Each column as wide as its widest cell. Past the column's measure, the widest give
+            // way first (each column keeps at least an even share), so a long cell wraps where
+            // there's the most text, and short ones stay on one line.
+            let gap: CGFloat = 28
+            var natural = [CGFloat](repeating: 0, count: columns)
+            // A little over the measured width: a cell set to exactly its width can still break.
+            for row in table.rows { for (c, cell) in row.enumerated() { natural[c] = max(natural[c], ceil(cell.size().width) + 4) } }
+            for c in 0..<columns - 1 { natural[c] += gap }
+            let available = style.columnWidth - table.indent
+            var widths = natural
+            if natural.reduce(0, +) > available {
+                var room = available
+                var open = Array(0..<columns)
+                while true {
+                    let share = room / CGFloat(open.count)
+                    let fits = open.filter { natural[$0] <= share }
+                    if fits.isEmpty { for c in open { widths[c] = share }; break }
+                    for c in fits { widths[c] = natural[c]; room -= natural[c] }
+                    open.removeAll { fits.contains($0) }
+                    if open.isEmpty { break }
                 }
-                line.append(NSAttributedString(string: r == table.rows.count - 1 ? "" : "\n", attributes: [.font: style.body]))
-                line.addAttribute(.paragraphStyle, value: p, range: NSRange(location: 0, length: line.length))
-                if r == 0, table.header != nil { line.addAttribute(MarkdownPreview.tableHeaderKey, value: true, range: NSRange(location: 0, length: line.length)) }
-                out.append(line)
-                paragraph = p
+            }
+            // As shares of the column, so the table narrows with a narrow window. The table's
+            // width takes in its indent (its margin).
+            let total = widths.reduce(0, +)
+            let grid = NSTextTable()
+            grid.numberOfColumns = columns
+            grid.layoutAlgorithm = .fixedLayoutAlgorithm
+            grid.collapsesBorders = true
+            grid.hidesEmptyCells = false
+            grid.setValue(min(100, (total + table.indent) / style.columnWidth * 100), type: .percentageValueType, for: .width)
+            grid.setWidth(table.indent, type: .absoluteValueType, for: .margin, edge: .minX)
+            for (r, row) in table.rows.enumerated() {
+                let isHeader = r == 0 && table.header != nil
+                for c in 0..<columns {
+                    let block = NSTextTableBlock(table: grid, startingRow: r, rowSpan: 1, startingColumn: c, columnSpan: 1)
+                    // A block's width is its content's; the gap after it is padding.
+                    block.setValue((widths[c] - (c == columns - 1 ? 0 : gap)) / total * 100, type: .percentageValueType, for: .width)
+                    block.setWidth(c == columns - 1 ? 0 : gap, type: .absoluteValueType, for: .padding, edge: .maxX)
+                    block.setWidth(r == 0 ? 0 : 4, type: .absoluteValueType, for: .padding, edge: .minY)
+                    block.setWidth(isHeader ? 6 : 4, type: .absoluteValueType, for: .padding, edge: .maxY)
+                    if isHeader {
+                        block.setWidth(1, type: .absoluteValueType, for: .border, edge: .maxY)
+                        block.setBorderColor(DS.Color.hairline, for: .maxY)
+                    }
+                    let p = NSMutableParagraphStyle()
+                    p.textBlocks = [block]
+                    p.lineHeightMultiple = 1.3
+                    p.paragraphSpacingBefore = r == 0 ? (style.bodySize * 0.3).rounded() : 0
+                    p.paragraphSpacing = r == table.rows.count - 1 ? (style.bodySize * 0.8).rounded() : 0
+                    let cell = NSMutableAttributedString(attributedString: row.indices.contains(c) ? row[c] : NSAttributedString())
+                    // The last cell's paragraph ends with the block's own line break (`endBlock`).
+                    let last = r == table.rows.count - 1 && c == columns - 1
+                    if !last { cell.append(NSAttributedString(string: "\n", attributes: [.font: style.body])) }
+                    cell.addAttribute(.paragraphStyle, value: p, range: NSRange(location: 0, length: cell.length))
+                    out.append(cell)
+                    paragraph = p
+                }
             }
         }
 
@@ -737,7 +773,7 @@ final class MarkdownPreviewTextView: NSTextView {
 }
 
 /// Draws what the preview's attributes ask for behind the text: code-block cards, inline-code
-/// chips, quote bars, rules, and the line under a table's header.
+/// chips, quote bars and rules.
 final class MarkdownPreviewLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
@@ -799,14 +835,11 @@ final class MarkdownPreviewLayoutManager: NSLayoutManager {
             NSBezierPath(roundedRect: NSRect(x: x, y: origin.y + top, width: 3, height: bottom - top), xRadius: 1.5, yRadius: 1.5).fill()
         }
 
-        // Rules and the line under a table's header.
-        for key in [MarkdownPreview.ruleKey, MarkdownPreview.tableHeaderKey] {
-            storage.enumerateAttribute(key, in: visible) { value, range, _ in
-                guard value != nil, let (top, bottom) = lines(range) else { return }
-                let y = key == MarkdownPreview.ruleKey ? (top + bottom) / 2 : bottom + 3
-                DS.Color.hairline.setFill()
-                NSRect(x: origin.x, y: (origin.y + y).rounded(), width: width, height: 1).fill()
-            }
+        // Rules. A table's header draws its own line, as the cells' border.
+        storage.enumerateAttribute(MarkdownPreview.ruleKey, in: visible) { value, range, _ in
+            guard value != nil, let (top, bottom) = lines(range) else { return }
+            DS.Color.hairline.setFill()
+            NSRect(x: origin.x, y: (origin.y + (top + bottom) / 2).rounded(), width: width, height: 1).fill()
         }
     }
 }

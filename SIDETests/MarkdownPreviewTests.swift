@@ -55,9 +55,40 @@ final class MarkdownPreviewTests: XCTestCase {
         XCTAssertTrue(text.contains("◦\tinner"), "a nested list gets its own bullet: \(text)")
     }
 
+    /// Lays `markdown` out in a preview column `width` wide: each cell's text and its frame.
+    private func layOut(_ markdown: String, width: CGFloat) -> (text: NSAttributedString, frame: (String) -> NSRect) {
+        let out = render(markdown)
+        let storage = NSTextStorage(attributedString: out)
+        let layout = MarkdownPreviewLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        layout.ensureLayout(for: container)
+        return (out, { word in
+            // The layout manager holds its storage weakly: the closure keeps it.
+            _ = storage
+            let range = (out.string as NSString).range(of: word)
+            return layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+        })
+    }
+
     func testTablesLineUp() {
-        let text = render("| A | B |\n|---|---|\n| one | two |\n").string
-        XCTAssertTrue(text.contains("A\tB\none\ttwo"), text)
+        let (text, frame) = layOut("| A | B |\n|---|---|\n| one | two |\n", width: 720)
+        XCTAssertTrue(text.string.contains("A\nB\none\ntwo"), text.string)
+        XCTAssertEqual(frame("B").minX, frame("two").minX, accuracy: 0.5, "a column starts in one place")
+        XCTAssertLessThan(frame("B").minX, 200, "a short table keeps to its cells, not the column's width")
+    }
+
+    /// 2026-10-31, the owner: a long cell ran out of its column. It wraps inside it now.
+    func testALongCellWrapsInsideItsColumn() {
+        let long = "Opening " + Array(repeating: "words that go on", count: 20).joined(separator: " ") + " closing"
+        let (text, frame) = layOut("| Name | Notes | End |\n|---|---|---|\n| one | \(long) | last |\n", width: 600)
+        let first = frame("Opening"), lastLine = frame("closing")
+        XCTAssertGreaterThan(lastLine.minY - first.minY, 60, "the cell wraps onto several lines: \(text.string)")
+        XCTAssertLessThanOrEqual(frame("last").maxX, 600.5, "the table fits the column")
+        XCTAssertGreaterThan(frame("last").minX, first.minX + 200, "the next column starts after the wrapped one")
+        XCTAssertEqual(frame("Notes").minX, first.minX, accuracy: 0.5)
     }
 
     func testAnchorLinksStayInTheDocument() {
