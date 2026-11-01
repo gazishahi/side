@@ -405,6 +405,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     }
     private(set) var commandStatus = CommandStatus()
     var onCommandStatusChanged: (() -> Void)?
+    /// The title the running program gave the terminal (OSC 0/2): Claude Code's task, Codex's,
+    /// vim's file. Only while a command runs: a shell setting one at every prompt isn't naming
+    /// anything, and the folder says more. Cleared when the command finishes.
+    private(set) var programTitle: String?
+    var onProgramTitleChanged: (() -> Void)?
     private var markScanCarry: [UInt8] = []
     /// The marked command's output so far, raw (`advanceMarkedCapture`); the sentinel path
     /// keeps its text in `pendingAgentCommand.buffer`.
@@ -1140,7 +1145,23 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     // MARK: - LocalProcessTerminalViewDelegate
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
-    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
+    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
+        guard commandStatus.runningSince != nil else { return }
+        setProgramTitle(Self.cleanProgramTitle(title))
+    }
+
+    private func setProgramTitle(_ title: String?) {
+        guard title != programTitle else { return }
+        programTitle = title
+        onProgramTitleChanged?()
+    }
+
+    /// A program's title without the spinner or status glyph in front (Claude Code animates one
+    /// there), so the tab doesn't redraw on every frame of it. Empty is no title.
+    static func cleanProgramTitle(_ title: String) -> String? {
+        let trimmed = title.drop { !$0.isLetter && !$0.isNumber }.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : String(trimmed.prefix(60))
+    }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         let path = directory.map(Self.pathFromOSC7)
@@ -1173,6 +1194,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                 status.lastExitCode = code
                 status.lastDuration = Date().timeIntervalSince(start)
                 status.runningSince = nil
+                setProgramTitle(nil)
                 status.lastCommandWasAgent = pendingAgentCommand != nil
                 status.finishedCount += 1
             }

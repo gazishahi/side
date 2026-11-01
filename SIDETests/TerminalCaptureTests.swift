@@ -147,4 +147,32 @@ final class VerificationStalenessTests: XCTestCase {
         XCTAssertNotNil(NSImage(contentsOfFile: saved), "a picture Claude Code can open")
         files.releaseGlobally(); picture.releaseGlobally()
     }
+
+    // MARK: - Program titles (2026-10-31, the owner: Claude Code's task on Run's tab)
+
+    func testAProgramTitleLosesItsSpinner() {
+        XCTAssertEqual(TerminalViewController.cleanProgramTitle("\u{2733} Fix the login bug"), "Fix the login bug")
+        XCTAssertEqual(TerminalViewController.cleanProgramTitle("\u{2802} Fix the login bug"), "Fix the login bug")
+        XCTAssertEqual(TerminalViewController.cleanProgramTitle("vim notes.md"), "vim notes.md")
+        XCTAssertNil(TerminalViewController.cleanProgramTitle(" \u{2733} "))
+    }
+
+    @MainActor
+    func testARunningProgramNamesTheTabUntilItFinishes() {
+        let vc = TerminalViewController()
+        vc.loadViewIfNeeded()
+        let session = TerminalSession(label: "project", viewController: vc)
+        func receive(_ text: String) { vc.terminalView.dataReceived(slice: ArraySlice(Array(text.utf8))) }
+        receive("\u{1B}]0;user@host: ~/project\u{07}")
+        XCTAssertEqual(session.title, "project", "a title set at the prompt names nothing")
+        receive("\u{1B}]133;C\u{07}" + "\u{1B}]0;\u{2733} Claude Code\u{07}")
+        XCTAssertEqual(session.title, "Claude Code")
+        receive("\u{1B}]2;\u{2802} Fix the login bug\u{07}")
+        XCTAssertEqual(session.title, "Fix the login bug")
+        session.customName = "Mine"
+        XCTAssertEqual(session.title, "Mine", "your own name wins")
+        session.customName = nil
+        receive("\u{1B}]133;D;0\u{07}")
+        XCTAssertEqual(session.title, "project", "back to the folder once it ends")
+    }
 }

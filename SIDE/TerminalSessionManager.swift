@@ -7,9 +7,10 @@ import Heron
 final class TerminalSession {
     let id = UUID()
     var label: String
-    /// The person's own name for the tab (Direction 03 §4.3); nil for the automatic `label`.
+    /// The person's own name for the tab (Direction 03 §4.3); nil for the automatic one: what's
+    /// running names it (an agent CLI's task), else `label`, the folder.
     var customName: String?
-    var title: String { customName ?? label }
+    var title: String { customName ?? viewController.programTitle ?? label }
     let viewController: TerminalViewController
     var hasUnseenOutput = false
 
@@ -125,6 +126,7 @@ final class TerminalSessionManager {
         // Run's status line: live cwd and the last command's exit and duration.
         vc.onDirectoryChanged = { [weak self] _ in self?.post(origin: nil) }
         vc.onCommandStatusChanged = { [weak self] in self?.post(origin: nil) }
+        vc.onProgramTitleChanged = { [weak self] in self?.post(origin: nil) }
         vc.onOutputReceived = { [weak self, weak session] in
             guard let self, let session else { return }
             // A shell still settling (integration line echoing, first prompt painting) is
