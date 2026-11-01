@@ -1088,4 +1088,51 @@ final class EditorParityTests: XCTestCase {
         settle(0.3)
         XCTAssertEqual(clip.bounds.origin.y, 3000)
     }
+
+    func testZoomStepsTheSizesSettingsOffers() {
+        XCTAssertEqual(DS.Text.CodeSize.zoomed(14, by: 1), 15)
+        XCTAssertEqual(DS.Text.CodeSize.zoomed(16, by: 1), 18)
+        XCTAssertEqual(DS.Text.CodeSize.zoomed(14, by: -1), 13)
+        XCTAssertEqual(DS.Text.CodeSize.zoomed(24, by: 1), 24, "holds at the end")
+        XCTAssertEqual(DS.Text.CodeSize.zoomed(11, by: -1), 11)
+        XCTAssertEqual(DS.Text.CodeSize.zoomed(17, by: 1), 18, "a size off the list joins it")
+    }
+
+    /// The owner: the zoom pill comes when you zoom, and isn't there otherwise.
+    func testZoomGrowsTheStageInFrontAndThePillComesAndGoes() throws {
+        let saved = (DS.Text.CodeSize.editor, DS.Text.CodeSize.terminal)
+        defer { (DS.Text.CodeSize.editor, DS.Text.CodeSize.terminal) = saved }
+        DS.Text.CodeSize.editor = 14
+        DS.Text.CodeSize.terminal = 14
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1100, height: 700), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let shell = ShellViewController()
+        window.contentViewController = shell
+        shell.installChrome(in: window)
+        window.makeKeyAndOrderFront(nil)
+        shell.openProject(at: root, focusingTrackKey: nil)
+        func settle(_ seconds: Double) { let end = Date().addingTimeInterval(seconds); while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.016)) } }
+        settle(1)
+        let pill = try XCTUnwrap(shell.zoomPillForTesting)
+        XCTAssertFalse(pill.isShown, "not there until you zoom")
+        shell.showStageForTesting("make")
+        shell.zoomIn(nil)
+        XCTAssertEqual(DS.Text.CodeSize.editor, 15)
+        XCTAssertEqual(DS.Text.CodeSize.terminal, 14)
+        XCTAssertTrue(pill.isShown)
+        XCTAssertEqual(pill.title, "Editor \u{00B7} 15 pt")
+        pill.hideForTesting()
+        settle(0.4)
+        XCTAssertFalse(pill.isShown, "gone a moment later")
+        shell.showStageForTesting("run")
+        shell.zoomOut(nil)
+        XCTAssertEqual(DS.Text.CodeSize.terminal, 13)
+        XCTAssertEqual(pill.title, "Terminal \u{00B7} 13 pt")
+        shell.actualSize(nil)
+        XCTAssertEqual(DS.Text.CodeSize.terminal, 14)
+        shell.showStageForTesting("think")
+        let item = NSMenuItem(title: "Zoom In", action: #selector(ShellViewController.zoomIn(_:)), keyEquivalent: "")
+        XCTAssertFalse(shell.validateMenuItem(item), "nothing to grow in Think")
+    }
 }

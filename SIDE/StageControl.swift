@@ -139,7 +139,7 @@ final class ProgressRing: NSView {
 /// (Direction 03 §6). It grows out of the bar when it comes and shrinks back when it goes, and
 /// what it says crossfades in place. Off the bar (the top-row placement) it's plain, like
 /// search's icon there.
-final class GlassPill: NSView {
+class GlassPill: NSView {
     enum Mark: Equatable {
         case none
         case dot(DS.StatusState)
@@ -152,7 +152,7 @@ final class GlassPill: NSView {
     private let label = NSTextField(labelWithString: "")
     private let ring = ProgressRing()
     private let dot = DS.StatusDot(state: .failed)
-    private let row = NSStackView()
+    let row = NSStackView()
     private var glass: NSView?
     private let height: CGFloat
 
@@ -279,4 +279,88 @@ final class GlassPill: NSView {
     }
 
     var ringForTesting: ProgressRing { ring }
+}
+
+/// Zoom's pill (⌘= ⌘− ⌘0): − and + around the size, the size itself back to the default. It
+/// comes when you zoom and goes a moment later (it stays while the pointer is on it); it's
+/// never there otherwise.
+final class ZoomPill: GlassPill {
+    var onZoomOut: (() -> Void)?
+    var onZoomIn: (() -> Void)?
+    /// It came or went: what fits beside it changed.
+    var onShownChanged: (() -> Void)?
+    /// How long it stays after the last zoom, or after the pointer leaves it.
+    static let lingering: TimeInterval = 2.5
+    private var hideTimer: Timer?
+    private var pointerInside = false
+
+    override init(height: CGFloat, glass: Bool) {
+        super.init(height: height, glass: glass)
+        isHidden = true
+        let minus = Self.button("minus", "Zoom Out", #selector(zoomOutPressed))
+        let plus = Self.button("plus", "Zoom In", #selector(zoomInPressed))
+        minus.target = self
+        plus.target = self
+        row.insertArrangedSubview(minus, at: 0)
+        row.addArrangedSubview(plus)
+        toolTip = "Click the size for the default"
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private static func button(_ symbol: String, _ label: String, _ action: Selector) -> NSButton {
+        let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: label) ?? NSImage(), target: nil, action: action)
+        button.isBordered = false
+        button.contentTintColor = .secondaryLabelColor
+        button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold, scale: .medium)
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
+        // One size for both: "minus" is a narrower image than "plus".
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant: 20), button.heightAnchor.constraint(equalToConstant: 20)])
+        button.setAccessibilityLabel(label)
+        return button
+    }
+
+    @objc private func zoomOutPressed() { onZoomOut?() }
+    @objc private func zoomInPressed() { onZoomIn?() }
+
+    /// A zoom happened: say the size, and stay a moment.
+    func show(_ title: String) {
+        set(title: title, mark: .none)
+        let arriving = !isShown
+        setShown(true, animated: true)
+        if arriving { onShownChanged?() }
+        scheduleHide()
+    }
+
+    private func scheduleHide() {
+        hideTimer?.invalidate()
+        guard !pointerInside else { return }
+        hideTimer = Timer.scheduledTimer(withTimeInterval: Self.lingering, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.leave() }
+        }
+    }
+
+    private func leave() {
+        setShown(false, animated: true)
+        // Measured once it's gone, not mid-fade.
+        DispatchQueue.main.asyncAfter(deadline: .now() + DS.Motion.fadeDuration + 0.05) { [weak self] in
+            guard let self, !self.isShown else { return }
+            self.onShownChanged?()
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        pointerInside = true
+        hideTimer?.invalidate()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        pointerInside = false
+        if isShown { scheduleHide() }
+    }
+
+    func hideForTesting() { hideTimer?.fire() }
 }

@@ -1013,6 +1013,45 @@ final class ShellViewController: NSViewController {
 
     @objc func toggleWriterMode(_ sender: Any?) { setWriterMode(!isWriting) }
 
+    // MARK: - Zoom
+
+    /// What ⌘= ⌘− ⌘0 grow in the stage in front: Make's text (editor, preview, Writer Mode) or
+    /// Run's terminal. The same sizes as Settings › Appearance, so the two never disagree.
+    enum ZoomSurface: Equatable {
+        case editor, terminal
+        var name: String { self == .editor ? "Editor" : "Terminal" }
+        var size: CGFloat {
+            get { self == .editor ? DS.Text.CodeSize.editor : DS.Text.CodeSize.terminal }
+            nonmutating set { if self == .editor { DS.Text.CodeSize.editor = newValue } else { DS.Text.CodeSize.terminal = newValue } }
+        }
+    }
+
+    var zoomSurface: ZoomSurface? {
+        switch current {
+        case .make: .editor
+        case .run: .terminal
+        default: nil
+        }
+    }
+
+    @objc func zoomIn(_ sender: Any?) { zoom(by: 1) }
+    @objc func zoomOut(_ sender: Any?) { zoom(by: -1) }
+    @objc func actualSize(_ sender: Any?) { zoom(by: 0) }
+
+    /// Steps the size (0 is the default) and says so on the zoom pill.
+    private func zoom(by steps: Int) {
+        guard let surface = zoomSurface else { NSSound.beep(); return }
+        let size = steps == 0 ? DS.Text.CodeSize.standard : DS.Text.CodeSize.zoomed(surface.size, by: steps)
+        if size != surface.size { surface.size = size }
+        guard let pill = chrome.zoomPill else { return }
+        pill.onZoomIn = { [weak self] in self?.zoom(by: 1) }
+        pill.onZoomOut = { [weak self] in self?.zoom(by: -1) }
+        pill.onClick = { [weak self] in self?.zoom(by: 0) }
+        pill.show("\(surface.name) \u{00B7} \(Int(size)) pt")
+    }
+
+    var zoomPillForTesting: ZoomPill? { chrome.zoomPill }
+
     func setWriterMode(_ on: Bool) {
         guard on != isWriting else { return }
         if on { show(.make) }
@@ -1893,5 +1932,15 @@ extension ShellViewController: WorkspaceBridgeHost {
     func revealAfterApply(_ url: URL) {
         show(.make)
         makeVC.revealAfterApply(url)
+    }
+}
+
+extension ShellViewController: NSMenuItemValidation {
+    /// Zoom only where there's text to grow; everything else as it was.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(zoomIn(_:)), #selector(zoomOut(_:)), #selector(actualSize(_:)): zoomSurface != nil
+        default: true
+        }
     }
 }

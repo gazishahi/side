@@ -272,6 +272,13 @@ enum DS {
                 let value = defaults.double(forKey: key)
                 return value > 0 ? CGFloat(value) : standard
             }
+            /// Zoom: the next size in `choices` up or down from `size` (one off the list joins it
+            /// at the nearest step), holding at the ends.
+            static func zoomed(_ size: CGFloat, by steps: Int) -> CGFloat {
+                if steps > 0 { return choices.first { $0 > size } ?? choices.last ?? size }
+                if steps < 0 { return choices.last { $0 < size } ?? choices.first ?? size }
+                return size
+            }
             private static func store(_ value: CGFloat, _ key: String) {
                 defaults.set(Double(value), forKey: key)
                 NotificationCenter.default.post(name: didChangeNotification, object: nil)

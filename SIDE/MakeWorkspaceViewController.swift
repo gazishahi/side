@@ -4796,6 +4796,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         Shortcuts.bind(viewMenu.addItem(withTitle: "Live Markdown", action: #selector(toggleLiveMarkdown(_:)), keyEquivalent: ""), "view.liveMarkdown")
         // The shell's: it hides its own chrome as well as Make's.
         Shortcuts.bind(viewMenu.addItem(withTitle: "Writer Mode", action: #selector(ShellViewController.toggleWriterMode(_:)), keyEquivalent: ""), "view.writerMode")
+        // The shell's: the stage in front decides what grows (Make's text, Run's terminal).
+        viewMenu.addItem(NSMenuItem.separator())
+        Shortcuts.bind(viewMenu.addItem(withTitle: "Zoom In", action: #selector(ShellViewController.zoomIn(_:)), keyEquivalent: ""), "view.zoomIn")
+        Shortcuts.bind(viewMenu.addItem(withTitle: "Zoom Out", action: #selector(ShellViewController.zoomOut(_:)), keyEquivalent: ""), "view.zoomOut")
+        Shortcuts.bind(viewMenu.addItem(withTitle: "Actual Size", action: #selector(ShellViewController.actualSize(_:)), keyEquivalent: ""), "view.actualSize")
         viewItem.submenu = viewMenu
 
         // Markdown's formatting (its shortcuts are live in Markdown files only).

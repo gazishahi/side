@@ -73,6 +73,8 @@ final class ChromeHost {
     private var barPieces: [NSView] = []
     /// The update pill, beside search (Direction 03 §5.1).
     private(set) var updatePill: UpdatePill?
+    /// Zoom's pill, beside the update pill: only while you're zooming.
+    private(set) var zoomPill: ZoomPill?
     /// Search and the update pill, as one trailing piece of the bar.
     private var trailingCluster: NSView?
     private var updateObserver: NSObjectProtocol?
@@ -111,7 +113,9 @@ final class ChromeHost {
             searchButton.setGlass(false)
             let update = UpdatePill(glass: false, height: 28)
             updatePill = update
-            for view in [pill, stageSlot, stageControl, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
+            let zoom = ZoomPill(height: 28, glass: false)
+            zoomPill = zoom
+            for view in [pill, stageSlot, stageControl, zoom, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
             row.setCustomSpacing(DS.Spacing.l, after: stageSlot)
         case .floatingBar:
             row.addArrangedSubview(stageSlot)
@@ -155,7 +159,9 @@ final class ChromeHost {
         searchButton.setGlass(true)
         let update = UpdatePill(glass: true, height: Self.barHeight)
         updatePill = update
-        let cluster = NSStackView(views: [update.view, searchButton])
+        let zoom = ZoomPill(height: Self.barHeight, glass: true)
+        zoomPill = zoom
+        let cluster = NSStackView(views: [zoom, update.view, searchButton])
         cluster.orientation = .horizontal
         cluster.alignment = .centerY
         cluster.spacing = DS.Spacing.m
@@ -177,13 +183,16 @@ final class ChromeHost {
         barPieces = [pillCapsule, stagesCapsule, cluster]
         // The pill coming or going changes what fits beside the stage control.
         updateObserver = NotificationCenter.default.addObserver(forName: UpdateDriver.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let root = self.barRoot, self.accessoryStage != nil else { return }
-                self.placeAccessories(of: self.accessoryStage, width: root.bounds.width)
-            }
+            MainActor.assumeIsolated { self?.replaceAccessories() }
         }
+        zoom.onShownChanged = { [weak self] in self?.replaceAccessories() }
         barRoot = root
         pillPiece = pillCapsule
+    }
+
+    private func replaceAccessories() {
+        guard let root = barRoot, accessoryStage != nil else { return }
+        placeAccessories(of: accessoryStage, width: root.bounds.width)
     }
 
     /// With one stage to show there's nowhere to switch to: the stage control goes (its glass
@@ -594,7 +603,7 @@ final class TopRowView: NSView {
     }
 
     static func isInteractive(_ view: NSView) -> Bool {
-        if view is TrackPill || view is TabChipView { return true }
+        if view is TrackPill || view is TabChipView || view is GlassPill { return true }
         if let field = view as? NSTextField { return field.isEditable || field.isSelectable }
         return view is NSControl
     }

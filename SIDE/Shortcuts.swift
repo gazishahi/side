@@ -147,6 +147,9 @@ enum Shortcuts {
         c("view.minimap", "Show Minimap", .view, "m", [.command, .control]),
         c("view.writerMode", "Writer Mode", .view, "w", [.command, .control]),
         c("view.liveMarkdown", "Live Markdown", .view, nil),
+        c("view.zoomIn", "Zoom In", .view, "="),
+        c("view.zoomOut", "Zoom Out", .view, "-"),
+        c("view.actualSize", "Actual Size", .view, "0"),
 
         c("navigate.quickOpen", "Quick Open", .navigate, "p"),
         c("navigate.commandPalette", "Command Palette", .navigate, "p", [.command, .shift]),
