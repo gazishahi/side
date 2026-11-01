@@ -664,11 +664,22 @@ final class EditorParityTests: XCTestCase {
         }
         make.editor.selectedRange = target
         XCTAssertEqual(make.wordCountForTesting, "3 of 480 words")
+        make.editor.selectedRange = NSRange(location: target.location, length: 0)
+
+        // ⌘= in Writer mode: the bar is hidden, so the zoom rides in this pill a moment.
+        make.showZoomWhileWriting(16, for: 0.2)
+        XCTAssertEqual(make.wordCountForTesting, "480 words \u{00B7} 2 min read \u{00B7} Zoom 114%")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        XCTAssertEqual(make.wordCountForTesting, "480 words \u{00B7} 2 min read")
 
         WriterPreferences.set(.dimOthers, false)
         WriterPreferences.set(.wordCount, false)
         defer { WriterPreferences.set(.dimOthers, true); WriterPreferences.set(.wordCount, true) }
         XCTAssertNil(alloy.focusedLines, "a toggle in Settings takes effect at once")
+        XCTAssertNil(make.wordCountForTesting)
+        make.showZoomWhileWriting(14, for: 0.2)
+        XCTAssertEqual(make.wordCountForTesting, "Zoom 100%", "with the count off, the pill comes for the zoom alone")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         XCTAssertNil(make.wordCountForTesting)
 
         make.setWriterMode(false)

@@ -323,6 +323,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// The count sits on its own capsule, so text scrolling under it doesn't cover it.
     private let wordCountPill = NSBox()
     private var wordCountWork: DispatchWorkItem?
+    /// The zoom, said for a moment in the word count's pill: Writer mode hides the bar's own.
+    private var zoomNote: String?
+    private var zoomNoteWork: DispatchWorkItem?
     private var problemRows: [(url: URL, diagnostic: LSPDiagnostic)] = []
     /// The uses Find References found, with each line's text, and the rows the query keeps.
     private var referenceResults: [(location: LSPLocation, url: URL, line: Int, text: String)] = []
@@ -2378,6 +2381,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
         editor.appearance = Self.editorAppearance
         restyleMarkdownPreview()
+        if isWriting { applyWriterAids() }
     }
 
     /// The active file's language server as a caption and a dot: ready, starting (the working
@@ -5696,6 +5700,8 @@ extension MakeWorkspaceViewController: StageChromeProviding {
             alloyView?.readingColumnWidth = nil
             alloyView?.focusedLines = nil
             alloyView?.documentPadding = nil
+            zoomNoteWork?.cancel()
+            zoomNote = nil
             wordCountPill.isHidden = true
         }
         applyWriterAids()
@@ -5711,7 +5717,6 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         let font = prose ? DS.Text.Fonts.font(.reading, size: AlloyEditorEngine.proseSize) : DS.Text.editor()
         let digit = ("0" as NSString).size(withAttributes: [.font: font]).width
         alloyView?.readingColumnWidth = min(760, (digit * 72).rounded())
-        wordCountPill.isHidden = !WriterPreferences.isOn(.wordCount)
         if !WriterPreferences.isOn(.dimOthers) { alloyView?.focusedLines = nil }
         applyWriterInsets()
         followCaretWhileWriting()
@@ -5767,18 +5772,40 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
-    /// "1,204 words · 5 min read", or the selection's count of the whole.
+    /// "1,204 words · 5 min read", or the selection's count of the whole, and the zoom just after
+    /// ⌘= ⌘− ⌘0. With the count off, the pill comes only for the zoom.
     private func updateWordCount() {
-        guard isWriting, WriterPreferences.isOn(.wordCount), let document = editor.document else { return }
-        let text = document.text
-        let total = Self.wordCount(text, in: NSRange(location: 0, length: text.length))
-        let selection = editor.selectedRange
-        if selection.length > 0, NSMaxRange(selection) <= text.length {
-            wordCountLabel.stringValue = "\(Self.wordCount(text, in: selection).formatted()) of \(total.formatted()) words"
-        } else {
-            let minutes = max(1, Int((Double(total) / 230).rounded()))
-            wordCountLabel.stringValue = "\(total.formatted()) word\(total == 1 ? "" : "s") \u{00B7} \(minutes) min read"
+        guard isWriting else { return }
+        var parts: [String] = []
+        if WriterPreferences.isOn(.wordCount), let document = editor.document {
+            let text = document.text
+            let total = Self.wordCount(text, in: NSRange(location: 0, length: text.length))
+            let selection = editor.selectedRange
+            if selection.length > 0, NSMaxRange(selection) <= text.length {
+                parts.append("\(Self.wordCount(text, in: selection).formatted()) of \(total.formatted()) words")
+            } else {
+                let minutes = max(1, Int((Double(total) / 230).rounded()))
+                parts.append("\(total.formatted()) word\(total == 1 ? "" : "s") \u{00B7} \(minutes) min read")
+            }
         }
+        if let zoomNote { parts.append(zoomNote) }
+        wordCountLabel.stringValue = parts.joined(separator: " \u{00B7} ")
+        wordCountPill.isHidden = parts.isEmpty
+    }
+
+    /// Writer mode's answer to the zoom pill: the size as a share of the default, in the pill
+    /// already at the bottom, for as long as the zoom pill would stay.
+    func showZoomWhileWriting(_ size: CGFloat, for duration: TimeInterval = ZoomPill.lingering) {
+        guard isWriting else { return }
+        zoomNote = "Zoom \(Int((size / DS.Text.CodeSize.standard * 100).rounded()))%"
+        updateWordCount()
+        zoomNoteWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.zoomNote = nil
+            self?.updateWordCount()
+        }
+        zoomNoteWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
     }
 
     static func wordCount(_ text: NSString, in range: NSRange) -> Int {

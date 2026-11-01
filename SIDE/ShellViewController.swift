@@ -1038,11 +1038,13 @@ final class ShellViewController: NSViewController {
     @objc func zoomOut(_ sender: Any?) { zoom(by: -1) }
     @objc func actualSize(_ sender: Any?) { zoom(by: 0) }
 
-    /// Steps the size (0 is the default) and says so on the zoom pill.
+    /// Steps the size (0 is the default) and says so on the zoom pill, or in Writer mode, where
+    /// the bar is hidden, in the word count's pill.
     private func zoom(by steps: Int) {
         guard let surface = zoomSurface else { NSSound.beep(); return }
         let size = steps == 0 ? DS.Text.CodeSize.standard : DS.Text.CodeSize.zoomed(surface.size, by: steps)
         if size != surface.size { surface.size = size }
+        if isWriting { makeVC.showZoomWhileWriting(size); return }
         guard let pill = chrome.zoomPill else { return }
         pill.onZoomIn = { [weak self] in self?.zoom(by: 1) }
         pill.onZoomOut = { [weak self] in self?.zoom(by: -1) }
