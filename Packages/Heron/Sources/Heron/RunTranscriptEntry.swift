@@ -56,6 +56,95 @@ public struct RunTranscriptEntry: Identifiable {
         /// An outside agent asking before it acts (ACP `session/request_permission`): the agent's
         /// own options become the card's buttons (`SIDE_RFC_BYO_HARNESS.md` D3).
         case permissionRequest(PermissionPresentation)
+        /// A command an outside agent runs in its own process (Claude Code's Bash, Codex's exec),
+        /// its output streamed in as the agent reports it (`SIDE_RFC_LIVE_COMMAND_OUTPUT.md`).
+        case agentCommand(AgentCommandPresentation)
+    }
+}
+
+/// An outside agent's command: what it runs, what it has printed so far, and how it ended.
+/// The agent owns the process, so there's nothing to decide here; the card is a window onto it.
+public struct AgentCommandPresentation {
+    public enum State: Equatable {
+        case running
+        case finished(exitCode: Int?)
+        case failed(exitCode: Int?)
+        /// The turn ended (Stop, a failure) before the agent reported the command's end.
+        case stopped
+    }
+
+    /// The most output a card keeps, from the end: what a command ends with is its result.
+    public static let outputLimit = 256 * 1024
+
+    public var command: String
+    /// Plain text: ANSI escapes are stripped as it arrives.
+    public private(set) var output: String
+    public private(set) var isTruncated: Bool
+    public var state: State
+
+    public init(command: String, output: String = "", isTruncated: Bool = false, state: State = .running) {
+        self.command = command
+        self.output = ""
+        self.isTruncated = isTruncated
+        self.state = state
+        replaceOutput(output)
+    }
+
+    public var isRunning: Bool { state == .running }
+
+    /// A progress line ended with a carriage return: the next text redraws it.
+    private var redrawsLastLine = false
+
+    /// New text as it arrives. A progress line redrawn with "\r" can span two chunks, so a chunk
+    /// that ends in one leaves the line to be replaced by whatever comes next.
+    public mutating func appendOutput(_ text: String) {
+        var chunk = Self.stripEscapes(text)
+        guard !chunk.isEmpty else { return }
+        if redrawsLastLine, !chunk.hasPrefix("\n") {
+            let lineStart = output.lastIndex(of: "\n").map { output.index(after: $0) } ?? output.startIndex
+            output.removeSubrange(lineStart...)
+        }
+        redrawsLastLine = chunk.hasSuffix("\r")
+        if redrawsLastLine { chunk.removeLast() }
+        output += Self.collapseCarriageReturns(chunk)
+        trim()
+    }
+
+    /// The whole output so far, as an agent that resends it reports it.
+    public mutating func replaceOutput(_ text: String) {
+        output = Self.plain(text)
+        redrawsLastLine = false
+        trim()
+    }
+
+    /// Bounded from the front, at a line start when one is near, so the card never shows half a
+    /// line at its top.
+    private mutating func trim() {
+        guard output.utf8.count > Self.outputLimit else { return }
+        let suffix = String(decoding: output.utf8.suffix(Self.outputLimit), as: UTF8.self)
+        var tail = suffix[...]
+        if let newline = tail.prefix(4096).firstIndex(of: "\n") { tail = tail[tail.index(after: newline)...] }
+        output = String(tail)
+        isTruncated = true
+    }
+
+    /// Colour and cursor escapes out, and each carriage-return-redrawn line at its last state.
+    static func plain(_ text: String) -> String {
+        collapseCarriageReturns(stripEscapes(text))
+    }
+
+    /// CSI and OSC sequences out, "\r\n" as "\n".
+    static func stripEscapes(_ text: String) -> String {
+        var result = text.replacingOccurrences(of: "\u{1B}\\[[0-?]*[ -/]*[@-~]", with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: "\u{1B}\\][^\u{07}\u{1B}]*(\u{07}|\u{1B}\\\\)", with: "", options: .regularExpression)
+        return result.replacingOccurrences(of: "\r\n", with: "\n")
+    }
+
+    private static func collapseCarriageReturns(_ text: String) -> String {
+        guard text.contains("\r") else { return text }
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in line.split(separator: "\r", omittingEmptySubsequences: false).last(where: { !$0.isEmpty }).map(String.init) ?? "" }
+            .joined(separator: "\n")
     }
 }
 

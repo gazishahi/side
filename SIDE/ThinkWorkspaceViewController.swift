@@ -1499,7 +1499,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case .assistantText(let text), .userText(let text), .failure(let text):
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false).reduce(0) { $0 + max(1, $1.count / 80 + 1) }
             return CGFloat(min(lines, 400)) * 20 + 24
-        case .proposal, .commandProposal, .permissionRequest: return 160
+        case .proposal, .commandProposal, .permissionRequest, .agentCommand: return 160
         case .userImage: return 200
         default: return 24
         }
@@ -1768,6 +1768,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         case .commandProposal(let presentation):
             guard let card = entryViews[index] as? CommandProposalView, let resolution = presentation.resolution else { return }
             showCommandResolution(card, presentation.command, resolution)
+        case .agentCommand(let presentation):
+            guard let card = entryViews[index] as? CommandProposalView else { return }
+            let clip = transcriptScroll.contentView
+            let wasAtBottom = clip.bounds.maxY >= transcriptContainer.bounds.height - 80
+            card.update(presentation)
+            // Output arrives many times a second: follow it only for someone already at the end.
+            guard wasAtBottom else { return }
         case .thinking(let text):
             guard let label = entryViews[index] as? NSTextField else { return }
             label.stringValue = Self.condensedThinking(text)
@@ -1873,6 +1880,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                 card.wholeFileDiff = wholeFileDiffProvider(for: presentation.edit)
             }
             return card
+        case .agentCommand(let presentation):
+            return CommandProposalView(agentCommand: presentation)
         case .commandProposal(let presentation):
             let card = CommandProposalView(command: presentation.command)
             if let resolution = presentation.resolution {
@@ -1917,7 +1926,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private static func spacing(before kind: RunTranscriptEntry.Kind) -> CGFloat {
         switch kind {
-        case .meta, .checkpoint, .compaction, .userText, .userImage, .assistantText, .proposal, .commandProposal, .permissionRequest: return 8
+        case .meta, .checkpoint, .compaction, .userText, .userImage, .assistantText, .proposal, .commandProposal, .permissionRequest, .agentCommand: return 8
         case .toolCall, .toolResult, .failure, .thinking: return 4
         }
     }

@@ -1,6 +1,7 @@
 # Live output for outside agents' commands
 
-Status: proposed 2026-11-02. Replaces the backlog item "Think agents write into our own terminal".
+Status: built 2026-11-02. Replaces the backlog item "Think agents write into our own terminal".
+Symbols: `AgentCommandPresentation`, `ACPHarness`, `CommandProposalView`, `OutsideSessionLog`.
 
 ## Why
 
@@ -19,9 +20,14 @@ background tasks and breaks with the adapters' frequent releases.
 ## What
 
 An outside agent's command shows in Think as a command card, the same card Heron's commands use:
-the command, its output scrolling in as it runs (the last lines, monospaced), then its exit
-status. Clicking the card shows the full output. Stop still stops the turn; there is no
+the command, "Running · 12s" with a turning ring, its output scrolling in as it arrives, then
+"Ran", "Failed · exit 1" or "Stopped". The output box shows up to 14 lines and scrolls through
+the last 256 KB, following the end unless scrolled up. Stop still stops the turn; there is no
 per-command interrupt, since the agent owns the process.
+
+How live it is depends on the agent. Codex (`codex-acp`) streams each chunk as the command
+prints it. Claude Code (`claude-agent-acp` 0.81) reports only elapsed-time beats while a command
+runs and sends the whole output with the exit when it ends, so its card runs, then fills.
 
 ## How
 
@@ -43,23 +49,27 @@ tool call's id, not a terminal Side created.
 3. **Heron, `tool_call_update`:** append `terminal_output_delta.data` to that entry's output
    (bounded from the front, as `ACPTerminalBroker` bounds `terminal/output`, with ANSI stripped),
    and set its exit from `terminal_exit`. Updates coalesce to one redraw per frame.
-4. **Side, Think:** render the entry with the existing command card in its finished-output state
-   (`CommandProposalView`'s terminal tail), without Run or Approve buttons: the agent's own
-   permission card has already asked.
-5. **Session log:** the entry is saved with its final output, so a reopened session shows it.
+4. **Side, Think:** `CommandProposalView(agentCommand:)`, without Run or Reject: the agent's own
+   permission card has already asked. A card standing on its own, like Heron's, not a line in
+   the collapsed "Worked for…" group, so its output is in view while it runs.
+5. **Session log:** the entry is saved once it ends, with the last 64 KB of output, so a reopened
+   session shows it.
 
-An adapter that sends no `terminal_*` meta, or a command with no terminal content, keeps today's
-tool line.
+An adapter that sends no `terminal_*` meta still gets the card: when the call completes, the
+result's text stands in for the output.
 
 ## Acceptance
 
-- A replayed `claude-agent-acp` transcript of `for i in 1 2 3; do echo $i; sleep 1; done` shows
-  1, 2, 3 arriving in the card, then exit 0.
-- The same for `codex-acp`.
-- A command that fails shows its exit code in the failed status color.
-- 5 MB of output keeps the card's tail and the full-output view bounded, and Think stays at 60 fps.
-- A session reopened from the log shows the finished card.
-- An adapter without the capability renders exactly as before.
+Covered by `LiveCommandOutputTests` (Side) and `AgentCommandOutputTests` (Heron):
+
+- A fake agent shaped like `codex-acp` streams `for i in 1 2 3; do echo $i; done`: mid-run the
+  card shows "1" and "Running", then "1 2 3" and "Ran", in the same card.
+- One shaped like `claude-agent-acp` sends `npm test`'s output and exit 1 at the end: the card
+  says "Failed · exit 1", with colour escapes stripped.
+- Carriage-return progress lines settle at their last state, across chunks.
+- Output past 256 KB is cut from the front at a line.
+- An agent that streams nothing still shows the result's text.
+- A conversation reopened from Side's record shows the finished cards as they ended.
 
 ## Not in this
 

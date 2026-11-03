@@ -141,6 +141,140 @@ for line in sys.stdin:
     }
 }
 
+/// An outside agent's commands, run in its own process, as command cards whose output arrives
+/// as the agent reports it (SIDE_RFC_LIVE_COMMAND_OUTPUT.md). The fake agent behaves as
+/// codex-acp and claude-agent-acp do: output on the tool call only when the client asks for it.
+@MainActor
+final class LiveCommandOutputTests: XCTestCase {
+    private var root: URL!
+    private var context: ProjectContext!
+    private var agent: ACPAgent!
+    private var gate: URL!
+
+    override func setUp() async throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("livecommand-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "T"]] { _ = GitPaths.runGit(args, cwd: root.path) }
+        try "hi\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = GitPaths.runGit(["add", "."], cwd: root.path); _ = GitPaths.runGit(["commit", "-q", "-m", "base"], cwd: root.path)
+        context = ProjectContextRegistry.shared.acquire(projectRoot: root)
+        // The agent holds its first command open until the test has looked at it mid-run.
+        gate = root.appendingPathComponent(".gate")
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("commands-\(UUID().uuidString).py")
+        try (#"""
+import json, os, sys, time
+GATE = sys.argv[1]
+def send(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+def up(u): send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "c", "update": u}})
+streams = False
+for line in sys.stdin:
+    m = json.loads(line); meth = m.get("method")
+    if meth == "initialize":
+        streams = m["params"]["clientCapabilities"].get("_meta", {}).get("terminal_output_delta") is True
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1}})
+    elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "c"}})
+    elif meth == "session/prompt":
+        # Codex's shape: an argument list, output streamed, then the exit.
+        up({"sessionUpdate": "tool_call", "toolCallId": "x1", "title": "Run count", "kind": "execute", "status": "in_progress",
+            "rawInput": {"command": ["bash", "-lc", "for i in 1 2 3; do echo $i; done"]}, "_meta": {"terminal_info": {"terminal_id": "x1"}}})
+        if streams:
+            up({"sessionUpdate": "tool_call_update", "toolCallId": "x1", "_meta": {"terminal_output_delta": {"terminal_id": "x1", "data": "1\n"}}})
+            while not os.path.exists(GATE): time.sleep(0.02)
+            for n in ("2\n", "3\n"): up({"sessionUpdate": "tool_call_update", "toolCallId": "x1", "_meta": {"terminal_output_delta": {"terminal_id": "x1", "data": n}}})
+            up({"sessionUpdate": "tool_call_update", "toolCallId": "x1", "status": "completed", "_meta": {"terminal_exit": {"terminal_id": "x1", "exit_code": 0, "signal": None}}})
+        else:
+            up({"sessionUpdate": "tool_call_update", "toolCallId": "x1", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "1"}}]})
+        # Claude Code's shape: a string command, its whole output and a failing exit at the end.
+        up({"sessionUpdate": "tool_call", "toolCallId": "x2", "title": "`npm test`", "kind": "execute", "status": "pending", "rawInput": {"command": "npm test"}})
+        up({"sessionUpdate": "tool_call_update", "toolCallId": "x2", "_meta": {"terminal_output_delta": {"terminal_id": "x2", "data": "\u001b[31m1 failing\u001b[0m\n"}}})
+        up({"sessionUpdate": "tool_call_update", "toolCallId": "x2", "status": "failed", "_meta": {"terminal_exit": {"terminal_id": "x2", "exit_code": 1, "signal": None}}})
+        up({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "One test fails."}})
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
+"""#).write(to: script, atomically: true, encoding: .utf8)
+        agent = ACPAgent.addCustom(name: "Commands", command: "commands", arguments: [script.path, gate.path], apiKeyVariable: nil)
+        ACPAgent.defaults.set("/usr/bin/python3", forKey: "SideACPAgentPath.\(agent.id)")
+    }
+
+    override func tearDown() async throws {
+        guard let context else { return }
+        for track in context.trackStore.tracks { context.runnerManager.discardRunner(forTrackKey: track.branchName) }
+        ProjectContextRegistry.shared.release(projectRoot: root)
+        if let agent { ACPAgent.removeCustom(id: agent.id); ACPAgent.defaults.removeObject(forKey: "SideACPAgentPath.\(agent.id)") }
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline { autoreleasepool { _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) } }
+    }
+
+    private func commands(_ runner: any Harness) -> [AgentCommandPresentation] {
+        runner.entries.compactMap { if case .agentCommand(let c) = $0.kind { return c } else { return nil } }
+    }
+
+    func testACommandShowsItsOutputAsItRunsAndHowItEnded() throws {
+        final class Box: @unchecked Sendable { var id: UUID? }
+        let box = Box()
+        let created = expectation(description: "track")
+        context.trackStore.createTrack(intent: "Run the tests") { result in
+            if case .success(let (track, _)) = result { box.id = track.id }
+            created.fulfill()
+        }
+        wait(for: [created], timeout: 30)
+        let track = try XCTUnwrap(context.trackStore.tracks.first { $0.id == box.id })
+        context.trackStore.setHarness(agent.id, forTrackKey: track.branchName)
+        let think = ThinkWorkspaceViewController()
+        think.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: root.path, trackKey: track.branchName)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = think
+        window.orderFront(nil)
+        defer { window.close() }
+        let harness = context.runnerManager.runner(forTrackKey: track.branchName)
+        harness.send("Run the tests")
+
+        // Mid-run: the first line is in, the command still running, and the card says so.
+        waitUntil(30) { self.commands(harness).first?.output == "1\n" }
+        let running = try XCTUnwrap(commands(harness).first)
+        XCTAssertEqual(running.command, "for i in 1 2 3; do echo $i; done", "the shell wrapper is dropped")
+        XCTAssertEqual(running.state, .running)
+        waitUntil(0.3) { false }
+        let card = try XCTUnwrap(think.view.firstDescendant(of: CommandProposalView.self))
+        XCTAssertEqual(card.liveOutputForTesting, "1")
+        XCTAssertTrue(card.agentStatusForTesting.hasPrefix("Running"), card.agentStatusForTesting)
+
+        try "go".write(to: gate, atomically: true, encoding: .utf8)
+        waitUntil(30) { harness.phase == .finishedTurn }
+        waitUntil(0.3) { false }
+        let ended = commands(harness)
+        XCTAssertEqual(ended.count, 2)
+        XCTAssertEqual(ended[0].output, "1\n2\n3\n")
+        XCTAssertEqual(ended[0].state, .finished(exitCode: 0))
+        XCTAssertEqual(ended[1].command, "npm test")
+        XCTAssertEqual(ended[1].output, "1 failing\n", "colour escapes stripped")
+        XCTAssertEqual(ended[1].state, .failed(exitCode: 1))
+        XCTAssertEqual(card.liveOutputForTesting, "1\n2\n3", "the same card, grown")
+        XCTAssertEqual(card.agentStatusForTesting, "Ran")
+        let cards = think.view.allDescendants(of: CommandProposalView.self)
+        XCTAssertEqual(cards.last?.agentStatusForTesting, "Failed · exit 1")
+        if let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] {
+            window.setContentSize(NSSize(width: 760, height: 560))
+            let content = try XCTUnwrap(window.contentView)
+            content.layoutSubtreeIfNeeded()
+            waitUntil(0.5) { false }
+            let rep = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds), "\(content.bounds)")
+            content.cacheDisplay(in: content.bounds, to: rep)
+            try XCTUnwrap(rep.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: directory).appendingPathComponent("agent-commands.png"))
+        }
+
+        // Reopened from Side's record: the finished cards, as they ended.
+        context.runnerManager.discardRunner(forTrackKey: track.branchName)
+        let reopened = context.runnerManager.runner(forTrackKey: track.branchName)
+        XCTAssertEqual(commands(reopened).map(\.state), [.finished(exitCode: 0), .failed(exitCode: 1)])
+        XCTAssertEqual(commands(reopened).first?.output, "1\n2\n3\n")
+    }
+}
+
 private extension NSView {
     func firstDescendant<T: NSView>(of type: T.Type) -> T? {
         for view in subviews {
@@ -148,6 +282,9 @@ private extension NSView {
             if let match = view.firstDescendant(of: type) { return match }
         }
         return nil
+    }
+    func allDescendants<T: NSView>(of type: T.Type) -> [T] {
+        subviews.flatMap { view -> [T] in ((view as? T).map { [$0] } ?? []) + view.allDescendants(of: type) }
     }
     /// Every piece of text shown under this view.
     func allText() -> String {

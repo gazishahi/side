@@ -10,7 +10,7 @@ import Foundation
 /// `SecretRedactor`, as Heron's tool results do.
 enum OutsideSessionLog {
     struct Record: Codable, Equatable {
-        enum Kind: String, Codable { case header, user, assistant, thinking, tool, meta, failure, checkpoint }
+        enum Kind: String, Codable { case header, user, assistant, thinking, tool, meta, failure, checkpoint, command }
         var kind: Kind
         var text: String = ""
         var detail: String?
@@ -19,6 +19,9 @@ enum OutsideSessionLog {
         var conversationId: UUID?
         var agentId: String?
         var agentSessionId: String?
+        /// On a command: how it ended ("finished", "failed", "stopped") and its exit code.
+        var outcome: String?
+        var exitCode: Int?
         var at = Date()
     }
 
@@ -142,6 +145,8 @@ enum OutsideSessionLog {
         }
     }
 
+    static let commandOutputKept = 64 * 1024
+
     /// A finished entry as a record, or nil for what isn't worth keeping (a card still open).
     static func record(for entry: RunTranscriptEntry) -> Record? {
         let redact = SecretRedactor.redacted
@@ -160,6 +165,18 @@ enum OutsideSessionLog {
         case .proposal(let presentation):
             guard let resolution = presentation.resolution else { return nil }
             record = Record(kind: .tool, text: "Edit \(presentation.edit.relativePath)", detail: " · \(resolution.label.text)")
+        case .agentCommand(let command):
+            // The last 64 KB of output: enough to read what it ended with, without a long log
+            // making the record heavy.
+            let output = command.output.utf8.count > commandOutputKept
+                ? String(decoding: command.output.utf8.suffix(commandOutputKept), as: UTF8.self) : command.output
+            record = Record(kind: .command, text: command.command, detail: redact(output))
+            switch command.state {
+            case .running: return nil
+            case .finished(let code): record.outcome = "finished"; record.exitCode = code
+            case .failed(let code): record.outcome = "failed"; record.exitCode = code
+            case .stopped: record.outcome = "stopped"
+            }
         default:
             return nil
         }
@@ -177,6 +194,14 @@ enum OutsideSessionLog {
         case .meta: return .meta(record.text)
         case .failure: return .failure(record.text)
         case .checkpoint: return record.checkpointId.map { .checkpoint(id: $0, text: record.text) }
+        case .command:
+            let state: AgentCommandPresentation.State
+            switch record.outcome {
+            case "failed": state = .failed(exitCode: record.exitCode)
+            case "stopped": state = .stopped
+            default: state = .finished(exitCode: record.exitCode)
+            }
+            return .agentCommand(AgentCommandPresentation(command: record.text, output: record.detail ?? "", state: state))
         }
     }
 }

@@ -63,6 +63,8 @@ public final class ACPHarness: Harness {
     private var streamingIndex: Int?
     private var thinkingIndex: Int?
     private var toolEntryIndex: [String: Int] = [:]
+    /// Command cards whose output changed since the last redraw.
+    private var pendingCommandRedraws: Set<Int> = []
     /// Permission cards waiting for an answer: entry id → the agent's request, and the files its
     /// tool call names (a write to one of them, once allowed, needs no second card — D9).
     private struct PendingPermission { let requestId: Any; let paths: Set<String> }
@@ -201,6 +203,7 @@ public final class ACPHarness: Harness {
             switch entry.kind {
             case .permissionRequest(let p) where p.chosenOptionName == nil: break
             case .proposal(let p) where p.resolution == nil: break
+            case .agentCommand(let c) where c.isRunning: break
             default:
                 if let record = OutsideSessionLog.record(for: entry) { records.append(record) }
                 persistedCount += 1
@@ -357,6 +360,7 @@ public final class ACPHarness: Harness {
 
     private func finishTurn(stopReason: String) {
         disarmStallTimer()
+        settleRunningCommands()
         streamingIndex = nil
         thinkingIndex = nil
         answerPendingPermissions(with: nil)
@@ -380,6 +384,7 @@ public final class ACPHarness: Harness {
 
     private func fail(_ message: String) {
         disarmStallTimer()
+        settleRunningCommands()
         streamingIndex = nil
         thinkingIndex = nil
         answerPendingPermissions(with: nil)
@@ -477,7 +482,13 @@ public final class ACPHarness: Harness {
             "protocolVersion": 1,
             // Side's files (contained, unsaved-buffer-aware, approval per D9) and — when the app
             // provides them — Side's terminals, as visible Run tabs.
-            "clientCapabilities": ["fs": ["readTextFile": true, "writeTextFile": true], "terminal": terminalHostProvider() != nil],
+            // `terminal_output_delta`: an agent that runs commands itself (Claude Code, Codex)
+            // reports their output and exit on the tool call (SIDE_RFC_LIVE_COMMAND_OUTPUT.md).
+            "clientCapabilities": [
+                "fs": ["readTextFile": true, "writeTextFile": true],
+                "terminal": terminalHostProvider() != nil,
+                "_meta": ["terminal_output_delta": true],
+            ],
             "clientInfo": ["name": "side", "title": "Side", "version": "1"],
         ]) { [weak self] result in
             guard let self else { return }
@@ -703,12 +714,26 @@ public final class ACPHarness: Harness {
             let title = update["title"] as? String ?? "Working"
             noteToolCall(id: id, update)
             if update["status"] as? String == "completed" { markTouched(byToolCall: id) }
-            toolEntryIndex[id] = append(.toolCall(name: title, summary: Self.locationSummary(update["locations"], besides: title)))
+            if update["kind"] as? String == "execute" {
+                var command = AgentCommandPresentation(command: Self.commandLine(update["rawInput"]) ?? title)
+                Self.apply(update, to: &command)
+                toolEntryIndex[id] = append(.agentCommand(command))
+            } else {
+                toolEntryIndex[id] = append(.toolCall(name: title, summary: Self.locationSummary(update["locations"], besides: title)))
+            }
             if phase == .streaming { setPhase(.runningTools) }
         case "tool_call_update":
             let id = update["toolCallId"] as? String ?? ""
             noteToolCall(id: id, update)
             if update["status"] as? String == "completed" { markTouched(byToolCall: id) }
+            if let index = toolEntryIndex[id], case .agentCommand(var command) = entries[index].kind {
+                if let line = Self.commandLine(update["rawInput"]) { command.command = line }
+                Self.apply(update, to: &command)
+                entries[index].kind = .agentCommand(command)
+                scheduleCommandRedraw(index)
+                if !command.isRunning, phase == .runningTools { setPhase(.streaming) }
+                return
+            }
             guard let index = toolEntryIndex[id], case .toolCall(let name, let summary) = entries[index].kind else { return }
             let title = update["title"] as? String ?? name
             let locations = update["locations"] != nil ? Self.locationSummary(update["locations"], besides: title) : summary
@@ -1422,6 +1447,74 @@ public final class ACPHarness: Harness {
     }
 
     /// One short line about what a finished tool produced: the files it changed, or its text.
+    // MARK: Commands the agent runs itself
+
+    /// Output, exit and status from a `tool_call` or `tool_call_update` for a command. Output
+    /// comes as `_meta.terminal_output_delta` (new text) or `_meta.terminal_output` (all of it so
+    /// far), the end as `_meta.terminal_exit`. An agent that sends none of it still reports the
+    /// result as text content, which stands in for the output when the call completes.
+    static func apply(_ update: [String: Any], to command: inout AgentCommandPresentation) {
+        let meta = update["_meta"] as? [String: Any] ?? [:]
+        var streamed = false
+        if let delta = (meta["terminal_output_delta"] as? [String: Any])?["data"] as? String {
+            command.appendOutput(delta)
+            streamed = true
+        }
+        if let whole = (meta["terminal_output"] as? [String: Any])?["data"] as? String {
+            command.replaceOutput(whole)
+            streamed = true
+        }
+        var exitCode: Int?
+        let exit = meta["terminal_exit"] as? [String: Any]
+        if let exit { exitCode = (exit["exit_code"] as? NSNumber)?.intValue }
+        let status = update["status"] as? String
+        if !streamed, status == "completed" || status == "failed", command.output.isEmpty {
+            let text = (update["content"] as? [[String: Any]] ?? []).compactMap { item -> String? in
+                guard item["type"] as? String == "content" else { return nil }
+                return Self.text(item["content"])
+            }.joined(separator: "\n")
+            if !text.isEmpty { command.replaceOutput(text) }
+        }
+        if status == "failed" || (exitCode ?? 0) != 0 || (exit != nil && exitCode == nil && exit?["signal"] is String) {
+            command.state = .failed(exitCode: exitCode)
+        } else if status == "completed" || exit != nil {
+            command.state = .finished(exitCode: exitCode)
+        }
+    }
+
+    /// The command a tool call runs, from its raw input: a string, or an argument list whose
+    /// shell wrapper (`bash -lc "…"`) is dropped.
+    static func commandLine(_ rawInput: Any?) -> String? {
+        guard let input = rawInput as? [String: Any] else { return nil }
+        if let line = input["command"] as? String, !line.isEmpty { return line }
+        guard let parts = input["command"] as? [String], !parts.isEmpty else { return nil }
+        if parts.count >= 3, ["bash", "sh", "zsh", "/bin/bash", "/bin/sh", "/bin/zsh"].contains(parts[0]), parts[1].hasPrefix("-"), parts[1].contains("c") {
+            return parts[2]
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// One redraw per frame for a command's card, however fast its output arrives.
+    private func scheduleCommandRedraw(_ index: Int) {
+        guard pendingCommandRedraws.insert(index).inserted, pendingCommandRedraws.count == 1 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in
+            guard let self else { return }
+            let indices = self.pendingCommandRedraws.sorted()
+            self.pendingCommandRedraws.removeAll()
+            for index in indices where self.entries.indices.contains(index) { self.notify(.updated(index)) }
+            self.persistNewEntries()
+        }
+    }
+
+    /// A turn that ends with commands still reported running: the agent won't report them now.
+    private func settleRunningCommands() {
+        for index in entries.indices {
+            guard case .agentCommand(var command) = entries[index].kind, command.isRunning else { continue }
+            command.state = .stopped
+            replace(index, .agentCommand(command))
+        }
+    }
+
     private static func resultSummary(_ content: Any?) -> String {
         let items = content as? [[String: Any]] ?? []
         let changed = items.filter { $0["type"] as? String == "diff" }.compactMap { $0["path"] as? String }
