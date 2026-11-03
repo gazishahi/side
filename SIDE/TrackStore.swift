@@ -232,6 +232,7 @@ final class TrackStore {
                 guard self.epoch == startEpoch else { return }
                 self.repoState = isRepo ? .ready : .notAGitRepo
                 guard isRepo else { self.notifyChange(); return }
+                if !base.isEmpty { self.cachedDefaultBranch = base }
                 self.applyReconciliation(currentBranch: current, defaultBranch: base)
             }
         }
@@ -1284,9 +1285,15 @@ final class TrackStore {
     /// The cached answer where there is one — main-actor, because the cache is mutable state
     /// the launch probe writes.
     func defaultBranchName() -> String {
+        // Outside a repo there is nothing to ask. Asking anyway was four failed spawns, run on the
+        // main thread twice per track-pill refresh, which every terminal event triggers: a `cd`
+        // took over a second to show its output in a project opened at a non-repo folder.
+        if repoState == .notAGitRepo { return "" }
         // The probe already answered this; re-asking costs three subprocesses.
         if let cachedDefaultBranch, !cachedDefaultBranch.isEmpty { return cachedDefaultBranch }
-        return resolveDefaultBranchFromGit()
+        let resolved = resolveDefaultBranchFromGit()
+        if !resolved.isEmpty { cachedDefaultBranch = resolved }
+        return resolved
     }
 
     /// The same question, asked of git directly. `nonisolated` because it consults no stored

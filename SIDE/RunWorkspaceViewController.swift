@@ -406,9 +406,16 @@ final class RunWorkspaceViewController: NSViewController {
     private func closeSession(at index: Int) {
         guard sessions.indices.contains(index) else { return }
         let after = TabSelection.indexAfterClosing(index, active: activeSessionIndex, countBefore: sessions.count)
+        let wasActive = activeSessionIndex == index
+        // The neighbour's terminal shows now, not once the strip's spring settles: waiting for
+        // it held the closed tab's content on screen for half a second. The list itself changes
+        // when the chip has gone, so the strip's indices still match it until then.
+        if wasActive, let after {
+            activeSessionIndex = after >= index ? after + 1 : after
+            showActiveSession()
+        }
         tabStrip.animateClose(at: index, activeAfter: after) { [weak self] in
             guard let self, self.sessions.indices.contains(index) else { return }
-            let wasActive = self.activeSessionIndex == index
             let next = TabSelection.indexAfterClosing(index, active: self.activeSessionIndex, countBefore: self.sessions.count)
             self.sessions[index].viewController.prepareForClose()
             self.sessions.remove(at: index)

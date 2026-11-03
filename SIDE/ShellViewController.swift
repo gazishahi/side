@@ -378,7 +378,7 @@ final class ShellViewController: NSViewController {
             self.show(.make)
             self.makeVC.revealFile(url, line: line)
         }
-        runVC.onActivityChanged = { [weak self] in self?.updateStageLabels() }
+        runVC.onActivityChanged = { [weak self] in self?.setNeedsStageLabelsUpdate() }
         runVC.onRunTask = { [weak self] task in
             guard let self, let manager = self.projectContext?.runnerManager else { return }
             // Refused while the agent is mid-turn or another task holds the terminal — two
@@ -1156,6 +1156,21 @@ final class ShellViewController: NSViewController {
         refreshStageControl()
         trackPill.refresh()
     }
+
+    /// Run reports every terminal event (a command starting or ending, a `cd`, unseen output),
+    /// several per command and more under an agent's output; one refresh per 100 ms covers a
+    /// burst, where one per event rebuilt the pill and the stage control each time.
+    private func setNeedsStageLabelsUpdate() {
+        guard !stageLabelsUpdateScheduled else { return }
+        stageLabelsUpdateScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self else { return }
+            self.stageLabelsUpdateScheduled = false
+            self.updateStageLabels()
+        }
+    }
+
+    private var stageLabelsUpdateScheduled = false
 
     // MARK: - Agent activity (dock badge, notifications)
 
