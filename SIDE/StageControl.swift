@@ -170,8 +170,9 @@ class GlassPill: NSView {
             ])
             self.glass = glassView
         }
-        label.font = DS.Text.body(.medium)
+        label.font = Self.titleFont
         label.textColor = .labelColor
+        label.alignment = .center
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         row.orientation = .horizontal
@@ -196,6 +197,47 @@ class GlassPill: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    /// The body's medium weight with tabular digits, so a percentage counts in place.
+    static var titleFont: NSFont {
+        let base = DS.Text.body(.medium)
+        let tabular = base.fontDescriptor.addingAttributes([.featureSettings: [[
+            NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
+            NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector,
+        ]]])
+        return NSFont(descriptor: tabular, size: base.pointSize) ?? base
+    }
+
+    /// The words it keeps room for, so a count going up (5%, 50%, 100%) never resizes it.
+    func reserveWidth(for title: String?) {
+        // Measured as the label measures itself, padding included.
+        let width = title.map { title -> CGFloat in
+            let probe = NSTextField(labelWithString: title)
+            probe.font = label.font
+            // A few points over: the label measured a little wider on screen than off it.
+            return ceil(probe.intrinsicContentSize.width) + 6
+        } ?? 0
+        guard width != reservedWidth.constant || reservedWidth.isActive != (width > 0) else { return }
+        reservedWidth.constant = width
+        reservedWidth.isActive = width > 0
+    }
+    private lazy var reservedWidth = label.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
+
+    /// A capsule tinted for a state that's done and waiting on you, as an update ready to
+    /// relaunch is: the color fills the glass and the words go white. Nil is plain glass.
+    func setTint(_ color: NSColor?) {
+        guard color != tint else { return }
+        tint = color
+        if window != nil { DS.Motion.crossfade(self) }
+        if #available(macOS 26.0, *), let glass = glass as? NSGlassEffectView {
+            glass.tintColor = color
+        } else {
+            glass?.wantsLayer = true
+            glass?.layer?.backgroundColor = color?.cgColor
+        }
+        label.textColor = color == nil ? .labelColor : .white
+    }
+    private(set) var tint: NSColor?
 
     /// What it says. A change while it's on screen crossfades.
     func set(title: String, mark: Mark) {

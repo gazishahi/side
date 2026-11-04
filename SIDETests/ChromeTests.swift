@@ -21,28 +21,30 @@ final class ChromeTests: XCTestCase {
         }
     }
 
-    /// Polish list (2026-11-03): a working agent's tab breathes the Working ring where its × goes;
-    /// hovering swaps in the ×, and the ⌘ hints take the slot over both.
-    func testAWorkingTabShowsTheRingUntilHoveredAndHintsTakeTheSlot() {
+    /// Polish list (2026-11-03, 11-04): a tab shows its icon before its title, and a working
+    /// agent's tab breathes the Working ring in the icon's place; the ⌘ hints fade in over the ×.
+    func testAWorkingTabShowsTheRingInPlaceOfItsIconAndHintsTakeTheSlot() {
         let chip = TabChipView(frame: NSRect(x: 0, y: 0, width: 140, height: TabChipView.height))
         let close = TabCloseButton()
         chip.addSubview(close)
         chip.closeButton = close
+        chip.title = "a-long-file-name.swift"
+        let plain = chip.intrinsicContentSize.width
+        chip.dragIcon = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+        XCTAssertGreaterThan(chip.intrinsicContentSize.width, plain, "room for the icon")
         chip.isActive = true
         chip.updateCloseVisibility()
         XCTAssertFalse(close.isHidden, "the active tab offers its ×")
         chip.isWorking = true
-        XCTAssertTrue(close.isHidden)
+        XCTAssertFalse(close.isHidden, "the ring isn't in the ×'s slot")
         XCTAssertEqual(chip.workingRing?.isHidden, false)
         XCTAssertEqual(chip.workingRing?.state, .working)
         XCTAssertTrue(chip.accessibilityLabel()?.contains("working") == true)
         chip.shortcutHint = "\u{2318}1"
-        XCTAssertEqual(chip.workingRing?.isHidden, true, "the hint takes the slot")
-        XCTAssertTrue(close.isHidden)
+        XCTAssertTrue(chip.isShowingHintForTesting, "the hint fades in over the slot")
         chip.shortcutHint = nil
         chip.isWorking = false
         XCTAssertEqual(chip.workingRing?.isHidden, true)
-        XCTAssertFalse(close.isHidden)
     }
 
     func testShortcutHintsNumberTheFirstEightAndTheLastTab() {
@@ -52,20 +54,25 @@ final class ChromeTests: XCTestCase {
         XCTAssertEqual(TabShortcutHints.hint(at: 11, count: 12), Shortcuts.display("tabs.last"))
     }
 
-    /// Claude Code turns a spinner in front of its title while it works: two changes in a moment
-    /// is working, one (a turn ending) isn't, and a still glyph ends it.
-    func testATerminalIsWorkingWhileItsTitleSpinnerTurns() {
+    /// Claude Code's title starts with ✳ while it waits and a half-circle (◐ ◓ ◑ ◒) while it
+    /// works, changing only every few seconds (recorded 2026-11-04): the glyph is the state.
+    func testATerminalIsWorkingWhileItsTitleShowsASpinner() {
         let terminal = TerminalViewController()
-        terminal.noteTitleGlyph("\u{2733} Fix the parser")
-        XCTAssertFalse(terminal.isProgramWorking, "one glyph is a still title")
-        terminal.noteTitleGlyph("\u{2810} Fix the parser")
+        var changes = 0
+        terminal.onWorkingChanged = { changes += 1 }
+        terminal.noteTitleGlyph("\u{2733} Claude Code")
+        XCTAssertFalse(terminal.isProgramWorking, "✳ is waiting")
+        terminal.noteTitleGlyph("\u{25D0} Slow counting from one to five")
         XCTAssertTrue(terminal.isProgramWorking)
-        terminal.noteTitleGlyph("\u{2802} Fix the parser")
-        XCTAssertTrue(terminal.isProgramWorking)
-        // No command running (the shell's own state): the check ends it at its next tick.
-        let ended = expectation(description: "working ends")
-        terminal.onWorkingChanged = { if !terminal.isProgramWorking { ended.fulfill() } }
-        wait(for: [ended], timeout: 2)
+        terminal.noteTitleGlyph("\u{25D1} Slow counting from one to five")
+        XCTAssertTrue(terminal.isProgramWorking, "still working seconds later, the glyph turned once")
+        terminal.noteTitleGlyph("\u{2733} Slow counting from one to five")
+        XCTAssertFalse(terminal.isProgramWorking)
+        terminal.noteTitleGlyph("\u{2802} npm install")
+        XCTAssertTrue(terminal.isProgramWorking, "braille spinners count")
+        terminal.noteTitleGlyph("vim main.swift")
+        XCTAssertFalse(terminal.isProgramWorking)
+        XCTAssertEqual(changes, 4)
     }
 
     func testAtLeastOneStageStaysPinnedAndPinsPersist() {

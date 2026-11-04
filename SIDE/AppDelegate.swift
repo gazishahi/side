@@ -76,6 +76,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     guard let shell = window.contentViewController as? ShellViewController else { return }
                     if command.hasPrefix("open ") { shell.revealFile(URL(fileURLWithPath: String(command.dropFirst(5)))) }
                     if command == "close-all" { shell.closeAllMakeTabsForTesting() }
+                    if command == "run-close-tab" { shell.closeActiveRunTabForTesting() }
+                    if command == "hints on" || command == "hints off" { TabShortcutHints.setShowingForTesting(command == "hints on") }
+                    if command.hasPrefix("window-size ") {
+                        let parts = command.split(separator: " ").compactMap { Double($0) }
+                        if parts.count == 2 { window.setContentSize(NSSize(width: parts[0], height: parts[1])) }
+                    }
+                    // "update downloading 0.05", "update ready": the update pill's stages.
+                    if command.hasPrefix("update ") {
+                        let parts = command.split(separator: " ").map(String.init)
+                        switch parts[1] {
+                        case "available": Updates.shared.driver.setStageForTesting(.available(version: "9.9.9"))
+                        case "downloading": Updates.shared.driver.setStageForTesting(.downloading(fraction: parts.count > 2 ? Double(parts[2]) : nil))
+                        case "preparing": Updates.shared.driver.setStageForTesting(.preparing)
+                        case "ready": Updates.shared.driver.setStageForTesting(.ready)
+                        default: Updates.shared.driver.setStageForTesting(.none)
+                        }
+                    }
+                    // The window as composited, animations in flight included: "snapshot <path>",
+                    // or "snapshots <dir> <count> <ms>" for frames of a motion. An app may capture
+                    // its own windows without screen-recording permission.
+                    if command.hasPrefix("snapshot ") { Self.snapshot(window, to: String(command.dropFirst(9))) }
+                    if command.hasPrefix("snapshots ") {
+                        let parts = command.split(separator: " ").map(String.init)
+                        if parts.count == 4, let count = Int(parts[2]), let ms = Int(parts[3]) {
+                            for frame in 0..<count {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(frame * ms)) {
+                                    Self.snapshot(window, to: "\(parts[1])/frame-\(String(format: "%03d", frame)).png")
+                                }
+                            }
+                        }
+                    }
                     if command.hasPrefix("find ") { shell.findForTesting(String(command.dropFirst(5))) }
                     if command.hasPrefix("think-track ") { shell.thinkTrackForTesting(agentId: String(command.dropFirst(12))) }
                     if command.hasPrefix("think-send ") { shell.thinkSendForTesting(String(command.dropFirst(11))) }
@@ -290,6 +321,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             openTrackInNewWindow(projectRoot: project, trackKey: nil)
         }
         _ = shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id, inProject: project, trackKey: track) })
+    }
+
+    /// UI testing: the window as the window server composites it, to a PNG.
+    static func snapshot(_ window: NSWindow, to path: String) {
+        // Looked up at run time: the SDK marks it unavailable (ScreenCaptureKit instead, which
+        // needs screen-recording permission even for an app's own windows). Test-only.
+        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return }
+        let create = unsafeBitCast(symbol, to: CreateImage.self)
+        let options = CGWindowImageOption.boundsIgnoreFraming.rawValue | CGWindowImageOption.bestResolution.rawValue
+        guard let image = create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber), options)?.takeRetainedValue() else { return }
+        let rep = NSBitmapImageRep(cgImage: image)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }
 
     @objc func showRunningTerminals() {

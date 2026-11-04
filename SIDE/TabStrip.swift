@@ -298,10 +298,12 @@ final class TabStrip: NSObject {
 
     var appearCountForTesting = 0
 
-    /// Down to one tab: the open reversed, tight, with no pause (the owner: it lingered). The
-    /// others slide under the tab that stays as the track closes to it, fading as they go, and
-    /// the strip fades as they arrive. They used to slide across it at full strength, so the
-    /// second tab sat over the first before the strip went (the owner, 2026-11-03).
+    /// Down to one tab (the owner: it lingered, and then that the closed tab crossed the other,
+    /// 2026-11-03 and 11-04). The tab that went fades where it is, at once; the one that stays
+    /// moves to the strip's start if it wasn't there, taking the tint; the track closes to it;
+    /// and the strip fades as they arrive. Sliding the closed tab onto the one that stays, the
+    /// earlier design, put its title and tint over that tab's title: tabs have no background of
+    /// their own to hide it under.
     private func dismiss(keeping kept: UUID? = nil) {
         guard !chips.isEmpty else { return }
         let gone = chips
@@ -309,7 +311,7 @@ final class TabStrip: NSObject {
         ids = []
         bar.accessibleTabs = []
         guard bar.window != nil, !bar.isHiddenOrHasHiddenAncestor, !DS.Motion.reduceMotion,
-              let first = gone.first(where: { $0.id == kept }) ?? gone.first else {
+              let first = gone.first(where: { $0.id == kept }) ?? gone.first, let leading = gone.first else {
             gone.forEach { $0.removeFromSuperview() }
             selection.isHidden = true
             bar.showTrack(false, animated: false)
@@ -317,17 +319,19 @@ final class TabStrip: NSObject {
         }
         leaving = gone
         let others = gone.filter { $0 !== first }
-        first.layer?.zPosition = 1
-        bar.setTrackWidth(first.frame.maxX + stack.edgeInsets.right, spring: DS.Motion.snappy)
-        for chip in others {
-            slide(chip, from: 0, to: first.frame.minX - chip.frame.minX, spring: DS.Motion.snappy)
+        let shift = leading.frame.minX - first.frame.minX
+        // Where the one that stays moves into their place, they're gone at once: even a short
+        // fade showed them under it.
+        if shift != 0 {
+            others.forEach { $0.alphaValue = 0 }
+        } else {
+            DS.Motion.fade(duration: 0.08) { others.forEach { $0.animator().alphaValue = 0 } }
         }
-        // The tint goes to the tab that stays, wherever it was.
-        if let active = gone.first(where: \.isActive), active !== first {
-            slide(selection, from: 0, to: first.frame.minX - active.frame.minX, spring: DS.Motion.snappy)
-        }
-        // Gone well before they reach it: under it, but its capsule is clear.
-        DS.Motion.fade(duration: DS.Motion.snappy.duration * 0.55) { others.forEach { $0.animator().alphaValue = 0 } }
+        slide(first, from: 0, to: shift, spring: DS.Motion.snappy)
+        // The tint sits under the selected tab, which may be the one that went.
+        let tinted = gone.first(where: \.isActive) ?? first
+        slide(selection, from: 0, to: leading.frame.minX - tinted.frame.minX, spring: DS.Motion.snappy)
+        bar.setTrackWidth(leading.frame.minX + first.frame.width + stack.edgeInsets.right, spring: DS.Motion.snappy)
         // The fade starts as the slide is most of the way home and ends with it.
         let fadeAt = max(0, DS.Motion.snappy.duration - DS.Motion.fadeDuration * 1.3)
         DispatchQueue.main.asyncAfter(deadline: .now() + fadeAt) { [weak self] in
@@ -568,8 +572,9 @@ final class TabChipView: NSView, PointerHoverSyncing {
     var hasUnseenOutput: Bool = false { didSet { needsDisplay = true } }
     /// Unsaved edits: a dot where the close button sits, until hover swaps it for the ×.
     var isDirty: Bool = false { didSet { needsDisplay = true; updateCloseVisibility() } }
-    /// An agent working in the tab's terminal: the Working ring in the trailing slot (the app's
-    /// one animated indicator, Direction 02 §2.4), which hover swaps for the × like the dots.
+    /// An agent working in the tab's terminal: the Working ring (the app's one animated
+    /// indicator, Direction 02 §2.4) in place of the tab's icon, where the eye starts reading.
+    /// In the trailing slot it was easy to miss (the owner, 2026-11-04).
     var isWorking: Bool = false {
         didSet {
             guard isWorking != oldValue else { return }
@@ -578,27 +583,85 @@ final class TabChipView: NSView, PointerHoverSyncing {
                 ring.setAccessibilityElement(false)
                 addSubview(ring)
                 NSLayoutConstraint.activate([
-                    ring.centerXAnchor.constraint(equalTo: trailingAnchor, constant: -(5 + Self.flare + 8)),
+                    ring.centerXAnchor.constraint(equalTo: leadingAnchor, constant: dragIcon == nil ? Self.flare + 6 : Self.iconCenterX),
                     ring.centerYAnchor.constraint(equalTo: centerYAnchor),
                 ])
                 workingRing = ring
             }
+            iconView.isHidden = dragIcon == nil || isWorking
+            workingRing?.isHidden = !isWorking
             needsDisplay = true
             updateCloseVisibility()
         }
     }
     private(set) var workingRing: DS.StatusDot?
-    /// Its shortcut ("⌘2") while the modifier is held (`TabShortcutHints`), over whatever the
-    /// trailing slot holds.
+    /// Its shortcut ("⌘2") while the modifier is held (`TabShortcutHints`): it fades in over
+    /// the trailing slot as the × or ring there fades out, and back (the owner, 2026-11-04: they
+    /// popped in).
     var shortcutHint: String? {
         didSet {
             guard shortcutHint != oldValue else { return }
+            if let shortcutHint { hintLabel.stringValue = shortcutHint }
+            let showing = shortcutHint != nil
+            if showing { hintLabel.isHidden = false }
             needsDisplay = true
-            updateCloseVisibility()
+            DS.Motion.fade(duration: DS.Motion.fadeDuration, {
+                hintLabel.animator().alphaValue = showing ? 1 : 0
+                closeButton?.animator().alphaValue = showing ? 0 : 1
+            }, completion: { [weak self] in
+                guard let self, self.shortcutHint == nil else { return }
+                self.hintLabel.isHidden = true
+            })
         }
     }
+    var isShowingHintForTesting: Bool { !hintLabel.isHidden }
+    private lazy var hintLabel: NSTextField = {
+        let label = NSTextField(labelWithString: "")
+        label.font = DS.Text.caption(.medium)
+        label.textColor = .secondaryLabelColor
+        label.alphaValue = 0
+        label.isHidden = true
+        label.wantsLayer = true
+        label.setAccessibilityElement(false)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: trailingAnchor, constant: -(5 + Self.flare + 8)),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        return label
+    }()
     /// For the card a dragged-out tab becomes: its icon, and what it shows.
-    var dragIcon: NSImage?
+    /// The file's icon, or the Terminal's glyph: before the title, and in the card a dragged-out
+    /// tab becomes. While an agent works, the Working ring takes its place.
+    var dragIcon: NSImage? {
+        didSet {
+            guard dragIcon !== oldValue else { return }
+            iconView.image = dragIcon
+            iconView.isHidden = dragIcon == nil || isWorking
+            if (dragIcon == nil) != (oldValue == nil) { invalidateIntrinsicContentSize(); needsDisplay = true }
+        }
+    }
+    private lazy var iconView: NSImageView = {
+        let view = NSImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.contentTintColor = .secondaryLabelColor
+        view.symbolConfiguration = .init(pointSize: 11, weight: .medium)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.setAccessibilityElement(false)
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.centerXAnchor.constraint(equalTo: leadingAnchor, constant: Self.iconCenterX),
+            view.centerYAnchor.constraint(equalTo: centerYAnchor),
+            view.widthAnchor.constraint(equalToConstant: Self.iconSize),
+            view.heightAnchor.constraint(equalToConstant: Self.iconSize),
+        ])
+        return view
+    }()
+    private static let iconSize: CGFloat = 14
+    private static var iconCenterX: CGFloat { flare + 10 + iconSize / 2 }
+    /// Where the title starts: after the icon when there is one.
+    private var textX: CGFloat { dragIcon == nil ? Self.flare + Self.textInset : Self.flare + 10 + Self.iconSize + 6 }
     var dragPreview: (() -> NSImage?)?
     /// Holds the slot closed while the tab is torn out of the strip.
     fileprivate var slotWidth: NSLayoutConstraint?
@@ -636,7 +699,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
     override var intrinsicContentSize: NSSize {
         let font = DS.Text.body(.medium)
         let textWidth = min(Self.label(title: title, detail: detail, attributes: [.font: font]).size().width, Self.maxTextWidth)
-        return NSSize(width: max(Self.minWidth, textWidth + Self.textInset + Self.trailingReserve + Self.flare * 2), height: Self.height)
+        return NSSize(width: max(Self.minWidth, textWidth + (textX - Self.flare) + Self.trailingReserve + Self.flare * 2), height: Self.height)
     }
 
     /// The title, then the detail in a quieter color.
@@ -722,8 +785,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// The active tab always offers its ×; others on hover. A dirty or working tab shows its
     /// dot or ring there instead until hovered.
     func updateCloseVisibility() {
-        closeButton?.isHidden = renameField != nil || shortcutHint != nil || !(isHovered || (isActive && !isDirty && !isWorking))
-        workingRing?.isHidden = !isWorking || closeButton?.isHidden == false || renameField != nil || shortcutHint != nil
+        closeButton?.isHidden = renameField != nil || !(isHovered || (isActive && !isDirty))
     }
 
     /// In the title-bar strip the window server decides a press is a window drag before any view
@@ -765,7 +827,6 @@ final class TabChipView: NSView, PointerHoverSyncing {
             ]
             let text = Self.label(title: title, detail: detail, attributes: attributes)
             let size = text.size()
-            let textX = Self.flare + Self.textInset
             let maxWidth = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
             let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
             text.draw(with: drawRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
@@ -773,12 +834,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
         // Unsaved edits and unseen output are marks, not states (Direction 03 §3.1): one quiet
         // 5 pt dot in the trailing slot, where the close button goes, until hover swaps it for ×.
-        if let shortcutHint, !drawsLifted {
-            let hint = NSAttributedString(string: shortcutHint, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.secondaryLabelColor])
-            let size = hint.size()
-            let centerX = bounds.width - Self.flare - 5 - 8
-            hint.draw(at: NSPoint(x: centerX - size.width / 2, y: (bounds.height - size.height) / 2))
-        } else if (isDirty || hasUnseenOutput) && !isWorking && !isHovered && !drawsLifted && closeButton?.isHidden != false {
+        if shortcutHint == nil, (isDirty || hasUnseenOutput) && !isHovered && !drawsLifted && closeButton?.isHidden != false {
             NSColor.secondaryLabelColor.setFill()
             let dotSize: CGFloat = 5
             let x = bounds.width - Self.flare - 5 - 8 - dotSize / 2
@@ -796,9 +852,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
         defer { drawsLifted = false; needsDisplay = true }
         let wasHidden = closeButton?.isHidden ?? true
         closeButton?.isHidden = true
-        let ringWasHidden = workingRing?.isHidden ?? true
+        // The floating layer adds the title and the card its icon: the chip is only its capsule.
+        let iconWasHidden = iconView.isHidden, ringWasHidden = workingRing?.isHidden ?? true
+        iconView.isHidden = true
         workingRing?.isHidden = true
-        defer { closeButton?.isHidden = wasHidden; workingRing?.isHidden = ringWasHidden }
+        defer { closeButton?.isHidden = wasHidden; iconView.isHidden = iconWasHidden; workingRing?.isHidden = ringWasHidden }
         let image = NSImage(size: bounds.size)
         if let rep = bitmapImageRepForCachingDisplay(in: bounds) {
             effectiveAppearance.performAsCurrentDrawingAppearance { cacheDisplay(in: bounds, to: rep) }
@@ -1015,7 +1073,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         field.lineBreakMode = .byTruncatingTail
         field.cell?.isScrollable = true
         field.delegate = self
-        let x = Self.flare + Self.textInset
+        let x = textX
         field.frame = NSRect(x: x - 2, y: (bounds.height - 18) / 2, width: bounds.width - x - Self.flare - 6, height: 18)
         addSubview(field)
         renameField = field

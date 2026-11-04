@@ -443,14 +443,12 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// anything, and the folder says more. Cleared when the command finishes.
     private(set) var programTitle: String?
     var onProgramTitleChanged: (() -> Void)?
-    /// A program at work, by its title: Claude Code turns a spinner in front of its title while
-    /// it works and holds a still ✳ while it waits. Two changes of that glyph within a moment
-    /// start it (one is a turn ending); a still one for a moment ends it. Run's tab shows it.
+    /// A program at work, by the glyph in front of its title: Claude Code shows ✳ while it waits
+    /// and a turning half-circle (◐ ◓ ◑ ◒) while it works, changing it only every few seconds,
+    /// so the glyph itself is read, not how often it changes (recorded 2026-11-04). Braille
+    /// spinners count too. The Terminal's tab shows it.
     private(set) var isProgramWorking = false
     var onWorkingChanged: (() -> Void)?
-    private var titleGlyph = ""
-    private var titleGlyphChanges: (previous: Date, last: Date) = (.distantPast, .distantPast)
-    private var workingCheck: Timer?
     private var markScanCarry: [UInt8] = []
     /// The marked command's output so far, raw (`advanceMarkedCapture`); the sentinel path
     /// keeps its text in `pendingAgentCommand.buffer`.
@@ -1354,28 +1352,15 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     }
 
     func noteTitleGlyph(_ title: String) {
-        let glyph = String(title.prefix { !$0.isLetter && !$0.isNumber }).trimmingCharacters(in: .whitespaces)
-        guard glyph != titleGlyph else { return }
-        titleGlyph = glyph
-        let now = Date()
-        titleGlyphChanges = (titleGlyphChanges.last, now)
-        guard !isProgramWorking, now.timeIntervalSince(titleGlyphChanges.previous) < Self.workingWindow else { return }
-        setProgramWorking(true)
-        workingCheck = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                if self.commandStatus.runningSince == nil || Date().timeIntervalSince(self.titleGlyphChanges.last) > Self.workingWindow {
-                    self.setProgramWorking(false)
-                }
-            }
-        }
+        let glyph = title.unicodeScalars.first { !CharacterSet.whitespaces.contains($0) }
+        setProgramWorking(glyph.map(Self.isSpinnerGlyph) ?? false)
     }
 
-    /// Claude Code turns its spinner about ten times a second.
-    static let workingWindow: TimeInterval = 1.5
+    static func isSpinnerGlyph(_ scalar: Unicode.Scalar) -> Bool {
+        (0x2800...0x28FF).contains(scalar.value) && scalar.value != 0x2800 || "◐◓◑◒◴◵◶◷".unicodeScalars.contains(scalar)
+    }
 
     private func setProgramWorking(_ working: Bool) {
-        if !working { workingCheck?.invalidate(); workingCheck = nil }
         guard working != isProgramWorking else { return }
         isProgramWorking = working
         onWorkingChanged?()
@@ -1426,6 +1411,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                 status.lastDuration = Date().timeIntervalSince(start)
                 status.runningSince = nil
                 setProgramTitle(nil)
+                setProgramWorking(false)
                 status.lastCommandWasAgent = pendingAgentCommand != nil
                 status.finishedCount += 1
             }

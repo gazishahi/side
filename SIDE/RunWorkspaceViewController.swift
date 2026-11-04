@@ -331,6 +331,8 @@ final class RunWorkspaceViewController: NSViewController {
         sessions[activeSessionIndex ?? 0].viewController.activate()
     }
 
+    func closeActiveTabForTesting() { closeActiveTab() }
+
     @objc private func closeActiveTab() {
         guard let index = activeSessionIndex else { return }
         requestClose(at: index)

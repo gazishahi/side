@@ -581,6 +581,9 @@ final class ShellViewController: NSViewController {
             self.show(self.visibleStages[index])
         }
         stageControl.showsSymbols = true
+        // The symbols come with the segments: set here, since the refresh only sets segments
+        // when the visible stages change, and at launch they don't (no icons, 2026-11-04).
+        stageControl.setSegments(visibleStages.map(\.title), symbols: visibleStages.map(\.symbol), selected: stageControl.selectedIndex)
         stageControl.setAccessibilityLabel("Stage")
         stageControl.menu = pinsMenu()
         searchButton.button.target = self
@@ -1009,6 +1012,7 @@ final class ShellViewController: NSViewController {
 
     /// UI testing: typing into Run's terminal.
     func runTypeForTesting(_ text: String) { runVC.typeForTesting(text) }
+    func closeActiveRunTabForTesting() { runVC.closeActiveTabForTesting() }
 
     /// UI testing: a stage brought forward by name ("make", "think", "review", "run").
     func showStageForTesting(_ name: String) {

@@ -293,6 +293,14 @@ final class UpdatePill {
         default: .none
         }
         if stage != .none { view.set(title: stage.title, mark: mark) }
+        // Room for the longest count while it downloads and prepares, so the pill holds its
+        // size (the owner, 2026-11-04: it resized with every percent).
+        switch stage {
+        case .downloading, .preparing: view.reserveWidth(for: UpdateDriver.Stage.downloading(fraction: 1).title)
+        default: view.reserveWidth(for: nil)
+        }
+        // Ready to relaunch: done, and waiting on one click. Green, as Ready for review is.
+        view.setTint(stage == .ready ? DS.Color.statusVerified : nil)
         view.toolTip = driver.failureReason
         view.setShown(stage != .none, animated: animated)
         if stage == .none || stage == .upToDate || stage == .checking || stage == .preparing { popover?.close() }
