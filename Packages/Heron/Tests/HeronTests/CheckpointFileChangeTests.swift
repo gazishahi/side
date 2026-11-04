@@ -72,7 +72,7 @@ final class CheckpointFileChangeTests: XCTestCase {
             ("context only", "@@ -1,3 +1,3 @@\n one\n two\n three", 0, 0),
         ]
         for row in cases {
-            let delta = AgentRunner.lineDelta(in: row.diff)
+            let delta = CheckpointCommit.lineDelta(in: row.diff)
             XCTAssertEqual(delta.added, row.added, "\(row.name): added")
             XCTAssertEqual(delta.removed, row.removed, "\(row.name): removed")
         }

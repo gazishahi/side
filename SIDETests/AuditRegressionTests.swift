@@ -230,7 +230,7 @@ final class CheckpointStagingTests: XCTestCase {
 
         // The agent's batch edits its own file.
         try "agent v2".write(to: root.appendingPathComponent("agent.txt"), atomically: true, encoding: .utf8)
-        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: baseline, knownChanged: ["agent.txt"], message: "agent work")
+        let outcome = CheckpointCommit.stageAndCommit(root: root.path, baseline: baseline, knownChanged: ["agent.txt"], message: "agent work")
         guard case .committed(_, let paths)? = outcome else { return XCTFail("expected a commit, got \(String(describing: outcome))") }
         XCTAssertEqual(paths, ["agent.txt"])
         // The commit contains only the agent's file; the manual edit is still staged, uncommitted.
@@ -255,7 +255,7 @@ final class CheckpointStagingTests: XCTestCase {
         try "mine".write(to: root.appendingPathComponent("newdir/notes.md"), atomically: true, encoding: .utf8)
         try "agent".write(to: root.appendingPathComponent("newdir/x.swift"), atomically: true, encoding: .utf8)
 
-        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: baseline, knownChanged: [], userSaved: ["newdir/notes.md"], message: "agent work")
+        let outcome = CheckpointCommit.stageAndCommit(root: root.path, baseline: baseline, knownChanged: [], userSaved: ["newdir/notes.md"], message: "agent work")
         guard case .committed(_, let paths)? = outcome else { return XCTFail("expected a commit, got \(String(describing: outcome))") }
         XCTAssertEqual(paths, ["newdir/x.swift"])
         XCTAssertEqual(git(["show", "--name-only", "--format=", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines), "newdir/x.swift")
@@ -277,7 +277,7 @@ final class CheckpointStagingTests: XCTestCase {
         try "manual v2".write(to: root.appendingPathComponent("manual.txt"), atomically: true, encoding: .utf8)
         try "agent v2".write(to: root.appendingPathComponent("agent.txt"), atomically: true, encoding: .utf8)
 
-        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: nil, knownChanged: ["agent.txt"], message: "agent work")
+        let outcome = CheckpointCommit.stageAndCommit(root: root.path, baseline: nil, knownChanged: ["agent.txt"], message: "agent work")
         guard case .committed(_, let paths)? = outcome else { return XCTFail("expected a commit, got \(String(describing: outcome))") }
         XCTAssertEqual(paths, ["agent.txt"])
         XCTAssertEqual(git(["status", "--porcelain"]).trimmingCharacters(in: .whitespacesAndNewlines), "M manual.txt")

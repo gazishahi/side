@@ -1550,7 +1550,7 @@ final class ShellViewController: NSViewController {
         switch request.verb {
         case .change:
             if let (id, proposal) = InlineInstruct.pendingProposal(forRelativePath: request.relativePath, in: runner.entries, after: start) {
-                let delta = AgentRunner.lineDelta(in: proposal.diffText)
+                let delta = CheckpointCommit.lineDelta(in: proposal.diffText)
                 makeVC.showInstructProposal(
                     id: id, url: request.url, line: request.lines.lowerBound, added: delta.added, removed: delta.removed,
                     apply: { [weak runner] in runner?.resolve(proposalId: id, decision: .apply) },

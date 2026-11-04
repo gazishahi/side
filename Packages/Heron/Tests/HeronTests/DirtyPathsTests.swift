@@ -105,7 +105,7 @@ final class DirtyPathsTests: XCTestCase {
         let baseline = try XCTUnwrap(GitPaths.dirtyPaths(cwd: root.path))
         git(["mv", "src/a.txt", "src/moved.txt"])
         XCTAssertEqual(GitPaths.dirtyPaths(cwd: root.path), ["src/moved.txt", "src/a.txt"], "the source too")
-        guard case .committed? = AgentRunner.stageAndCommit(root: root.path, baseline: baseline, knownChanged: [], message: "move") else {
+        guard case .committed? = CheckpointCommit.stageAndCommit(root: root.path, baseline: baseline, knownChanged: [], message: "move") else {
             return XCTFail("not committed")
         }
         let tree = GitPaths.runGit(["ls-tree", "-r", "--name-only", "HEAD"], cwd: root.path).output
@@ -129,10 +129,10 @@ final class DirtyPathsTests: XCTestCase {
 
         let baseline = try XCTUnwrap(GitPaths.dirtyPaths(cwd: root.path))
         try "edited\n".write(to: root.appendingPathComponent("vendor/lib.txt"), atomically: true, encoding: .utf8)
-        let (outcome, submodules) = AgentRunner.stageAndCommitReporting(root: root.path, baseline: baseline, knownChanged: [], message: "edit")
+        let (outcome, submodules) = CheckpointCommit.stageAndCommitReporting(root: root.path, baseline: baseline, knownChanged: [], message: "edit")
         guard case .nothingToCommit? = outcome else { return XCTFail("\(String(describing: outcome))") }
         XCTAssertEqual(submodules, ["vendor"])
-        XCTAssertNotNil(AgentRunner.uncommittedSubmoduleNote(submodules))
-        XCTAssertNil(AgentRunner.uncommittedSubmoduleNote([]))
+        XCTAssertNotNil(CheckpointCommit.uncommittedSubmoduleNote(submodules))
+        XCTAssertNil(CheckpointCommit.uncommittedSubmoduleNote([]))
     }
 }

@@ -1363,7 +1363,7 @@ public final class ACPHarness: Harness {
             // back has nothing to commit, and `git add` of a vanished untracked path would fail.
             // A failed status here fails the commit's own status too, which is reported.
             let dirty = GitPaths.dirtyPaths(cwd: root) ?? []
-            let (outcome, submodules) = AgentRunner.stageAndCommitReporting(root: root, baseline: baseline, knownChanged: touched.intersection(dirty),
+            let (outcome, submodules) = CheckpointCommit.stageAndCommitReporting(root: root, baseline: baseline, knownChanged: touched.intersection(dirty),
                                                      userSaved: userSaved, message: intent.isEmpty ? "\(agent.displayName) checkpoint" : intent)
             var fileChanges: [CheckpointFileChange] = []
             if let sha = outcome?.commit?.sha {
@@ -1376,7 +1376,7 @@ public final class ACPHarness: Harness {
                     // checkpoint record can't be found in Review or undone from it.
                     var lines: [RunTranscriptEntry.Kind] = []
                     // Said whatever else happened (GIT-6).
-                    if let note = AgentRunner.uncommittedSubmoduleNote(submodules) { lines.append(.failure(note)) }
+                    if let note = CheckpointCommit.uncommittedSubmoduleNote(submodules) { lines.append(.failure(note)) }
                     switch outcome {
                     case .none, .nothingToCommit?:
                         break
@@ -1394,7 +1394,7 @@ public final class ACPHarness: Harness {
                             provenance: AgentProvenance(providerId: "acp:\(agent.id)", modelId: agent.displayName, instructionSourceSummary: "\(agent.displayName) conversation"),
                             gitCommitSHA: sha, fileChanges: fileChanges)
                         sessionStore.appendCheckpoint(checkpoint)
-                        lines.append(.checkpoint(id: checkpoint.id, text: AgentRunner.checkpointMarker(checkpoint)))
+                        lines.append(.checkpoint(id: checkpoint.id, text: CheckpointCommit.checkpointMarker(checkpoint)))
                         let sharedNames = shared.sorted().map { ($0 as NSString).lastPathComponent }
                         if !sharedNames.isEmpty {
                             lines.append(.meta("Also has your own saved edits, committed with the agent's: \(sharedNames.joined(separator: ", "))."))

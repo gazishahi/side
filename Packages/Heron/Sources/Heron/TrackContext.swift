@@ -33,6 +33,11 @@ public struct AgentTrackSummary: Equatable, Sendable {
 public enum TrackContextTools {
     /// The listing `list_tracks` returns. Changed-file counts come from git, one call per track,
     /// which is why this runs where the tool executor already runs: off the main thread.
+    /// What a track has changed against its base: one `git diff --name-only`.
+    public static func changedPaths(_ track: AgentTrackSummary) -> Set<String> {
+        TrackOverlap.changedPaths(branch: track.branchName, baseRef: track.baseRef, cwd: track.gitDirectory)
+    }
+
     public static func listing(_ tracks: [AgentTrackSummary], changedPaths: (AgentTrackSummary) -> Set<String>) -> String {
         guard !tracks.isEmpty else { return "This project has no tracks." }
         return tracks.map { track in

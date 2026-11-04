@@ -260,7 +260,7 @@ public struct ToolExecutor {
             return .commandProposal(ProposedCommand(toolUseId: toolUseId, command: command))
         case "list_tracks":
             let tracks = trackContextProvider()
-            var listing = TrackContextTools.listing(tracks, changedPaths: Self.changedPaths)
+            var listing = TrackContextTools.listing(tracks, changedPaths: TrackContextTools.changedPaths)
             // Here rather than in create_subtrack's description, which has to stay the same bytes.
             if coordination != nil, !coordinationAgents.isEmpty {
                 listing += "\n\nAgents a subtrack can run on (create_subtrack's agent): " + coordinationAgents.map { "\($0.id) (\($0.name))" }.joined(separator: ", ") + "."
@@ -271,7 +271,7 @@ public struct ToolExecutor {
             guard let current = tracks.first(where: \.isCurrent) else {
                 return .completed(output: "This conversation isn't attached to a track, so there is nothing to compare.", isError: false)
             }
-            return .completed(output: TrackContextTools.overlapReport(current: current, all: tracks, changedPaths: Self.changedPaths), isError: false)
+            return .completed(output: TrackContextTools.overlapReport(current: current, all: tracks, changedPaths: TrackContextTools.changedPaths), isError: false)
         case "fetch_url":
             guard let text = input.stringValue(for: "url"), !text.isEmpty else {
                 return .completed(output: "Missing required argument: url", isError: true)
@@ -336,11 +336,6 @@ public struct ToolExecutor {
         let tail = text.suffix(keep * 5 / 8)
         let elided = text.count - head.count - tail.count
         return head + "\n\n[… \(elided) characters elided …]\n\n" + tail
-    }
-
-    /// A track's changed files against its base, via git in the shared checkout.
-    static func changedPaths(_ track: AgentTrackSummary) -> Set<String> {
-        TrackOverlap.changedPaths(branch: track.branchName, baseRef: track.baseRef, cwd: track.gitDirectory)
     }
 
     // MARK: - Write tools (propose only — never touch disk)

@@ -132,14 +132,3 @@ extension Harness {
     public func send(_ text: String) { send(text, attachments: []) }
     public func editAndResend(turnId: UUID, text: String) { editAndResend(turnId: turnId, text: text, attachments: []) }
 }
-
-extension AgentRunner: Harness {
-    public func compact(completion: @escaping (Result<Void, Error>) -> Void) { compact(automatic: false, completion: completion) }
-    public var harnessName: String? { nil }
-    public var agentOptions: [HarnessOption] { [] }
-    public var accountLabel: String? { nil }
-    public func setAgentOption(id: String, value: String) {}
-    public func prepareSession() {}
-    /// Heron asks through proposal cards, never permission prompts.
-    public func answerPermission(proposalId: UUID, optionId: String?) {}
-}

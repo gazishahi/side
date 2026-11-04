@@ -537,7 +537,7 @@ for line in sys.stdin:
         UserSaveLog.shared.record(root.appendingPathComponent("d.txt"))
         let saved = UserSaveLog.shared.paths(savedSince: started, under: root.path)
         XCTAssertEqual(saved, ["d.txt"])
-        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: baseline, knownChanged: ["a.txt"], userSaved: saved, message: "agent")
+        let outcome = CheckpointCommit.stageAndCommit(root: root.path, baseline: baseline, knownChanged: ["a.txt"], userSaved: saved, message: "agent")
         guard case .committed(_, let paths)? = outcome else { return XCTFail("\(String(describing: outcome))") }
         XCTAssertEqual(paths, ["a.txt"])
     }

@@ -30,7 +30,7 @@ final class CheckpointCostTests: XCTestCase {
             }
             let before = GitPaths.metrics.processes
             let start = Date()
-            let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: baseline, knownChanged: ["d2/f2.txt"], message: "checkpoint \(round)")
+            let outcome = CheckpointCommit.stageAndCommit(root: root.path, baseline: baseline, knownChanged: ["d2/f2.txt"], message: "checkpoint \(round)")
             samples.append(Date().timeIntervalSince(start))
             processes.append(GitPaths.metrics.processes - before)
             guard case .committed(_, let paths)? = outcome else { XCTFail("\(String(describing: outcome))"); break }
@@ -78,9 +78,9 @@ final class CheckpointCostTests: XCTestCase {
         XCTAssertTrue(status.hasStaged)
         XCTAssertFalse(GitPaths.parseStatus("# branch.oid (initial)\0? a\0").hasStaged)
         XCTAssertNil(GitPaths.parseStatus("# branch.oid (initial)\0").head)
-        XCTAssertEqual(AgentRunner.addedPaths("add 'a b'\nremove 'c'", asked: ["a b", "c"]), ["a b", "c"])
-        XCTAssertNil(AgentRunner.addedPaths("warning: in the working copy of 'a', LF will be replaced", asked: ["a"]))
-        XCTAssertEqual(AgentRunner.addedPaths("", asked: ["a"]), [])
+        XCTAssertEqual(CheckpointCommit.addedPaths("add 'a b'\nremove 'c'", asked: ["a b", "c"]), ["a b", "c"])
+        XCTAssertNil(CheckpointCommit.addedPaths("warning: in the working copy of 'a', LF will be replaced", asked: ["a"]))
+        XCTAssertEqual(CheckpointCommit.addedPaths("", asked: ["a"]), [])
     }
 
     /// A file the agent changes in place, to the same size, in the second the previous
@@ -94,10 +94,10 @@ final class CheckpointCostTests: XCTestCase {
         func waitForTheNextSecond() { Thread.sleep(forTimeInterval: 1.05 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1)) }
         waitForTheNextSecond()
         try "changed 0\n".write(to: file, atomically: false, encoding: .utf8)
-        guard case .committed? = AgentRunner.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "first") else { return XCTFail("first checkpoint") }
+        guard case .committed? = CheckpointCommit.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "first") else { return XCTFail("first checkpoint") }
         try "changed 1\n".write(to: file, atomically: false, encoding: .utf8)  // same second, same size, same inode
         waitForTheNextSecond()
-        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "second")
+        let outcome = CheckpointCommit.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "second")
         guard case .committed(_, let paths)? = outcome else { return XCTFail("\(String(describing: outcome))") }
         XCTAssertEqual(paths, ["d2/f2.txt"])
         XCTAssertEqual(GitPaths.runGit(["show", "HEAD:d2/f2.txt"], cwd: root.path).output, "changed 1")
@@ -283,7 +283,7 @@ final class CheckpointIndexLockTests: XCTestCase {
         let root = try repo()
         defer { try? FileManager.default.removeItem(at: root) }
         holdLock(root, for: 1.5)
-        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "checkpoint")
+        let outcome = CheckpointCommit.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "checkpoint")
         guard case .committed(_, let paths)? = outcome else { return XCTFail("\(String(describing: outcome))") }
         XCTAssertEqual(paths, ["d2/f2.txt"])
         XCTAssertEqual(GitPaths.runGit(["status", "--porcelain"], cwd: root.path).output, "", "the index reads the checkpoint as committed")
@@ -293,7 +293,7 @@ final class CheckpointIndexLockTests: XCTestCase {
         let root = try repo()
         defer { try? FileManager.default.removeItem(at: root) }
         holdLock(root, for: 15)
-        let outcome = AgentRunner.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "checkpoint")
+        let outcome = CheckpointCommit.stageAndCommit(root: root.path, baseline: [], knownChanged: ["d2/f2.txt"], message: "checkpoint")
         guard case .committedIndexStale(_, let paths)? = outcome else { return XCTFail("\(String(describing: outcome))") }
         XCTAssertEqual(paths, ["d2/f2.txt"])
         XCTAssertTrue(outcome?.staleIndexWarning?.contains("git reset -q HEAD -- 'd2/f2.txt'") == true)

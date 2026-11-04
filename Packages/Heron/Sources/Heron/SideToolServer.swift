@@ -240,12 +240,12 @@ public final class SideToolServer: @unchecked Sendable {
     static func run(_ name: String, tracks: [AgentTrackSummary]) -> String {
         switch name {
         case "list_tracks":
-            return TrackContextTools.listing(tracks, changedPaths: ToolExecutor.changedPaths)
+            return TrackContextTools.listing(tracks, changedPaths: TrackContextTools.changedPaths)
         default:
             guard let current = tracks.first(where: \.isCurrent) else {
                 return "This conversation isn't attached to a track, so there is nothing to compare."
             }
-            return TrackContextTools.overlapReport(current: current, all: tracks, changedPaths: ToolExecutor.changedPaths)
+            return TrackContextTools.overlapReport(current: current, all: tracks, changedPaths: TrackContextTools.changedPaths)
         }
     }
 }
