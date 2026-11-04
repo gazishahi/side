@@ -1098,18 +1098,20 @@ final class ShellViewController: NSViewController {
     }
 
     /// side://run/<id>: brings this window to Run, on the tab with that keeper session, if this
-    /// window's project has it.
-    @discardableResult
-    func revealTerminal(keeperID id: String) -> Bool {
-        guard projectContext?.terminals.everySession().contains(where: { $0.viewController.keeperID == id }) == true else { return false }
+    /// window has the session or is on `project`. False if it has neither. Run restores the
+    /// project's tabs (reattaching them) when first shown, so the tab may only exist after.
+    func revealTerminal(keeperID id: String, inProject project: URL?) -> Bool {
+        let hasSession = projectContext?.terminals.everySession().contains(where: { $0.viewController.keeperID == id }) == true
+        let onProject = project != nil && projectURL?.standardizedFileURL.path == project?.standardizedFileURL.path
+        guard hasSession || onProject else { return false }
         show(.run)
-        guard runVC.showSession(keeperID: id) else { return false }
+        runVC.showSession(keeperID: id)
         view.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
         return true
     }
 
-    var projectRootURL: URL? { projectURL }
+    var hasProject: Bool { projectURL != nil }
 
     private func show(_ stage: Stage) {
         guard current != stage else { return }

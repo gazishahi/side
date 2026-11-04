@@ -262,20 +262,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for url in urls where url.scheme == "side" && url.host == "run" {
             let id = url.lastPathComponent
             guard !id.isEmpty, id != "/" else { continue }
-            if shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id) }) { continue }
-            guard let record = SessionRecord.read(from: SessionPaths.record(id)),
-                  let project = record.client[SessionKeepers.Fact.project] else { continue }
-            let track = record.client[SessionKeepers.Fact.track].flatMap { $0.isEmpty ? nil : $0 }
-            openTrackInNewWindow(projectRoot: URL(fileURLWithPath: project), trackKey: track)
-            // The project's tabs restore (and reattach) as it opens; then the tab comes forward.
-            revealWhenOpen(id, attempts: 30)
+            revealTerminal(id, attempts: 50)
         }
     }
 
-    private func revealWhenOpen(_ id: String, attempts: Int) {
+    /// A click that launched Side arrives before the last project is restored (a turn after the
+    /// first frame), so this waits for that first: opening the project again then would put it
+    /// in a second window. Then the window with the session or its project, else a window with
+    /// no project, else a new one.
+    private func revealTerminal(_ id: String, attempts: Int) {
         guard attempts > 0 else { return }
-        if shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id) }) { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.revealWhenOpen(id, attempts: attempts - 1) }
+        guard didFinishRestoring else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.revealTerminal(id, attempts: attempts - 1) }
+            return
+        }
+        let record = SessionRecord.read(from: SessionPaths.record(id))
+        let project = record?.client[SessionKeepers.Fact.project].map { URL(fileURLWithPath: $0) }
+        if shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id, inProject: project) }) { return }
+        guard let project else { return }
+        let track = record?.client[SessionKeepers.Fact.track].flatMap { $0.isEmpty ? nil : $0 }
+        if let empty = shellViewControllers.first(where: { !$0.hasProject }) {
+            empty.openProject(at: project, focusingTrackKey: track)
+        } else {
+            openTrackInNewWindow(projectRoot: project, trackKey: track)
+        }
+        _ = shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id, inProject: project) })
     }
 
     @objc func showRunningTerminals() {

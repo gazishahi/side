@@ -36,6 +36,35 @@ final class TerminalSessionManagerTests: XCTestCase {
         XCTAssertTrue(manager.sessions(forTrackKey: "feature").isEmpty)
     }
 
+    /// Two windows on one project, each bringing the same terminal forward in turn: it moves
+    /// to the one that asked, and the other shows a placeholder. The handoff once recursed
+    /// until the stack overflowed (2026-11-04, opening Run from a notification).
+    func testTwoWindowsHandATerminalBackAndForthWithoutLooping() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("terminals-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let manager = TerminalSessionManager(projectRoot: root) { _ in root }
+        defer { manager.teardownAll() }
+        let session = manager.makeSession(forTrackKey: "")
+        manager.setSessions([session], forTrackKey: "")
+        manager.setActiveIndex(0, forTrackKey: "")
+
+        let views = (0..<2).map { _ -> RunWorkspaceViewController in
+            let run = RunWorkspaceViewController()
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentViewController = run
+            run.attach(to: manager)
+            return run
+        }
+        defer { views.forEach { $0.view.window?.close() } }
+        for run in [views[0], views[1], views[0], views[1]] {
+            run.activateActiveSession()
+            XCTAssertTrue(session.viewController.parent === run)
+            let other = views.first { $0 !== run }!
+            XCTAssertFalse(other.children.contains { $0 === session.viewController })
+        }
+    }
+
     /// Tear-out moves a terminal, never copies or restarts it: it leaves every other window's
     /// list for the torn-out window's, and closing that window hands it back to the track.
     func testATornOutTerminalMovesToItsWindowAndReturnsWhenThatWindowCloses() {

@@ -112,7 +112,9 @@ final class RunWorkspaceViewController: NSViewController {
         } else if let displayed = displayedSession, displayed.viewController.parent !== self {
             clearContainer()
             showPlaceholder("This terminal is showing in another window. Select its tab to bring it here.")
-        } else if displayedSession == nil, let index = activeSessionIndex, sessions.indices.contains(index), view.window != nil, container.subviews.isEmpty {
+        } else if displayedSession == nil, let index = activeSessionIndex, sessions.indices.contains(index), view.window != nil, container.subviews.isEmpty,
+                  terminals?.isDisplayed(sessions[index], elsewhereThan: self) != true {
+            // Never taken from another window on a change notice: only selecting the tab does that.
             showActiveSession()
         }
     }
@@ -554,7 +556,6 @@ final class RunWorkspaceViewController: NSViewController {
             self.renderTaskRow()
         }
         displayedSession = session
-        terminals?.markDisplayed(session, by: self)
         let key = ObjectIdentifier(vc)
         if mounted[key] == nil {
             addChild(vc)
@@ -568,6 +569,10 @@ final class RunWorkspaceViewController: NSViewController {
             ])
             mounted[key] = (session, top, bottom)
         }
+        // Said only once the terminal is this view's child: the post reaches other windows on
+        // this project synchronously, and one that saw it half-moved (no parent yet) let go of
+        // it, which made this one let go too, and the two traded it until the stack ran out.
+        terminals?.markDisplayed(session, by: self)
         for (other, entry) in mounted { entry.session.viewController.view.isHidden = other != key }
         vc.activate()
         renderTaskRow()

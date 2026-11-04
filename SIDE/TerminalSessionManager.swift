@@ -190,6 +190,11 @@ final class TerminalSessionManager {
         post(origin: host)
     }
 
+    /// Whether a view other than `host` is showing `session`.
+    func isDisplayed(_ session: TerminalSession, elsewhereThan host: AnyObject) -> Bool {
+        displayedByHost.contains { $0.key != ObjectIdentifier(host) && $0.value == session.id }
+    }
+
     func clearUnseenOutput(_ session: TerminalSession) {
         guard session.hasUnseenOutput else { return }
         session.hasUnseenOutput = false
