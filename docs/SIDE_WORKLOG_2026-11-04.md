@@ -252,3 +252,14 @@ Objective-C exception (an abort) on a handle closed under it. It now uses `read(
 returns an error, and the stream just ends. Other `availableData` readers read pipes, which a
 process closes by exiting (EOF, not an exception), so I left them: the language-server
 transport, ACP, the LSP installer, and the DAP transport's stdio path.
+
+### 05:10 — cleaning up after my own tests
+
+- **The unit tests had filled your real project switcher.** The test host opens dozens of
+  throwaway projects (`…/T/parity-…`), and each became a space in `com.shahi.side`'s
+  `side.projectSpaces`: 39 of them, none yours, since the feature is new tonight. I deleted the
+  key. Under XCTest the switcher now keeps its own store (`side.tests.projectSpaces`).
+- My style switching had written `tabs.workingStyle` to your preferences early in the night. It's
+  deleted, and the test channel writes to its throwaway store now.
+- The six keepers running in your sessions folder are yours (sill, side-demo-repo, side,
+  started before you left). I didn't touch them.

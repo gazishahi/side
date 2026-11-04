@@ -26,7 +26,11 @@ final class ProjectSpaces {
                           "paperplane.fill", "globe.americas.fill", "books.vertical.fill", "puzzlepiece.fill", "shippingbox.fill",
                           "sparkle", "bubble.left.fill", "music.note", "camera.fill"]
 
-    static var defaults: UserDefaults = .standard
+    /// Under XCTest, a store of its own: the test host opens dozens of throwaway projects, and
+    /// they filled the real switcher (found 2026-11-04, the night it was built).
+    static var defaults: UserDefaults = NSClassFromString("XCTestCase") != nil
+        ? UserDefaults(suiteName: "side.tests.projectSpaces") ?? .standard
+        : .standard
     private static let key = "side.projectSpaces"
 
     private(set) var spaces: [Space]
