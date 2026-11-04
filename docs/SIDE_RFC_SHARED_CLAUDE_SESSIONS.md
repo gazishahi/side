@@ -1,6 +1,7 @@
 # One Claude Code history: Terminal and Agent share chats
 
-Status: decisions pending (proposed 2026-11-04). Nothing built yet.
+Status: agreed (2026-11-04: the owner took both recommendations: the menu and an empty Agent
+stage both offer it; Claude Code first). Nothing built yet.
 
 ## Why
 
@@ -61,7 +62,7 @@ So the work is mostly Side's: the IDs already line up.
    when a tab's keeper reports it, and asks before opening it in Agent as well ("It's running in
    Terminal tab 2. Open it here as well?").
 
-## Decisions for the owner
+## Decisions (2026-11-04: both as recommended)
 
 1. **Where "Continue a Claude Code chat…" lives:** the conversation menu only, or also as an
    empty Agent stage's first offer ("Pick up where you left off in Terminal")? Recommended: both.

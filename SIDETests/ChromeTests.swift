@@ -24,11 +24,6 @@ final class ChromeTests: XCTestCase {
     /// Polish list (2026-11-03, 11-04): a tab shows its icon before its title, a working agent's
     /// tab shows the working indicator, and the ⌘ hints fade in over the ×.
     func testAWorkingTabShowsItsIndicatorAndHintsTakeTheSlot() {
-        // The edge light: it needs no drawn title to place itself, and this chip is never drawn.
-        let original = TabChipView.workingStyleDefaults
-        TabChipView.workingStyleDefaults = throwawayDefaults()
-        defer { TabChipView.workingStyleDefaults = original }
-        TabChipView.workingStyle = .edge
         let chip = TabChipView(frame: NSRect(x: 0, y: 0, width: 140, height: TabChipView.height))
         chip.wantsLayer = true
         let close = TabCloseButton()
@@ -43,13 +38,17 @@ final class ChromeTests: XCTestCase {
         XCTAssertFalse(close.isHidden, "the active tab offers its ×")
         chip.isWorking = true
         XCTAssertFalse(close.isHidden, "the indicator isn't in the ×'s slot")
-        XCTAssertEqual(chip.workingStyleShownForTesting, TabChipView.workingStyle)
+        // The shimmer follows the title, so it comes once the title is drawn.
+        let rep = chip.bitmapImageRepForCachingDisplay(in: chip.bounds)!
+        chip.cacheDisplay(in: chip.bounds, to: rep)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(chip.isShowingWorkingLightForTesting, "the title shimmers")
         XCTAssertTrue(chip.accessibilityLabel()?.contains("working") == true)
         chip.shortcutHint = "\u{2318}1"
         XCTAssertTrue(chip.isShowingHintForTesting, "the hint fades in over the slot")
         chip.shortcutHint = nil
         chip.isWorking = false
-        XCTAssertNil(chip.workingStyleShownForTesting)
+        XCTAssertFalse(chip.isShowingWorkingLightForTesting)
     }
 
     func testShortcutHintsNumberTheFirstEightAndTheLastTab() {

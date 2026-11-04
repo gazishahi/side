@@ -720,65 +720,23 @@ final class TabChipView: NSView, PointerHoverSyncing {
         }
     }
 
-    // MARK: Working (prototypes, 2026-11-04)
+    // MARK: Working
 
-    /// How a working tab says so. The breathing ring is gone (the owner: "lazy and ugly"); these
-    /// are the candidates being tried, chosen in Settings → Appearance until one is kept. A caret
-    /// and a level meter were tried too (2026-11-04: "awful"; "looks like someone speaking").
-    enum WorkingStyle: String, CaseIterable {
-        /// A band of light sweeps across the title, which dims a little underneath it.
-        case shimmer
-        /// A short light runs around the tab's outline, as light travels along glass.
-        case edge
-        /// A soft band of light drifting across the whole tab, as light moves through glass.
-        case glint
-
-        var name: String {
-            switch self {
-            case .shimmer: return "Shimmer"
-            case .edge: return "Edge light"
-            case .glint: return "Glint"
-            }
-        }
-    }
-    static let workingStyleKey = "tabs.workingStyle"
-    static let workingStyleChanged = Notification.Name("SideTabWorkingStyleChanged")
-    static var workingStyleDefaults: UserDefaults = .standard
-    static var workingStyle: WorkingStyle {
-        get { WorkingStyle(rawValue: workingStyleDefaults.string(forKey: workingStyleKey) ?? "") ?? .shimmer }
-        set {
-            workingStyleDefaults.set(newValue.rawValue, forKey: workingStyleKey)
-            NotificationCenter.default.post(name: workingStyleChanged, object: nil)
-        }
-    }
+    /// A working tab's title shimmers: a band of light sweeps across it, the title a step
+    /// quieter underneath. Kept from five tried on 2026-11-04 (the owner: "shimmer"); the ring
+    /// before it was "lazy and ugly".
     private var workingLayers: [CALayer] = []
-    private var workingStyleObserver: NSObjectProtocol?
     /// Where the title was last drawn: the shimmer follows it.
     private var workingTextRect = NSRect.zero
-    var workingStyleShownForTesting: WorkingStyle? { workingLayers.isEmpty ? nil : Self.workingStyle }
+    var isShowingWorkingLightForTesting: Bool { !workingLayers.isEmpty }
 
     private func updateWorkingIndicator() {
         workingLayers.forEach { $0.removeFromSuperlayer() }
         workingLayers = []
         iconView.isHidden = dragIcon == nil
-        if workingStyleObserver == nil {
-            workingStyleObserver = NotificationCenter.default.addObserver(forName: Self.workingStyleChanged, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.workingTextRect = .zero
-                    self?.needsDisplay = true
-                    self?.updateWorkingIndicator()
-                }
-            }
-        }
         guard isWorking, let host = layer, bounds.width > 0, !drawsLifted else { return }
         let reduce = DS.Motion.reduceMotion
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            switch Self.workingStyle {
-            case .shimmer: workingLayers = shimmerLayers(reduce: reduce)
-            case .edge: workingLayers = edgeLayers(reduce: reduce)
-            case .glint: workingLayers = glintLayers(reduce: reduce)
-            }
-        }
+        effectiveAppearance.performAsCurrentDrawingAppearance { workingLayers = shimmerLayers(reduce: reduce) }
         workingLayers.forEach { host.addSublayer($0) }
     }
 
@@ -793,7 +751,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
     /// On one clock for every tab: each tab's light at the same point of its cycle, whenever its
     /// work began, so several working tabs move as one rather than each its own way (the owner,
-    /// 2026-11-04: the edge light "overstimulating … on multiple terminal tabs").
+    /// 2026-11-04: lights "overstimulating … on multiple terminal tabs").
     private static func inStep(_ animation: CABasicAnimation) {
         let now = CACurrentMediaTime()
         animation.beginTime = now - fmod(now, animation.duration)
@@ -822,57 +780,6 @@ final class TabChipView: NSView, PointerHoverSyncing {
         sweep.repeatCount = .infinity
         Self.inStep(sweep)
         band.add(sweep, forKey: "shimmer")
-        return [band]
-    }
-
-    private func edgeLayers(reduce: Bool) -> [CALayer] {
-        let body = bounds.insetBy(dx: Self.flare - 2, dy: 0.75)
-        let path = CGPath(roundedRect: body, cornerWidth: body.height / 2, cornerHeight: body.height / 2, transform: nil)
-        let perimeter = 2 * (body.width - body.height) + .pi * body.height
-        return [(3.0, 0.14), (1.25, 0.6)].map { width, alpha -> CALayer in
-            let stroke = CAShapeLayer()
-            stroke.path = path
-            stroke.fillColor = nil
-            stroke.strokeColor = NSColor.labelColor.withAlphaComponent(alpha).cgColor
-            stroke.lineWidth = width
-            stroke.lineCap = .round
-            stroke.lineDashPattern = [NSNumber(value: Double(perimeter * 0.18)), NSNumber(value: Double(perimeter * 0.82))]
-            if !reduce {
-                let run = CABasicAnimation(keyPath: "lineDashPhase")
-                run.fromValue = 0
-                run.toValue = -perimeter
-                run.duration = 2.2
-                run.repeatCount = .infinity
-                Self.inStep(run)
-                stroke.add(run, forKey: "edge")
-            }
-            return stroke
-        }
-    }
-
-    private func glintLayers(reduce: Bool) -> [CALayer] {
-        let body = bounds.insetBy(dx: Self.flare - 2, dy: 0)
-        let capsule = CAShapeLayer()
-        capsule.path = CGPath(roundedRect: CGRect(origin: .zero, size: body.size), cornerWidth: body.height / 2, cornerHeight: body.height / 2, transform: nil)
-        let band = CAGradientLayer()
-        band.frame = body
-        band.startPoint = CGPoint(x: 0, y: 0.5)
-        band.endPoint = CGPoint(x: 1, y: 0.5)
-        // Stronger on dark glass, where a tenth of the label color all but vanished.
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let light = NSColor.labelColor.withAlphaComponent(isDark ? 0.18 : 0.10).cgColor
-        band.colors = [NSColor.clear.cgColor, light, NSColor.clear.cgColor]
-        band.locations = [0.35, 0.5, 0.65]
-        band.mask = capsule
-        guard !reduce else { return [band] }
-        let drift = CABasicAnimation(keyPath: "locations")
-        drift.fromValue = [-0.5, -0.25, 0]
-        drift.toValue = [1, 1.25, 1.5]
-        drift.duration = 2.4
-        drift.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        drift.repeatCount = .infinity
-        Self.inStep(drift)
-        band.add(drift, forKey: "glint")
         return [band]
     }
 
@@ -1023,7 +930,6 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let changed = newSize != frame.size
         super.setFrameSize(newSize)
         if changed { needsDisplay = true }
-        if changed, isWorking, [.edge, .glint].contains(Self.workingStyle) { updateWorkingIndicator() }
         strip?.chipFrameChanged(self)
     }
 
@@ -1104,7 +1010,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
         if renameField == nil, !drawsLifted {
             // Under the shimmer the title sits a step quieter, so the band of light reads.
-            let shimmering = isWorking && Self.workingStyle == .shimmer
+            let shimmering = isWorking
             // The quieter colors carry their own transparency: `withAlphaComponent(1)` replaced
             // it, and every inactive title drew as dark as the active one (found 2026-11-04).
             let tone: NSColor = shimmering ? .tertiaryLabelColor : isActive || drawsLifted ? .labelColor : .secondaryLabelColor

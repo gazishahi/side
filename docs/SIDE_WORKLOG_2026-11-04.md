@@ -4,6 +4,44 @@ Status: reference. Done on my own between 03:09 and 06:09, while the owner was a
 were: commit as I go, track progress here, and make no releases of Side or Alloy. Every visual
 change was checked on a built app through the UI-testing channel before it was committed.
 
+## Afternoon, after the owner's second test (15:00–)
+
+The owner's notes: "substantially better, but still far from perfect", with three bugs and four
+decisions.
+
+**Fixed:**
+- **Changes kept the last project's file list.** After a switch to a project with no track, the
+  empty state showed and the file list from the project before stayed beside it. The empty state
+  hid the list, but the stage's layout pass showed it again whenever it had items; and the list
+  and diff were never cleared on a project or track change, so a diff still loading could land
+  too. Now the empty state clears both, a new project or track drops the old diff and anything
+  still loading, and layout leaves the list hidden under the empty state. Checked on a running
+  build: three changed files on a track, then a switch to a project with no tracks (empty state
+  only), then back (the three files).
+- **Project switching has a transition:** the stage crossfades in 0.12 s, quicker than a stage
+  switch (0.15 s), and the project chip's mark crossfades with it.
+- **Tearing a tab out and back.** Two causes. Lifted, the tab's picture left out its icon and put
+  its title where an icon-less tab has it; at the drop the real tab came back with its icon and
+  the title 18 pt to the right. And the drop swapped the lifted capsule (solid, with a shadow)
+  for the tab (on the glass, no shadow) in one frame: the "instant change" the owner saw. Now the
+  icon and title ride in the lifted tab where the tab draws them (and the icon travels into the
+  card's title bar and back), the shadow fades on the way into the slot, and the lifted capsule
+  fades into the tab over 0.12 s. A test checks the icon's and title's places and the fade.
+
+**Decided:**
+1. **Running indicator: shimmer.** Edge light and glint are gone, and so is the Settings popup.
+2. **Heron is retired.** Agent's modes go with it. A read-only audit of what only works with
+   Heron is the first step (the retirement plan's step 1).
+3. **Agent's side panel: yes.** `docs/SIDE_RFC_AGENT_PANEL.md` proposes what it shows and asks
+   the owner's question: hidden or floating below the docking width (recommended: hidden, shown
+   floating on request, as the explorer floats).
+4. **Shared Claude Code chats: as recommended.** The RFC is marked agreed.
+
+Housekeeping: the disk filled (119 MB free) while copying the repo for a test run, because the
+copy included the repo's 7.7 GB `build/` folder. The copy no longer takes `build/`. 78
+DerivedData folders from 2026-09-30 and 10-01 (about 12 GB, their projects gone) are the owner's
+to clear; I left them.
+
 ## Morning, after the owner's testing (07:00–10:00)
 
 The owner tested the night's work and found real regressions. The night's "checked on screen"

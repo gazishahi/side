@@ -65,7 +65,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             MakeWorkspaceViewController.preferences = volatile
             StagePins.defaults = volatile
             ProjectSpaces.defaults = volatile
-            TabChipView.workingStyleDefaults = volatile
             Shortcuts.defaults = volatile
             LanguageSettings.defaults = volatile
             ReviewViewedStore.shared = ReviewViewedStore(defaults: volatile)
@@ -112,7 +111,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         let states: [String: DS.StatusState] = ["needsYou": .needsYou, "failed": .failed, "unread": .unread, "verified": .verified]
                         if parts.count == 3, let index = Int(parts[1]) { shell.stageBadgeForTesting(index, state: states[parts[2]]) }
                     }
-                    if command.hasPrefix("working-style "), let style = TabChipView.WorkingStyle(rawValue: String(command.dropFirst(14))) { TabChipView.workingStyle = style }
                     if command == "hints on" || command == "hints off" { TabShortcutHints.setShowingForTesting(command == "hints on") }
                     if command.hasPrefix("window-size ") {
                         let parts = command.split(separator: " ").compactMap { Double($0) }

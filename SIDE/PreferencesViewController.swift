@@ -426,9 +426,6 @@ final class GeneralPreferencesViewController: NSViewController {
         confirmCloseSwitch.setAccessibilityLabel("Ask before closing a running terminal")
         let sidePopup = SettingsForm.popup(FileExplorer.Side.allCases.map(\.title), selected: 0, self, #selector(explorerSideChanged(_:)))
         explorerPopup = sidePopup
-        let styles = TabChipView.WorkingStyle.allCases
-        let workingPopup = SettingsForm.popup(styles.map(\.name), selected: styles.firstIndex(of: TabChipView.workingStyle) ?? 0, self, #selector(workingStyleChanged(_:)))
-        workingPopup.setAccessibilityLabel("Working tabs")
         let page = SettingsForm.page([
             SettingsSplitViewController.hero(.general),
             SettingsForm.section("Stages", footer: "Pinned stages appear in the stage control. Unpinned ones stay on the Navigate menu, \u{2318}\u{2325}1\u{2013}4 and the palette, and show up on their own when they need you.", stageRows),
@@ -442,7 +439,6 @@ final class GeneralPreferencesViewController: NSViewController {
                                  keepRunningSwitch),
                 SettingsForm.row("Ask before closing a running terminal", detail: "When a program is running in a tab you close.",
                                  confirmCloseSwitch),
-                SettingsForm.row("Working tabs", detail: "How a tab shows an agent working in it, as Claude Code or Codex.", workingPopup),
             ]),
             SettingsForm.section("Writer Mode", footer: "View \u{2192} Writer Mode: the Editor alone, one column of text, nothing else on screen.",
                                  WriterPreferences.Aid.allCases.map { aid in
@@ -510,12 +506,6 @@ final class GeneralPreferencesViewController: NSViewController {
 
     @objc private func openLibrary() {
         LibraryWindowController.shared.show(for: nil)
-    }
-
-    @objc private func workingStyleChanged(_ sender: NSPopUpButton) {
-        let styles = TabChipView.WorkingStyle.allCases
-        guard styles.indices.contains(sender.indexOfSelectedItem) else { return }
-        TabChipView.workingStyle = styles[sender.indexOfSelectedItem]
     }
 
     @objc private func explorerSideChanged(_ sender: NSPopUpButton) {
