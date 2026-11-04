@@ -843,7 +843,9 @@ final class TabChipView: NSView, PointerHoverSyncing {
         band.frame = body
         band.startPoint = CGPoint(x: 0, y: 0.5)
         band.endPoint = CGPoint(x: 1, y: 0.5)
-        let light = NSColor.labelColor.withAlphaComponent(0.10).cgColor
+        // Stronger on dark glass, where a tenth of the label color all but vanished.
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let light = NSColor.labelColor.withAlphaComponent(isDark ? 0.18 : 0.10).cgColor
         band.colors = [NSColor.clear.cgColor, light, NSColor.clear.cgColor]
         band.locations = [0.35, 0.5, 0.65]
         band.mask = capsule

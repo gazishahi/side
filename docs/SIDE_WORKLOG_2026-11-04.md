@@ -61,6 +61,11 @@ Code, so the paths that broke were never run. Fixed first:
   word wasn't an allowed one); the commit was undone at once, never pushed, and redone after a
   passing run.
 
+**To pick the running indicator:** `docs/audit-2026-11-04/working-styles-compared.gif` shows
+shimmer, edge light and glint side by side, three Claude Code tabs working at once, light and
+dark. Or try them live in Settings → General → Terminal → Working tabs, no relaunch needed.
+Glint was nearly invisible in dark mode and is stronger there now.
+
 New RFC: `docs/SIDE_RFC_SHARED_CLAUDE_SESSIONS.md`. Terminal and Agent can share Claude Code chats;
 verified in the adapter (it lists and reopens the CLI's own sessions).
 
