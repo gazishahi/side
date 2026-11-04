@@ -211,6 +211,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "runloop" { FileHandle.standardError.write(Data("\(String(describing: CFRunLoopGetMain()))\n".utf8)) }
                     if command.hasPrefix("project ") { shell.openProject(at: URL(fileURLWithPath: String(command.dropFirst(8))), focusingTrackKey: nil) }
                     if command.hasPrefix("scroll ") { shell.scrollForTesting(pages: Int(command.dropFirst(7)) ?? 1) }
+                    // Settings: "settings-end" scrolls its page to the bottom; "settings-popup <label> <n>"
+                    // picks the nth item of the popup with that accessibility label, as a click would.
+                    if command == "settings-end" || command.hasPrefix("settings-popup "), let root = self.preferencesWindow?.contentView {
+                        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+                        if command == "settings-end" {
+                            for scroll in all(root).compactMap({ $0 as? NSScrollView }) {
+                                guard let document = scroll.documentView else { continue }
+                                document.scroll(NSPoint(x: 0, y: document.isFlipped ? document.bounds.maxY : 0))
+                            }
+                        } else {
+                            let words = command.dropFirst(15).split(separator: " ")
+                            if let index = words.last.flatMap({ Int($0) }) {
+                                let label = words.dropLast().joined(separator: " ")
+                                if let popup = all(root).compactMap({ $0 as? NSPopUpButton }).first(where: { $0.accessibilityLabel() == label }) {
+                                    popup.selectItem(at: index)
+                                    _ = popup.sendAction(popup.action, to: popup.target)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if let fixture = UserDefaults.standard.string(forKey: "SideUITestingProject") {
