@@ -268,8 +268,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// A click that launched Side arrives before the last project is restored (a turn after the
     /// first frame), so this waits for that first: opening the project again then would put it
-    /// in a second window. Then the window with the session or its project, else a window with
-    /// no project, else a new one.
+    /// in a second window. Then the window with the session among its tabs (a torn-out one
+    /// included), else one on its project, else a window with no project, else a new one.
     private func revealTerminal(_ id: String, attempts: Int) {
         guard attempts > 0 else { return }
         guard didFinishRestoring else {
@@ -278,15 +278,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let record = SessionRecord.read(from: SessionPaths.record(id))
         let project = record?.client[SessionKeepers.Fact.project].map { URL(fileURLWithPath: $0) }
-        if shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id, inProject: project) }) { return }
+        let track = record?.client[SessionKeepers.Fact.track]
+        let shells = shellViewControllers.sorted { $0.listsTerminal(keeperID: id) && !$1.listsTerminal(keeperID: id) }
+        if shells.contains(where: { $0.revealTerminal(keeperID: id, inProject: project, trackKey: track) }) { return }
         guard let project else { return }
-        let track = record?.client[SessionKeepers.Fact.track].flatMap { $0.isEmpty ? nil : $0 }
+        // Opened on the project's active track; revealing switches to the session's, landing on
+        // Run (opening on that track would land on Make, and race the switch).
         if let empty = shellViewControllers.first(where: { !$0.hasProject }) {
-            empty.openProject(at: project, focusingTrackKey: track)
+            empty.openProject(at: project, focusingTrackKey: nil)
         } else {
-            openTrackInNewWindow(projectRoot: project, trackKey: track)
+            openTrackInNewWindow(projectRoot: project, trackKey: nil)
         }
-        _ = shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id, inProject: project) })
+        _ = shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id, inProject: project, trackKey: track) })
     }
 
     @objc func showRunningTerminals() {

@@ -1098,18 +1098,30 @@ final class ShellViewController: NSViewController {
     }
 
     /// side://run/<id>: brings this window to Run, on the tab with that keeper session, if this
-    /// window has the session or is on `project`. False if it has neither. Run restores the
-    /// project's tabs (reattaching them) when first shown, so the tab may only exist after.
-    func revealTerminal(keeperID id: String, inProject project: URL?) -> Bool {
+    /// window has the session or is on `project`. False if it has neither. A session on another
+    /// track switches to that track first, as picking it would. Run restores a track's tabs
+    /// (reattaching them) when it's shown, so the tab may only exist after.
+    func revealTerminal(keeperID id: String, inProject project: URL?, trackKey: String?) -> Bool {
         let hasSession = projectContext?.terminals.everySession().contains(where: { $0.viewController.keeperID == id }) == true
         let onProject = project != nil && projectURL?.standardizedFileURL.path == project?.standardizedFileURL.path
         guard hasSession || onProject else { return false }
-        show(.run)
-        runVC.showSession(keeperID: id)
         view.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
+        if let key = trackKey, key != (currentTrackKey ?? ""), !runVC.listsSession(keeperID: id),
+           let track = trackStore?.tracks.first(where: { $0.branchName == key }) {
+            switchToTrack(track, landOn: .run) { [weak self] outcome in
+                guard outcome != nil else { return }
+                self?.runVC.showSession(keeperID: id)
+            }
+        } else {
+            show(.run)
+            runVC.showSession(keeperID: id)
+        }
         return true
     }
+
+    /// Whether this window's Run has that keeper session among its own tabs.
+    func listsTerminal(keeperID id: String) -> Bool { runVC.listsSession(keeperID: id) }
 
     var hasProject: Bool { projectURL != nil }
 

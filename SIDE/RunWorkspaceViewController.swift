@@ -522,6 +522,8 @@ final class RunWorkspaceViewController: NSViewController {
 
     /// Shows the tab whose shell lives in keeper `id`, if this view has it. For a notification's
     /// side://run link.
+    func listsSession(keeperID id: String) -> Bool { sessions.contains { $0.viewController.keeperID == id } }
+
     @discardableResult
     func showSession(keeperID id: String) -> Bool {
         guard let index = sessions.firstIndex(where: { $0.viewController.keeperID == id }) else { return false }
