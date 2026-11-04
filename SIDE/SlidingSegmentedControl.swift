@@ -113,6 +113,7 @@ final class SlidingSegmentedControl: NSView {
         if let state { badges[index].state = state }
         badges[index].isHidden = state == nil
         badges[index].toolTip = state.map { spokenState ?? $0.name }
+        framesDirty = true
         needsLayout = true
         refreshAccessibility()
     }
@@ -271,15 +272,19 @@ final class SlidingSegmentedControl: NSView {
             }
             // On the title's centre line, just after it — a dot riding up like a superscript read
             // as misaligned. Title and dot centre as one group, so the dot never crowds the edge.
+            // A segment that's only its symbol keeps the symbol centred and the dot just after it,
+            // inside the segment (it was cut off at the segment's edge, 2026-11-04).
             let dot = DS.StatusDot.diameter
-            let shift = badges[index].isHidden ? 0 : (DS.Spacing.s + dot) / 2
+            let iconOnly = expandsSelected && index != selectedIndex
+            let shift = badges[index].isHidden || iconOnly ? 0 : (DS.Spacing.s + dot) / 2
             let target = frame.offsetBy(dx: -shift, dy: 0)
+            let gap = iconOnly ? 2 : DS.Spacing.s
             if animated {
                 DS.Motion.animate(DS.Motion.snappy, { button.animator().frame = target })
             } else {
                 button.frame = target
             }
-            badges[index].frame = NSRect(x: (frame.width + titleWidth) / 2 + DS.Spacing.s, y: (bounds.height - dot) / 2, width: dot, height: dot)
+            badges[index].frame = NSRect(x: (frame.width + titleWidth) / 2 + gap, y: (bounds.height - dot) / 2, width: dot, height: dot)
         }
     }
 

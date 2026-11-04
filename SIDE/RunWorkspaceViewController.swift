@@ -649,7 +649,8 @@ final class RunWorkspaceViewController: NSViewController {
             let vc = session.viewController
             let directory = (vc.currentDirectory ?? vc.workingDirectory).map { ($0 as NSString).abbreviatingWithTildeInPath }
             item.toolTip = [session.title, directory].compactMap { $0 }.joined(separator: "\n")
-            item.icon = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+            // What's running in it: Claude Code's tab shows Claude's mark, nvim's a pencil.
+            item.icon = ProgramMarks.image(forProgram: vc.runningProgramName)
             // Its terminal as it stands, for the card the tab becomes when dragged out.
             let terminalView = session.viewController.terminalView
             item.preview = { [weak terminalView] in

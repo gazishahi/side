@@ -21,9 +21,9 @@ final class ChromeTests: XCTestCase {
         }
     }
 
-    /// Polish list (2026-11-03, 11-04): a tab shows its icon before its title, and a working
-    /// agent's tab breathes the Working ring in the icon's place; the ⌘ hints fade in over the ×.
-    func testAWorkingTabShowsTheRingInPlaceOfItsIconAndHintsTakeTheSlot() {
+    /// Polish list (2026-11-03, 11-04): a tab shows its icon before its title, a working agent's
+    /// tab shows the working indicator, and the ⌘ hints fade in over the ×.
+    func testAWorkingTabShowsItsIndicatorAndHintsTakeTheSlot() {
         let chip = TabChipView(frame: NSRect(x: 0, y: 0, width: 140, height: TabChipView.height))
         let close = TabCloseButton()
         chip.addSubview(close)
@@ -36,15 +36,14 @@ final class ChromeTests: XCTestCase {
         chip.updateCloseVisibility()
         XCTAssertFalse(close.isHidden, "the active tab offers its ×")
         chip.isWorking = true
-        XCTAssertFalse(close.isHidden, "the ring isn't in the ×'s slot")
-        XCTAssertEqual(chip.workingRing?.isHidden, false)
-        XCTAssertEqual(chip.workingRing?.state, .working)
+        XCTAssertFalse(close.isHidden, "the indicator isn't in the ×'s slot")
+        XCTAssertEqual(chip.workingStyleShownForTesting, TabChipView.workingStyle)
         XCTAssertTrue(chip.accessibilityLabel()?.contains("working") == true)
         chip.shortcutHint = "\u{2318}1"
         XCTAssertTrue(chip.isShowingHintForTesting, "the hint fades in over the slot")
         chip.shortcutHint = nil
         chip.isWorking = false
-        XCTAssertEqual(chip.workingRing?.isHidden, true)
+        XCTAssertNil(chip.workingStyleShownForTesting)
     }
 
     func testShortcutHintsNumberTheFirstEightAndTheLastTab() {

@@ -1013,6 +1013,7 @@ final class ShellViewController: NSViewController {
     /// UI testing: typing into Run's terminal.
     func runTypeForTesting(_ text: String) { runVC.typeForTesting(text) }
     func closeActiveRunTabForTesting() { runVC.closeActiveTabForTesting() }
+    func stageBadgeForTesting(_ index: Int, state: DS.StatusState?) { stageControl.setBadge(state, spokenState: nil, at: index) }
 
     /// UI testing: a stage brought forward by name ("make", "think", "review", "run").
     func showStageForTesting(_ name: String) {

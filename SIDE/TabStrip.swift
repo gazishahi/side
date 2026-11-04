@@ -578,23 +578,156 @@ final class TabChipView: NSView, PointerHoverSyncing {
     var isWorking: Bool = false {
         didSet {
             guard isWorking != oldValue else { return }
-            if isWorking, workingRing == nil {
-                let ring = DS.StatusDot(state: .working)
-                ring.setAccessibilityElement(false)
-                addSubview(ring)
-                NSLayoutConstraint.activate([
-                    ring.centerXAnchor.constraint(equalTo: leadingAnchor, constant: dragIcon == nil ? Self.flare + 6 : Self.iconCenterX),
-                    ring.centerYAnchor.constraint(equalTo: centerYAnchor),
-                ])
-                workingRing = ring
-            }
-            iconView.isHidden = dragIcon == nil || isWorking
-            workingRing?.isHidden = !isWorking
+            workingTextRect = .zero
             needsDisplay = true
+            updateWorkingIndicator()
             updateCloseVisibility()
         }
     }
-    private(set) var workingRing: DS.StatusDot?
+
+    // MARK: Working (prototypes, 2026-11-04)
+
+    /// How a working tab says so. The breathing ring is gone (the owner: "lazy and ugly"); these
+    /// are the candidates being tried, switched with `tabs.workingStyle`, until one is chosen.
+    enum WorkingStyle: String, CaseIterable {
+        /// A band of light sweeps across the title, which dims a little underneath it.
+        case shimmer
+        /// A short light runs around the tab's outline, as light travels along glass.
+        case edge
+        /// A terminal's block caret blinks after the title: something is typing here.
+        case caret
+        /// Three small bars in the icon's place, moving like a level meter.
+        case meter
+    }
+    static let workingStyleKey = "tabs.workingStyle"
+    static let workingStyleChanged = Notification.Name("SideTabWorkingStyleChanged")
+    static var workingStyle: WorkingStyle {
+        get { WorkingStyle(rawValue: UserDefaults.standard.string(forKey: workingStyleKey) ?? "") ?? .shimmer }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: workingStyleKey)
+            NotificationCenter.default.post(name: workingStyleChanged, object: nil)
+        }
+    }
+    private var workingLayers: [CALayer] = []
+    private var workingStyleObserver: NSObjectProtocol?
+    /// Where the title was last drawn: the shimmer and the caret follow it.
+    private var workingTextRect = NSRect.zero
+    var workingStyleShownForTesting: WorkingStyle? { workingLayers.isEmpty ? nil : Self.workingStyle }
+
+    private func updateWorkingIndicator() {
+        workingLayers.forEach { $0.removeFromSuperlayer() }
+        workingLayers = []
+        iconView.isHidden = dragIcon == nil || (isWorking && Self.workingStyle == .meter)
+        if workingStyleObserver == nil {
+            workingStyleObserver = NotificationCenter.default.addObserver(forName: Self.workingStyleChanged, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.workingTextRect = .zero
+                    self?.needsDisplay = true
+                    self?.updateWorkingIndicator()
+                }
+            }
+        }
+        guard isWorking, let host = layer, bounds.width > 0, !drawsLifted else { return }
+        let reduce = DS.Motion.reduceMotion
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            switch Self.workingStyle {
+            case .shimmer: workingLayers = shimmerLayers(reduce: reduce)
+            case .edge: workingLayers = edgeLayers(reduce: reduce)
+            case .caret: workingLayers = caretLayers(reduce: reduce)
+            case .meter: workingLayers = meterLayers(reduce: reduce)
+            }
+        }
+        workingLayers.forEach { host.addSublayer($0) }
+    }
+
+    private var backingScale: CGFloat { window?.backingScaleFactor ?? 2 }
+
+    private func shimmerLayers(reduce: Bool) -> [CALayer] {
+        guard workingTextRect.width > 0 else { return [] }
+        let text = CATextLayer()
+        text.string = Self.label(title: title, detail: detail, attributes: [.font: DS.Text.body(isActive ? .medium : .regular), .foregroundColor: NSColor.black])
+        text.truncationMode = .end
+        text.contentsScale = backingScale
+        text.frame = CGRect(origin: .zero, size: workingTextRect.size)
+        let band = CAGradientLayer()
+        band.frame = workingTextRect
+        band.startPoint = CGPoint(x: 0, y: 0.5)
+        band.endPoint = CGPoint(x: 1, y: 0.5)
+        let light = NSColor.labelColor.cgColor
+        band.colors = [NSColor.clear.cgColor, light, NSColor.clear.cgColor]
+        band.locations = [0.4, 0.5, 0.6]
+        band.mask = text
+        guard !reduce else { return [band] }
+        let sweep = CABasicAnimation(keyPath: "locations")
+        sweep.fromValue = [-0.3, -0.15, 0]
+        sweep.toValue = [1, 1.15, 1.3]
+        sweep.duration = 1.6
+        sweep.repeatCount = .infinity
+        band.add(sweep, forKey: "shimmer")
+        return [band]
+    }
+
+    private func edgeLayers(reduce: Bool) -> [CALayer] {
+        let body = bounds.insetBy(dx: Self.flare - 2, dy: 0.75)
+        let path = CGPath(roundedRect: body, cornerWidth: body.height / 2, cornerHeight: body.height / 2, transform: nil)
+        let perimeter = 2 * (body.width - body.height) + .pi * body.height
+        return [(3.0, 0.14), (1.25, 0.6)].map { width, alpha -> CALayer in
+            let stroke = CAShapeLayer()
+            stroke.path = path
+            stroke.fillColor = nil
+            stroke.strokeColor = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+            stroke.lineWidth = width
+            stroke.lineCap = .round
+            stroke.lineDashPattern = [NSNumber(value: Double(perimeter * 0.18)), NSNumber(value: Double(perimeter * 0.82))]
+            if !reduce {
+                let run = CABasicAnimation(keyPath: "lineDashPhase")
+                run.fromValue = 0
+                run.toValue = -perimeter
+                run.duration = 2.2
+                run.repeatCount = .infinity
+                stroke.add(run, forKey: "edge")
+            }
+            return stroke
+        }
+    }
+
+    private func caretLayers(reduce: Bool) -> [CALayer] {
+        guard workingTextRect.width > 0 else { return [] }
+        let caret = CALayer()
+        let height: CGFloat = 13
+        caret.frame = CGRect(x: workingTextRect.maxX + 3, y: (bounds.height - height) / 2, width: 7, height: height)
+        caret.backgroundColor = NSColor.secondaryLabelColor.cgColor
+        caret.cornerRadius = DS.Radius.capsule(height: 2)
+        guard !reduce else { return [caret] }
+        let blink = CAKeyframeAnimation(keyPath: "opacity")
+        blink.values = [1, 1, 0, 0]
+        blink.keyTimes = [0, 0.5, 0.5, 1]
+        blink.duration = 1.0
+        blink.repeatCount = .infinity
+        caret.add(blink, forKey: "caret")
+        return [caret]
+    }
+
+    private func meterLayers(reduce: Bool) -> [CALayer] {
+        let centerX = dragIcon == nil ? Self.flare + 8 : Self.iconCenterX
+        let heights: [[CGFloat]] = [[4, 10, 6, 11, 5, 8, 4], [9, 5, 11, 4, 10, 6, 9], [6, 11, 4, 8, 11, 5, 6]]
+        return (0..<3).map { index -> CALayer in
+            let bar = CALayer()
+            bar.backgroundColor = NSColor.secondaryLabelColor.cgColor
+            bar.cornerRadius = DS.Radius.capsule(height: 2.5)
+            bar.bounds = CGRect(x: 0, y: 0, width: 2.5, height: heights[index][0])
+            bar.position = CGPoint(x: centerX + CGFloat(index - 1) * 4.5, y: bounds.height / 2)
+            if !reduce {
+                let level = CAKeyframeAnimation(keyPath: "bounds.size.height")
+                level.values = heights[index]
+                level.duration = [1.1, 0.9, 1.3][index]
+                level.calculationMode = .cubic
+                level.repeatCount = .infinity
+                bar.add(level, forKey: "meter")
+            }
+            return bar
+        }
+    }
     /// Its shortcut ("⌘2") while the modifier is held (`TabShortcutHints`): it fades in over
     /// the trailing slot as the × or ring there fades out, and back (the owner, 2026-11-04: they
     /// popped in).
@@ -741,6 +874,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let changed = newSize != frame.size
         super.setFrameSize(newSize)
         if changed { needsDisplay = true }
+        if changed, isWorking, Self.workingStyle == .edge { updateWorkingIndicator() }
         strip?.chipFrameChanged(self)
     }
 
@@ -820,9 +954,13 @@ final class TabChipView: NSView, PointerHoverSyncing {
         }
 
         if renameField == nil, !drawsLifted {
-            let dimmed = isDead ? 0.35 : 1.0
+            // Under the shimmer the title sits a step quieter, so the band of light reads.
+            let shimmering = isWorking && Self.workingStyle == .shimmer
+            // The quieter colors carry their own transparency: `withAlphaComponent(1)` replaced
+            // it, and every inactive title drew as dark as the active one (found 2026-11-04).
+            let tone: NSColor = shimmering ? .tertiaryLabelColor : isActive || drawsLifted ? .labelColor : .secondaryLabelColor
             let attributes: [NSAttributedString.Key: Any] = [
-                .foregroundColor: (isActive || drawsLifted ? NSColor.labelColor : NSColor.secondaryLabelColor).withAlphaComponent(dimmed),
+                .foregroundColor: isDead ? tone.withAlphaComponent(0.35) : tone,
                 .font: DS.Text.body(isActive || drawsLifted ? .medium : .regular),
             ]
             let text = Self.label(title: title, detail: detail, attributes: attributes)
@@ -830,6 +968,10 @@ final class TabChipView: NSView, PointerHoverSyncing {
             let maxWidth = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
             let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
             text.draw(with: drawRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            if isWorking, drawRect != workingTextRect {
+                workingTextRect = drawRect
+                DispatchQueue.main.async { [weak self] in self?.updateWorkingIndicator() }
+            }
         }
 
         // Unsaved edits and unseen output are marks, not states (Direction 03 §3.1): one quiet
@@ -853,10 +995,10 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let wasHidden = closeButton?.isHidden ?? true
         closeButton?.isHidden = true
         // The floating layer adds the title and the card its icon: the chip is only its capsule.
-        let iconWasHidden = iconView.isHidden, ringWasHidden = workingRing?.isHidden ?? true
+        let iconWasHidden = iconView.isHidden
         iconView.isHidden = true
-        workingRing?.isHidden = true
-        defer { closeButton?.isHidden = wasHidden; iconView.isHidden = iconWasHidden; workingRing?.isHidden = ringWasHidden }
+        workingLayers.forEach { $0.isHidden = true }
+        defer { closeButton?.isHidden = wasHidden; iconView.isHidden = iconWasHidden; workingLayers.forEach { $0.isHidden = false } }
         let image = NSImage(size: bounds.size)
         if let rep = bitmapImageRepForCachingDisplay(in: bounds) {
             effectiveAppearance.performAsCurrentDrawingAppearance { cacheDisplay(in: bounds, to: rep) }
