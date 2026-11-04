@@ -161,6 +161,7 @@ class GlassPill: NSView {
     private(set) var title = ""
     private(set) var mark: Mark = .none
     private let label = NSTextField(labelWithString: "")
+    private let countBadge = CountBadge()
     private let ring = ProgressRing()
     private let dot = DS.StatusDot(state: .failed)
     let row = NSStackView()
@@ -185,13 +186,19 @@ class GlassPill: NSView {
         label.textColor = .labelColor
         label.alignment = .center
         label.lineBreakMode = .byTruncatingTail
-        label.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        // Below the window's own size (windowSizeStayPut, 500): a long title truncates rather
+        // than widening the window. At 750 the activity pill, naming what was running, pushed a
+        // window past the screen's edge (the owner, 2026-11-04).
+        label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(480), for: .horizontal)
+        label.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxTitleWidth).isActive = true
+        row.setClippingResistancePriority(.defaultLow, for: .horizontal)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = DS.Spacing.s
         row.detachesHiddenViews = true
         row.translatesAutoresizingMaskIntoConstraints = false
-        for view in [ring, dot, label] as [NSView] { row.addArrangedSubview(view) }
+        countBadge.isHidden = true
+        for view in [ring, dot, label, countBadge] as [NSView] { row.addArrangedSubview(view) }
         addSubview(row)
         let inset = glass ? DS.Spacing.l : DS.Spacing.s
         NSLayoutConstraint.activate([
@@ -208,6 +215,9 @@ class GlassPill: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    /// The widest a title gets; past it, it truncates.
+    static let maxTitleWidth: CGFloat = 260
 
     /// The body's medium weight with tabular digits, so a percentage counts in place.
     static var titleFont: NSFont {
@@ -249,6 +259,17 @@ class GlassPill: NSView {
         label.textColor = color == nil ? .labelColor : .white
     }
     private(set) var tint: NSColor?
+
+    /// How many more it has besides what it says, as a "+2" after the words; 0 is none. The words
+    /// stay the same as the count changes, so the pill keeps its size.
+    func setCount(_ count: Int) {
+        let text = count > 0 ? "+\(count)" : ""
+        guard text != countBadge.text else { return }
+        if !isHidden, window != nil { DS.Motion.crossfade(row) }
+        countBadge.text = text
+        countBadge.isHidden = count <= 0
+    }
+    var countForTesting: String { countBadge.text }
 
     /// What it says. A change while it's on screen crossfades.
     func set(title: String, mark: Mark) {
@@ -416,4 +437,49 @@ final class ZoomPill: GlassPill {
     }
 
     func hideForTesting() { hideTimer?.fire() }
+}
+
+/// A small count in a capsule ("+2"), trailing a pill's words.
+final class CountBadge: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    var text: String {
+        get { label.stringValue }
+        set { label.stringValue = newValue }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        label.font = {
+            let base = DS.Text.caption(.semibold)
+            let tabular = base.fontDescriptor.addingAttributes([.featureSettings: [[
+                NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
+                NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector,
+            ]]])
+            return NSFont(descriptor: tabular, size: base.pointSize) ?? base
+        }()
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.s),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.s),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            heightAnchor.constraint(equalTo: label.heightAnchor, constant: 4),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+        layer?.cornerRadius = bounds.height / 2
+    }
+    override func layout() {
+        super.layout()
+        needsDisplay = true
+    }
 }

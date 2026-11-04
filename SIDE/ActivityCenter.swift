@@ -97,7 +97,10 @@ final class ActivityCenter {
         for context in ProjectContextRegistry.openContexts() {
             let project = context.projectRoot
             let projectName = project.lastPathComponent
-            for session in context.terminals.everySession() {
+            let sessions = context.terminals.everySession()
+            // Named as their tabs are: two Claude Codes are "Claude Code" and "Claude Code 2".
+            let tabTitles = RunWorkspaceViewController.distinctTitles(sessions.map(\.title))
+            for (session, tabTitle) in zip(sessions, tabTitles) {
                 let vc = session.viewController
                 // In sight: shown in the key window of an active Side. Anything else is out of sight.
                 guard front?.isShowingTerminalSession(session.id) != true else { continue }
@@ -106,14 +109,16 @@ final class ActivityCenter {
                 guard vc.isProgramWorking || session.hasUnseenOutput || vc.lastBellAt != nil || vc.turnFinishedAt != nil else { continue }
                 let program = vc.runningProgramName
                 let name = Self.programName(program)
-                let place = "\(projectName) \u{00B7} \(session.title)"
-                if vc.lastBellAt != nil {
-                    // It rang the bell and nobody has looked since: it wants you.
-                    next.append(Item(id: "term-\(session.id)", state: .needsYou, title: name, place: place, program: program, target: .terminal(project: project, session: session.id)))
-                } else if vc.isProgramWorking {
-                    next.append(Item(id: "term-\(session.id)", state: .working, title: name, place: place, program: program, target: .terminal(project: project, session: session.id)))
-                } else if vc.turnFinishedAt != nil || (session.hasUnseenOutput && ProgramMarks.hasMark(program)) {
-                    next.append(Item(id: "term-\(session.id)", state: .finished, title: name, place: place, program: program, target: .terminal(project: project, session: session.id)))
+                let place = "\(projectName) \u{00B7} \(tabTitle)"
+                let state: Item.State?
+                switch vc.news {
+                // It rang the bell and nobody has looked since: it wants you.
+                case .needsYou: state = .needsYou
+                case .finished: state = .finished
+                case nil: state = vc.isProgramWorking ? .working : session.hasUnseenOutput && ProgramMarks.hasMark(program) ? .finished : nil
+                }
+                if let state {
+                    next.append(Item(id: "term-\(session.id)", state: state, title: name, place: place, program: program, target: .terminal(project: project, session: session.id)))
                 }
             }
             for track in context.trackStore.tracks {
@@ -156,10 +161,7 @@ final class ActivityCenter {
 
     /// The program as people call it: `claude` is Claude Code.
     static func programName(_ program: String?) -> String {
-        guard let program else { return "Terminal" }
-        let name = (program as NSString).lastPathComponent
-        let known = ["claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode", "gemini": "Gemini", "aider": "Aider", "goose": "Goose", "amp": "Amp"]
-        return known[name.lowercased()] ?? name
+        program.map(ProgramMarks.displayName) ?? "Terminal"
     }
 
     /// Goes to the item: the window with its project (opening it if none has it), the stage, the tab.
@@ -204,11 +206,10 @@ final class ActivityPill {
         refresh(animated: false)
     }
 
-    /// "Claude Code finished", or "Claude Code finished · 2 more".
+    /// "Claude Code finished": the most pressing item. The rest are counted beside it ("+2").
     static func summary(_ items: [ActivityCenter.Item]) -> String {
         guard let first = items.first else { return "" }
-        let lead = first.state == .working ? "\(first.title) working" : "\(first.title) \(first.state.word.lowercased())"
-        return items.count == 1 ? lead : "\(lead) \u{00B7} \(items.count - 1) more"
+        return first.state == .working ? "\(first.title) working" : "\(first.title) \(first.state.word.lowercased())"
     }
 
     func refresh(animated: Bool) {
@@ -216,6 +217,7 @@ final class ActivityPill {
         if let first = items.first {
             let mark: GlassPill.Mark = first.state == .working ? .ring(fraction: nil) : .dot(first.state.status)
             view.set(title: Self.summary(items), mark: mark)
+            view.setCount(items.count - 1)
             view.toolTip = items.map { "\($0.title) \u{2014} \($0.state.word), \($0.place)" }.joined(separator: "\n")
         }
         view.setShown(!items.isEmpty, animated: animated)
@@ -225,6 +227,12 @@ final class ActivityPill {
 
     private func togglePopover() {
         if let popover, popover.isShown { popover.close(); return }
+        // One thing to say: a click goes there. A list is for choosing among several.
+        let items = ActivityCenter.shared.items
+        if items.count == 1, let only = items.first {
+            ActivityCenter.shared.go(to: only)
+            return
+        }
         let content = ActivityListViewController()
         content.onPick = { [weak self] item in
             self?.popover?.close()

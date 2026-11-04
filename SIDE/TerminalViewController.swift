@@ -30,6 +30,7 @@ final class SideTerminalView: LocalProcessTerminalView {
     /// actual bytes.
     var onRawDataReceived: ((ArraySlice<UInt8>) -> Void)?
     private var currentLineBuffer = ""
+    private var inputEscape = EscapeSkipper()
     private var accessibilityUpdateWorkItem: DispatchWorkItem?
 
     /// Whether VoiceOver is on, kept by observing it: asking NSWorkspace on every read of output
@@ -118,8 +119,13 @@ final class SideTerminalView: LocalProcessTerminalView {
     /// Best-effort line capture, not a real line editor: control sequences like arrow-key
     /// history recall aren't parsed, so a command recalled via shell history and re-run won't
     /// be captured here. Plain typed/pasted-then-Return input is.
+    ///
+    /// Escape sequences are skipped whole: arrow keys, and the terminal's own replies to a
+    /// program's queries, which go to the program the same way (Claude Code asks at startup,
+    /// and its "command" read `[?65;4;1;2;6;21;22;17;28cP>|SwiftTerm`).
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         for byte in data {
+            if inputEscape.consume(byte) { continue }
             switch byte {
             case 13, 10:
                 let line = currentLineBuffer.trimmingCharacters(in: .whitespaces)
@@ -298,6 +304,18 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private(set) var lastBellAt: Date?
     /// When an agent's turn last ended out of sight, until the tab is shown.
     private(set) var turnFinishedAt: Date?
+    /// What happened here out of sight that you'd want to know, until the tab is shown: an
+    /// agent's turn that ended, or a bell on its own, which wants you. A bell with the end of a
+    /// turn is the turn ending (Claude Code rings one then, set to notify by the terminal bell).
+    enum News { case finished, needsYou }
+    var news: News? {
+        let bellEndedTurn = lastBellAt.flatMap { bell in turnFinishedAt.map { abs(bell.timeIntervalSince($0)) < 2 } } ?? false
+        if lastBellAt != nil, !bellEndedTurn { return .needsYou }
+        if turnFinishedAt != nil { return .finished }
+        return nil
+    }
+    var onNewsChanged: (() -> Void)?
+
     /// On screen in Side's front window.
     var isOnScreen: Bool { NSApp.isActive && view.window?.isKeyWindow == true && !view.isHiddenOrHasHiddenAncestor }
     private var didStart = false
@@ -485,7 +503,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         terminalView.onBell = { [weak self] in
             guard let self else { return }
             // Rung where you can see it: nothing to tell you later.
-            if !self.isOnScreen { self.lastBellAt = Date() }
+            if !self.isOnScreen {
+                self.lastBellAt = Date()
+                self.onNewsChanged?()
+            }
         }
         applyTextSize()
         NotificationCenter.default.addObserver(self, selector: #selector(applyTextSize), name: DS.Text.CodeSize.didChangeNotification, object: nil)
@@ -532,8 +553,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         ensureStarted()
         view.window?.makeFirstResponder(terminalView)
         // Seen: a bell or a finished turn from before no longer wants you.
-        lastBellAt = nil
-        turnFinishedAt = nil
+        if news != nil {
+            lastBellAt = nil
+            turnFinishedAt = nil
+            onNewsChanged?()
+        }
     }
 
     /// Starts the shell without claiming first responder — split out of `activate()` so an
@@ -667,14 +691,23 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     var runningProgramName: String? {
         guard didStart, isAlive else { return nil }
         if let launch = commandLaunch { return (launch.command as NSString).lastPathComponent }
-        if shellIntegration == .confirmed {
-            guard commandStatus.runningSince != nil else { return nil }
-            let typed = lastSubmittedCommand?.split(separator: " ").first.map(String.init)
-            return typed ?? programTitle ?? "A command"
-        }
-        guard let keeperID, let program = SessionKeepers.liveRecord(keeperID)?.foreground.first else { return nil }
-        return (program as NSString).lastPathComponent
+        // Asked of the kernel: what was typed is no guide (an autosuggestion accepted with →
+        // typed "claOC", and a message to Claude Code is a line too).
+        if let shell = shellPID { return ForegroundProgram.name(ofShell: shell) }
+        guard let keeperID, let record = SessionKeepers.liveRecord(keeperID) else { return nil }
+        return ForegroundProgram.name(arguments: record.foreground)
     }
+
+    /// The shell's process: Side's own child, or the keeper's, read once from its record.
+    private var shellPID: pid_t? {
+        if terminalView.keeper == nil {
+            let pid = terminalView.process.shellPid
+            return pid > 0 ? pid : nil
+        }
+        if keeperShellPID == nil, let keeperID { keeperShellPID = SessionKeepers.liveRecord(keeperID).map(\.childPID).flatMap { $0 > 0 ? $0 : nil } }
+        return keeperShellPID
+    }
+    private var keeperShellPID: pid_t?
 
     /// Run Again: types the offered command into the shell.
     func runOfferedCommand() {
@@ -1367,7 +1400,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-        guard commandStatus.runningSince != nil else { return }
+        // A program's title, not the shell's. A tab reattached to its keeper doesn't know a
+        // command is running (the shell's mark for it came before), so the kernel is asked too.
+        guard commandStatus.runningSince != nil || shellPID.flatMap(ForegroundProgram.group(ofShell:)) != nil else { return }
         noteTitleGlyph(title)
         setProgramTitle(Self.cleanProgramTitle(title))
     }
@@ -1600,3 +1635,35 @@ final class OverlayScrollThumb: NSView {
     }
 }
 
+
+/// Follows the escape sequences in a byte stream, so what's between them can be read as text.
+struct EscapeSkipper {
+    private enum State { case text, escape, csi, string, stringEscape, single }
+    private var state = State.text
+
+    /// Whether `byte` belongs to an escape sequence (and so isn't text).
+    mutating func consume(_ byte: UInt8) -> Bool {
+        switch state {
+        case .text:
+            guard byte == 0x1B else { return false }
+            state = .escape
+        case .escape:
+            switch byte {
+            case UInt8(ascii: "["): state = .csi
+            case UInt8(ascii: "P"), UInt8(ascii: "]"), UInt8(ascii: "_"), UInt8(ascii: "^"), UInt8(ascii: "X"): state = .string
+            // SS3 (`ESC O C`, an arrow key in application mode) and charset picks take one more byte.
+            case UInt8(ascii: "O"), UInt8(ascii: "("), UInt8(ascii: ")"): state = .single
+            default: state = .text
+            }
+        case .csi:
+            if (0x40...0x7E).contains(byte) { state = .text }
+        case .string:
+            if byte == 0x07 { state = .text } else if byte == 0x1B { state = .stringEscape }
+        case .stringEscape:
+            state = byte == UInt8(ascii: "\\") ? .text : .string
+        case .single:
+            state = .text
+        }
+        return true
+    }
+}

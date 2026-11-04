@@ -1443,14 +1443,54 @@ final class TabStripTests: XCTestCase {
         XCTAssertEqual(tint.midX, strip.chips[1].frame.midX, accuracy: 1, "under the selected tab")
         var closed = false
         // Closing the second: the third (index 1 once it's gone) is selected next.
+        let third = strip.chips[2]
         strip.animateClose(at: 1, activeAfter: 1) { closed = true }
-        XCTAssertTrue(strip.chips[2].isActive, "selected from the start of the close, not its end")
-        XCTAssertFalse(strip.chips[1].isActive)
+        XCTAssertTrue(strip.chips[1] === third, "the closed tab leaves the list at once")
+        XCTAssertTrue(third.isActive, "selected from the start of the close, not its end")
         let deadline = Date().addingTimeInterval(2)
         while !closed, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         XCTAssertTrue(closed)
         let moved = try XCTUnwrap(strip.selectionFrameForTesting)
-        XCTAssertEqual(moved.midX, strip.chips[2].frame.midX, accuracy: 1, "the tint went with it")
+        XCTAssertEqual(moved.midX, third.frame.midX, accuracy: 1, "the tint went with it")
+    }
+
+    /// 2026-11-04: a second close while the first was animating removed the wrong tab, and the
+    /// X stopped working. The strip's list matches the owner's from the start of a close, and
+    /// the tab on its way out takes no clicks.
+    func testClosesInQuickSuccessionCloseTheTabsClicked() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let bar = TabStripView(frame: window.contentView!.bounds)
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(stack)
+        window.contentView = bar
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor), stack.topAnchor.constraint(equalTo: bar.topAnchor),
+            stack.heightAnchor.constraint(equalToConstant: 30),
+        ])
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        var items = (1...5).map { TabStrip.Item(id: UUID(), title: "tab \($0)") }
+        strip.reload(items, active: 0)
+        bar.layoutSubtreeIfNeeded()
+        // An owner that drops the tab as the strip starts closing it, as Editor and Terminal do.
+        func close(_ index: Int) {
+            let leaving = strip.chips[index]
+            strip.animateClose(at: index, activeAfter: 0)
+            items.remove(at: index)
+            strip.reload(items, active: 0)
+            XCTAssertNil(leaving.hitTest(NSPoint(x: leaving.bounds.midX, y: leaving.bounds.midY)), "the closing tab takes no clicks")
+        }
+        close(1)
+        close(1)
+        XCTAssertEqual(strip.chips.map(\.title), ["tab 1", "tab 4", "tab 5"])
+        let deadline = Date().addingTimeInterval(1)
+        while Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        XCTAssertEqual(stack.arrangedSubviews.count, 3)
+        XCTAssertEqual(strip.chips.map(\.title), ["tab 1", "tab 4", "tab 5"])
     }
 }
 

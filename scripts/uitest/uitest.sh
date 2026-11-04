@@ -9,6 +9,10 @@
 #   scripts/uitest/uitest.sh claude             put the stand-in `claude` first on the shell's PATH
 #   scripts/uitest/uitest.sh quit               quit, and end its keepers and their shells
 #
+# The build is its own app, com.shahi.side.uitest: its settings are its own, and macOS doesn't
+# confuse it with the installed Side (same identifier, different signature: privacy grants
+# flip between them, and Side asked for ~/Documents again and again).
+#
 # Everything lives in $SIDE_UIT (default /tmp/side-uit), for two reasons:
 # - out of ~/Documents: a build or test run from there waits on macOS's Documents prompt;
 # - short: a keeper's socket path must fit in 104 bytes, and a deep folder made keepers fail to
@@ -32,7 +36,7 @@ case ${1:-} in
     rsync -a --delete --exclude build --exclude '.build' --exclude DerivedData $REPO/ $ROOT/repo/
     cd $ROOT/repo
     xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -destination 'platform=macOS' \
-      -skipPackagePluginValidation -derivedDataPath $ROOT/dd build 2>&1 | grep -E " error: |BUILD (SUCCEEDED|FAILED)"
+      -skipPackagePluginValidation -derivedDataPath $ROOT/dd PRODUCT_BUNDLE_IDENTIFIER=com.shahi.side.uitest build 2>&1 | grep -E " error: |BUILD (SUCCEEDED|FAILED)"
     ;;
   launch)
     tools

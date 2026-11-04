@@ -80,6 +80,7 @@ final class ChromeHost {
     /// Search and the update pill, as one trailing piece of the bar.
     private var trailingCluster: NSView?
     private var updateObserver: NSObjectProtocol?
+    private var activityObserver: NSObjectProtocol?
     private var leadingInset: NSLayoutConstraint?
 
     init(placement: ChromePlacement, pill: TrackPill, stageControl: SlidingSegmentedControl, searchButton: GlassCircleButton) {
@@ -172,6 +173,8 @@ final class ChromeHost {
         cluster.alignment = .centerY
         cluster.spacing = DS.Spacing.m
         cluster.detachesHiddenViews = true
+        // As the top row's: what the cluster holds never sizes the window.
+        cluster.setClippingResistancePriority(.defaultLow, for: .horizontal)
         cluster.translatesAutoresizingMaskIntoConstraints = false
         trailingCluster = cluster
         for piece in [pillCapsule, stagesCapsule, cluster] as [NSView] { root.addSubview(piece) }
@@ -192,6 +195,9 @@ final class ChromeHost {
             MainActor.assumeIsolated { self?.replaceAccessories() }
         }
         zoom.onShownChanged = { [weak self] in self?.replaceAccessories() }
+        activityObserver = NotificationCenter.default.addObserver(forName: ActivityCenter.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.replaceAccessories() }
+        }
         barRoot = root
         pillPiece = pillCapsule
     }

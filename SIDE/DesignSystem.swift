@@ -432,6 +432,21 @@ enum DS {
             }
             /// How long `curve` runs: about when the spring looks settled.
             var duration: TimeInterval { response * 1.3 }
+
+            /// `curve`'s value `t` of the way through (0–1), overshoot included: for a change
+            /// driven frame by frame that must keep step with views moving on `curve`.
+            func progress(at t: Double) -> Double {
+                let t = min(max(t, 0), 1)
+                let (x1, y1, x2, y2) = (Double(controlPoints[0]), Double(controlPoints[1]), Double(controlPoints[2]), Double(controlPoints[3]))
+                func bezier(_ s: Double, _ a: Double, _ b: Double) -> Double { 3 * (1 - s) * (1 - s) * s * a + 3 * (1 - s) * s * s * b + s * s * s }
+                // The curve's x is monotonic in s: bisect for the s whose x is t.
+                var low = 0.0, high = 1.0
+                for _ in 0..<24 {
+                    let mid = (low + high) / 2
+                    if bezier(mid, x1, x2) < t { low = mid } else { high = mid }
+                }
+                return bezier((low + high) / 2, y1, y2)
+            }
         }
 
         /// Settling after direct manipulation: a tab set down, neighbours sliding aside, a press
@@ -777,20 +792,59 @@ final class TabStripView: NSView {
     /// strip drives it: sized inside this view's layout pass, the track never moved on a spring
     /// and jumped again once the tabs' frames caught up (2026-10-31).
     func setTrackWidth(_ width: CGFloat, spring: DS.Motion.Spring?, from: CGFloat? = nil) {
-        guard let glass = glassTrack else { return }
-        let shown = from ?? (glass.layer?.presentation() ?? glass.layer)?.bounds.width ?? glass.frame.width
+        guard glassTrack != nil else { return }
+        let shown = from ?? trackMotion?.width ?? glassTrack?.frame.width ?? width
         trackWidth = width
+        trackMotion = nil
         applyTrack()
-        guard let spring, !DS.Motion.reduceMotion, let layer = glass.layer else { return }
-        let target = glass.frame.width
-        guard abs(shown - target) > 0.5 else { return }
-        // The left edge stays put (an AppKit view's layer grows from its origin); only the width
-        // moves, additively, so a second change mid-spring carries on from where it is.
-        let grow = DS.Motion.spring(spring, keyPath: "bounds.size.width")
-        grow.isAdditive = true
-        grow.fromValue = shown - target
-        grow.toValue = 0
-        layer.add(grow, forKey: nil)
+        guard let spring, !DS.Motion.reduceMotion, window != nil, let target = glassTrack?.frame.width, abs(shown - target) > 0.5 else {
+            trackLink?.invalidate()
+            trackLink = nil
+            return
+        }
+        // Frame by frame, on the tabs' own curve: the glass is drawn from its view's frame, so a
+        // layer animation of it never showed (narrowing, it stayed wide and then jumped: the
+        // owner, 2026-11-04, closing tabs "choppy and rough"), and a true spring settled well
+        // before the tabs moving on `curve`.
+        // Growing, it gets there first and fast: a new tab fades in at its place at once and
+        // mustn't sit outside the glass. Narrowing, it keeps step with the tabs closing up.
+        let curve = target > shown ? DS.Motion.Spring(response: spring.response * 0.7, damping: 1, controlPoints: [0.2, 0.85, 0.25, 1]) : spring
+        trackMotion = TrackMotion(from: shown, to: target, start: CACurrentMediaTime(), spring: curve)
+        if trackLink == nil {
+            let link = displayLink(target: self, selector: #selector(stepTrack(_:)))
+            link.add(to: .main, forMode: .common)
+            trackLink = link
+        }
+        applyTrack()
+    }
+
+    /// The track on its way from one width to another.
+    private struct TrackMotion {
+        let from: CGFloat
+        let to: CGFloat
+        let start: CFTimeInterval
+        let spring: DS.Motion.Spring
+        var width: CGFloat { width(at: CACurrentMediaTime()) }
+        func width(at time: CFTimeInterval) -> CGFloat {
+            from + (to - from) * spring.progress(at: (time - start) / spring.duration)
+        }
+        func isDone(at time: CFTimeInterval) -> Bool { time - start >= spring.duration }
+    }
+    private var trackMotion: TrackMotion?
+    private var trackLink: CADisplayLink?
+
+    @objc private func stepTrack(_ link: CADisplayLink) {
+        guard let motion = trackMotion else {
+            link.invalidate()
+            trackLink = nil
+            return
+        }
+        if motion.isDone(at: CACurrentMediaTime()) {
+            trackMotion = nil
+            link.invalidate()
+            trackLink = nil
+        }
+        applyTrack()
     }
 
     override func layout() {
@@ -805,11 +859,15 @@ final class TabStripView: NSView {
         // frame left the track, and the mask below, at the old width. A new tab (or one dropped
         // back from its card) was then cut off by the mask, there in every record but blank on
         // screen until another layout (the owner, 2026-10-31).
-        let width = min(trackWidth ?? stack.fittingSize.width, scroll.frame.width)
+        let tabs = min(trackWidth ?? stack.fittingSize.width, scroll.frame.width)
+        // On its way (`setTrackWidth`), the glass is where its motion has got to; the mask is the
+        // wider of that and the tabs' width, so tabs arriving or sliding in are never cut off.
+        let glassWidth = min(trackMotion?.width ?? tabs, scroll.frame.width)
+        let width = max(glassWidth, tabs)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
             context.allowsImplicitAnimation = false
-            glass.frame = NSRect(x: scroll.frame.minX, y: (bounds.height - Self.trackHeight) / 2, width: width, height: Self.trackHeight)
+            glass.frame = NSRect(x: scroll.frame.minX, y: (bounds.height - Self.trackHeight) / 2, width: glassWidth, height: Self.trackHeight)
         }
         // The tabs are cut off at the track's round ends, not the scroll view's square ones: a
         // selected tab half scrolled out used to poke its pill past the curve. The mask takes its

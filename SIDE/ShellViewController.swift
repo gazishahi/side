@@ -763,6 +763,16 @@ final class ShellViewController: NSViewController {
     @objc func selectNextTab(_ sender: Any?) { adjacentTab(1) }
     @objc func selectPreviousTab(_ sender: Any?) { adjacentTab(-1) }
 
+    /// ⌘1–9: a tab in the current stage's top row, by its place. Here, not in Editor, so it
+    /// reaches Terminal's tabs too (the owner, 2026-11-04: it did nothing there).
+    @objc func switchToTabShortcut(_ sender: NSMenuItem) {
+        switch current {
+        case .make: makeVC.selectTab(number: sender.tag)
+        case .run: runVC.selectTab(number: sender.tag)
+        default: break
+        }
+    }
+
     /// ⌃Tab cycles the tabs in the current stage's top row.
     private func adjacentTab(_ offset: Int) {
         switch current {
@@ -807,7 +817,7 @@ final class ShellViewController: NSViewController {
         let stages = StagePins.visible(pinned: StagePins.pinned, attention: attention, dismissed: dismissedAttention, current: current)
         if stages != visibleStages || stageControl.segmentAccessibilityLabels.count != stages.count {
             visibleStages = stages
-            stageControl.setSegments(stages.map(\.title), symbols: stages.map(\.symbol), selected: current.flatMap { stages.firstIndex(of: $0) } ?? -1)
+            stageControl.setSegments(stages.map(\.title), symbols: stages.map(\.symbol), selected: current.flatMap { stages.firstIndex(of: $0) } ?? -1, animated: true)
         } else if let current, let index = stages.firstIndex(of: current) {
             if index != stageControl.selectedIndex { stageControl.select(index, animated: true) }
         } else {
@@ -1024,6 +1034,16 @@ final class ShellViewController: NSViewController {
 
     /// UI testing: typing into Run's terminal.
     func runTypeForTesting(_ text: String) { runVC.typeForTesting(text) }
+    func runSelectForTesting(_ index: Int) { runVC.selectTab(number: index) }
+    func clickTabCloseForTesting(_ index: Int) {
+        (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).clickCloseForTesting(index)
+    }
+    /// The strip's tabs, then the stage's own list: they must agree.
+    var tabsDumpForTesting: String {
+        let strip = (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).chips.map(\.title)
+        let model = current == .run ? RunWorkspaceViewController.distinctTitles(runVC.sessionTitlesForTesting) : makeVC.openTabTitlesForTesting
+        return "strip=\(strip.joined(separator: "|")) model=\(model.joined(separator: "|"))"
+    }
     func closeActiveRunTabForTesting() { runVC.closeActiveTabForTesting() }
     func stageBadgeForTesting(_ index: Int, state: DS.StatusState?) { stageControl.setBadge(state, spokenState: nil, at: index) }
 

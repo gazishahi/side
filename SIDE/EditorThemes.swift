@@ -101,9 +101,14 @@ enum EditorThemes {
     // MARK: Imported themes, kept in Application Support
 
     private static var storeURL: URL {
+        // Tests keep theirs in a temporary folder: one file per run in Application Support had
+        // left 181 behind there (2026-11-04).
+        if NSClassFromString("XCTestCase") != nil {
+            return FileManager.default.temporaryDirectory.appendingPathComponent("Themes.tests.\(ProcessInfo.processInfo.processIdentifier).json")
+        }
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Side", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder.appendingPathComponent(NSClassFromString("XCTestCase") == nil ? "Themes.json" : "Themes.tests.\(ProcessInfo.processInfo.processIdentifier).json")
+        return folder.appendingPathComponent("Themes.json")
     }
 
     private static var cached: [EditorTheme]?

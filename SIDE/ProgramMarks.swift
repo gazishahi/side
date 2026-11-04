@@ -16,6 +16,13 @@ enum ProgramMarks {
         return NSImage(systemSymbolName: symbol(for: name), accessibilityDescription: nil) ?? NSImage()
     }
 
+    /// The program as people call it: `claude` is Claude Code.
+    static func displayName(_ program: String) -> String {
+        let name = (program as NSString).lastPathComponent
+        let known = ["claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode", "gemini": "Gemini", "aider": "Aider", "goose": "Goose", "amp": "Amp"]
+        return known[name.lowercased()] ?? name
+    }
+
     /// Whether a program is an agent whose own mark the tab shows.
     static func hasMark(_ program: String?) -> Bool {
         program.map { marks[($0 as NSString).lastPathComponent.lowercased()] != nil } ?? false

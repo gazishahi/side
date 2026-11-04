@@ -79,6 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("open ") { shell.revealFile(URL(fileURLWithPath: String(command.dropFirst(5)))) }
                     if command == "close-all" { shell.closeAllMakeTabsForTesting() }
                     if command == "run-close-tab" { shell.closeActiveRunTabForTesting() }
+                    // "tab-x 2": a click on the third tab's X, in Editor or Terminal, whichever shows.
+                    if command.hasPrefix("tab-x "), let index = Int(command.dropFirst(6)) { shell.clickTabCloseForTesting(index) }
+                    if command == "tabs-dump" {
+                        FileHandle.standardError.write(Data("[tabs] \(shell.tabsDumpForTesting)\n".utf8))
+                    }
                     if command == "activity-open" { shell.activityPillForTesting?.clickForTesting() }
                     if command.hasPrefix("project-switch ") { shell.switchProject(to: URL(fileURLWithPath: String(command.dropFirst(15)))) }
                     if command.hasPrefix("project-step ") { shell.switchProject(offset: Int(command.dropFirst(13)) ?? 1) }
@@ -90,6 +95,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         let sessions = ProjectContextRegistry.openContexts().flatMap { $0.terminals.everySession() }
                         let lines = sessions.map { "session \($0.title) working=\($0.viewController.isProgramWorking) program=\($0.viewController.runningProgramName ?? "-") unseen=\($0.hasUnseenOutput)" }
                             + ActivityCenter.shared.items.map { "item \($0.title) \($0.state) \($0.place)" }
+                            + ["stage \(shell.currentStageForTesting ?? "-")", "pill \(shell.activityPillForTesting?.view.isShown == true ? (shell.activityPillForTesting?.view.title ?? "") + " " + (shell.activityPillForTesting?.view.countForTesting ?? "") : "-")",
+                               "popover \(shell.activityPillForTesting?.popoverForTesting?.isShown == true)"]
                         FileHandle.standardError.write(Data(("[activity]\n" + lines.joined(separator: "\n") + "\n").utf8))
                     }
                     // "stage-badge 3 needsYou": a status dot on a stage, as attention would set it.
@@ -159,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("keymap "), let keymap = Shortcuts.Keymap(rawValue: String(command.dropFirst(7))) { Shortcuts.keymap = keymap }
                     if command.hasPrefix("pin-only ") { StagePins.pinned = [ShellViewController.Stage(rawValue: String(command.dropFirst(9)))].compactMap { $0 }.reduce(into: Set()) { $0.insert($1) } }
                     if command.hasPrefix("run-type ") { shell.runTypeForTesting(String(command.dropFirst(9))) }
+                    if command.hasPrefix("run-select "), let index = Int(command.dropFirst(11)) { shell.runSelectForTesting(index) }
                     // Any menu action, down the responder chain: "action foldAll:".
                     if command.hasPrefix("action ") { NSApp.sendAction(NSSelectorFromString(String(command.dropFirst(7))), to: nil, from: nil) }
                     if command.hasPrefix("settings "), let pane = SettingsSplitViewController.Pane(rawValue: String(command.dropFirst(9))) {

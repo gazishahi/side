@@ -143,6 +143,7 @@ final class TerminalSessionManager {
         vc.onCommandStatusChanged = { [weak self] in self?.post(origin: nil) }
         vc.onProgramTitleChanged = { [weak self] in self?.post(origin: nil) }
         vc.onWorkingChanged = { [weak self] in self?.post(origin: nil) }
+        vc.onNewsChanged = { [weak self] in self?.post(origin: nil) }
         vc.onOutputReceived = { [weak self, weak session] in
             guard let self, let session else { return }
             // A shell still settling (integration line echoing, first prompt painting) is

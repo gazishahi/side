@@ -169,7 +169,7 @@ enum SessionKeepers {
     /// `foreground`: the program that was running (the record's), `agentSession`: its agent's own
     /// session id, when the `claude` wrapper reported one.
     static func recovery(foreground: [String], agentSession: String?, hasTranscript: (String) -> Bool = claudeTranscriptExists) -> Recovery {
-        guard let program = foreground.first.map({ ($0 as NSString).lastPathComponent }) else { return .nothing }
+        guard let program = ForegroundProgram.name(arguments: foreground) else { return .nothing }
         if ["zsh", "-zsh", "bash", "-bash", "sh", "fish", "login"].contains(program) { return .nothing }
         if program == "claude" {
             guard let session = agentSession else { return .run("claude --continue") } // the directory's latest

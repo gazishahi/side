@@ -313,7 +313,7 @@ let busyBeforeNotifying: TimeInterval = 5
 let quietBeforeNotifying: TimeInterval = 4
 
 var sessionName: String {
-    let program = record.foreground.first.map { ($0 as NSString).lastPathComponent }
+    let program = ForegroundProgram.name(arguments: record.foreground)
     let place = spec.place ?? (spec.directory as NSString).lastPathComponent
     return program.map { "\(displayName($0)) in \(place)" } ?? place
 }
@@ -344,7 +344,7 @@ func checkForTurnEnd() {
     }
     guard !attached, !notifiedThisBusySpell, let start = busySince, record.lastOutputAt.timeIntervalSince(start) >= busyBeforeNotifying else { return }
     let foreground = foregroundArguments()
-    guard let program = foreground.first.map({ ($0 as NSString).lastPathComponent }), agents.contains(program) else { return }
+    guard let program = ForegroundProgram.name(arguments: foreground), agents.contains(program) else { return }
     notifiedThisBusySpell = true
     record.foreground = foreground
     notify(body: "\(sessionName) stopped: done, or waiting on you")
@@ -447,24 +447,7 @@ func restoredTerminal(from path: String) -> GhosttyTerminal? {
 func foregroundArguments() -> [String] {
     let group = tcgetpgrp(master)
     guard group > 0, group != childPID else { return [] }
-    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, group]
-    var size = 0
-    guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return [] }
-    var buffer = [UInt8](repeating: 0, count: size)
-    guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return [] }
-    // argc, then the executable path, padding, then argc NUL-terminated arguments.
-    let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
-    var index = 4
-    while index < size, buffer[index] != 0 { index += 1 }
-    while index < size, buffer[index] == 0 { index += 1 }
-    var arguments: [String] = []
-    while arguments.count < Int(argc), index < size {
-        let start = index
-        while index < size, buffer[index] != 0 { index += 1 }
-        arguments.append(String(decoding: buffer[start..<index], as: UTF8.self))
-        index += 1
-    }
-    return arguments
+    return ForegroundProgram.arguments(of: group)
 }
 
 func enqueueParse(_ chunk: Chunk) {

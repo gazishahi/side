@@ -20,13 +20,16 @@ mkdir -p "$dest"
 staged="$dest/.SideSessionKeeper.staged"
 cp -f "$scratch/$config/SideSessionKeeper" "$staged"
 identity="${EXPANDED_CODE_SIGN_IDENTITY:-}"
+# Named for the app it belongs to: a bare binary otherwise takes its file name with an empty
+# prefix (".SideSessionKeeper"), an identity macOS's privacy settings can't keep a grant for.
+keeper_id="${PRODUCT_BUNDLE_IDENTIFIER:-com.shahi.side}.SessionKeeper"
 if [[ -n "$identity" && "$identity" != "-" ]]; then
   # Hardened runtime and a timestamp for release builds, which are notarized.
   timestamp=--timestamp=none
   [[ "$config" == release ]] && timestamp=--timestamp
-  codesign --force --sign "$identity" --options runtime $timestamp "$staged"
+  codesign --force --sign "$identity" --identifier "$keeper_id" --options runtime $timestamp "$staged"
 else
-  codesign --force --sign - "$staged"
+  codesign --force --sign - --identifier "$keeper_id" "$staged"
 fi
 mv -f "$staged" "$dest/SideSessionKeeper"
 

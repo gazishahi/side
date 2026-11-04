@@ -95,13 +95,50 @@ final class SlidingSegmentedControl: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Replaces the segments — the stage control's set changes with pins and attention.
-    func setSegments(_ titles: [String], symbols: [String?]? = nil, selected: Int) {
+    func setSegments(_ titles: [String], symbols: [String?]? = nil, selected: Int, animated: Bool = false) {
+        // Animated, the segments that stay slide from where they were, a new one fades in, and
+        // the thumb moves to the selection: leaving an unpinned stage (Branches) changes which
+        // stages show, and the control used to jump (the owner, 2026-11-04).
+        let before = animated && window != nil && !buttons.isEmpty && !DS.Motion.reduceMotion ? placement() : nil
         self.titles = titles
         self.symbols = symbols ?? titles.map { _ in nil }
         accessibilityStates = titles.map { _ in nil }
         badgeStates = titles.map { _ in nil }
         selectedIndex = selected < 0 ? -1 : max(0, min(selected, titles.count - 1))
         rebuildContents()
+        guard let before, let root = window?.contentView else { return }
+        for (index, title) in titles.enumerated() {
+            guard let old = before.segments[title] else {
+                buttons[index].alphaValue = 0
+                continue
+            }
+            buttons[index].frame = old.button
+            if icons.indices.contains(index), let icon = old.icon, let name = old.name {
+                icons[index].frame = icon
+                names[index].frame = name
+                names[index].alphaValue = old.nameAlpha
+            }
+        }
+        thumbContainer.isHidden = before.thumbHidden
+        thumbContainer.frame = before.thumb
+        thumbContainer.subviews.first?.frame = thumbContainer.bounds
+        let buttons = buttons
+        DS.Motion.animate(DS.Motion.snappy, {
+            // The control's own width changes with its segments; its layout runs in here, so
+            // the bar, the segments and the thumb all move together.
+            root.layoutSubtreeIfNeeded()
+            buttons.forEach { $0.animator().alphaValue = 1 }
+        })
+    }
+
+    /// Where every segment and the thumb are, by title.
+    private func placement() -> (segments: [String: (button: NSRect, icon: NSRect?, name: NSRect?, nameAlpha: CGFloat)], thumb: NSRect, thumbHidden: Bool) {
+        var segments: [String: (button: NSRect, icon: NSRect?, name: NSRect?, nameAlpha: CGFloat)] = [:]
+        for (index, title) in titles.enumerated() where buttons.indices.contains(index) {
+            let hasParts = icons.indices.contains(index)
+            segments[title] = (buttons[index].frame, hasParts ? icons[index].frame : nil, hasParts ? names[index].frame : nil, hasParts ? names[index].alphaValue : 0)
+        }
+        return (segments, thumbContainer.frame, thumbContainer.isHidden)
     }
 
     /// The status dot trailing the segment's title, and the state spoken with its name. A dot
@@ -239,7 +276,7 @@ final class SlidingSegmentedControl: NSView {
             thumbContainer.frame = thumbFrame(for: max(selectedIndex, 0))
             thumbContainer.subviews.first?.frame = thumbContainer.bounds
         }
-        thumbContainer.isHidden = selectedIndex < 0
+        if !thumbFadingOut { thumbContainer.isHidden = selectedIndex < 0 }
     }
 
     private func placeSegments(animated: Bool = false) {
@@ -298,15 +335,32 @@ final class SlidingSegmentedControl: NSView {
     /// No segment selected (the window is on a stage the control doesn't show): no thumb.
     func clearSelection() {
         let previous = selectedIndex
+        guard previous >= 0 else { return }
         selectedIndex = -1
-        thumbContainer.isHidden = true
-        if expandsSelected, buttons.indices.contains(previous) {
-            framesDirty = true
-            needsLayout = true
-        }
         refreshTitles()
         refreshAccessibility()
+        guard window != nil, !DS.Motion.reduceMotion, buttons.indices.contains(previous) else {
+            thumbContainer.isHidden = true
+            if expandsSelected { framesDirty = true; needsLayout = true }
+            return
+        }
+        // The selected segment narrows back to its symbol and the thumb fades where it was.
+        thumbFadingOut = true
+        if expandsSelected { placeSegments(animated: true) }
+        let target = segmentFrames()[previous].insetBy(dx: 2, dy: 2)
+        DS.Motion.animate(DS.Motion.snappy, {
+            thumbContainer.animator().frame = target
+            thumbContainer.subviews.first?.animator().frame = NSRect(origin: .zero, size: target.size)
+            thumbContainer.animator().alphaValue = 0
+        }, completion: { [weak self] in
+            guard let self, self.thumbFadingOut else { return }
+            self.thumbFadingOut = false
+            self.thumbContainer.isHidden = true
+            self.thumbContainer.alphaValue = 1
+        })
     }
+    /// The thumb on its way out after `clearSelection`, still shown until it's faded.
+    private var thumbFadingOut = false
 
     private func thumbFrame(for index: Int) -> NSRect {
         let frames = segmentFrames()
@@ -323,10 +377,33 @@ final class SlidingSegmentedControl: NSView {
         _ = previous
         refreshTitles()
         refreshAccessibility()
-        guard animated, !wasHidden, !DS.Motion.reduceMotion else {
+        guard animated, window != nil, !DS.Motion.reduceMotion else {
             placeSegments()
+            thumbFadingOut = false
+            thumbContainer.alphaValue = 1
             thumbContainer.frame = thumbFrame(for: index)
             thumbContainer.subviews.first?.frame = thumbContainer.bounds
+            return
+        }
+        if wasHidden || thumbFadingOut {
+            // From no selection (Branches, which the control doesn't show): the segments make
+            // room as they do between stages, and the thumb fades in where it lands. It used to
+            // appear at once (the owner, 2026-11-04).
+            // It grows out of the segment, in step with the segments.
+            thumbFadingOut = false
+            if wasHidden {
+                thumbContainer.frame = buttons[index].frame.insetBy(dx: 2, dy: 2)
+                thumbContainer.subviews.first?.frame = thumbContainer.bounds
+                thumbContainer.alphaValue = 0
+            }
+            if expandsSelected { placeSegments(animated: true) }
+            let target = thumbFrame(for: index)
+            DS.Motion.animate(DS.Motion.snappy, {
+                thumbContainer.animator().frame = target
+                thumbContainer.subviews.first?.animator().frame = NSRect(origin: .zero, size: target.size)
+                thumbContainer.animator().alphaValue = 1
+            })
+            CATransaction.flush()
             return
         }
         if expandsSelected { placeSegments(animated: true) }

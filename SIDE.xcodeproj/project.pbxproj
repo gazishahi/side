@@ -888,7 +888,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.4.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.shahi.side;
+				PRODUCT_BUNDLE_IDENTIFIER = com.shahi.side.dev;
 				PRODUCT_NAME = Side;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;

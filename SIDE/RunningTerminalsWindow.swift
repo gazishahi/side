@@ -114,7 +114,7 @@ final class RunningTerminalsWindowController: NSWindowController, NSWindowDelega
         rows = SessionPaths.records().filter { $0.exit == nil && SessionKeepers.isRunning($0) }.map { record in
             let project = record.client[SessionKeepers.Fact.project].map { ($0 as NSString).lastPathComponent } ?? "—"
             let tab = open[record.id]?.title ?? TerminalViewController.cleanProgramTitle(record.title) ?? (record.directory as NSString).lastPathComponent
-            let running = record.foreground.first.map { ($0 as NSString).lastPathComponent } ?? "shell"
+            let running = ForegroundProgram.name(arguments: record.foreground) ?? "shell"
             return Row(record: record, project: project, tab: tab, running: running,
                        idle: Self.idleText(Date().timeIntervalSince(record.lastOutputAt)), memoryMB: Self.treeFootprintMB(record))
         }

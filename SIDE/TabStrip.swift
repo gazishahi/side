@@ -21,6 +21,9 @@ final class TabStrip: NSObject {
         var isDirty = false
         var isDead = false
         var hasUnseenOutput = false
+        /// Run's: what happened out of sight that the tab's dot says in color (a turn that
+        /// finished, a bell that wants you); nil leaves new output a plain dot.
+        var news: DS.StatusState?
         /// Run's: an agent in the terminal is working (DS's breathing Working ring).
         var isWorking = false
         var menu: NSMenu?
@@ -200,6 +203,14 @@ final class TabStrip: NSObject {
             return
         }
         showSolo(nil)
+        // The same tabs while a close is on its way (the owner's reload just after it): only what
+        // they say and which is selected. Laying out here would stop the close's spring halfway.
+        if items.map(\.id) == ids, !chips.isEmpty, !closing.isEmpty {
+            let wasActive = chips.firstIndex(where: \.isActive)
+            for (index, (chip, item)) in zip(chips, items).enumerated() { configure(chip, item, index: index, isActive: index == active) }
+            if wasActive != active { relayout(DS.Motion.snappy) }
+            return
+        }
         let appearing = chips.isEmpty && bar.window?.isVisible == true && !bar.isHiddenOrHasHiddenAncestor
         let wasActive = chips.first(where: \.isActive)?.id
         let newIDs = items.map(\.id)
@@ -431,6 +442,7 @@ final class TabStrip: NSObject {
         if chip.isDirty != item.isDirty { chip.isDirty = item.isDirty }
         if chip.isDead != item.isDead { chip.isDead = item.isDead }
         if chip.hasUnseenOutput != item.hasUnseenOutput { chip.hasUnseenOutput = item.hasUnseenOutput }
+        if chip.news != item.news { chip.news = item.news }
         if chip.isWorking != item.isWorking { chip.isWorking = item.isWorking }
         if chip.isActive != isActive { chip.isActive = isActive }
         chip.menu = item.menu
@@ -478,20 +490,69 @@ final class TabStrip: NSObject {
         DS.Motion.fade { chip.animator().alphaValue = 1 }
     }
 
-    /// The closing tab fades and narrows to nothing, and its neighbours close the gap, before
-    /// the owner removes it. `activeAfter` is the tab selected once it's gone (indexed after the
-    /// close): it takes the selection now, the tint sliding over as the gap closes.
-    func animateClose(at index: Int, activeAfter: Int?, completion: @escaping @MainActor () -> Void) {
-        guard chips.indices.contains(index), chips.count > 2 else { completion(); return }
-        let chip = chips[index]
-        let next = activeAfter.map { $0 >= index ? $0 + 1 : $0 }
-        for (position, each) in chips.enumerated() where each !== chip { each.isActive = position == next }
+    /// The closing tab narrows to nothing and fades as its neighbours close the gap.
+    /// `activeAfter` is the tab selected once it's gone (indexed after the close): it takes the
+    /// selection now, the tint sliding over as the gap closes.
+    ///
+    /// The chip leaves `chips` at once, so the strip's indices are the owner's as soon as the owner
+    /// drops the tab, which it does right away. Until 2026-11-04 the chip stayed listed until its
+    /// animation ended and the owner waited for it: a second close in that time used an index
+    /// counted with the vanishing tab in it and removed the wrong one, after which the X and
+    /// clicks on tabs did nothing (the owner: "sometimes closing a tab by clicking on the X
+    /// doesn't work"). The vanishing chip took clicks too: a view at alpha 0 is still hit.
+    /// `completion` is the animation's end, for anyone watching it.
+    func animateClose(at index: Int, activeAfter: Int?, completion: (@MainActor () -> Void)? = nil) {
+        // Two down to one is the strip going (`dismiss`, from the owner's reload).
+        guard chips.indices.contains(index), chips.count > 2 else { completion?(); return }
+        let chip = chips.remove(at: index)
+        ids.remove(at: index)
+        for (position, each) in chips.enumerated() {
+            each.index = position
+            each.isActive = position == activeAfter
+        }
+        bar.accessibleTabs = chips
+        applyShortcutHints()
+        chip.isLeaving = true
         chip.isActive = false
-        let constraint = chip.widthAnchor.constraint(equalToConstant: chip.frame.width)
-        constraint.isActive = true
-        DS.Motion.fade { chip.animator().alphaValue = 0 }
-        relayout(DS.Motion.snappy, { constraint.constant = 0 }, completion: completion)
+        guard bar.window != nil, !DS.Motion.reduceMotion else {
+            chip.removeFromSuperview()
+            relayout(DS.Motion.snappy, completion: completion)
+            return
+        }
+        // Out of the row, over its old place: the row closes up on the spring while the chip
+        // narrows from its trailing edge, clipped, so it's gone as its neighbour arrives.
+        let frame = chip.frame
+        stack.removeArrangedSubview(chip)
+        chip.removeConstraints(chip.constraints.filter { $0.firstItem === chip && $0.secondItem == nil })
+        chip.translatesAutoresizingMaskIntoConstraints = true
+        chip.frame = frame
+        chip.layer?.masksToBounds = true
+        closing.append(chip)
+        DS.Motion.animate(DS.Motion.snappy, {
+            chip.animator().frame = NSRect(x: frame.minX, y: frame.minY, width: 0, height: frame.height)
+        })
+        // Quick: narrowing, it shows its icon alone for a moment, which shouldn't linger.
+        DS.Motion.fade(duration: DS.Motion.fadeDuration * 0.4, { chip.animator().alphaValue = 0 })
+        relayout(DS.Motion.snappy, completion: { [weak self] in
+            chip.removeFromSuperview()
+            self?.closing.removeAll { $0 === chip }
+            completion?()
+        })
     }
+
+    /// UI testing: a click on the X of the tab at `index`, as the pointer makes one: hit-tested
+    /// at the X's centre, so a view over it (a tab on its way out) takes the click instead.
+    func clickCloseForTesting(_ index: Int) {
+        guard chips.indices.contains(index), let close = chips[index].closeButton, let window = bar.window,
+              let content = window.contentView else { return }
+        close.isHidden = false
+        let point = content.convert(NSPoint(x: close.bounds.midX, y: close.bounds.midY), from: close)
+        guard let hit = content.hitTest(point) as? NSControl else { return }
+        hit.sendAction(hit.action, to: hit.target)
+    }
+
+    /// Chips on their way out after `animateClose`: drawn, never listed, never hit.
+    private var closing: [TabChipView] = []
 
     // MARK: Drag (§4.2), called by the chip being dragged
 
@@ -615,6 +676,9 @@ final class TabStrip: NSObject {
 /// the floating layer, following the pointer, torn out into a card, set down or landed.
 final class TabChipView: NSView, PointerHoverSyncing {
     weak var strip: TabStrip?
+    /// Closed and on its way out: still drawn, never clicked.
+    var isLeaving = false
+    override func hitTest(_ point: NSPoint) -> NSView? { isLeaving ? nil : super.hitTest(point) }
     weak var closeButton: TabCloseButton?
     var id = UUID()
     var index: Int = 0
@@ -631,6 +695,8 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// Run's: an exited process, and output printed while the tab wasn't shown.
     var isDead: Bool = false { didSet { needsDisplay = true } }
     var hasUnseenOutput: Bool = false { didSet { needsDisplay = true } }
+    /// The dot in color: a turn finished (green), a bell wanting you (amber).
+    var news: DS.StatusState? { didSet { needsDisplay = true } }
     /// Unsaved edits: a dot where the close button sits, until hover swaps it for the ×.
     var isDirty: Bool = false { didSet { needsDisplay = true; updateCloseVisibility() } }
     /// An agent working in the tab's terminal: the Working ring (the app's one animated
@@ -649,18 +715,23 @@ final class TabChipView: NSView, PointerHoverSyncing {
     // MARK: Working (prototypes, 2026-11-04)
 
     /// How a working tab says so. The breathing ring is gone (the owner: "lazy and ugly"); these
-    /// are the candidates being tried, switched with `tabs.workingStyle`, until one is chosen.
+    /// are the candidates being tried, chosen in Settings → Appearance until one is kept. A caret
+    /// and a level meter were tried too (2026-11-04: "awful"; "looks like someone speaking").
     enum WorkingStyle: String, CaseIterable {
         /// A band of light sweeps across the title, which dims a little underneath it.
         case shimmer
         /// A short light runs around the tab's outline, as light travels along glass.
         case edge
-        /// A terminal's block caret blinks after the title: something is typing here.
-        case caret
-        /// Three small bars in the icon's place, moving like a level meter.
-        case meter
         /// A soft band of light drifting across the whole tab, as light moves through glass.
         case glint
+
+        var name: String {
+            switch self {
+            case .shimmer: return "Shimmer"
+            case .edge: return "Edge light"
+            case .glint: return "Glint"
+            }
+        }
     }
     static let workingStyleKey = "tabs.workingStyle"
     static let workingStyleChanged = Notification.Name("SideTabWorkingStyleChanged")
@@ -674,14 +745,14 @@ final class TabChipView: NSView, PointerHoverSyncing {
     }
     private var workingLayers: [CALayer] = []
     private var workingStyleObserver: NSObjectProtocol?
-    /// Where the title was last drawn: the shimmer and the caret follow it.
+    /// Where the title was last drawn: the shimmer follows it.
     private var workingTextRect = NSRect.zero
     var workingStyleShownForTesting: WorkingStyle? { workingLayers.isEmpty ? nil : Self.workingStyle }
 
     private func updateWorkingIndicator() {
         workingLayers.forEach { $0.removeFromSuperlayer() }
         workingLayers = []
-        iconView.isHidden = dragIcon == nil || (isWorking && Self.workingStyle == .meter)
+        iconView.isHidden = dragIcon == nil
         if workingStyleObserver == nil {
             workingStyleObserver = NotificationCenter.default.addObserver(forName: Self.workingStyleChanged, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -697,8 +768,6 @@ final class TabChipView: NSView, PointerHoverSyncing {
             switch Self.workingStyle {
             case .shimmer: workingLayers = shimmerLayers(reduce: reduce)
             case .edge: workingLayers = edgeLayers(reduce: reduce)
-            case .caret: workingLayers = caretLayers(reduce: reduce)
-            case .meter: workingLayers = meterLayers(reduce: reduce)
             case .glint: workingLayers = glintLayers(reduce: reduce)
             }
         }
@@ -756,23 +825,6 @@ final class TabChipView: NSView, PointerHoverSyncing {
         }
     }
 
-    private func caretLayers(reduce: Bool) -> [CALayer] {
-        guard workingTextRect.width > 0 else { return [] }
-        let caret = CALayer()
-        let height: CGFloat = 13
-        caret.frame = CGRect(x: workingTextRect.maxX + 3, y: (bounds.height - height) / 2, width: 7, height: height)
-        caret.backgroundColor = NSColor.secondaryLabelColor.cgColor
-        caret.cornerRadius = DS.Radius.capsule(height: 2)
-        guard !reduce else { return [caret] }
-        let blink = CAKeyframeAnimation(keyPath: "opacity")
-        blink.values = [1, 1, 0, 0]
-        blink.keyTimes = [0, 0.5, 0.5, 1]
-        blink.duration = 1.0
-        blink.repeatCount = .infinity
-        caret.add(blink, forKey: "caret")
-        return [caret]
-    }
-
     private func glintLayers(reduce: Bool) -> [CALayer] {
         let body = bounds.insetBy(dx: Self.flare - 2, dy: 0)
         let capsule = CAShapeLayer()
@@ -796,26 +848,6 @@ final class TabChipView: NSView, PointerHoverSyncing {
         return [band]
     }
 
-    private func meterLayers(reduce: Bool) -> [CALayer] {
-        let centerX = dragIcon == nil ? Self.flare + 8 : Self.iconCenterX
-        let heights: [[CGFloat]] = [[4, 10, 6, 11, 5, 8, 4], [9, 5, 11, 4, 10, 6, 9], [6, 11, 4, 8, 11, 5, 6]]
-        return (0..<3).map { index -> CALayer in
-            let bar = CALayer()
-            bar.backgroundColor = NSColor.secondaryLabelColor.cgColor
-            bar.cornerRadius = DS.Radius.capsule(height: 2.5)
-            bar.bounds = CGRect(x: 0, y: 0, width: 2.5, height: heights[index][0])
-            bar.position = CGPoint(x: centerX + CGFloat(index - 1) * 4.5, y: bounds.height / 2)
-            if !reduce {
-                let level = CAKeyframeAnimation(keyPath: "bounds.size.height")
-                level.values = heights[index]
-                level.duration = [1.1, 0.9, 1.3][index]
-                level.calculationMode = .cubic
-                level.repeatCount = .infinity
-                bar.add(level, forKey: "meter")
-            }
-            return bar
-        }
-    }
     /// Its shortcut ("⌘2") while the modifier is held (`TabShortcutHints`): it fades in over
     /// the trailing slot as the × or ring there fades out, and back (the owner, 2026-11-04: they
     /// popped in).
@@ -859,7 +891,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         didSet {
             guard dragIcon !== oldValue else { return }
             iconView.image = dragIcon
-            iconView.isHidden = dragIcon == nil || isWorking
+            iconView.isHidden = dragIcon == nil
             if (dragIcon == nil) != (oldValue == nil) { invalidateIntrinsicContentSize(); needsDisplay = true }
         }
     }
@@ -1065,9 +1097,13 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
         // Unsaved edits and unseen output are marks, not states (Direction 03 §3.1): one quiet
         // 5 pt dot in the trailing slot, where the close button goes, until hover swaps it for ×.
-        if shortcutHint == nil, (isDirty || hasUnseenOutput) && !isHovered && !drawsLifted && closeButton?.isHidden != false {
-            NSColor.secondaryLabelColor.setFill()
-            let dotSize: CGFloat = 5
+        // News is the same dot in its state's color, a little larger: a turn that finished out
+        // of sight read the same as any output (the owner, 2026-11-04: "no clear completion
+        // indicator").
+        // Working, the indicator says it: output while it works is no news.
+        if shortcutHint == nil, (isDirty || (hasUnseenOutput && !isWorking) || news != nil) && !isHovered && !drawsLifted && closeButton?.isHidden != false {
+            (news?.color ?? NSColor.secondaryLabelColor).setFill()
+            let dotSize: CGFloat = news == nil ? 5 : 7
             let x = bounds.width - Self.flare - 5 - 8 - dotSize / 2
             NSBezierPath(ovalIn: NSRect(x: x, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)).fill()
         }
@@ -1399,7 +1435,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
         if !detail.isEmpty { parts.append(detail) }
         if isDirty { parts.append("unsaved") }
         if isWorking { parts.append("working") }
-        if hasUnseenOutput { parts.append("new output") }
+        switch news {
+        case .verified?: parts.append("finished")
+        case .needsYou?: parts.append("needs you")
+        default: if hasUnseenOutput { parts.append("new output") }
+        }
         return parts.joined(separator: ", ")
     }
     override func accessibilityValue() -> Any? { isActive ? 1 : 0 }

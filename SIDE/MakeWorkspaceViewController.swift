@@ -2668,9 +2668,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
-    @objc private func switchToTabShortcut(_ sender: NSMenuItem) {
-        let index = sender.tag >= 0 ? sender.tag : openTabs.count - 1
-        switchToTab(index)
+    /// ⌘1–8 and ⌘9: a tab by its place, -1 the last.
+    func selectTab(number: Int) {
+        switchToTab(number >= 0 ? number : openTabs.count - 1)
     }
 
     // MARK: - Inline instruct (§5.3)
@@ -2833,22 +2833,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func finishCloseTab(id tabID: UUID) {
         guard let index = indexForTab(id: tabID) else { return }
         let after = TabSelection.indexAfterClosing(index, active: activeTabIndex, countBefore: openTabs.count)
-        tabStrip.animateClose(at: index, activeAfter: after) { [weak self] in
-            guard let self, let index = self.indexForTab(id: tabID) else { return }
-            let closedTab = self.openTabs[index]
-            let wasActive = self.activeTabIndex == index
-            if !wasActive { self.captureActiveTabSelection() }
-            let next = TabSelection.indexAfterClosing(index, active: self.activeTabIndex, countBefore: self.openTabs.count)
-            self.openTabs.remove(at: index)
-            if closedTab.kind == .text { self.lspManager?.closed(url: closedTab.url) }
-            if self.openTabs.isEmpty {
-                self.closeAllTabsImmediately()
-            } else {
-                self.activeTabIndex = next
-                // Only the tab you were on closing changes what the editor shows.
-                if wasActive { self.loadActiveTabIntoEditor() }
-                self.rebuildTabBar()
-            }
+        // The strip and the tabs change together (the strip animates the chip out on its own),
+        // as Terminal's do: see `RunWorkspaceViewController.closeSession`.
+        tabStrip.animateClose(at: index, activeAfter: after)
+        let closedTab = openTabs[index]
+        let wasActive = activeTabIndex == index
+        if !wasActive { captureActiveTabSelection() }
+        openTabs.remove(at: index)
+        if closedTab.kind == .text { lspManager?.closed(url: closedTab.url) }
+        if openTabs.isEmpty {
+            closeAllTabsImmediately()
+        } else {
+            activeTabIndex = after
+            // Only the tab you were on closing changes what the editor shows.
+            if wasActive { loadActiveTabIntoEditor() }
+            rebuildTabBar()
         }
     }
 
@@ -2982,6 +2981,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }()
 
     var tabStripForTesting: TabStrip { tabStrip }
+    var openTabTitlesForTesting: [String] { openTabs.map { $0.url.lastPathComponent } }
 
     /// A tab dragged to a new place: the model follows the strip, the active file with it.
     private func moveTab(from: Int, to: Int) {
@@ -4915,11 +4915,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let tabsItem = NSMenuItem(title: "Tabs", action: nil, keyEquivalent: "")
         let tabsMenu = NSMenu(title: "Tabs")
         for i in 1...8 {
-            let item = tabsMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "")
+            let item = tabsMenu.addItem(withTitle: "Switch to Tab \(i)", action: #selector(ShellViewController.switchToTabShortcut(_:)), keyEquivalent: "")
             Shortcuts.bind(item, "tabs.\(i)")
             item.tag = i - 1
         }
-        let lastTab = tabsMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(switchToTabShortcut(_:)), keyEquivalent: "")
+        let lastTab = tabsMenu.addItem(withTitle: "Switch to Last Tab", action: #selector(ShellViewController.switchToTabShortcut(_:)), keyEquivalent: "")
         Shortcuts.bind(lastTab, "tabs.last")
         lastTab.tag = -1
         tabsMenu.addItem(NSMenuItem.separator())

@@ -102,7 +102,7 @@ final class ChromeTests: XCTestCase {
         let working = Item(id: "a", state: .working, title: "Claude Code", place: "app · tab", program: "claude", target: .update)
         let finished = Item(id: "b", state: .finished, title: "Codex", place: "app · tab 2", program: "codex", target: .update)
         XCTAssertEqual(ActivityPill.summary([working]), "Claude Code working")
-        XCTAssertEqual(ActivityPill.summary([finished, working]), "Codex finished \u{00B7} 1 more")
+        XCTAssertEqual(ActivityPill.summary([finished, working]), "Codex finished")
         XCTAssertEqual(ActivityCenter.programName("/usr/local/bin/claude"), "Claude Code")
         XCTAssertLessThan(Item.State.needsYou.rank, Item.State.working.rank)
     }

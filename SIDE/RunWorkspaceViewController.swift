@@ -333,6 +333,8 @@ final class RunWorkspaceViewController: NSViewController {
     }
 
     func closeActiveTabForTesting() { closeActiveTab() }
+    var tabStripForTesting: TabStrip { tabStrip }
+    var sessionTitlesForTesting: [String] { sessions.map(\.title) }
 
     @objc private func closeActiveTab() {
         guard let index = activeSessionIndex else { return }
@@ -347,7 +349,7 @@ final class RunWorkspaceViewController: NSViewController {
         guard SessionKeepers.confirmsClosingRunning, let program = session.viewController.runningProgramName, let window = view.window else {
             return closeSession(at: index)
         }
-        confirmClosing(message: "Close this terminal?", detail: "\(program) is still running in it. Closing the tab ends it.", in: window) { [weak self] in
+        confirmClosing(message: "Close this terminal?", detail: "\(ProgramMarks.displayName(program)) is still running in it. Closing the tab ends it.", in: window) { [weak self] in
             guard let self, let current = self.sessions.firstIndex(where: { $0 === session }) else { return }
             self.closeSession(at: current)
         }
@@ -484,30 +486,23 @@ final class RunWorkspaceViewController: NSViewController {
         guard sessions.indices.contains(index) else { return }
         let after = TabSelection.indexAfterClosing(index, active: activeSessionIndex, countBefore: sessions.count)
         let wasActive = activeSessionIndex == index
-        // The neighbour's terminal shows now, not once the strip's spring settles: waiting for
-        // it held the closed tab's content on screen for half a second. The list itself changes
-        // when the chip has gone, so the strip's indices still match it until then.
-        if wasActive, let after {
-            activeSessionIndex = after >= index ? after + 1 : after
-            showActiveSession()
+        // The strip and the list change together, now: the strip animates the chip out on its
+        // own. Waiting for its animation to drop the session let a second close, made meanwhile,
+        // remove the wrong one (2026-11-04).
+        tabStrip.animateClose(at: index, activeAfter: after)
+        sessions[index].viewController.prepareForClose()
+        sessions.remove(at: index)
+        // The closed tab may have been the last one holding unseen output — without this
+        // the stage's ● outlived every tab that caused it.
+        onActivityChanged?()
+        if sessions.isEmpty {
+            // Run always has at least one session — no empty state to design for.
+            createSession()
+            return
         }
-        tabStrip.animateClose(at: index, activeAfter: after) { [weak self] in
-            guard let self, self.sessions.indices.contains(index) else { return }
-            let next = TabSelection.indexAfterClosing(index, active: self.activeSessionIndex, countBefore: self.sessions.count)
-            self.sessions[index].viewController.prepareForClose()
-            self.sessions.remove(at: index)
-            // The closed tab may have been the last one holding unseen output — without this
-            // the stage's ● outlived every tab that caused it.
-            self.onActivityChanged?()
-            if self.sessions.isEmpty {
-                // Run always has at least one session — no empty state to design for.
-                self.createSession()
-                return
-            }
-            self.activeSessionIndex = next
-            self.rebuildTabBar()
-            if wasActive { self.showActiveSession() }
-        }
+        activeSessionIndex = after
+        rebuildTabBar()
+        if wasActive { showActiveSession() }
     }
 
     /// This window was opened for a terminal torn out of another: take it, still running.
@@ -680,6 +675,11 @@ final class RunWorkspaceViewController: NSViewController {
             item.isDead = !session.viewController.isAliveOrUnstarted
             item.hasUnseenOutput = session.hasUnseenOutput
             item.isWorking = session.viewController.isProgramWorking
+            switch session.viewController.news {
+            case .finished?: item.news = .verified
+            case .needsYou?: item.news = .needsYou
+            case nil: item.news = nil
+            }
             // The whole name (a long one is cut off at the chip's width), and where it's working.
             let vc = session.viewController
             let directory = (vc.currentDirectory ?? vc.workingDirectory).map { ($0 as NSString).abbreviatingWithTildeInPath }
@@ -760,7 +760,7 @@ final class RunWorkspaceViewController: NSViewController {
     @objc private func closeOtherSessionsFromMenu(_ sender: NSMenuItem) {
         guard let index = sessionIndex(from: sender) else { return }
         let kept = sessions[index]
-        let running = sessions.filter { $0 !== kept }.compactMap { $0.viewController.runningProgramName }
+        let running = sessions.filter { $0 !== kept }.compactMap { $0.viewController.runningProgramName.map(ProgramMarks.displayName) }
         if SessionKeepers.confirmsClosingRunning, !running.isEmpty, let window = view.window {
             let what = running.count == 1 ? "\(running[0]) is" : "\(running.count) programs are"
             confirmClosing(message: "Close the other terminals?", detail: "\(what) still running in them. Closing the tabs ends them.", in: window) { [weak self, weak kept] in
@@ -952,7 +952,18 @@ extension RunWorkspaceViewController: StageChromeProviding {
     func selectAdjacentTab(_ offset: Int) {
         guard !sessions.isEmpty else { return }
         let current = activeSessionIndex ?? 0
-        let next = (current + offset + sessions.count) % sessions.count
+        selectTab(at: (current + offset + sessions.count) % sessions.count)
+    }
+
+    /// ⌘1–8 and ⌘9: a tab by its place, -1 the last.
+    func selectTab(number index: Int) {
+        guard !sessions.isEmpty else { return }
+        let target = index < 0 ? sessions.count - 1 : index
+        guard sessions.indices.contains(target), target != activeSessionIndex else { return }
+        selectTab(at: target)
+    }
+
+    private func selectTab(at next: Int) {
         activeSessionIndex = next
         rebuildTabBar()
         showActiveSession()
