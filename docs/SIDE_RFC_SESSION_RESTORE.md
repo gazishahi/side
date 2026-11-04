@@ -1,6 +1,6 @@
 # Session restore: terminals you can always get back
 
-Status: decisions pending. Drafted 2026-11-03 and revised with the owner's decisions the same day; the memory plan (decision 7) awaits the owner's review.
+Status: agreed 2026-11-03. Phase 1 in progress.
 
 ## Why
 
