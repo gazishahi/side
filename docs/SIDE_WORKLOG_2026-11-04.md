@@ -247,5 +247,8 @@ unseen when no view has the tab selected. A turn that ends out of sight is now r
 A flake, noted: one full run crashed in `DebugServerSessionTests.testALauncherSessionItsTerminalAndItsChild`
 (`-[NSFileHandle availableData]: unknown error` in `DAPSocketTransport.attach`, debugger code
 not touched tonight). It passed three runs in a row on its own, and I committed only after a
-clean full run. The handler reads `availableData` on a closed handle and could catch that
-instead of aborting. Worth a look.
+clean full run. Cause: the socket's read handler called `availableData`, which raises an
+Objective-C exception (an abort) on a handle closed under it. It now uses `read(2)`, which
+returns an error, and the stream just ends. Other `availableData` readers read pipes, which a
+process closes by exiting (EOF, not an exception), so I left them: the language-server
+transport, ACP, the LSP installer, and the DAP transport's stdio path.

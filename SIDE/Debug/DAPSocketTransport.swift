@@ -164,12 +164,17 @@ actor DAPSocketTransport: DAPTransport {
             await self?.ended()
         }
         handle.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty {
+            // read(2), not `availableData`: on a socket closed under it `availableData` raises an
+            // Objective-C exception, which aborts the app (a test run crashed so, 2026-11-04).
+            // read returns -1 instead, and the stream just ends.
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            let count = read(handle.fileDescriptor, &buffer, buffer.count)
+            if count < 0, errno == EAGAIN || errno == EINTR { return }
+            if count <= 0 {
                 handle.readabilityHandler = nil
                 continuation.finish()
             } else {
-                continuation.yield(data)
+                continuation.yield(Data(buffer[0..<count]))
             }
         }
     }
