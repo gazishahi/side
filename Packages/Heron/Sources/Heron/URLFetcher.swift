@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// What `fetch_url` may reach, decided before any connection is made.
 ///

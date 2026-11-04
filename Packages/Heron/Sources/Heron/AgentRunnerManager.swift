@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Owns at most one `AgentRunner` per track key for a single project, spawned lazily on first
 /// visit — the `AgentRunner` analog of `LSPManager` (lazy per-key creation, explicit discard,

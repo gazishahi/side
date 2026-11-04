@@ -51,8 +51,12 @@ live there (`GitPaths`, `SpawnEnvironment`, `HeronDefaults`, `JSONStore`, …).
    session pill. Tracks already on Heron stay there with their conversations; they move in
    step 3, when Heron's conversations become read-only. Tests never detect an agent, so none
    starts a real one.
-2. **Move the plumbing.** Checkpoint commits out of `AgentRunner`; the shared types and utilities
-   into Side (a `SideAgents` package, as `SideSessions` is), with their tests (about 90).
+2. **Move the plumbing. Built 2026-11-04.** Checkpoint commits out of `AgentRunner`
+   (`CheckpointCommit`); 58 shared files into `Packages/SideAgents`, with 29 test files (143
+   tests). Heron keeps its runner, providers, tools and streaming code (12 files), depends on
+   SideAgents and re-exports it, so Side's `import Heron` still sees everything. One change from
+   the plan: `AgentRunnerManager` stays in Heron until step 4, since it's what makes Heron's runner
+   when a track has no outside agent. Side switching to `import SideAgents` comes with step 4.
 3. **Remove the UI:** modes, provider/model pickers, Settings › Providers, compaction, the rules
    gate, first run's model step, the Library's "Heron" wording.
 4. **Remove Heron's agent** and its tests (about 110 in the package, 30–40 in Side's).

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Heron
+@testable import SideAgents
 @testable import Side
 
 /// Library step 1 (`SIDE_RFC_LIBRARY.md`): instruction files and who reads them, saved prompts,

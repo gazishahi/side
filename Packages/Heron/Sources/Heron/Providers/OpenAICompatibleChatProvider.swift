@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Adapter for the OpenAI chat-completions wire shape (`POST {baseURL}/chat/completions`, SSE
 /// streaming) — deliberately generic rather than "the OpenAI adapter," since Ollama and LM

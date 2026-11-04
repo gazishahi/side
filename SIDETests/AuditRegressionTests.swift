@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// The regression tests the 2026-09-01 audit listed in Part V item 15 that were not tied to a fix
 /// already made — written now so "closed" means test-pinned, not commit-message-pinned.

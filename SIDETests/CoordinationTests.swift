@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// Multi-agent RFC step 2: a coordinator track creates subtracks on any agent, messages them,
 /// waits for them and reads their results, under M1–M4 and the R3 ceiling.

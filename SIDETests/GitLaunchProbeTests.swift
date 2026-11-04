@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// The launch probe. Its bugs are invisible (a stale branch name) until they aren't (opening the
 /// wrong state directory), so the cases below pin the correctness rules the speed depends on.

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Heron
+@testable import SideAgents
 @testable import Side
 
 @MainActor

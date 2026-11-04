@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// The git/persistence data-integrity cluster from the 2026-09-01 audit (H3–H6). Each of these
 /// was a path where Side lost work or reported success for something that had not happened.

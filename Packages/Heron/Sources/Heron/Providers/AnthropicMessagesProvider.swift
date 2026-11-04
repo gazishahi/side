@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Adapter for Anthropic's Messages API (`POST /v1/messages`, SSE streaming). Every
 /// Anthropic-only concern — the `x-api-key`/`anthropic-version` headers, the Messages event

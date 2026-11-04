@@ -1,5 +1,6 @@
 import XCTest
 @testable import Heron
+@testable import SideAgents
 @testable import Side
 
 /// Think with a long, realistic conversation: memory and CPU, with the transcript on screen and

@@ -1,5 +1,6 @@
 import AppKit
 @testable import Heron
+@testable import SideAgents
 import MachO
 import XCTest
 

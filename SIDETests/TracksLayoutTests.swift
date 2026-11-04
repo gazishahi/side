@@ -1,5 +1,6 @@
 import XCTest
 @testable import Heron
+@testable import SideAgents
 @testable import Side
 
 /// Tracks (SIDE_RFC_FIND_REVIEW_TRACKS.md, T1): the switcher on the track pill, and the stage's

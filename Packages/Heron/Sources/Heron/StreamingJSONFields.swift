@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Reads string fields out of a JSON object that **hasn't finished arriving yet**.
 ///

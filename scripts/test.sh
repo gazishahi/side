@@ -1,7 +1,9 @@
 #!/bin/zsh
-# Every test: Heron's, Alloy's and SideSessions' own (swift test, as their public repositories run them), then the app's.
+# Every test: SideAgents', Heron's, Alloy's and SideSessions' own (swift test, as their public repositories run them), then the app's.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+echo "==> SideAgents"
+(cd Packages/SideAgents && swift test)
 echo "==> Heron"
 (cd Packages/Heron && swift test)
 echo "==> Alloy"

@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// Direction 02 §2 acceptance, enforced at test time rather than by a checklist nobody reruns.
 final class TokenComplianceTests: XCTestCase {

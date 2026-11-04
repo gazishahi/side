@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Owns the persisted provider table and turns an entry + its Keychain credential into a
 /// ready ChatModelProvider. App-level (one per machine, like UserDefaults), not per-project —

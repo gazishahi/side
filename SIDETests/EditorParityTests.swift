@@ -3,6 +3,7 @@ import AlloyAppKit
 import AlloyRender
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// Alloy RFC step 5, the parity bar: what Make does with its editor, through Make's own entry
 /// points. These ran on TextKit and Alloy both until step 7 made Alloy the only editor.

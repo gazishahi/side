@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Decides what a proposed edit's card should show *while the model is still writing it*.
 ///

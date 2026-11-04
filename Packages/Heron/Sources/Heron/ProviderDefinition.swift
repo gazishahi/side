@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 public enum ProviderKind: String, Codable, Sendable {
     case builtIn

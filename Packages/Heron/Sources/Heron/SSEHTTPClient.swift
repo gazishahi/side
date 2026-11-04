@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// One Server-Sent Events frame: an optional `event:` name plus a `data:` payload.
 public struct SSEEvent {

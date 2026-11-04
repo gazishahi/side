@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Stale content out of the history, in one sweep (SIDE_RFC_HERON_EFFICIENCY.md, D3 and the
 /// owner's answer to Q1).

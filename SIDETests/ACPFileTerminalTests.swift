@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// Harness RFC step 3 (D9): an outside agent reads and writes through Side, runs commands in
 /// Run tabs of its own, and every turn that changed files ends in a checkpoint that doesn't

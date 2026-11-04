@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// A failed run has to reach the user. It used to finish as `.idle` — no chip, no badge, no
 /// notification — so a background rate-limit looked exactly like an agent that had nothing to say.

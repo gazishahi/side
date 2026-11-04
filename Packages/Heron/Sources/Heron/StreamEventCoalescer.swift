@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// A provider's stream events, carried to the main thread at most once a frame
 /// (SIDE_RFC_HERON_EFFICIENCY.md, D6).

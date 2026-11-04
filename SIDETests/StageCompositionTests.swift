@@ -1,6 +1,7 @@
 import XCTest
 @testable import Side
 @testable import Heron
+@testable import SideAgents
 
 /// Direction 02 §4: what each stage says, as tables.
 @MainActor

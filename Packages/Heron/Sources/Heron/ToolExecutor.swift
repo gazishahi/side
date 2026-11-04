@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Executes the tools Heron offers the model. Read tools auto-run (pure reads, nothing to
 /// promote); write tools deliberately **cannot** mutate anything from here — they return a

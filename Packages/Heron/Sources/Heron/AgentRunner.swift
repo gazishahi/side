@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Everything pending between a batch of tool calls landing and every proposal in it being
 /// resolved. Lifted verbatim in shape from what used to be a set of escaping-closure captures
