@@ -14,13 +14,17 @@ scratch="${OBJROOT:-build}/SideSessions"
   || { tail -30 "$scratch.log"; exit 1; }
 dest="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
 mkdir -p "$dest"
-cp -f "$scratch/$config/SideSessionKeeper" "$dest/SideSessionKeeper"
+# Signed beside the destination, then renamed over it: never written in place. A running
+# process whose executable changes under it is killed by the kernel (an invalid code page).
+staged="$dest/.SideSessionKeeper.staged"
+cp -f "$scratch/$config/SideSessionKeeper" "$staged"
 identity="${EXPANDED_CODE_SIGN_IDENTITY:-}"
 if [[ -n "$identity" && "$identity" != "-" ]]; then
   # Hardened runtime and a timestamp for release builds, which are notarized.
   timestamp=--timestamp=none
   [[ "$config" == release ]] && timestamp=--timestamp
-  codesign --force --sign "$identity" --options runtime $timestamp "$dest/SideSessionKeeper"
+  codesign --force --sign "$identity" --options runtime $timestamp "$staged"
 else
-  codesign --force --sign - "$dest/SideSessionKeeper"
+  codesign --force --sign - "$staged"
 fi
+mv -f "$staged" "$dest/SideSessionKeeper"

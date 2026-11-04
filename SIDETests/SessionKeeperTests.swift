@@ -10,7 +10,7 @@ final class SessionKeeperTests: XCTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        try XCTSkipIf(SessionKeepers.keeperURL == nil, "No keeper in the test host's bundle.")
+        try XCTSkipIf(SessionKeepers.bundledKeeperURL == nil, "No keeper in the test host's bundle.")
         // Short: a socket path must fit in 103 bytes.
         runDirectory = URL(fileURLWithPath: "/tmp/skt-\(UUID().uuidString.prefix(8))", isDirectory: true)
         setenv("SIDE_SESSIONS_DIR", runDirectory.path, 1)
@@ -54,6 +54,15 @@ final class SessionKeeperTests: XCTestCase {
         session.viewController.terminalView.send(txt: "echo keeper-$((40+2))\r")
         XCTAssertTrue(waitUntil { self.screen(session).contains("keeper-42") }, screen(session))
         let shell = try XCTUnwrap(SessionKeepers.liveRecord(id)?.childPID)
+        // Run from a copy, never the bundle's own file: a rebuild that rewrites that file kills
+        // every keeper running it (2026-11-03).
+        let keeperPID = try XCTUnwrap(SessionKeepers.liveRecord(id)?.keeperPID)
+        var path = [CChar](repeating: 0, count: 4096)
+        proc_pidpath(keeperPID, &path, UInt32(path.count))
+        let executable = String(cString: path)
+        // `/tmp` is `/private/tmp`: compared by the run directory's own name.
+        XCTAssertTrue(executable.contains("/\(runDirectory.lastPathComponent)/bin/"), executable)
+        XCTAssertFalse(executable.contains(".app/"), executable)
 
         // Quitting, or the project's last window closing: the shell keeps running.
         first.teardownAll()

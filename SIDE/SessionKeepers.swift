@@ -5,11 +5,47 @@ import SideSessionsKit
 /// outside Side, that owns the PTY and a copy of the screen. Closing a window or quitting detaches
 /// from them; reopening the project attaches again, to the same running shells.
 enum SessionKeepers {
-    /// `Contents/Helpers/SideSessionKeeper`, put there by the "Embed session keeper" build phase.
-    static let keeperURL: URL? = {
+    /// The keeper in the app bundle (`Contents/Helpers`, from the "Embed session keeper" build
+    /// phase).
+    static let bundledKeeperURL: URL? = {
         let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/SideSessionKeeper")
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
     }()
+
+    /// What keepers run: a copy of the bundled one under the run directory, one per build.
+    /// Never the bundle's own file: a rebuild or an update that changes it in place makes the
+    /// kernel kill every process running it (an invalid code page), which took every session
+    /// with it (2026-11-03). A copy per build means a running keeper's file never changes.
+    static var keeperURL: URL? {
+        guard let bundled = bundledKeeperURL else { return nil }
+        if let installed = installedKeeper { return installed }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: bundled.path)
+        let size = (attributes?[.size] as? Int) ?? 0
+        let modified = Int((attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
+        let dir = SessionPaths.runDirectory.appendingPathComponent("bin/\(size)-\(modified)", isDirectory: true)
+        let copy = dir.appendingPathComponent("SideSessionKeeper")
+        if !FileManager.default.isExecutableFile(atPath: copy.path) {
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                // Copied beside it, then renamed into place: a reader never sees half a file.
+                let temporary = dir.appendingPathComponent(".SideSessionKeeper.\(getpid())")
+                try? FileManager.default.removeItem(at: temporary)
+                try FileManager.default.copyItem(at: bundled, to: temporary)
+                guard rename(temporary.path, copy.path) == 0 else { return bundled }
+            } catch {
+                return bundled
+            }
+        }
+        installedKeeper = copy
+        // Other builds' copies go: deleting a running program's file is safe (it keeps the file
+        // it opened); only changing one in place isn't.
+        let bin = dir.deletingLastPathComponent()
+        for other in (try? FileManager.default.contentsOfDirectory(at: bin, includingPropertiesForKeys: nil)) ?? [] where other.lastPathComponent != dir.lastPathComponent {
+            try? FileManager.default.removeItem(at: other)
+        }
+        return copy
+    }
+    nonisolated(unsafe) private static var installedKeeper: URL?
 
     /// Settings → Terminal: "Keep terminals running when Side quits" (on unless turned off).
     static let settingKey = "side.run.keepSessions"
@@ -19,7 +55,7 @@ enum SessionKeepers {
     nonisolated(unsafe) static var enabledForTesting = false
 
     static var isEnabled: Bool {
-        guard keeperURL != nil else { return false }
+        guard bundledKeeperURL != nil else { return false }
         if NSClassFromString("XCTestCase") != nil { return enabledForTesting }
         return UserDefaults.standard.object(forKey: settingKey) as? Bool ?? true
     }
