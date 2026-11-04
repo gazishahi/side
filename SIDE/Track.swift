@@ -50,9 +50,12 @@ struct Track: Codable, Identifiable {
     /// be migrated from `autoRunCommands` at decode time instead of guessing later.
     var toolScope: AgentToolScope?
     var autonomy: AgentAutonomy?
-    /// The outside agent this track runs on (`ACPAgent.id`), nil for Heron —
-    /// `SIDE_RFC_BYO_HARNESS.md`.
+    /// The outside agent this track runs on (`ACPAgent.id`), or `Track.heronId` —
+    /// `SIDE_RFC_BYO_HARNESS.md`. A new track takes the default agent (`DefaultAgent`); a track
+    /// stored before there was one has no id, and stays on Heron with its conversations.
     var harnessId: String?
+    static let heronId = "heron"
+    var runsOnHeron: Bool { ACPAgent.agent(id: harnessId) == nil }
     /// The outside agent's settings chosen on this track (option id → value: model, effort,
     /// mode), re-applied to each new session. Cleared when the track changes agent.
     var harnessOptions: [String: String]?
@@ -116,7 +119,7 @@ struct Track: Codable, Identifiable {
         effort = try container.decodeIfPresent(AgentEffort.self, forKey: .effort)
         toolScope = try container.decodeIfPresent(AgentToolScope.self, forKey: .toolScope)
         autonomy = try container.decodeIfPresent(AgentAutonomy.self, forKey: .autonomy)
-        harnessId = try container.decodeIfPresent(String.self, forKey: .harnessId)
+        harnessId = try container.decodeIfPresent(String.self, forKey: .harnessId) ?? Self.heronId
         harnessOptions = try container.decodeIfPresent([String: String].self, forKey: .harnessOptions)
         spawnedByCoordinator = try container.decodeIfPresent(Bool.self, forKey: .spawnedByCoordinator) ?? false
         portBase = try container.decodeIfPresent(Int.self, forKey: .portBase)

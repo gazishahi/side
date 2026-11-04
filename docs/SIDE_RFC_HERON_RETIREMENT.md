@@ -1,7 +1,7 @@
 # Retiring Heron's agent
 
-Status: decisions pending (2026-11-04: the owner decided to retire Heron; this is the plan, from
-a read-only audit the same day). Nothing removed yet.
+Status: in progress (2026-11-04: the owner decided to retire Heron, and took the three
+recommendations below). Step 1 built; nothing removed yet.
 
 ## What goes, what stays
 
@@ -44,9 +44,13 @@ live there (`GitPaths`, `SpawnEnvironment`, `HeronDefaults`, `JSONStore`, …).
 
 ## Steps
 
-1. **A default agent.** Settings › Agents chooses it (the first installed of Claude Code, Codex,
-   …); new tracks and sub-tracks use it; tracks set to Heron move to it, with their history
-   kept read-only.
+1. **A default agent. Built 2026-11-04.** Settings › Agents › Default agent: Automatic (the first
+   installed of Claude Code, Codex, …) or one chosen. New tracks and subtracks take it, and the
+   coordinator offers it first. The base (no track) has an agent of its own per project: the
+   default, or Heron where it already has Heron conversations, until one is chosen from its
+   session pill. Tracks already on Heron stay there with their conversations; they move in
+   step 3, when Heron's conversations become read-only. Tests never detect an agent, so none
+   starts a real one.
 2. **Move the plumbing.** Checkpoint commits out of `AgentRunner`; the shared types and utilities
    into Side (a `SideAgents` package, as `SideSessions` is), with their tests (about 90).
 3. **Remove the UI:** modes, provider/model pickers, Settings › Providers, compaction, the rules
@@ -59,7 +63,7 @@ live there (`GitPaths`, `SpawnEnvironment`, `HeronDefaults`, `JSONStore`, …).
 Each step ships on its own, with the suite passing; steps 1 and 2 change nothing you see but
 the default.
 
-## Decisions for the owner
+## Decisions (2026-11-04: all three as recommended)
 
 1. **Heron conversations already on disk:** kept read-only in the conversation list, or left
    on disk and no longer shown? Recommended: read-only, labeled "Heron (retired)".

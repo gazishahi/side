@@ -32,6 +32,10 @@ final class ProjectContext {
         // Outside agents (SIDE_RFC_BYO_HARNESS.md): the track says which; the login shell says
         // where — the same PATH lookup and spawn environment the language servers use.
         manager.agentProvider = { [weak self] trackKey in self?.trackStore.harness(forTrackKey: trackKey) }
+        trackStore.baseHasHeronHistory = { [weak self] in
+            guard let store = self?.sessionStore else { return false }
+            return !(store.session(forTrackKey: "")?.turns.isEmpty ?? true) || !store.archivedConversations(forTrackKey: "").isEmpty
+        }
         manager.acpLaunchProvider = { agent in
             guard let executable = AgentAvailability.executable(for: agent) else { return nil }
             // The user's subscription (every key variable removed) or the key they gave Side for

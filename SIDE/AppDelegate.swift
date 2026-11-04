@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Self.shared = self
         TextScaleFollower.start()
         SystemNotifier.shared.start()
+        // Which agents are installed, off the main thread: the default agent new tracks take.
+        if DefaultAgent.detects { AgentAvailability.refresh {} }
         // Persistence failures used to be swallowed by `try?` — a full disk or a revoked
         // permission lost the user's tracks and conversations without a word. They arrive here
         // now and get said out loud, once per file.

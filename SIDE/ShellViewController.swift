@@ -1379,12 +1379,13 @@ final class ShellViewController: NSViewController {
     /// and any window showing the track reattaches.
     private func syncHarnesses() {
         guard let context = projectContext else { return }
-        for track in context.trackStore.tracks {
-            let wanted = ACPAgent.agent(id: track.harnessId)?.displayName
-            if let existing = context.runnerManager.existingRunner(forTrackKey: track.branchName), existing.harnessName != wanted {
-                context.runnerManager.discardRunner(forTrackKey: track.branchName)
+        // The base ("") has an agent of its own too.
+        for key in [""] + context.trackStore.tracks.map(\.branchName) {
+            let wanted = context.trackStore.harness(forTrackKey: key)?.displayName
+            if let existing = context.runnerManager.existingRunner(forTrackKey: key), existing.harnessName != wanted {
+                context.runnerManager.discardRunner(forTrackKey: key)
             }
-            if track.branchName == currentTrackKey, thinkVC.attachedHarnessName != wanted {
+            if key == (currentTrackKey ?? ""), thinkVC.isAttachedToRunner, thinkVC.attachedHarnessName != wanted {
                 thinkVC.reloadForTrackSwitch(trackKey: currentTrackKey)
             }
         }

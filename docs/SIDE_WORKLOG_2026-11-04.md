@@ -37,6 +37,15 @@ decisions.
    floating on request, as the explorer floats).
 4. **Shared Claude Code chats: as recommended.** The RFC is marked agreed.
 
+**Then (16:00–):** the owner took the recommendations for the Agent panel and Heron's
+retirement, and asked to start with the default agent. Built: Settings › Agents › Default agent
+(step 1 of `SIDE_RFC_HERON_RETIREMENT.md`); new tracks, subtracks and the base take it.
+
+Found on the way: the owner's login shell took 61 s to start. `pyenv rehash` was waiting out a
+stale lock (`~/.pyenv/shims/.pyenv-shim`, 15:44), most likely left when my test copy filled the
+disk. Side asks the login shell for PATH before starting an agent, so every agent start (and the
+ACP tests) waited a minute. With the owner's yes I deleted the lock; the shell starts in 0.3 s.
+
 Housekeeping: the disk filled (119 MB free) while copying the repo for a test run, because the
 copy included the repo's 7.7 GB `build/` folder. The copy no longer takes `build/`. 78
 DerivedData folders from 2026-09-30 and 10-01 (about 12 GB, their projects gone) are the owner's

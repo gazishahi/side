@@ -130,6 +130,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Which engine this view is attached to (nil for Heron) — the shell compares it with the
     /// track's choice to know when to reattach.
     var attachedHarnessName: String? { runner?.harnessName }
+    var isAttachedToRunner: Bool { runner != nil }
     private var observerToken: UUID?
     /// Parallel to `runner.entries` — the view currently rendering each entry, so a streamed
     /// delta or a proposal resolution can update one block in place instead of rebuilding the

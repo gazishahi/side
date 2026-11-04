@@ -62,14 +62,17 @@ final class TrackCoordinator: TrackCoordinating {
         return nil
     }
 
+    /// The default agent first: a subtrack that names none gets it.
     var agentChoices: [(id: String, name: String)] {
-        [("heron", "Heron")] + ACPAgent.known.filter { AgentAvailability.isInstalled($0) != false }.map { ($0.id, $0.displayName) }
+        let all = [(Track.heronId, "Heron")] + ACPAgent.known.filter { AgentAvailability.isInstalled($0) != false }.map { ($0.id, $0.displayName) }
+        let preferred = DefaultAgent.harnessIdForNewTrack
+        return all.filter { $0.0 == preferred } + all.filter { $0.0 != preferred }
     }
 
     func createSubtrack(parentKey: String, request: SubtrackRequest, completion: @escaping (String) -> Void) {
         if let refusal = spawnRefusal(parentKey: parentKey) { return completion(refusal) }
         guard let parent = track(parentKey) else { return completion("Subtracks need a track to belong to.") }
-        let agentName = request.agentId.flatMap { ACPAgent.agent(id: $0)?.displayName } ?? "Heron"
+        let agentName = ACPAgent.agent(id: request.agentId ?? DefaultAgent.harnessIdForNewTrack)?.displayName ?? "Heron"
         // TrackStore calls back on the main thread; the box carries the main-actor closures there.
         let box = CompletionBox(coordinator: self, completion: completion)
         trackStore.createTrack(intent: request.intent, baseTrack: parent, spawnedByCoordinator: true) { result in

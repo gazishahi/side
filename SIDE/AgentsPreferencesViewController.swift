@@ -21,12 +21,48 @@ final class AgentsPreferencesViewController: NSViewController {
 
     private func rebuild() {
         keyFields.removeAll()
-        var sections: [NSView] = [SettingsSplitViewController.hero(.agents)]
+        var sections: [NSView] = [SettingsSplitViewController.hero(.agents), defaultSection()]
         sections += ACPAgent.known.map(section(for:))
         sections.append(SettingsForm.section(footer: "Other agents that speak the Agent Client Protocol (Qwen Code, Goose and more) can be added by the command that starts them in ACP mode. Side has verified Claude Code; the others are experimental, and may not work fully.", [
             SettingsForm.row("Add another agent", SettingsForm.button("Add Agent\u{2026}", self, #selector(addAgent))),
         ]))
         SettingsForm.install(SettingsForm.page(sections), in: view)
+    }
+
+    /// The agent new tracks run on (SIDE_RFC_HERON_RETIREMENT.md, step 1). Only installed agents
+    /// can be chosen; "Automatic" is the first installed, and says which.
+    private func defaultSection() -> NSView {
+        let popup = NSPopUpButton()
+        popup.menu?.autoenablesItems = false
+        let automatic = DefaultAgent.chosenId == nil ? DefaultAgent.agent : nil
+        popup.addItem(withTitle: automatic.map { "Automatic (\($0.displayName))" } ?? "Automatic")
+        popup.lastItem?.representedObject = ""
+        popup.menu?.addItem(.separator())
+        for agent in ACPAgent.known {
+            let installed = AgentAvailability.isInstalled(agent)
+            popup.addItem(withTitle: installed == false ? "\(agent.displayName), not installed" : agent.displayName)
+            popup.lastItem?.representedObject = agent.id
+            popup.lastItem?.isEnabled = installed != false || agent.id == DefaultAgent.chosenId
+        }
+        let index = (0..<popup.numberOfItems).first { (popup.item(at: $0)?.representedObject as? String) == (DefaultAgent.chosenId ?? "") }
+        popup.selectItem(at: index ?? 0)
+        popup.target = self
+        popup.action = #selector(defaultAgentChanged(_:))
+        popup.setAccessibilityLabel("Default agent")
+        defaultPopup = popup
+        let anyInstalled = ACPAgent.known.contains { AgentAvailability.isInstalled($0) == true }
+        let detail = DefaultAgent.agent != nil
+            ? "New tracks and subtracks start on it. A track can still change agent from its session pill."
+            : anyInstalled ? "Choose one for new tracks. Until then they use Heron." : "No agent is installed yet, so new tracks use Heron. Install one below."
+        return SettingsForm.section([SettingsForm.row("Default agent", detail: detail, popup)])
+    }
+
+    private(set) var defaultPopup: NSPopUpButton?
+
+    @objc private func defaultAgentChanged(_ sender: NSPopUpButton) {
+        let id = sender.selectedItem?.representedObject as? String ?? ""
+        DefaultAgent.chosenId = id.isEmpty ? nil : id
+        rebuild()
     }
 
     private func section(for agent: ACPAgent) -> NSView {

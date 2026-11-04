@@ -344,6 +344,7 @@ final class TrackStore {
                 case .success(let worktreePath):
                     self.demoteActiveTrack()
                     var track = Track(intent: trimmed, branchName: branchName, parentTrackId: self.inferredBase(for: branchName)?.id)
+                    track.harnessId = DefaultAgent.harnessIdForNewTrack
                     track.workingDirectoryPath = worktreePath.path
                     self.tracks.append(track)
                     self.isDetachedHead = false
@@ -380,6 +381,7 @@ final class TrackStore {
         epoch += 1
         demoteActiveTrack()
         var track = Track(intent: trimmed, branchName: branchName, parentTrackId: inferredBase(for: branchName)?.id)
+        track.harnessId = DefaultAgent.harnessIdForNewTrack
         // Belt to the clearing above's braces: only hand over a worktree that is actually on this
         // branch. One `symbolic-ref` — a click-triggered action can afford a spawn.
         if let path = untrackedBranchWorkingDirectoryPath {
@@ -435,6 +437,8 @@ final class TrackStore {
                     completion(.failure(error))
                 case .success(let worktreePath):
                     var track = Track(intent: trimmed, branchName: branchName, parentTrackId: baseTrack?.id)
+                    // A subtrack the coordinator names an agent for gets it next (`setHarness`).
+                    track.harnessId = DefaultAgent.harnessIdForNewTrack
                     if spawnedByCoordinator {
                         track.spawnedByCoordinator = true
                         track.status = .waiting
@@ -693,8 +697,16 @@ final class TrackStore {
         notifyChange()
     }
 
-    /// Which engine runs the track's conversation: an outside agent's id, or nil for Heron.
+    /// Which engine runs the track's conversation: an outside agent's id, or nil for Heron. The
+    /// base (`""`, no track) keeps its choice per project.
     func setHarness(_ harnessId: String?, forTrackKey trackKey: String) {
+        let harnessId = harnessId ?? Track.heronId
+        if trackKey.isEmpty {
+            guard baseHarnessId != harnessId else { return }
+            baseHarnessId = harnessId
+            notifyChange()
+            return
+        }
         guard let index = tracks.firstIndex(where: { $0.branchName == trackKey }), tracks[index].harnessId != harnessId else { return }
         tracks[index].harnessId = harnessId
         // Another agent's model ids and modes mean nothing to this one.
@@ -716,7 +728,27 @@ final class TrackStore {
     }
 
     func harness(forTrackKey trackKey: String) -> ACPAgent? {
-        ACPAgent.agent(id: tracks.first { $0.branchName == trackKey }?.harnessId)
+        if trackKey.isEmpty { return ACPAgent.agent(id: baseHarnessId) }
+        return ACPAgent.agent(id: tracks.first { $0.branchName == trackKey }?.harnessId)
+    }
+
+    /// Whether the base has Heron conversations to keep (`ProjectContext` asks the session store).
+    var baseHasHeronHistory: () -> Bool = { false }
+    private static let baseHarnessKey = "agents.base"
+
+    /// The base's agent: as chosen for this project; unchosen, Heron where it has Heron
+    /// conversations (they stay where they are), otherwise the default agent.
+    var baseHarnessId: String {
+        get {
+            let chosen = (ACPAgent.defaults.dictionary(forKey: Self.baseHarnessKey) as? [String: String])?[projectRoot.standardizedFileURL.path]
+            if let chosen { return chosen }
+            return baseHasHeronHistory() ? Track.heronId : DefaultAgent.harnessIdForNewTrack
+        }
+        set {
+            var all = (ACPAgent.defaults.dictionary(forKey: Self.baseHarnessKey) as? [String: String]) ?? [:]
+            all[projectRoot.standardizedFileURL.path] = newValue
+            ACPAgent.defaults.set(all, forKey: Self.baseHarnessKey)
+        }
     }
 
     func mode(forTrackKey trackKey: String) -> AgentMode {

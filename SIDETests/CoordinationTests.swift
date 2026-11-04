@@ -333,6 +333,41 @@ for line in sys.stdin:
         XCTAssertTrue(text.contains("declined"), text)
         XCTAssertFalse(context.trackStore.tracks.contains { $0.spawnedByCoordinator })
     }
+
+    /// SIDE_RFC_HERON_RETIREMENT.md, step 1: new tracks, subtracks and the base take the default
+    /// agent; nothing chosen (and tests never detect one), Heron.
+    func testNewTracksSubtracksAndTheBaseTakeTheDefaultAgent() throws {
+        XCTAssertNil(DefaultAgent.chosenId, "a test's settings start empty")
+        let before = try createTrack("Before a default")
+        XCTAssertEqual(before.harnessId, Track.heronId)
+        XCTAssertNil(context.trackStore.harness(forTrackKey: before.branchName), "Heron")
+
+        DefaultAgent.chosenId = worker.id
+        defer { DefaultAgent.chosenId = nil }
+        let track = try createTrack("With a default")
+        XCTAssertEqual(track.harnessId, worker.id)
+        XCTAssertEqual(context.trackStore.harness(forTrackKey: track.branchName)?.id, worker.id)
+        XCTAssertEqual(context.trackStore.harness(forTrackKey: before.branchName)?.id, nil, "a track already on Heron stays there")
+        XCTAssertEqual(context.coordinator.agentChoices.first?.id, worker.id, "offered first, as the default")
+        let child = try createTrack("A subtrack", parent: track, spawned: true)
+        XCTAssertEqual(child.harnessId, worker.id)
+
+        // The base, with no Heron conversations: the default, until a choice of its own.
+        XCTAssertEqual(context.trackStore.harness(forTrackKey: "")?.id, worker.id)
+        context.trackStore.setHarness(nil, forTrackKey: "")
+        XCTAssertNil(context.trackStore.harness(forTrackKey: ""), "Heron, chosen for the base")
+        context.trackStore.setHarness(worker.id, forTrackKey: "")
+        XCTAssertEqual(context.trackStore.harness(forTrackKey: "")?.id, worker.id)
+    }
+
+    /// A track stored before there was a default agent has no agent id: it was Heron's, and stays.
+    func testATrackStoredBeforeTheDefaultStaysOnHeron() throws {
+        let old = Track(intent: "Old", branchName: "old")
+        XCTAssertNil(old.harnessId)
+        let decoded = try JSONDecoder().decode(Track.self, from: JSONEncoder().encode(old))
+        XCTAssertEqual(decoded.harnessId, Track.heronId)
+        XCTAssertTrue(decoded.runsOnHeron)
+    }
 }
 
 private final class ResultBox: @unchecked Sendable { var value = "" }

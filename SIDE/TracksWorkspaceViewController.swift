@@ -1289,7 +1289,7 @@ final class TracksWorkspaceViewController: NSViewController {
         let agentMenu = NSMenu()
         let heron = agentMenu.addItem(withTitle: "Heron", action: #selector(setHarnessMenuItem(_:)), keyEquivalent: "")
         heron.representedObject = [track, ""] as [Any]
-        heron.state = track.harnessId == nil ? .on : .off
+        heron.state = track.runsOnHeron ? .on : .off
         agentMenu.addItem(NSMenuItem.separator())
         for agent in ACPAgent.known {
             let item = agentMenu.addItem(withTitle: agent.displayName, action: #selector(setHarnessMenuItem(_:)), keyEquivalent: "")

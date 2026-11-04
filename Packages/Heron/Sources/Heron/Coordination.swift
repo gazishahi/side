@@ -171,7 +171,7 @@ public struct CoordinationBridge: @unchecked Sendable {
     /// every time to stay cached, and the installed agents aren't (SIDE_RFC_HERON_EFFICIENCY.md,
     /// D1). An outside agent over MCP, which has no such cache of ours, gets the list inline.
     public static func toolSpecs(agentChoices: [(id: String, name: String)]? = nil) -> [ToolSpec] {
-        let agents = agentChoices.map { "Agents: " + $0.map { "\($0.id) (\($0.name))" }.joined(separator: ", ") + "." }
+        let agents = agentChoices.map { "Agents: " + $0.map { "\($0.id) (\($0.name))" }.joined(separator: ", ") + ($0.first.map { "; \($0.id) is the default" } ?? "") + "." }
             ?? "list_tracks names the agents it can use; heron is the default."
         func schema(_ properties: [String: JSONValue], required: [String]) -> JSONValue {
             .object(["type": .string("object"), "properties": .object(properties), "required": .array(required.map { .string($0) })])

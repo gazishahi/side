@@ -37,6 +37,40 @@ enum AgentAvailability {
     }
 }
 
+/// The agent new tracks run on (SIDE_RFC_HERON_RETIREMENT.md, step 1): the one chosen in
+/// Settings › Agents, else the first installed of Claude Code, Codex, … in that order. Until one
+/// is installed, Heron, while it's still here. Tests never detect one: a test gets an agent
+/// only by choosing it, so no test starts the owner's real Claude Code.
+@MainActor
+enum DefaultAgent {
+    static let key = "agents.default"
+    static var defaults: UserDefaults { ACPAgent.defaults }
+    static var detects: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] == nil && environment["XCTestBundlePath"] == nil && !AppDelegate.isUITesting
+    }()
+
+    /// The id chosen in Settings, nil for "the first installed".
+    static var chosenId: String? {
+        get { defaults.string(forKey: key) }
+        set {
+            if let newValue { defaults.set(newValue, forKey: key) } else { defaults.removeObject(forKey: key) }
+            NotificationCenter.default.post(name: changed, object: nil)
+        }
+    }
+    static let changed = Notification.Name("SideDefaultAgentChanged")
+
+    /// nil: Heron.
+    static var agent: ACPAgent? {
+        if let id = chosenId, let chosen = ACPAgent.agent(id: id), AgentAvailability.isInstalled(chosen) != false { return chosen }
+        guard detects else { return nil }
+        return ACPAgent.known.first { AgentAvailability.isInstalled($0) == true }
+    }
+
+    /// What a new track stores: the agent's id, or Heron's.
+    static var harnessIdForNewTrack: String { agent?.id ?? Track.heronId }
+}
+
 /// The "AGENT" row both session popovers start with: Heron, or an outside agent (RFC step 4).
 @MainActor
 enum AgentPicker {
