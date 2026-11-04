@@ -1,6 +1,7 @@
 # Agent's side panel: the branch beside the conversation
 
-Status: decisions pending (proposed 2026-11-04). Nothing built yet.
+Status: agreed (2026-11-04: the owner took all three recommendations: hidden below the docking
+width and shown floating on request; all four sections; the empty stage's offer). Nothing built yet.
 
 ## Why
 
@@ -38,7 +39,7 @@ keeps it as it is.
   (⌥⌘0 is already Go to Branches), hides or shows it. The choice is remembered per window,
   and a hidden panel stays hidden.
 
-## Decisions for the owner
+## Decisions (2026-11-04: all three as recommended)
 
 1. **Below the docking width: hidden or floating?**
    - **Hidden (recommended).** The toggle stays in the top row. Clicking it shows the panel
