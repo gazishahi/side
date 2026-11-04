@@ -1,7 +1,7 @@
 # Tracks from git: every branch is a track
 
-Status: decisions pending (drafted 2026-11-04, overnight, from the direction agreed on
-2026-11-03). Nothing built yet.
+Status: agreed (2026-11-04: the owner agreed with the recommendations, with the retention
+period adjustable). Drafted overnight from the direction agreed on 2026-11-03. Nothing built yet.
 
 ## Why
 
@@ -53,7 +53,8 @@ has.
 - **New Track still exists.** It makes a branch, and a worktree if you want one, from the base
   you pick. Branches made in a terminal or another app show up on their own within a second.
 - **Deleting a branch in git removes its track.** Side's overlay for it (intent, conversation,
-  checkpoints) is kept for 30 days, in case the branch comes back (re-created, or fetched).
+  checkpoints) is kept in case the branch comes back (re-created, or fetched): 30 days by default,
+  set in Settings (7 days, 30 days, 90 days, or Never delete).
 
 ## How
 
@@ -105,8 +106,8 @@ where the audit's Branches findings get fixed.
 ### Migration
 
 Existing `Track` records keep their branch names, so each matches its branch on first refresh.
-A record whose branch is gone is kept for 30 days, then swept, like the overlay of a deleted
-branch.
+A record whose branch is gone is kept for the retention period (Settings, 30 days by default),
+then swept, like the overlay of a deleted branch.
 
 ## The constitution
 
@@ -135,16 +136,14 @@ Articles 6 and 7 change:
 2. **Branches, rebuilt** as the board: status per row, sessions and agents per branch.
 3. **PRs:** the base from the PR, PR state on rows, opening a PR from a track.
 
-## Decisions pending
+## Decisions (2026-11-04)
 
-1. **Remote branches.** Show only local branches (and worktrees), or also remote branches you
-   haven't checked out, dimmed, as a section? Recommended: local only, plus a "Check out…" picker
-   for remote ones. A busy remote can have hundreds of branches.
-2. **Where a chosen base lives.** `git config branch.<name>.sideBase` (visible to other tools,
-   travels with the repo's config) or Side's own store? Recommended: git config.
-3. **The 30 days.** How long to keep a deleted branch's conversation and checkpoints.
-   Recommended: 30 days, then gone. The Library's archive could keep them longer.
-4. **Auto-worktrees.** Today a track gets its own worktree when you switch to it. With every
-   branch a track, should a switch check the branch out in place (as git does) and make a
-   worktree only on request? Recommended: in place by default. A worktree comes from "Open in
-   New Window" or a track that has running sessions you'd interrupt.
+1. **Remote branches:** local branches and worktrees only, plus a "Check out…" picker for remote
+   ones. A busy remote can have hundreds of branches.
+2. **Where a chosen base lives:** `git config branch.<name>.sideBase`, visible to other tools
+   and kept with the repository's config.
+3. **How long a deleted branch's overlay is kept:** 30 days by default. Adjustable in Settings
+   (the owner): 7, 30 or 90 days, or Never delete. The Library's archive can keep a conversation
+   past it.
+4. **Auto-worktrees:** a switch checks the branch out in place, as git does. A worktree comes
+   from "Open in New Window", or for a track with running sessions a checkout would interrupt.

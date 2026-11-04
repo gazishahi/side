@@ -158,6 +158,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
                     if command == "switcher" { shell.toggleTrackPopover(nil) }
                     if command == "projects" { shell.projectChipForTesting.togglePopover() }
+                    // "key cmd+2", "key ctrl+shift+tab": a chord as the menu bar receives it.
+                    if command.hasPrefix("key ") {
+                        let parts = String(command.dropFirst(4)).split(separator: "+").map { String($0).lowercased() }
+                        var flags: NSEvent.ModifierFlags = []
+                        for part in parts.dropLast() {
+                            switch part {
+                            case "cmd": flags.insert(.command)
+                            case "ctrl": flags.insert(.control)
+                            case "opt", "alt": flags.insert(.option)
+                            case "shift": flags.insert(.shift)
+                            default: break
+                            }
+                        }
+                        let key = parts.last.map { $0 == "tab" ? "\t" : $0 } ?? ""
+                        if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                                        windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0) {
+                            _ = NSApp.mainMenu?.performKeyEquivalent(with: event)
+                        }
+                    }
                     if command.hasPrefix("stage-hover ") { shell.stageControlForTesting.hoverForTesting(Int(command.dropFirst(12))) }
                     if command.hasPrefix("theme-light ") { EditorThemes.lightThemeID = String(command.dropFirst(12)) }
                     if command.hasPrefix("theme-dark ") { EditorThemes.darkThemeID = String(command.dropFirst(11)) }

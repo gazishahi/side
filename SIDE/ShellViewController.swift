@@ -1046,9 +1046,11 @@ final class ShellViewController: NSViewController {
     }
     /// The strip's tabs, then the stage's own list: they must agree.
     var tabsDumpForTesting: String {
-        let strip = (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).chips.map(\.title)
+        let chips = (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).chips
+        let strip = chips.map(\.title)
+        let active = chips.firstIndex(where: \.isActive).map(String.init) ?? "-"
         let model = current == .run ? RunWorkspaceViewController.distinctTitles(runVC.sessionTitlesForTesting) : makeVC.openTabTitlesForTesting
-        return "strip=\(strip.joined(separator: "|")) model=\(model.joined(separator: "|"))"
+        return "strip=\(strip.joined(separator: "|")) model=\(model.joined(separator: "|")) active=\(active)"
     }
     func closeActiveRunTabForTesting() { runVC.closeActiveTabForTesting() }
     func stageBadgeForTesting(_ index: Int, state: DS.StatusState?) { stageControl.setBadge(state, spokenState: nil, at: index) }

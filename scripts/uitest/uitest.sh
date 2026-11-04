@@ -3,6 +3,7 @@
 #
 #   scripts/uitest/uitest.sh build              copy the repo out of ~/Documents and build it
 #   scripts/uitest/uitest.sh launch [project]   start it (UI-testing mode) on a project
+#   scripts/uitest/uitest.sh relaunch [project] quit and start again, its terminals kept running
 #   scripts/uitest/uitest.sh post "<command>"…  send UI-testing commands (AppDelegate's list)
 #   scripts/uitest/uitest.sh shot <file.png>    capture Side's front window
 #   scripts/uitest/uitest.sh type "<text>"      type into the Terminal stage's shell
@@ -42,6 +43,14 @@ case ${1:-} in
     tools
     $0 quit 2>/dev/null || true
     mkdir -p $ROOT/run
+    SIDE_SESSIONS_DIR=$ROOT/run "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
+    echo $! > $ROOT/side.pid
+    sleep 4
+    ;;
+  relaunch)
+    # Side quits and comes back; its keepers, and what runs in them, carry on (session restore).
+    $BIN/post "action terminate:"; sleep 2
+    pkill -f "$APP/Contents/MacOS/Side" || true; sleep 0.5
     SIDE_SESSIONS_DIR=$ROOT/run "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
     echo $! > $ROOT/side.pid
     sleep 4

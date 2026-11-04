@@ -571,6 +571,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         guard !didStart else { return }
         didStart = true
         isAlive = true
+        // Laid out first when it's on screen, so the shell starts (or a keeper's session is
+        // rejoined) at the terminal's real size, not SwiftTerm's 80×25 before layout: the prompt
+        // drawn at 80 columns and then resized came back broken (a right-aligned segment
+        // stranded mid-screen).
+        if terminalView.bounds.isEmpty, view.window != nil { view.superview?.layoutSubtreeIfNeeded() }
         if let launch = commandLaunch {
             // `env` resolves the command on PATH, which comes from the login shell — a GUI
             // app's own PATH has no Homebrew, nvm or the like.
@@ -626,7 +631,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                               place: keeperFacts[SessionKeepers.Fact.project].map { ($0 as NSString).lastPathComponent })
         guard let link = try? KeeperLink.launch(spec) else { return false }
         wire(link)
-        link.attach(cols: terminal.cols, rows: terminal.rows, history: terminal.options.scrollback)
+        // At its real size when it has one (`ensureStarted` lays it out first); else unsized,
+        // and the keeper keeps its own until this one has one (`KeeperLink.attach`).
+        let sized = !terminalView.bounds.isEmpty
+        link.attach(cols: sized ? terminal.cols : 0, rows: sized ? terminal.rows : 0, history: terminal.options.scrollback)
         return true
     }
 
@@ -643,7 +651,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         didTidyAfterSetup = true
         reattachedTitlePending = true
         wire(link)
-        link.attach(cols: terminal.cols, rows: terminal.rows, history: terminal.options.scrollback)
+        // At its real size when it has one (`ensureStarted` lays it out first); else unsized,
+        // and the keeper keeps its own until this one has one (`KeeperLink.attach`).
+        let sized = !terminalView.bounds.isEmpty
+        link.attach(cols: sized ? terminal.cols : 0, rows: sized ? terminal.rows : 0, history: terminal.options.scrollback)
         return true
     }
 

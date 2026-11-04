@@ -55,14 +55,18 @@ final class RunningTerminalsWindowController: NSWindowController, NSWindowDelega
     }
 
     private func build() {
-        let columns: [(String, String, CGFloat)] = [("project", "Project", 130), ("tab", "Tab", 190), ("running", "Running", 120), ("idle", "Quiet for", 80), ("memory", "Memory", 70), ("end", "", 60)]
+        let columns: [(String, String, CGFloat)] = [("project", "Project", 120), ("tab", "Tab", 170), ("running", "Running", 120), ("idle", "Quiet for", 76), ("memory", "Memory", 66), ("end", "", 56)]
         for (id, title, width) in columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             column.title = title
             column.width = width
-            column.minWidth = id == "end" ? 60 : 50
+            column.minWidth = id == "end" ? 56 : 50
+            // The End button's column keeps its width; the others share what the window has.
+            column.resizingMask = id == "end" ? [] : [.autoresizingMask, .userResizingMask]
             table.addTableColumn(column)
         }
+        // Fitted to the window: the End buttons were cut off at its edge (2026-11-04).
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.dataSource = self
         table.delegate = self
         // Side's list look, not a spreadsheet's: inset rows, no stripes (the visual audit).
@@ -218,20 +222,41 @@ final class RunningTerminalsWindowController: NSWindowController, NSWindowDelega
             button.controlSize = .small
             button.tag = index
             button.setAccessibilityLabel("End \(row.tab)")
-            return button
+            // Its own size, in the middle of the row: returned as the cell, it filled the cell.
+            let cell = NSView()
+            button.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(button)
+            NSLayoutConstraint.activate([
+                button.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                button.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            ])
+            return cell
         }
         let text: String
+        // An agent by its name, as its tab says it ("Claude Code"); a command as it was typed.
+        let named = column == "running" && ProgramMarks.displayName(row.running) != row.running
         switch column {
         case "project": text = row.project
         case "tab": text = row.tab
-        case "running": text = row.running
+        case "running": text = ProgramMarks.displayName(row.running)
         case "idle": text = row.idle
         default: text = String(format: "%.0f MB", row.memoryMB)
         }
         let field = NSTextField(labelWithString: text)
-        field.font = column == "running" ? DS.Text.code(11.5) : DS.Text.body()
+        field.font = column == "running" && !named ? DS.Text.code(11.5) : DS.Text.body()
         field.lineBreakMode = .byTruncatingTail
         field.toolTip = column == "tab" ? row.record.directory : nil
-        return field
+        // On the row's middle line, as the End button is: returned as the cell, a label sat at
+        // its top.
+        let cell = NSView()
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        cell.addSubview(field)
+        NSLayoutConstraint.activate([
+            field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+            field.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -2),
+        ])
+        return cell
     }
 }

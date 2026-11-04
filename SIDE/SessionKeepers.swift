@@ -249,16 +249,28 @@ final class KeeperLink {
     }
 
     /// `history`: the lines of scrollback this terminal keeps, so the keeper sends no more.
+    ///
+    /// A size of 0×0 is "keep yours" (a keeper ignores a size it can't use): a terminal not laid
+    /// out yet attaches so, and attaches again with its real size once it has one, for a fresh
+    /// snapshot at that size. Attached at SwiftTerm's 80×25 placeholder, the session was resized
+    /// twice, and a prompt drawn to the right edge, and the cursor's row, came back wrong.
     func attach(cols: Int, rows: Int, history: Int) {
-        lastSize = Size(cols: cols, rows: rows)
-        connection?.send(Frame(.attach, json: Attach(cols: cols, rows: rows, history: history)))
+        attachHistory = history
+        attachedUnsized = cols <= 0 || rows <= 0
+        lastSize = attachedUnsized ? nil : Size(cols: cols, rows: rows)
+        connection?.send(Frame(.attach, json: Attach(cols: max(cols, 0), rows: max(rows, 0), history: history)))
     }
+    private var attachedUnsized = false
+    private var attachHistory = 0
 
     func input<C: Collection>(_ bytes: C) where C.Element == UInt8 { connection?.send(Frame(.input, Array(bytes))) }
 
     func resize(cols: Int, rows: Int) {
         let size = Size(cols: cols, rows: rows)
         guard size != lastSize, cols > 0, rows > 0 else { return }
+        // The first real size after attaching without one: attached again, so the screen comes
+        // fresh at this size rather than reflowed into it.
+        if attachedUnsized { return attach(cols: cols, rows: rows, history: attachHistory) }
         lastSize = size
         connection?.send(Frame(.resize, json: size))
     }

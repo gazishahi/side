@@ -4,7 +4,48 @@ Status: reference. Done on my own between 03:09 and 06:09, while the owner was a
 were: commit as I go, track progress here, and make no releases of Side or Alloy. Every visual
 change was checked on a built app through the UI-testing channel before it was committed.
 
-## Start here
+## Morning, after the owner's testing (07:00–10:00)
+
+The owner tested the night's work and found real regressions. The night's "checked on screen"
+had a hole: the UI-testing setup couldn't start keepers (socket path too long) and had no Claude
+Code, so the paths that broke were never run. Fixed first:
+
+- **Test setup** (`scripts/uitest/`): builds a copy in `/tmp/side-uit`, short enough for keeper
+  sockets; a stand-in `claude` (`fake-claude.c`) that does at the terminal what Claude Code does
+  (startup queries, spinner titles, the bell); and repeatable checks: `check-terminal-agent.sh`,
+  `check-activity.sh`, `check-tab-close.sh`. Each reproduced its bug before the fix.
+- **Window stretched past the screen:** the activity pill appeared with a long title, and the
+  bar's required constraints outranked the window's size. Its title now truncates, the bar can't
+  widen the window, and the bar's docking is re-checked as the pill changes.
+- **No Claude mark / garbled pill:** the program was named from keystrokes. An accepted
+  autosuggestion read "claOC", a message to Claude became the "command", and the terminal's
+  replies to Claude's queries became the pill's title. Now it comes from the foreground process
+  (`ForegroundProgram`, shared with the keeper).
+- **The X sometimes did nothing:** a second close during the first's animation removed the wrong
+  tab, after which the strip and the tabs disagreed. Rapid closes also clipped and jumped. The
+  strip and the tabs now change together; the glass narrows frame by frame with the tabs.
+- **⌘1–9 in Terminal**, the **stage bar jumping** when leaving Branches, a **completion dot**
+  (green finished, amber wants you), **"+N"** on the pill, one item **goes straight there**.
+- **Documents prompts:** dev and test builds shared `com.shahi.side` with another signature, so
+  macOS's grant flipped between identities. Debug is now `com.shahi.side.dev`, UI tests
+  `com.shahi.side.uitest`, and the keeper is signed as `<app>.SessionKeeper` (it was
+  `.SideSessionKeeper`). **Terminals started by a dev build keep that identity until they end:
+  close those tabs once.**
+- **Project chip** at the bar's leading edge, with the repository's logo (logo/favicon files, an
+  Icon Composer bundle as Side's own, an AppIcon set), and its own switcher. The track pill is
+  about tracks again.
+- **Reattaching after a relaunch** happened at SwiftTerm's 80×25 placeholder before layout: the
+  screen came back resized twice (cursor row off). Terminals now start and rejoin at their real
+  size. Known leftover: a powerline prompt's right segment can come back on its own row; likely a
+  character-width difference between the keeper's engine (ghostty) and SwiftTerm. Not yet fixed.
+
+New RFC: `docs/SIDE_RFC_SHARED_CLAUDE_SESSIONS.md`. Terminal and Agent can share Claude Code chats;
+verified in the adapter (it lists and reopens the CLI's own sessions).
+
+Not done, on purpose: removing Agent's modes (they're Heron's Ask/Plan/Build scopes and approval
+levels, tied to the Heron-retirement decision); Agent's wide-screen layout (a design to agree).
+
+## Start here (night)
 
 **Your decisions:**
 1. **The running indicator.** Try the five styles in the app with
