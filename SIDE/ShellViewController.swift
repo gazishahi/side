@@ -1192,8 +1192,10 @@ final class ShellViewController: NSViewController {
             guard let self, proceed else { return }
             if let current = self.projectURL { ProjectSpaces.shared.hold(current) }
             ProjectSpaces.shared.space(for: url)
+            self.makeVC.putAwayTabsForProjectSwitch()
             self.openProject(at: url, focusingTrackKey: nil)
             self.projectIndicator.show(current: url)
+            self.trackPill.nameProjectBriefly()
         }
     }
 

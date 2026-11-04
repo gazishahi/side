@@ -1416,7 +1416,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Untitled tabs are deliberately excluded: they have no path to restore from, and their
     /// content lives only in the buffer.
     private func rememberOpenTabs(forProject project: URL) {
-        guard soleFile == nil else { return }
+        guard soleFile == nil, !tabMemorySuspended else { return }
         var map = HeronDefaults.store.dictionary(forKey: openTabsByProjectKey) as? [String: [String]] ?? [:]
         let paths = openTabs.filter { !$0.isUntitled }.map(\.url.path)
         if paths.isEmpty {
@@ -2019,6 +2019,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let indexed = Self.indexFiles(at: root)
             DispatchQueue.main.async {
                 guard let self, self.focusedRoot == root else { return }
+                self.tabMemorySuspended = false
                 self.allFiles = indexed
                 self.searchField.placeholderString = "Find a file in \(root.lastPathComponent)"
                 // Every remembered tab, in order, filtered against what the index actually
@@ -2028,9 +2029,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     self.open(sole)
                     return
                 }
-                let indexedPaths = Set(indexed.map(\.url.path))
+                // Compared resolved: the index can name a file by another spelling of the same
+                // path (/tmp and /private/tmp), and the tab was dropped as missing.
+                let indexedPaths = Set(indexed.map { $0.url.resolvingSymlinksInPath().path })
                 let remembered = self.rememberedOpenTabs(forProject: memoryRoot)
-                    .filter { indexedPaths.contains($0.path) }
+                    .filter { indexedPaths.contains($0.resolvingSymlinksInPath().path) }
                 if !remembered.isEmpty {
                     // Opened in the remembered order, so the tab strip comes back arranged the
                     // way the user left it. Selection is applied afterwards by *switching* to
@@ -2842,6 +2845,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     func closeAllTabsForTesting() { closeAllTabsImmediately() }
+
+    /// The window is moving to another project (project switching): this one's tabs are put away,
+    /// not forgotten (they're remembered as they change), so the next project's come back
+    /// instead. They followed the window across projects at first (2026-11-04).
+    func putAwayTabsForProjectSwitch() {
+        // Held off until the next project's tabs are back (`reindexAndRestoreLastFile`): closing
+        // these wrote an empty list over this project's, and the next one's empty start over its.
+        tabMemorySuspended = true
+        closeAllTabsImmediately()
+    }
+    private var tabMemorySuspended = false
 
     private func closeAllTabsImmediately() {
         for tab in openTabs where tab.kind == .text { lspManager?.closed(url: tab.url) }

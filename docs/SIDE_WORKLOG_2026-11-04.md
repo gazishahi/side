@@ -170,3 +170,20 @@ Also since the last commit:
   window with rows in it is unverified.
 - The track switcher's field has no system focus ring.
 - The activity pill asks only working terminals, or ones with unseen output, what's running.
+
+### 04:50 — project switching, fixed and finished
+
+- **Bug: the Editor's tabs followed the window across projects.** Switching from audit-project
+  to web-app left Greeter.swift and .env open in web-app. The window now puts the old project's
+  tabs away and the new project's remembered tabs come back. Getting that right took three
+  fixes:
+  - Closing the old tabs wrote an empty list over that project's memory. Tab memory is now held
+    off until the new project's tabs are back.
+  - The restore checked remembered files against the project's index by exact path. The index
+    can spell the same path another way (`/tmp` and `/private/tmp`), and those tabs were dropped
+    as missing. It compares resolved paths now.
+  - Checked on screen: audit-project → web-app → back gave Greeter.swift and .env; forward
+    again gave index.ts.
+- **The pill names the project only when it's useful** (Sill's rule): "web-app › main · Base"
+  for 1.6 s after a switch and while the pointer is on the pill. Otherwise the mark says which
+  project you're in.

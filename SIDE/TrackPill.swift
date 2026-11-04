@@ -130,6 +130,24 @@ final class TrackPill: NSView {
         }
     }
     private var spacesObserver: NSObjectProtocol?
+    private var hovering = false
+    private var namingUntil = Date.distantPast
+    private var showsProjectName: Bool { hovering || Date() < namingUntil }
+
+    /// After a project switch: the project's name for a moment.
+    func nameProjectBriefly() {
+        namingUntil = Date().addingTimeInterval(1.6)
+        refresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.65) { [weak self] in self?.refresh() }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = true; refresh() }
+    override func mouseExited(with event: NSEvent) { hovering = false; refresh() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -143,7 +161,13 @@ final class TrackPill: NSView {
             projectGlyph.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
             projectGlyph.contentTintColor = .tertiaryLabelColor
         }
-        titleLabel.stringValue = snapshot.title
+        // The project's name only when it's useful (Sill): for a moment after a switch, and
+        // while the pointer is on the pill. Otherwise its mark says which project this is.
+        if showsProjectName, let project = snapshot.projectName {
+            titleLabel.stringValue = "\(project) \u{203A} \(snapshot.title)"
+        } else {
+            titleLabel.stringValue = snapshot.title
+        }
         extraLabel.stringValue = "+\(snapshot.othersNeedingYou)"
         let showsExtra = snapshot.othersNeedingYou > 0
         let showsGlyph = snapshot.isTornOut
