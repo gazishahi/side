@@ -1,4 +1,5 @@
 import AppKit
+import SideSessionsKit
 import Heron
 
 final class RunWorkspaceViewController: NSViewController {
@@ -372,26 +373,43 @@ final class RunWorkspaceViewController: NSViewController {
     /// a session would be a lie. What *is* restorable is the arrangement, which is what was
     /// actually lost: reopening a project dropped every Run tab because nothing recorded that
     /// they had existed at all.
+    ///
+    /// With session keepers (SIDE_RFC_SESSION_RESTORE.md) the state comes back too: a remembered
+    /// tab whose keeper still runs reattaches to its shell, and a live session the list doesn't
+    /// know about (Side ended before it could remember) comes back as a tab of its own.
     private func restoreRememberedSessionsOrCreateOne() {
         let remembered = terminals?.rememberedDirectories(forTrackKey: trackKey) ?? []
-        guard !remembered.isEmpty else { return createSession() }
+        let keeperIDs = terminals?.rememberedKeeperIDs(forTrackKey: trackKey) ?? []
+        let project = terminals?.projectRoot.path ?? ""
+        let live = SessionKeepers.isEnabled ? SessionKeepers.liveRecords(project: project, track: trackKey) : []
+        let liveIDs = Set(live.map(\.id))
+        let orphans = live.filter { record in !keeperIDs.contains { $0 == record.id } }
+        guard !remembered.isEmpty || !orphans.isEmpty else { return createSession() }
         // Created, not started: a shell starts when its tab is first shown. Starting all of them
         // here made every background tab's first prompt count as unseen output, so reopening a
-        // project with three remembered tabs lit Run's badge for nothing.
+        // project with three remembered tabs lit Run's badge for nothing. A live session is the
+        // exception: it's already running, so it reattaches now and keeps its tab current.
         let names = terminals?.rememberedNames(forTrackKey: trackKey) ?? []
         for (index, directory) in remembered.enumerated() {
-            createSession(inDirectory: directory, show: false)
+            let id = keeperIDs.indices.contains(index) ? keeperIDs[index] : nil
+            createSession(inDirectory: directory, keeperID: id, show: false)
             if names.indices.contains(index) { sessions.last?.customName = names[index] }
+            if let id, liveIDs.contains(id) { sessions.last?.viewController.loadViewIfNeeded(); sessions.last?.viewController.start() }
+        }
+        for record in orphans {
+            createSession(inDirectory: record.directory, keeperID: record.id, show: false)
+            sessions.last?.viewController.loadViewIfNeeded()
+            sessions.last?.viewController.start()
         }
         activeSessionIndex = 0
         rebuildTabBar()
         showActiveSession()
     }
 
-    private func createSession(replacing index: Int? = nil, inDirectory directory: String? = nil, show: Bool = true) {
+    private func createSession(replacing index: Int? = nil, inDirectory directory: String? = nil, keeperID: String? = nil, show: Bool = true) {
         guard let terminals else { return }
         // A restored tab reopens where it was, not wherever the track currently points.
-        let session = terminals.makeSession(forTrackKey: trackKey, inDirectory: directory)
+        let session = terminals.makeSession(forTrackKey: trackKey, inDirectory: directory, keeperID: keeperID)
         if let index, sessions.indices.contains(index) {
             sessions[index] = session
         } else {

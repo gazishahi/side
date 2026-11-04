@@ -1,5 +1,6 @@
 import AppKit
 import Heron
+import SideSessionsKit
 
 /// One terminal: a live PTY and the view that renders it. A class so every window's Run stage
 /// and the agent's command path hold the same object rather than copies that drift.
@@ -117,10 +118,15 @@ final class TerminalSessionManager {
     }
 
     /// A new, not-yet-started terminal in `directory` (or the track's own worktree).
-    func makeSession(forTrackKey key: String, inDirectory directory: String? = nil) -> TerminalSession {
+    /// `keeperID`: a remembered tab's session, to reattach to if its keeper still runs.
+    func makeSession(forTrackKey key: String, inDirectory directory: String? = nil, keeperID: String? = nil) -> TerminalSession {
         let vc = TerminalViewController()
         let path = directory ?? directoryProvider(key).path
         vc.workingDirectory = path
+        if SessionKeepers.isEnabled {
+            vc.keeperID = keeperID ?? SessionPaths.newID()
+            vc.keeperFacts = [SessionKeepers.Fact.project: projectRoot.path, SessionKeepers.Fact.track: key]
+        }
         let session = TerminalSession(label: (path as NSString).lastPathComponent, viewController: vc)
         vc.onExitStatusChanged = { [weak self] _, _ in self?.post(origin: nil) }
         // Run's status line: live cwd and the last command's exit and duration.
@@ -191,9 +197,11 @@ final class TerminalSessionManager {
         post(origin: nil)
     }
 
-    /// The project is being released: the one moment every shell in it ends.
+    /// The project is being released (its last window closed, or Side quitting). Shells in
+    /// keepers are let go and keep running, to be reattached when the project opens again; the
+    /// rest end.
     func teardownAll() {
-        for list in sessionsByPool.values { for session in list { session.viewController.prepareForClose() } }
+        for list in sessionsByPool.values { for session in list { session.viewController.detachOrClose() } }
         sessionsByPool.removeAll()
         activeIndexByPool.removeAll()
         agentSessionIDByTrackKey.removeAll()
@@ -272,6 +280,14 @@ final class TerminalSessionManager {
     private static let rememberedSessionsKey = "side.run-sessions-by-track"
     /// Tabs' own names, in the same order as the directories; "" for an automatic name.
     private static let rememberedNamesKey = "side.run-session-names-by-track"
+    /// Tabs' keeper sessions, in the same order; "" for a tab with none.
+    private static let rememberedKeepersKey = "side.run-session-keepers-by-track"
+
+    /// Each remembered tab's keeper session, nil where it had none.
+    func rememberedKeeperIDs(forTrackKey key: String) -> [String?] {
+        let map = HeronDefaults.store.dictionary(forKey: Self.rememberedKeepersKey) as? [String: [String]] ?? [:]
+        return (map[rememberedKey(key)] ?? []).map { $0.isEmpty ? nil : $0 }
+    }
 
     private func rememberedKey(_ trackKey: String) -> String { "\(projectRoot.path)#\(trackKey)" }
 
@@ -308,6 +324,10 @@ final class TerminalSessionManager {
         let named = kept.map { $0.customName ?? "" }
         if named.allSatisfy(\.isEmpty) { names.removeValue(forKey: rememberedKey(key)) } else { names[rememberedKey(key)] = named }
         HeronDefaults.store.set(names, forKey: Self.rememberedNamesKey)
+        var keepers = HeronDefaults.store.dictionary(forKey: Self.rememberedKeepersKey) as? [String: [String]] ?? [:]
+        let ids = kept.map { $0.viewController.keeperID ?? "" }
+        if ids.allSatisfy(\.isEmpty) { keepers.removeValue(forKey: rememberedKey(key)) } else { keepers[rememberedKey(key)] = ids }
+        HeronDefaults.store.set(keepers, forKey: Self.rememberedKeepersKey)
     }
 
     private func post(origin: AnyObject?) {

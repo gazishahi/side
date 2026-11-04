@@ -34,6 +34,8 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     public var id: String
     public var keeperPID: Int32
     public var childPID: Int32
+    /// The PTY's device (`/dev/ttys012`): a debugger points a program at it.
+    public var tty: String
     public var executable: String
     public var arguments: [String]
     public var directory: String
@@ -45,12 +47,13 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     public var exit: Exit?
     public var protocolVersion: Int
 
-    public init(id: String, keeperPID: Int32, childPID: Int32, executable: String, arguments: [String], directory: String,
+    public init(id: String, keeperPID: Int32, childPID: Int32, tty: String = "", executable: String, arguments: [String], directory: String,
                 client: [String: String], title: String = "", createdAt: Date, lastOutputAt: Date, exit: Exit? = nil,
                 protocolVersion: Int = SessionProtocol.version) {
         self.id = id
         self.keeperPID = keeperPID
         self.childPID = childPID
+        self.tty = tty
         self.executable = executable
         self.arguments = arguments
         self.directory = directory

@@ -61,6 +61,7 @@ final class KeeperTests: XCTestCase {
         client.send(Frame(.input, Array("abc\r".utf8)))
         XCTAssertTrue(client.waitForText("got:abc"), client.text)
         XCTAssertEqual(client.welcome?.record.id, id)
+        XCTAssertTrue(client.welcome?.record.tty.hasPrefix("/dev/ttys") == true)
     }
 
     func testReattachGivesTheSameScreenAndScrollback() throws {

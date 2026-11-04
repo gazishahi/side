@@ -1,5 +1,6 @@
 import AppKit
 import Heron
+import SideSessionsKit
 import SwiftTerm
 
 /// Subclasses LocalProcessTerminalView purely to hook three things it exposes specifically for
@@ -9,6 +10,11 @@ import SwiftTerm
 /// integration to ask), and raw output bytes (to signal "this session has unseen output" for
 /// the background-activity indicator).
 final class SideTerminalView: LocalProcessTerminalView {
+    /// Set when this terminal's shell lives in a session keeper (SIDE_RFC_SESSION_RESTORE.md):
+    /// input and size go to it, and output comes from it, instead of SwiftTerm's own process.
+    var keeper: KeeperLink? {
+        didSet { syncKeeperSize() }
+    }
     var onFileLinkRequested: ((String) -> Bool)?
     var onLineSubmitted: ((String) -> Void)?
     var onDataReceived: (() -> Void)?
@@ -120,7 +126,14 @@ final class SideTerminalView: LocalProcessTerminalView {
                 break
             }
         }
-        super.send(source: source, data: data)
+        if let keeper { keeper.input(data) } else { super.send(source: source, data: data) }
+    }
+
+    /// SwiftTerm tells only its own process about a new size, so a keeper's terminal is told
+    /// here, whenever layout settles on a different grid.
+    func syncKeeperSize() {
+        guard let keeper else { return }
+        keeper.resize(cols: terminal.cols, rows: terminal.rows)
     }
 
     override func dataReceived(slice: ArraySlice<UInt8>) {
@@ -162,6 +175,7 @@ final class SideTerminalView: LocalProcessTerminalView {
 
     override func layout() {
         super.layout()
+        syncKeeperSize()
         syncScrollerVisibility()
         thumb.frame = NSRect(x: bounds.maxX - OverlayScrollThumb.trackWidth, y: bounds.minY, width: OverlayScrollThumb.trackWidth, height: bounds.height)
         updateThumb()
@@ -275,6 +289,12 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     let terminalView = SideTerminalView(frame: .zero)
     private var didStart = false
     var workingDirectory: String?
+    /// The session keeper this terminal's shell lives in (SIDE_RFC_SESSION_RESTORE.md), set
+    /// before it starts: a remembered tab keeps its id, so it reattaches to the shell it had.
+    /// Nil runs the shell in Side's own process, as command tabs always do.
+    var keeperID: String?
+    /// Side's facts for the keeper's record: project and track, so a reopened project finds it.
+    var keeperFacts: [String: String] = [:]
 
     /// A program to run in place of the login shell — an outside agent's `terminal/create`
     /// (`SIDE_RFC_BYO_HARNESS.md` step 3a). The command runs directly, never typed into a shell
@@ -383,7 +403,8 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// ordinary output. This does not stop a process that reads the rc file or the shell's
     /// environment — same-user code can — but it moves the attack from "print a line" to
     /// "deliberately go looking", which is a different threat. (2026-09-01 audit, terminal Med.)
-    private let markNonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    /// A reattached shell keeps the nonce it started with, from its keeper's record.
+    private var markNonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
     static let agentCommandTimeout = CommandTimeout.command
     static let agentTaskTimeout = CommandTimeout.task
 
@@ -425,6 +446,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// prompts draw their segments with its glyphs), with the system monospace as the fallback.
     @objc private func applyTextSize() {
         terminalView.font = DS.Text.Fonts.font(.terminal, size: DS.Text.CodeSize.terminal)
+        terminalView.syncKeeperSize()
     }
 
     override func viewDidLoad() {
@@ -489,6 +511,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             terminalView.startProcess(executable: "/usr/bin/env", args: [launch.command] + launch.arguments, environment: environment, currentDirectory: workingDirectory)
             return
         }
+        if let keeperID, SessionKeepers.isEnabled, let record = SessionKeepers.liveRecord(keeperID), reattach(record) { return }
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         // zsh gets its integration through a ZDOTDIR wrapper (the VS Code technique): the shell
         // sources our rc — which sources the user's own — so the hooks install before the first
@@ -504,8 +527,79 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             integrationInstalledViaRc = true
         }
         environment += Self.portEnvironment(for: workingDirectory)
+        if let keeperID, SessionKeepers.isEnabled, startInKeeper(id: keeperID, executable: shell, environment: environment) {
+            installShellIntegration(shell: shell)
+            return
+        }
         terminalView.startProcess(executable: shell, args: ["-l"], environment: environment, currentDirectory: workingDirectory)
         installShellIntegration(shell: shell)
+    }
+
+    // MARK: - Session keeper
+
+    /// A new shell in its own keeper. False if the keeper couldn't start; the shell then runs
+    /// in Side's process as before, so a broken keeper never costs a terminal.
+    private func startInKeeper(id: String, executable: String, environment: [String]) -> Bool {
+        var facts = keeperFacts
+        facts[SessionKeepers.Fact.nonce] = markNonce
+        facts[SessionKeepers.Fact.integration] = integrationInstalledViaRc ? "rc" : "typed"
+        let spec = LaunchSpec(id: id, executable: executable, arguments: ["-l"], environment: environment,
+                              directory: workingDirectory ?? NSHomeDirectory(), cols: max(terminal.cols, 2), rows: max(terminal.rows, 2), client: facts)
+        guard let link = try? KeeperLink.launch(spec) else { return false }
+        wire(link)
+        link.attach(cols: terminal.cols, rows: terminal.rows)
+        return true
+    }
+
+    /// The shell this tab had, still running in its keeper: its screen comes back from the
+    /// keeper's snapshot, and its shell integration is the one it was started with.
+    private func reattach(_ record: SessionRecord) -> Bool {
+        guard let link = try? KeeperLink.connect(record.id) else { return false }
+        if let nonce = record.client[SessionKeepers.Fact.nonce] { markNonce = nonce }
+        switch record.client[SessionKeepers.Fact.integration] {
+        case "rc": integrationInstalledViaRc = true; shellIntegration = .confirmed
+        case "typed": shellIntegration = .confirmed
+        default: shellIntegration = .unavailable
+        }
+        didTidyAfterSetup = true
+        reattachedTitlePending = true
+        wire(link)
+        link.attach(cols: terminal.cols, rows: terminal.rows)
+        return true
+    }
+
+    private var terminal: Terminal { terminalView.terminal }
+    /// The first title after a reattach names what was already running before it.
+    private var reattachedTitlePending = false
+
+    private func wire(_ link: KeeperLink) {
+        terminalView.keeper = link
+        link.onSnapshot = { [weak self] bytes in self?.terminalView.feed(byteArray: bytes[...]) }
+        link.onOutput = { [weak self] bytes in self?.terminalView.dataReceived(slice: bytes) }
+        link.onTitle = { [weak self] title in
+            guard let self, self.reattachedTitlePending else { return }
+            self.reattachedTitlePending = false
+            self.setProgramTitle(Self.cleanProgramTitle(title))
+        }
+        link.onExit = { [weak self] exit in self?.keeperSessionEnded(exitCode: exit.status) }
+        link.onLost = { [weak self] in self?.keeperSessionEnded(exitCode: nil) }
+    }
+
+    private func keeperSessionEnded(exitCode: Int32?) {
+        terminalView.keeper = nil
+        guard isAlive else { return }
+        processTerminated(source: terminalView, exitCode: exitCode)
+    }
+
+    /// Closing a window or quitting: a shell in a keeper is let go and keeps running; one in
+    /// Side's own process ends, as it always has.
+    func detachOrClose() {
+        if let keeper = terminalView.keeper {
+            keeper.detach()
+            terminalView.keeper = nil
+        } else {
+            prepareForClose()
+        }
     }
 
     /// A track's terminal gets its ports (`TrackPorts`): what runs in it, the agent's commands
@@ -1025,6 +1119,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// reliable fix is walking the live descendant tree via `ps` and signaling each PID directly
     /// — process group membership doesn't matter once you're killing by PID.
     private func terminateProcessTree() {
+        if let keeper = terminalView.keeper {
+            keeper.terminate()
+            return
+        }
         let pid = terminalView.process.shellPid
         guard pid != 0 else {
             terminalView.process.terminate()

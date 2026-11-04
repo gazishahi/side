@@ -1,6 +1,6 @@
 # Session restore: terminals you can always get back
 
-Status: agreed 2026-11-03. Phase 1 in progress.
+Status: agreed 2026-11-03. Phase 1 in progress: the keeper (Packages/SideSessions) and Side reattaching to it are built.
 
 ## Why
 
@@ -156,7 +156,9 @@ On by default (decided).
   - `teardownAll` and quitting **detach**.
   - `discardSessions` (track deleted) and closing a tab end the session with `signal`.
 - **Shell integration and ports** are unchanged. Side builds the environment (ZDOTDIR wrapper, `SIDE_MARK_NONCE`, `TrackPorts`) and passes it to the keeper.
-- **Command tabs** (an outside agent's `terminal/create`) and Heron's typed agent commands run in keepers too. An ACP agent process itself (`claude-agent-acp` behind Think) isn't a terminal and still ends with Side; out of scope here.
+- **Heron's typed agent commands** run in the shell's keeper, like anything else typed there.
+- **Command tabs stay in Side's process** (decided while building phase 1). An outside agent's `terminal/create` and a debugged program's terminal belong to an agent or debugger session in this Side process, so they end with it. An ACP agent process itself (`claude-agent-acp` behind Think) isn't a terminal, and also ends with Side.
+- **Closing a tab** sends SIGTERM to the whole tree and SIGHUP to the shell. An interactive shell ignores SIGTERM, and a keeper's PTY doesn't close with the tab, so the hangup a closing terminal sends has to be sent on purpose.
 
 ### Agent sessions
 

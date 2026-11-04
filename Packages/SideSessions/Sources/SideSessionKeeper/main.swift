@@ -72,7 +72,7 @@ clustering.mode = ghostty_mode_new(2027, false)
 clustering.value = true
 ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &clustering)
 
-record = SessionRecord(id: spec.id, keeperPID: getpid(), childPID: childPID, executable: spec.executable, arguments: spec.arguments,
+record = SessionRecord(id: spec.id, keeperPID: getpid(), childPID: childPID, tty: ptsname(master).map { String(cString: $0) } ?? "", executable: spec.executable, arguments: spec.arguments,
                            directory: spec.directory, client: spec.client, createdAt: Date(), lastOutputAt: Date())
 writeRecord()
 

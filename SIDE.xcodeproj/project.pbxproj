@@ -72,6 +72,7 @@
 		A00000000000000000000298 /* FileIntegrityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000297 /* FileIntegrityTests.swift */; };
 		A00000000000000000000302 /* StageNavigationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000301 /* StageNavigationUITests.swift */; };
 		A00000000000000000000400 /* TerminalSessionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000299 /* TerminalSessionManagerTests.swift */; };
+		A00000000000000000000607 /* SessionKeeperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000606 /* SessionKeeperTests.swift */; };
 		A00000000000000000000401 /* TrackPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000199 /* TrackPill.swift */; };
 		A00000000000000000000403 /* ChromeHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000402 /* ChromeHost.swift */; };
 		A00000000000000000000405 /* ChromeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000404 /* ChromeTests.swift */; };
@@ -80,6 +81,8 @@
 		A00000000000000000000411 /* FileExplorerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000410 /* FileExplorerTests.swift */; };
 		A00000000000000000000413 /* StageCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000412 /* StageCompositionTests.swift */; };
 		A00000000000000000000416 /* Heron in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000415 /* Heron */; };
+		A00000000000000000000602 /* SideSessionsKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000601 /* SideSessionsKit */; };
+		A00000000000000000000604 /* SessionKeepers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000603 /* SessionKeepers.swift */; };
 		A00000000000000000000418 /* CheckpointSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000417 /* CheckpointSheet.swift */; };
 		A00000000000000000000420 /* InlineInstruct.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000419 /* InlineInstruct.swift */; };
 		A00000000000000000000422 /* FirstRunSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000421 /* FirstRunSheet.swift */; };
@@ -216,6 +219,7 @@
 		A00000000000000000000185 /* LSP/JSONRPCFraming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LSP/JSONRPCFraming.swift; sourceTree = "<group>"; };
 		A00000000000000000000191 /* ProjectWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectWatcher.swift; sourceTree = "<group>"; };
 		A00000000000000000000193 /* TerminalSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionManager.swift; sourceTree = "<group>"; };
+		A00000000000000000000603 /* SessionKeepers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionKeepers.swift; sourceTree = "<group>"; };
 		A00000000000000000000195 /* SlidingSegmentedControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlidingSegmentedControl.swift; sourceTree = "<group>"; };
 		A00000000000000000000197 /* StagePins.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StagePins.swift; sourceTree = "<group>"; };
 		A00000000000000000000199 /* TrackPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackPill.swift; sourceTree = "<group>"; };
@@ -242,6 +246,7 @@
 		A00000000000000000000295 /* TokenComplianceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenComplianceTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000297 /* FileIntegrityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIntegrityTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000299 /* TerminalSessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionManagerTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000606 /* SessionKeeperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionKeeperTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000300 /* SIDEUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SIDEUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000301 /* StageNavigationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StageNavigationUITests.swift; sourceTree = "<group>"; };
 		A00000000000000000000402 /* ChromeHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChromeHost.swift; sourceTree = "<group>"; };
@@ -329,6 +334,7 @@
 			files = (
 				A00000000000000000000022 /* SwiftTerm in Frameworks */,
 				A00000000000000000000416 /* Heron in Frameworks */,
+				A00000000000000000000602 /* SideSessionsKit in Frameworks */,
 				A00000000000000000000571 /* SwiftMath in Frameworks */,
 				A00000000000000000000451 /* Sparkle in Frameworks */,
 				A00000000000000000000463 /* AlloyCore in Frameworks */,
@@ -416,6 +422,7 @@
 				A00000000000000000000185 /* LSP/JSONRPCFraming.swift */,
 				A00000000000000000000191 /* ProjectWatcher.swift */,
 				A00000000000000000000193 /* TerminalSessionManager.swift */,
+				A00000000000000000000603 /* SessionKeepers.swift */,
 				A00000000000000000000195 /* SlidingSegmentedControl.swift */,
 				A00000000000000000000197 /* StagePins.swift */,
 				A00000000000000000000199 /* TrackPill.swift */,
@@ -490,6 +497,7 @@
 				A00000000000000000000295 /* TokenComplianceTests.swift */,
 				A00000000000000000000297 /* FileIntegrityTests.swift */,
 				A00000000000000000000299 /* TerminalSessionManagerTests.swift */,
+				A00000000000000000000606 /* SessionKeeperTests.swift */,
 				A00000000000000000000404 /* ChromeTests.swift */,
 				A00000000000000000000410 /* FileExplorerTests.swift */,
 				A00000000000000000000412 /* StageCompositionTests.swift */,
@@ -533,6 +541,7 @@
 				A00000000000000000000009 /* Sources */,
 				A00000000000000000000010 /* Frameworks */,
 				A00000000000000000000011 /* Resources */,
+				A00000000000000000000605 /* Embed session keeper */,
 			);
 			buildRules = (
 			);
@@ -542,6 +551,7 @@
 			packageProductDependencies = (
 				A00000000000000000000021 /* SwiftTerm */,
 				A00000000000000000000415 /* Heron */,
+				A00000000000000000000601 /* SideSessionsKit */,
 				A00000000000000000000570 /* SwiftMath */,
 				A00000000000000000000450 /* Sparkle */,
 				A00000000000000000000459 /* AlloyCore */,
@@ -618,6 +628,7 @@
 			packageReferences = (
 				A00000000000000000000020 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				A00000000000000000000414 /* XCLocalSwiftPackageReference "Packages/Heron" */,
+				A00000000000000000000600 /* XCLocalSwiftPackageReference "Packages/SideSessions" */,
 				A00000000000000000000569 /* XCLocalSwiftPackageReference "Packages/SwiftMath" */,
 				A00000000000000000000449 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				A00000000000000000000458 /* XCLocalSwiftPackageReference "Packages/Alloy" */,
@@ -645,6 +656,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A00000000000000000000605 /* Embed session keeper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed session keeper";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "\"$SRCROOT/scripts/embed-session-keeper.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A00000000000000000000009 /* Sources */ = {
@@ -721,6 +751,7 @@
 				A00000000000000000000186 /* LSP/JSONRPCFraming.swift in Sources */,
 				A00000000000000000000192 /* ProjectWatcher.swift in Sources */,
 				A00000000000000000000194 /* TerminalSessionManager.swift in Sources */,
+				A00000000000000000000604 /* SessionKeepers.swift in Sources */,
 				A00000000000000000000196 /* SlidingSegmentedControl.swift in Sources */,
 				A00000000000000000000198 /* StagePins.swift in Sources */,
 				A00000000000000000000401 /* TrackPill.swift in Sources */,
@@ -774,6 +805,7 @@
 				A00000000000000000000296 /* TokenComplianceTests.swift in Sources */,
 				A00000000000000000000298 /* FileIntegrityTests.swift in Sources */,
 				A00000000000000000000400 /* TerminalSessionManagerTests.swift in Sources */,
+				A00000000000000000000607 /* SessionKeeperTests.swift in Sources */,
 				A00000000000000000000405 /* ChromeTests.swift in Sources */,
 				A00000000000000000000411 /* FileExplorerTests.swift in Sources */,
 				A00000000000000000000413 /* StageCompositionTests.swift in Sources */,
@@ -1000,6 +1032,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/SwiftMath;
 		};
+		A00000000000000000000600 /* XCLocalSwiftPackageReference "Packages/SideSessions" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/SideSessions;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1056,6 +1092,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A00000000000000000000458 /* XCLocalSwiftPackageReference "Packages/Alloy" */;
 			productName = AlloySyntax;
+		};
+		A00000000000000000000601 /* SideSessionsKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000600 /* XCLocalSwiftPackageReference "Packages/SideSessions" */;
+			productName = SideSessionsKit;
 		};
 		A00000000000000000000570 /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;
