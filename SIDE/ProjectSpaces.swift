@@ -63,6 +63,14 @@ final class ProjectSpaces {
 
     func index(of url: URL) -> Int? { spaces.firstIndex { $0.path == Self.normalized(url) } }
 
+    /// What the switcher shows: the first nine (⌃1–9 reach them), and the current one wherever
+    /// it falls. Every project opened becomes a space, so the whole list can run long.
+    func shown(current url: URL?) -> [Space] {
+        var shown = Array(spaces.prefix(9))
+        if let url, let space = spaces.first(where: { $0.path == Self.normalized(url) }), !shown.contains(space) { shown.append(space) }
+        return shown
+    }
+
     /// Keeps a project open after its window moves on.
     func hold(_ url: URL) {
         let path = Self.normalized(url)
@@ -136,7 +144,7 @@ final class ProjectIndicator: NSView {
     func show(current url: URL) {
         row.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let currentPath = url.standardizedFileURL.path
-        for space in ProjectSpaces.shared.spaces {
+        for space in ProjectSpaces.shared.shown(current: url) {
             let isCurrent = space.path == currentPath
             let icon = NSImageView(image: ProjectSpaces.image(for: space, pointSize: isCurrent ? 13 : 11) ?? NSImage())
             icon.alphaValue = isCurrent ? 1 : 0.55

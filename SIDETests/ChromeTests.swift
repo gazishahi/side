@@ -124,6 +124,12 @@ final class ChromeTests: XCTestCase {
         XCTAssertEqual(reread.space(for: b).colorIndex, 7)
         reread.remove(b)
         XCTAssertEqual(reread.spaces.map(\.path), [first.path, third.path])
+        // The switcher shows nine, and the current one past them.
+        for n in 0..<12 { reread.space(for: URL(fileURLWithPath: "/tmp/side-spaces/more-\(n)")) }
+        let late = URL(fileURLWithPath: "/tmp/side-spaces/more-11")
+        let shown = reread.shown(current: late)
+        XCTAssertEqual(shown.count, 10)
+        XCTAssertEqual(shown.last?.path, late.path)
     }
 
     func testAtLeastOneStageStaysPinnedAndPinsPersist() {

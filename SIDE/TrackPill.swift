@@ -308,7 +308,7 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
             let row = NSStackView()
             row.orientation = .horizontal
             row.spacing = DS.Spacing.xs
-            for space in ProjectSpaces.shared.spaces {
+            for space in ProjectSpaces.shared.shown(current: URL(fileURLWithPath: path)) {
                 let isCurrent = space.path == current
                 let chip = NSButton(title: isCurrent ? space.name : "", image: ProjectSpaces.image(for: space, pointSize: 13) ?? NSImage(), target: self, action: #selector(projectTapped(_:)))
                 chip.isBordered = false

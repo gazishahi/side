@@ -4,6 +4,31 @@ Status: reference. Done on my own between 03:09 and 06:09, while the owner was a
 were: commit as I go, track progress here, and make no releases of Side or Alloy. Every visual
 change was checked on a built app through the UI-testing channel before it was committed.
 
+## Start here
+
+**Your decisions:**
+1. **The running indicator.** Try the five styles in the app with
+   `defaults write com.shahi.side tabs.workingStyle shimmer|edge|caret|meter|glint`, or watch
+   the GIFs below. Shimmer is the default for now. Status dots elsewhere (tracks, the stage
+   bar's badges) still breathe until this is decided.
+2. **The activity pill:** keep "· 1 more", or only the list? And should a finished turn read
+   "Finished" or "Your turn"?
+3. **Project switching:** the symbols and colors are picked automatically, and the pill's
+   right-click menu changes them. Should ⌃1–9 stay (Mission Control uses ⌃1–9 for desktops when
+   that's turned on)?
+4. **Agent mode colors:** the Build mode's orange send button is the last non-accent color in
+   the chrome. Keep the mode tints?
+5. **`docs/SIDE_RFC_GIT_TRACKS.md`:** four decisions at its end.
+
+**What to look at first:**
+1. Build and open two projects.
+2. Switch between them: swipe on the bottom-left pill, use ⌃1/⌃2, or the pill's popover.
+3. Start Claude Code in a Terminal tab of one, then go to the Editor or the other project: the
+   activity pill says what it's doing, and its list takes you back.
+
+**Not touched:** releases (none made), Alloy (only last night's unreleased `.env` mapping is in
+it), vim (the RFC's decisions are still yours).
+
 ## Asked for (from the owner's notes on the visual audit)
 
 1. The stage bar's status dots were cut off on stages showing only an icon.
@@ -203,3 +228,24 @@ Also since the last commit:
   - constitution articles 6 and 7 are rewritten.
 
   It also covers audit items 6 and 10.
+
+### 05:00 — bells, and a cap on the switcher
+
+- **A bell (BEL) from a terminal you can't see is "needs you"** in the activity pill: "bell.sh
+  needs you" in amber. It clears once you go to the tab. A bell that rings while the tab is on
+  screen in the front window isn't kept. Checked on screen: rung on the Editor stage, the pill
+  said so, the row went there, and back on the Editor the pill was gone.
+- **The switcher shows at most nine projects**, the ones ⌃1–9 reach, plus the current one if
+  it's past them. Every project opened becomes a space, so the full list can run long.
+
+A gap, found and closed: an agent that finished in the Terminal tab that was selected while
+the window was on another stage wasn't caught as "finished", because Side only marks output
+unseen when no view has the tab selected. A turn that ends out of sight is now remembered
+(`turnFinishedAt`) until the tab is shown. Checked on screen: "Claude Code working", then
+"Claude Code finished", then nothing once the tab had been visited.
+
+A flake, noted: one full run crashed in `DebugServerSessionTests.testALauncherSessionItsTerminalAndItsChild`
+(`-[NSFileHandle availableData]: unknown error` in `DAPSocketTransport.attach`, debugger code
+not touched tonight). It passed three runs in a row on its own, and I committed only after a
+clean full run. The handler reads `availableData` on a closed handle and could catch that
+instead of aborting. Worth a look.

@@ -16,6 +16,13 @@ final class SideTerminalView: LocalProcessTerminalView {
         didSet { syncKeeperSize() }
     }
     var onFileLinkRequested: ((String) -> Bool)?
+    /// A bell from the program (BEL): the activity pill says so when the tab is out of sight.
+    var onBell: (() -> Void)?
+
+    override func bell(source: Terminal) {
+        super.bell(source: source)
+        onBell?()
+    }
     var onLineSubmitted: ((String) -> Void)?
     var onDataReceived: (() -> Void)?
     /// Raw output bytes, separate from `onDataReceived` (which only signals *that* output
@@ -287,6 +294,12 @@ final class SideTerminalView: LocalProcessTerminalView {
 
 final class TerminalViewController: NSViewController, @preconcurrency LocalProcessTerminalViewDelegate {
     let terminalView = SideTerminalView(frame: .zero)
+    /// When the program last rang the bell out of sight: it wants you, until the tab is shown.
+    private(set) var lastBellAt: Date?
+    /// When an agent's turn last ended out of sight, until the tab is shown.
+    private(set) var turnFinishedAt: Date?
+    /// On screen in Side's front window.
+    var isOnScreen: Bool { NSApp.isActive && view.window?.isKeyWindow == true && !view.isHiddenOrHasHiddenAncestor }
     private var didStart = false
     var workingDirectory: String?
     /// The session keeper this terminal's shell lives in (SIDE_RFC_SESSION_RESTORE.md), set
@@ -469,6 +482,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        terminalView.onBell = { [weak self] in
+            guard let self else { return }
+            // Rung where you can see it: nothing to tell you later.
+            if !self.isOnScreen { self.lastBellAt = Date() }
+        }
         applyTextSize()
         NotificationCenter.default.addObserver(self, selector: #selector(applyTextSize), name: DS.Text.CodeSize.didChangeNotification, object: nil)
         // SwiftTerm's own defaults are a ~54%-gray foreground on a pure black background —
@@ -513,6 +531,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     func activate() {
         ensureStarted()
         view.window?.makeFirstResponder(terminalView)
+        // Seen: a bell or a finished turn from before no longer wants you.
+        lastBellAt = nil
+        turnFinishedAt = nil
     }
 
     /// Starts the shell without claiming first responder — split out of `activate()` so an
@@ -1362,6 +1383,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     private func setProgramWorking(_ working: Bool) {
         guard working != isProgramWorking else { return }
+        // A turn that ended out of sight: the activity pill says it finished until you look.
+        if !working, !isOnScreen { turnFinishedAt = Date() }
+        if working { turnFinishedAt = nil }
         isProgramWorking = working
         onWorkingChanged?()
     }
