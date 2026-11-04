@@ -293,6 +293,8 @@ final class TabStrip: NSObject {
     private var soloLeading: NSLayoutConstraint?
     var soloTitleForTesting: String? { soloLabel.alphaValue > 0 || soloShown ? soloLabel.stringValue : nil }
     private var soloShown = false
+    /// Set by `dismiss` when the tab that stays doesn't move: the name can come in under it.
+    private var soloUnderKeptTab = false
 
     private func showSolo(_ item: Item?) {
         let shown = item != nil
@@ -307,7 +309,12 @@ final class TabStrip: NSObject {
         soloShown = shown
         guard bar.window != nil, !DS.Motion.reduceMotion else { views.forEach { $0.alphaValue = shown ? 1 : 0 }; return }
         // In as the strip fades out over it (`dismiss`), out at once as a strip opens.
-        let delay = shown ? max(0, DS.Motion.snappy.duration - DS.Motion.fadeDuration * 1.3) : 0
+        // When the tab that stays is already where the name goes, the name comes in under it at
+        // once, and the tab fades off a name already there: started together, both were half
+        // there at once and the name all but blinked out between them. When the tab slides
+        // there, the name waits for it.
+        let delay = shown && !soloUnderKeptTab ? max(0, DS.Motion.snappy.duration - DS.Motion.fadeDuration * 1.3) : 0
+        soloUnderKeptTab = false
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.soloShown == shown else { return }
             DS.Motion.fade { views.forEach { $0.animator().alphaValue = shown ? 1 : 0 } }
@@ -392,6 +399,7 @@ final class TabStrip: NSObject {
         leaving = gone
         let others = gone.filter { $0 !== first }
         let shift = leading.frame.minX - first.frame.minX
+        soloUnderKeptTab = shift == 0
         // Where the one that stays moves into their place, they're gone at once: even a short
         // fade showed them under it.
         if shift != 0 {

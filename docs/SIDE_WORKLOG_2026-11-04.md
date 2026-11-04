@@ -64,6 +64,8 @@ Code, so the paths that broke were never run. Fixed first:
   only offered (Run Again), never run.
 - **A working tab's light** is made again when the appearance changes; it kept the old one's
   colors until the turn ended.
+- **Two tabs down to one:** the remaining tab's name no longer blinks out between the tab
+  fading and the plain name fading in; when the tab stays put, the name comes in under it.
 - **A slip, caught:** I committed one batch while its test run had failed (a new doc's status
   word wasn't an allowed one); the commit was undone at once, never pushed, and redone after a
   passing run.
