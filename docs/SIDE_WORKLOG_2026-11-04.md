@@ -53,6 +53,10 @@ Code, so the paths that broke were never run. Fixed first:
   Claude Code in a project this window had switched away from opened a second window. It now
   switches this window back, to that tab (`check-projects.sh`). The switcher says what a project
   has in the activity's words ("Finished", not "Ready for review").
+- **A notification's link** for a held project took the same wrong turn (a new window); fixed
+  the same way, and held projects are matched through symlinks (`/tmp` and `/private/tmp`).
+  Under UI testing such links had been dropped altogether, which hid it.
+- **Held ⌘W and ⌘T act once,** on the press, as Rex's do; key repeats are ignored.
 - **A slip, caught:** I committed one batch while its test run had failed (a new doc's status
   word wasn't an allowed one); the commit was undone at once, never pushed, and redone after a
   passing run.

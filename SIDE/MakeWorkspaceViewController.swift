@@ -2776,7 +2776,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let id = sender.representedObject as? UUID, let index = indexForTab(id: id) else { return }
         closeTab(at: index)
     }
-    @objc private func closeActiveTab() { guard let index = activeTabIndex else { return }; closeTab(at: index) }
+    @objc private func closeActiveTab() { guard !Shortcuts.isKeyRepeat, let index = activeTabIndex else { return }; closeTab(at: index) }
 
     /// Uses a stable tab id (not the raw index) beyond this point: closing this tab involves
     /// an async alert sheet, and another tab's own async save/formatter pipeline could shift

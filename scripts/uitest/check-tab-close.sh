@@ -40,6 +40,15 @@ $U post "key cmd+1"; sleep 0.6
 check "Terminal: ⌘1 selects the first tab" '[[ $(active) == 0 ]]' "$(active)"
 $U post "key cmd+9"; sleep 0.6
 check "Terminal: ⌘9 selects the last tab" '[[ $(active) == 1 ]]' "$(active)"
+# A held ⌘W or ⌘T acts once, on the press, not on each repeat (as Rex's tabs do).
+count() { tabs | sed -E 's/strip=(.*) model=.*/\1/' | tr '|' '\n' | grep -c . ; }
+before=$(count)
+$U post "key cmd+t"; sleep 1.2
+$U post "key cmd+t repeat" "key cmd+t repeat" "key cmd+t repeat"; sleep 1.5
+check "Terminal: a held ⌘T opens one tab" '[[ $(count) == $((before + 1)) ]]' "$before → $(count)"
+$U post "key cmd+w"; sleep 1
+$U post "key cmd+w repeat" "key cmd+w repeat"; sleep 1.2
+check "Terminal: a held ⌘W closes one tab" '[[ $(count) == $before ]]' "$before → $(count)"
 $U quit
 echo "$failures failed"
 exit $(( failures > 0 ))

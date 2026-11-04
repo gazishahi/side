@@ -328,6 +328,7 @@ final class RunWorkspaceViewController: NSViewController {
     }
 
     @objc func newSession() {
+        guard !Shortcuts.isKeyRepeat else { return }
         createSession()
         sessions[activeSessionIndex ?? 0].viewController.activate()
     }
@@ -337,7 +338,7 @@ final class RunWorkspaceViewController: NSViewController {
     var sessionTitlesForTesting: [String] { sessions.map(\.title) }
 
     @objc private func closeActiveTab() {
-        guard let index = activeSessionIndex else { return }
+        guard !Shortcuts.isKeyRepeat, let index = activeSessionIndex else { return }
         requestClose(at: index)
     }
 

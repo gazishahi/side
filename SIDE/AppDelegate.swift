@@ -165,9 +165,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
                     if command == "switcher" { shell.toggleTrackPopover(nil) }
                     if command == "projects" { shell.projectChipForTesting.togglePopover() }
-                    // "key cmd+2", "key ctrl+shift+tab": a chord as the menu bar receives it.
+                    // "key cmd+2", "key ctrl+shift+tab": a chord as the menu bar receives it; "… repeat",
+                    // as a held key's repeats arrive.
                     if command.hasPrefix("key ") {
-                        let parts = String(command.dropFirst(4)).split(separator: "+").map { String($0).lowercased() }
+                        let words = String(command.dropFirst(4)).split(separator: " ")
+                        let isRepeat = words.dropFirst().contains("repeat")
+                        let parts = (words.first.map(String.init) ?? "").split(separator: "+").map { String($0).lowercased() }
                         var flags: NSEvent.ModifierFlags = []
                         for part in parts.dropLast() {
                             switch part {
@@ -180,8 +183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         }
                         let key = parts.last.map { $0 == "tab" ? "\t" : $0 } ?? ""
                         if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
-                                                        windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0) {
-                            _ = NSApp.mainMenu?.performKeyEquivalent(with: event)
+                                                        windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: isRepeat, keyCode: 0) {
+                            // Through the event queue, as a real one comes: then it's the current event.
+                            NSApp.postEvent(event, atStart: false)
                         }
                     }
                     // "open-url side://run/<id>": a link as macOS hands one over (a notification's click).

@@ -345,6 +345,13 @@ enum Shortcuts {
     /// The chord as the palette and menus show it, "" for none.
     static func display(_ id: String) -> String { chord(id)?.display ?? "" }
 
+    /// The key is being held down: a repeat of the shortcut, not a new press. Opening and closing
+    /// tabs act on presses only, as Rex's do; held, ⌘W emptied the strip and ⌘T filled it.
+    @MainActor static var isKeyRepeat: Bool {
+        guard let event = NSApp.currentEvent, event.type == .keyDown else { return false }
+        return event.isARepeat
+    }
+
     /// Another command already on this chord, if any (fixed ones included: they'd still win in
     /// their view).
     static func conflict(for chord: KeyChord, excluding id: String) -> Command? {
