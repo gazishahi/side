@@ -225,7 +225,9 @@ Not done, because each would cost speed or a feature:
 Sparkle can replace Side while keepers keep running from the old build. The `hello` handshake
 carries both versions. New messages are added, never changed, so a new Side can always attach to
 an old keeper. A keeper is never ended because Side updated; it runs its old build until its
-session ends.
+session ends. So what a keeper itself does (notifications, turn detection, snapshots) is
+the old build's until then: a terminal started before notifications existed never sends one
+(seen 2026-11-04). Running Terminals could mark sessions on an older keeper; not built.
 
 ## Measures
 
