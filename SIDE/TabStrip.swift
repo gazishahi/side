@@ -21,6 +21,8 @@ final class TabStrip: NSObject {
         var isDirty = false
         var isDead = false
         var hasUnseenOutput = false
+        /// Run's: an agent in the terminal is working (DS's breathing Working ring).
+        var isWorking = false
         var menu: NSMenu?
         /// What the tab shows, drawn into the card it becomes when dragged out.
         var preview: (() -> NSImage?)?
@@ -64,6 +66,16 @@ final class TabStrip: NSObject {
         selection.layer?.shadowOffset = CGSize(width: 0, height: -0.5)
         selection.isHidden = true
         stack.addSubview(selection, positioned: .below, relativeTo: nil)
+        TabShortcutHints.start()
+        NotificationCenter.default.addObserver(self, selector: #selector(applyShortcutHints), name: TabShortcutHints.changed, object: nil)
+    }
+
+    /// Each tab's shortcut in its trailing slot while the hints show, in the key window only.
+    @objc private func applyShortcutHints() {
+        let showing = TabShortcutHints.showing && bar.window?.isKeyWindow == true
+        for (index, chip) in chips.enumerated() {
+            chip.shortcutHint = showing ? TabShortcutHints.hint(at: index, count: chips.count) : nil
+        }
     }
 
     /// Where the tint sits: under the selected chip's capsule.
@@ -183,7 +195,7 @@ final class TabStrip: NSObject {
         selection.layer?.removeAnimation(forKey: "stripSlide")
         selection.alphaValue = 1
         guard items.count > 1 else {
-            dismiss()
+            dismiss(keeping: items.first?.id)
             return
         }
         let appearing = chips.isEmpty && bar.window?.isVisible == true && !bar.isHiddenOrHasHiddenAncestor
@@ -208,6 +220,7 @@ final class TabStrip: NSObject {
         chips = next
         ids = newIDs
         bar.accessibleTabs = chips
+        applyShortcutHints()
         if appearing {
             appear()
         } else if previous.isEmpty {
@@ -252,6 +265,8 @@ final class TabStrip: NSObject {
         // Quick: it's chrome making room, not a presentation (the owner: faster).
         bar.setTrackWidth(tabsWidth(), spring: DS.Motion.snappy, from: firstEnd)
         guard !DS.Motion.reduceMotion else { return }
+        // Above the others, so they come out from under it rather than across it.
+        first.layer?.zPosition = 1
         first.alphaValue = 0
         for chip in chips.dropFirst() { chip.alphaValue = 0 }
         selection.alphaValue = 0
@@ -266,6 +281,7 @@ final class TabStrip: NSObject {
             slide(chip, from: first.frame.minX - chip.frame.minX, to: 0, spring: DS.Motion.snappy)
             if chip === activeChip { slide(selection, from: first.frame.minX - chip.frame.minX, to: 0, spring: DS.Motion.snappy) }
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + DS.Motion.snappy.duration) { first.layer?.zPosition = 0 }
     }
 
     /// A horizontal offset that springs away (or in), additively, over the view's laid-out place.
@@ -283,27 +299,35 @@ final class TabStrip: NSObject {
     var appearCountForTesting = 0
 
     /// Down to one tab: the open reversed, tight, with no pause (the owner: it lingered). The
-    /// others slide back under the first tab as the track closes to it; the whole strip fades
-    /// as they arrive.
-    private func dismiss() {
+    /// others slide under the tab that stays as the track closes to it, fading as they go, and
+    /// the strip fades as they arrive. They used to slide across it at full strength, so the
+    /// second tab sat over the first before the strip went (the owner, 2026-11-03).
+    private func dismiss(keeping kept: UUID? = nil) {
         guard !chips.isEmpty else { return }
         let gone = chips
         chips = []
         ids = []
         bar.accessibleTabs = []
-        guard bar.window != nil, !bar.isHiddenOrHasHiddenAncestor, !DS.Motion.reduceMotion, let first = gone.first else {
+        guard bar.window != nil, !bar.isHiddenOrHasHiddenAncestor, !DS.Motion.reduceMotion,
+              let first = gone.first(where: { $0.id == kept }) ?? gone.first else {
             gone.forEach { $0.removeFromSuperview() }
             selection.isHidden = true
             bar.showTrack(false, animated: false)
             return
         }
         leaving = gone
+        let others = gone.filter { $0 !== first }
+        first.layer?.zPosition = 1
         bar.setTrackWidth(first.frame.maxX + stack.edgeInsets.right, spring: DS.Motion.snappy)
-        let activeChip = gone.first(where: \.isActive)
-        for chip in gone.dropFirst() {
+        for chip in others {
             slide(chip, from: 0, to: first.frame.minX - chip.frame.minX, spring: DS.Motion.snappy)
-            if chip === activeChip { slide(selection, from: 0, to: first.frame.minX - chip.frame.minX, spring: DS.Motion.snappy) }
         }
+        // The tint goes to the tab that stays, wherever it was.
+        if let active = gone.first(where: \.isActive), active !== first {
+            slide(selection, from: 0, to: first.frame.minX - active.frame.minX, spring: DS.Motion.snappy)
+        }
+        // Gone well before they reach it: under it, but its capsule is clear.
+        DS.Motion.fade(duration: DS.Motion.snappy.duration * 0.55) { others.forEach { $0.animator().alphaValue = 0 } }
         // The fade starts as the slide is most of the way home and ends with it.
         let fadeAt = max(0, DS.Motion.snappy.duration - DS.Motion.fadeDuration * 1.3)
         DispatchQueue.main.asyncAfter(deadline: .now() + fadeAt) { [weak self] in
@@ -314,7 +338,7 @@ final class TabStrip: NSObject {
                 self.selection.animator().alphaValue = 0
             }, completion: { [weak self] in
                 guard let self, self.leaving.contains(where: { gone.contains($0) }) else { return }
-                gone.forEach { $0.layer?.removeAnimation(forKey: "stripSlide"); $0.removeFromSuperview() }
+                gone.forEach { $0.layer?.removeAnimation(forKey: "stripSlide"); $0.layer?.zPosition = 0; $0.removeFromSuperview() }
                 self.leaving.removeAll { gone.contains($0) }
                 self.selection.layer?.removeAnimation(forKey: "stripSlide")
                 if self.chips.isEmpty {
@@ -342,6 +366,7 @@ final class TabStrip: NSObject {
         if chip.isDirty != item.isDirty { chip.isDirty = item.isDirty }
         if chip.isDead != item.isDead { chip.isDead = item.isDead }
         if chip.hasUnseenOutput != item.hasUnseenOutput { chip.hasUnseenOutput = item.hasUnseenOutput }
+        if chip.isWorking != item.isWorking { chip.isWorking = item.isWorking }
         if chip.isActive != isActive { chip.isActive = isActive }
         chip.menu = item.menu
     }
@@ -543,6 +568,35 @@ final class TabChipView: NSView, PointerHoverSyncing {
     var hasUnseenOutput: Bool = false { didSet { needsDisplay = true } }
     /// Unsaved edits: a dot where the close button sits, until hover swaps it for the ×.
     var isDirty: Bool = false { didSet { needsDisplay = true; updateCloseVisibility() } }
+    /// An agent working in the tab's terminal: the Working ring in the trailing slot (the app's
+    /// one animated indicator, Direction 02 §2.4), which hover swaps for the × like the dots.
+    var isWorking: Bool = false {
+        didSet {
+            guard isWorking != oldValue else { return }
+            if isWorking, workingRing == nil {
+                let ring = DS.StatusDot(state: .working)
+                ring.setAccessibilityElement(false)
+                addSubview(ring)
+                NSLayoutConstraint.activate([
+                    ring.centerXAnchor.constraint(equalTo: trailingAnchor, constant: -(5 + Self.flare + 8)),
+                    ring.centerYAnchor.constraint(equalTo: centerYAnchor),
+                ])
+                workingRing = ring
+            }
+            needsDisplay = true
+            updateCloseVisibility()
+        }
+    }
+    private(set) var workingRing: DS.StatusDot?
+    /// Its shortcut ("⌘2") while the modifier is held (`TabShortcutHints`), over whatever the
+    /// trailing slot holds.
+    var shortcutHint: String? {
+        didSet {
+            guard shortcutHint != oldValue else { return }
+            needsDisplay = true
+            updateCloseVisibility()
+        }
+    }
     /// For the card a dragged-out tab becomes: its icon, and what it shows.
     var dragIcon: NSImage?
     var dragPreview: (() -> NSImage?)?
@@ -665,10 +719,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
         super.viewWillMove(toWindow: newWindow)
     }
 
-    /// The active tab always offers its ×; others on hover. A dirty tab shows its dot there
-    /// instead until hovered.
+    /// The active tab always offers its ×; others on hover. A dirty or working tab shows its
+    /// dot or ring there instead until hovered.
     func updateCloseVisibility() {
-        closeButton?.isHidden = renameField != nil || !(isHovered || (isActive && !isDirty))
+        closeButton?.isHidden = renameField != nil || shortcutHint != nil || !(isHovered || (isActive && !isDirty && !isWorking))
+        workingRing?.isHidden = !isWorking || closeButton?.isHidden == false || renameField != nil || shortcutHint != nil
     }
 
     /// In the title-bar strip the window server decides a press is a window drag before any view
@@ -718,7 +773,12 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
         // Unsaved edits and unseen output are marks, not states (Direction 03 §3.1): one quiet
         // 5 pt dot in the trailing slot, where the close button goes, until hover swaps it for ×.
-        if (isDirty || hasUnseenOutput) && !isHovered && !drawsLifted && closeButton?.isHidden != false {
+        if let shortcutHint, !drawsLifted {
+            let hint = NSAttributedString(string: shortcutHint, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.secondaryLabelColor])
+            let size = hint.size()
+            let centerX = bounds.width - Self.flare - 5 - 8
+            hint.draw(at: NSPoint(x: centerX - size.width / 2, y: (bounds.height - size.height) / 2))
+        } else if (isDirty || hasUnseenOutput) && !isWorking && !isHovered && !drawsLifted && closeButton?.isHidden != false {
             NSColor.secondaryLabelColor.setFill()
             let dotSize: CGFloat = 5
             let x = bounds.width - Self.flare - 5 - 8 - dotSize / 2
@@ -736,7 +796,9 @@ final class TabChipView: NSView, PointerHoverSyncing {
         defer { drawsLifted = false; needsDisplay = true }
         let wasHidden = closeButton?.isHidden ?? true
         closeButton?.isHidden = true
-        defer { closeButton?.isHidden = wasHidden }
+        let ringWasHidden = workingRing?.isHidden ?? true
+        workingRing?.isHidden = true
+        defer { closeButton?.isHidden = wasHidden; workingRing?.isHidden = ringWasHidden }
         let image = NSImage(size: bounds.size)
         if let rep = bitmapImageRepForCachingDisplay(in: bounds) {
             effectiveAppearance.performAsCurrentDrawingAppearance { cacheDisplay(in: bounds, to: rep) }
@@ -1047,6 +1109,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         var parts = [title]
         if !detail.isEmpty { parts.append(detail) }
         if isDirty { parts.append("unsaved") }
+        if isWorking { parts.append("working") }
         if hasUnseenOutput { parts.append("new output") }
         return parts.joined(separator: ", ")
     }
@@ -1431,4 +1494,63 @@ final class TabCloseButton: CircularIconButton {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+/// Holding the tab shortcuts' modifier (⌘ unless rebound) for a moment shows each tab's shortcut
+/// on it, as Rex does. After a moment, not at once: every ⌘C would flash them. Any key, click or
+/// other modifier puts them away.
+@MainActor
+enum TabShortcutHints {
+    static let changed = Notification.Name("SideTabShortcutHintsChanged")
+    private(set) static var showing = false
+    private static var monitor: Any?
+    private static var pending: Timer?
+    static let delay: TimeInterval = 0.5
+
+    static func start() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]) { event in
+            MainActor.assumeIsolated { handle(event) }
+            return event
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { cancel() }
+        }
+    }
+
+    private static func handle(_ event: NSEvent) {
+        let held = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if event.type == .flagsChanged, let wanted = Shortcuts.chord("tabs.1")?.flags.intersection([.command, .option, .control, .shift]),
+           !wanted.isEmpty, held == wanted {
+            guard !showing, pending == nil else { return }
+            pending = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    pending = nil
+                    set(true)
+                }
+            }
+        } else {
+            cancel()
+        }
+    }
+
+    private static func cancel() {
+        pending?.invalidate()
+        pending = nil
+        set(false)
+    }
+
+    private static func set(_ on: Bool) {
+        guard on != showing else { return }
+        showing = on
+        NotificationCenter.default.post(name: changed, object: nil)
+    }
+
+    /// Tabs 1–8 by number; the last tab, past the eighth, by "Switch to Last Tab".
+    static func hint(at index: Int, count: Int) -> String? {
+        let id = index < 8 ? "tabs.\(index + 1)" : index == count - 1 ? "tabs.last" : nil
+        return id.map(Shortcuts.display).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    static func setShowingForTesting(_ on: Bool) { set(on) }
 }

@@ -642,6 +642,11 @@ final class RunWorkspaceViewController: NSViewController {
             var item = TabStrip.Item(id: session.id, title: session.title)
             item.isDead = !session.viewController.isAliveOrUnstarted
             item.hasUnseenOutput = session.hasUnseenOutput
+            item.isWorking = session.viewController.isProgramWorking
+            // The whole name (a long one is cut off at the chip's width), and where it's working.
+            let vc = session.viewController
+            let directory = (vc.currentDirectory ?? vc.workingDirectory).map { ($0 as NSString).abbreviatingWithTildeInPath }
+            item.toolTip = [session.title, directory].compactMap { $0 }.joined(separator: "\n")
             item.icon = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
             // Its terminal as it stands, for the card the tab becomes when dragged out.
             let terminalView = session.viewController.terminalView

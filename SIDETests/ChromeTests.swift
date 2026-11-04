@@ -21,6 +21,53 @@ final class ChromeTests: XCTestCase {
         }
     }
 
+    /// Polish list (2026-11-03): a working agent's tab breathes the Working ring where its × goes;
+    /// hovering swaps in the ×, and the ⌘ hints take the slot over both.
+    func testAWorkingTabShowsTheRingUntilHoveredAndHintsTakeTheSlot() {
+        let chip = TabChipView(frame: NSRect(x: 0, y: 0, width: 140, height: TabChipView.height))
+        let close = TabCloseButton()
+        chip.addSubview(close)
+        chip.closeButton = close
+        chip.isActive = true
+        chip.updateCloseVisibility()
+        XCTAssertFalse(close.isHidden, "the active tab offers its ×")
+        chip.isWorking = true
+        XCTAssertTrue(close.isHidden)
+        XCTAssertEqual(chip.workingRing?.isHidden, false)
+        XCTAssertEqual(chip.workingRing?.state, .working)
+        XCTAssertTrue(chip.accessibilityLabel()?.contains("working") == true)
+        chip.shortcutHint = "\u{2318}1"
+        XCTAssertEqual(chip.workingRing?.isHidden, true, "the hint takes the slot")
+        XCTAssertTrue(close.isHidden)
+        chip.shortcutHint = nil
+        chip.isWorking = false
+        XCTAssertEqual(chip.workingRing?.isHidden, true)
+        XCTAssertFalse(close.isHidden)
+    }
+
+    func testShortcutHintsNumberTheFirstEightAndTheLastTab() {
+        XCTAssertEqual(TabShortcutHints.hint(at: 0, count: 3), Shortcuts.display("tabs.1"))
+        XCTAssertEqual(TabShortcutHints.hint(at: 7, count: 12), Shortcuts.display("tabs.8"))
+        XCTAssertNil(TabShortcutHints.hint(at: 9, count: 12), "tabs past the eighth have no shortcut but the last")
+        XCTAssertEqual(TabShortcutHints.hint(at: 11, count: 12), Shortcuts.display("tabs.last"))
+    }
+
+    /// Claude Code turns a spinner in front of its title while it works: two changes in a moment
+    /// is working, one (a turn ending) isn't, and a still glyph ends it.
+    func testATerminalIsWorkingWhileItsTitleSpinnerTurns() {
+        let terminal = TerminalViewController()
+        terminal.noteTitleGlyph("\u{2733} Fix the parser")
+        XCTAssertFalse(terminal.isProgramWorking, "one glyph is a still title")
+        terminal.noteTitleGlyph("\u{2810} Fix the parser")
+        XCTAssertTrue(terminal.isProgramWorking)
+        terminal.noteTitleGlyph("\u{2802} Fix the parser")
+        XCTAssertTrue(terminal.isProgramWorking)
+        // No command running (the shell's own state): the check ends it at its next tick.
+        let ended = expectation(description: "working ends")
+        terminal.onWorkingChanged = { if !terminal.isProgramWorking { ended.fulfill() } }
+        wait(for: [ended], timeout: 2)
+    }
+
     func testAtLeastOneStageStaysPinnedAndPinsPersist() {
         let original = StagePins.defaults
         StagePins.defaults = throwawayDefaults()

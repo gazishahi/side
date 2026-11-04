@@ -28,6 +28,8 @@ final class SidebarListController: NSViewController, NSTableViewDataSource, NSTa
     private var shown: [SidebarItem]
     private let table = NSTableView()
     private let search = NSSearchField()
+    /// A search that matches nothing says so, as System Settings does, instead of an empty list.
+    private let noResults = NSTextField(wrappingLabelWithString: "")
     private let showsSearch: Bool
     private(set) var selectedId: String?
 
@@ -59,7 +61,12 @@ final class SidebarListController: NSViewController, NSTableViewDataSource, NSTa
         search.sendsSearchStringImmediately = true
         search.isHidden = !showsSearch
         search.refusesFirstResponder = false
-        for view in [search, scroll] as [NSView] {
+        noResults.font = DS.Text.body()
+        noResults.textColor = .secondaryLabelColor
+        noResults.alignment = .center
+        noResults.isHidden = true
+        noResults.setAccessibilityIdentifier("sidebar.noResults")
+        for view in [search, scroll, noResults] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
@@ -73,6 +80,9 @@ final class SidebarListController: NSViewController, NSTableViewDataSource, NSTa
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             root.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            noResults.topAnchor.constraint(equalTo: scroll.topAnchor, constant: DS.Spacing.xl),
+            noResults.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: DS.Spacing.l),
+            noResults.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -DS.Spacing.l),
         ])
         view = root
     }
@@ -89,6 +99,7 @@ final class SidebarListController: NSViewController, NSTableViewDataSource, NSTa
             search.stringValue = ""
             shown = items
             table.reloadData()
+            noResults.isHidden = true
         }
         guard let row = shown.firstIndex(where: { $0.id == id }) else { return }
         table.selectRowIndexes([row], byExtendingSelection: false)
@@ -104,6 +115,9 @@ final class SidebarListController: NSViewController, NSTableViewDataSource, NSTa
     func controlTextDidChange(_ obj: Notification) {
         shown = items.filter { $0.matches(search.stringValue) }
         table.reloadData()
+        let query = search.stringValue.trimmingCharacters(in: .whitespaces)
+        noResults.stringValue = "No Results for \u{201C}\(query)\u{201D}"
+        noResults.isHidden = !shown.isEmpty || query.isEmpty
         if let selectedId, let row = shown.firstIndex(where: { $0.id == selectedId }) {
             table.selectRowIndexes([row], byExtendingSelection: false)
         } else if !shown.isEmpty {
