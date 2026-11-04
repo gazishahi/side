@@ -57,6 +57,13 @@ Code, so the paths that broke were never run. Fixed first:
   the same way, and held projects are matched through symlinks (`/tmp` and `/private/tmp`).
   Under UI testing such links had been dropped altogether, which hid it.
 - **Held ⌘W and ⌘T act once,** on the press, as Rex's do; key repeats are ignored.
+- **A test run started the real Claude Code** (09:10): a test tab recovered after its keeper
+  ended, and session restore re-ran it as `claude --continue` in a fresh shell, where the
+  stand-in wasn't first on PATH. I ended it within minutes; nothing was typed into it and no
+  session was written under `~/.claude/projects`. Under UI testing a recovered command is now
+  only offered (Run Again), never run.
+- **A working tab's light** is made again when the appearance changes; it kept the old one's
+  colors until the turn ended.
 - **A slip, caught:** I committed one batch while its test run had failed (a new doc's status
   word wasn't an allowed one); the commit was undone at once, never pushed, and redone after a
   passing run.

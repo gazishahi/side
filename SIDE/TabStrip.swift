@@ -776,6 +776,13 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
     private var backingScale: CGFloat { window?.backingScaleFactor ?? 2 }
 
+    /// The working light's colors are resolved when it's made: made again for a new appearance,
+    /// or a light-mode band stayed on a dark tab until the turn ended.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        if isWorking { updateWorkingIndicator() }
+    }
+
     /// On one clock for every tab: each tab's light at the same point of its cycle, whenever its
     /// work began, so several working tabs move as one rather than each its own way (the owner,
     /// 2026-11-04: the edge light "overstimulating … on multiple terminal tabs").

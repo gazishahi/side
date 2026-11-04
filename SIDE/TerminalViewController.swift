@@ -685,6 +685,13 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             rerunOffer = command
             onRerunOfferChanged?()
         case .run(let command):
+            // Offered, never run, under UI testing: a test's recovered tab started the real
+            // `claude --continue` on the developer's account (2026-11-04).
+            guard !AppDelegate.isUITesting else {
+                rerunOffer = command
+                onRerunOfferChanged?()
+                return
+            }
             whenShellIsReady { [weak self] in self?.terminalView.send(txt: command + "\r") }
         }
     }
