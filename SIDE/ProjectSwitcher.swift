@@ -224,11 +224,14 @@ final class ProjectChip: NSView {
         mark.contentTintColor = nil
         // Another project wants you: its dot rides on this one's mark, since only this one shows.
         let current = url.standardizedFileURL.path
-        let elsewhere = ProjectSpaces.shared.spaces.lazy.filter { $0.path != current }.compactMap { ActivityCenter.shared.attention(forProject: $0.path) }.first
+        let elsewhere = ProjectSpaces.shared.spaces.lazy.filter { $0.path != current }
+            .compactMap { other in ActivityCenter.shared.attentionItem(forProject: other.path).map { (other, $0) } }.first
         dot.isHidden = elsewhere == nil
-        if let elsewhere { dot.state = elsewhere }
-        toolTip = elsewhere == nil ? space.name : "\(space.name)\nAnother project: \(elsewhere!.name)"
-        setAccessibilityLabel("Project: \(space.name)" + (elsewhere.map { ". Another project: \($0.name)" } ?? ""))
+        if let elsewhere { dot.state = elsewhere.1.state.status }
+        // "webapp: Claude Code finished", for the project that has something to say.
+        let note = elsewhere.map { "\($0.0.name): \($0.1.title) \($0.1.state.word.lowercased())" }
+        toolTip = [space.name, note].compactMap { $0 }.joined(separator: "\n")
+        setAccessibilityLabel("Project: \(space.name)" + (note.map { ". \($0)" } ?? ""))
     }
 
     override func mouseDown(with event: NSEvent) { DS.Motion.press(self, down: true, amount: ChipButton.pressScale) }
@@ -308,7 +311,7 @@ final class ProjectSwitcherViewController: NSViewController {
             let isCurrent = space.path == currentPath
             let row = ProjectRow(mark: ProjectSpaces.mark(for: space, size: 20), name: space.name,
                                  place: (space.path as NSString).abbreviatingWithTildeInPath,
-                                 attention: isCurrent ? nil : ActivityCenter.shared.attention(forProject: space.path),
+                                 attention: isCurrent ? nil : ActivityCenter.shared.attentionItem(forProject: space.path).map { ($0.state.status, $0.state.word) },
                                  shortcut: shortcut, isCurrent: isCurrent)
             row.onPick = { [weak self] in self?.onPick?(space.url) }
             row.menu = menu(for: space, isCurrent: isCurrent)
@@ -404,7 +407,7 @@ private final class ProjectRow: NSView {
     private let isCurrent: Bool
     private var hovered = false { didSet { needsDisplay = true } }
 
-    init(mark: NSImage?, name: String, place: String?, attention: DS.StatusState?, shortcut: String?, isCurrent: Bool) {
+    init(mark: NSImage?, name: String, place: String?, attention: (state: DS.StatusState, word: String)?, shortcut: String?, isCurrent: Bool) {
         self.name = name
         self.isCurrent = isCurrent
         super.init(frame: .zero)
@@ -431,7 +434,7 @@ private final class ProjectRow: NSView {
         column.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         var trailing: NSView = NSView()
         if let attention {
-            trailing = DS.StatusLabel(state: attention, text: attention.name)
+            trailing = DS.StatusLabel(state: attention.state, text: attention.word)
         } else if let shortcut {
             let label = NSTextField(labelWithString: shortcut)
             label.font = DS.Text.caption()
@@ -454,7 +457,7 @@ private final class ProjectRow: NSView {
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel(isCurrent ? "\(name), current project" : name + (attention.map { ", \($0.name)" } ?? ""))
+        setAccessibilityLabel(isCurrent ? "\(name), current project" : name + (attention.map { ", \($0.word)" } ?? ""))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

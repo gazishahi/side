@@ -145,7 +145,10 @@ final class ActivityCenter {
 
     /// What a project has to say, if anything wants you there: its most pressing item that isn't
     /// just working (the project switcher's dots).
-    func attention(forProject path: String) -> DS.StatusState? {
+    func attention(forProject path: String) -> DS.StatusState? { attentionItem(forProject: path)?.state.status }
+
+    /// The item behind `attention`, for its own word ("Finished", not the status's generic name).
+    func attentionItem(forProject path: String) -> Item? {
         let target = URL(fileURLWithPath: path).standardizedFileURL.path
         return items.first { item in
             guard item.state != .working else { return false }
@@ -153,7 +156,7 @@ final class ActivityCenter {
             case .terminal(let project, _), .agent(let project, _): return project.standardizedFileURL.path == target
             case .update: return false
             }
-        }?.state.status
+        }
     }
 
     /// The program as people call it: `claude` is Claude Code.

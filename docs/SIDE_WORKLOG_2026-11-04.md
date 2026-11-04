@@ -13,7 +13,7 @@ Code, so the paths that broke were never run. Fixed first:
 - **Test setup** (`scripts/uitest/`): builds a copy in `/tmp/side-uit`, short enough for keeper
   sockets; a stand-in `claude` (`fake-claude.c`) that does at the terminal what Claude Code does
   (startup queries, spinner titles, the bell); and repeatable checks: `check-terminal-agent.sh`,
-  `check-activity.sh`, `check-tab-close.sh`. Each reproduced its bug before the fix.
+  `check-activity.sh`, `check-tab-close.sh`, `check-projects.sh`. Each was written against its bug.
 - **Window stretched past the screen:** the activity pill appeared with a long title, and the
   bar's required constraints outranked the window's size. Its title now truncates, the bar can't
   widen the window, and the bar's docking is re-checked as the pill changes.
@@ -49,6 +49,10 @@ Code, so the paths that broke were never run. Fixed first:
   slot, so "working" turning "finished" doesn't move it. Crowded (with the update pill, in a
   narrow window) its title truncates instead of being cut off under its neighbour. The update
   is no longer listed in it, since its own pill says so.
+- **Back to a project left behind:** the activity pill's click (or a notification's) for
+  Claude Code in a project this window had switched away from opened a second window. It now
+  switches this window back, to that tab (`check-projects.sh`). The switcher says what a project
+  has in the activity's words ("Finished", not "Ready for review").
 - **A slip, caught:** I committed one batch while its test run had failed (a new doc's status
   word wasn't an allowed one); the commit was undone at once, never pushed, and redone after a
   passing run.
