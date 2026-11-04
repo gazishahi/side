@@ -11,7 +11,10 @@ final class TerminalSession {
     /// The person's own name for the tab (Direction 03 §4.3); nil for the automatic one: what's
     /// running names it (an agent CLI's task), else `label`, the folder.
     var customName: String?
-    var title: String { customName ?? viewController.programTitle ?? label }
+    var title: String { customName ?? viewController.programTitle ?? restoredTitle ?? label }
+    /// After a restart, what the tab was last called (its program's title), until a program
+    /// names it again.
+    var restoredTitle: String?
     let viewController: TerminalViewController
     var hasUnseenOutput = false
 
@@ -124,8 +127,11 @@ final class TerminalSessionManager {
         let path = directory ?? directoryProvider(key).path
         vc.workingDirectory = path
         if SessionKeepers.isEnabled {
-            vc.keeperID = keeperID ?? SessionPaths.newID()
+            let id = keeperID ?? SessionPaths.newID()
+            vc.keeperID = id
             vc.keeperFacts = [SessionKeepers.Fact.project: projectRoot.path, SessionKeepers.Fact.track: key]
+            vc.recoveredAgentSession = agentSession(forKeeper: id)
+            vc.onAgentSessionReported = { [weak self] agent, session in self?.rememberAgentSession(agent: agent, session: session, forKeeper: id) }
         }
         let session = TerminalSession(label: (path as NSString).lastPathComponent, viewController: vc)
         vc.onExitStatusChanged = { [weak self] _, _ in self?.post(origin: nil) }
@@ -163,6 +169,7 @@ final class TerminalSessionManager {
     /// Takes one terminal out of whichever list holds it, ending its process if it still runs.
     func removeSession(_ session: TerminalSession) {
         session.viewController.prepareForClose()
+        if let id = session.viewController.keeperID { forgetAgentSession(forKeeper: id) }
         for pool in sessionsByPool.keys {
             guard let index = sessionsByPool[pool]?.firstIndex(where: { $0 === session }) else { continue }
             let countBefore = sessionsByPool[pool]!.count
@@ -282,6 +289,29 @@ final class TerminalSessionManager {
     private static let rememberedNamesKey = "side.run-session-names-by-track"
     /// Tabs' keeper sessions, in the same order; "" for a tab with none.
     private static let rememberedKeepersKey = "side.run-session-keepers-by-track"
+
+    /// Agent sessions by keeper id (`claude:<session id>`), for resuming after a restart.
+    private static let agentSessionsKey = "side.run-session-agents"
+
+    func agentSession(forKeeper id: String) -> String? {
+        let map = HeronDefaults.store.dictionary(forKey: Self.agentSessionsKey) as? [String: String] ?? [:]
+        guard let value = map[id], value.hasPrefix("claude:") else { return nil }
+        return String(value.dropFirst("claude:".count))
+    }
+
+    func rememberAgentSession(agent: String, session: String, forKeeper id: String) {
+        guard !AppDelegate.isUITesting else { return }
+        var map = HeronDefaults.store.dictionary(forKey: Self.agentSessionsKey) as? [String: String] ?? [:]
+        map[id] = "\(agent):\(session)"
+        HeronDefaults.store.set(map, forKey: Self.agentSessionsKey)
+        for list in sessionsByPool.values { for s in list where s.viewController.keeperID == id { s.viewController.recoveredAgentSession = session } }
+    }
+
+    func forgetAgentSession(forKeeper id: String) {
+        var map = HeronDefaults.store.dictionary(forKey: Self.agentSessionsKey) as? [String: String] ?? [:]
+        guard map.removeValue(forKey: id) != nil else { return }
+        HeronDefaults.store.set(map, forKey: Self.agentSessionsKey)
+    }
 
     /// Each remembered tab's keeper session, nil where it had none.
     func rememberedKeeperIDs(forTrackKey key: String) -> [String?] {

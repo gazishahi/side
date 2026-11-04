@@ -295,6 +295,18 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     var keeperID: String?
     /// Side's facts for the keeper's record: project and track, so a reopened project finds it.
     var keeperFacts: [String: String] = [:]
+    /// Set before it starts when this tab's keeper ended without the session ending (a restart,
+    /// a crash): the new shell starts below the old screen, and what was running is resumed,
+    /// run again or offered (`SessionKeepers.recovery`).
+    var recovering: SessionRecord?
+    /// The agent session the tab's Claude reported, for resuming it after a restart.
+    var recoveredAgentSession: String?
+    /// A command that was running before a restart and isn't safe to start unasked: Run shows it
+    /// with Run Again.
+    private(set) var rerunOffer: String?
+    var onRerunOfferChanged: (() -> Void)?
+    /// An agent CLI reported its session id (the `claude` wrapper, `SessionKeepers`).
+    var onAgentSessionReported: ((_ agent: String, _ session: String) -> Void)?
 
     /// A program to run in place of the login shell — an outside agent's `terminal/create`
     /// (`SIDE_RFC_BYO_HARNESS.md` step 3a). The command runs directly, never typed into a shell
@@ -467,6 +479,14 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // has no handler of its own and logged "Unknown OSC code: 133" for every mark.
         // Registering a no-op tells the parser the code is spoken for.
         terminalView.terminal.registerOscHandler(code: 133) { _ in }
+        // Side's own: `agent;<name>;<session id>;<nonce>` from the shell's `claude` wrapper, so a
+        // restart can resume the exact conversation. Without the nonce, it's anyone's output.
+        terminalView.terminal.registerOscHandler(code: 6973) { [weak self] data in
+            guard let self else { return }
+            let parts = String(decoding: data, as: UTF8.self).split(separator: ";", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 4, parts[0] == "agent", parts[3] == self.markNonce, !parts[2].isEmpty else { return }
+            self.onAgentSessionReported?(parts[1], parts[2])
+        }
         terminalView.onFileLinkRequested = { [weak self] link in self?.onFileLinkRequested?(link) ?? false }
         terminalView.onLineSubmitted = { [weak self] line in self?.lastSubmittedCommand = line }
         terminalView.onDataReceived = { [weak self] in self?.onOutputReceived?() }
@@ -529,8 +549,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         environment += Self.portEnvironment(for: workingDirectory)
         if let keeperID, SessionKeepers.isEnabled, startInKeeper(id: keeperID, executable: shell, environment: environment) {
             installShellIntegration(shell: shell)
+            if let recovering { resumeAfterRestart(recovering) }
             return
         }
+        // A recovery that couldn't get a keeper starts plainly; what it left behind goes.
+        if let keeperID, recovering != nil { SessionPaths.remove(keeperID) }
         terminalView.startProcess(executable: shell, args: ["-l"], environment: environment, currentDirectory: workingDirectory)
         installShellIntegration(shell: shell)
     }
@@ -543,8 +566,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         var facts = keeperFacts
         facts[SessionKeepers.Fact.nonce] = markNonce
         facts[SessionKeepers.Fact.integration] = integrationInstalledViaRc ? "rc" : "typed"
+        // A recovered tab starts from its saved screen, below a line saying so.
+        let snapshot = recovering.map { SessionPaths.snapshot($0.id).path }.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
         let spec = LaunchSpec(id: id, executable: executable, arguments: ["-l"], environment: environment,
-                              directory: workingDirectory ?? NSHomeDirectory(), cols: max(terminal.cols, 2), rows: max(terminal.rows, 2), client: facts)
+                              directory: workingDirectory ?? NSHomeDirectory(), cols: max(terminal.cols, 2), rows: max(terminal.rows, 2), client: facts,
+                              restoreFrom: snapshot, banner: snapshot == nil ? nil : SessionKeepers.restartBanner)
         guard let link = try? KeeperLink.launch(spec) else { return false }
         wire(link)
         link.attach(cols: terminal.cols, rows: terminal.rows, history: terminal.options.scrollback)
@@ -583,6 +609,39 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         }
         link.onExit = { [weak self] exit in self?.keeperSessionEnded(exitCode: exit.status) }
         link.onLost = { [weak self] in self?.keeperSessionEnded(exitCode: nil) }
+    }
+
+    /// Once the new shell is ready: Claude resumes its conversation, an editor or watcher starts
+    /// again, anything else is offered.
+    private func resumeAfterRestart(_ record: SessionRecord) {
+        switch SessionKeepers.recovery(foreground: record.foreground, agentSession: recoveredAgentSession) {
+        case .nothing:
+            break
+        case .offer(let command):
+            rerunOffer = command
+            onRerunOfferChanged?()
+        case .run(let command):
+            whenShellIsReady { [weak self] in self?.terminalView.send(txt: command + "\r") }
+        }
+    }
+
+    /// Runs `body` once the shell is past its startup (prompt drawn, integration settled), or
+    /// after ten seconds regardless.
+    private func whenShellIsReady(_ body: @escaping () -> Void, waited: Int = 0) {
+        if startupSettled || waited >= 100 { return body() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.whenShellIsReady(body, waited: waited + 1) }
+    }
+
+    /// Run Again: types the offered command into the shell.
+    func runOfferedCommand() {
+        guard let command = rerunOffer else { return }
+        dismissRerunOffer()
+        whenShellIsReady { [weak self] in self?.terminalView.send(txt: command + "\r") }
+    }
+
+    func dismissRerunOffer() {
+        rerunOffer = nil
+        onRerunOfferChanged?()
     }
 
     private func keeperSessionEnded(exitCode: Int32?) {
@@ -624,6 +683,26 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         preexec_functions=(${preexec_functions:#__side_start} __side_start)
         printf '\e]133;D;0;%s\a' $__SIDE_NONCE
         printf '\e]7;file://%s%s\a' "$HOST" "${PWD// /%20}"
+        # Claude Code with a known session id, reported to Side so a restart resumes it exactly
+        # (SIDE_RFC_SESSION_RESTORE.md). An explicit --resume <id> is reported as is; --continue,
+        # a bare --resume picker and --print are left alone. An alias of the user's wins.
+        claude() {
+          local i=1 a
+          while (( i <= $# )); do
+            a=${@[i]}
+            case $a in
+              --session-id|--session-id=*|-c|--continue|-p|--print) command claude "$@"; return ;;
+              -r|--resume)
+                (( i < $# )) && [[ ${@[i+1]} != -* ]] && printf '\e]6973;agent;claude;%s;%s\a' "${@[i+1]}" "$__SIDE_NONCE"
+                command claude "$@"; return ;;
+              --resume=*) printf '\e]6973;agent;claude;%s;%s\a' "${a#--resume=}" "$__SIDE_NONCE"; command claude "$@"; return ;;
+            esac
+            (( i++ ))
+          done
+          local id=${(L)$(uuidgen)}
+          printf '\e]6973;agent;claude;%s;%s\a' "$id" "$__SIDE_NONCE"
+          command claude --session-id "$id" "$@"
+        }
         """#
         func wrapper(_ name: String, extra: String = "") -> String {
             """

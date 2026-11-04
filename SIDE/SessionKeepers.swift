@@ -68,15 +68,78 @@ enum SessionKeepers {
         return true
     }
 
-    /// A live session's record: its keeper answers on its socket.
+    /// A live session's record: its keeper is running. Checked by the process's own arguments
+    /// (which carry the session's id), not by its PID alone, which after a restart can belong to
+    /// anything, and not by connecting, which a keeper takes as a client taking over.
     static func liveRecord(_ id: String) -> SessionRecord? {
-        guard let record = SessionRecord.read(from: SessionPaths.record(id)), kill(record.keeperPID, 0) == 0 else { return nil }
+        guard let record = SessionRecord.read(from: SessionPaths.record(id)), isRunning(record) else { return nil }
         return record
+    }
+
+    /// A session whose keeper is gone (a restart, or a crash) but whose record is still there:
+    /// one to recover.
+    static func endedRecord(_ id: String) -> SessionRecord? {
+        guard let record = SessionRecord.read(from: SessionPaths.record(id)), record.exit == nil, !isRunning(record) else { return nil }
+        return record
+    }
+
+    static func isRunning(_ record: SessionRecord) -> Bool {
+        guard record.keeperPID > 0, kill(record.keeperPID, 0) == 0 else { return false }
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, record.keeperPID]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return false }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return false }
+        let arguments = String(decoding: buffer.prefix(size).map { $0 == 0 ? 10 : $0 }, as: UTF8.self)
+        return arguments.contains("SideSessionKeeper") && arguments.contains("/\(record.id).launch.json")
     }
 
     /// Every live session for a project's track, oldest first.
     static func liveRecords(project: String, track: String) -> [SessionRecord] {
-        SessionPaths.records().filter { $0.client[Fact.project] == project && $0.client[Fact.track] == track && kill($0.keeperPID, 0) == 0 }
+        SessionPaths.records().filter { $0.client[Fact.project] == project && $0.client[Fact.track] == track && isRunning($0) }
+    }
+
+    /// Every ended, unfinished session for a project's track, oldest first.
+    static func endedRecords(project: String, track: String) -> [SessionRecord] {
+        SessionPaths.records().filter { $0.client[Fact.project] == project && $0.client[Fact.track] == track && $0.exit == nil && !isRunning($0) }
+    }
+
+    // MARK: - After a restart
+
+    /// The line between a recovered screen and the new shell.
+    static let restartBanner = "\u{2500}\u{2500} Restored after a restart \u{2500}\u{2500}"
+
+    /// Programs that are safe to start again by themselves in a recovered tab: editors, pagers,
+    /// watchers (the RFC's list). Anything else is offered, never run unasked: re-running an
+    /// arbitrary command could deploy something or delete files twice.
+    static let rerunnable: Set<String> = ["vim", "nvim", "vi", "less", "more", "man", "top", "htop", "btop", "tail", "watch"]
+
+    /// What a recovered tab does once its new shell is ready.
+    enum Recovery: Equatable {
+        case nothing
+        /// Typed into the new shell.
+        case run(String)
+        /// Shown with a Run Again button.
+        case offer(String)
+    }
+
+    /// `foreground`: the program that was running (the record's), `agentSession`: its agent's own
+    /// session id, when the `claude` wrapper reported one.
+    static func recovery(foreground: [String], agentSession: String?) -> Recovery {
+        guard let program = foreground.first.map({ ($0 as NSString).lastPathComponent }) else { return .nothing }
+        if ["zsh", "-zsh", "bash", "-bash", "sh", "fish", "login"].contains(program) { return .nothing }
+        if program == "claude" {
+            // The exact conversation; without its id, the directory's latest one.
+            return .run(agentSession.map { "claude --resume \($0)" } ?? "claude --continue")
+        }
+        let line = foreground.map(shellQuoted).joined(separator: " ")
+        return rerunnable.contains(program) ? .run(line) : .offer(line)
+    }
+
+    static func shellQuoted(_ word: String) -> String {
+        let safe = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_./=:,+@%"))
+        if !word.isEmpty, word.unicodeScalars.allSatisfy(safe.contains) { return word }
+        return "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// Side's own facts in a session's record.

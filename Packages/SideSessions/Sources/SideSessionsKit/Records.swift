@@ -14,9 +14,15 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     /// Side's own facts about the session (project, track, tab, shell-integration nonce),
     /// carried in the record and given back on every attach. The keeper never reads them.
     public var client: [String: String]
+    /// Start from this snapshot: the screen and scrollback a session had before a restart, with
+    /// the new program's output following it.
+    public var restoreFrom: String?
+    /// Written between the restored screen and the new program's output.
+    public var banner: String?
 
     public init(id: String, executable: String, arguments: [String], environment: [String], directory: String,
-                cols: Int, rows: Int, scrollbackLines: Int = 10_000, client: [String: String] = [:]) {
+                cols: Int, rows: Int, scrollbackLines: Int = 10_000, client: [String: String] = [:],
+                restoreFrom: String? = nil, banner: String? = nil) {
         self.id = id
         self.executable = executable
         self.arguments = arguments
@@ -26,6 +32,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.rows = rows
         self.scrollbackLines = scrollbackLines
         self.client = client
+        self.restoreFrom = restoreFrom
+        self.banner = banner
     }
 }
 
@@ -46,6 +54,11 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     public var lastOutputAt: Date
     public var exit: Exit?
     public var protocolVersion: Int
+    /// The foreground program's arguments when the record was written (empty when the shell
+    /// itself is): what to resume or re-run after a restart.
+    public var foreground: [String] = []
+    /// The working directory the shell last reported (OSC 7); empty when none.
+    public var pwd: String = ""
 
     public init(id: String, keeperPID: Int32, childPID: Int32, tty: String = "", executable: String, arguments: [String], directory: String,
                 client: [String: String], title: String = "", createdAt: Date, lastOutputAt: Date, exit: Exit? = nil,
@@ -63,6 +76,30 @@ public struct SessionRecord: Codable, Sendable, Equatable {
         self.lastOutputAt = lastOutputAt
         self.exit = exit
         self.protocolVersion = protocolVersion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, keeperPID, childPID, tty, executable, arguments, directory, client, title, createdAt, lastOutputAt, exit, protocolVersion, foreground, pwd
+    }
+
+    /// Fields added after phase 1 are optional on disk, so an older keeper's record still reads.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        keeperPID = try c.decode(Int32.self, forKey: .keeperPID)
+        childPID = try c.decode(Int32.self, forKey: .childPID)
+        tty = try c.decodeIfPresent(String.self, forKey: .tty) ?? ""
+        executable = try c.decode(String.self, forKey: .executable)
+        arguments = try c.decode([String].self, forKey: .arguments)
+        directory = try c.decode(String.self, forKey: .directory)
+        client = try c.decodeIfPresent([String: String].self, forKey: .client) ?? [:]
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        lastOutputAt = try c.decode(Date.self, forKey: .lastOutputAt)
+        exit = try c.decodeIfPresent(Exit.self, forKey: .exit)
+        protocolVersion = try c.decodeIfPresent(Int.self, forKey: .protocolVersion) ?? 1
+        foreground = try c.decodeIfPresent([String].self, forKey: .foreground) ?? []
+        pwd = try c.decodeIfPresent(String.self, forKey: .pwd) ?? ""
     }
 
     /// Written to a temporary file and renamed into place, so a reader never sees half a record.
@@ -98,6 +135,11 @@ public enum SessionPaths {
         let dir = runDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         chmod(dir.path, 0o700)
+        // Terminal contents stay off backups: they're saved for a restart, nothing more.
+        var excluded = dir
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? excluded.setResourceValues(values)
         return dir
     }
 
@@ -110,6 +152,9 @@ public enum SessionPaths {
     public static func socket(_ id: String) -> URL { runDirectory.appendingPathComponent("\(id).sock") }
     public static func record(_ id: String) -> URL { runDirectory.appendingPathComponent("\(id).json") }
     public static func launch(_ id: String) -> URL { runDirectory.appendingPathComponent("\(id).launch.json") }
+    /// The session's screen and scrollback, saved for a restart (on by default; see the RFC's
+    /// "Snapshots on disk" for the protections).
+    public static func snapshot(_ id: String) -> URL { runDirectory.appendingPathComponent("\(id).snap") }
 
     /// Every session's record in the run directory, live or not.
     public static func records() -> [SessionRecord] {
@@ -121,6 +166,8 @@ public enum SessionPaths {
 
     /// Removes what a session left behind.
     public static func remove(_ id: String) {
-        for url in [socket(id), record(id), launch(id)] { try? FileManager.default.removeItem(at: url) }
+        for url in [socket(id), record(id), launch(id), snapshot(id), runDirectory.appendingPathComponent("\(id).log")] {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 }

@@ -60,9 +60,15 @@ guard childPID > 0 else { unlink(socketURL.path); fail("spawn \(spec.executable)
 
 // MARK: - The terminal
 
-var made: GhosttyTerminal?
-guard ghostty_terminal_new(nil, &made, UInt16(spec.cols), UInt16(spec.rows)) == GHOSTTY_SUCCESS, let made else { fail("ghostty_terminal_new") }
-terminal = made
+// After a restart: the session's last saved screen and scrollback first, then a line saying so,
+// then the new program's output. A snapshot that won't read is a fresh terminal instead.
+var made: GhosttyTerminal? = spec.restoreFrom.flatMap(restoredTerminal(from:))
+if made != nil {
+    ghostty_terminal_resize(made, UInt16(spec.cols), UInt16(spec.rows), 8, 16)
+} else {
+    guard ghostty_terminal_new(nil, &made, UInt16(spec.cols), UInt16(spec.rows)) == GHOSTTY_SUCCESS, made != nil else { fail("ghostty_terminal_new") }
+}
+terminal = made!
 var scrollbackLines = spec.scrollbackLines
 ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollbackLines)
 // The C API's 10,000-byte default overrides the line limit (about 390 rows at 200 columns).
@@ -71,6 +77,11 @@ var clustering = GhosttyTerminalModeConfig()
 clustering.mode = ghostty_mode_new(2027, false)
 clustering.value = true
 ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &clustering)
+if spec.restoreFrom != nil, let banner = spec.banner {
+    // Out of a full-screen program's alternate screen, below what was there, dimmed.
+    let line = Array("\u{1b}[?1049l\u{1b}[0m\r\n\u{1b}[2m\(banner)\u{1b}[0m\r\n".utf8)
+    line.withUnsafeBufferPointer { ghostty_terminal_vt_write(terminal, $0.baseAddress, $0.count) }
+}
 
 record = SessionRecord(id: spec.id, keeperPID: getpid(), childPID: childPID, tty: ptsname(master).map { String(cString: $0) } ?? "", executable: spec.executable, arguments: spec.arguments,
                            directory: spec.directory, client: spec.client, createdAt: Date(), lastOutputAt: Date())
@@ -88,6 +99,7 @@ startParser()
 watch(listener, EVFILT_READ, EV_ADD)
 watch(childPID, EVFILT_PROC, EV_ADD | EV_ONESHOT, fflags: UInt32(NOTE_EXIT))
 watch(SIGTERM, EVFILT_SIGNAL, EV_ADD)
+watch(SIGHUP, EVFILT_SIGNAL, EV_ADD)
 // Timers 2 (the record's last-output time) and 3 (compression) are armed by output.
 startReader()
 log("session \(spec.id): \(spec.executable) as \(childPID)")
@@ -106,13 +118,45 @@ while true {
             guard fd >= 0 else { continue }
             var uid: uid_t = 0, gid: gid_t = 0
             guard getpeereid(fd, &uid, &gid) == 0, uid == getuid() else { close(fd); continue }
-            if client >= 0 { sendToClient(Frame(.replaced)); flushClient(); dropClient() }
             var noSigPipe: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
             enlargeSocketBuffers(fd)
             setNonBlocking(fd)
-            client = fd
+            // With a client already here, a newcomer waits as a candidate: it's answered, and it
+            // takes over only if it attaches. Connecting alone never disturbs the session.
+            if client >= 0 {
+                if candidate >= 0 { close(candidate) }
+                candidate = fd
+                candidateDecoder = FrameDecoder()
+            } else {
+                client = fd
+            }
             watch(fd, EVFILT_READ, EV_ADD)
+        case EVFILT_READ where ident == candidate:
+            let n = read(candidate, readBuffer, 64 * 1024)
+            guard n > 0 else {
+                if n == 0 || (errno != EAGAIN && errno != EINTR) { close(candidate); candidate = -1 }
+                continue
+            }
+            candidateDecoder.append(UnsafeRawBufferPointer(start: readBuffer, count: n))
+            while candidate >= 0, let frame = candidateDecoder.next() {
+                switch frame.kind {
+                case .hello:
+                    let welcome = Frame(.welcome, json: Welcome(protocolVersion: SessionProtocol.version, build: build, record: record)).encoded
+                    _ = welcome.withUnsafeBytes { write(candidate, $0.baseAddress!, $0.count) }
+                case .attach:
+                    // The takeover: the attached client is told, then the candidate becomes it.
+                    sendToClient(Frame(.replaced)); flushClient(); dropClient()
+                    client = candidate
+                    clientDecoder = candidateDecoder
+                    candidate = -1
+                    handle(frame)
+                    while client >= 0, let next = clientDecoder.next() { handle(next) }
+                default:
+                    break // nothing else counts before an attach
+                }
+            }
+            if candidate >= 0, candidateDecoder.isCorrupt { close(candidate); candidate = -1 }
         case EVFILT_READ where ident == client:
             let n = read(client, readBuffer, 64 * 1024)
             if n > 0 {
@@ -126,11 +170,15 @@ while true {
             flushClient()
         case EVFILT_PROC:
             childExited()
+        case EVFILT_SIGNAL where ident == SIGHUP:
+            saveSnapshot(wait: true)
         case EVFILT_SIGNAL:
-            // Shutdown or logout: the child gets its own SIGTERM; save nothing yet (phase 2
-            // writes the snapshot here) and go.
+            // Shutdown or logout: the screen saved for the restart, then go. The child gets its
+            // own SIGTERM.
             log("SIGTERM")
-            if recordDirty { writeRecord() }
+            takeReads()
+            saveSnapshot(wait: true)
+            writeRecord()
             exit(0)
         case EVFILT_USER where event.ident == readIdent:
             takeReads()
@@ -140,6 +188,9 @@ while true {
             finish()
         case EVFILT_TIMER where event.ident == 3:
             compressIfQuiet()
+        case EVFILT_TIMER where event.ident == 4:
+            snapshotTimerArmed = false
+            saveSnapshot(wait: false)
         case EVFILT_TIMER:
             recordTimerArmed = false
             if recordDirty { writeRecord() }

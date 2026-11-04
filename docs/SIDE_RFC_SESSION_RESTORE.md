@@ -1,6 +1,6 @@
 # Session restore: terminals you can always get back
 
-Status: agreed 2026-11-03. Phase 1 built: the keeper (Packages/SideSessions), Side reattaching to it, the Settings switch, and the measures below.
+Status: agreed 2026-11-03. Phases 1 and 2 built (keepers and reattach; restart recovery). Phase 3 (visibility) is next.
 
 ## Why
 
@@ -117,7 +117,9 @@ Length-prefixed messages; the first is a version handshake.
 
 A session is created by starting its keeper with the command, environment, folder and size as
 arguments. A session has at most one attached client: a second `attach`, for example from another
-build of Side, takes it over and the first gets `detach`.
+build of Side, takes it over and the first gets `replaced`. A connection that doesn't attach
+(it only says hello, or only checks the session is there) never disturbs the attached client.
+Side checks whether a keeper is running by its process and arguments, not by connecting.
 
 ### Reattaching
 

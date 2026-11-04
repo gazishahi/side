@@ -383,7 +383,10 @@ final class RunWorkspaceViewController: NSViewController {
         let project = terminals?.projectRoot.path ?? ""
         let live = SessionKeepers.isEnabled ? SessionKeepers.liveRecords(project: project, track: trackKey) : []
         let liveIDs = Set(live.map(\.id))
-        let orphans = live.filter { record in !keeperIDs.contains { $0 == record.id } }
+        // Sessions whose keeper is gone without the session ending: a restart, or a crash.
+        let ended = SessionKeepers.isEnabled ? SessionKeepers.endedRecords(project: project, track: trackKey) : []
+        let endedByID = Dictionary(ended.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let orphans = (live + ended).filter { record in !keeperIDs.contains { $0 == record.id } }
         guard !remembered.isEmpty || !orphans.isEmpty else { return createSession() }
         // Created, not started: a shell starts when its tab is first shown. Starting all of them
         // here made every background tab's first prompt count as unseen output, so reopening a
@@ -392,18 +395,40 @@ final class RunWorkspaceViewController: NSViewController {
         let names = terminals?.rememberedNames(forTrackKey: trackKey) ?? []
         for (index, directory) in remembered.enumerated() {
             let id = keeperIDs.indices.contains(index) ? keeperIDs[index] : nil
-            createSession(inDirectory: directory, keeperID: id, show: false)
+            let recovering = id.flatMap { endedByID[$0] }
+            createSession(inDirectory: recovering.map(Self.recoveryDirectory) ?? directory, keeperID: id, show: false)
             if names.indices.contains(index) { sessions.last?.customName = names[index] }
+            if let recovering { prepareRecovery(recovering) }
             if let id, liveIDs.contains(id) { sessions.last?.viewController.loadViewIfNeeded(); sessions.last?.viewController.start() }
         }
         for record in orphans {
-            createSession(inDirectory: record.directory, keeperID: record.id, show: false)
-            sessions.last?.viewController.loadViewIfNeeded()
-            sessions.last?.viewController.start()
+            let isLive = liveIDs.contains(record.id)
+            createSession(inDirectory: isLive ? record.directory : Self.recoveryDirectory(record), keeperID: record.id, show: false)
+            if isLive {
+                sessions.last?.viewController.loadViewIfNeeded()
+                sessions.last?.viewController.start()
+            } else {
+                prepareRecovery(record)
+            }
         }
         activeSessionIndex = 0
         rebuildTabBar()
         showActiveSession()
+    }
+
+    /// Where a recovered shell starts: the directory it last reported, if it's still there.
+    private static func recoveryDirectory(_ record: SessionRecord) -> String {
+        var isDirectory: ObjCBool = false
+        if !record.pwd.isEmpty, FileManager.default.fileExists(atPath: record.pwd, isDirectory: &isDirectory), isDirectory.boolValue { return record.pwd }
+        return record.directory
+    }
+
+    /// The tab just created recovers `record` when it starts (on first show, as any tab does):
+    /// the old screen, Claude resumed or the program run again or offered, its last name.
+    private func prepareRecovery(_ record: SessionRecord) {
+        guard let session = sessions.last else { return }
+        session.viewController.recovering = record
+        session.restoredTitle = TerminalViewController.cleanProgramTitle(record.title)
     }
 
     private func createSession(replacing index: Int? = nil, inDirectory directory: String? = nil, keeperID: String? = nil, show: Bool = true) {
@@ -485,6 +510,10 @@ final class RunWorkspaceViewController: NSViewController {
         // Taken from another window if it was showing there; that window shows a placeholder.
         if vc.parent != nil, vc.parent !== self { vc.view.removeFromSuperview(); vc.removeFromParent() }
         vc.onFileLinkRequested = { [weak self] link in self?.handleFileLink(link) ?? false }
+        vc.onRerunOfferChanged = { [weak self, weak session] in
+            guard let self, self.displayedSession === session else { return }
+            self.renderTaskRow()
+        }
         displayedSession = session
         terminals?.markDisplayed(session, by: self)
         let key = ObjectIdentifier(vc)
@@ -502,7 +531,7 @@ final class RunWorkspaceViewController: NSViewController {
         }
         for (other, entry) in mounted { entry.session.viewController.view.isHidden = other != key }
         vc.activate()
-        updateStatusLine()
+        renderTaskRow()
         reportUserCommandIfFinished()
     }
 
@@ -656,12 +685,32 @@ final class RunWorkspaceViewController: NSViewController {
     func setTaskRow(_ state: TaskRowState) {
         guard state != taskRowState || taskRow.arrangedSubviews.isEmpty else { return }
         taskRowState = state
+        renderTaskRow()
+    }
+
+    private func renderTaskRow() {
+        let state = taskRowState
         guard isViewLoaded else { return }
         taskRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let hasContent = !state.tasks.isEmpty || state.pendingCommand != nil || state.attachOffer != nil
+        let rerun = displayedSession?.viewController.rerunOffer
+        let hasContent = !state.tasks.isEmpty || state.pendingCommand != nil || state.attachOffer != nil || rerun != nil
         taskRow.isHidden = !hasContent
         updateStatusLine()
         guard hasContent else { return }
+
+        if let rerun, state.pendingCommand == nil {
+            // After a restart (SIDE_RFC_SESSION_RESTORE.md): what this tab was running, which
+            // isn't safe to start again unasked.
+            let line = NSTextField(labelWithString: "")
+            let text = NSMutableAttributedString(string: rerun, attributes: [.font: DS.Text.code(11.5, weight: .medium), .foregroundColor: NSColor.labelColor])
+            text.append(NSAttributedString(string: " was running before the restart", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]))
+            line.attributedStringValue = text
+            line.lineBreakMode = .byTruncatingMiddle
+            taskRow.addArrangedSubview(line)
+            taskRow.addArrangedSubview(Self.textAction("Run Again", emphasized: true, target: self, action: #selector(runAgainOffered)))
+            taskRow.addArrangedSubview(Self.textAction("Dismiss", emphasized: false, target: self, action: #selector(dismissRunAgain)))
+            return
+        }
 
         if let pending = state.pendingCommand {
             // The same approval the agent's commands get, asked where the click happened.
@@ -726,6 +775,8 @@ final class RunWorkspaceViewController: NSViewController {
     }
 
     @objc private func attachOffered() { onResolveAttachOffer?(true) }
+    @objc private func runAgainOffered() { displayedSession?.viewController.runOfferedCommand() }
+    @objc private func dismissRunAgain() { displayedSession?.viewController.dismissRerunOffer() }
     @objc private func dismissOffered() { onResolveAttachOffer?(false) }
 
     /// A typed command in the shown terminal just finished — report it once. The first look at

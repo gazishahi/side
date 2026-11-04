@@ -105,4 +105,75 @@ final class SessionKeeperTests: XCTestCase {
         manager.teardownAll()
         XCTAssertTrue(waitUntil { kill(shell, 0) != 0 }, "the shell kept running with the setting off")
     }
+
+    func testWhatARecoveredTabDoesWithWhatWasRunning() {
+        XCTAssertEqual(SessionKeepers.recovery(foreground: [], agentSession: nil), .nothing)
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["-zsh"], agentSession: nil), .nothing)
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["claude"], agentSession: "1b2c"), .run("claude --resume 1b2c"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["/opt/homebrew/bin/claude", "--model", "opus"], agentSession: nil), .run("claude --continue"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["nvim", "My Notes.md"], agentSession: nil), .run("nvim 'My Notes.md'"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["tail", "-f", "log.txt"], agentSession: nil), .run("tail -f log.txt"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["npm", "run", "dev"], agentSession: nil), .offer("npm run dev"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["rm", "-rf", "it's"], agentSession: nil), .offer("rm -rf 'it'\\''s'"))
+    }
+
+    func testARestartBringsTheTabBackBelowItsOldScreen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keepers-restart-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let first = TerminalSessionManager(projectRoot: root) { _ in root }
+        let session = first.makeSession(forTrackKey: "t")
+        first.setSessions([session], forTrackKey: "t")
+        let id = try XCTUnwrap(session.viewController.keeperID)
+        session.viewController.loadViewIfNeeded()
+        session.viewController.start()
+        XCTAssertTrue(waitUntil { session.viewController.startupSettled })
+        session.viewController.terminalView.send(txt: "echo before-$((6*7))\r")
+        XCTAssertTrue(waitUntil { self.screen(session).contains("before-42") })
+        first.teardownAll()
+
+        // The machine restarts: the keeper saves the screen at SIGTERM, and everything ends.
+        let old = try XCTUnwrap(SessionKeepers.liveRecord(id))
+        kill(old.keeperPID, SIGTERM)
+        XCTAssertTrue(waitUntil { kill(old.keeperPID, 0) != 0 })
+        kill(old.childPID, SIGKILL)
+        let ended = try XCTUnwrap(SessionKeepers.endedRecord(id), "the ended session should be recoverable")
+        XCTAssertEqual(SessionKeepers.endedRecords(project: root.path, track: "t").map(\.id), [id])
+
+        let second = TerminalSessionManager(projectRoot: root) { _ in root }
+        let again = second.makeSession(forTrackKey: "t", keeperID: id)
+        second.setSessions([again], forTrackKey: "t")
+        again.viewController.recovering = ended
+        again.viewController.loadViewIfNeeded()
+        again.viewController.start()
+        XCTAssertTrue(waitUntil { self.screen(again).contains("Restored after a restart") }, screen(again))
+        XCTAssertTrue(screen(again).contains("before-42"), "the old screen didn't come back")
+        XCTAssertTrue(waitUntil { again.viewController.startupSettled })
+        again.viewController.terminalView.send(txt: "echo after-$((5*5))\r")
+        XCTAssertTrue(waitUntil { self.screen(again).contains("after-25") }, screen(again))
+        XCTAssertNotEqual(SessionKeepers.liveRecord(id)?.childPID, old.childPID, "a new shell")
+        second.removeSession(again)
+    }
+
+    func testTheClaudeWrapperReportsItsSessionWithTheNonceOnly() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keepers-agent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let manager = TerminalSessionManager(projectRoot: root) { _ in root }
+        let session = manager.makeSession(forTrackKey: "t")
+        manager.setSessions([session], forTrackKey: "t")
+        let id = try XCTUnwrap(session.viewController.keeperID)
+        defer { manager.forgetAgentSession(forKeeper: id); manager.removeSession(session) }
+        session.viewController.loadViewIfNeeded()
+        session.viewController.start()
+        XCTAssertTrue(waitUntil { session.viewController.startupSettled })
+        // The wrapper is defined in Side's zsh (when the shell is zsh).
+        guard (ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh").contains("zsh") else { throw XCTSkip("not zsh") }
+        session.viewController.terminalView.send(txt: "whence -w claude\r")
+        XCTAssertTrue(waitUntil { self.screen(session).contains("claude: function") }, screen(session))
+        // A report without the shell's nonce is anyone's output, and ignored.
+        session.viewController.terminalView.send(txt: "printf '\\e]6973;agent;claude;forged;nope\\a'\r")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertNil(manager.agentSession(forKeeper: id))
+        session.viewController.terminalView.send(txt: "printf '\\e]6973;agent;claude;0f1e-real;%s\\a' \"$__SIDE_NONCE\"\r")
+        XCTAssertTrue(waitUntil { manager.agentSession(forKeeper: id) == "0f1e-real" })
+    }
 }

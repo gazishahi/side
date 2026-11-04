@@ -27,10 +27,10 @@ final class KeeperTests: XCTestCase {
     }
 
     @discardableResult
-    private func launch(_ script: String, cols: Int = 80, rows: Int = 24, client: [String: String] = [:]) throws -> String {
-        let id = SessionPaths.newID()
-        let spec = LaunchSpec(id: id, executable: "/bin/sh", arguments: ["-c", script], environment: ["TERM=xterm-256color", "PATH=/usr/bin:/bin"],
-                              directory: NSTemporaryDirectory(), cols: cols, rows: rows, client: client)
+    private func launch(_ script: String, cols: Int = 80, rows: Int = 24, client: [String: String] = [:], id: String = SessionPaths.newID(),
+                        restoreFrom: String? = nil, banner: String? = nil, executable: String = "/bin/sh", arguments: [String]? = nil) throws -> String {
+        let spec = LaunchSpec(id: id, executable: executable, arguments: arguments ?? ["-c", script], environment: ["TERM=xterm-256color", "PATH=/usr/bin:/bin"],
+                              directory: NSTemporaryDirectory(), cols: cols, rows: rows, client: client, restoreFrom: restoreFrom, banner: banner)
         try KeeperLauncher.launch(spec, keeper: keeperURL)
         return id
     }
@@ -122,6 +122,42 @@ final class KeeperTests: XCTestCase {
         XCTAssertTrue(client.waitForText("def"), "output stopped after Return: \(client.text)")
     }
 
+    func testARestartBringsBackTheScreenBelowABanner() throws {
+        let id = try launch("echo before-the-restart; sleep 30")
+        let first = try TestClient(id)
+        try first.attach()
+        XCTAssertTrue(first.waitForText("before-the-restart"))
+        first.close()
+        // Shutdown: the keeper saves the screen and goes; the shell goes with the machine.
+        let old = try XCTUnwrap(SessionPaths.records().first { $0.id == id })
+        kill(old.keeperPID, SIGTERM)
+        XCTAssertTrue(waitUntil { kill(old.keeperPID, 0) != 0 })
+        kill(old.childPID, SIGKILL)
+        let snapshot = SessionPaths.snapshot(id).path
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshot), "no snapshot saved at shutdown")
+        // Side starts the tab again from it: same id, a fresh shell.
+        try launch("echo after-the-restart; sleep 30", id: id, restoreFrom: snapshot, banner: "Restored after a restart")
+        let second = try TestClient(id)
+        try second.attach()
+        XCTAssertTrue(second.waitForText("after-the-restart"))
+        let text = second.text
+        let order = ["before-the-restart", "Restored after a restart", "after-the-restart"].compactMap { text.range(of: $0)?.lowerBound }
+        XCTAssertEqual(order.count, 3, text)
+        XCTAssertEqual(order, order.sorted(), "out of order:\n\(text)")
+    }
+
+    func testTheRecordKeepsTheForegroundProgramAndDirectory() throws {
+        // An interactive zsh with no rc files: job control puts a command in its own group.
+        let id = try launch("", executable: "/bin/zsh", arguments: ["-f", "-i"])
+        let client = try TestClient(id)
+        try client.attach()
+        usleep(300_000)
+        client.send(Frame(.input, Array("printf '\\e]7;file://host/private/tmp\\a'; sleep 30\r".utf8)))
+        XCTAssertTrue(waitUntil(timeout: 8) { SessionPaths.records().first { $0.id == id }?.foreground == ["sleep", "30"] },
+                      "foreground: \(SessionPaths.records().first { $0.id == id }?.foreground ?? [])")
+        XCTAssertEqual(SessionPaths.records().first { $0.id == id }?.pwd, "/private/tmp")
+    }
+
     func testChildHasAControllingTerminal() throws {
         // Opening /dev/tty fails without one; job control and Ctrl-C depend on it.
         let id = try launch("if exec 3</dev/tty; then echo HAS-TTY; else echo NO-TTY; fi; sleep 30")
@@ -180,6 +216,19 @@ final class KeeperTests: XCTestCase {
         XCTAssertTrue(client.wait { $0.exit != nil })
         XCTAssertEqual(client.exit?.status, 3)
         XCTAssertTrue(try XCTUnwrap(client.snapshotPlainText()).contains("bye"))
+    }
+
+    func testConnectingAloneDoesntDisturbTheAttachedClient() throws {
+        let id = try launch("read go; echo still-here; sleep 30")
+        let first = try TestClient(id)
+        try first.attach()
+        // Something only connects and says hello (a probe, another Side looking): no takeover.
+        let probe = try TestClient(id)
+        XCTAssertTrue(probe.wait { $0.welcome != nil })
+        probe.close()
+        first.send(Frame(.input, Array("\r".utf8)))
+        XCTAssertTrue(first.waitForText("still-here"))
+        XCTAssertFalse(first.state.replaced)
     }
 
     func testASecondClientTakesOver() throws {

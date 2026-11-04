@@ -24,6 +24,7 @@ func setNonBlocking(_ fd: Int32) { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O
 
 func writeRecord() {
     recordDirty = false
+    record.foreground = foregroundArguments()
     do { try record.write(to: recordURL) } catch { log("record: \(error)") }
 }
 
@@ -34,6 +35,9 @@ func writeRecord() {
 var client: Int32 = -1
 var attached = false
 var clientDecoder = FrameDecoder()
+/// A second connection while a client is attached (`main.swift`).
+var candidate: Int32 = -1
+var candidateDecoder = FrameDecoder()
 var toClient: [UInt8] = []
 var toClientOffset = 0
 /// A client that stops reading is let go past this; the terminal keeps the state regardless,
@@ -224,6 +228,12 @@ let titleChanged: GhosttyTerminalTitleChangedFn = { _, _ in post(.title(currentT
 
 let bell: GhosttyTerminalBellFn = { _, _ in post(.bell) }
 
+let pwdChanged: GhosttyTerminalPwdChangedFn = { _, _ in
+    var value = GhosttyString()
+    guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_PWD, &value) == GHOSTTY_SUCCESS, let ptr = value.ptr, value.len > 0 else { return }
+    post(.pwd(String(decoding: UnsafeBufferPointer(start: ptr, count: value.len), as: UTF8.self)))
+}
+
 // Replies to the program's queries (cursor position, device attributes); `handleEvents` decides.
 let writePTY: GhosttyTerminalWritePtyFn = { _, _, data, len in
     guard let data, len > 0 else { return }
@@ -248,7 +258,7 @@ func startParser() {
     let thread = Thread {
         while true {
             parseCondition.lock()
-            while parseQueue.isEmpty { parserWaiting = true; parseCondition.wait(); parserWaiting = false }
+            while parseQueue.isEmpty && !snapshotRequested { parserWaiting = true; parseCondition.wait(); parserWaiting = false }
             let batch = parseQueue
             parseQueue.removeAll(keepingCapacity: true)
             parsing = true
@@ -258,6 +268,16 @@ func startParser() {
             terminalLock.unlock()
             for chunk in batch { ChunkPool.give(chunk.base) }
             parseCondition.lock()
+            let wantsSnapshot = snapshotRequested && parseQueue.isEmpty
+            parseCondition.unlock()
+            // On this thread, so forwarding never waits on it: the main loop only asks.
+            if wantsSnapshot {
+                terminalLock.lock()
+                writeSnapshotFile()
+                terminalLock.unlock()
+            }
+            parseCondition.lock()
+            if wantsSnapshot { snapshotRequested = false; snapshotsWritten += 1 }
             parsing = false
             parseCondition.broadcast()
             parseCondition.unlock()
@@ -265,6 +285,97 @@ func startParser() {
     }
     thread.qualityOfService = .userInitiated
     thread.start()
+}
+
+// MARK: - Snapshots on disk
+
+/// `<id>.snap`: the screen and scrollback, so a restart brings them back (RFC, Snapshots on disk).
+/// Written every 30 seconds while there's new output, and at shutdown (SIGTERM) or hangup.
+var snapshotRequested = false
+var snapshotsWritten = 0
+var snapshotTimerArmed = false
+
+func armSnapshotTimer() {
+    guard !snapshotTimerArmed else { return }
+    snapshotTimerArmed = true
+    watch(4, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: UInt32(NOTE_SECONDS), data: 30)
+}
+
+/// Asks the parse thread for a snapshot; `wait` blocks until it's on disk (at shutdown).
+func saveSnapshot(wait: Bool) {
+    parseCondition.lock()
+    let target = snapshotsWritten + 1
+    snapshotRequested = true
+    parseCondition.broadcast()
+    if wait { while snapshotsWritten < target { parseCondition.wait() } }
+    parseCondition.unlock()
+}
+
+/// Streamed through a writer to a temporary file and renamed into place: never built whole in
+/// memory, and a reader never sees half of one. Readable only by the user.
+func writeSnapshotFile() {
+    let url = SessionPaths.snapshot(spec.id)
+    let temporary = url.path + ".tmp"
+    let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { log("snapshot: \(String(cString: strerror(errno)))"); return }
+    var box = fd
+    let ok = withUnsafeMutablePointer(to: &box) { pointer -> Bool in
+        let writer = GhosttyWriter(write: { userdata, data, len in
+            guard let userdata, let data else { return false }
+            let fd = userdata.assumingMemoryBound(to: Int32.self).pointee
+            var offset = 0
+            while offset < len {
+                let n = Darwin.write(fd, data + offset, len - offset)
+                if n > 0 { offset += n } else if n < 0, errno == EINTR { continue } else { return false }
+            }
+            return true
+        }, userdata: UnsafeMutableRawPointer(pointer))
+        return ghostty_snapshot_encode(terminal, writer) == GHOSTTY_SUCCESS
+    }
+    close(fd)
+    if ok { rename(temporary, url.path) } else { unlink(temporary); log("snapshot: encode failed") }
+}
+
+/// A terminal decoded from a saved snapshot, or nil if it won't read.
+func restoredTerminal(from path: String) -> GhosttyTerminal? {
+    guard let data = FileManager.default.contents(atPath: path), !data.isEmpty else { return nil }
+    return data.withUnsafeBytes { raw -> GhosttyTerminal? in
+        var decoder: GhosttySnapshotDecoder?
+        guard ghostty_snapshot_decoder_new_buf(nil, &decoder, raw.bindMemory(to: UInt8.self).baseAddress, raw.count) == GHOSTTY_SUCCESS, let decoder else { return nil }
+        defer { ghostty_snapshot_decoder_free(decoder) }
+        var compress = true
+        ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_COMPRESS_HISTORY, &compress)
+        var restored: GhosttyTerminal?
+        guard ghostty_snapshot_decoder_decode(decoder, &restored) == GHOSTTY_SUCCESS else { return nil }
+        return restored
+    }
+}
+
+// MARK: - The foreground program
+
+/// The arguments of the program in the foreground of the PTY (its process group's leader), or
+/// empty when that's the shell itself: what a restart resumes or offers to run again.
+func foregroundArguments() -> [String] {
+    let group = tcgetpgrp(master)
+    guard group > 0, group != childPID else { return [] }
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, group]
+    var size = 0
+    guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return [] }
+    var buffer = [UInt8](repeating: 0, count: size)
+    guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return [] }
+    // argc, then the executable path, padding, then argc NUL-terminated arguments.
+    let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+    var index = 4
+    while index < size, buffer[index] != 0 { index += 1 }
+    while index < size, buffer[index] == 0 { index += 1 }
+    var arguments: [String] = []
+    while arguments.count < Int(argc), index < size {
+        let start = index
+        while index < size, buffer[index] != 0 { index += 1 }
+        arguments.append(String(decoding: buffer[start..<index], as: UTF8.self))
+        index += 1
+    }
+    return arguments
 }
 
 func enqueueParse(_ chunk: Chunk) {
@@ -287,6 +398,7 @@ func withTerminal<T>(_ body: () -> T) -> T {
 // MARK: - Events from the parse thread
 
 enum Event {
+    case pwd(String)
     case title(String)
     case bell
     case reply([UInt8])
@@ -318,6 +430,12 @@ func handleEvents() {
             sendToClient(Frame(.title, Array(title.utf8)))
         case .bell:
             sendToClient(Frame(.attention, Array("bell".utf8)))
+        case .pwd(let pwd):
+            // OSC 7 carries a file URL; the record keeps the path.
+            let path = URL(string: pwd)?.path ?? pwd
+            guard path != record.pwd else { continue }
+            record.pwd = path
+            recordDirty = true
         case .reply(let bytes):
             // While a client is attached, its own terminal answers the program's queries, as it
             // always has; answering here too would send every reply twice. Detached, the keeper
@@ -535,6 +653,7 @@ func consume(_ chunk: Chunk) {
 var recordTimerArmed = false
 func outputSinceTimers() {
     recordDirty = true
+    armSnapshotTimer()
     if !recordTimerArmed {
         recordTimerArmed = true
         watch(2, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: UInt32(NOTE_SECONDS), data: 2)
@@ -551,14 +670,13 @@ var compressionTimerArmedAt = Date.distantPast
 
 /// Exit for good: the client knows how the session ended, or a day passed.
 func finish() {
-    unlink(socketURL.path)
-    try? FileManager.default.removeItem(at: recordURL)
-    try? FileManager.default.removeItem(at: SessionPaths.runDirectory.appendingPathComponent("\(spec.id).log"))
+    SessionPaths.remove(spec.id)
     exit(0)
 }
 
 
 func registerTerminalCallbacks() {
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, unsafeBitCast(pwdChanged, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, unsafeBitCast(titleChanged, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_BELL, unsafeBitCast(bell, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, unsafeBitCast(writePTY, to: UnsafeRawPointer.self))
