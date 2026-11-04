@@ -211,6 +211,8 @@ final class ProjectChip: NSView {
 
     override var mouseDownCanMoveWindow: Bool { false }
 
+    private var shownPath: String?
+
     func refresh() {
         guard let url = currentProject?() else {
             mark.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
@@ -220,6 +222,9 @@ final class ProjectChip: NSView {
             return
         }
         let space = ProjectSpaces.shared.space(for: url)
+        // A different project's mark crossfades in, at the stage's quick project-switch pace.
+        if let shown = shownPath, shown != space.path { DS.Motion.crossfade(mark, duration: ShellViewController.projectSwitchFade) }
+        shownPath = space.path
         mark.image = ProjectSpaces.mark(for: space, size: 20)
         mark.contentTintColor = nil
         // Another project wants you: its dot rides on this one's mark, since only this one shows.

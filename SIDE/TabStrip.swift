@@ -1254,7 +1254,8 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let windowImage = content.map { Self.miniWindow(content: $0, size: card) }
         let frame = window.convertToScreen(convert(bounds, to: nil))
         let overlay = TabDragOverlay(chip: image, title: titleImage(), icon: cardIcon(), card: windowImage, sourceWindow: window, chipFrame: frame,
-                                     grab: NSPoint(x: grabOffset.x / max(1, bounds.width), y: grabOffset.y))
+                                     grab: NSPoint(x: grabOffset.x / max(1, bounds.width), y: grabOffset.y),
+                                     chipTitleX: textX, chipIconCenterX: Self.iconCenterX)
         overlay.show()
         self.overlay = overlay
         alphaValue = 0
@@ -1305,7 +1306,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         overlay?.settle(into: slotFrameOnScreen(), velocity: velocity) { [weak self] in
             guard let self else { return }
             self.alphaValue = 1
-            overlay?.close()
+            overlay?.handOver()
             self.strip?.chipSettled(self)
         }
         strip?.chipSetDown(self)
@@ -1327,7 +1328,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
             overlay?.settle(into: self.slotFrameOnScreen(), velocity: .zero) { [weak self] in
                 guard let self else { return }
                 self.alphaValue = 1
-                overlay?.close()
+                overlay?.handOver()
                 self.strip?.chipSettled(self)
             }
             strip.chipSetDown(self)
@@ -1526,6 +1527,12 @@ final class TabDragOverlay {
     private let titleSize: NSSize
     private let chipSize: NSSize
     private let hasCard: Bool
+    /// Where the chip draws its title and icon, so the lifted chip shows both where the tab
+    /// does: without them the icon blinked back and the title jumped at the drop (the owner,
+    /// 2026-11-04).
+    private let chipTitleX: CGFloat
+    private let chipIconCenterX: CGFloat
+    private let hasIcon: Bool
     private weak var sourceWindow: NSWindow?
     /// Where the pointer holds it, as a fraction across and points down from the top.
     private let grab: NSPoint
@@ -1548,8 +1555,12 @@ final class TabDragOverlay {
     /// Where the title sits in the chip: its text inset.
     static let chipTitleInset: CGFloat = 16
 
-    init(chip: NSImage, title: NSImage, icon: NSImage?, card cardImage: NSImage?, sourceWindow: NSWindow, chipFrame: NSRect, grab: NSPoint) {
+    init(chip: NSImage, title: NSImage, icon: NSImage?, card cardImage: NSImage?, sourceWindow: NSWindow, chipFrame: NSRect, grab: NSPoint,
+         chipTitleX: CGFloat = TabDragOverlay.chipTitleInset, chipIconCenterX: CGFloat = 0) {
         chipSize = chipFrame.size
+        self.chipTitleX = chipTitleX
+        self.chipIconCenterX = chipIconCenterX
+        hasIcon = icon != nil
         titleSize = title.size
         hasCard = cardImage != nil
         self.sourceWindow = sourceWindow
@@ -1591,7 +1602,8 @@ final class TabDragOverlay {
         iconLayer.contents = icon
         iconLayer.contentsScale = sourceWindow.backingScaleFactor
         iconLayer.bounds = CGRect(x: 0, y: 0, width: 14, height: 14)
-        iconLayer.opacity = 0
+        // In the chip and in the card alike: it travels from one place to the other.
+        iconLayer.opacity = icon == nil ? 0 : 1
         card.addSublayer(iconLayer)
         content.layer?.addSublayer(card)
         CATransaction.begin()
@@ -1643,7 +1655,9 @@ final class TabDragOverlay {
             (cardLayer, CGRect(x: 0, y: 0, width: size.width, height: max(0, size.height - bar))),
             (hairline, CGRect(x: 0, y: max(0, size.height - bar), width: size.width, height: 1)),
             (titleLayer, CGRect(x: titleAt.x - titleSize.width / 2, y: titleAt.y - titleSize.height / 2, width: titleSize.width, height: titleSize.height)),
-            (iconLayer, CGRect(x: titleAt.x - titleSize.width / 2 - 20, y: titleAt.y - 7, width: 14, height: 14)),
+            (iconLayer, chip || !hasCard
+                ? CGRect(x: chipIconCenterX - 7, y: size.height / 2 - 7, width: 14, height: 14)
+                : CGRect(x: titleAt.x - titleSize.width / 2 - 20, y: titleAt.y - 7, width: 14, height: 14)),
         ]
         // What's on screen now, for the spring to start from.
         let shown = targets.map { layer, _ in ((layer.presentation() ?? layer).position, (layer.presentation() ?? layer).bounds.size) }
@@ -1690,7 +1704,7 @@ final class TabDragOverlay {
     /// the chip, centred in the card's title bar beside the icon.
     private func titlePosition(in size: NSSize, chip: Bool) -> CGPoint {
         if chip || !hasCard {
-            return CGPoint(x: Self.chipTitleInset + titleSize.width / 2, y: size.height / 2)
+            return CGPoint(x: chipTitleX + titleSize.width / 2, y: size.height / 2)
         }
         return CGPoint(x: size.width / 2 + 10, y: size.height - Self.titleBarHeight / 2)
     }
@@ -1707,7 +1721,6 @@ final class TabDragOverlay {
         }
         fade(chipLayer, toCard ? 0 : 1)
         fade(cardLayer, toCard && hasCard ? 1 : 0)
-        fade(iconLayer, toCard && hasCard ? 1 : 0)
         fade(hairline, toCard && hasCard ? 1 : 0)
     }
 
@@ -1754,7 +1767,39 @@ final class TabDragOverlay {
             crossfade(toCard: false)
         }
         apply(frame: local(screenFrame), radius: screenFrame.height / 2, chip: true, spring: DS.Motion.snappy, velocity: velocity)
+        // Coming to rest it lies flat: the shadow goes on the way in, not at the hand-over.
+        let flatten = CABasicAnimation(keyPath: "shadowOpacity")
+        flatten.fromValue = (card.presentation() ?? card).shadowOpacity
+        flatten.toValue = 0
+        flatten.duration = DS.Motion.reduceMotion ? 0 : DS.Motion.snappy.duration
+        flatten.timingFunction = DS.Motion.fadeCurve
+        card.shadowOpacity = 0
+        card.add(flatten, forKey: "flatten")
         DispatchQueue.main.asyncAfter(deadline: .now() + (DS.Motion.reduceMotion ? 0 : DS.Motion.snappy.duration), execute: completion)
+    }
+
+    /// Settled, with the tab showing again under it: the lifted capsule fades into the tab
+    /// rather than giving way in one frame, where its solid fill and the tab's own look
+    /// differed (the owner, 2026-11-04: "an instant change when I release it").
+    static let handOverDuration: TimeInterval = 0.12
+
+    func handOver() {
+        Self.landing.append(self)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [self] in
+            MainActor.assumeIsolated {
+                panel.orderOut(nil)
+                Self.landing.removeAll { $0 === self }
+            }
+        }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = (card.presentation() ?? card).opacity
+        fade.toValue = 0
+        fade.duration = DS.Motion.reduceMotion ? 0.01 : Self.handOverDuration
+        fade.timingFunction = DS.Motion.fadeCurve
+        card.opacity = 0
+        card.add(fade, forKey: "fade")
+        CATransaction.commit()
     }
 
     /// Dropped outside the window: the card grows into the new window as it opens, then gives
@@ -1821,6 +1866,11 @@ final class TabDragOverlay {
     static var panelsOnScreenForTesting: Int { NSApp.windows.filter { $0 is NSPanel && $0.level == .popUpMenu && $0.isVisible }.count }
     var cardFrameForTesting: NSRect { card.frame.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY) }
     var isShowingCardForTesting: Bool { cardLayer.opacity > 0.5 }
+    /// The icon's and the title's frames on screen, and whether the icon shows.
+    var iconFrameForTesting: NSRect { iconLayer.frame.offsetBy(dx: card.frame.minX + panel.frame.minX, dy: card.frame.minY + panel.frame.minY) }
+    var titleFrameForTesting: NSRect { titleLayer.frame.offsetBy(dx: card.frame.minX + panel.frame.minX, dy: card.frame.minY + panel.frame.minY) }
+    var showsIconForTesting: Bool { iconLayer.opacity > 0.5 }
+    var isOnScreenForTesting: Bool { panel.isVisible }
 
     /// The layer as it stands, shadow included, over a backdrop.
     func renderedForTesting(backdrop: NSColor) -> NSImage? {

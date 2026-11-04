@@ -1228,11 +1228,15 @@ final class ShellViewController: NSViewController {
             if let current = self.projectURL { ProjectSpaces.shared.hold(current) }
             ProjectSpaces.shared.space(for: url)
             self.makeVC.putAwayTabsForProjectSwitch()
+            // Another place, briefly marked: the stage crossfades, quicker than a stage switch.
+            DS.Motion.crossfade(self.container, duration: Self.projectSwitchFade)
             self.openProject(at: url, focusingTrackKey: nil)
             self.projectIndicator.show(current: url)
             then?(self)
         }
     }
+
+    static let projectSwitchFade: TimeInterval = 0.12
 
     /// Previous or next project in the switcher's order (a swipe on the pill, ⌃⇥).
     func switchProject(offset: Int) {

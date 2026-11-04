@@ -589,6 +589,37 @@ final class EditorParityTests: XCTestCase {
         XCTAssertTrue(shell.paletteLayerForTesting.map { _ in true } ?? false)
     }
 
+    /// 2026-11-04, the owner: lifted over the strip the tab lost its icon and got it back at the
+    /// drop, and the drop itself was “an instant change when I release it.” Lifted, the icon and
+    /// title stay where the tab draws them; set down, the lifted capsule fades into the tab.
+    func testALiftedTabKeepsItsIconAndHandsOverWithAFade() throws {
+        for name in ["a.swift", "b.swift"] { _ = try open(name, "let \(name.first!) = 1\n") }
+        let chip = make.tabStripForTesting.chips[1]
+        make.view.layoutSubtreeIfNeeded()
+        XCTAssertNotNil(chip.dragIcon, "a file tab has its icon")
+        let resting = window.convertToScreen(chip.convert(chip.bounds, to: nil))
+        let start = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
+        chip.mouseDown(with: mouse(.leftMouseDown, start))
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 6)))
+        let overlay = try XCTUnwrap(chip.overlayForTesting)
+        XCTAssertTrue(overlay.showsIconForTesting, "the icon comes along")
+        let held = overlay.cardFrameForTesting
+        XCTAssertEqual(overlay.iconFrameForTesting.midX - held.minX, TabChipView.iconCenterX, accuracy: 0.5, "where the tab draws it")
+        XCTAssertEqual(overlay.titleFrameForTesting.minX - held.minX, TabChipView.textX(hasIcon: true), accuracy: 0.5, "the title after it, as the tab's")
+
+        chip.mouseUp(with: mouse(.leftMouseUp, NSPoint(x: start.x, y: start.y - 6)))
+        // Settled: the tab shows under the lifted capsule, which is still on its way out.
+        let settled = Date().addingTimeInterval(2)
+        while Date() < settled, chip.alphaValue < 1 { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+        XCTAssertEqual(chip.alphaValue, 1)
+        XCTAssertTrue(overlay.isOnScreenForTesting, "handed over with a fade, not in one frame")
+        XCTAssertEqual(overlay.cardFrameForTesting.minX, resting.minX, accuracy: 1, "in the tab's place")
+        XCTAssertEqual(overlay.iconFrameForTesting.midX - resting.minX, TabChipView.iconCenterX, accuracy: 0.5)
+        let gone = Date().addingTimeInterval(1)
+        while Date() < gone, overlay.isOnScreenForTesting { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        XCTAssertFalse(overlay.isOnScreenForTesting, "and then gone")
+    }
+
     /// 2026-10-31, the owner: after a tab was dropped outside its window, its card stayed over
     /// every app. The card goes once the landing is over, window or not.
     func testADroppedCardLeavesTheScreen() throws {

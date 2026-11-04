@@ -362,7 +362,8 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// Narrow windows give the diff the whole width; the list comes back when there's room.
     override func viewDidLayout() {
         super.viewDidLayout()
-        let showRail = view.bounds.width >= Self.railMinimumStageWidth && !rail.items.isEmpty
+        // The empty state hides the list; layout mustn't bring it back.
+        let showRail = view.bounds.width >= Self.railMinimumStageWidth && !rail.items.isEmpty && emptyState.isHidden
         rail.isHidden = !showRail
         let width = showRail ? ReviewFileRail.width : 0
         if railWidth?.constant != width {
@@ -403,6 +404,15 @@ final class ReviewWorkspaceViewController: NSViewController {
     // MARK: - Wiring
 
     func configure(trackStore: TrackStore, sessionStore: AgentSessionStore, canonicalRoot: URL) {
+        // Another project: nothing of the last one's diff, list or timeline carries over, even
+        // when the two have a track of the same name.
+        if self.canonicalRoot != nil, self.canonicalRoot != canonicalRoot {
+            currentTrack = nil
+            timeline = CheckpointTimeline(nodes: [])
+            accountExpanded = false
+            releasedAtFile = nil
+            clearDiff()
+        }
         self.trackStore = trackStore
         self.sessionStore = sessionStore
         self.canonicalRoot = canonicalRoot
@@ -414,6 +424,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         if next?.branchName != currentTrack?.branchName {
             timeline = CheckpointTimeline(nodes: [])
             accountExpanded = false
+            clearDiff()
         }
         currentTrack = next
         refresh()
@@ -425,6 +436,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// missing (no project, no repo, no track), since the remedy differs for each.
     private func showEmptyState(_ empty: Bool, message: String? = nil, action: (title: String, kind: EmptyStateAction)? = nil) {
         if empty {
+            clearDiff()
             emptyState.configure(message ?? Self.defaultEmptyStateText, action: action?.title, handler: action.map { action in { [weak self] in self?.onEmptyStateAction?(action.kind) } })
         }
         emptyState.isHidden = !empty
@@ -433,6 +445,17 @@ final class ReviewWorkspaceViewController: NSViewController {
         headerRow.isHidden = empty
         if !empty { view.needsLayout = true }
     }
+
+    /// Drops the shown diff and its file list, and any diff or refresh still on its way.
+    private func clearDiff() {
+        diffGeneration += 1
+        refreshGeneration += 1
+        rail.items = []
+        if !diffViewer.diff.files.isEmpty { diffViewer.releaseDocument() }
+        diffTotals.attributedStringValue = NSAttributedString()
+    }
+
+    private var refreshGeneration = 0
 
     private static let defaultEmptyStateText = "Changes shows what a track has changed."
     private static let promoteHeight: CGFloat = 26
@@ -555,6 +578,8 @@ final class ReviewWorkspaceViewController: NSViewController {
         // checked for a dirty base off-main, so a disabled Promote says why before the click.
         let target = mergeTarget(for: track, trackStore: trackStore)
         let previous = timeline
+        refreshGeneration += 1
+        let generation = refreshGeneration
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // One spawn: every commit on the branch not yet in its base; checkpoints are ahead
@@ -581,7 +606,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             }
             let siblings = TrackOverlap.siblings(of: branchName, changedPathsByBranch: changedPathsByBranch, intentsByBranch: intentsByBranch)
             DispatchQueue.main.async {
-                guard let self, self.currentTrack?.branchName == branchName else { return }
+                guard let self, self.refreshGeneration == generation, self.currentTrack?.branchName == branchName else { return }
                 let ahead = built.nodes.filter { if case .checkpoint = $0.kind { return true } else { return false } }.count
                 self.headerDetail.stringValue = "\(branchName) \u{2192} \(baseRef) \u{00B7} \(ahead) checkpoint\(ahead == 1 ? "" : "s") ahead"
                 self.setPromoteEnabled(hasChanges && blockedReason == nil)
