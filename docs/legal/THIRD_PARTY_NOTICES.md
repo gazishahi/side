@@ -2,7 +2,7 @@
 
 Side includes the following open-source components. Each is used under its license, reproduced in full below with its copyright notices.
 
-Heron and Alloy, Side's own engines, are published under Apache-2.0 at github.com/gazishahi/heron and github.com/gazishahi/alloy.
+Alloy, Side's own editor engine, is published under Apache-2.0 at github.com/gazishahi/alloy.
 
 | Component | Version | License |
 |---|---|---|

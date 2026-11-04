@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Search as its own circular glass button beside the floating bar (or a plain icon in the top
 /// row) — a component, placement-agnostic like the rest.

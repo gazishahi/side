@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// Documentation truthfulness, checked by machine.

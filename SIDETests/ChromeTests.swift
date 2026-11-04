@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// Direction 02 §3: stage pinning, window titles, and the revert-readiness of the floating bar.

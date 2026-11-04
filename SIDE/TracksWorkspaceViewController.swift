@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Plain `NSView` subviews (labels, chip containers) don't accept first responder, so without
 /// this the responder chain never reaches `TracksWorkspaceViewController` while its stage is

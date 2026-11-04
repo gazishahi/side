@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// The diff parser feeds Review's per-file cards and Think's proposal cards, so a parsing

@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Make's inline instruct (Direction 02 §5.3): select code, ⌘K, say what you want. Not a second
 /// agent and not a new loop — a new *entry point* into the track's Think conversation, carrying

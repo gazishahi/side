@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// RFC R2: terminals belong to the project, not a window.

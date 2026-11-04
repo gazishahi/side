@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 final class FileExplorerPanel: NSPanel {
     convenience init() {

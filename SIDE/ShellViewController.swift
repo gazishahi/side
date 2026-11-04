@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 import UserNotifications
 import os
 
@@ -405,10 +405,10 @@ final class ShellViewController: NSViewController {
         }
         runVC.onActivityChanged = { [weak self] in self?.setNeedsStageLabelsUpdate() }
         runVC.onRunTask = { [weak self] task in
-            guard let self, let manager = self.projectContext?.runnerManager else { return }
-            // Refused while the agent is mid-turn or another task holds the terminal — two
-            // commands interleaving in one shell would corrupt both results.
-            if manager.runner(forTrackKey: self.currentTrackKey ?? "").proposeUserTask(task) == nil { NSSound.beep() }
+            guard let self else { return }
+            // Typed into the terminal on screen: it was Heron's command card, and Heron is retired
+            // (SIDE_RFC_HERON_RETIREMENT.md, step 4).
+            if !self.runVC.runTask(task.command) { NSSound.beep() }
             self.refreshRunTasks()
         }
         runVC.onUserCommandFinished = { [weak self] command, exitCode, screen in

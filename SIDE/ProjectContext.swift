@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// Everything scoped to one open project, shared by every window that has that project open:
 /// `TrackStore`, `AgentSessionStore`, and `AgentRunnerManager` (so an agent conversation now
@@ -26,7 +26,6 @@ final class ProjectContext {
             bridgeProvider: { [weak self] trackKey in self?.bridge(forTrackKey: trackKey) ?? .none },
             rootProvider: { [weak self] trackKey in self?.workingDirectory(forTrackKey: trackKey) ?? fallbackRoot },
             modeProvider: { [weak self] trackKey in self?.trackStore.mode(forTrackKey: trackKey) ?? .default },
-            modelSelectionProvider: { [weak self] trackKey in self?.trackStore.modelSelection(forTrackKey: trackKey) ?? (nil, nil, nil) },
             trackContextProvider: { [weak self] trackKey in self?.trackSummaries(currentTrackKey: trackKey) ?? [] }
         )
         // Outside agents (SIDE_RFC_BYO_HARNESS.md): the track says which; the login shell says

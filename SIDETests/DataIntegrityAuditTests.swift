@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// The git/persistence data-integrity cluster from the 2026-09-01 audit (H3–H6). Each of these
@@ -658,8 +657,7 @@ final class TracksOffScreenTests: XCTestCase {
             sessionStore: sessions, projectPath: root.path,
             bridgeProvider: { _ in WorkspaceBridge(liveBufferProvider: { _ in nil }, applyEditIntoOpenTab: { _, _ in false }, onRevealFileRequested: { _ in },
                                                    runShellCommand: { _, _, completion in completion("") }, interruptShellCommand: {}) },
-            rootProvider: { _ in root }, modeProvider: { _ in AgentMode(scope: .ask, autonomy: .manual) },
-            modelSelectionProvider: { _ in (nil, nil, nil) }
+            rootProvider: { _ in root }, modeProvider: { _ in AgentMode(scope: .ask, autonomy: .manual) }
         )
         tracks.configure(with: store, runnerManager: manager, sessionStore: sessions)
         for _ in 0..<50 { tracks.refresh() }

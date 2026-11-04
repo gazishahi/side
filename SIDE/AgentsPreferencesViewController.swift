@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Settings › Agents (harness RFC, D7): the outside agents Side can run, whether each is
 /// installed, and how each signs in: with the user's subscription through the agent's own login,

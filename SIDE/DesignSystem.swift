@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// The design charter's token layer (`SIDE_DESIGN.md`, next to the constitution) — the single
 /// source of truth for color, radius, and motion. Before this existed, three separately-authored

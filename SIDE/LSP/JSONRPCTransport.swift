@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// Messages from a server, handled in the order they arrived. The transport delivers them in
 /// order; a `Task` per message to reach the client's actor did not keep it (a mirror of that

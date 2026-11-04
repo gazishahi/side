@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// The tool-activity disclosure. Its layout has been wrong three separate ways — a tall empty

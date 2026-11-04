@@ -3,7 +3,6 @@ import AlloyCore
 import AlloyRender
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// SIDE_RFC_ALLOY.md's performance budgets, measured in Make itself. The limits are in

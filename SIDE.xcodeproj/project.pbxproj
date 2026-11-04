@@ -53,12 +53,8 @@
 		A00000000000000000000216 /* ShellWrapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000215 /* ShellWrapperTests.swift */; };
 		A00000000000000000000228 /* AccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000227 /* AccessibilityTests.swift */; };
 		A00000000000000000000230 /* TypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000229 /* TypographyTests.swift */; };
-		A00000000000000000000234 /* ModelSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000233 /* ModelSelectionTests.swift */; };
-		A00000000000000000000236 /* AgentModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000235 /* AgentModeTests.swift */; };
 		A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000251 /* GitLaunchProbeTests.swift */; };
 		A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000257 /* WorkGroupViewTests.swift */; };
-		A00000000000000000000262 /* StreamingEditPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000261 /* StreamingEditPreviewTests.swift */; };
-		A00000000000000000000268 /* ThinkingStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000267 /* ThinkingStreamTests.swift */; };
 		A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000271 /* DataIntegrityAuditTests.swift */; };
 		A00000000000000000000274 /* LSPOrderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000273 /* LSPOrderingTests.swift */; };
 		A00000000000000000000276 /* TerminalCaptureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000275 /* TerminalCaptureTests.swift */; };
@@ -80,7 +76,7 @@
 		A00000000000000000000409 /* FileExplorer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000408 /* FileExplorer.swift */; };
 		A00000000000000000000411 /* FileExplorerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000410 /* FileExplorerTests.swift */; };
 		A00000000000000000000413 /* StageCompositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000412 /* StageCompositionTests.swift */; };
-		A00000000000000000000416 /* Heron in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000415 /* Heron */; };
+		A00000000000000000000416 /* SideAgents in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000415 /* SideAgents */; };
 		A00000000000000000000602 /* SideSessionsKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000601 /* SideSessionsKit */; };
 		A00000000000000000000604 /* SessionKeepers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000603 /* SessionKeepers.swift */; };
 		A00000000000000000000609 /* RunningTerminalsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000608 /* RunningTerminalsWindow.swift */; };
@@ -238,12 +234,8 @@
 		A00000000000000000000215 /* ShellWrapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellWrapperTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000227 /* AccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000229 /* TypographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypographyTests.swift; sourceTree = "<group>"; };
-		A00000000000000000000233 /* ModelSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSelectionTests.swift; sourceTree = "<group>"; };
-		A00000000000000000000235 /* AgentModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentModeTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000251 /* GitLaunchProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLaunchProbeTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000257 /* WorkGroupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkGroupViewTests.swift; sourceTree = "<group>"; };
-		A00000000000000000000261 /* StreamingEditPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingEditPreviewTests.swift; sourceTree = "<group>"; };
-		A00000000000000000000267 /* ThinkingStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingStreamTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000271 /* DataIntegrityAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataIntegrityAuditTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000273 /* LSPOrderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LSPOrderingTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000275 /* TerminalCaptureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCaptureTests.swift; sourceTree = "<group>"; };
@@ -343,7 +335,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000022 /* SwiftTerm in Frameworks */,
-				A00000000000000000000416 /* Heron in Frameworks */,
+				A00000000000000000000416 /* SideAgents in Frameworks */,
 				A00000000000000000000602 /* SideSessionsKit in Frameworks */,
 				A00000000000000000000571 /* SwiftMath in Frameworks */,
 				A00000000000000000000451 /* Sparkle in Frameworks */,
@@ -494,12 +486,8 @@
 				A00000000000000000000215 /* ShellWrapperTests.swift */,
 				A00000000000000000000227 /* AccessibilityTests.swift */,
 				A00000000000000000000229 /* TypographyTests.swift */,
-				A00000000000000000000233 /* ModelSelectionTests.swift */,
-				A00000000000000000000235 /* AgentModeTests.swift */,
 				A00000000000000000000251 /* GitLaunchProbeTests.swift */,
 				A00000000000000000000257 /* WorkGroupViewTests.swift */,
-				A00000000000000000000261 /* StreamingEditPreviewTests.swift */,
-				A00000000000000000000267 /* ThinkingStreamTests.swift */,
 				A00000000000000000000271 /* DataIntegrityAuditTests.swift */,
 				A00000000000000000000273 /* LSPOrderingTests.swift */,
 				A00000000000000000000275 /* TerminalCaptureTests.swift */,
@@ -565,7 +553,7 @@
 			name = SIDE;
 			packageProductDependencies = (
 				A00000000000000000000021 /* SwiftTerm */,
-				A00000000000000000000415 /* Heron */,
+				A00000000000000000000415 /* SideAgents */,
 				A00000000000000000000601 /* SideSessionsKit */,
 				A00000000000000000000570 /* SwiftMath */,
 				A00000000000000000000450 /* Sparkle */,
@@ -642,7 +630,7 @@
 			mainGroup = A00000000000000000000007;
 			packageReferences = (
 				A00000000000000000000020 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
-				A00000000000000000000414 /* XCLocalSwiftPackageReference "Packages/Heron" */,
+				A00000000000000000000414 /* XCLocalSwiftPackageReference "Packages/SideAgents" */,
 				A00000000000000000000600 /* XCLocalSwiftPackageReference "Packages/SideSessions" */,
 				A00000000000000000000569 /* XCLocalSwiftPackageReference "Packages/SwiftMath" */,
 				A00000000000000000000449 /* XCRemoteSwiftPackageReference "Sparkle" */,
@@ -807,12 +795,8 @@
 				A00000000000000000000216 /* ShellWrapperTests.swift in Sources */,
 				A00000000000000000000228 /* AccessibilityTests.swift in Sources */,
 				A00000000000000000000230 /* TypographyTests.swift in Sources */,
-				A00000000000000000000234 /* ModelSelectionTests.swift in Sources */,
-				A00000000000000000000236 /* AgentModeTests.swift in Sources */,
 				A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */,
 				A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */,
-				A00000000000000000000262 /* StreamingEditPreviewTests.swift in Sources */,
-				A00000000000000000000268 /* ThinkingStreamTests.swift in Sources */,
 				A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */,
 				A00000000000000000000274 /* LSPOrderingTests.swift in Sources */,
 				A00000000000000000000276 /* TerminalCaptureTests.swift in Sources */,
@@ -1040,9 +1024,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		A00000000000000000000414 /* XCLocalSwiftPackageReference "Packages/Heron" */ = {
+		A00000000000000000000414 /* XCLocalSwiftPackageReference "Packages/SideAgents" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = Packages/Heron;
+			relativePath = Packages/SideAgents;
 		};
 		A00000000000000000000458 /* XCLocalSwiftPackageReference "Packages/Alloy" */ = {
 			isa = XCLocalSwiftPackageReference;
@@ -1083,10 +1067,10 @@
 			package = A00000000000000000000020 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
 			productName = SwiftTerm;
 		};
-		A00000000000000000000415 /* Heron */ = {
+		A00000000000000000000415 /* SideAgents */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A00000000000000000000414 /* XCLocalSwiftPackageReference "Packages/Heron" */;
-			productName = Heron;
+			package = A00000000000000000000414 /* XCLocalSwiftPackageReference "Packages/SideAgents" */;
+			productName = SideAgents;
 		};
 		A00000000000000000000450 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;

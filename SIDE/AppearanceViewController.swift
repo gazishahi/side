@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// The Appearance pane of Preferences: light or dark, text sizes, and typefaces.
 ///

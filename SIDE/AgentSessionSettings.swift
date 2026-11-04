@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Which outside agents are installed (harness RFC step 4), and where. Resolution asks the login
 /// shell, so it runs off the main thread and is cached for the session; `refresh` re-asks.

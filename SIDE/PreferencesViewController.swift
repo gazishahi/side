@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Notifications → banners and sounds (Direction 03 §3.3): only for what changes out of view.
 /// System sounds people already know; a banner carries its own, so Focus can silence it.

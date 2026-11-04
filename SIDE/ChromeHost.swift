@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Where the navigation components live (Direction 02 §3.0). The floating bar is the layout —
 /// its trial ended 2026-09-23 with the owner keeping it. `.topRow` stays as the hidden fallback;

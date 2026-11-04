@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// How a language server is installed, if Side can offer to.
 enum LanguageInstall: Sendable, Equatable {

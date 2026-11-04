@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// A key and its modifiers, as a menu item takes them.
 struct KeyChord: Equatable, Hashable, Codable {

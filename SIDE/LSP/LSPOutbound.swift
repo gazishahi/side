@@ -1,6 +1,6 @@
 import AlloyCore
 import Foundation
-import Heron
+import SideAgents
 
 /// A request's handle: cancelling it before it's sent drops it from the queue; after, the
 /// client tells the server (`$/cancelRequest`) and answers the caller with nil at once.

@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// An outside agent's `terminal/*` requests, run as Run tabs of their own
 /// (`SIDE_RFC_BYO_HARNESS.md` step 3a). Each terminal runs its command directly — never typed into

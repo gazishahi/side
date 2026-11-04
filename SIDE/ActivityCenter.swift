@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// The activity pill (prototype, 2026-11-04): "a glorified notification center" (the owner).
 /// Whatever is happening, or wants you, somewhere you aren't looking, in any project and any

@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// An agent command is submitted to a real visible shell, then a second line echoes a sentinel

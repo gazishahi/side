@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// Direction 02 §4: what each stage says, as tables.
@@ -60,35 +59,6 @@ final class StageCompositionTests: XCTestCase {
         return try! decoder.decode(Checkpoint.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
-    /// Run's task chips go through the existing command-approval path (§4.3 acceptance): a click
-    /// produces a ProposedCommand card, Manual autonomy waits for Run / Cancel, only one task
-    /// holds the terminal at a time, and approving types it into the track's terminal.
-    @MainActor
-    func testATaskChipProposesACommandThroughTheApprovalPath() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tasks-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        var typed: [String] = []
-        var bridge = WorkspaceBridge.none
-        bridge.runShellCommand = { command, _, completion in typed.append(command); completion("ok\n[exit code: 0]") }
-        let runner = AgentRunner(trackKey: "t", sessionStore: AgentSessionStore(stateDirectory: root), projectPath: root.path,
-                                 bridgeProvider: { bridge }, rootProvider: { root })
-
-        let id = try XCTUnwrap(runner.proposeUserTask(ProjectTask(name: "test", command: "swift test")))
-        guard case .commandProposal(let card)? = runner.entries.last?.kind else { return XCTFail("no command card") }
-        XCTAssertEqual(card.command.command, "swift test")
-        XCTAssertEqual(card.command.taskName, "test")
-        XCTAssertEqual(runner.pendingUserTaskProposalId, id, "Manual autonomy asks first")
-        XCTAssertNil(runner.proposeUserTask(ProjectTask(name: "build", command: "swift build")), "one task at a time")
-        XCTAssertTrue(typed.isEmpty)
-
-        runner.resolve(proposalId: id, decision: .apply)
-        XCTAssertEqual(typed, ["swift test"])
-        XCTAssertNil(runner.pendingUserTaskProposalId)
-        XCTAssertNil(runner.runningUserTaskName)
-        guard case .commandProposal(let done)? = runner.entries.first(where: { $0.id == id })?.kind, case .executed? = done.resolution else {
-            return XCTFail("card not resolved")
-        }
-    }
 
     /// Run's status line reads the shell's own marks: C starts, D;code;nonce finishes, a mark
     /// split across reads is joined, and a D without this terminal's nonce is output, not status.

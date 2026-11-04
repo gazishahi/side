@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Make's spreadsheets: CSV and TSV files, and Excel workbooks (read-only), shown in a sheet
 /// view rather than as text.

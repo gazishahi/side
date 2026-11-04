@@ -3,7 +3,7 @@ import AlloyCore
 import AlloyRender
 import AlloySyntax
 import AppKit
-import Heron
+import SideAgents
 import SwiftMath
 
 /// Make's editor (SIDE_RFC_ALLOY.md): Alloy behind the `EditorEngine` seam.

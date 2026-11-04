@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// The GitHub CLI (`gh`), when it's installed and signed in: opening a pull request directly and
 /// finding the one a branch already has. Without it, Review opens GitHub's own "new pull

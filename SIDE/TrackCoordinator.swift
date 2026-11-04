@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// Multi-agent work for one project (`SIDE_RFC_MULTI_AGENT.md`, step 2): a coordinator track's
 /// agent creates subtracks (stacked children, each on any agent), messages them, and reads
@@ -62,9 +62,10 @@ final class TrackCoordinator: TrackCoordinating {
         return nil
     }
 
-    /// The default agent first: a subtrack that names none gets it.
+    /// The installed agents, the default first: a subtrack that names none gets it. Not Heron,
+    /// which is retired.
     var agentChoices: [(id: String, name: String)] {
-        let all = [(Track.heronId, "Heron")] + ACPAgent.known.filter { AgentAvailability.isInstalled($0) != false }.map { ($0.id, $0.displayName) }
+        let all = ACPAgent.known.filter { AgentAvailability.isInstalled($0) != false }.map { ($0.id, $0.displayName) }
         let preferred = DefaultAgent.harnessIdForNewTrack
         return all.filter { $0.0 == preferred } + all.filter { $0.0 != preferred }
     }

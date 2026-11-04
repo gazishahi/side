@@ -1,9 +1,8 @@
 import Foundation
-import SideAgents
 
-/// Owns at most one `AgentRunner` per track key for a single project, spawned lazily on first
-/// visit — the `AgentRunner` analog of `LSPManager` (lazy per-key creation, explicit discard,
-/// teardown-all on project close). Lives on `ProjectContext`, so it's shared across every window
+/// Owns at most one harness per track key for a single project, made lazily on first visit —
+/// the harness analog of `LSPManager` (lazy per-key creation, explicit discard, teardown-all on
+/// project close). Lives on `ProjectContext`, so it's shared across every window
 /// that has the project open, the same as `TrackStore`/`AgentSessionStore`.
 @MainActor
 public final class AgentRunnerManager {
@@ -14,7 +13,7 @@ public final class AgentRunnerManager {
     private let bridgeProvider: (String) -> WorkspaceBridge
     /// Resolves the directory a track's tools should actually operate in — its linked worktree
     /// if it has one, else the shared project root. Resolved fresh per tool call (see
-    /// `AgentRunner`), not cached, so a track lazily materializing its worktree mid-session is
+    /// `ACPHarness`), not cached, so a track lazily materializing its worktree mid-session is
     /// picked up without any explicit invalidation.
     private let rootProvider: (String) -> URL
     /// Whether a track has opted into skipping approval for `run_shell_command` — resolved
@@ -22,13 +21,11 @@ public final class AgentRunnerManager {
     /// on the very next command rather than requiring a fresh runner.
     /// The track's mode (tool scope × autonomy), resolved fresh per request.
     private let modeProvider: (String) -> AgentMode
-    /// Per-track provider/model/effort, resolved fresh per request — same reasoning as
-    /// `rootProvider`.
-    private let modelSelectionProvider: (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?)
-    /// One harness per track. Today always Heron's `AgentRunner`; the Agent Client Protocol client
-    /// joins it here when a track picks an outside agent (`SIDE_RFC_BYO_HARNESS.md`).
+    /// One harness per track: the Agent Client Protocol client for its outside agent
+    /// (`SIDE_RFC_BYO_HARNESS.md`), or, for a track still on Heron, its conversations to read
+    /// (`RetiredHeronHarness`, SIDE_RFC_HERON_RETIREMENT.md).
     private var runners: [String: any Harness] = [:]
-    /// The outside agent a track runs on, nil for Heron. Set by the app, which stores the choice
+    /// The outside agent a track runs on, nil for (retired) Heron. Set by the app, which stores the choice
     /// on the track.
     public var agentProvider: ((String) -> ACPAgent?)?
     /// Finds an agent's executable (login-shell PATH) and its spawn environment. Called off-main.
@@ -60,13 +57,12 @@ public final class AgentRunnerManager {
     private var debounceWorkItem: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.2
 
-    public init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, modeProvider: @escaping (String) -> AgentMode, modelSelectionProvider: @escaping (String) -> (providerId: String?, modelId: String?, effort: AgentEffort?), trackContextProvider: @escaping (String) -> [AgentTrackSummary] = { _ in [] }) {
+    public init(sessionStore: AgentSessionStore, projectPath: String, bridgeProvider: @escaping (String) -> WorkspaceBridge, rootProvider: @escaping (String) -> URL, modeProvider: @escaping (String) -> AgentMode, trackContextProvider: @escaping (String) -> [AgentTrackSummary] = { _ in [] }) {
         self.sessionStore = sessionStore
         self.projectPath = projectPath
         self.bridgeProvider = bridgeProvider
         self.rootProvider = rootProvider
         self.modeProvider = modeProvider
-        self.modelSelectionProvider = modelSelectionProvider
         self.trackContextProvider = trackContextProvider
     }
     private let trackContextProvider: (String) -> [AgentTrackSummary]
@@ -97,11 +93,7 @@ public final class AgentRunnerManager {
     /// for the rest of its life — no separate teardown needed, since that observer closure is
     /// only ever referenced by this manager, not by any external caller.
     public func runner(forTrackKey trackKey: String) -> any Harness {
-        visited(trackKey)
-        if let existing = runners[trackKey] {
-            (existing as? AgentRunner)?.restoreTranscriptIfDropped()
-            return existing
-        }
+        if let existing = runners[trackKey] { return existing }
         if let agent = agentProvider?(trackKey), let launch = acpLaunchProvider {
             let harness = ACPHarness(trackKey: trackKey, agent: agent, launchProvider: { launch(agent) },
                                      rootProvider: { [rootProvider] in rootProvider(trackKey) },
@@ -122,38 +114,9 @@ public final class AgentRunnerManager {
             runners[trackKey] = harness
             return harness
         }
-        let runner = AgentRunner(
-            trackKey: trackKey,
-            sessionStore: sessionStore,
-            projectPath: projectPath,
-            bridgeProvider: { [bridgeProvider] in bridgeProvider(trackKey) },
-            rootProvider: { [rootProvider] in rootProvider(trackKey) },
-            modeProvider: { [modeProvider] in modeProvider(trackKey) },
-            modelSelectionProvider: { [modelSelectionProvider] in modelSelectionProvider(trackKey) },
-            trackContextProvider: { [trackContextProvider] in trackContextProvider(trackKey) }
-        )
-        runner.coordinatorProvider = { [weak self] in self?.coordinator(for: trackKey) }
-        runner.addObserver { [weak self] event in
-            guard case .phaseChanged = event else { return }
-            self?.scheduleChangeNotification()
-        }
-        runners[trackKey] = runner
-        return runner
-    }
-
-    /// Tracks by visit, most recent last. Heron's runners past the most recent
-    /// `residentTranscripts` let go of their transcripts (D7): every visited track kept its
-    /// whole transcript until the project closed, and the session store's own limit of three
-    /// bounded nothing while the runners held a copy.
-    private var visits: [String] = []
-    static let residentTranscripts = 3
-
-    private func visited(_ trackKey: String) {
-        visits.removeAll { $0 == trackKey }
-        visits.append(trackKey)
-        for key in visits.dropLast(Self.residentTranscripts) {
-            (runners[key] as? AgentRunner)?.dropTranscript()
-        }
+        let reader = RetiredHeronHarness(trackKey: trackKey, sessionStore: sessionStore)
+        runners[trackKey] = reader
+        return reader
     }
 
     /// Non-creating peek — a track that's never had an agent run shouldn't spin one up just to
@@ -180,7 +143,6 @@ public final class AgentRunnerManager {
     /// Called when a track is deleted — its conversation has nowhere to belong anymore, same
     /// cleanup contract as Make's file memory and Run's terminal sessions.
     public func discardRunner(forTrackKey trackKey: String) {
-        visits.removeAll { $0 == trackKey }
         guard let runner = runners.removeValue(forKey: trackKey) else { return }
         runner.teardown()
     }

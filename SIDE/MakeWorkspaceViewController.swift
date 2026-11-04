@@ -1,7 +1,7 @@
 import AlloyCore
 import AlloyAppKit
 import AppKit
-import Heron
+import SideAgents
 
 private enum TabKind { case text, image, csv }
 

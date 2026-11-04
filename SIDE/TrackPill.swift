@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// The window's track, as one control: status dot + intent; click for every track (Direction 02
 /// §3.5). Placement-agnostic — it knows nothing about where the chrome puts it.

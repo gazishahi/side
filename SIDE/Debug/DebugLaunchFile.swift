@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// A project's `.vscode/launch.json` (SIDE_RFC_DEBUGGER.md, Q3): its configurations as Side's,
 /// with VS Code's variables filled in and `preLaunchTask` found in `.vscode/tasks.json`. The

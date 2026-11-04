@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// Light mode. Every token is dynamic, layer colours re-resolve on an appearance change, and the

@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// A small, deliberately non-exhaustive line/regex-based markdown renderer — headers, bold,
 /// italic, inline code, fenced code blocks, bullet lists, blockquotes, and links. Matches this

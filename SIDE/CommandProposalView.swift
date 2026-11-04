@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Inline review card for one proposed `run_shell_command` call — `ProposedEditView`'s sibling
 /// for commands rather than edits. Simpler by design: there's no diff to render, just the exact

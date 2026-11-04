@@ -1,7 +1,7 @@
 # Retiring Heron's agent
 
 Status: in progress (2026-11-04: the owner decided to retire Heron, and took the three
-recommendations below). Steps 1–3 built.
+recommendations below). Steps 1–4 built.
 
 ## What goes, what stays
 
@@ -65,7 +65,14 @@ live there (`GitPaths`, `SpawnEnvironment`, `HeronDefaults`, `JSONStore`, …).
    effort, scope), Settings › Providers, Compact and /compact, the project-rules gate and
    /rules, first run's model step (now "Set up an agent", opening Settings › Agents, where each
    agent's install command is shown to copy), and Heron in the Library. Autonomy stays.
-4. **Remove Heron's agent** and its tests (about 110 in the package, 30–40 in Side's).
+4. **Remove Heron's agent. Built 2026-11-04.** `Packages/Heron` is gone: the runner, providers,
+   tools, streaming and the benchmark, with their tests (96 in the package; four of Side's test
+   files and the Heron parts of three more). A track on Heron is read through
+   `RetiredHeronHarness` (SideAgents): its stored conversations rebuilt as Heron rebuilt them,
+   with their checkpoints, past ones still openable, nothing sendable. `AgentRunnerManager` moved
+   into SideAgents, and the app imports `SideAgents` directly. Run's task chips type their
+   command into the terminal on screen (they were Heron's command cards); coordinators offer only
+   installed agents, the default first.
 5. **Extend `SideToolServer`:** diagnostics, debugger state, ports, later tasks.
 6. **Outside the app:** the README, the landing page, `scripts/test.sh`, third-party notices; the
    public Heron repository archived with a note, not deleted.

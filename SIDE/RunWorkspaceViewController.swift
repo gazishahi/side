@@ -1,6 +1,6 @@
 import AppKit
 import SideSessionsKit
-import Heron
+import SideAgents
 
 final class RunWorkspaceViewController: NSViewController {
     /// The project's terminals (RFC R2). Run is a view onto them: it attaches to a track's
@@ -121,6 +121,15 @@ final class RunWorkspaceViewController: NSViewController {
 
     /// The session this view has in its container, if any.
     private var displayedSession: TerminalSession?
+
+    /// A task chip: the task's command typed into the terminal on screen and run, as if typed
+    /// there; its exit then gets Run's usual offer to record it on the checkpoint. Refused while a
+    /// program holds the terminal: two commands in one shell would corrupt both.
+    func runTask(_ command: String) -> Bool {
+        guard let controller = displayedSession?.viewController, controller.runningProgramName == nil else { return false }
+        controller.terminalView.send(txt: command + "\r")
+        return true
+    }
 
     /// UI testing: characters typed into the terminal on screen, one per `interval`.
     func typeForTesting(_ text: String, interval: TimeInterval = 0.1) {

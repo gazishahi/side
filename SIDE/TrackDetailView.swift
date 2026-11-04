@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Everything the Tracks stage's detail pane says about one track, gathered by the stage.
 struct TrackDetail {

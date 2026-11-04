@@ -1,6 +1,6 @@
 import AlloyCore
 import Foundation
-import Heron
+import SideAgents
 
 /// One running language server process, speaking JSON-RPC 2.0 / LSP over stdio.
 actor LSPClient {

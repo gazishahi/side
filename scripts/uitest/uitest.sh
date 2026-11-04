@@ -71,7 +71,13 @@ case ${1:-} in
     pkill -f "$APP/Contents/MacOS/Side" || true
     # Keepers outlive Side on purpose; the test ones don't.
     pkill -f "SideSessionKeeper.*$ROOT/run/" || true
-    rm -rf $ROOT/run ;;
+    rm -rf $ROOT/run
+    # Tracks' working copies, and their branches: left over, the next run's track couldn't be made.
+    rm -rf "$(getconf DARWIN_USER_TEMP_DIR)SideUITests"
+    if [[ -d $ROOT/repo/.git ]]; then
+      git -C $ROOT/repo worktree prune
+      git -C $ROOT/repo for-each-ref --format='%(refname:short)' refs/heads | grep -vxE "main|$(git -C $ROOT/repo branch --show-current)" | xargs -n1 git -C $ROOT/repo branch -D -q 2>/dev/null || true
+    fi ;;
   *)
     sed -n 2,10p $0; exit 1 ;;
 esac

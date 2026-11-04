@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// Maps file extensions to language server launch commands, and resolves
 /// those binaries on disk.

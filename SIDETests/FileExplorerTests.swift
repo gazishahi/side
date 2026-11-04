@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// The explorer's two pure pieces: what a folder lists, and what `git status` marks.

@@ -2,7 +2,6 @@ import XCTest
 import AlloyAppKit
 import AlloyRender
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// Alloy RFC step 5, the parity bar: what Make does with its editor, through Make's own entry

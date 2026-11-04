@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 import SideSessionsKit
 
 /// One terminal: a live PTY and the view that renders it. A class so every window's Run stage

@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// The `Content-Length: N\r\n\r\n<json>` framing of LSP over stdio, as a pure state machine.
 ///

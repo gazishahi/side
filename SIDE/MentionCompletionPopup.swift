@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// The `@`-mention candidate list: a floating, non-activating panel under the caret.
 ///

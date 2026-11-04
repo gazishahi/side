@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// A flat, guaranteed-dark background for chrome surfaces (window root, tab bars) — matching
 /// the editor's own near-black tone exactly, no vibrancy/material involved. An earlier version

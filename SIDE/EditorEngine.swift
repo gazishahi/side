@@ -1,7 +1,7 @@
 import AlloyCore
 import AlloySyntax
 import AppKit
-import Heron
+import SideAgents
 
 // MARK: - The seam (SIDE_RFC_ALLOY.md, step 0)
 

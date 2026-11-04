@@ -167,7 +167,7 @@ public final class SideToolServer: @unchecked Sendable {
                     switch bridge.request(from: input) {
                     case .failure(let error): text(error.message, true)
                     case .success(let request):
-                        let agentName = registration.agentChoices.first { $0.id == (request.agentId ?? registration.agentChoices.first?.id) }?.name ?? "Heron"
+                        let agentName = registration.agentChoices.first { $0.id == (request.agentId ?? registration.agentChoices.first?.id) }?.name ?? "the default agent"
                         guard let authorize = registration.authorize else { return text("Side can't ask the user here, so no subtrack was created.", true) }
                         authorize(name, "Create subtrack \u{201C}\(request.intent)\u{201D} on \(agentName)", true) { allowed in
                             guard allowed else { return text("The user declined. No subtrack was created.", false) }

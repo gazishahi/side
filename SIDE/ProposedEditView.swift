@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Inline review card for one proposed edit, shown in the Think transcript. Deliberately not a
 /// separate window or sheet: the decision belongs next to the conversation that produced it, and

@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// The terminal/verification cluster from the 2026-09-01 audit (H11, H14).

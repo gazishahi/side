@@ -1,6 +1,6 @@
 import AppKit
 import SideSessionsKit
-import Heron
+import SideAgents
 import os.signpost
 
 @MainActor

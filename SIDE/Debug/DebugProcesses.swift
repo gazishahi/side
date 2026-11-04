@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// The person's running processes, to attach the debugger to (SIDE_RFC_DEBUGGER.md, Q3).
 enum DebugProcesses {

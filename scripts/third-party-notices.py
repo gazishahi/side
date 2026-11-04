@@ -96,8 +96,8 @@ def main():
     entries = components()
     intro = ("Side includes the following open-source components. Each is used under its license, "
              "reproduced in full below with its copyright notices.")
-    engines = ("Heron and Alloy, Side's own engines, are published under Apache-2.0 at "
-               "github.com/gazishahi/heron and github.com/gazishahi/alloy.")
+    engines = ("Alloy, Side's own editor engine, is published under Apache-2.0 at "
+               "github.com/gazishahi/alloy.")
 
     markdown = ["# Third-party notices", "", intro, "", engines, "",
                 "| Component | Version | License |", "|---|---|---|"]

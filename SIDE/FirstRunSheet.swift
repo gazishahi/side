@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// The first-run sheet (Direction 02 §6): three steps in one column — open a project, set up an
 /// agent, create a track — each a button that does it. No tour, no tooltips; dismissed once,

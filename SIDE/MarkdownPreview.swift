@@ -2,7 +2,7 @@ import AlloyCore
 import AlloyRender
 import AlloySyntax
 import AppKit
-import Heron
+import SideAgents
 import SwiftMath
 
 /// Make's Markdown preview: a document to read, not a rendering of the source. CommonMark

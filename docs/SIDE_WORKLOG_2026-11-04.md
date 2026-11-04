@@ -46,6 +46,20 @@ stale lock (`~/.pyenv/shims/.pyenv-shim`, 15:44), most likely left when my test 
 disk. Side asks the login shell for PATH before starting an agent, so every agent start (and the
 ACP tests) waited a minute. With the owner's yes I deleted the lock; the shell starts in 0.3 s.
 
+**Evening:** Heron's retirement, steps 2–4 (`SIDE_RFC_HERON_RETIREMENT.md`): SideAgents, Heron
+out of the app's UI, then `Packages/Heron` removed. The owner asked to merge before the next
+release, to retire Heron sooner.
+
+**For later (the owner, 2026-11-04 evening, "not now, but for sure later"):**
+- Onboarding: set the person up and explain how Side works.
+- Updates read as crashes: after an update relaunched Side, it offered to report an issue on
+  GitHub.
+- The project switcher still looks lackluster; to be designed together, properly.
+- The stage bar's icons: the owner isn't a fan.
+- On 0.4.0, Claude Code sessions in Terminal froze (no typing) until the tab or window was
+  reopened, while the Mac was out of storage. Likely the keeper or the terminal failing to write;
+  to check how a full disk is handled.
+
 Housekeeping: the disk filled (119 MB free) while copying the repo for a test run, because the
 copy included the repo's 7.7 GB `build/` folder. The copy no longer takes `build/`. 78
 DerivedData folders from 2026-09-30 and 10-01 (about 12 GB, their projects gone) are the owner's

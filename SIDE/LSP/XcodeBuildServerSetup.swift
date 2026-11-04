@@ -1,5 +1,5 @@
 import Foundation
-import Heron
+import SideAgents
 
 /// Detects an Xcode project/workspace directly inside a project root and, if
 /// `xcode-build-server` is on PATH and no buildServer.json exists yet, generates one so

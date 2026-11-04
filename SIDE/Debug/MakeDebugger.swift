@@ -1,6 +1,6 @@
 import AlloyCore
 import AppKit
-import Heron
+import SideAgents
 
 /// What Make gives its debugger: the project, the editor, and a way to show a file.
 @MainActor

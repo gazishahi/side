@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 // MARK: - The debug bar
 

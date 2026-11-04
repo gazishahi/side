@@ -1,6 +1,5 @@
 import XCTest
 @testable import Side
-@testable import Heron
 @testable import SideAgents
 
 /// Multi-agent RFC step 2: a coordinator track creates subtracks on any agent, messages them,
@@ -94,22 +93,14 @@ for line in sys.stdin:
         XCTAssertTrue(coordinator.canCoordinate(trackKey: coordinatorTrack.branchName))
         let bridge = CoordinationBridge(parentKey: coordinatorTrack.branchName, coordinator: coordinator)
 
-        // Heron's path: the spawn is a card (M1), with the worker named.
-        var executor = ToolExecutor(projectRoot: root, liveBufferProvider: { _ in nil })
-        executor.coordination = bridge
-        executor.coordinationAgents = coordinator.agentChoices
         let input: JSONValue = .object(["intent": .string("Write the docs"), "agent": .string(worker.id), "instructions": .string("Document a.txt")])
-        guard case .commandProposal(let proposal) = executor.execute(name: "create_subtrack", input: input, toolUseId: "t1", scope: .build) else { return XCTFail("not a card") }
-        XCTAssertEqual(proposal.spawnRequest?.agentId, worker.id)
-        XCTAssertEqual(proposal.command, "Create subtrack \u{201C}Write the docs\u{201D} on Worker")
-        guard case .completed(_, let isError) = executor.execute(name: "create_subtrack", input: input, toolUseId: "t2", scope: .ask), isError else {
-            return XCTFail("Ask can't create subtracks")
-        }
+        guard case .success(let request) = bridge.request(from: input) else { return XCTFail("not a request") }
+        XCTAssertEqual(request.agentId, worker.id)
 
         // Approved: the subtrack is created, stacked, on the worker, and started.
         let created = expectation(description: "created")
         var report = ""
-        coordinator.createSubtrack(parentKey: coordinatorTrack.branchName, request: try XCTUnwrap(proposal.spawnRequest)) { report = $0; created.fulfill() }
+        coordinator.createSubtrack(parentKey: coordinatorTrack.branchName, request: request) { report = $0; created.fulfill() }
         wait(for: [created], timeout: 30)
         XCTAssertTrue(report.contains("Created subtrack"), report)
         let child = try XCTUnwrap(context.trackStore.tracks.first { $0.spawnedByCoordinator })
@@ -329,7 +320,7 @@ for line in sys.stdin:
         let list = try await post(["jsonrpc": "2.0", "id": 1, "method": "tools/list"])
         let names = ((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
         XCTAssertEqual(Set(names), ["list_tracks", "read_track_overlap", "create_subtrack", "message_track", "read_track", "promote_subtrack", "wait_for_tracks"])
-        let call = try await post(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "create_subtrack", "arguments": ["intent": "No", "agent": "heron", "instructions": "x"]]])
+        let call = try await post(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "create_subtrack", "arguments": ["intent": "No", "agent": worker.id, "instructions": "x"]]])
         let text = (((call["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
         XCTAssertTrue(text.contains("declined"), text)
         XCTAssertFalse(context.trackStore.tracks.contains { $0.spawnedByCoordinator })

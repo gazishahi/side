@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Library (`SIDE_RFC_LIBRARY.md`): what shapes an agent's behavior, in one window (⇧⌘L). Not a
 /// stage: it follows the frontmost project window and edits nothing silently. Files open in

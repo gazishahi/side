@@ -8,7 +8,7 @@ import Foundation
 /// What a coordinator asks for when it creates a subtrack.
 public struct SubtrackRequest: Equatable, Sendable {
     public let intent: String
-    /// An `ACPAgent.id`, or nil for Heron.
+    /// An `ACPAgent.id`; nil takes the default agent.
     public let agentId: String?
     /// The subtrack's first message.
     public let instructions: String
@@ -38,7 +38,7 @@ public protocol TrackCoordinating: AnyObject {
     func read(parentKey: String, trackKey: String) -> String
     /// Whether a child has stopped working (finished, blocked, or waiting on the user).
     func isSettled(parentKey: String, trackKey: String) -> Bool
-    /// The agents a subtrack can run on: (id to pass, name). "heron" is Heron.
+    /// The agents a subtrack can run on: (id to pass, name), the default first.
     var agentChoices: [(id: String, name: String)] { get }
 
     /// What promoting a subtrack into its coordinator involves, for the M2 check: the branches
@@ -243,12 +243,15 @@ public struct CoordinationBridge: @unchecked Sendable {
               let instructions = input.text("instructions"), !instructions.isEmpty else {
             return .failure(RequestError(message: "create_subtrack needs an intent and instructions."))
         }
-        let agent = (input.text("agent") ?? "heron").trimmingCharacters(in: .whitespaces).lowercased()
         let choices = agentChoices
+        guard let fallback = choices.first else {
+            return .failure(RequestError(message: "No agent is installed for a subtrack to run on."))
+        }
+        let agent = (input.text("agent") ?? fallback.id).trimmingCharacters(in: .whitespaces).lowercased()
         guard let choice = choices.first(where: { $0.id.lowercased() == agent || $0.name.lowercased() == agent }) else {
             return .failure(RequestError(message: "Unknown agent \u{201C}\(agent)\u{201D}. Use one of: \(choices.map(\.id).joined(separator: ", "))."))
         }
-        return .success(SubtrackRequest(intent: intent, agentId: choice.id == "heron" ? nil : choice.id, instructions: instructions))
+        return .success(SubtrackRequest(intent: intent, agentId: choice.id, instructions: instructions))
     }
 
     public struct RequestError: Error { public let message: String }

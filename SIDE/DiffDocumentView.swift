@@ -3,7 +3,7 @@ import AlloyCore
 import AlloyRender
 import AlloySyntax
 import AppKit
-import Heron
+import SideAgents
 
 /// Review's diff (SIDE_RFC_FIND_REVIEW_TRACKS.md, R2): every file in one read-only Alloy
 /// document, so a change set of any size costs what's on screen. Alloy lays out and draws only

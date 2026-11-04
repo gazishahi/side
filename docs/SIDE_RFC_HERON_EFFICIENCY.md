@@ -1,6 +1,6 @@
 # RFC: Heron, efficient
 
-*2026-09-26. Status: **built**: accepted on 2026-09-26 (the owner took each recommendation); steps 1–5 built the same day.
+*2026-09-26. Status: **reference**: built on 2026-09-26 (the owner took each recommendation), and removed with Heron's agent on 2026-11-04 (`SIDE_RFC_HERON_RETIREMENT.md`). Kept for the record.
 Stale content is pruned in one sweep at half the window. Compaction is automatic at 85%, with
 Undo. An opt-in benchmark runs on the real API. The cache lives five minutes. The build order is
 the plan below. The owner asked for this (2026-09-25): Heron should be "a highly efficient

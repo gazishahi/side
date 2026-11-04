@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// The Usage pane of Preferences: what every model has cost across every project, with a
 /// per-project breakdown underneath.
@@ -288,8 +288,8 @@ enum UsageNames {
             let agent = ACPAgent.agent(id: agentId)?.displayName ?? agentId
             return (agentModelName(agentId: agentId, value: modelId) ?? modelId, agent)
         }
-        let provider = ProviderRegistryStore.shared.provider(for: providerId)
-        return (provider?.models.first { $0.id == modelId }?.displayName ?? modelId, provider?.displayName ?? providerId)
+        // Anything else is Heron's, retired: its usage stays, under its provider's id.
+        return (modelId, providerId == "anthropic" ? "Anthropic (Heron)" : "\(providerId) (Heron)")
     }
 
     private static func agentModelName(agentId: String, value: String) -> String? {

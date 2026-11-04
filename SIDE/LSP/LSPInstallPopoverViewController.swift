@@ -1,5 +1,5 @@
 import AppKit
-import Heron
+import SideAgents
 
 /// Content of the popover shown when clicking Make's missing-LSP indicator. While installing,
 /// shows just a spinner and status line — raw Homebrew output is captured but only surfaced if
