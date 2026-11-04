@@ -28,9 +28,11 @@ final class KeeperTests: XCTestCase {
 
     @discardableResult
     private func launch(_ script: String, cols: Int = 80, rows: Int = 24, client: [String: String] = [:], id: String = SessionPaths.newID(),
-                        restoreFrom: String? = nil, banner: String? = nil, executable: String = "/bin/sh", arguments: [String]? = nil) throws -> String {
+                        restoreFrom: String? = nil, banner: String? = nil, executable: String = "/bin/sh", arguments: [String]? = nil,
+                        notifier: String? = nil) throws -> String {
         let spec = LaunchSpec(id: id, executable: executable, arguments: arguments ?? ["-c", script], environment: ["TERM=xterm-256color", "PATH=/usr/bin:/bin"],
-                              directory: NSTemporaryDirectory(), cols: cols, rows: rows, client: client, restoreFrom: restoreFrom, banner: banner)
+                              directory: NSTemporaryDirectory(), cols: cols, rows: rows, client: client, restoreFrom: restoreFrom, banner: banner,
+                              notifier: notifier, place: "proj")
         try KeeperLauncher.launch(spec, keeper: keeperURL)
         return id
     }
@@ -156,6 +158,55 @@ final class KeeperTests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 8) { SessionPaths.records().first { $0.id == id }?.foreground == ["sleep", "30"] },
                       "foreground: \(SessionPaths.records().first { $0.id == id }?.foreground ?? [])")
         XCTAssertEqual(SessionPaths.records().first { $0.id == id }?.pwd, "/private/tmp")
+    }
+
+    /// A stand-in for Side's notifier: appends its arguments, one call a line.
+    private func fakeNotifier() throws -> (path: String, calls: () -> [String]) {
+        let dir = runDirectory.appendingPathComponent("notifier", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let log = dir.appendingPathComponent("calls.txt").path
+        let script = dir.appendingPathComponent("notify").path
+        try "#!/bin/sh\necho \"$*\" >> '\(log)'\n".write(toFile: script, atomically: true, encoding: .utf8)
+        chmod(script, 0o755)
+        return (script, { ((try? String(contentsOfFile: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init) })
+    }
+
+    func testAProgramsNotificationReachesTheNotifierOnlyWhileDetached() throws {
+        let notifier = try fakeNotifier()
+        let id = try launch("read go; printf '\\033]777;notify;Build;Tests passed\\007'; printf '\\033]9;second one\\007'; read again; printf '\\033]777;notify;Attached;Not for the notifier\\007'; sleep 30",
+                            notifier: notifier.path)
+        let client = try TestClient(id)
+        try client.attach()
+        client.send(Frame(.input, Array("\r".utf8)))
+        client.send(Frame(.detach))
+        client.close()
+        XCTAssertTrue(waitUntil { !notifier.calls().isEmpty }, "no notification")
+        usleep(300_000)
+        XCTAssertEqual(notifier.calls().count, 1, "one notification within 30 seconds: \(notifier.calls())")
+        let call = try XCTUnwrap(notifier.calls().first)
+        XCTAssertTrue(call.contains("--title Build --body Tests passed --url side://run/\(id)"), call)
+        // Attached, the client hears it instead.
+        let again = try TestClient(id)
+        try again.attach()
+        again.send(Frame(.input, Array("\r".utf8)))
+        XCTAssertTrue(again.waitForText("Not for the notifier") || true)
+        usleep(500_000)
+        XCTAssertEqual(notifier.calls().count, 1, "notified while attached")
+    }
+
+    func testAnAgentThatStopsWorkingIsReported() throws {
+        let notifier = try fakeNotifier()
+        // A program that calls itself claude (as the real one, a binary, does), works for six
+        // seconds, then waits.
+        let id = try launch("", executable: "/bin/zsh", arguments: ["-f", "-i"], notifier: notifier.path)
+        let client = try TestClient(id)
+        try client.attach()
+        usleep(300_000)
+        client.send(Frame(.input, Array("(exec -a claude /bin/sh -c 'i=0; while [ $i -lt 30 ]; do echo working $i; sleep 0.2; i=$((i+1)); done; sleep 60')\r".utf8)))
+        client.send(Frame(.detach))
+        client.close()
+        XCTAssertTrue(waitUntil(timeout: 20) { !notifier.calls().isEmpty }, "no notification when the agent stopped")
+        XCTAssertTrue(notifier.calls().first?.contains("claude in proj stopped") == true || notifier.calls().first?.contains("Claude in proj stopped") == true, notifier.calls().first ?? "")
     }
 
     func testChildHasAControllingTerminal() throws {

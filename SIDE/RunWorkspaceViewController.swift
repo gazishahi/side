@@ -518,6 +518,16 @@ final class RunWorkspaceViewController: NSViewController {
         onTearOutRequested?(sessions[index], screenPoint)
     }
 
+    /// Shows the tab whose shell lives in keeper `id`, if this view has it. For a notification's
+    /// side://run link.
+    @discardableResult
+    func showSession(keeperID id: String) -> Bool {
+        guard let index = sessions.firstIndex(where: { $0.viewController.keeperID == id }) else { return false }
+        if index != activeSessionIndex { switchToSession(index) }
+        sessions[index].viewController.activate()
+        return true
+    }
+
     private func switchToSession(_ index: Int) {
         guard sessions.indices.contains(index), index != activeSessionIndex else { return }
         activeSessionIndex = index

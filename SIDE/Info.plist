@@ -10,5 +10,18 @@
 	<string>aUCfPPld1OyGSfBQBhzvIw27w5eKvkZE2vm/lAE8W5o=</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<false/>
+	<!-- side://run/<session id>: a notification from a terminal's keeper brings Side to that tab
+	     (SIDE_RFC_SESSION_RESTORE.md, Notifications). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.shahi.side.run</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>side</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

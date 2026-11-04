@@ -12,6 +12,12 @@ enum SessionKeepers {
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
     }()
 
+    /// The notifier app keepers run to post notifications (`Contents/Helpers/Side Notifier.app`).
+    static let notifierURL: URL? = {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Side Notifier.app/Contents/MacOS/Side Notifier")
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }()
+
     /// What keepers run: a copy of the bundled one under the run directory, one per build.
     /// Never the bundle's own file: a rebuild or an update that changes it in place makes the
     /// kernel kill every process running it (an invalid code page), which took every session

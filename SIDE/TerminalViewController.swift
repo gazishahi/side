@@ -570,7 +570,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         let snapshot = recovering.map { SessionPaths.snapshot($0.id).path }.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
         let spec = LaunchSpec(id: id, executable: executable, arguments: ["-l"], environment: environment,
                               directory: workingDirectory ?? NSHomeDirectory(), cols: max(terminal.cols, 2), rows: max(terminal.rows, 2), client: facts,
-                              restoreFrom: snapshot, banner: snapshot == nil ? nil : SessionKeepers.restartBanner)
+                              restoreFrom: snapshot, banner: snapshot == nil ? nil : SessionKeepers.restartBanner,
+                              notifier: SessionKeepers.notifierURL?.path,
+                              place: keeperFacts[SessionKeepers.Fact.project].map { ($0 as NSString).lastPathComponent })
         guard let link = try? KeeperLink.launch(spec) else { return false }
         wire(link)
         link.attach(cols: terminal.cols, rows: terminal.rows, history: terminal.options.scrollback)

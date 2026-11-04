@@ -1,4 +1,5 @@
 import AppKit
+import SideSessionsKit
 import Heron
 import os.signpost
 
@@ -255,6 +256,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Library for the frontmost project window (⇧⌘L).
+    /// side://run/<session id>, from a notification a terminal's keeper posted: Side comes to
+    /// that tab, opening its project first if no window has it.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "side" && url.host == "run" {
+            let id = url.lastPathComponent
+            guard !id.isEmpty, id != "/" else { continue }
+            if shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id) }) { continue }
+            guard let record = SessionRecord.read(from: SessionPaths.record(id)),
+                  let project = record.client[SessionKeepers.Fact.project] else { continue }
+            let track = record.client[SessionKeepers.Fact.track].flatMap { $0.isEmpty ? nil : $0 }
+            openTrackInNewWindow(projectRoot: URL(fileURLWithPath: project), trackKey: track)
+            // The project's tabs restore (and reattach) as it opens; then the tab comes forward.
+            revealWhenOpen(id, attempts: 30)
+        }
+    }
+
+    private func revealWhenOpen(_ id: String, attempts: Int) {
+        guard attempts > 0 else { return }
+        if shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id) }) { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.revealWhenOpen(id, attempts: attempts - 1) }
+    }
+
     @objc func showRunningTerminals() {
         RunningTerminalsWindowController.shared.show()
     }

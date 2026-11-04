@@ -19,10 +19,15 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var restoreFrom: String?
     /// Written between the restored screen and the new program's output.
     public var banner: String?
+    /// The notifier app's executable, run (detached) to post a notification for this session
+    /// while no client is attached. Nil: no notifications.
+    public var notifier: String?
+    /// How notifications name the session ("sill"): the project, by default its folder.
+    public var place: String?
 
     public init(id: String, executable: String, arguments: [String], environment: [String], directory: String,
                 cols: Int, rows: Int, scrollbackLines: Int = 10_000, client: [String: String] = [:],
-                restoreFrom: String? = nil, banner: String? = nil) {
+                restoreFrom: String? = nil, banner: String? = nil, notifier: String? = nil, place: String? = nil) {
         self.id = id
         self.executable = executable
         self.arguments = arguments
@@ -34,6 +39,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.client = client
         self.restoreFrom = restoreFrom
         self.banner = banner
+        self.notifier = notifier
+        self.place = place
     }
 }
 

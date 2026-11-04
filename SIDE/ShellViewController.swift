@@ -1097,6 +1097,20 @@ final class ShellViewController: NSViewController {
         makeVC.revealFile(url, line: nil)
     }
 
+    /// side://run/<id>: brings this window to Run, on the tab with that keeper session, if this
+    /// window's project has it.
+    @discardableResult
+    func revealTerminal(keeperID id: String) -> Bool {
+        guard projectContext?.terminals.everySession().contains(where: { $0.viewController.keeperID == id }) == true else { return false }
+        show(.run)
+        guard runVC.showSession(keeperID: id) else { return false }
+        view.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+        return true
+    }
+
+    var projectRootURL: URL? { projectURL }
+
     private func show(_ stage: Stage) {
         guard current != stage else { return }
         // Writer mode is Make alone: going anywhere else leaves it.

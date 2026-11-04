@@ -1,6 +1,6 @@
 # Session restore: terminals you can always get back
 
-Status: agreed 2026-11-03. Phases 1 and 2 built, and phase 3 apart from notifications (the close warning and Running Terminals). Notifications are next.
+Status: agreed 2026-11-03. Phases 1, 2 and 3 built: notifications came last (an agent finishing a turn, a bell, or an OSC 9/777 notification while no Side window is attached; clicking one opens the tab).
 
 ## Why
 

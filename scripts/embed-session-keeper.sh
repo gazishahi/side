@@ -1,6 +1,7 @@
 #!/bin/zsh
-# Xcode build phase "Embed session keeper": builds Packages/SideSessions' keeper and puts it in
-# Side.app/Contents/Helpers, signed like the app (SIDE_RFC_SESSION_RESTORE.md). Runs in Xcode's
+# Xcode build phase "Embed session keeper": builds Packages/SideSessions' keeper and the notifier
+# app (Helpers/SideNotifier), and puts both in Side.app/Contents/Helpers, signed like the app
+# (SIDE_RFC_SESSION_RESTORE.md). Runs in Xcode's
 # environment; swift build runs in a clean one, since Xcode's settings confuse SwiftPM.
 set -euo pipefail
 cd "$SRCROOT"
@@ -28,3 +29,21 @@ else
   codesign --force --sign - "$staged"
 fi
 mv -f "$staged" "$dest/SideSessionKeeper"
+
+# The notifier: a tiny background app keepers run to post notifications under Side's name.
+notifier="$dest/Side Notifier.app"
+staging="$dest/.Side Notifier.staged.app"
+rm -rf "$staging"
+mkdir -p "$staging/Contents/MacOS" "$staging/Contents/Resources"
+sed -e "s/\$(MARKETING_VERSION)/${MARKETING_VERSION:-0}/" -e "s/\$(CURRENT_PROJECT_VERSION)/${CURRENT_PROJECT_VERSION:-0}/" \
+  Helpers/SideNotifier/Info.plist > "$staging/Contents/Info.plist"
+xcrun swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos15.0" Helpers/SideNotifier/main.swift -o "$staging/Contents/MacOS/Side Notifier"
+icon="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Resources/AppIcon.icns"
+[[ -f "$icon" ]] && cp "$icon" "$staging/Contents/Resources/AppIcon.icns"
+if [[ -n "$identity" && "$identity" != "-" ]]; then
+  codesign --force --sign "$identity" --options runtime $timestamp "$staging"
+else
+  codesign --force --sign - "$staging"
+fi
+rm -rf "$notifier"
+mv "$staging" "$notifier"

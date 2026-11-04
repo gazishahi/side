@@ -228,6 +228,16 @@ let titleChanged: GhosttyTerminalTitleChangedFn = { _, _ in post(.title(currentT
 
 let bell: GhosttyTerminalBellFn = { _, _ in post(.bell) }
 
+// OSC 9 and OSC 777: a program's own desktop notification.
+let desktopNotification: GhosttyTerminalDesktopNotificationFn = { _, _, request in
+    guard let request else { return }
+    func text(_ value: GhosttyString) -> String {
+        guard let ptr = value.ptr, value.len > 0 else { return "" }
+        return String(decoding: UnsafeBufferPointer(start: ptr, count: value.len), as: UTF8.self)
+    }
+    post(.notification(title: text(request.pointee.title), body: text(request.pointee.body)))
+}
+
 let pwdChanged: GhosttyTerminalPwdChangedFn = { _, _ in
     var value = GhosttyString()
     guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_PWD, &value) == GHOSTTY_SUCCESS, let ptr = value.ptr, value.len > 0 else { return }
@@ -285,6 +295,85 @@ func startParser() {
     }
     thread.qualityOfService = .userInitiated
     thread.start()
+}
+
+// MARK: - Notifications
+
+/// While no client is attached (Side is closed, or this session's project is), the keeper
+/// tells the person through Side's notifier app (RFC, Notifications): a program's own desktop
+/// notification (OSC 9/777), a bell, or an agent going quiet after working, which is the end of its
+/// turn or a question waiting. One notification a session every 30 seconds at most.
+let agents: Set<String> = ["claude", "codex", "opencode", "gemini", "aider", "goose", "amp", "crush", "qwen", "cursor-agent"]
+var busySince: Date?
+var notifiedThisBusySpell = false
+var lastNotifiedAt = Date.distantPast
+var quietTimerArmedAt = Date.distantPast
+/// Working for this long, then quiet for `quietBeforeNotifying`: a turn ended.
+let busyBeforeNotifying: TimeInterval = 5
+let quietBeforeNotifying: TimeInterval = 4
+
+var sessionName: String {
+    let program = record.foreground.first.map { ($0 as NSString).lastPathComponent }
+    let place = spec.place ?? (spec.directory as NSString).lastPathComponent
+    return program.map { "\(displayName($0)) in \(place)" } ?? place
+}
+
+func displayName(_ program: String) -> String {
+    ["claude": "Claude", "codex": "Codex", "opencode": "OpenCode", "gemini": "Gemini", "aider": "Aider"][program] ?? program
+}
+
+func noteActivity() {
+    let now = Date()
+    // A new spell of work begins after two quiet seconds.
+    if busySince == nil || now.timeIntervalSince(record.lastOutputAt) > 2 {
+        busySince = now
+        notifiedThisBusySpell = false
+    }
+    guard spec.notifier != nil, now.timeIntervalSince(quietTimerArmedAt) > 1 else { return }
+    quietTimerArmedAt = now
+    watch(5, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: 0 /* milliseconds */, data: Int((quietBeforeNotifying + 1.2) * 1000))
+}
+
+/// The quiet timer: an agent that worked and has now stopped.
+func checkForTurnEnd() {
+    let now = Date()
+    let quiet = now.timeIntervalSince(record.lastOutputAt)
+    guard quiet >= quietBeforeNotifying else {
+        watch(5, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: 0 /* milliseconds */, data: Int((quietBeforeNotifying - quiet) * 1000) + 50)
+        return
+    }
+    guard !attached, !notifiedThisBusySpell, let start = busySince, record.lastOutputAt.timeIntervalSince(start) >= busyBeforeNotifying else { return }
+    let foreground = foregroundArguments()
+    guard let program = foreground.first.map({ ($0 as NSString).lastPathComponent }), agents.contains(program) else { return }
+    notifiedThisBusySpell = true
+    record.foreground = foreground
+    notify(body: "\(sessionName) stopped: done, or waiting on you")
+}
+
+func notify(title: String? = nil, body: String) {
+    guard let notifier = spec.notifier, FileManager.default.isExecutableFile(atPath: notifier) else { return }
+    let now = Date()
+    guard now.timeIntervalSince(lastNotifiedAt) >= 30 else { return }
+    lastNotifiedAt = now
+    let arguments = [notifier, "--title", title ?? "Side", "--body", body, "--url", "side://run/\(spec.id)", "--group", spec.id]
+    var actions: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&actions)
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+    posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
+    posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
+    var attributes: posix_spawnattr_t?
+    posix_spawnattr_init(&attributes)
+    defer { posix_spawnattr_destroy(&attributes) }
+    posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
+    var cArgs: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
+    var cEnv: [UnsafeMutablePointer<CChar>?] = (["PATH=/usr/bin:/bin"] as [String]).map { strdup($0) } + [nil]
+    defer { (cArgs + cEnv).forEach { free($0) } }
+    var pid: pid_t = 0
+    if posix_spawn(&pid, notifier, &actions, &attributes, &cArgs, &cEnv) == 0 {
+        // Reaped when it ends, so it never lingers as a zombie of ours.
+        Thread.detachNewThread { var status: Int32 = 0; waitpid(pid, &status, 0) }
+    }
 }
 
 // MARK: - Snapshots on disk
@@ -398,6 +487,7 @@ func withTerminal<T>(_ body: () -> T) -> T {
 // MARK: - Events from the parse thread
 
 enum Event {
+    case notification(title: String, body: String)
     case pwd(String)
     case title(String)
     case bell
@@ -430,6 +520,10 @@ func handleEvents() {
             sendToClient(Frame(.title, Array(title.utf8)))
         case .bell:
             sendToClient(Frame(.attention, Array("bell".utf8)))
+            if !attached { notify(body: "\(sessionName) rang its bell") }
+        case .notification(let title, let body):
+            sendToClient(Frame(.attention, Array(body.utf8)))
+            if !attached { notify(title: title.isEmpty ? nil : title, body: body.isEmpty ? "\(sessionName) sent a notification" : body) }
         case .pwd(let pwd):
             // OSC 7 carries a file URL; the record keeps the path.
             let path = URL(string: pwd)?.path ?? pwd
@@ -653,6 +747,7 @@ func consume(_ chunk: Chunk) {
 var recordTimerArmed = false
 func outputSinceTimers() {
     recordDirty = true
+    noteActivity()
     armSnapshotTimer()
     if !recordTimerArmed {
         recordTimerArmed = true
@@ -676,6 +771,7 @@ func finish() {
 
 
 func registerTerminalCallbacks() {
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, unsafeBitCast(desktopNotification, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, unsafeBitCast(pwdChanged, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, unsafeBitCast(titleChanged, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_BELL, unsafeBitCast(bell, to: UnsafeRawPointer.self))

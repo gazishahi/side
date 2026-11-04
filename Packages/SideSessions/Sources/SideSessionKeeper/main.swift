@@ -188,6 +188,8 @@ while true {
             finish()
         case EVFILT_TIMER where event.ident == 3:
             compressIfQuiet()
+        case EVFILT_TIMER where event.ident == 5:
+            checkForTurnEnd()
         case EVFILT_TIMER where event.ident == 4:
             snapshotTimerArmed = false
             saveSnapshot(wait: false)
