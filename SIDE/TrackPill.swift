@@ -56,6 +56,8 @@ final class TrackPill: NSView {
     var onSwipeProject: ((Int) -> Void)?
     /// The popover's project row: switch this window to that project.
     var onSwitchProject: ((URL) -> Void)?
+    /// Its +: open another project (and switch to it).
+    var onAddProject: (() -> Void)?
 
     private(set) var snapshot = Snapshot.empty
     /// The project's mark, where the track's dot was; the dot now rides on it only when the
@@ -243,6 +245,7 @@ final class TrackPill: NSView {
         content.onNewTrackNamed = { [weak self, weak popover] name in popover?.close(); self?.onNewTrackNamed?(name) }
         content.onOpenTracks = { [weak self, weak popover] in popover?.close(); self?.onOpenTracks?() }
         content.onSwitchProject = { [weak self, weak popover] url in popover?.close(); self?.onSwitchProject?(url) }
+        content.onAddProject = { [weak self, weak popover] in popover?.close(); self?.onAddProject?() }
         self.popover = popover
         popover.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
         content.focusFilter()
@@ -264,6 +267,7 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
     var onNewTrackNamed: ((String) -> Void)?
     var onOpenTracks: (() -> Void)?
     var onSwitchProject: ((URL) -> Void)?
+    var onAddProject: (() -> Void)?
     private let snapshot: TrackPill.Snapshot
     private let filterField = NSSearchField()
     private let list = NSStackView()
@@ -333,6 +337,14 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
                     chip.setAccessibilityLabel("Switch to \(space.name), \(state.name)")
                 }
             }
+            let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Open Another Project") ?? NSImage(), target: self, action: #selector(addProjectTapped))
+            add.isBordered = false
+            add.contentTintColor = .secondaryLabelColor
+            add.toolTip = "Open Another Project\u{2026}"
+            add.translatesAutoresizingMaskIntoConstraints = false
+            add.widthAnchor.constraint(equalToConstant: 26).isActive = true
+            add.heightAnchor.constraint(equalToConstant: 26).isActive = true
+            row.addArrangedSubview(add)
             header.addArrangedSubview(row)
         } else if let project = snapshot.projectName {
             let label = NSTextField(labelWithString: project)
@@ -542,6 +554,8 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
         guard let path = sender.representedObject as? String else { return }
         ProjectSpaces.shared.remove(URL(fileURLWithPath: path))
     }
+
+    @objc private func addProjectTapped() { onAddProject?() }
 
     @objc private func projectTapped(_ sender: NSButton) {
         guard let path = sender.identifier?.rawValue else { return }

@@ -598,6 +598,8 @@ final class ShellViewController: NSViewController {
         trackPill.onOpenTracks = { [weak self] in self?.show(.tracks) }
         trackPill.onSwipeProject = { [weak self] offset in self?.switchProject(offset: offset) }
         trackPill.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
+        trackPill.onAddProject = { [weak self] in self?.presentOpenProject() }
+        makeVC.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
         trackPill.onNewTrackNamed = { [weak self] name in
             self?.show(.tracks)
             self?.tracksVC.newTrack(prefill: name)

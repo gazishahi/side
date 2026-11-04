@@ -187,3 +187,19 @@ Also since the last commit:
 - **The pill names the project only when it's useful** (Sill's rule): "web-app › main · Base"
   for 1.6 s after a switch and while the pointer is on the pill. Otherwise the mark says which
   project you're in.
+
+### 04:55 — adding projects; a tracks RFC
+
+- **The project row has a + to open another project.** Open Project in a window that already
+  has one is now a switch: the project left stays open in the background, where before it was
+  closed.
+- **`docs/SIDE_RFC_GIT_TRACKS.md`** (decisions pending), item 3 of the direction list:
+  - every local branch and worktree is a track, with no adopting;
+  - Side's records become an overlay keyed by branch name;
+  - a track's base is its PR's, the one chosen for it (git config), the one it was made from,
+    or the default branch;
+  - Changes shows something on any branch, the base included;
+  - Branches is rebuilt as the board;
+  - constitution articles 6 and 7 are rewritten.
+
+  It also covers audit items 6 and 10.

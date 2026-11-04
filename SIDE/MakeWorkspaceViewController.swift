@@ -1580,6 +1580,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc func openProjectFromMenuAction() { openProject() }
+    /// Set by the shell: moves the window to another project, keeping this one open.
+    var onSwitchProject: ((URL) -> Void)?
 
     @objc private func openProject() {
         confirmAllUnsavedChanges { [weak self] proceed in
@@ -1592,6 +1594,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             panel.allowsMultipleSelection = false
             panel.beginSheetModal(for: window) { [weak self] response in
                 guard let self, response == .OK, let url = panel.url else { return }
+                // With a project open, opening another is a switch: the one left stays open in
+                // the background (project switching), its terminals and agents still going.
+                if self.projectURL != nil, let switchProject = self.onSwitchProject {
+                    switchProject(url)
+                    return
+                }
                 self.closeAllTabsImmediately()
                 self.loadProject(at: url)
             }
