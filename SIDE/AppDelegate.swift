@@ -97,12 +97,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // or "snapshots <dir> <count> <ms>" for frames of a motion. An app may capture
                     // its own windows without screen-recording permission.
                     if command.hasPrefix("snapshot ") { Self.snapshot(window, to: String(command.dropFirst(9))) }
+                    // Every window on screen (Settings, popovers, sheets): "snapshot-all <dir>".
+                    if command.hasPrefix("snapshot-all ") {
+                        let dir = String(command.dropFirst(13))
+                        for (index, each) in NSApp.windows.enumerated() where each.isVisible && each.frame.width > 40 {
+                            let name = String(describing: type(of: each)).replacingOccurrences(of: " ", with: "")
+                            Self.snapshot(each, to: "\(dir)/\(index)-\(name).png")
+                        }
+                    }
+                    if command.hasPrefix("appearance ") {
+                        let name = String(command.dropFirst(11))
+                        NSApp.appearance = name == "dark" ? NSAppearance(named: .darkAqua) : name == "light" ? NSAppearance(named: .aqua) : nil
+                    }
                     if command.hasPrefix("snapshots ") {
                         let parts = command.split(separator: " ").map(String.init)
                         if parts.count == 4, let count = Int(parts[2]), let ms = Int(parts[3]) {
+                            // Off the main thread: what happens while it's busy (a stage loading)
+                            // is what these are for.
+                            let number = UInt32(window.windowNumber)
                             for frame in 0..<count {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(frame * ms)) {
-                                    Self.snapshot(window, to: "\(parts[1])/frame-\(String(format: "%03d", frame)).png")
+                                DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(frame * ms)) {
+                                    Self.snapshot(windowNumber: number, to: "\(parts[1])/frame-\(String(format: "%03d", frame)).png")
                                 }
                             }
                         }
@@ -325,13 +340,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// UI testing: the window as the window server composites it, to a PNG.
     static func snapshot(_ window: NSWindow, to path: String) {
+        snapshot(windowNumber: UInt32(window.windowNumber), to: path)
+    }
+
+    nonisolated static func snapshot(windowNumber: UInt32, to path: String) {
         // Looked up at run time: the SDK marks it unavailable (ScreenCaptureKit instead, which
         // needs screen-recording permission even for an app's own windows). Test-only.
         typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return }
         let create = unsafeBitCast(symbol, to: CreateImage.self)
         let options = CGWindowImageOption.boundsIgnoreFraming.rawValue | CGWindowImageOption.bestResolution.rawValue
-        guard let image = create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber), options)?.takeRetainedValue() else { return }
+        guard let image = create(.null, CGWindowListOption.optionIncludingWindow.rawValue, windowNumber, options)?.takeRetainedValue() else { return }
         let rep = NSBitmapImageRep(cgImage: image)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }

@@ -21,8 +21,24 @@ final class SlidingSegmentedControl: NSView {
     }
     /// Narrow windows: symbols instead of titles, with the title kept as tooltip and AX label.
     var compact = false { didSet { if compact != oldValue { rebuildContents() } } }
-    /// Each segment's symbol before its title (the stage control), not only when compact.
+    /// Each segment's symbol before its title, not only when compact.
     var showsSymbols = false { didSet { if showsSymbols != oldValue { rebuildContents() } } }
+    /// The stage control (the owner, 2026-11-04: less text in the bar): every segment is its
+    /// symbol, and only the selected one also says its name. Selecting another widens it as the
+    /// last one narrows, the thumb riding along. The selected slot is as wide as the widest
+    /// name needs, so the control keeps one width whichever is selected.
+    var expandsSelected = false { didSet { if expandsSelected != oldValue { rebuildContents() } } }
+    private static let collapsedWidth: CGFloat = 40
+    private static let iconGap: CGFloat = 6
+    private var expandedWidth: CGFloat = 0
+    /// Expanding: each segment's symbol and name, drawn as their own views inside its button so
+    /// the symbol slides and the name fades as the segment resizes (a crossfade of the whole
+    /// button showed both states at once).
+    private var icons: [NSImageView] = []
+    private var names: [NSTextField] = []
+    /// Button frames are set by layout only when something moved them; a layout pass during a
+    /// selection's slide would otherwise snap them to the end.
+    private var framesDirty = true
 
     private let style: ThumbStyle
     private let height: CGFloat
@@ -105,13 +121,34 @@ final class SlidingSegmentedControl: NSView {
         buttons.forEach { $0.removeFromSuperview() }
         buttons = []
         badges = []
+        icons = []
+        names = []
         for (index, title) in titles.enumerated() {
             let button = NSButton(title: title, target: self, action: #selector(segmentTapped(_:)))
             button.isBordered = false
             button.font = DS.Text.body(.medium)
             button.tag = index
             button.menu = menu
-            if compact, let symbol = symbols[index], let image = NSImage(systemSymbolName: symbol, accessibilityDescription: title) {
+            if expandsSelected {
+                button.title = ""
+                let icon = NSImageView()
+                icon.image = symbols[index].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+                icon.symbolConfiguration = .init(pointSize: 13, weight: .medium)
+                icon.imageScaling = .scaleProportionallyDown
+                // The name fades inside the segment as it narrows, never over its neighbour.
+                button.wantsLayer = true
+                button.layer?.masksToBounds = true
+                let name = NSTextField(labelWithString: title)
+                name.font = DS.Text.body(.medium)
+                for view in [icon, name] as [NSView] {
+                    view.wantsLayer = true
+                    view.setAccessibilityElement(false)
+                    button.addSubview(view)
+                }
+                icons.append(icon)
+                names.append(name)
+                button.toolTip = index == selectedIndex ? nil : title
+            } else if compact, let symbol = symbols[index], let image = NSImage(systemSymbolName: symbol, accessibilityDescription: title) {
                 button.image = image
                 button.imagePosition = .imageOnly
                 button.toolTip = title
@@ -134,16 +171,51 @@ final class SlidingSegmentedControl: NSView {
         }
         // Hug the titles: segment width is the widest title plus padding, so the control keeps
         // its size as selection changes and never collapses below what it has to say.
-        let widest = buttons.map { $0.intrinsicContentSize.width }.max() ?? 0
-        let segmentWidth = ceil(widest) + (compact ? 16 : 28)
+        let total: CGFloat
+        if expandsSelected {
+            expandedWidth = ceil(buttons.indices.map(expandedContentWidth).max() ?? 0) + 28
+            total = Self.collapsedWidth * CGFloat(max(buttons.count - 1, 0)) + expandedWidth
+        } else {
+            let widest = buttons.map { $0.intrinsicContentSize.width }.max() ?? 0
+            total = (ceil(widest) + (compact ? 16 : 28)) * CGFloat(max(buttons.count, 1))
+        }
         widthConstraint?.isActive = false
-        widthConstraint = widthAnchor.constraint(equalToConstant: segmentWidth * CGFloat(max(buttons.count, 1)))
+        widthConstraint = widthAnchor.constraint(equalToConstant: total)
         widthConstraint?.priority = .defaultHigh
         widthConstraint?.isActive = true
         refreshTitles()
         refreshAccessibility()
         lastLayoutBounds = .zero
+        framesDirty = true
         needsLayout = true
+    }
+
+    /// Room for any symbol at 13 pt: sized from the image, symbols drew clipped.
+    private func iconSize(_ index: Int) -> NSSize { NSSize(width: 18, height: 18) }
+    private func nameSize(_ index: Int) -> NSSize {
+        let size = names[index].intrinsicContentSize
+        return NSSize(width: ceil(size.width) + 2, height: ceil(size.height))
+    }
+
+    /// Symbol and name together.
+    private func expandedContentWidth(_ index: Int) -> CGFloat {
+        iconSize(index).width + Self.iconGap + nameSize(index).width
+    }
+
+    /// Each segment's frame: equal widths, or (expanding) narrow ones with the selected one wide.
+    private func segmentFrames() -> [NSRect] {
+        let count = buttons.count
+        guard count > 0 else { return [] }
+        guard expandsSelected else {
+            let width = bounds.width / CGFloat(count)
+            return (0..<count).map { NSRect(x: CGFloat($0) * width, y: 0, width: width, height: bounds.height) }
+        }
+        var x: CGFloat = selectedIndex < 0 ? (bounds.width - Self.collapsedWidth * CGFloat(count)) / 2 : 0
+        return (0..<count).map { index in
+            let width = index == selectedIndex ? expandedWidth : Self.collapsedWidth
+            defer { x += width }
+            return NSRect(x: x, y: 0, width: width, height: bounds.height)
+        }
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
@@ -152,28 +224,63 @@ final class SlidingSegmentedControl: NSView {
         didSet { buttons.forEach { $0.menu = menu } }
     }
 
-    // Manual layout: equal-width segments, thumb under the selected one.
+    // Manual layout: the segments, thumb under the selected one.
     override func layout() {
         super.layout()
         track.frame = bounds
-        let width = bounds.width / CGFloat(max(buttons.count, 1))
-        for (index, button) in buttons.enumerated() {
-            let titleWidth = min(button.intrinsicContentSize.width, width)
-            // On the title's centre line, just after it — a dot riding up like a superscript read
-            // as misaligned. Title and dot centre as one group, so the dot never crowds the edge.
-            let dot = DS.StatusDot.diameter
-            let shift = badges[index].isHidden ? 0 : (DS.Spacing.s + dot) / 2
-            button.frame = NSRect(x: CGFloat(index) * width - shift, y: 0, width: width, height: bounds.height)
-            badges[index].frame = NSRect(x: (width + titleWidth) / 2 + DS.Spacing.s, y: (bounds.height - dot) / 2, width: dot, height: dot)
-        }
-        // Snap the thumb only when the control actually resized — selecting re-tints a label,
-        // which schedules a layout pass that would otherwise teleport the thumb mid-slide.
-        if bounds != lastLayoutBounds {
+        // Snap only when the control actually resized or its segments changed — selecting
+        // re-tints a label, which schedules a layout pass that would otherwise teleport the
+        // thumb (and, expanding, the segments) mid-slide.
+        if bounds != lastLayoutBounds || framesDirty {
             lastLayoutBounds = bounds
+            framesDirty = false
+            placeSegments()
             thumbContainer.frame = thumbFrame(for: max(selectedIndex, 0))
             thumbContainer.subviews.first?.frame = thumbContainer.bounds
         }
         thumbContainer.isHidden = selectedIndex < 0
+    }
+
+    private func placeSegments(animated: Bool = false) {
+        for (index, (button, frame)) in zip(buttons, segmentFrames()).enumerated() {
+            var titleWidth = min(button.intrinsicContentSize.width, frame.width)
+            if expandsSelected {
+                let expanded = index == selectedIndex
+                let icon = iconSize(index), name = nameSize(index)
+                let contentWidth = expanded ? expandedContentWidth(index) : icon.width
+                titleWidth = contentWidth
+                let iconX = ((frame.width - contentWidth) / 2).rounded()
+                let iconFrame = NSRect(x: iconX, y: ((frame.height - icon.height) / 2).rounded(), width: icon.width, height: icon.height)
+                let nameFrame = NSRect(x: iconX + icon.width + Self.iconGap, y: ((frame.height - name.height) / 2).rounded(), width: name.width, height: name.height)
+                if animated {
+                    let icon = icons[index], name = names[index]
+                    DS.Motion.animate(DS.Motion.snappy, {
+                        icon.animator().frame = iconFrame
+                        name.animator().frame = nameFrame
+                        if expanded { name.animator().alphaValue = 1 }
+                    })
+                    // Gone at once as its segment starts to narrow: even a short fade left a
+                    // clipped stub of it behind for a frame or two.
+                    if !expanded { name.alphaValue = 0 }
+                } else {
+                    icons[index].frame = iconFrame
+                    names[index].frame = nameFrame
+                    names[index].alphaValue = expanded ? 1 : 0
+                }
+                button.toolTip = expanded ? nil : titles[index]
+            }
+            // On the title's centre line, just after it — a dot riding up like a superscript read
+            // as misaligned. Title and dot centre as one group, so the dot never crowds the edge.
+            let dot = DS.StatusDot.diameter
+            let shift = badges[index].isHidden ? 0 : (DS.Spacing.s + dot) / 2
+            let target = frame.offsetBy(dx: -shift, dy: 0)
+            if animated {
+                DS.Motion.animate(DS.Motion.snappy, { button.animator().frame = target })
+            } else {
+                button.frame = target
+            }
+            badges[index].frame = NSRect(x: (frame.width + titleWidth) / 2 + DS.Spacing.s, y: (bounds.height - dot) / 2, width: dot, height: dot)
+        }
     }
 
     /// Where a segment's title starts and its dot ends, in the control's coordinates.
@@ -185,37 +292,55 @@ final class SlidingSegmentedControl: NSView {
 
     /// No segment selected (the window is on a stage the control doesn't show): no thumb.
     func clearSelection() {
+        let previous = selectedIndex
         selectedIndex = -1
         thumbContainer.isHidden = true
+        if expandsSelected, buttons.indices.contains(previous) {
+            framesDirty = true
+            needsLayout = true
+        }
         refreshTitles()
         refreshAccessibility()
     }
 
     private func thumbFrame(for index: Int) -> NSRect {
-        let width = bounds.width / CGFloat(max(buttons.count, 1))
-        return NSRect(x: CGFloat(index) * width + 2, y: 2, width: width - 4, height: bounds.height - 4)
+        let frames = segmentFrames()
+        guard frames.indices.contains(index) else { return .zero }
+        return frames[index].insetBy(dx: 2, dy: 2)
     }
 
     func select(_ index: Int, animated: Bool) {
         guard buttons.indices.contains(index) else { return }
         let wasHidden = thumbContainer.isHidden
+        let previous = selectedIndex
         thumbContainer.isHidden = false
         selectedIndex = index
+        _ = previous
         refreshTitles()
         refreshAccessibility()
-        guard animated, !wasHidden else {
+        guard animated, !wasHidden, !DS.Motion.reduceMotion else {
+            placeSegments()
             thumbContainer.frame = thumbFrame(for: index)
             thumbContainer.subviews.first?.frame = thumbContainer.bounds
             return
         }
-        DS.Motion.animate(DS.Motion.snappy, crossfading: self, {
+        if expandsSelected { placeSegments(animated: true) }
+        DS.Motion.animate(DS.Motion.snappy, crossfading: expandsSelected ? nil : self, {
             thumbContainer.animator().frame = thumbFrame(for: index)
         })
+        // Committed now: a stage that takes a moment to show (the Terminal's first visit) used
+        // to hold the run loop until the slide was over, so it was never seen.
+        CATransaction.flush()
     }
 
     private func refreshTitles() {
         for (index, button) in buttons.enumerated() {
-            button.contentTintColor = index == selectedIndex ? .labelColor : .secondaryLabelColor
+            let color: NSColor = index == selectedIndex ? .labelColor : .secondaryLabelColor
+            button.contentTintColor = color
+            if icons.indices.contains(index) {
+                icons[index].contentTintColor = color
+                names[index].textColor = color
+            }
         }
     }
 

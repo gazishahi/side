@@ -580,7 +580,7 @@ final class ShellViewController: NSViewController {
             guard let self, self.visibleStages.indices.contains(index) else { return }
             self.show(self.visibleStages[index])
         }
-        stageControl.showsSymbols = true
+        stageControl.expandsSelected = true
         // The symbols come with the segments: set here, since the refresh only sets segments
         // when the visible stages change, and at launch they don't (no icons, 2026-11-04).
         stageControl.setSegments(visibleStages.map(\.title), symbols: visibleStages.map(\.symbol), selected: stageControl.selectedIndex)
