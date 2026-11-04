@@ -163,6 +163,7 @@ class GlassPill: NSView {
     private let label = NSTextField(labelWithString: "")
     private let countBadge = CountBadge()
     private let ring = ProgressRing()
+    private let markSlot = NSView()
     private let dot = DS.StatusDot(state: .failed)
     let row = NSStackView()
     private var glass: NSView?
@@ -191,14 +192,28 @@ class GlassPill: NSView {
         // window past the screen's edge (the owner, 2026-11-04).
         label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(480), for: .horizontal)
         label.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxTitleWidth).isActive = true
-        row.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        // Between the two: the title truncates before the row clips it, and neither widens the
+        // window. Low (250), the row clipped the pill short instead of truncating its title.
+        row.setClippingResistancePriority(NSLayoutConstraint.Priority(490), for: .horizontal)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = DS.Spacing.s
         row.detachesHiddenViews = true
         row.translatesAutoresizingMaskIntoConstraints = false
         countBadge.isHidden = true
-        for view in [ring, dot, label, countBadge] as [NSView] { row.addArrangedSubview(view) }
+        // The ring and the dot share one slot, the ring's size, so a pill whose mark changes
+        // (working, then finished) keeps its width.
+        markSlot.translatesAutoresizingMaskIntoConstraints = false
+        for view in [ring, dot] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            markSlot.addSubview(view)
+            NSLayoutConstraint.activate([view.centerXAnchor.constraint(equalTo: markSlot.centerXAnchor), view.centerYAnchor.constraint(equalTo: markSlot.centerYAnchor)])
+        }
+        NSLayoutConstraint.activate([
+            markSlot.widthAnchor.constraint(equalToConstant: ProgressRing.diameter),
+            markSlot.heightAnchor.constraint(equalToConstant: ProgressRing.diameter),
+        ])
+        for view in [markSlot, label, countBadge] as [NSView] { row.addArrangedSubview(view) }
         addSubview(row)
         let inset = glass ? DS.Spacing.l : DS.Spacing.s
         NSLayoutConstraint.activate([
@@ -230,19 +245,29 @@ class GlassPill: NSView {
     }
 
     /// The words it keeps room for, so a count going up (5%, 50%, 100%) never resizes it.
+    /// A title's width in the pill's font.
+    static func measure(_ title: String) -> CGFloat {
+        (title as NSString).size(withAttributes: [.font: titleFont]).width
+    }
+
     func reserveWidth(for title: String?) {
         // Measured as the label measures itself, padding included.
         let width = title.map { title -> CGFloat in
             let probe = NSTextField(labelWithString: title)
             probe.font = label.font
             // A few points over: the label measured a little wider on screen than off it.
-            return ceil(probe.intrinsicContentSize.width) + 6
+            return min(ceil(probe.intrinsicContentSize.width) + 6, Self.maxTitleWidth)
         } ?? 0
         guard width != reservedWidth.constant || reservedWidth.isActive != (width > 0) else { return }
         reservedWidth.constant = width
         reservedWidth.isActive = width > 0
     }
-    private lazy var reservedWidth = label.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
+    // Below the window's own size, as the title's resistance is: room kept, never room taken.
+    private lazy var reservedWidth: NSLayoutConstraint = {
+        let constraint = label.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
+        constraint.priority = NSLayoutConstraint.Priority(470)
+        return constraint
+    }()
 
     /// A capsule tinted for a state that's done and waiting on you, as an update ready to
     /// relaunch is: the color fills the glass and the words go white. Nil is plain glass.
@@ -282,6 +307,7 @@ class GlassPill: NSView {
         if changingInPlace, wordsChange { DS.Motion.crossfade(row) }
         label.stringValue = title
         setAccessibilityLabel(title)
+        markSlot.isHidden = mark == .none
         switch mark {
         case .none:
             ring.isHidden = true

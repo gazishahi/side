@@ -175,8 +175,9 @@ final class ChromeHost {
         cluster.alignment = .centerY
         cluster.spacing = DS.Spacing.m
         cluster.detachesHiddenViews = true
-        // As the top row's: what the cluster holds never sizes the window.
-        cluster.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        // What the cluster holds never sizes the window (500), and its pills' titles truncate
+        // (480) before it clips them: at 250 a long one was cut off under its neighbour.
+        cluster.setClippingResistancePriority(NSLayoutConstraint.Priority(490), for: .horizontal)
         cluster.translatesAutoresizingMaskIntoConstraints = false
         trailingCluster = cluster
         for piece in [projectChip, pillCapsule, stagesCapsule, cluster] as [NSView] { root.addSubview(piece) }

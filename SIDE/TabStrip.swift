@@ -776,6 +776,14 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
     private var backingScale: CGFloat { window?.backingScaleFactor ?? 2 }
 
+    /// On one clock for every tab: each tab's light at the same point of its cycle, whenever its
+    /// work began, so several working tabs move as one rather than each its own way (the owner,
+    /// 2026-11-04: the edge light "overstimulating … on multiple terminal tabs").
+    private static func inStep(_ animation: CABasicAnimation) {
+        let now = CACurrentMediaTime()
+        animation.beginTime = now - fmod(now, animation.duration)
+    }
+
     private func shimmerLayers(reduce: Bool) -> [CALayer] {
         guard workingTextRect.width > 0 else { return [] }
         let text = CATextLayer()
@@ -797,6 +805,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         sweep.toValue = [1, 1.15, 1.3]
         sweep.duration = 1.6
         sweep.repeatCount = .infinity
+        Self.inStep(sweep)
         band.add(sweep, forKey: "shimmer")
         return [band]
     }
@@ -819,6 +828,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
                 run.toValue = -perimeter
                 run.duration = 2.2
                 run.repeatCount = .infinity
+                Self.inStep(run)
                 stroke.add(run, forKey: "edge")
             }
             return stroke
@@ -844,6 +854,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         drift.duration = 2.4
         drift.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         drift.repeatCount = .infinity
+        Self.inStep(drift)
         band.add(drift, forKey: "glint")
         return [band]
     }

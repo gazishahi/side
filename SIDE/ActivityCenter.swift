@@ -136,10 +136,7 @@ final class ActivityCenter {
                                  program: nil, target: .agent(project: project, trackKey: track.branchName)))
             }
         }
-        if case .downloading(let fraction) = Updates.shared.driver.stage {
-            let percent = fraction.map { " \(Int(($0 * 100).rounded()))%" } ?? ""
-            next.append(Item(id: "update", state: .working, title: "Side update", place: "Downloading\(percent)", program: nil, target: .update))
-        }
+        // An update downloading isn't listed: its own pill, beside this one, says so already.
         next.sort { ($0.state.rank, $0.title) < ($1.state.rank, $1.title) }
         guard next != items else { return }
         items = next
@@ -218,6 +215,10 @@ final class ActivityPill {
             let mark: GlassPill.Mark = first.state == .working ? .ring(fraction: nil) : .dot(first.state.status)
             view.set(title: Self.summary(items), mark: mark)
             view.setCount(items.count - 1)
+            // As wide as its longest state, so "working" turning "finished" doesn't resize it.
+            let states: [ActivityCenter.Item.State] = [.working, .needsYou, .finished, .failed]
+            view.reserveWidth(for: states.map { Self.summary([ActivityCenter.Item(id: "", state: $0, title: first.title, place: "", program: nil, target: .update)]) }
+                .max { GlassPill.measure($0) < GlassPill.measure($1) })
             view.toolTip = items.map { "\($0.title) \u{2014} \($0.state.word), \($0.place)" }.joined(separator: "\n")
         }
         view.setShown(!items.isEmpty, animated: animated)

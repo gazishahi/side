@@ -39,6 +39,14 @@ Code, so the paths that broke were never run. Fixed first:
   size. Known leftover: a powerline prompt's right segment can come back on its own row; likely a
   character-width difference between the keeper's engine (ghostty) and SwiftTerm. Not yet fixed.
 
+- **Running Terminals**, seen populated for the first time: the End buttons were cut off and
+  stretched, and labels sat at the rows' tops. Agents show by name ("Claude Code").
+- **Working tabs move in step:** every tab's shimmer, edge light or glint runs on one clock, so
+  several working tabs move as one (the owner's worry about the edge light on many tabs).
+- **A slip, caught:** I committed one batch while its test run had failed (a new doc's status
+  word wasn't an allowed one); the commit was undone at once, never pushed, and redone after a
+  passing run.
+
 New RFC: `docs/SIDE_RFC_SHARED_CLAUDE_SESSIONS.md`. Terminal and Agent can share Claude Code chats;
 verified in the adapter (it lists and reopens the CLI's own sessions).
 
