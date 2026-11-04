@@ -1,0 +1,4 @@
+# Build output: rebuilt by scripts/build-ghostty.sh and scripts/make-workloads.sh
+*.xcframework/
+.ghostty/
+workloads/
