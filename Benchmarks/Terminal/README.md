@@ -17,6 +17,7 @@ terminal, measured the same way.
   - `TermBenchST`: setups A and B
   - `TermBenchGV`: setup C
   - `TermBenchGK`: setup D
+- `Keeper/keeper.c` is the prototype session keeper behind the memory figures in `docs/SIDE_RFC_SESSION_RESTORE.md`: a PTY and a headless libghostty-vt terminal, measured idle, with full scrollback, and compressed.
 - `scripts/` holds the build, workload, suite and summary scripts.
 - `results/` holds the raw results the write-up was made from, plus `memory/`, the `footprint` breakdowns.
 
@@ -45,5 +46,5 @@ TermBench/.build/release/TermBenchGV --setup C --workload workloads/tui.bin --co
 
 - Same font (Menlo 13), colors and command for all four. Each window is sized from its engine's own cell metrics, so every setup gets the same grid.
 - The clock starts when the shell, already waiting on `read`, gets its line. No setup's startup is counted, Ghostty's `login` wrapper included.
-- libghostty-vt runs with grapheme clustering (mode 2027) on, as Ghostty.app does.
+- libghostty-vt runs with grapheme clustering (mode 2027) on, as Ghostty.app does, and with its default 10,000-byte scrollback cap removed (it overrides the line limit).
 - Check the screenshots before trusting a number. Two invalid runs were caught that way.

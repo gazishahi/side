@@ -2,7 +2,13 @@
 
 Status: decisions pending — benchmark findings (2026-11-03) for choosing Run's terminal engine; nothing here is built into Side yet.
 
-**Result: libghostty-vt drawn by Alloy (setup C) came out ahead overall.** It matched full Ghostty on bulk output, used the least CPU of the four, and drew frames 5–35× cheaper than Side's current CoreText path, ultrawide included. Its one weak spot is keypress latency: today's SwiftTerm view is still the quickest (6.8 ms median idle, against C's 11–15 ms). That gap comes from how frames are presented, and the prototype hasn't been tuned for it yet.
+**Result: libghostty-vt drawn by Alloy (setup C) came out ahead overall.** It used the least CPU of the four, scaled best with many sessions, and drew frames 5–35× cheaper than Side's current CoreText path, ultrawide included. It has two weak spots:
+- **Throughput:** full Ghostty (D) is 6–63% ahead of it on bulk output, because C's reader and renderer share a lock.
+- **Keypress latency:** today's SwiftTerm view is still the quickest (6.8 ms median idle, against C's 12–14 ms). That gap comes from how frames are presented.
+
+The prototype hasn't been tuned for either yet.
+
+**Correction, 2026-11-03.** The first version of this report understated C's work. libghostty-vt's C API caps scrollback at 10,000 bytes by default, which silently overrode the 10,000-line limit, so C kept about 390 rows. Every libghostty-vt result below was re-run with the cap removed. The biggest change: plain text emulator-only went from 856 to 462 MB/s, and C's end-to-end plain-text throughput from 178 to 136 MB/s.
 
 ## The question
 
@@ -48,49 +54,49 @@ B and C share the same renderer, so any gap between them is the emulator. C and 
 - Each window is sized from that engine's own cell metrics, so all four get exactly the same grid.
 - The command is `sh -c 'read _; exec cat …'`. The clock starts only when the shell gets its line, so startup isn't counted. That includes Ghostty's `/usr/bin/login` wrapper.
 - libghostty-vt runs with grapheme clustering (mode 2027) on, as Ghostty.app does.
-- B and C use 10,000 lines of scrollback, and D Ghostty's 10 MB. A keeps the 500-line default Side ships today, which flatters A (see Other findings).
+- B and C use 10,000 lines of scrollback (for C with libghostty-vt's default 10,000-byte cap removed; see the correction above), and D Ghostty's 10 MB. A keeps the 500-line default Side ships today, which flatters A (see Other findings).
 - Every setup's final frame was checked by screenshot before its numbers counted. That caught two invalid runs, both fixed and re-run: a quoting bug that meant D never ran `cat`, and a spinning lock that starved B's frames.
 
 ## Throughput
 
-**Ghostty's emulator (C and D) handles 4–24× more output than SwiftTerm (A and B) in a real window.** On bulk output, C and D run near the PTY's ceiling of about 200 MB/s. Moving SwiftTerm off the main thread (B) barely helps it: SwiftTerm's parse is the limit, not where it runs.
+**Ghostty's emulator (C and D) handles 4–17× more output than Side today (A) in a real window.** On bulk output, D runs near the PTY's ceiling of about 200 MB/s, and C up to 160 MB/s. Moving SwiftTerm off the main thread (B) barely helps it: SwiftTerm's parse is the limit, not where it runs.
 
 End to end at 200×60, in MB/s (median of 3):
 
 | Workload | A (Side today) | B | C | D |
 | --- | --- | --- | --- | --- |
-| ascii | 31.5 | 34.7 | 177.8 | 222.3 |
-| colors | 13.6 | 24.6 | 142.2 | 199.3 |
-| unicode | 5.6 | 9.9 | 101.2 | 136.8 |
+| ascii | 31.5 | 34.7 | 136.4 | 222.3 |
+| colors | 13.6 | 24.6 | 137.0 | 199.3 |
+| unicode | 5.6 | 9.9 | 95.8 | 136.8 |
 | cursor | 11.7 | 10.7 | 50.5 | 58.4 |
-| tui | 20.8 | 24.3 | 159.9 | 168.8 |
-| scroll | 25.7 | 26.0 | 112.8 | 160.1 |
+| tui | 20.8 | 24.3 | 159.4 | 168.8 |
+| scroll | 25.7 | 26.0 | 112.7 | 160.1 |
 
 At 80×24, in MB/s:
 
 | Workload | A | B | C | D |
 | --- | --- | --- | --- | --- |
-| ascii | 39.9 | 39.4 | 186.0 | 201.0 |
-| colors | 24.9 | 25.1 | 112.8 | 159.1 |
-| unicode | 9.7 | 10.4 | 101.2 | 134.2 |
-| cursor | 11.9 | 1.8 | 76.7 | 94.0 |
-| tui | 21.4 | 22.1 | 147.6 | 162.9 |
+| ascii | 39.9 | 39.4 | 170.4 | 201.0 |
+| colors | 24.9 | 25.1 | 112.9 | 159.1 |
+| unicode | 9.7 | 10.4 | 95.9 | 134.2 |
+| cursor | 11.9 | 1.8 | 73.8 | 94.0 |
+| tui | 21.4 | 22.1 | 137.1 | 162.9 |
 | scroll | 31.9 | 32.0 | 147.6 | 167.9 |
 
 B's 1.8 MB/s on cursor at 80×24 comes from SwiftTerm's handling of a 10,000-line scrollback, covered under Other findings. Run-to-run spread was within about 20% for every cell.
 
-D stays 5–40% ahead of C on most workloads. The emulator is the same, so the gap is the host: Ghostty reads and parses on its own IO thread with nothing shared with drawing, while C's reader and frame snapshot share one lock.
+D is 6–63% ahead of C at 200×60 (most on plain text and scrolling, least on the TUI redraw). The emulator is the same, so the gap is the host: Ghostty reads and parses on its own IO thread with nothing shared with drawing, while C's reader and frame snapshot share one lock.
 
 **The emulator alone**, with no PTY or window (200×60, 10,000 lines of scrollback, median of 5), shows how far apart they really are. This is the headroom C and D have beyond what the PTY lets through:
 
 | Workload | SwiftTerm | libghostty-vt | Faster by |
 | --- | --- | --- | --- |
-| ascii | 45.8 MB/s | 856.4 MB/s | 18.7× |
-| colors | 30.5 MB/s | 292.0 MB/s | 9.6× |
-| unicode | 11.6 MB/s | 218.6 MB/s | 18.8× |
-| cursor | 11.8 MB/s | 71.6 MB/s | 6.1× |
-| tui | 29.1 MB/s | 626.4 MB/s | 21.5× |
-| scroll | 34.3 MB/s | 290.4 MB/s | 8.5× |
+| ascii | 47.7 MB/s | 461.9 MB/s | 9.7× |
+| colors | 31.4 MB/s | 288.6 MB/s | 9.2× |
+| unicode | 11.8 MB/s | 199.8 MB/s | 17.0× |
+| cursor | 12.2 MB/s | 73.2 MB/s | 6.0× |
+| tui | 29.5 MB/s | 623.4 MB/s | 21.1× |
+| scroll | 34.9 MB/s | 288.2 MB/s | 8.3× |
 
 Both emulators ended on identical screens for all six workloads, checked row by row.
 
@@ -102,16 +108,16 @@ CPU seconds to process each workload at 200×60, shown as main thread / whole pr
 
 | Workload | A (Side today) | B | C | D |
 | --- | --- | --- | --- | --- |
-| ascii | 1.06 / 1.43 | 0.11 / 1.04 | 0.03 / 0.18 | 0.003 / 0.36 |
+| ascii | 1.06 / 1.43 | 0.11 / 1.04 | 0.04 / 0.25 | 0.003 / 0.36 |
 | colors | 2.33 / 2.79 | 0.20 / 1.44 | 0.05 / 0.25 | 0.003 / 0.43 |
-| unicode | 2.77 / 3.05 | 0.20 / 1.75 | 0.04 / 0.18 | 0.003 / 0.27 |
+| unicode | 2.77 / 3.05 | 0.20 / 1.75 | 0.04 / 0.19 | 0.003 / 0.27 |
 | cursor | 1.35 / 1.55 | 0.11 / 1.56 | 0.03 / 0.34 | 0.004 / 0.43 |
 | tui | 0.69 / 0.89 | 0.05 / 0.70 | 0.03 / 0.11 | 0.002 / 0.17 |
 | scroll | 0.60 / 0.80 | 0.07 / 0.65 | 0.02 / 0.15 | 0.002 / 0.24 |
 
-- **D** keeps almost nothing on the main thread (≤ 4 ms), because Ghostty parses and renders on threads of its own. Its total is 1.5–2× C's: its renderer does more per frame, and it draws more frames.
+- **D** keeps almost nothing on the main thread (≤ 4 ms), because Ghostty parses and renders on threads of its own. Its total is 1.3–2.9× C's: its renderer does more per frame, and it draws more frames.
 - **C**'s main-thread time is the snapshot and the frame, since this prototype draws on the main thread. Moving drawing to its own thread, as Ghostty does, would bring it close to D's.
-- **Memory** (physical footprint after the run, 200×60): A 230–280 MB, B 178–240 MB, C 175–185 MB, D 194–214 MB.
+- **Memory** (physical footprint after the run, 200×60): A 230–280 MB, B 178–240 MB, C 174–204 MB, D 194–214 MB.
 
 ## Frame cost
 
@@ -121,15 +127,15 @@ Milliseconds per frame (median of 60), drawn offscreen at 2×. For B and C, CPU 
 
 | Grid | Workload | A full screen | B full screen | C full screen | A one row | B one row | C one row |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 80×24 | tui | 1.32 | 0.12 + 0.03 | 0.11 + 0.03 | 0.09 | 0.12 + 0.03 | 0.02 + 0.03 |
-| 80×24 | ascii | 0.60 | 0.13 + 0.03 | 0.13 + 0.10 | 0.08 | 0.13 + 0.03 | 0.02 + 0.10 |
-| 200×60 | tui | 4.51 | 0.19 + 0.10 | 0.18 + 0.10 | 0.18 | 0.43 + 0.14 | 0.04 + 0.10 |
-| 200×60 | ascii | 3.30 | 0.61 + 0.11 | 0.55 + 0.10 | 0.20 | 0.61 + 0.11 | 0.04 + 0.10 |
-| 440×96 | tui | 10.87 | 0.35 + 0.29 | 0.30 + 0.29 | 0.19 | 0.89 + 0.29 | 0.04 + 0.29 |
-| 440×96 | ascii | 10.26 | 1.86 + 0.54 | 1.66 + 0.33 | 0.20 | 1.84 + 0.53 | 0.07 + 0.33 |
+| 80×24 | tui | 1.32 | 0.12 + 0.03 | 0.11 + 0.05 | 0.09 | 0.12 + 0.03 | 0.02 + 0.05 |
+| 80×24 | ascii | 0.60 | 0.13 + 0.03 | 0.12 + 0.10 | 0.08 | 0.13 + 0.03 | 0.02 + 0.09 |
+| 200×60 | tui | 4.51 | 0.19 + 0.10 | 0.17 + 0.10 | 0.18 | 0.43 + 0.14 | 0.03 + 0.10 |
+| 200×60 | ascii | 3.30 | 0.61 + 0.11 | 0.56 + 0.10 | 0.20 | 0.61 + 0.11 | 0.04 + 0.10 |
+| 440×96 | tui | 10.87 | 0.35 + 0.29 | 0.31 + 0.29 | 0.19 | 0.89 + 0.29 | 0.05 + 0.29 |
+| 440×96 | ascii | 10.26 | 1.86 + 0.54 | 1.58 + 0.31 | 0.20 | 1.84 + 0.53 | 0.06 + 0.31 |
 
 - A's figures are CPU only. Its pixels then go to Core Animation, whose compositing cost isn't included.
-- **A one-row change costs C almost nothing (0.02–0.07 ms CPU).** libghostty-vt reports exactly which rows changed. SwiftTerm's dirty range is coarse: a one-row change through save/restore cursor marks a span of rows, so B copies and rebuilds nearly a full screen (0.6–1.8 ms).
+- **A one-row change costs C almost nothing (0.02–0.06 ms CPU).** libghostty-vt reports exactly which rows changed. SwiftTerm's dirty range is coarse: a one-row change through save/restore cursor marks a span of rows, so B copies and rebuilds nearly a full screen (0.6–1.8 ms).
 - The "full screen" tui rows change only the bottom ~18 rows (the TUI's region), which is why tui costs less than ascii scrolling.
 - GPU time is flat at 0.1–0.5 ms: one instanced draw of every quad on screen.
 
@@ -143,11 +149,11 @@ Six sessions at 200×60, one shown, five hidden, each at about 260 KB/s for 10 s
 | --- | --- | --- | --- |
 | A (Side today) | 2.74 s | 3.28 s | 78 MB |
 | B | 0.30 s | 1.97 s | 177 MB |
-| C | 0.36 s | 0.83 s | 176 MB |
+| C | 0.31 s | 0.79 s | 176 MB |
 | D | 0.32 s | 1.40 s | 324 MB |
 
 - A parses hidden tabs on the main thread too. B, C and D parse them on background threads and draw only the visible one.
-- C did the whole job on 0.83 s of CPU: 60% of D, 42% of B, 25% of A.
+- C did the whole job on 0.79 s of CPU: 56% of D, 40% of B, 24% of A.
 - D's footprint is the largest, but not because of its emulator; see the breakdown below. A's is the smallest, partly because its scrollback is 500 lines, not 10,000.
 - Wall time (12–14 s) is set by the shell's sleep loop, not the terminal, so it isn't compared.
 
@@ -172,21 +178,23 @@ Process CPU (main-thread CPU in brackets), and footprint:
 
 | Sessions | A (Side today) | B | C | D |
 | --- | --- | --- | --- | --- |
-| 1 | 1.76 s (1.67), 74 MB | 0.69 s (0.29), 175 MB | 0.48 s (0.28), 176 MB | 0.78 s (0.35), 195 MB |
-| 6 | 3.35 s (2.80), 78 MB | 2.07 s (0.33), 177 MB | 0.89 s (0.36), 176 MB | 1.70 s (0.38), 323 MB |
-| 12 | 4.03 s (3.26), 82 MB | 3.45 s (0.29), 182 MB | 0.95 s (0.29), 177 MB | 2.12 s (0.24), 478 MB |
-| 24 | 5.39 s (4.16), 90 MB | 4.15 s (0.22), 190 MB | 1.02 s (0.22), 178 MB | 1.88 s (0.20), 750 MB |
+| 1 | 1.76 s (1.67), 74 MB | 0.69 s (0.29), 175 MB | 0.53 s (0.28), 175 MB | 0.78 s (0.35), 195 MB |
+| 6 | 3.35 s (2.80), 78 MB | 2.07 s (0.33), 177 MB | 0.78 s (0.30), 177 MB | 1.70 s (0.38), 323 MB |
+| 12 | 4.03 s (3.26), 82 MB | 3.45 s (0.29), 182 MB | 0.89 s (0.26), 177 MB | 2.12 s (0.24), 478 MB |
+| 24 | 5.39 s (4.16), 90 MB | 4.15 s (0.22), 190 MB | 1.07 s (0.24), 178 MB | 1.88 s (0.20), 750 MB |
 
-- **C** parses hidden sessions on background threads at libghostty-vt's speed and draws only the one shown. That's why its cost barely grows: 24 sessions cost 2.1× one session.
+- **C** parses hidden sessions on background threads at libghostty-vt's speed and draws only the one shown. That's why its cost barely grows: 24 sessions cost 2× one session.
 - **D** has the same emulator, but every session is a full surface with its own renderer and framebuffers, hidden or not. Memory grows linearly, reaching 750 MB at 24. Its CPU at 24 (1.88 s) came in below 12 (2.12 s) in both runs; why isn't known, so treat the 12–24 range as roughly flat.
 - **A** does everything on the main thread. At 24 sessions the main thread was busy 4.2 s of about 12.5, a third of the time, before you type anything.
 - **B** shows that the emulator decides CPU: the same renderer as C, but SwiftTerm's parse makes it grow 6× from 1 to 24.
+
+**What this load doesn't exercise: scrollback.** A Claude-shaped redraw happens in place, so these sessions kept almost no scrollback. Output that scrolls adds up to about 16 MB per session at 10,000 lines and 200 columns of plain text, in C and D alike, about 1.3 MB once compressed (`docs/SIDE_RFC_SESSION_RESTORE.md`, Memory). D's framebuffers come on top of that.
 
 **The cost of C's approach:** a hidden session has no frame ready, so showing it means building one. At 200×60 that's under 1 ms (Frame cost), well inside one frame.
 
 ## Keypress latency
 
-**Side's current CoreText view had the lowest latency: 6.8 ms median idle. C and B ran at 11–15 ms and D at about 20–22 ms.** All four stayed under 27 ms at the 95th percentile. That's below one frame at 60 Hz plus a little, and not something you'd feel day to day, but it's the one place C is behind A.
+**Side's current CoreText view had the lowest latency: 6.8 ms median idle. C and B ran at 12–15 ms and D at about 20–22 ms.** All four stayed under 27 ms at the 95th percentile. That's below one frame at 60 Hz plus a little, and not something you'd feel day to day, but it's the one place C is behind A.
 
 Key to pixels on screen, in ms (median across 3 runs):
 
@@ -194,7 +202,7 @@ Key to pixels on screen, in ms (median across 3 runs):
 | --- | --- | --- | --- | --- | --- |
 | A (Side today) | 6.8 | 16.6 | 4.2 | 9.1 | 15.3 |
 | B | 14.7 | 17.0 | 5.5 | 11.5 | 17.0 |
-| C | 14.7 | 16.6 | 5.9 | 11.4 | 17.1 |
+| C | 13.7 | 17.8 | 5.7 | 12.6 | 17.2 |
 | D | 21.9 | 26.2 | 12.2 | 20.3 | 25.8 |
 
 "Loaded" means five hidden sessions streaming at about 260 KB/s each.
@@ -203,7 +211,7 @@ Key to pixels on screen, in ms (median across 3 runs):
 - **What was tried:**
   - Drawing as soon as output arrives, rather than at the next display-link tick, and cutting the drawables in flight from 3 to 2: about 15 → 12 ms. This is in the numbers above.
   - Presenting with the Core Animation transaction (`presentsWithTransaction`): worse, 16–17 ms. Reverted.
-- **B and C were slower idle than loaded (14.7 vs 11.4 ms).** The likely cause is ProMotion dropping the refresh rate when the screen is quiet, which delays a lone Metal frame. An earlier single run measured C at 12.9 ms idle. The best-case numbers (5–6 ms) show the pipeline can match A when a frame lines up.
+- **B and C were slower idle than loaded (B 14.7 vs 11.5 ms, C 13.7 vs 12.6 ms).** The likely cause is ProMotion dropping the refresh rate when the screen is quiet, which delays a lone Metal frame. An earlier single run measured C at 12.9 ms idle. The best-case numbers (5–6 ms) show the pipeline can match A when a frame lines up.
 - **D is consistently slowest.** Ghostty draws on its own vsync-paced render thread, after its IO thread has parsed; that's a design that favors throughput. Two checks that this isn't the harness's doing:
     - Telling Ghostty its display (`ghostty_surface_set_display_id`, as Ghostty.app does) changed nothing: 17.3–18.5 ms median with it, 17.5–18.2 ms without.
     - Ghostty's own `window-vsync = false` brought it to about 16 ms. Ghostty documents that trade: it keeps vsync on by default because rendering out of sync can cause kernel panics on macOS 14.4+.
@@ -213,6 +221,7 @@ Key to pixels on screen, in ms (median across 3 runs):
 ## Other findings
 
 - **SwiftTerm slows sharply with a long scrollback.** With 10,000 lines, the cursor workload at 80×24 ran at 1.8 MB/s and used 9.3 s of CPU. With Side's 500 lines it ran at 10.5 MB/s. Output that clears the screen often fills and trims scrollback constantly. Side couldn't raise its scrollback much on SwiftTerm without hitting this.
+- **libghostty-vt caps scrollback at 10,000 bytes by default.** The C API's byte limit wins over any line limit, so a host that sets 10,000 lines without clearing the byte limit (`GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES` to NULL) keeps about 390 rows. Side's integration has to clear it, and this report's first version didn't.
 - **libghostty-vt needs grapheme clustering turned on.** Mode 2027 is off by default in the library, and with it off, flags (🇯🇵) and ZWJ emoji (👩‍💻) split into their parts. Ghostty.app turns it on; Side would need to as well.
 - **Arabic is the one text-fidelity difference.** SwiftTerm's view lays out each row with CoreText, so Arabic comes out shaped and joined. C and D draw one letter per cell, unjoined, which is how Ghostty itself draws it. CJK, Korean, emoji, combining marks and box drawing matched across all four.
 - **Embedding full libghostty (D) has rough edges:**
@@ -227,7 +236,7 @@ Key to pixels on screen, in ms (median across 3 runs):
 - **B and C's renderer reuses only part of Alloy:** its glyph atlas and its quad shaders, unchanged. Alloy's document layout (CoreText line layout, folding, LaTeX and image replacements) isn't involved; a terminal grid doesn't need it. These numbers say nothing about the cost of that layer.
 - **B and C's renderer is a prototype written in an afternoon.** It has no selection, cursor styles, ligatures, IME (marked text), accessibility, mouse reporting or hyperlinks, and it rebuilds whole rows. Ghostty's renderer has years of tuning. Treat B and C's drawing numbers as roughly a floor for Alloy, and D's as a mature reference.
 - **The workloads are synthetic.** The tui workload is shaped like Claude Code's output but isn't a recording. A real capture replayed through all four is the most useful next test.
-- **The PTY caps end-to-end throughput at about 200 MB/s,** which compresses the C-vs-D gap. The emulator-only benchmark shows the uncapped difference.
+- **The PTY caps end-to-end throughput at about 200 MB/s,** which compresses the differences at the top. The emulator-only benchmark shows the uncapped difference.
 - **Latency is measured where the window server composites the window.** It doesn't include display scan-out or the panel. It's right for comparing the four setups, not as an absolute input-to-photon figure.
 - **A ran with 500 lines of scrollback** while the others had 10,000 lines (or 10 MB). With matching scrollback, A would be slower than shown.
 - **D's frame cost and frame counts weren't available,** because Ghostty renders on its own thread into its own surface.
@@ -238,7 +247,7 @@ Key to pixels on screen, in ms (median across 3 runs):
 
 **Why C:**
 
-- It's as fast as full Ghostty at bulk output and leaves SwiftTerm 4–24× behind.
+- It leaves SwiftTerm 4–17× behind at bulk output. Full Ghostty is still 6–63% ahead of it there, which is the lock to remove (next step 3).
 - It uses the least CPU of all four, under a single stream and with six sessions, and draws ultrawide frames in about 2 ms.
 - It keeps one text engine across Make and Run, so the editor and terminal look the same.
 - It uses half of D's memory with six sessions. That's because only the visible session holds framebuffers, a design C makes easy; the emulators themselves are equally lean.
@@ -255,7 +264,7 @@ Key to pixels on screen, in ms (median across 3 runs):
 1. **Replay a real Claude Code capture** through all four setups. Record it from Side's raw terminal data hook.
 2. **Close the latency gap to A**, with a target of ≤ 7 ms median. Try a `CAMetalDisplayLink`, present-at-time, and drawing on a thread of its own, and measure each with this harness.
 3. **Remove the lock contention between reader and renderer.** For example, double-buffer the render state, as Ghostty's own threads do. That's where C trails D on throughput.
-4. **Design session restore around it.** A small helper process could own each session's PTY and libghostty-vt terminal, so Side reattaches to live terminals after a quit. libghostty-vt runs headless, which is exactly what such a helper needs.
+4. **Session restore around it:** drafted in `docs/SIDE_RFC_SESSION_RESTORE.md`. A keeper process per session owns its PTY and a headless libghostty-vt terminal.
 5. **Build out the renderer's missing features** before switching Run over, then re-run this suite against the real thing.
 6. **Re-run on an external ultrawide display** when one is available.
 

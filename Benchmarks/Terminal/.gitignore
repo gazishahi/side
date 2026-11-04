@@ -2,3 +2,4 @@
 *.xcframework/
 .ghostty/
 workloads/
+Keeper/keeper

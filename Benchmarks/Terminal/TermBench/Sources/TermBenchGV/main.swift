@@ -17,6 +17,9 @@ final class GhosttySource: GridSource, @unchecked Sendable {
         ghostty_terminal_new(nil, &terminal, UInt16(cols), UInt16(rows))
         var lines = 10_000
         ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &lines)
+        // The C API's default byte limit is 10,000 bytes (about two pages, ~390 rows at 200
+        // columns), which silently overrides the line limit. Removed, so 10,000 lines are kept.
+        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, nil)
         // Grapheme clustering (mode 2027), on as in Ghostty.app: flags and ZWJ emoji are one cell.
         var clustering = GhosttyTerminalModeConfig()
         clustering.mode = ghostty_mode_new(2027, false)

@@ -1,6 +1,6 @@
 # Session restore: terminals you can always get back
 
-Status: decisions pending. Drafted 2026-11-03; revised with the owner's answers the same day. One decision remains (end of document).
+Status: decisions pending. Drafted 2026-11-03 and revised with the owner's decisions the same day; the memory plan (decision 7) awaits the owner's review.
 
 ## Why
 
@@ -67,9 +67,9 @@ one shared server.
 - **Isolation.** One server for everything (tmux's model) means one crash ends every session.
   That's the limitation weighed in the first draft. With a keeper per session, a crash costs one
   session, and Side never holds a terminal at all.
-- **Cost.** About 5–7 MB per session (a small process plus its terminal state), to be confirmed
-  by the measures below. Twenty-four sessions is roughly 150 MB, against roughly 30 MB for one
-  shared server. That's the price of the guarantee.
+- **Cost.** Measured with a prototype keeper (2026-11-03), a keeper process is 1.6 MB in Swift
+  (0.9 MB in C), and isolation costs only that much per session. The rest is scrollback, which
+  costs the same in one shared server. See Memory, below.
 - **Started by Side,** detached with `posix_spawn` and `POSIX_SPAWN_SETSID`, so it isn't Side's
   child and quitting Side doesn't end it. It's shipped in the app bundle (`Contents/Helpers/`),
   signed and notarized with Side. No launchd agent or login item: nothing it holds survives a
@@ -190,6 +190,31 @@ asks permission for once. Clicking the notification opens `side://run/<session i
 Side if needed and shows that tab. Several notifications within a few seconds from one project are
 grouped.
 
+### Memory
+
+The rule: a saving goes in only if it costs no speed and no feature. Measured with a prototype keeper (a PTY plus a headless libghostty-vt terminal, 10,000 lines of scrollback at 200 columns):
+
+| | Plain text | Colored text (worst case) | Unicode |
+| --- | --- | --- | --- |
+| Keeper process (Swift) | 1.6 MB | 1.6 MB | 1.6 MB |
+| Full scrollback, as written | 16.4 MB | 35.6 MB | 18.4 MB |
+| Full scrollback, compressed | 1.3 MB | 14.3 MB | 1.9 MB |
+| Compression, longest pause per step | 0.36 ms | 2.7 ms | 0.40 ms |
+| Snapshot of compressed scrollback | 5.1 ms | 19.7 ms | 11.1 ms |
+
+Scrollback is the memory, not the processes. A full plain-text scrollback is 10× the size of the keeper that holds it, and it would cost the same in one shared server. So:
+
+- **Compress scrollback when a session goes quiet** (libghostty-vt's incremental compression, after 5 s without output, stopping the moment output resumes). Nothing changes while output flows. Scrolling back into compressed history decompresses it transparently; a full-scrollback snapshot of compressed history took about as long as an uncompressed one. Text compresses 10–12×; heavily colored output about 2.5×.
+- **Write the keeper in Swift.** C would save 0.7 MB per session, about 17 MB at 24 sessions. That's not worth a second language in Side's codebase.
+- **Stream snapshots through a writer** (`ghostty_snapshot_encode` with a writer callback) to the socket or disk, never built whole in memory. Building one whole took up to 18 MB at once, and macOS reclaims freed memory lazily.
+
+At 24 sessions with full plain-text scrollback, that's about 70 MB in total (24 × 1.6 MB of processes, plus 24 × 1.3 MB of compressed scrollback). A Claude Code session that redraws in place keeps much less. The first draft's 150 MB estimate for processes alone was wrong.
+
+Not done, because each would cost speed or a feature:
+- Less scrollback: it's a feature.
+- One shared server: it gives up crash isolation for 0.7–1.6 MB per session.
+- Dropping Side's copy of hidden tabs' terminals and re-fetching on show: that would make switching tabs cost 5–20 ms, not under 1 ms.
+
 ### Updates
 
 Sparkle can replace Side while keepers keep running from the old build. The `hello` handshake
@@ -207,7 +232,8 @@ Targets, measured before this ships:
 | Keypress latency added by the keeper hop | ≤ 0.5 ms median |
 | End-to-end throughput through a keeper | ≥ 90% of direct |
 | Reattach to visible screen, 6 sessions with full scrollback | ≤ 150 ms |
-| Keeper memory per idle session | ≤ 7 MB |
+| Keeper memory per idle session, scrollback empty | ≤ 2 MB |
+| Keeper memory, full plain-text scrollback after compression | ≤ 4 MB |
 | Keeper CPU with no output | 0 (it blocks on reads) |
 | A snapshot write, 10,000 lines of scrollback | ≤ 20 ms, off the reading thread |
 
@@ -231,10 +257,7 @@ Tests:
 4. Agent tabs resume automatically after a restart.
 5. Detached sessions post notifications.
 6. Snapshots on disk are on by default, with the protections above.
-
-## Open decisions
-
-1. **The cost of one keeper per session.** The first estimate, about 5–7 MB each and around 150 MB at 24 sessions, was too much for the owner. Being reworked to cut it substantially.
+7. Memory comes down only through savings that cost no speed or feature (Memory, above): compression when idle, streamed snapshots, and Swift for the keeper.
 
 ## Not doing
 
