@@ -74,7 +74,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// instead of as a permanent first line of every conversation.
     /// One sentence and the one action that fixes it (§6): open a project, initialise git, start
     /// a track — Think works on a track — or, on a track with nothing said yet, just a line.
-    private let emptyState = DS.EmptyState()
+    /// The conversation's and the composer's widest: a reading column, centred.
+    static let columnWidth: CGFloat = 860
+    private let emptyState: DS.EmptyState = {
+        let state = DS.EmptyState()
+        state.symbol = ShellViewController.Stage.think.symbol
+        return state
+    }()
     /// Set by the shell, which performs empty-state actions.
     var onEmptyStateAction: ((EmptyStateAction) -> Void)?
     /// Opens a track in this window (a subtrack, from the strip).
@@ -302,6 +308,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         ]
         editingChipLeading = editingChip.leadingAnchor.constraint(equalTo: changesPill.trailingAnchor, constant: DS.Spacing.xl + DS.Spacing.s * 2)
         NSLayoutConstraint.activate(undockedPillConstraints + [editingChipLeading])
+        let column = NSLayoutGuide()
+        view.addLayoutGuide(column)
         NSLayoutConstraint.activate([
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -318,18 +326,36 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // instead of growing horizontally forever.
             transcriptContainer.widthAnchor.constraint(equalTo: transcriptScroll.contentView.widthAnchor),
             transcriptStack.topAnchor.constraint(equalTo: transcriptContainer.topAnchor),
-            transcriptStack.leadingAnchor.constraint(equalTo: transcriptContainer.leadingAnchor),
-            transcriptStack.trailingAnchor.constraint(equalTo: transcriptContainer.trailingAnchor),
+            // A readable column, centred: on an ultrawide window the conversation and its composer
+            // spanned the whole width (the visual audit, 2026-11-04).
+            transcriptStack.centerXAnchor.constraint(equalTo: transcriptContainer.centerXAnchor),
+            transcriptStack.widthAnchor.constraint(lessThanOrEqualToConstant: Self.columnWidth),
+            {
+                let fill = transcriptStack.widthAnchor.constraint(equalTo: transcriptContainer.widthAnchor)
+                // Under the window's stay-put priority (500): stronger, it sized the window itself
+                // down to the column.
+                fill.priority = NSLayoutConstraint.Priority(490)
+                return fill
+            }(),
             transcriptStack.bottomAnchor.constraint(equalTo: transcriptContainer.bottomAnchor),
             // The + sits beside the capsule, its glass circle bottom-aligned with it.
-            plusGlass.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: DS.Spacing.xxl),
+            column.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            column.widthAnchor.constraint(lessThanOrEqualToConstant: Self.columnWidth),
+            {
+                let fill = column.widthAnchor.constraint(equalTo: view.widthAnchor, constant: -DS.Spacing.xxl * 2)
+                // Under the window's stay-put priority (500): stronger, it sized the window itself
+                // down to the column.
+                fill.priority = NSLayoutConstraint.Priority(490)
+                return fill
+            }(),
+            plusGlass.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             plusGlass.bottomAnchor.constraint(equalTo: composer.bottomAnchor, constant: -3),
             plusGlass.widthAnchor.constraint(equalToConstant: 38),
             plusGlass.heightAnchor.constraint(equalToConstant: 38),
             plusButton.centerXAnchor.constraint(equalTo: plusGlass.centerXAnchor),
             plusButton.centerYAnchor.constraint(equalTo: plusGlass.centerYAnchor),
             composer.leadingAnchor.constraint(equalTo: plusGlass.trailingAnchor, constant: DS.Spacing.m),
-            composer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.xxl),
+            composer.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             composerBottom,
             // The session pill floats just above the composer's trailing corner.
             sessionGroup.topAnchor.constraint(equalTo: sessionPillGlass.topAnchor),

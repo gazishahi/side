@@ -24,7 +24,13 @@ final class ChromeTests: XCTestCase {
     /// Polish list (2026-11-03, 11-04): a tab shows its icon before its title, a working agent's
     /// tab shows the working indicator, and the ⌘ hints fade in over the ×.
     func testAWorkingTabShowsItsIndicatorAndHintsTakeTheSlot() {
+        // The edge light: it needs no drawn title to place itself, and this chip is never drawn.
+        let original = TabChipView.workingStyleDefaults
+        TabChipView.workingStyleDefaults = throwawayDefaults()
+        defer { TabChipView.workingStyleDefaults = original }
+        TabChipView.workingStyle = .edge
         let chip = TabChipView(frame: NSRect(x: 0, y: 0, width: 140, height: TabChipView.height))
+        chip.wantsLayer = true
         let close = TabCloseButton()
         chip.addSubview(close)
         chip.closeButton = close
@@ -72,6 +78,52 @@ final class ChromeTests: XCTestCase {
         terminal.noteTitleGlyph("vim main.swift")
         XCTAssertFalse(terminal.isProgramWorking)
         XCTAssertEqual(changes, 4)
+    }
+
+    /// The sweep after the visual audit (2026-11-04).
+    func testSameNamedTerminalTabsAreNumbered() {
+        XCTAssertEqual(RunWorkspaceViewController.distinctTitles(["app", "app", "vim", "app"]), ["app", "app 2", "vim", "app 3"])
+    }
+
+    func testTheStatusRowShowsAFolderOnlyAwayFromTheRoot() {
+        XCTAssertEqual(RunWorkspaceViewController.statusPath("/p/app", root: "/p/app"), "")
+        XCTAssertEqual(RunWorkspaceViewController.statusPath("/p/app/Sources/App", root: "/p/app/"), "Sources/App")
+        XCTAssertEqual(RunWorkspaceViewController.statusPath("/elsewhere", root: "/p/app"), "/elsewhere")
+    }
+
+    func testPaletteCommandsHaveTheirOwnSymbols() {
+        XCTAssertEqual(MakeWorkspaceViewController.commandSymbol("Go to Terminal"), ShellViewController.Stage.run.symbol)
+        XCTAssertEqual(MakeWorkspaceViewController.commandSymbol("Quick Open"), "doc.text.magnifyingglass")
+        XCTAssertEqual(MakeWorkspaceViewController.commandSymbol("Something new"), "command")
+    }
+
+    func testTheActivityPillSaysTheMostPressingThing() {
+        typealias Item = ActivityCenter.Item
+        let working = Item(id: "a", state: .working, title: "Claude Code", place: "app · tab", program: "claude", target: .update)
+        let finished = Item(id: "b", state: .finished, title: "Codex", place: "app · tab 2", program: "codex", target: .update)
+        XCTAssertEqual(ActivityPill.summary([working]), "Claude Code working")
+        XCTAssertEqual(ActivityPill.summary([finished, working]), "Codex finished \u{00B7} 1 more")
+        XCTAssertEqual(ActivityCenter.programName("/usr/local/bin/claude"), "Claude Code")
+        XCTAssertLessThan(Item.State.needsYou.rank, Item.State.working.rank)
+    }
+
+    /// Project switching (prototype, 2026-11-04): every project gets a symbol no other has, the
+    /// order wraps for swipes, a choice of color or symbol sticks, and closing takes it out.
+    func testProjectSpacesKeepTheirOrderSymbolsAndColors() {
+        let defaults = throwawayDefaults()
+        let spaces = ProjectSpaces(store: defaults)
+        let a = URL(fileURLWithPath: "/tmp/side-spaces/a"), b = URL(fileURLWithPath: "/tmp/side-spaces/b"), c = URL(fileURLWithPath: "/tmp/side-spaces/c/")
+        let first = spaces.space(for: a), second = spaces.space(for: b), third = spaces.space(for: c)
+        XCTAssertEqual(Set([first.symbol, second.symbol, third.symbol]).count, 3, "shape tells them apart, not only color")
+        XCTAssertEqual(spaces.space(for: a), first, "seen again, the same space")
+        XCTAssertEqual(spaces.neighbor(of: c, offset: 1)?.path, first.path, "the order wraps")
+        XCTAssertEqual(spaces.neighbor(of: a, offset: -1)?.path, third.path)
+        spaces.set(symbol: "leaf.fill", colorIndex: 7, for: b)
+        let reread = ProjectSpaces(store: defaults)
+        XCTAssertEqual(reread.space(for: b).symbol, "leaf.fill")
+        XCTAssertEqual(reread.space(for: b).colorIndex, 7)
+        reread.remove(b)
+        XCTAssertEqual(reread.spaces.map(\.path), [first.path, third.path])
     }
 
     func testAtLeastOneStageStaysPinnedAndPinsPersist() {

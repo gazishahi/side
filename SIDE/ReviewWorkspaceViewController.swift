@@ -18,7 +18,11 @@ final class ReviewWorkspaceViewController: NSViewController {
     private var currentWorkingDirectory: URL?
 
     /// One sentence and the one action that fixes it (§6).
-    private let emptyState = DS.EmptyState()
+    private let emptyState: DS.EmptyState = {
+        let state = DS.EmptyState()
+        state.symbol = ShellViewController.Stage.review.symbol
+        return state
+    }()
     var onEmptyStateAction: ((EmptyStateAction) -> Void)?
 
     // The top row: the track's intent, `branch → base · N ahead`, then Publish and Promote.

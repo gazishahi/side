@@ -196,8 +196,10 @@ final class TabStrip: NSObject {
         selection.alphaValue = 1
         guard items.count > 1 else {
             dismiss(keeping: items.first?.id)
+            showSolo(items.first)
             return
         }
+        showSolo(nil)
         let appearing = chips.isEmpty && bar.window?.isVisible == true && !bar.isHiddenOrHasHiddenAncestor
         let wasActive = chips.first(where: \.isActive)?.id
         let newIDs = items.map(\.id)
@@ -239,6 +241,65 @@ final class TabStrip: NSObject {
             bar.setTrackWidth(tabsWidth(), spring: nil)
             keepTabsInView()
             placeSelection()
+        }
+    }
+
+    /// One tab is no strip (the owner, 2026-11-04: no tab for a single item), but it still says
+    /// what's open: its name, plain, where the tab would start. It fades in as the strip goes.
+    private lazy var soloLabel: NSTextField = {
+        let label = NSTextField(labelWithString: "")
+        label.font = DS.Text.body(.medium)
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingMiddle
+        label.alphaValue = 0
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        bar.addSubview(label)
+        soloLeading = label.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 0)
+        NSLayoutConstraint.activate([
+            soloLeading!,
+            label.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -DS.Spacing.l),
+        ])
+        return label
+    }()
+    /// The tab's icon beside it, where the chip drew it, so the chip crossfades into the two.
+    private lazy var soloIcon: NSImageView = {
+        let view = NSImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.contentTintColor = .secondaryLabelColor
+        view.symbolConfiguration = .init(pointSize: 11, weight: .medium)
+        view.alphaValue = 0
+        view.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.centerXAnchor.constraint(equalTo: stack.leadingAnchor, constant: stack.edgeInsets.left + TabChipView.iconCenterX),
+            view.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            view.widthAnchor.constraint(equalToConstant: 14), view.heightAnchor.constraint(equalToConstant: 14),
+        ])
+        return view
+    }()
+    private var soloLeading: NSLayoutConstraint?
+    var soloTitleForTesting: String? { soloLabel.alphaValue > 0 || soloShown ? soloLabel.stringValue : nil }
+    private var soloShown = false
+
+    private func showSolo(_ item: Item?) {
+        let shown = item != nil
+        if let item {
+            soloLabel.attributedStringValue = TabChipView.label(title: item.title, detail: item.detail, attributes: [.font: DS.Text.body(.medium), .foregroundColor: NSColor.secondaryLabelColor])
+            soloLabel.toolTip = item.toolTip
+            soloIcon.image = item.icon
+            soloLeading?.constant = stack.edgeInsets.left + TabChipView.textX(hasIcon: item.icon != nil)
+        }
+        let views: [NSView] = [soloLabel, soloIcon]
+        guard shown != soloShown else { return }
+        soloShown = shown
+        guard bar.window != nil, !DS.Motion.reduceMotion else { views.forEach { $0.alphaValue = shown ? 1 : 0 }; return }
+        // In as the strip fades out over it (`dismiss`), out at once as a strip opens.
+        let delay = shown ? max(0, DS.Motion.snappy.duration - DS.Motion.fadeDuration * 1.3) : 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.soloShown == shown else { return }
+            DS.Motion.fade { views.forEach { $0.animator().alphaValue = shown ? 1 : 0 } }
         }
     }
 
@@ -601,10 +662,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
     }
     static let workingStyleKey = "tabs.workingStyle"
     static let workingStyleChanged = Notification.Name("SideTabWorkingStyleChanged")
+    static var workingStyleDefaults: UserDefaults = .standard
     static var workingStyle: WorkingStyle {
-        get { WorkingStyle(rawValue: UserDefaults.standard.string(forKey: workingStyleKey) ?? "") ?? .shimmer }
+        get { WorkingStyle(rawValue: workingStyleDefaults.string(forKey: workingStyleKey) ?? "") ?? .shimmer }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: workingStyleKey)
+            workingStyleDefaults.set(newValue.rawValue, forKey: workingStyleKey)
             NotificationCenter.default.post(name: workingStyleChanged, object: nil)
         }
     }
@@ -792,9 +854,10 @@ final class TabChipView: NSView, PointerHoverSyncing {
         return view
     }()
     private static let iconSize: CGFloat = 14
-    private static var iconCenterX: CGFloat { flare + 10 + iconSize / 2 }
+    static var iconCenterX: CGFloat { flare + 10 + iconSize / 2 }
     /// Where the title starts: after the icon when there is one.
-    private var textX: CGFloat { dragIcon == nil ? Self.flare + Self.textInset : Self.flare + 10 + Self.iconSize + 6 }
+    private var textX: CGFloat { Self.textX(hasIcon: dragIcon != nil) }
+    static func textX(hasIcon: Bool) -> CGFloat { hasIcon ? flare + 10 + iconSize + 6 : flare + textInset }
     var dragPreview: (() -> NSImage?)?
     /// Holds the slot closed while the tab is torn out of the strip.
     fileprivate var slotWidth: NSLayoutConstraint?

@@ -20,6 +20,32 @@ Findings are ranked by how often you'd see them, multiplied by how unfinished th
 look. Each has a proposed fix. Nothing here is fixed yet except the stage bar, which is at the
 end.
 
+## Where it stands (updated 04:30)
+
+The owner's answers, the same night: item 1 (content under the bar) is intentional, so the Liquid
+Glass shows; item 2 is wanted, but without a tab for a single item; items 3–8 are agreed. What
+was done is in `docs/SIDE_WORKLOG_2026-11-04.md`.
+
+| Item | State |
+|---|---|
+| 1. Content under the bar | Kept, by design |
+| 2. One file, no name | Done: the name and icon, plain, in the top row |
+| 3. One accent, one selection | Done for lists (Quick Open, palette, Settings, mentions); the Agent's mode colors are a question |
+| 4. Palette icons | Done |
+| 5. Dark-mode search button | Done |
+| 6. Changes on the base branch | Waits for git-derived tracks |
+| 7. Terminal status row and tab names | Done |
+| 8. Terminal reflow | Waits for the libghostty-vt move |
+| 9. Empty states | Done: stage symbol, no duplicate button |
+| 10. Branches is stock AppKit | Subtitle fixed; the rest waits for git-derived tracks |
+| 11. Track switcher popover | Gained the project row; still a stock popover |
+| 12. Track pill's idle ring | Done: the project's mark is there now |
+| 13. Problem count | Labeled as the project's |
+| 14. Preview inline code | Chips fixed; one uneven line left |
+| 15. Find's controls | Done |
+| 16. Ultrawide composer | Done |
+| 17. Running Terminals window | Not started (it could become the activity pill's "Show All") |
+
 ## Tier 1: seen every minute
 
 ### 1. Content runs under the bottom bar

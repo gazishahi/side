@@ -1090,8 +1090,16 @@ final class EditorParityTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         settle(0.3)
         let frameView = try XCTUnwrap(window.contentView?.superview)
-        let press = NSPoint(x: 300, y: window.frame.height - 14)
-        XCTAssertTrue(frameView.hitTest(frameView.convert(press, from: nil)) is TopRowView)
+        // A bare stretch of the top row: x 300 was one, until the stage bar narrowed to its
+        // symbols and moved a button under it (2026-11-04); a press on a button waits for a real
+        // mouse-up that never comes.
+        let bare = stride(from: 120, to: window.frame.width - 40, by: 10).map { NSPoint(x: $0, y: window.frame.height - 14) }
+            .first { frameView.hitTest(frameView.convert($0, from: nil)) is TopRowView }
+        let hits = stride(from: 40, to: window.frame.width - 40, by: 60).map { x -> String in
+            let view = frameView.hitTest(frameView.convert(NSPoint(x: x, y: window.frame.height - 14), from: nil))
+            return "\(Int(x)):\(view.map { String(describing: Swift.type(of: $0)) } ?? "nil")"
+        }
+        let press = try XCTUnwrap(bare, "no bare stretch of top row to drag by: \(hits.joined(separator: " "))")
         for (type, point) in [(NSEvent.EventType.leftMouseDown, press), (.leftMouseDragged, NSPoint(x: press.x + 20, y: press.y - 5)), (.leftMouseUp, NSPoint(x: press.x + 20, y: press.y - 5))] {
             window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))

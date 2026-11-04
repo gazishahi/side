@@ -596,12 +596,20 @@ final class ShellViewController: NSViewController {
             self?.tracksVC.newTrackTapped()
         }
         trackPill.onOpenTracks = { [weak self] in self?.show(.tracks) }
+        trackPill.onSwipeProject = { [weak self] offset in self?.switchProject(offset: offset) }
+        trackPill.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
         trackPill.onNewTrackNamed = { [weak self] name in
             self?.show(.tracks)
             self?.tracksVC.newTrack(prefill: name)
         }
 
         chrome.install(in: view, content: container)
+        // Above the track pill: where you landed after a project switch.
+        view.addSubview(projectIndicator)
+        NSLayoutConstraint.activate([
+            projectIndicator.leadingAnchor.constraint(equalTo: trackPill.leadingAnchor, constant: -DS.Spacing.xs),
+            projectIndicator.bottomAnchor.constraint(equalTo: trackPill.topAnchor, constant: -DS.Spacing.l - 6),
+        ])
         // Make's surface is the editor theme's: the top row follows it.
         for name in [EditorThemes.didChangeNotification, DS.Appearance.didChangeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -712,6 +720,7 @@ final class ShellViewController: NSViewController {
     var paletteLayerForTesting: CALayer? { paletteHost?.layer }
     func paletteOriginForTesting() -> NSRect { chrome.paletteOrigin(in: view) }
     var updatePillForTesting: UpdatePill? { chrome.updatePill }
+    var activityPillForTesting: ActivityPill? { chrome.activityPill }
     var searchFrameForTesting: NSRect { searchButton.convert(searchButton.bounds, to: view) }
 
     /// Every stage — pinned or not — and every Navigate menu item, by name.
@@ -862,6 +871,7 @@ final class ShellViewController: NSViewController {
             stateName: currentTrack.map { state($0).name } ?? "Base"
         )
         snapshot.projectName = projectURL?.lastPathComponent
+        snapshot.projectPath = projectURL?.path
         snapshot.isTornOut = isTornOut
         snapshot.branch = gitBranch.map { gitDirtyCount > 0 ? "\($0) · \(gitDirtyCount) changed" : $0 }
         if current == .make, let projectURL, let currentFileURL { snapshot.filePath = humanePath(for: currentFileURL, projectURL: projectURL) }
@@ -1151,10 +1161,78 @@ final class ShellViewController: NSViewController {
         return true
     }
 
+    /// The activity pill: the Terminal, on that session's tab, on whichever track holds it.
+    func revealTerminalSession(_ id: UUID) {
+        view.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+        show(.run)
+        if runVC.showSession(id: id) { return }
+        // On another track: switch to it, as picking the track would.
+        guard let context = projectContext,
+              let key = context.terminals.everySession().first(where: { $0.id == id }).flatMap({ session in
+                  trackStore?.tracks.first { context.terminals.sessions(forTrackKey: $0.branchName).contains { $0 === session } }?.branchName
+              }),
+              let track = trackStore?.tracks.first(where: { $0.branchName == key }) else { return }
+        switchToTrack(track, landOn: .run) { [weak self] outcome in
+            guard outcome != nil else { return }
+            self?.runVC.showSession(id: id)
+        }
+    }
+
+    // MARK: - Project switching (prototype, 2026-11-04)
+
+    private lazy var projectIndicator = ProjectIndicator()
+    var projectIndicatorForTesting: ProjectIndicator { projectIndicator }
+
+    /// This window moves to another project; the one it leaves stays open in the background, so
+    /// its terminals and agents carry on (and the activity pill can say what they're doing).
+    func switchProject(to url: URL) {
+        guard url.standardizedFileURL.path != projectURL?.standardizedFileURL.path else { projectIndicator.show(current: url); return }
+        confirmCloseAllUnsaved { [weak self] proceed in
+            guard let self, proceed else { return }
+            if let current = self.projectURL { ProjectSpaces.shared.hold(current) }
+            ProjectSpaces.shared.space(for: url)
+            self.openProject(at: url, focusingTrackKey: nil)
+            self.projectIndicator.show(current: url)
+        }
+    }
+
+    /// Previous or next project in the switcher's order (a swipe on the pill, ⌃⇥).
+    func switchProject(offset: Int) {
+        guard let projectURL, let space = ProjectSpaces.shared.neighbor(of: projectURL, offset: offset) else {
+            if let projectURL { projectIndicator.show(current: projectURL) }
+            return
+        }
+        switchProject(to: space.url)
+    }
+
+    /// The nth project (⌃1–9).
+    @objc func switchToProjectNumber(_ sender: NSMenuItem) {
+        let spaces = ProjectSpaces.shared.spaces
+        guard spaces.indices.contains(sender.tag) else { NSSound.beep(); return }
+        switchProject(to: spaces[sender.tag].url)
+    }
+
+    @objc func switchToNextProject(_ sender: Any?) { switchProject(offset: 1) }
+    @objc func switchToPreviousProject(_ sender: Any?) { switchProject(offset: -1) }
+
+    /// On the Terminal, on that session's tab: in sight.
+    func isShowingTerminalSession(_ id: UUID) -> Bool { current == .run && runVC.displayedSessionID == id }
+
+    /// The activity pill: the Agent stage on that track.
+    func revealAgent(trackKey: String) {
+        view.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+        if trackKey == (currentTrackKey ?? "") { show(.think); return }
+        guard let track = trackStore?.tracks.first(where: { $0.branchName == trackKey }) else { show(.think); return }
+        switchToTrack(track, landOn: .think) { _ in }
+    }
+
     /// Whether this window's Run has that keeper session among its own tabs.
     func listsTerminal(keeperID id: String) -> Bool { runVC.listsSession(keeperID: id) }
 
     var hasProject: Bool { projectURL != nil }
+    var projectRootURL: URL? { projectURL }
 
     private func show(_ stage: Stage) {
         guard current != stage else { return }
@@ -1645,6 +1723,7 @@ final class ShellViewController: NSViewController {
     }
 
     private func projectOpened(_ url: URL) {
+        ProjectSpaces.shared.space(for: url)
         // Opening a different project (or reopening after this window already had one) drops
         // this window's claim on whatever it held before — without this, the old project's
         // context would never hit zero refcount and would leak for the life of the app.

@@ -27,8 +27,19 @@ final class GlassCircleButton: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private var hasGlass = false
+
+    /// The disc's glass kept the appearance it was made in: after a switch to dark it stayed a
+    /// light disc beside dark pills until the window resized (visual audit, 2026-11-04). It's
+    /// made again for the new appearance.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        if hasGlass { setGlass(true) }
+    }
+
     /// Puts a glass disc behind the icon. Off in the top row, where it is a plain toolbar icon.
     func setGlass(_ on: Bool) {
+        hasGlass = on
         subviews.filter { $0 !== button }.forEach { $0.removeFromSuperview() }
         guard on else { return }
         let glass = DS.makeGlass(cornerRadius: diameter / 2)

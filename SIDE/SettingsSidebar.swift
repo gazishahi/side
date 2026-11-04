@@ -49,6 +49,9 @@ final class SidebarListController: NSViewController, NSTableViewDataSource, NSTa
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         table.style = .sourceList
+        // Selection is `DS.SelectionRowView`'s capsule; the source-list highlight also tinted the
+        // selected name with the accent.
+        table.selectionHighlightStyle = .regular
         table.headerView = nil
         table.rowHeight = 32
         table.addTableColumn(NSTableColumn(identifier: .init("item")))
@@ -128,6 +131,9 @@ final class SidebarListController: NSViewController, NSTableViewDataSource, NSTa
 
     func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
 
+    /// Selected as tabs and the palette are: the soft capsule, not the accent.
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { DS.SelectionRowView() }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = shown[row]
         let cell = NSTableCellView()
@@ -138,7 +144,10 @@ final class SidebarListController: NSViewController, NSTableViewDataSource, NSTa
         stack.spacing = DS.Spacing.m
         stack.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(stack)
-        cell.textField = label
+        // Not the cell's `textField`: the cell would recolor it for the selection (accent blue on
+        // the capsule). The row says its name to VoiceOver itself.
+        label.textColor = .labelColor
+        cell.setAccessibilityLabel(item.title)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
             stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),

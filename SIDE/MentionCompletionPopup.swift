@@ -148,22 +148,12 @@ final class MentionCompletionPopup: NSObject {
     }
 }
 
-/// Selection drawn as a rounded, inset pill: the stock rectangular highlight ran corner-to-
-/// corner and poked square edges out of the rounded panel.
-private final class PaletteRowView: NSTableRowView {
-    override func drawSelection(in dirtyRect: NSRect) {
-        guard isSelected else { return }
-        let rect = bounds.insetBy(dx: DS.Spacing.s, dy: 1.5)
-        NSColor.controlAccentColor.setFill()
-        NSBezierPath(roundedRect: rect, xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
-    }
-}
 
 extension MentionCompletionPopup: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { candidates.count }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        PaletteRowView()
+        DS.SelectionRowView()
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {

@@ -197,10 +197,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var findRowOfMatch: [Int] = []
     private let findAccessory = NSStackView()
     private let findCountLabel = NSTextField(labelWithString: "")
-    private let findCaseButton = NSButton()
-    private let findWordButton = NSButton()
-    private let findRegexButton = NSButton()
-    private let findReplaceToggle = NSButton()
+    private let findCaseButton = DS.CapsuleToggle()
+    private let findWordButton = DS.CapsuleToggle()
+    private let findRegexButton = DS.CapsuleToggle()
+    private let findReplaceToggle = DS.CapsuleToggle()
     private let replaceRow = NSStackView()
     let replaceField = NSTextField()
     private var replaceRowHeight: NSLayoutConstraint?
@@ -853,8 +853,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         findCountLabel.alignment = .right
         for (button, title, tip) in [(findCaseButton, "Aa", "Match Case"), (findWordButton, "W", "Whole Words"), (findRegexButton, ".*", "Regular Expression")] {
             button.title = title
-            button.setButtonType(.pushOnPushOff)
-            button.bezelStyle = .accessoryBarAction
             button.font = DS.Text.code(12, weight: .medium)
             button.toolTip = tip
             button.setAccessibilityLabel(tip)
@@ -862,8 +860,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             button.action = #selector(findOptionChanged)
         }
         findReplaceToggle.image = NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: "Replace")
-        findReplaceToggle.setButtonType(.pushOnPushOff)
-        findReplaceToggle.bezelStyle = .accessoryBarAction
         findReplaceToggle.toolTip = "Replace (⌥⌘F)"
         findReplaceToggle.target = self
         findReplaceToggle.action = #selector(toggleReplaceRow)
@@ -885,7 +881,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         replaceField.setAccessibilityLabel("Replace with")
         let one = NSButton(title: "Replace", target: self, action: #selector(replaceCurrent))
         let all = NSButton(title: "All", target: self, action: #selector(replaceAll))
-        for button in [one, all] { button.bezelStyle = .accessoryBarAction; button.font = DS.Text.body() }
+        // Actions, not options: a quiet capsule, never the stock square bezel.
+        for button in [one, all] {
+            button.isBordered = false
+            button.font = DS.Text.body()
+            button.wantsLayer = true
+            button.layer?.cornerRadius = DS.Radius.control
+            button.bindLayerBackground(DS.Color.scrimSoft)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        }
         all.toolTip = "Replace All (⌥Return)"
         replaceRow.orientation = .horizontal
         replaceRow.spacing = 6
@@ -3490,7 +3496,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         switch effectiveMode {
         case .commands:
             let command = commandMatches[row]
-            cell.configure(icon: Self.paletteSymbol("command"), title: command.title, detail: nil, trailing: command.shortcut)
+            cell.configure(icon: Self.paletteSymbol(Self.commandSymbol(command.title)), title: command.title, detail: nil, trailing: command.shortcut)
         case .files:
             let url = matches[row]
             let relative = relativePath(url)
@@ -3530,7 +3536,20 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        tableView === resultsTable ? PaletteRowView() : nil
+        tableView === resultsTable ? DS.SelectionRowView() : nil
+    }
+
+    /// Each command its own symbol (the audit: every row had the same ⌘): a stage's command takes
+    /// the stage's, the rest what they do. ⌘ only for what has no better sign.
+    static func commandSymbol(_ title: String) -> String {
+        if title.hasPrefix("Go to "), let stage = ShellViewController.Stage.allCases.first(where: { "Go to \($0.title)" == title }) { return stage.symbol }
+        let byTitle: [String: String] = [
+            "Quick Open": "doc.text.magnifyingglass", "Command Palette": "command", "Find in Project…": "text.magnifyingglass",
+            "Go to Line…": "arrow.right.to.line", "Go to Symbol…": "number", "Jump to Definition": "arrow.turn.down.right",
+            "Find References": "link", "Show Problems": "exclamationmark.triangle", "Back": "chevron.backward", "Forward": "chevron.forward",
+            "New Track…": "plus", "Switch Track…": "arrow.triangle.branch",
+        ]
+        return byTitle[title] ?? "command"
     }
 
     private static func paletteSymbol(_ name: String) -> NSImage? {
@@ -3866,7 +3885,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             text.append(NSAttributedString(string: "\u{26A0}\u{FE0E} \(warnings)", attributes: [.font: font, .foregroundColor: NSColor.systemOrange]))
         }
         problemsButton.attributedTitle = text
-        problemsButton.setAccessibilityLabel("\(problemsSummary). Show Problems")
+        // The whole project's, as VS Code counts them: said so, since it shows on every file
+        // (the visual audit read it as the open file's).
+        problemsButton.toolTip = "\(problemsSummary) in this project \u{2014} Show Problems"
+        problemsButton.setAccessibilityLabel("\(problemsSummary) in this project. Show Problems")
         problemsButton.isHidden = false
     }
 
@@ -4950,6 +4972,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // Every terminal running in a keeper, across projects (SIDE_RFC_SESSION_RESTORE.md).
         let terminals = windowMenu.addItem(withTitle: "Running Terminals", action: #selector(AppDelegate.showRunningTerminals), keyEquivalent: "")
         Shortcuts.bind(terminals, "window.runningTerminals")
+        // Project switching in one window (prototype): ⌃1–9, and next and previous.
+        let projectsItem = NSMenuItem(title: "Projects", action: nil, keyEquivalent: "")
+        let projectsMenu = NSMenu(title: "Projects")
+        Shortcuts.bind(projectsMenu.addItem(withTitle: "Next Project", action: #selector(ShellViewController.switchToNextProject(_:)), keyEquivalent: ""), "project.next")
+        Shortcuts.bind(projectsMenu.addItem(withTitle: "Previous Project", action: #selector(ShellViewController.switchToPreviousProject(_:)), keyEquivalent: ""), "project.previous")
+        projectsMenu.addItem(NSMenuItem.separator())
+        for number in 1...9 {
+            let item = projectsMenu.addItem(withTitle: "Switch to Project \(number)", action: #selector(ShellViewController.switchToProjectNumber(_:)), keyEquivalent: "")
+            Shortcuts.bind(item, "project.\(number)")
+            item.tag = number - 1
+        }
+        projectsItem.submenu = projectsMenu
+        terminals.menu?.addItem(projectsItem)
         terminals.target = NSApp.delegate as? AppDelegate
         windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
@@ -6172,15 +6207,6 @@ private final class PaletteCellView: NSTableCellView {
     }
 }
 
-/// The accent-filled rounded selection a system list draws, inset from the palette's edges.
-/// Always emphasized: focus stays in the field while the list is what's being chosen from.
-private final class PaletteRowView: NSTableRowView {
-    override var isEmphasized: Bool { get { true } set {} }
-    override func drawSelection(in dirtyRect: NSRect) {
-        NSColor.selectedContentBackgroundColor.setFill()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 8, dy: 1), xRadius: 8, yRadius: 8).fill()
-    }
-}
 
 /// Make's language-server indicator: `DS.StatusDot` + a caption, as status is everywhere else
 /// (§2.4). Only the not-installed state is a button — the rest just say what's true.

@@ -476,10 +476,17 @@ enum MarkdownPreview {
             let body = style.bodySize
             let p = NSMutableParagraphStyle()
             p.lineHeightMultiple = 1.3
+            // Pinned, so a glyph from a fallback font (⌘, an emoji) can't make its line taller
+            // than the rest (the visual audit, 2026-11-04).
+            let natural = NSLayoutManager().defaultLineHeight(for: style.body)
+            p.minimumLineHeight = (natural * 1.3).rounded()
+            p.maximumLineHeight = (natural * 1.3).rounded()
             p.paragraphSpacing = (body * 0.75).rounded()
             p.firstLineHeadIndent = indent
             p.headIndent = indent
             if let first = components.first, case .header(let level) = first.kind {
+                p.minimumLineHeight = 0
+                p.maximumLineHeight = 0
                 p.lineHeightMultiple = 1.15
                 p.paragraphSpacingBefore = level <= 2 ? (body * 1.3).rounded() : (body * 0.9).rounded()
                 p.paragraphSpacing = (body * 0.45).rounded()
@@ -811,11 +818,18 @@ final class MarkdownPreviewLayoutManager: NSLayoutManager {
             // Per line, from the glyphs' own bounds: a span that wraps gets a chip on each line,
             // each as wide as its text (not to the line's end).
             let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            enumerateLineFragments(forGlyphRange: glyphs) { _, _, _, lineGlyphs, _ in
+            let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+            enumerateLineFragments(forGlyphRange: glyphs) { lineRect, _, _, lineGlyphs, _ in
                 let piece = NSIntersectionRange(glyphs, lineGlyphs)
                 guard piece.length > 0 else { return }
                 let rect = self.boundingRect(forGlyphRange: piece, in: container)
-                let chip = rect.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: -3, dy: 1)
+                // As tall as the code's own letters around its baseline, not the line's height
+                // with its leading: chips on neighbouring lines touched. A little over the text
+                // on each side, so two chips a comma apart stay two.
+                let baseline = lineRect.minY + self.location(forGlyphAt: piece.location).y
+                let ascent = font?.ascender ?? rect.height * 0.75, descent = -(font?.descender ?? -rect.height * 0.25)
+                let text = NSRect(x: rect.minX, y: baseline - ascent, width: rect.width, height: ascent + descent)
+                let chip = text.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: -2, dy: -1.5)
                 DS.Color.scrimSoft.setFill()
                 NSBezierPath(roundedRect: chip, xRadius: DS.Radius.control * 0.7, yRadius: DS.Radius.control * 0.7).fill()
             }

@@ -168,6 +168,13 @@ enum Shortcuts {
         c("tabs.5", "Switch to Tab 5", .tabs, "5"), c("tabs.6", "Switch to Tab 6", .tabs, "6"),
         c("tabs.7", "Switch to Tab 7", .tabs, "7"), c("tabs.8", "Switch to Tab 8", .tabs, "8"),
         c("tabs.last", "Switch to Last Tab", .tabs, "9"),
+        c("project.next", "Next Project", .window, "]", [.control, .command]),
+        c("project.previous", "Previous Project", .window, "[", [.control, .command]),
+        c("project.1", "Switch to Project 1", .window, "1", .control), c("project.2", "Switch to Project 2", .window, "2", .control),
+        c("project.3", "Switch to Project 3", .window, "3", .control), c("project.4", "Switch to Project 4", .window, "4", .control),
+        c("project.5", "Switch to Project 5", .window, "5", .control), c("project.6", "Switch to Project 6", .window, "6", .control),
+        c("project.7", "Switch to Project 7", .window, "7", .control), c("project.8", "Switch to Project 8", .window, "8", .control),
+        c("project.9", "Switch to Project 9", .window, "9", .control),
         c("tabs.next", "Next Tab", .tabs, "\t", .control),
         c("tabs.previous", "Previous Tab", .tabs, "\t", [.control, .shift]),
 

@@ -73,6 +73,8 @@ final class ChromeHost {
     private var barPieces: [NSView] = []
     /// The update pill, beside search (Direction 03 §5.1).
     private(set) var updatePill: UpdatePill?
+    /// The activity pill (prototype): what's happening out of sight, beside zoom and update.
+    private(set) var activityPill: ActivityPill?
     /// Zoom's pill, beside the update pill: only while you're zooming.
     private(set) var zoomPill: ZoomPill?
     /// Search and the update pill, as one trailing piece of the bar.
@@ -115,7 +117,9 @@ final class ChromeHost {
             updatePill = update
             let zoom = ZoomPill(height: 28, glass: false)
             zoomPill = zoom
-            for view in [pill, stageSlot, stageControl, zoom, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
+            let activity = ActivityPill(glass: false, height: 28)
+            activityPill = activity
+            for view in [pill, stageSlot, stageControl, activity.view, zoom, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
             row.setCustomSpacing(DS.Spacing.l, after: stageSlot)
         case .floatingBar:
             row.addArrangedSubview(stageSlot)
@@ -161,7 +165,9 @@ final class ChromeHost {
         updatePill = update
         let zoom = ZoomPill(height: Self.barHeight, glass: true)
         zoomPill = zoom
-        let cluster = NSStackView(views: [zoom, update.view, searchButton])
+        let activity = ActivityPill(glass: true, height: Self.barHeight)
+        activityPill = activity
+        let cluster = NSStackView(views: [activity.view, zoom, update.view, searchButton])
         cluster.orientation = .horizontal
         cluster.alignment = .centerY
         cluster.spacing = DS.Spacing.m

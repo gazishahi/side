@@ -275,6 +275,7 @@ final class RunWorkspaceViewController: NSViewController {
 
     private func showNoProjectState() {
         let state = DS.EmptyState()
+        state.symbol = ShellViewController.Stage.run.symbol
         state.configure("Open a project to run its terminals.", action: "Open Project…", handler: { [weak self] in self?.onEmptyStateAction?(.openProject) })
         container.addSubview(state)
         NSLayoutConstraint.activate([
@@ -524,6 +525,17 @@ final class RunWorkspaceViewController: NSViewController {
 
     /// Shows the tab whose shell lives in keeper `id`, if this view has it. For a notification's
     /// side://run link.
+    var displayedSessionID: UUID? { displayedSession?.id }
+
+    /// Shows the tab for a session by its own id (the activity pill's rows).
+    @discardableResult
+    func showSession(id: UUID) -> Bool {
+        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return false }
+        if index != activeSessionIndex { switchToSession(index) }
+        sessions[index].viewController.activate()
+        return true
+    }
+
     func listsSession(keeperID id: String) -> Bool { sessions.contains { $0.viewController.keeperID == id } }
 
     @discardableResult
@@ -594,23 +606,35 @@ final class RunWorkspaceViewController: NSViewController {
         let cwd = vc.currentDirectory ?? vc.workingDirectory ?? worktree
         let outside = !TerminalSessionManager.isInside(cwd, root: worktree)
         let base: [NSAttributedString.Key: Any] = [.font: DS.Text.code(11, weight: .regular), .foregroundColor: NSColor.tertiaryLabelColor]
-        let text = NSMutableAttributedString(string: (cwd as NSString).abbreviatingWithTildeInPath,
+        // Only what's worth reading (the audit: it was a debug readout). The folder only when the
+        // shell has left the project's root, relative to it while inside; the last command only
+        // when it failed or took a while.
+        let text = NSMutableAttributedString(string: Self.statusPath(cwd, root: worktree),
                                              attributes: base.merging([.foregroundColor: outside ? DS.Color.statusNeedsYou : NSColor.secondaryLabelColor]) { $1 })
         var parts: [String] = []
         let status = vc.commandStatus
-        if let code = status.lastExitCode { parts.append("last exit \(code)") }
-        if let duration = status.lastDuration { parts.append(Self.durationText(duration)) }
+        if let code = status.lastExitCode, code != 0 { parts.append("exit \(code)") }
+        if let duration = status.lastDuration, duration >= 10 || status.lastExitCode.map({ $0 != 0 }) == true { parts.append(Self.durationText(duration)) }
         if let task = taskRowState.runningTaskName {
             let agentTab = terminals.agentSessionIndex(forTrackKey: trackKey)
             parts.append(agentTab.map { $0 != activeSessionIndex && sessions.count > 1 ? "running \(task) in tab \($0 + 1)" : "running \(task)" } ?? "running \(task)")
         }
-        for part in parts { text.append(NSAttributedString(string: " \u{00B7} " + part, attributes: base)) }
+        for part in parts { text.append(NSAttributedString(string: (text.length == 0 ? "" : " \u{00B7} ") + part, attributes: base)) }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingHead
         paragraph.alignment = .right
         text.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
         statusLine.attributedStringValue = text
         statusLine.toolTip = outside ? "Outside this track's worktree \u{2014} agent commands in this terminal always ask first." : cwd
+    }
+
+    /// The status row's folder: nothing at the project's root, the rest of the path inside it,
+    /// and the whole path (with ~) outside it.
+    static func statusPath(_ path: String, root: String) -> String {
+        let clean = (path as NSString).standardizingPath, base = (root as NSString).standardizingPath
+        if clean == base { return "" }
+        if clean.hasPrefix(base + "/") { return String(clean.dropFirst(base.count + 1)) }
+        return (clean as NSString).abbreviatingWithTildeInPath
     }
 
     static func durationText(_ seconds: TimeInterval) -> String {
@@ -639,9 +663,20 @@ final class RunWorkspaceViewController: NSViewController {
         return strip
     }()
 
+    /// Tabs that would read the same are numbered as Terminal.app numbers them: "audit-project",
+    /// "audit-project 2" (the audit: two tabs both named for the project).
+    static func distinctTitles(_ titles: [String]) -> [String] {
+        var seen: [String: Int] = [:]
+        return titles.map { title in
+            seen[title, default: 0] += 1
+            return seen[title]! == 1 ? title : "\(title) \(seen[title]!)"
+        }
+    }
+
     private func rebuildTabBar() {
-        let items = sessions.map { session -> TabStrip.Item in
-            var item = TabStrip.Item(id: session.id, title: session.title)
+        let titles = Self.distinctTitles(sessions.map(\.title))
+        let items = zip(sessions, titles).map { session, title -> TabStrip.Item in
+            var item = TabStrip.Item(id: session.id, title: title)
             item.isDead = !session.viewController.isAliveOrUnstarted
             item.hasUnseenOutput = session.hasUnseenOutput
             item.isWorking = session.viewController.isProgramWorking

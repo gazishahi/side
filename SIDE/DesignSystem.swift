@@ -1090,6 +1090,53 @@ extension DS {
     /// A 6 pt status dot. Filled for every state but Working, which is a hollow ring that
     /// breathes — the only animated indicator in the app. Exposed to accessibility as an image
     /// whose label is the state's name, so the colour is never the only carrier.
+    /// A list's selected row (Quick Open, the palette, Settings' sidebar, mention lists): the
+    /// soft selected capsule tabs and the stage control use, inset from the list's edges.
+    /// Never the accent: one way of saying "selected" across Side (visual audit, 2026-11-04).
+    /// Never emphasized either, so a row's text keeps its own colors on it.
+    /// An on/off option in a floating panel (Find's Aa, W, .*): plain until on, then the selected
+    /// capsule behind it, as a selected tab or stage. The stock accessory-bar bezel was a gray
+    /// square in a panel of capsules (the visual audit, 2026-11-04).
+    final class CapsuleToggle: NSButton {
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            setButtonType(.pushOnPushOff)
+            isBordered = false
+            wantsLayer = true
+            layer?.cornerRadius = Radius.control
+            contentTintColor = .secondaryLabelColor
+            translatesAutoresizingMaskIntoConstraints = false
+            heightAnchor.constraint(equalToConstant: 24).isActive = true
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+        }
+
+        convenience init() { self.init(frame: .zero) }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override var state: NSControl.StateValue { didSet { applyState() } }
+
+        override func mouseUp(with event: NSEvent) {
+            super.mouseUp(with: event)
+            applyState()
+        }
+
+        func applyState() {
+            if state == .on { bindLayerBackground(Color.selectedCapsule) } else { unbindLayerBackground() }
+            contentTintColor = state == .on ? .labelColor : .secondaryLabelColor
+        }
+    }
+
+    final class SelectionRowView: NSTableRowView {
+        override var isEmphasized: Bool { get { false } set {} }
+        override func drawSelection(in dirtyRect: NSRect) {
+            guard isSelected else { return }
+            Color.selectedCapsule.setFill()
+            let rect = bounds.insetBy(dx: Spacing.m, dy: 1)
+            NSBezierPath(roundedRect: rect, xRadius: Radius.control + 2, yRadius: Radius.control + 2).fill()
+        }
+    }
+
     final class StatusDot: NSView {
         var state: StatusState { didSet { if state != oldValue { apply() } } }
         /// One size everywhere (Direction 03 §3.2): four sizes made the same state look different.
@@ -1150,6 +1197,15 @@ extension DS {
     /// An empty state (Direction 02 §6): one sentence and the one action that fixes it — never a
     /// paragraph of explainer. The action is the screen's primary, so it takes the accent.
     final class EmptyState: NSStackView {
+        /// The stage's own symbol, large and quiet above the sentence: an empty stage still says
+        /// which stage it is (the visual audit: a sentence and a button in an empty canvas).
+        var symbol: String? {
+            didSet {
+                icon.image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+                icon.isHidden = symbol == nil
+            }
+        }
+        private let icon = NSImageView()
         private let label = NSTextField(wrappingLabelWithString: "")
         private let button = NSButton(title: "", target: nil, action: nil)
         private var handler: (() -> Void)?
@@ -1168,6 +1224,12 @@ extension DS {
             button.bezelColor = .controlAccentColor
             button.target = self
             button.action = #selector(performAction)
+            icon.symbolConfiguration = .init(pointSize: 30, weight: .light)
+            icon.contentTintColor = .tertiaryLabelColor
+            icon.isHidden = true
+            icon.setAccessibilityElement(false)
+            addArrangedSubview(icon)
+            setCustomSpacing(Spacing.xxl, after: icon)
             addArrangedSubview(label)
             addArrangedSubview(button)
         }

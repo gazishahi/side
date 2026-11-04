@@ -493,7 +493,8 @@ final class TracksWorkspaceViewController: NSViewController {
         let rest = families().map { $0.filter { !pinnedIDs.contains($0.id) } }.filter { !$0.isEmpty }
         if needsYou.isEmpty && rest.isEmpty {
             if searchQuery.isEmpty {
-                addEmptyState("A track is one line of work, on its own branch.", action: "New Track") { [weak self] in self?.newTrackTapped() }
+                // The header's New Track is right above: a second one here was the same button twice.
+                addEmptyState("A track is one line of work, on its own branch.", action: nil) {}
             } else {
                 let empty = NSTextField(labelWithString: "No tracks match \u{201C}\(searchQuery)\u{201D}.")
                 empty.font = DS.Text.body()
@@ -527,8 +528,9 @@ final class TracksWorkspaceViewController: NSViewController {
 
     /// Archived work shows when asked for — the toggle, or a search, which reaches it too.
     /// §6: one sentence and its one action, centred in the space the list would fill.
-    private func addEmptyState(_ text: String, action: String, handler: @escaping () -> Void) {
+    private func addEmptyState(_ text: String, action: String?, handler: @escaping () -> Void) {
         let state = DS.EmptyState()
+        state.symbol = ShellViewController.Stage.tracks.symbol
         state.configure(text, action: action, handler: handler)
         state.edgeInsets = NSEdgeInsets(top: 80, left: 0, bottom: 0, right: 0)
         contentStack.addArrangedSubview(state)
@@ -1703,7 +1705,7 @@ private final class BaseRowView: NSView {
         let sep = NSTextField(labelWithString: "\u{00B7}")
         sep.font = DS.Text.caption()
         sep.textColor = .tertiaryLabelColor
-        let meta = NSTextField(labelWithString: landingCount == 0 ? "Tracks fork from here and land here" : "\(landingCount) track\(landingCount == 1 ? "" : "s") land\(landingCount == 1 ? "s" : "") here")
+        let meta = NSTextField(labelWithString: landingCount == 0 ? "Tracks start and land here" : "\(landingCount) track\(landingCount == 1 ? "" : "s") land\(landingCount == 1 ? "s" : "") here")
         meta.font = DS.Text.caption()
         meta.textColor = .secondaryLabelColor
         let metaRow = NSStackView(views: [status, sep, meta])

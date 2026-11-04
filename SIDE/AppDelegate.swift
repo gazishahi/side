@@ -64,6 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ProjectRules.defaults = volatile
             MakeWorkspaceViewController.preferences = volatile
             StagePins.defaults = volatile
+            ProjectSpaces.defaults = volatile
+            TabChipView.workingStyleDefaults = volatile
             Shortcuts.defaults = volatile
             LanguageSettings.defaults = volatile
             ReviewViewedStore.shared = ReviewViewedStore(defaults: volatile)
@@ -77,6 +79,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("open ") { shell.revealFile(URL(fileURLWithPath: String(command.dropFirst(5)))) }
                     if command == "close-all" { shell.closeAllMakeTabsForTesting() }
                     if command == "run-close-tab" { shell.closeActiveRunTabForTesting() }
+                    if command == "activity-open" { shell.activityPillForTesting?.clickForTesting() }
+                    if command.hasPrefix("project-switch ") { shell.switchProject(to: URL(fileURLWithPath: String(command.dropFirst(15)))) }
+                    if command.hasPrefix("project-step ") { shell.switchProject(offset: Int(command.dropFirst(13)) ?? 1) }
+                    if command.hasPrefix("activity-go "), let index = Int(command.dropFirst(12)), ActivityCenter.shared.items.indices.contains(index) {
+                        ActivityCenter.shared.go(to: ActivityCenter.shared.items[index])
+                    }
+                    if command == "activity-dump" {
+                        ActivityCenter.shared.refresh()
+                        let sessions = ProjectContextRegistry.openContexts().flatMap { $0.terminals.everySession() }
+                        let lines = sessions.map { "session \($0.title) working=\($0.viewController.isProgramWorking) program=\($0.viewController.runningProgramName ?? "-") unseen=\($0.hasUnseenOutput)" }
+                            + ActivityCenter.shared.items.map { "item \($0.title) \($0.state) \($0.place)" }
+                        FileHandle.standardError.write(Data(("[activity]\n" + lines.joined(separator: "\n") + "\n").utf8))
+                    }
                     // "stage-badge 3 needsYou": a status dot on a stage, as attention would set it.
                     if command.hasPrefix("stage-badge ") {
                         let parts = command.split(separator: " ").map(String.init)
@@ -360,6 +375,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let image = create(.null, CGWindowListOption.optionIncludingWindow.rawValue, windowNumber, options)?.takeRetainedValue() else { return }
         let rep = NSBitmapImageRep(cgImage: image)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+
+    /// The window on `project`, or a new one opened on it, then `then` on its shell.
+    func revealProject(_ project: URL, then: @escaping (ShellViewController) -> Void) {
+        let path = project.standardizedFileURL.path
+        if let shell = shellViewControllers.first(where: { $0.projectRootURL?.standardizedFileURL.path == path }) { then(shell); return }
+        if let empty = shellViewControllers.first(where: { !$0.hasProject }) {
+            empty.openProject(at: project, focusingTrackKey: nil)
+            then(empty)
+            return
+        }
+        openTrackInNewWindow(projectRoot: project, trackKey: nil)
+        if let shell = shellViewControllers.last { then(shell) }
     }
 
     @objc func showRunningTerminals() {

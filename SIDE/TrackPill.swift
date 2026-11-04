@@ -27,6 +27,8 @@ final class TrackPill: NSView {
         var state: DS.StatusState
         var stateName: String
         var projectName: String?
+        /// The project's folder: its space's symbol and color lead the pill.
+        var projectPath: String?
         var branch: String?
         var filePath: String?
         var needsYou: [Row] = []
@@ -49,8 +51,16 @@ final class TrackPill: NSView {
     /// "New track “…”" in the switcher: the typed words become the new track's intent.
     var onNewTrackNamed: ((String) -> Void)?
     var onOpenTracks: (() -> Void)?
+    /// A horizontal swipe on the pill: -1 for the previous project, 1 for the next (Sill's
+    /// context chip).
+    var onSwipeProject: ((Int) -> Void)?
+    /// The popover's project row: switch this window to that project.
+    var onSwitchProject: ((URL) -> Void)?
 
     private(set) var snapshot = Snapshot.empty
+    /// The project's mark, where the track's dot was; the dot now rides on it only when the
+    /// track has something to say (an idle ring there read as a glitch, the visual audit).
+    private let projectGlyph = NSImageView()
     private let dot = DS.StatusDot(state: .idle)
     private let titleLabel = NSTextField(labelWithString: "")
     private let extraLabel = NSTextField(labelWithString: "")
@@ -89,16 +99,21 @@ final class TrackPill: NSView {
         titleLabel.cell?.lineBreakMode = .byTruncatingTail
         titleLabel.setContentHuggingPriority(.required, for: .horizontal)
         extraLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        for view in [dot, titleLabel, extraLabel, tornOutGlyph] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        projectGlyph.imageScaling = .scaleProportionallyDown
+        projectGlyph.setAccessibilityElement(false)
+        for view in [projectGlyph, dot, titleLabel, extraLabel, tornOutGlyph] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
         extraTrailing = extraLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
         titleTrailing = titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
         glyphTrailing = tornOutGlyph.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)
         glyphAfterTitle = tornOutGlyph.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: DS.Spacing.s)
         glyphAfterExtra = tornOutGlyph.leadingAnchor.constraint(equalTo: extraLabel.trailingAnchor, constant: DS.Spacing.s)
         NSLayoutConstraint.activate([
-            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
-            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: DS.Spacing.s),
+            projectGlyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
+            projectGlyph.centerYAnchor.constraint(equalTo: centerYAnchor),
+            projectGlyph.widthAnchor.constraint(equalToConstant: 16), projectGlyph.heightAnchor.constraint(equalToConstant: 16),
+            dot.centerXAnchor.constraint(equalTo: projectGlyph.trailingAnchor),
+            dot.centerYAnchor.constraint(equalTo: projectGlyph.bottomAnchor, constant: -1),
+            titleLabel.leadingAnchor.constraint(equalTo: projectGlyph.trailingAnchor, constant: DS.Spacing.s + 1),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             extraLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: DS.Spacing.s),
             extraLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
@@ -109,13 +124,25 @@ final class TrackPill: NSView {
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(.popUpButton)
+        // A project's new color or symbol shows at once.
+        spacesObserver = NotificationCenter.default.addObserver(forName: ProjectSpaces.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
+    private var spacesObserver: NSObjectProtocol?
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func refresh() {
         snapshot = snapshotProvider?() ?? .empty
         dot.state = snapshot.state
+        dot.isHidden = snapshot.state == .idle
+        if let path = snapshot.projectPath {
+            projectGlyph.image = ProjectSpaces.image(for: ProjectSpaces.shared.space(for: URL(fileURLWithPath: path)))
+        } else {
+            projectGlyph.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+            projectGlyph.contentTintColor = .tertiaryLabelColor
+        }
         titleLabel.stringValue = snapshot.title
         extraLabel.stringValue = "+\(snapshot.othersNeedingYou)"
         let showsExtra = snapshot.othersNeedingYou > 0
@@ -157,6 +184,24 @@ final class TrackPill: NSView {
     }
     override var mouseDownCanMoveWindow: Bool { false }
     override func accessibilityPerformPress() -> Bool { togglePopover(); return true }
+
+    // A two-finger swipe across the pill moves between projects, once per swipe.
+    private var swipeTravel: CGFloat = 0
+    private var swipeFired = false
+    override func scrollWheel(with event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas, abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) || swipeTravel != 0 else {
+            super.scrollWheel(with: event)
+            return
+        }
+        if event.phase == .began { swipeTravel = 0; swipeFired = false }
+        swipeTravel += event.scrollingDeltaX
+        if !swipeFired, abs(swipeTravel) > 36 {
+            swipeFired = true
+            // Content follows the fingers: swiping left brings the next project.
+            onSwipeProject?(swipeTravel < 0 ? 1 : -1)
+        }
+        if event.phase == .ended || event.phase == .cancelled { swipeTravel = 0; swipeFired = false }
+    }
     override var acceptsFirstResponder: Bool { true }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 49 || event.keyCode == 36 { togglePopover() } else { super.keyDown(with: event) }
@@ -173,6 +218,7 @@ final class TrackPill: NSView {
         content.onNewTrack = { [weak self, weak popover] in popover?.close(); self?.onNewTrack?() }
         content.onNewTrackNamed = { [weak self, weak popover] name in popover?.close(); self?.onNewTrackNamed?(name) }
         content.onOpenTracks = { [weak self, weak popover] in popover?.close(); self?.onOpenTracks?() }
+        content.onSwitchProject = { [weak self, weak popover] url in popover?.close(); self?.onSwitchProject?(url) }
         self.popover = popover
         popover.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
         content.focusFilter()
@@ -193,6 +239,7 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
     var onNewTrack: (() -> Void)?
     var onNewTrackNamed: ((String) -> Void)?
     var onOpenTracks: (() -> Void)?
+    var onSwitchProject: ((URL) -> Void)?
     private let snapshot: TrackPill.Snapshot
     private let filterField = NSSearchField()
     private let list = NSStackView()
@@ -226,7 +273,44 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
         header.orientation = .vertical
         header.alignment = .leading
         header.spacing = DS.Spacing.xxs
-        if let project = snapshot.projectName {
+        // The projects, as the stage bar shows stages: each its mark, this one also its name.
+        // One click moves the window there; the one left keeps running (ProjectSpaces).
+        if let path = snapshot.projectPath {
+            let current = URL(fileURLWithPath: path).standardizedFileURL.path
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.spacing = DS.Spacing.xs
+            for space in ProjectSpaces.shared.spaces {
+                let isCurrent = space.path == current
+                let chip = NSButton(title: isCurrent ? space.name : "", image: ProjectSpaces.image(for: space, pointSize: 13) ?? NSImage(), target: self, action: #selector(projectTapped(_:)))
+                chip.isBordered = false
+                chip.imagePosition = isCurrent ? .imageLeading : .imageOnly
+                chip.imageHugsTitle = true
+                chip.font = DS.Text.body(.semibold)
+                chip.toolTip = isCurrent ? nil : space.name
+                chip.identifier = NSUserInterfaceItemIdentifier(space.path)
+                chip.setAccessibilityLabel(isCurrent ? "\(space.name), current project" : "Switch to \(space.name)")
+                chip.wantsLayer = true
+                if isCurrent { chip.layer?.cornerRadius = DS.Radius.control; chip.bindLayerBackground(DS.Color.selectedCapsule) }
+                chip.menu = projectMenu(for: space, isCurrent: isCurrent)
+                chip.translatesAutoresizingMaskIntoConstraints = false
+                chip.heightAnchor.constraint(equalToConstant: 26).isActive = true
+                chip.widthAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
+                row.addArrangedSubview(chip)
+                // Something there wants you: the activity's dot on the project's mark.
+                if !isCurrent, let state = ActivityCenter.shared.attention(forProject: space.path) {
+                    let dot = DS.StatusDot(state: state)
+                    dot.setAccessibilityElement(false)
+                    chip.addSubview(dot)
+                    NSLayoutConstraint.activate([
+                        dot.centerXAnchor.constraint(equalTo: chip.trailingAnchor, constant: -6),
+                        dot.centerYAnchor.constraint(equalTo: chip.bottomAnchor, constant: -6),
+                    ])
+                    chip.setAccessibilityLabel("Switch to \(space.name), \(state.name)")
+                }
+            }
+            header.addArrangedSubview(row)
+        } else if let project = snapshot.projectName {
             let label = NSTextField(labelWithString: project)
             label.font = DS.Text.body(.semibold)
             header.addArrangedSubview(label)
@@ -386,6 +470,57 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc private func newTrackTapped() { onNewTrack?() }
+    /// A project's right-click menu: its color and symbol (Sill's), and closing it, which ends
+    /// what it keeps running in the background. The one this window shows can't be closed here.
+    private func projectMenu(for space: ProjectSpaces.Space, isCurrent: Bool) -> NSMenu {
+        let menu = NSMenu()
+        let names = ["Graphite", "Blue", "Purple", "Pink", "Red", "Orange", "Yellow", "Green", "Teal"]
+        let colors = NSMenu()
+        for (index, name) in names.enumerated() {
+            let item = colors.addItem(withTitle: name, action: #selector(projectColorChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            item.representedObject = space.path
+            item.state = index == space.colorIndex % names.count ? .on : .off
+            item.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(paletteColors: [ProjectSpaces.palette[index]]))
+        }
+        menu.addItem(withTitle: "Color", action: nil, keyEquivalent: "").submenu = colors
+        let symbols = NSMenu()
+        for symbol in ProjectSpaces.symbols {
+            let item = symbols.addItem(withTitle: "", action: #selector(projectSymbolChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol)
+            item.representedObject = [space.path, symbol]
+            item.state = symbol == space.symbol ? .on : .off
+        }
+        menu.addItem(withTitle: "Symbol", action: nil, keyEquivalent: "").submenu = symbols
+        menu.addItem(.separator())
+        let close = menu.addItem(withTitle: "Close \u{201C}\(space.name)\u{201D}", action: isCurrent ? nil : #selector(projectCloseChosen(_:)), keyEquivalent: "")
+        close.target = self
+        close.representedObject = space.path
+        return menu
+    }
+
+    @objc private func projectColorChosen(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        ProjectSpaces.shared.set(colorIndex: sender.tag, for: URL(fileURLWithPath: path))
+    }
+
+    @objc private func projectSymbolChosen(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        ProjectSpaces.shared.set(symbol: pair[1], for: URL(fileURLWithPath: pair[0]))
+    }
+
+    @objc private func projectCloseChosen(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        ProjectSpaces.shared.remove(URL(fileURLWithPath: path))
+    }
+
+    @objc private func projectTapped(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        onSwitchProject?(URL(fileURLWithPath: path))
+    }
     @objc private func openTracksTapped() { onOpenTracks?() }
 }
 
