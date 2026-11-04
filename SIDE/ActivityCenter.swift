@@ -101,6 +101,9 @@ final class ActivityCenter {
                 let vc = session.viewController
                 // In sight: shown in the key window of an active Side. Anything else is out of sight.
                 guard front?.isShowingTerminalSession(session.id) != true else { continue }
+                // What's running is asked only of a terminal with something to report: it can read
+                // the keeper's record from disk, and this runs every second.
+                guard vc.isProgramWorking || session.hasUnseenOutput else { continue }
                 let program = vc.runningProgramName
                 let name = Self.programName(program)
                 let place = "\(projectName) \u{00B7} \(session.title)"

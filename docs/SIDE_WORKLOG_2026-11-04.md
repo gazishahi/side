@@ -38,6 +38,7 @@ judged in the app instead of from a description. Switch with
 | `edge` | A short light runs around the tab's outline | ![](audit-2026-11-04/indicator-edge-light.gif) | ![](audit-2026-11-04/indicator-edge-dark.gif) |
 | `caret` | A terminal's block caret blinks after the title | ![](audit-2026-11-04/indicator-caret-light.gif) | ![](audit-2026-11-04/indicator-caret-dark.gif) |
 | `meter` | Three bars in the icon's place, moving like a level meter | ![](audit-2026-11-04/indicator-meter-light.gif) | ![](audit-2026-11-04/indicator-meter-dark.gif) |
+| `glint` (added 04:35) | A soft band of light drifts across the whole tab, as light moves through glass; quiet, very faint in dark | ![](audit-2026-11-04/indicator-glint-light.gif) | ![](audit-2026-11-04/indicator-glint-dark.gif) |
 
 My read:
 - **Shimmer** is the calmest and works on any program.
@@ -150,3 +151,22 @@ window. The new stage bar puts a button there, and a simulated press on a button
 for a real mouse-up. The test now looks for a bare stretch of the top row. Separately, running
 the suite from `~/Documents` waits on macOS's Documents-folder prompt for each rebuilt test
 app, so tonight's runs use a copy of the repo outside Documents.
+
+### 04:40 — after
+
+The same captures as the audit, on tonight's build:
+
+| | |
+|---|---|
+| One file open, its name in the top row ![](audit-2026-11-04/after-02-one-file.jpg) | Dark mode, the search button dark ![](audit-2026-11-04/after-06-dark-search.jpg) |
+| Terminal: numbered tabs, a quiet status row ![](audit-2026-11-04/after-08-terminal.jpg) | Palette: the capsule selection and its own symbols ![](audit-2026-11-04/after-15-palette.jpg) |
+| Agent's empty state ![](audit-2026-11-04/after-05-agent-empty.jpg) | Branches: one New Track button ![](audit-2026-11-04/after-10-branches.jpg) |
+| Activity pill, on Terminal (none), on the Editor, in dark ![](audit-2026-11-04/after-activity-pill.jpg) | Its list ![](audit-2026-11-04/after-activity-list.jpg) |
+| Switching projects: before, the indicator, after, back ![](audit-2026-11-04/after-project-switch.jpg) | The switcher's project row ![](audit-2026-11-04/after-11-switcher-projects.jpg) |
+
+Also since the last commit:
+- Running Terminals has an inset list and an empty state. In my test setup the keepers can't
+  start, because the scratch folder's socket path is over the 104-character limit, so the
+  window with rows in it is unverified.
+- The track switcher's field has no system focus ring.
+- The activity pill asks only working terminals, or ones with unseen output, what's running.

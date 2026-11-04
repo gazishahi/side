@@ -21,6 +21,8 @@ final class RunningTerminalsWindowController: NSWindowController, NSWindowDelega
     private let table = NSTableView()
     private let summary = NSTextField(labelWithString: "")
     private let endAllButton = NSButton(title: "End All", target: nil, action: nil)
+    private let emptyState = DS.EmptyState()
+    private var header: NSTableHeaderView?
     private var rows: [Row] = []
     private var timer: Timer?
 
@@ -63,8 +65,10 @@ final class RunningTerminalsWindowController: NSWindowController, NSWindowDelega
         }
         table.dataSource = self
         table.delegate = self
-        table.usesAlternatingRowBackgroundColors = true
-        table.rowHeight = 24
+        // Side's list look, not a spreadsheet's: inset rows, no stripes (the visual audit).
+        table.style = .inset
+        table.usesAlternatingRowBackgroundColors = false
+        table.rowHeight = 30
         table.allowsMultipleSelection = false
         table.setAccessibilityLabel("Running terminals")
         let scroll = NSScrollView()
@@ -80,8 +84,12 @@ final class RunningTerminalsWindowController: NSWindowController, NSWindowDelega
         endAllButton.bezelStyle = .rounded
         endAllButton.translatesAutoresizingMaskIntoConstraints = false
 
+        emptyState.symbol = "terminal"
+        emptyState.configure("No terminals are running.", action: nil, handler: nil)
+        emptyState.isHidden = true
         let content = NSView()
         content.addSubview(scroll)
+        content.addSubview(emptyState)
         content.addSubview(summary)
         content.addSubview(endAllButton)
         NSLayoutConstraint.activate([
@@ -93,6 +101,8 @@ final class RunningTerminalsWindowController: NSWindowController, NSWindowDelega
             summary.centerYAnchor.constraint(equalTo: endAllButton.centerYAnchor),
             endAllButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
             endAllButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            emptyState.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
         ])
         window?.contentView = content
     }
@@ -110,7 +120,11 @@ final class RunningTerminalsWindowController: NSWindowController, NSWindowDelega
         }
         table.reloadData()
         let total = rows.reduce(0) { $0 + $1.memoryMB }
-        summary.stringValue = rows.isEmpty ? "No terminals running." : "\(rows.count) terminal\(rows.count == 1 ? "" : "s") running · \(String(format: "%.0f", total)) MB"
+        emptyState.isHidden = !rows.isEmpty
+        // No headers over nothing: hidden, they still kept their band.
+        if header == nil { header = table.headerView }
+        table.headerView = rows.isEmpty ? nil : header
+        summary.stringValue = rows.isEmpty ? "" : "\(rows.count) terminal\(rows.count == 1 ? "" : "s") running · \(String(format: "%.0f", total)) MB"
         endAllButton.isEnabled = !rows.isEmpty
     }
 

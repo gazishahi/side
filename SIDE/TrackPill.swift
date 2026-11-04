@@ -331,6 +331,8 @@ final class TrackSwitcherViewController: NSViewController, NSSearchFieldDelegate
         root.addArrangedSubview(header)
 
         filterField.placeholderString = "Switch to a track, or name a new one"
+        // The palette's field has no system focus ring either: the panel is the focus.
+        filterField.focusRingType = .none
         filterField.delegate = self
         filterField.translatesAutoresizingMaskIntoConstraints = false
         filterField.setAccessibilityLabel("Filter tracks")

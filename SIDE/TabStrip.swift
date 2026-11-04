@@ -659,6 +659,8 @@ final class TabChipView: NSView, PointerHoverSyncing {
         case caret
         /// Three small bars in the icon's place, moving like a level meter.
         case meter
+        /// A soft band of light drifting across the whole tab, as light moves through glass.
+        case glint
     }
     static let workingStyleKey = "tabs.workingStyle"
     static let workingStyleChanged = Notification.Name("SideTabWorkingStyleChanged")
@@ -697,6 +699,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
             case .edge: workingLayers = edgeLayers(reduce: reduce)
             case .caret: workingLayers = caretLayers(reduce: reduce)
             case .meter: workingLayers = meterLayers(reduce: reduce)
+            case .glint: workingLayers = glintLayers(reduce: reduce)
             }
         }
         workingLayers.forEach { host.addSublayer($0) }
@@ -768,6 +771,29 @@ final class TabChipView: NSView, PointerHoverSyncing {
         blink.repeatCount = .infinity
         caret.add(blink, forKey: "caret")
         return [caret]
+    }
+
+    private func glintLayers(reduce: Bool) -> [CALayer] {
+        let body = bounds.insetBy(dx: Self.flare - 2, dy: 0)
+        let capsule = CAShapeLayer()
+        capsule.path = CGPath(roundedRect: CGRect(origin: .zero, size: body.size), cornerWidth: body.height / 2, cornerHeight: body.height / 2, transform: nil)
+        let band = CAGradientLayer()
+        band.frame = body
+        band.startPoint = CGPoint(x: 0, y: 0.5)
+        band.endPoint = CGPoint(x: 1, y: 0.5)
+        let light = NSColor.labelColor.withAlphaComponent(0.10).cgColor
+        band.colors = [NSColor.clear.cgColor, light, NSColor.clear.cgColor]
+        band.locations = [0.35, 0.5, 0.65]
+        band.mask = capsule
+        guard !reduce else { return [band] }
+        let drift = CABasicAnimation(keyPath: "locations")
+        drift.fromValue = [-0.5, -0.25, 0]
+        drift.toValue = [1, 1.25, 1.5]
+        drift.duration = 2.4
+        drift.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        drift.repeatCount = .infinity
+        band.add(drift, forKey: "glint")
+        return [band]
     }
 
     private func meterLayers(reduce: Bool) -> [CALayer] {
@@ -937,7 +963,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let changed = newSize != frame.size
         super.setFrameSize(newSize)
         if changed { needsDisplay = true }
-        if changed, isWorking, Self.workingStyle == .edge { updateWorkingIndicator() }
+        if changed, isWorking, [.edge, .glint].contains(Self.workingStyle) { updateWorkingIndicator() }
         strip?.chipFrameChanged(self)
     }
 
