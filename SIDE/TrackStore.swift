@@ -732,8 +732,9 @@ final class TrackStore {
         return ACPAgent.agent(id: tracks.first { $0.branchName == trackKey }?.harnessId)
     }
 
-    /// Whether the base has Heron conversations to keep (`ProjectContext` asks the session store).
-    var baseHasHeronHistory: () -> Bool = { false }
+    /// Whether a track (or the base, `""`) has Heron conversations to keep: Heron is retired, and
+    /// what it said stays readable (`ProjectContext` asks the session store).
+    var hasHeronHistory: (String) -> Bool = { _ in false }
     private static let baseHarnessKey = "agents.base"
 
     /// The base's agent: as chosen for this project; unchosen, Heron where it has Heron
@@ -742,7 +743,7 @@ final class TrackStore {
         get {
             let chosen = (ACPAgent.defaults.dictionary(forKey: Self.baseHarnessKey) as? [String: String])?[projectRoot.standardizedFileURL.path]
             if let chosen { return chosen }
-            return baseHasHeronHistory() ? Track.heronId : DefaultAgent.harnessIdForNewTrack
+            return hasHeronHistory("") ? Track.heronId : DefaultAgent.harnessIdForNewTrack
         }
         set {
             var all = (ACPAgent.defaults.dictionary(forKey: Self.baseHarnessKey) as? [String: String]) ?? [:]

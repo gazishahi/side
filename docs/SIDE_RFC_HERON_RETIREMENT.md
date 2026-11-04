@@ -1,7 +1,7 @@
 # Retiring Heron's agent
 
 Status: in progress (2026-11-04: the owner decided to retire Heron, and took the three
-recommendations below). Step 1 built; nothing removed yet.
+recommendations below). Steps 1–3 built.
 
 ## What goes, what stays
 
@@ -57,8 +57,14 @@ live there (`GitPaths`, `SpawnEnvironment`, `HeronDefaults`, `JSONStore`, …).
    SideAgents and re-exports it, so Side's `import Heron` still sees everything. One change from
    the plan: `AgentRunnerManager` stays in Heron until step 4, since it's what makes Heron's runner
    when a track has no outside agent. Side switching to `import SideAgents` comes with step 4.
-3. **Remove the UI:** modes, provider/model pickers, Settings › Providers, compaction, the rules
-   gate, first run's model step, the Library's "Heron" wording.
+3. **Remove the UI. Built 2026-11-04.** A track on Heron with nothing of Heron's to read moves
+   to the default agent when Agent opens it. One with Heron conversations keeps them to read: the
+   composer is read-only, "Continue on <agent>" (or "Set Up an Agent…") stands where Send was,
+   and the agent menus offer "Heron (retired), to read" only where there's something to read.
+   Gone: modes (Shift+Tab, /ask /plan /build, the scope tint), Heron's session popover (model,
+   effort, scope), Settings › Providers, Compact and /compact, the project-rules gate and
+   /rules, first run's model step (now "Set up an agent", opening Settings › Agents, where each
+   agent's install command is shown to copy), and Heron in the Library. Autonomy stays.
 4. **Remove Heron's agent** and its tests (about 110 in the package, 30–40 in Side's).
 5. **Extend `SideToolServer`:** diagnostics, debugger state, ports, later tasks.
 6. **Outside the app:** the README, the landing page, `scripts/test.sh`, third-party notices; the

@@ -53,7 +53,7 @@ final class AgentsPreferencesViewController: NSViewController {
         let anyInstalled = ACPAgent.known.contains { AgentAvailability.isInstalled($0) == true }
         let detail = DefaultAgent.agent != nil
             ? "New tracks and subtracks start on it. A track can still change agent from its session pill."
-            : anyInstalled ? "Choose one for new tracks. Until then they use Heron." : "No agent is installed yet, so new tracks use Heron. Install one below."
+            : anyInstalled ? "Choose one for new tracks to start on." : "No agent is installed yet. Install one below, then come back to choose it."
         return SettingsForm.section([SettingsForm.row("Default agent", detail: detail, popup)])
     }
 
@@ -191,7 +191,7 @@ final class AgentsPreferencesViewController: NSViewController {
         NSPasteboard.general.setString(command, forType: .string)
     }
 
-    /// Asked first (UX-10): tracks set to this agent go back to Heron.
+    /// Asked first (UX-10): tracks set to this agent offer to continue on the default agent.
     @objc private func removeAgent(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue, let window = view.window else { return }
         let alert = NSAlert()

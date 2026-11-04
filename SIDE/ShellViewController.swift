@@ -1407,7 +1407,7 @@ final class ShellViewController: NSViewController {
             guard !AppDelegate.isUITesting else { return }
             let recents = (HeronDefaults.store.array(forKey: "side.recent-projects") as? [String]) ?? []
             let hasRecents = !recents.isEmpty || HeronDefaults.store.string(forKey: "side.last-project-path") != nil
-            guard FirstRun.shouldPresent(dismissed: FirstRun.dismissed, hasRecentProjects: hasRecents, modelReady: FirstRun.modelReady) else { return }
+            guard FirstRun.shouldPresent(dismissed: FirstRun.dismissed, hasRecentProjects: hasRecents, agentReady: FirstRun.agentReady) else { return }
         }
         firstRunActive = true
         // A step's own sheet (open panel, New Track) ending, or Preferences closing, brings the
@@ -1430,7 +1430,7 @@ final class ShellViewController: NSViewController {
     private func firstRunDone() -> Set<FirstRun.Step> {
         var done: Set<FirstRun.Step> = []
         if projectURL != nil { done.insert(.project) }
-        if FirstRun.modelReady { done.insert(.model) }
+        if FirstRun.agentReady { done.insert(.agent) }
         if trackStore?.tracks.isEmpty == false { done.insert(.track) }
         return done
     }
@@ -1450,7 +1450,7 @@ final class ShellViewController: NSViewController {
             self.hideFirstRun()
             switch step {
             case .project: self.performEmptyStateAction(.openProject)
-            case .model: self.performEmptyStateAction(.setUpModel)
+            case .agent: self.performEmptyStateAction(.setUpAgent)
             case .track: self.performEmptyStateAction(needsGit ? .initializeGit : .newTrack)
             }
         }
@@ -1498,7 +1498,7 @@ final class ShellViewController: NSViewController {
             tracksVC.initializeGit()
         case .newTrack: trackPill.onNewTrack?()
         case .chooseTrack: trackPill.togglePopover()
-        case .setUpModel: AppDelegate.shared?.openPreferences(on: .providers)
+        case .setUpAgent: AppDelegate.shared?.openPreferences(on: .agents)
         }
     }
 

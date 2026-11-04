@@ -194,8 +194,7 @@ final class LibraryViewController: NSSplitViewController {
 
 // MARK: - Instructions
 
-/// Every instruction file for the working copy and the user, with who reads it. Heron's file
-/// can be acknowledged here, after reading it; it's the same acknowledgement Think asks for.
+/// Every instruction file for the working copy and the user, with who reads it.
 @MainActor
 final class InstructionsPaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     var target: LibraryTarget? { didSet { reload() } }
@@ -205,14 +204,13 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
     private let table = NSTableView()
     private let preview = NSTextView()
     private let primaryButton = NSButton(title: "Open in Editor", target: nil, action: nil)
-    private let acknowledgeButton = NSButton(title: "Use for Heron", target: nil, action: nil)
     private let stateLabel = NSTextField(wrappingLabelWithString: "")
 
     override func loadView() {
         let root = NSView()
         let heading = NSTextField(labelWithString: "Instructions")
         heading.font = DS.Text.title(.bold)
-        let note = NSTextField(wrappingLabelWithString: "Standing instructions agents read before they work. Heron uses the first of its files that exists, once you've read and accepted it. Outside agents read their own files directly, whether or not you've accepted them here.")
+        let note = NSTextField(wrappingLabelWithString: "Standing instructions agents read before they work. Each agent reads its own files directly: Claude Code its CLAUDE.md, Codex and others AGENTS.md.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
 
@@ -247,10 +245,7 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
         primaryButton.target = self
         primaryButton.action = #selector(primaryTapped)
         primaryButton.bezelStyle = .rounded
-        acknowledgeButton.target = self
-        acknowledgeButton.action = #selector(acknowledgeTapped)
-        acknowledgeButton.bezelStyle = .rounded
-        let buttons = NSStackView(views: [stateLabel, NSView(), acknowledgeButton, primaryButton])
+        let buttons = NSStackView(views: [stateLabel, NSView(), primaryButton])
         buttons.spacing = DS.Spacing.m
 
         for view in [heading, note, tableScroll, previewScroll, buttons] as [NSView] {
@@ -295,12 +290,7 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
 
     static func stateText(_ file: InstructionFile) -> String {
         guard file.exists else { return "Not present" }
-        switch file.heron {
-        case .inUse(acknowledged: true): return "Heron uses this"
-        case .inUse(acknowledged: false): return "Heron will ask before using this"
-        case .shadowed(let winner): return "Heron uses \(winner) instead"
-        case .candidate, nil: return file.scope == .user ? "Your own, for every project" : "In this project"
-        }
+        return file.scope == .user ? "Your own, for every project" : "In this project"
     }
 
     private func refreshDetail() {
@@ -308,34 +298,24 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
             preview.string = ""
             stateLabel.stringValue = target == nil ? "Open a project to see its instructions." : ""
             primaryButton.isHidden = true
-            acknowledgeButton.isHidden = true
             return
         }
         preview.string = file.exists ? ((try? String(contentsOf: file.url, encoding: .utf8)) ?? "This file couldn't be read.") : ""
         stateLabel.stringValue = Self.stateText(file)
         primaryButton.isHidden = false
         primaryButton.title = file.exists ? "Open in Editor" : "Create"
-        acknowledgeButton.isHidden = file.heron != .inUse(acknowledged: false)
     }
 
     @objc private func primaryTapped() {
         guard let file = selectedFile else { return }
         if !file.exists {
             try? FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let text = file.heron != nil ? ProjectRules.template : "# Agent instructions\n"
-            guard (try? text.write(to: file.url, atomically: true, encoding: .utf8)) != nil else { return }
-            // Written by the user, here, on purpose, as Think's /rules does.
-            if file.heron != nil { ProjectRules.acknowledge(url: file.url, contents: text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            guard (try? "# Agent instructions\n".write(to: file.url, atomically: true, encoding: .utf8)) != nil else { return }
             reload()
         }
         onReveal?(file.url)
     }
 
-    @objc private func acknowledgeTapped() {
-        guard let file = selectedFile, let text = try? String(contentsOf: file.url, encoding: .utf8) else { return }
-        ProjectRules.acknowledge(url: file.url, contents: text.trimmingCharacters(in: .whitespacesAndNewlines))
-        reload()
-    }
 
     func numberOfRows(in tableView: NSTableView) -> Int { files.count }
 
@@ -583,7 +563,7 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
         let root = NSView()
         let heading = NSTextField(labelWithString: "MCP Servers")
         heading.font = DS.Text.title(.bold)
-        let note = NSTextField(wrappingLabelWithString: "Your own tools for agents. Outside agents start the servers you switch on for a project, alongside Side's own tools and whatever their own settings add. Heron can't use MCP servers yet. Idle agents restart to pick up a change.")
+        let note = NSTextField(wrappingLabelWithString: "Your own tools for agents. Outside agents start the servers you switch on for a project, alongside Side's own tools and whatever their own settings add. Idle agents restart to pick up a change.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
 
@@ -770,7 +750,7 @@ final class MCPServersPaneViewController: NSViewController, NSTableViewDataSourc
 
 // MARK: - Skills
 
-/// Skills on disk and the agents that load them. Read-only: Heron doesn't use skills yet (L3).
+/// Skills on disk and the agents that load them. Read-only (L3).
 @MainActor
 final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     var target: LibraryTarget? { didSet { reload() } }
@@ -788,7 +768,7 @@ final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, N
         let root = NSView()
         let heading = NSTextField(labelWithString: "Skills")
         heading.font = DS.Text.title(.bold)
-        let note = NSTextField(wrappingLabelWithString: "Instructions and scripts an agent loads when a task calls for them. Outside agents find these on their own. Heron doesn't use skills yet.")
+        let note = NSTextField(wrappingLabelWithString: "Instructions and scripts an agent loads when a task calls for them. Agents find these on their own.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
 
@@ -964,8 +944,8 @@ final class StoragePaneViewController: NSViewController {
 
         let sections = NSStackView(views: [
             SettingsForm.section("On this Mac", [
-                SettingsForm.row("Heron conversations", conversationsValue),
-                SettingsForm.row("Outside-agent records", outsideValue),
+                SettingsForm.row("Agent records", outsideValue),
+                SettingsForm.row("Heron conversations (retired)", conversationsValue),
                 SettingsForm.row("Track working copies", copiesValue),
             ]),
             SettingsForm.section("History", footer: "The same setting as Preferences \u{203A} History.", [

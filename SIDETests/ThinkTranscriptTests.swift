@@ -72,6 +72,34 @@ for line in sys.stdin:
     }
 
 
+    /// SIDE_RFC_HERON_RETIREMENT.md, step 3: a track on Heron with nothing of Heron's to read
+    /// moves to the default agent when Agent opens it; one with a Heron conversation keeps it, to
+    /// read, with "Continue on <agent>" where Send was, and carrying on moves it.
+    func testHeronIsRetiredReadOnlyAndCarriedOnByTheDefaultAgent() throws {
+        DefaultAgent.chosenId = agent.id
+        defer { DefaultAgent.chosenId = nil }
+        let empty = try makeTrack()
+        context.trackStore.setHarness(nil, forTrackKey: empty.branchName)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let think = ThinkWorkspaceViewController()
+        window.contentViewController = think
+        think.configure(runnerManager: context.runnerManager, trackStore: context.trackStore, projectPath: root.path, trackKey: empty.branchName)
+        XCTAssertEqual(context.trackStore.harness(forTrackKey: empty.branchName)?.id, agent.id, "nothing to read: on the default agent")
+        XCTAssertFalse(think.isRetiredHeron)
+        XCTAssertNil(think.sendReplacementForTesting)
+
+        let kept = try makeTrack()
+        context.trackStore.setHarness(nil, forTrackKey: kept.branchName)
+        context.sessionStore.appendTurn(AgentTurn(role: .user, content: [.text("What did Heron say?")]), trackKey: kept.branchName, providerId: "p", modelId: "m")
+        think.reloadForTrackSwitch(trackKey: kept.branchName)
+        XCTAssertNil(context.trackStore.harness(forTrackKey: kept.branchName), "a Heron conversation stays where it is")
+        XCTAssertTrue(think.isRetiredHeron)
+        XCTAssertEqual(think.sendReplacementForTesting, "Continue on \(agent.displayName)")
+        XCTAssertTrue(context.trackStore.hasHeronHistory(kept.branchName))
+    }
+
     /// 2026-09-30 audit, UX-7: a reply finishing, on screen, said nothing to VoiceOver (focus
     /// is in the composer). It says so, with how the reply begins.
     func testAFinishedReplyIsAnnounced() throws {

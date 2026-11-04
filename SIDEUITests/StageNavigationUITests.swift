@@ -94,7 +94,7 @@ final class StageNavigationUITests: XCTestCase {
 
         let preferences = app.windows["Preferences"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 5))
-        for pane in ["General", "Providers", "Usage", "Appearance", "History"] {
+        for pane in ["General", "Agents", "Usage", "Appearance", "History"] {
             // `NSTabViewController` in toolbar style exposes its panes as toolbar buttons.
             XCTAssertTrue(preferences.toolbars.buttons[pane].exists, "\(pane) pane is missing from Preferences")
         }

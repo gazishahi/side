@@ -1287,14 +1287,17 @@ final class TracksWorkspaceViewController: NSViewController {
         // account (SIDE_RFC_BYO_HARNESS.md).
         let agentItem = menu.addItem(withTitle: "Agent", action: nil, keyEquivalent: "")
         let agentMenu = NSMenu()
-        let heron = agentMenu.addItem(withTitle: "Heron", action: #selector(setHarnessMenuItem(_:)), keyEquivalent: "")
-        heron.representedObject = [track, ""] as [Any]
-        heron.state = track.runsOnHeron ? .on : .off
-        agentMenu.addItem(NSMenuItem.separator())
         for agent in ACPAgent.known {
             let item = agentMenu.addItem(withTitle: agent.displayName, action: #selector(setHarnessMenuItem(_:)), keyEquivalent: "")
             item.representedObject = [track, agent.id] as [Any]
             item.state = track.harnessId == agent.id ? .on : .off
+        }
+        // Heron is retired: offered only to read the conversations it left on this track.
+        if track.runsOnHeron || trackStore?.hasHeronHistory(track.branchName) == true {
+            agentMenu.addItem(NSMenuItem.separator())
+            let heron = agentMenu.addItem(withTitle: "Heron (retired), to read", action: #selector(setHarnessMenuItem(_:)), keyEquivalent: "")
+            heron.representedObject = [track, ""] as [Any]
+            heron.state = track.runsOnHeron ? .on : .off
         }
         agentItem.submenu = agentMenu
         // Available regardless of status — the whole point is watching/working on two tracks

@@ -71,13 +71,14 @@ enum DefaultAgent {
     static var harnessIdForNewTrack: String { agent?.id ?? Track.heronId }
 }
 
-/// The "AGENT" row both session popovers start with: Heron, or an outside agent (RFC step 4).
+/// The "AGENT" row of the session popover: an outside agent, or Heron (retired), offered only
+/// where it has conversations to read (SIDE_RFC_HERON_RETIREMENT.md, step 3).
 @MainActor
 enum AgentPicker {
     /// `representedObject` is the agent id, "" for Heron.
-    static func makePopup(currentId: String?, target: AnyObject, action: Selector) -> NSPopUpButton {
+    static func makePopup(currentId: String?, offersHeron: Bool, target: AnyObject, action: Selector) -> NSPopUpButton {
         let popup = NSPopUpButton()
-        fill(popup, currentId: currentId)
+        fill(popup, currentId: currentId, offersHeron: offersHeron)
         popup.target = target
         popup.action = action
         popup.setAccessibilityLabel("Agent")
@@ -85,12 +86,9 @@ enum AgentPicker {
     }
 
     /// (Re)fills the list — again once detection has found which agents are installed.
-    static func fill(_ popup: NSPopUpButton, currentId: String?) {
+    static func fill(_ popup: NSPopUpButton, currentId: String?, offersHeron: Bool) {
         popup.removeAllItems()
         popup.menu?.autoenablesItems = false
-        popup.addItem(withTitle: "Heron")
-        popup.lastItem?.representedObject = ""
-        popup.menu?.addItem(.separator())
         for agent in ACPAgent.known {
             let installed = AgentAvailability.isInstalled(agent)
             let label = agent.isVerified ? agent.displayName : "\(agent.displayName) (experimental)"
@@ -98,7 +96,16 @@ enum AgentPicker {
             popup.lastItem?.representedObject = agent.id
             if installed == false { popup.lastItem?.toolTip = "Install with: \(agent.installHint)" }
         }
-        let index = (0..<popup.numberOfItems).first { (popup.item(at: $0)?.representedObject as? String) == (currentId ?? "") }
+        let onHeron = ACPAgent.agent(id: currentId) == nil
+        if offersHeron || onHeron {
+            popup.menu?.addItem(.separator())
+            popup.addItem(withTitle: "Heron (retired), to read")
+            popup.lastItem?.representedObject = ""
+        }
+        let index = (0..<popup.numberOfItems).first {
+            let id = popup.item(at: $0)?.representedObject as? String
+            return onHeron ? id == "" : id == currentId
+        }
         popup.selectItem(at: index ?? 0)
     }
 }
@@ -109,6 +116,8 @@ enum AgentPicker {
 final class AgentSessionSettingsViewController: NSViewController {
     weak var harness: (any Harness)?
     var harnessId: String?
+    /// The track has Heron conversations, so "Heron (retired)" is offered to read them.
+    var offersHeron = false
     /// The agent id picked, "" for Heron.
     var onAgentChosen: ((String) -> Void)?
 
@@ -156,14 +165,16 @@ final class AgentSessionSettingsViewController: NSViewController {
             return label
         }
 
-        let picker = AgentPicker.makePopup(currentId: harnessId, target: self, action: #selector(agentChanged(_:)))
+        let picker = AgentPicker.makePopup(currentId: harnessId, offersHeron: offersHeron, target: self, action: #selector(agentChanged(_:)))
         stack.addArrangedSubview(caption("Agent"))
         stack.addArrangedSubview(picker)
         picker.widthAnchor.constraint(equalToConstant: width).isActive = true
         stack.setCustomSpacing(DS.Spacing.xl, after: picker)
 
         let options = harness?.agentOptions ?? []
-        if options.isEmpty {
+        if harness != nil, harness?.harnessName == nil {
+            stack.addArrangedSubview(note("Heron is retired. Its conversations on this track are kept to read; pick an agent above to carry on.", color: .secondaryLabelColor))
+        } else if options.isEmpty {
             stack.addArrangedSubview(note("Opening a session… The agent's model and mode appear here once it answers."))
         }
         for (index, option) in options.enumerated() {

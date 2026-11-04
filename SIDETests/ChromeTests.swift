@@ -216,7 +216,7 @@ final class TextScaleFollowerTests: XCTestCase {
         defer { window.close() }
         let content = NSView(frame: window.contentRect(forFrameRect: window.frame))
         window.contentView = content
-        let label = NSTextField(labelWithString: "Providers")
+        let label = NSTextField(labelWithString: "Agents")
         label.font = .systemFont(ofSize: 13)
         let table = NSTableView()
         table.rowHeight = 20

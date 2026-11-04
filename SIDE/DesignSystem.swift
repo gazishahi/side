@@ -1340,7 +1340,7 @@ extension DS {
 /// What an empty state's one action does. The shell performs it — a stage can't open a project,
 /// initialise git or start a track on its own.
 enum EmptyStateAction {
-    case openProject, initializeGit, newTrack, chooseTrack, setUpModel
+    case openProject, initializeGit, newTrack, chooseTrack, setUpAgent
 }
 
 

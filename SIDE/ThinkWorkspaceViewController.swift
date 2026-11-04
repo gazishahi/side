@@ -100,7 +100,6 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// The active provider can take a message. Read on attach and whenever the window becomes
     /// main again (Preferences closing is the usual reason it changed); not per keystroke — it's a
     /// Keychain read.
-    private var modelReady = true
     private var mainWindowObserver: NSObjectProtocol?
 
     private var runnerManager: AgentRunnerManager?
@@ -131,6 +130,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// track's choice to know when to reattach.
     var attachedHarnessName: String? { runner?.harnessName }
     var isAttachedToRunner: Bool { runner != nil }
+    var sendReplacementForTesting: String? { composer.sendReplacementForTesting }
     private var observerToken: UUID?
     /// Parallel to `runner.entries` — the view currently rendering each entry, so a streamed
     /// delta or a proposal resolution can update one block in place instead of rebuilding the
@@ -214,8 +214,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
         composer.onSlashCommand = { [weak self] name in self?.performSlashCommand(name) }
         composer.onAction = { [weak self] in self?.composerActionTapped() }
-        composer.onSetUpModel = { [weak self] in self?.onEmptyStateAction?(.setUpModel) }
-        composer.onCycleMode = { [weak self] in self?.cycleScope() }
+        composer.onSendReplacementTapped = { [weak self] in self?.continueAfterHeron() }
         composer.onEscape = { [weak self] in self?.escapePressed() ?? false }
         composer.onEngagedChanged = { [weak self] engaged in self?.onComposerEngagedChanged?(engaged) }
         // Newest first, deduplicated: pressing Up three times to get past the same message
@@ -519,7 +518,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         refreshFileIndex()
         // Think works on a track (§6): with none, there's no conversation to attach to — the
         // empty state offers to start one.
+        runner = nil
         if let runnerManager, let trackKey, !trackKey.isEmpty {
+            // A track still on Heron with nothing of Heron's to read moves to the default agent
+            // before anything is made for it (SIDE_RFC_HERON_RETIREMENT.md, step 3).
+            if let store = trackStore, store.harness(forTrackKey: trackKey) == nil, !store.hasHeronHistory(trackKey), let agent = DefaultAgent.agent {
+                store.setHarness(agent.id, forTrackKey: trackKey)
+            }
             let newRunner = runnerManager.runner(forTrackKey: trackKey)
             runner = newRunner
             observerToken = newRunner.addObserver { [weak self] event in self?.handle(event) }
@@ -555,15 +560,27 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         } else if runner == nil {
             let hasTracks = trackStore?.tracks.contains { $0.status != .archived } ?? false
             emptyState.configure("Agent works on a track.", action: hasTracks ? "Choose a Track…" : "New Track", handler: act(hasTracks ? .chooseTrack : .newTrack))
+        } else if isRetiredHeron {
+            emptyState.configure("Heron is retired. Set up an agent to start a conversation on this track.", action: nil, handler: nil)
         } else {
             emptyState.configure("Ask anything about this track. Every change waits for your approval.", action: nil, handler: nil)
         }
     }
 
+    /// Heron is retired (SIDE_RFC_HERON_RETIREMENT.md, step 3): a track still on it shows its
+    /// conversation to read, and Send gives way to carrying on with an agent.
+    var isRetiredHeron: Bool { runner != nil && runner?.harnessName == nil }
+
     private func refreshModelReadiness() {
-        modelReady = runner?.isReadyToSend ?? true
         guard isViewLoaded else { return }
-        composer.setNeedsModelSetup(!modelReady)
+        composer.setSendReplacement(isRetiredHeron ? (DefaultAgent.agent.map { "Continue on \($0.displayName)" } ?? "Set Up an Agent\u{2026}") : nil)
+        updateSendButton()
+    }
+
+    /// The retired-Heron button: the track moves to the default agent (its Heron conversations
+    /// stay, under "Heron (retired)" in the agent menu), or, with none installed, Settings › Agents.
+    private func continueAfterHeron() {
+        if let agent = DefaultAgent.agent { chooseAgent(agent.id) } else { onEmptyStateAction?(.setUpAgent) }
     }
 
     private func detach() {
@@ -681,17 +698,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         let text = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = composer.attachmentPayloads()
         guard !text.isEmpty || !attachments.isEmpty else { return }
-        // Standing instructions from a file that arrived with the repo get the user's eyes
-        // before they get the system prompt — see ProjectRules.
-        guard confirmProjectRulesIfNeeded() else { return }
-        // Checked before clearing: a message that can't be sent must stay in the composer
-        // rather than vanishing behind a muted notice.
-        guard runner.isReadyToSend else {
-            // "Set up a model…" (§6): straight to Providers; the message stays where it is.
-            refreshModelReadiness()
-            onEmptyStateAction?(.setUpModel)
-            return
-        }
+        // Nothing goes to a retired Heron; the message stays where it is.
+        guard !isRetiredHeron else { return }
         composer.clear()
         if let turnId = editingTurnId {
             endEditingMessage()
@@ -782,6 +790,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         composer.isEnabled = !awaitingApproval
         composer.placeholder = runner == nil
             ? "Start a track to begin a conversation"
+            : isRetiredHeron
+            ? "Heron is retired. This conversation is kept to read."
             : awaitingApproval
             ? "Apply or reject the proposed change above to continue…"
             : (busy ? "Working. Your next message will be sent when it finishes…" : "Ask about this project…")
@@ -857,36 +867,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     // MARK: - Model + effort
 
-    /// What this track will actually use: its own choice where it has one, the app default
-    /// otherwise. Mirrors `AgentRunner.resolvedSelection()` deliberately — the header must show
-    /// what the next request will do, not what someone once picked.
-    private func resolvedSelection() -> (providerId: String, modelId: String, effort: AgentEffort, isTrackSpecific: Bool) {
-        let registry = ProviderRegistryStore.shared
-        let storedProviderId: String? = trackStore?.modelSelection(forTrackKey: attachedTrackKey ?? "").providerId
-        let storedModelId: String? = trackStore?.modelSelection(forTrackKey: attachedTrackKey ?? "").modelId
-        let storedEffort: AgentEffort? = trackStore?.modelSelection(forTrackKey: attachedTrackKey ?? "").effort
-
-        let providerId: String = storedProviderId ?? registry.activeProviderId
-        let definition = registry.provider(for: providerId) ?? registry.provider(for: registry.activeProviderId)
-        // Falls back rather than showing a model that no longer exists: a provider's model list
-        // can change under a stored selection, and `resolveAdapter` falls back the same way.
-        var modelId: String = definition?.defaultModelId ?? ""
-        if let requested = storedModelId, let match = definition?.models.first(where: { $0.id == requested }) {
-            modelId = match.id
-        }
-        let isTrackSpecific = storedProviderId != nil || storedModelId != nil || storedEffort != nil
-        return (providerId, modelId, storedEffort ?? .default, isTrackSpecific)
-    }
 
     /// The + popover — same presentation as the pill, same feel.
     private func showPlusPopover() {
         let actions = PlusActionsViewController()
         actions.onAttach = { [weak self] in self?.insertMentionTrigger() }
         actions.onAttachImage = { [weak self] in self?.pickImageAttachment() }
-        actions.onOpenRules = { [weak self] in self?.openProjectRules() }
         actions.onOpenLibrary = { [weak self] in self?.onOpenLibrary?() }
         actions.onShowHistory = { [weak self] in self?.showConversationHistory() }
-        actions.onCompact = { [weak self] in self?.compactConversation() }
         actions.onNewConversation = { [weak self] in self?.startNewConversation() }
         let popover = NSPopover()
         popover.behavior = .transient
@@ -894,88 +882,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         popover.show(relativeTo: plusButton.bounds, of: plusButton, preferredEdge: .maxY)
     }
 
-    /// Asks once per (file, contents) before a repo's rules file is allowed to shape requests.
-    ///
-    /// Returns false only when the user chooses to look at the file first — the send is then
-    /// abandoned with the message still in the composer, so nothing is lost. Declining just
-    /// leaves the rules inactive; the conversation proceeds without them.
-    private func confirmProjectRulesIfNeeded() -> Bool {
-        guard let projectPath else { return true }
-        let root = URL(fileURLWithPath: trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath)
-        // Two files arrive with a repository and change what the agent does: the rules file
-        // shapes what it says, the tasks file decides what `run_task` executes. Both get the same
-        // per-content consent before they take effect.
-        if let rules = ProjectRules.pendingAcknowledgement(projectRoot: root) {
-            let name = rules.url.lastPathComponent
-            let outcome = askToAcknowledge(
-                title: "Use \(name) as standing instructions?",
-                detail: "This project contains \(name), which tells agents how to work in it. "
-                    + "Side would include it in every request for this project.\n\n"
-                    + "Files like this arrive with a cloned repository, so read it first if the project isn't yours: "
-                    + "it shapes what the agent does, though it can never waive your approval of edits and commands.",
-                acceptTitle: "Use These Rules", file: rules,
-                acceptedNotice: "\(name) is now included in every request for this project."
-            )
-            guard outcome else { return false }
-        }
-        if let tasks = ProjectTasks.pendingDeclaration(projectRoot: root) {
-            let outcome = askToAcknowledge(
-                title: "Use this project's declared tasks?",
-                detail: "This project contains \(ProjectTasks.declarationPath), which names commands the agent can run "
-                    + "with run_task: its build, test, and verify steps.\n\n"
-                    + "It arrives with a cloned repository, so read it first if the project isn't yours: a task named "
-                    + "\u{201C}test\u{201D} can run anything. Until you accept it, Side uses what it detects from the "
-                    + "project's own manifests instead. Each task still shows an approval card unless the track auto-runs commands.",
-                acceptTitle: "Use These Tasks", file: tasks,
-                acceptedNotice: "\(ProjectTasks.declarationPath) is now the source of this project's tasks."
-            )
-            guard outcome else { return false }
-        }
-        return true
-    }
 
-    /// One consent dialog. Returns false only when the user chose to look at the file first — that
-    /// is a "not yet", and the message stays in the composer.
-    private func askToAcknowledge(title: String, detail: String, acceptTitle: String, file: (url: URL, contents: String), acceptedNotice: String) -> Bool {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = detail
-        alert.addButton(withTitle: acceptTitle)
-        alert.addButton(withTitle: "Show Me the File")
-        alert.addButton(withTitle: "Not Now")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            ProjectRules.acknowledge(url: file.url, contents: file.contents)
-            appendLocalNotice(acceptedNotice)
-            return true
-        case .alertSecondButtonReturn:
-            onRevealFileRequested?(file.url)
-            return false
-        default:
-            return true
-        }
-    }
-
-    /// Opens the project's rules file in Make, creating it from the template when there is
-    /// none — the file only helps if writing the first one is a single click.
-    private func openProjectRules() {
-        guard let projectPath else { return }
-        let root = trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath
-        let rootURL = URL(fileURLWithPath: root)
-        if let existing = ProjectRules.candidateNames
-            .map({ rootURL.appendingPathComponent($0) })
-            .first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
-            onRevealFileRequested?(existing)
-            return
-        }
-        let url = rootURL.appendingPathComponent(ProjectRules.preferredFileName)
-        guard (try? ProjectRules.template.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
-        // Written by the user, here, on purpose — asking them to acknowledge their own file
-        // would be theatre.
-        ProjectRules.acknowledge(url: url, contents: ProjectRules.template.trimmingCharacters(in: .whitespacesAndNewlines))
-        appendLocalNotice("Created \(ProjectRules.preferredFileName). What you write there is included in every Agent request for this project.")
-        onRevealFileRequested?(url)
-    }
 
     /// The history picker: every past conversation on this track, newest first.
     private func showConversationHistory() {
@@ -1018,52 +925,16 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         composer.insertText("@")
     }
 
-    /// The pill's popover: every session control in one place, as real controls.
+
+    /// The pill's popover: the agent, and the agent's own settings as it reports them. Heron's
+    /// model, effort and scope went with it (SIDE_RFC_HERON_RETIREMENT.md, step 3).
     private func showSessionPopover() {
-        if let runner, runner.harnessName != nil {
-            let agentSettings = AgentSessionSettingsViewController()
-            agentSettings.harness = runner
-            agentSettings.harnessId = trackStore?.harness(forTrackKey: attachedTrackKey ?? "")?.id
-            agentSettings.onAgentChosen = { [weak self] id in self?.chooseAgent(id) }
-            presentSessionPopover(agentSettings)
-            return
-        }
-        let settings = SessionSettingsViewController()
+        let settings = AgentSessionSettingsViewController()
+        settings.harness = runner
+        let key = attachedTrackKey ?? ""
+        settings.harnessId = trackStore?.harness(forTrackKey: key)?.id
+        settings.offersHeron = trackStore?.hasHeronHistory(key) ?? false
         settings.onAgentChosen = { [weak self] id in self?.chooseAgent(id) }
-        settings.snapshot = sessionSnapshot()
-        settings.onModelChosen = { [weak self] providerId, modelId in
-            guard let self else { return }
-            if let providerId, let modelId {
-                let current = self.resolvedSelection()
-                self.trackStore?.setModelSelection(providerId: providerId, modelId: modelId, effort: current.effort, for: self.attachedTrackKey ?? "")
-            } else {
-                // nil/nil is "App Default" — clear the track's own choice entirely.
-                self.trackStore?.setModelSelection(providerId: nil, modelId: nil, effort: nil, for: self.attachedTrackKey ?? "")
-            }
-            self.refreshSessionPill()
-            settings.snapshot = self.sessionSnapshot()
-        }
-        settings.onEffortChosen = { [weak self] effort in
-            guard let self else { return }
-            let current = self.resolvedSelection()
-            // Choosing effort pins the model too: otherwise "high effort" would silently move to
-            // a different model the moment someone changed the app default.
-            self.trackStore?.setModelSelection(providerId: current.providerId, modelId: current.modelId, effort: effort, for: self.attachedTrackKey ?? "")
-            self.refreshSessionPill()
-        }
-        settings.onScopeChosen = { [weak self] scope in
-            guard let self else { return }
-            // Leaving a read-only scope keeps whatever autonomy was set; entering one leaves it
-            // stored but inert, so switching back restores it.
-            self.trackStore?.setMode(AgentMode(scope: scope, autonomy: self.currentMode().autonomy), forTrackKey: self.attachedTrackKey ?? "")
-            self.refreshSessionPill()
-            settings.snapshot = self.sessionSnapshot()
-        }
-        settings.onAutonomyChosen = { [weak self] autonomy in
-            guard let self else { return }
-            self.trackStore?.setMode(AgentMode(scope: self.currentMode().scope, autonomy: autonomy), forTrackKey: self.attachedTrackKey ?? "")
-            self.refreshSessionPill()
-        }
         presentSessionPopover(settings)
     }
 
@@ -1095,43 +966,6 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         trackStore?.setHarness(id.isEmpty ? nil : id, forTrackKey: trackKey)
     }
 
-    private func sessionSnapshot() -> SessionSettingsViewController.Snapshot {
-        let selection = resolvedSelection()
-        let mode = currentMode()
-        var usageLine = ""
-        var spendLine: String?
-        var budgetLine: String?
-        if let runner {
-            let usage = runner.contextUsage()
-            usageLine = "Context: \(UsageFormatting.tokens(usage.usedTokens)) of \(UsageFormatting.tokens(usage.windowTokens)) tokens (\(Int((usage.fraction * 100).rounded()))%)"
-        }
-        if let projectPath {
-            let trackKey = attachedTrackKey ?? ""
-            let totals = UsageStore.shared.totals(projectPath: projectPath, trackKey: trackKey)
-            if totals.totalTokens > 0 {
-                var line = "This track: \(UsageFormatting.tokens(totals.totalTokens)) tokens"
-                let priced = UsageStore.shared.records.filter { $0.projectPath == projectPath && $0.trackKey == trackKey }
-                if priced.allSatisfy({ ModelPricing.isPriced(modelId: $0.modelId) }) {
-                    let cost = priced.reduce(0.0) { $0 + (ModelPricing.estimatedCost(modelId: $1.modelId, totals: $1.totals) ?? 0) }
-                    line += " · ~\(UsageFormatting.cost(cost))"
-                }
-                spendLine = line
-            }
-        }
-        switch UsageBudget.status() {
-        case .approaching(let spent, let limit):
-            budgetLine = "Budget: \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit)) this month"
-        case .exceeded(let spent, let limit):
-            budgetLine = "Budget reached: \(UsageFormatting.cost(spent)) of \(UsageFormatting.cost(limit))"
-        case .unlimited, .withinBudget:
-            break
-        }
-        return .init(
-            providerId: selection.providerId, modelId: selection.modelId,
-            isTrackSpecific: selection.isTrackSpecific, effort: selection.effort, mode: mode,
-            usageLine: usageLine, spendLine: spendLine, budgetLine: budgetLine
-        )
-    }
 
     /// The directory `@`-mentions resolve against: the track's own worktree when it has one,
     /// which is the same directory `AgentRunner` hands its tools.
@@ -1191,28 +1025,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         if let line { onRevealFileAtLineRequested?(url, line) } else { onRevealFileRequested?(url) }
     }
 
-    /// Shift+Tab in the composer walks Ask → Plan → Build → Ask, same as Cursor and Claude Code.
-    private func cycleScope() {
-        let all = AgentToolScope.allCases
-        let current = currentMode()
-        let next = all[((all.firstIndex(of: current.scope) ?? 0) + 1) % all.count]
-        trackStore?.setMode(AgentMode(scope: next, autonomy: current.autonomy), forTrackKey: attachedTrackKey ?? "")
-        refreshSessionPill()
-    }
 
     private func currentMode() -> AgentMode {
         trackStore?.mode(forTrackKey: attachedTrackKey ?? "") ?? .default
     }
 
-    /// One hue per tool scope, applied sparingly (pill edge, send button): the mode is a safety
-    /// property, so the color is a signal, not a theme.
-    private static func tint(for scope: AgentToolScope) -> NSColor {
-        switch scope {
-        case .ask: return .systemBlue
-        case .plan: return .systemPurple
-        case .build: return .systemOrange
-        }
-    }
 
     func popoverDidClose(_ notification: Notification) {
         sessionPopover = nil
@@ -1222,35 +1039,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
     }
 
-    private func resolvedSelectionModelName() -> String {
-        let selection = resolvedSelection()
-        return ProviderRegistryStore.shared.provider(for: selection.providerId)?
-            .models.first { $0.id == selection.modelId }?.displayName ?? selection.modelId
-    }
 
-    @objc private func compactConversation() {
-        guard let runner else { return }
-        let usage = runner.contextUsage()
-        let alert = NSAlert()
-        alert.messageText = "Compact this conversation?"
-        // Says what is lost, what it costs, and that it can't be undone — all three, because this
-        // deletes the user's conversation to make room.
-        alert.informativeText = "The turns so far (\(UsageFormatting.tokens(usage.usedTokens)) tokens) are replaced by a summary the model writes of them. Detail beyond that summary is gone from the agent's context; Undo, on the line that follows, brings the full conversation back. Checkpoints and your files are untouched.\n\nWriting the summary costs one request."
-        alert.addButton(withTitle: "Compact")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        runner.compact { [weak self] _ in
-            self?.renderFull()
-            self?.refreshSessionPill()
-        }
-    }
 
     @objc private func startNewConversation() {
         guard let runner, !runner.entries.isEmpty else { return }
         let alert = NSAlert()
         alert.messageText = "Start a new conversation?"
-        alert.informativeText = "This conversation is filed under History, and you can reopen it any time. The agent starts fresh and won't carry anything forward; use Compact instead if it should. Checkpoints, usage history, and your files are untouched."
+        alert.informativeText = "This conversation is filed under History, and you can reopen it any time. The agent starts fresh and won't carry anything forward. Checkpoints, usage history, and your files are untouched."
         alert.addButton(withTitle: "Start New")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
@@ -1265,34 +1060,28 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     /// The pill's face: model · scope · context, tinted by how full the window is.
     private func refreshSessionPill() {
-        // Color updates always land — changing a segmented control in the popover should recolor
-        // the pill edge and send button immediately, and color doesn't move the anchor.
-        // Scope is Heron's; an outside agent's pill isn't tinted by a scope it doesn't have.
-        let isOutsideAgent = runner?.harnessName != nil
-        let scopeTint = isOutsideAgent ? NSColor.controlAccentColor : Self.tint(for: currentMode().scope)
-        pillModeTint.color = isOutsideAgent ? .clear : scopeTint.withAlphaComponent(0.16)
-        composer.setModeTint(scopeTint)
+        // No scope tint: modes were Heron's, and went with it (SIDE_RFC_HERON_RETIREMENT.md).
+        pillModeTint.color = .clear
+        composer.setModeTint(.controlAccentColor)
         // The popover is anchored to the pill: resizing the pill mid-edit visibly drags the
         // popover sideways. Hold the label until the popover closes.
         if sessionPopover?.isShown == true {
             pillRefreshDeferred = true
             return
         }
-        let mode = currentMode()
-        // An outside agent names itself and its own model; Heron's model and scope don't apply
-        // to it (RFC D6).
+        // The agent names itself and its own model (RFC D6).
         var title: String
         if let runner, let agentName = runner.harnessName {
             let model = runner.agentOptions.first { $0.category == .model }?.currentChoice?.name
             title = [agentName, model].compactMap { $0 }.joined(separator: " · ")
         } else {
-            title = "\(resolvedSelectionModelName()) · \(mode.scope.displayName)"
+            title = "Heron (retired)"
         }
         var tint = NSColor.secondaryLabelColor
         // Context appears once the conversation has one: before the first message it's 0%
         // (Heron) or unknown (an outside agent reports usage only once it answers).
         let hasSentMessage = runner?.entries.contains { if case .userText = $0.kind { return true } else { return false } } ?? false
-        if let runner, hasSentMessage, runner.harnessName == nil || runner.contextUsage().windowTokens > 0 {
+        if let runner, hasSentMessage, runner.harnessName != nil, runner.contextUsage().windowTokens > 0 {
             let usage = runner.contextUsage()
             title += " · \(Int((usage.fraction * 100).rounded()))%"
             switch usage.status {
@@ -1421,15 +1210,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Everything a chip can do, reachable without leaving the keyboard. The list is the router
     /// below, restated — a command that exists here but does nothing is worse than no palette.
     private static let slashCommands: [(name: String, blurb: String)] = [
-        ("compact", "summarize the conversation to free up context"),
         ("new", "discard this conversation and start fresh"),
-        ("ask", "read-only: answer questions"),
-        ("plan", "read-only: produce a plan"),
-        ("build", "full tools: edits and commands"),
         ("manual", "approve every edit and command"),
         ("guarded", "auto-run safe commands"),
         ("full", "auto-apply edits too"),
-        ("rules", "open this project's standing instructions for the agent"),
         ("history", "reopen a past conversation on this track"),
         ("library", "saved prompts, instruction files and more"),
     ]
@@ -1445,15 +1229,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private func performSlashCommand(_ name: String) {
         switch name {
-        case "compact": compactConversation()
         case "new": startNewConversation()
-        case "rules": openProjectRules()
         case "history": showConversationHistory()
         case "library": onOpenLibrary?()
-        case "ask", "plan", "build":
-            guard let scope = AgentToolScope(rawValue: name) else { return }
-            trackStore?.setMode(AgentMode(scope: scope, autonomy: currentMode().autonomy), forTrackKey: attachedTrackKey ?? "")
-            refreshSessionPill()
         case "manual", "guarded", "full":
             guard let autonomy = AgentAutonomy(rawValue: name) else { return }
             trackStore?.setMode(AgentMode(scope: currentMode().scope, autonomy: autonomy), forTrackKey: attachedTrackKey ?? "")
@@ -3555,10 +3333,8 @@ private final class ConversationHistoryRow: NSView {
 private final class PlusActionsViewController: NSViewController {
     var onAttach: (() -> Void)?
     var onAttachImage: (() -> Void)?
-    var onOpenRules: (() -> Void)?
     var onOpenLibrary: (() -> Void)?
     var onShowHistory: (() -> Void)?
-    var onCompact: (() -> Void)?
     var onNewConversation: (() -> Void)?
 
     override func loadView() { view = NSView() }
@@ -3567,11 +3343,9 @@ private final class PlusActionsViewController: NSViewController {
         super.viewDidLoad()
         let rows = [
             PopoverActionRow(symbol: "photo", title: "Attach Image…") { [weak self] in self?.dismissThen(self?.onAttachImage) },
-            PopoverActionRow(symbol: "text.book.closed", title: "Project Rules…") { [weak self] in self?.dismissThen(self?.onOpenRules) },
             PopoverActionRow(symbol: "books.vertical", title: "Library…") { [weak self] in self?.dismissThen(self?.onOpenLibrary) },
             PopoverActionRow(symbol: "clock.arrow.circlepath", title: "History…") { [weak self] in self?.dismissThen(self?.onShowHistory) },
             PopoverActionRow(symbol: "at", title: "Add File Reference") { [weak self] in self?.dismissThen(self?.onAttach) },
-            PopoverActionRow(symbol: "arrow.down.right.and.arrow.up.left", title: "Compact Conversation…") { [weak self] in self?.dismissThen(self?.onCompact) },
             PopoverActionRow(symbol: "square.and.pencil", title: "New Conversation…") { [weak self] in self?.dismissThen(self?.onNewConversation) },
         ]
         let stack = NSStackView(views: rows)
@@ -3600,189 +3374,6 @@ private final class PlusActionsViewController: NSViewController {
 
 }
 
-/// The session pill's popover: model, thinking effort, tool scope, autonomy, and the context /
-/// spend figures — as real macOS controls rather than stacked menus. Three-way choices are
-/// segmented controls; the model list is a popup grouped by provider.
-private final class SessionSettingsViewController: NSViewController {
-    struct Snapshot {
-        var providerId: String
-        var modelId: String
-        var isTrackSpecific: Bool
-        var effort: AgentEffort
-        var mode: AgentMode
-        var usageLine: String
-        var spendLine: String?
-        var budgetLine: String?
-    }
-
-    var snapshot: Snapshot? { didSet { if isViewLoaded { apply() } } }
-    /// nil/nil means "App Default."
-    var onModelChosen: ((String?, String?) -> Void)?
-    var onEffortChosen: ((AgentEffort) -> Void)?
-    var onScopeChosen: ((AgentToolScope) -> Void)?
-    var onAutonomyChosen: ((AgentAutonomy) -> Void)?
-    /// The AGENT row: an agent id, "" for Heron.
-    var onAgentChosen: ((String) -> Void)?
-
-    private lazy var agentPopup = AgentPicker.makePopup(currentId: nil, target: self, action: #selector(agentChanged))
-    private let modelPopup = NSPopUpButton()
-    private let effortControl = SlidingSegmentedControl(titles: AgentEffort.allCases.map { $0 == .standard ? "Default" : $0.shortLabel.capitalized })
-    private let scopeControl = SlidingSegmentedControl(titles: AgentToolScope.allCases.map(\.displayName))
-    private let autonomyControl = SlidingSegmentedControl(titles: AgentAutonomy.allCases.map { $0.shortLabel.capitalized })
-    private let autonomyCaption = NSTextField(wrappingLabelWithString: "")
-    private let usageLabel = NSTextField(labelWithString: "")
-    private let spendLabel = NSTextField(labelWithString: "")
-    private let budgetLabel = NSTextField(labelWithString: "")
-
-    override func loadView() { view = NSView() }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-
-        func caption(_ text: String) -> NSTextField {
-            let label = NSTextField(labelWithString: text)
-            label.font = DS.Text.caption()
-            label.textColor = .tertiaryLabelColor
-            return label
-        }
-
-        modelPopup.target = self
-        modelPopup.action = #selector(modelChanged)
-
-        effortControl.onChange = { [weak self] index in
-            guard AgentEffort.allCases.indices.contains(index) else { return }
-            self?.onEffortChosen?(AgentEffort.allCases[index])
-        }
-        scopeControl.onChange = { [weak self] index in
-            guard AgentToolScope.allCases.indices.contains(index) else { return }
-            self?.onScopeChosen?(AgentToolScope.allCases[index])
-        }
-        autonomyControl.onChange = { [weak self] index in
-            guard AgentAutonomy.allCases.indices.contains(index) else { return }
-            self?.onAutonomyChosen?(AgentAutonomy.allCases[index])
-        }
-        for control in [effortControl, scopeControl, autonomyControl] {
-            control.widthAnchor.constraint(equalToConstant: 312).isActive = true
-        }
-
-        autonomyCaption.font = DS.Text.caption()
-        autonomyCaption.textColor = .tertiaryLabelColor
-        autonomyCaption.preferredMaxLayoutWidth = 300
-
-        for label in [usageLabel, spendLabel, budgetLabel] {
-            label.font = DS.Text.caption()
-            label.textColor = .secondaryLabelColor
-        }
-
-        let separator = NSBox()
-        separator.boxType = .separator
-
-        agentPopup.widthAnchor.constraint(equalToConstant: 312).isActive = true
-        AgentAvailability.refresh { [weak self] in
-            guard let self else { return }
-            AgentPicker.fill(self.agentPopup, currentId: nil)
-        }
-        let stack = NSStackView(views: [
-            caption("AGENT"), agentPopup,
-            caption("MODEL"), modelPopup,
-            caption("THINKING"), effortControl,
-            caption("WHAT THE AGENT CAN DO"), scopeControl,
-            caption("WITHOUT ASKING"), autonomyControl, autonomyCaption,
-            separator, usageLabel, spendLabel, budgetLabel,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = DS.Spacing.s
-        stack.setCustomSpacing(DS.Spacing.xl, after: agentPopup)
-        stack.setCustomSpacing(DS.Spacing.xl, after: modelPopup)
-        stack.setCustomSpacing(DS.Spacing.xl, after: effortControl)
-        stack.setCustomSpacing(DS.Spacing.xl, after: scopeControl)
-        stack.setCustomSpacing(DS.Spacing.xl, after: autonomyCaption)
-        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.xxl, left: DS.Spacing.xxl, bottom: DS.Spacing.xxl, right: DS.Spacing.xxl)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 340),
-        ])
-        apply()
-    }
-
-    private func apply() {
-        guard let snapshot else { return }
-        let registry = ProviderRegistryStore.shared
-
-        modelPopup.removeAllItems()
-        // Without this, NSMenu re-enables every item itself and the provider headers become
-        // selectable rows, which is how a provider ended up choosable as a model.
-        modelPopup.menu?.autoenablesItems = false
-        // First row is "follow the app default" — a distinct state from "happens to match it."
-        let defaultProvider = registry.provider(for: registry.activeProviderId)
-        let defaultName = defaultProvider?.models.first { $0.id == defaultProvider?.defaultModelId }?.displayName ?? "default"
-        modelPopup.addItem(withTitle: "App Default (\(defaultName))")
-        modelPopup.lastItem?.representedObject = ["", ""]
-        // Long lists: a separator between providers keeps the flat list scannable, and NSMenu
-        // scrolls natively once it outgrows the screen — a provider with forty models is a
-        // scrolling section, not a broken popover.
-        for provider in registry.providers where !provider.models.isEmpty {
-            modelPopup.menu?.addItem(.separator())
-            if registry.providers.count > 1 {
-                let header = NSMenuItem(title: provider.displayName, action: nil, keyEquivalent: "")
-                header.isEnabled = false
-                modelPopup.menu?.addItem(header)
-            }
-            for model in provider.models {
-                modelPopup.addItem(withTitle: model.displayName)
-                // Menu-only indentation under the provider header — leading spaces in the title
-                // used to travel into the closed button's face.
-                modelPopup.lastItem?.indentationLevel = registry.providers.count > 1 ? 1 : 0
-                modelPopup.lastItem?.representedObject = [provider.id, model.id]
-            }
-        }
-        if snapshot.isTrackSpecific {
-            let index = (0..<modelPopup.numberOfItems).first { index in
-                (modelPopup.item(at: index)?.representedObject as? [String]) == [snapshot.providerId, snapshot.modelId]
-            }
-            modelPopup.selectItem(at: index ?? 0)
-        } else {
-            modelPopup.selectItem(at: 0)
-        }
-
-        let animated = view.window != nil
-        effortControl.select(AgentEffort.allCases.firstIndex(of: snapshot.effort) ?? 0, animated: animated)
-        scopeControl.select(AgentToolScope.allCases.firstIndex(of: snapshot.mode.scope) ?? 0, animated: animated)
-        autonomyControl.select(AgentAutonomy.allCases.firstIndex(of: snapshot.mode.autonomy) ?? 0, animated: animated)
-        // Nothing to auto-approve in a read-only scope — dimmed rather than hidden, so the
-        // axis doesn't appear to vanish when someone switches to Ask.
-        autonomyControl.isEnabledControl = snapshot.mode.autonomyIsMeaningful
-        autonomyCaption.stringValue = snapshot.mode.autonomyIsMeaningful
-            ? snapshot.mode.autonomy.displayName
-            : "Autonomy applies in Build. Read-only scopes have nothing to auto-approve."
-
-        usageLabel.stringValue = snapshot.usageLine
-        spendLabel.stringValue = snapshot.spendLine ?? ""
-        spendLabel.isHidden = snapshot.spendLine == nil
-        budgetLabel.stringValue = snapshot.budgetLine ?? ""
-        budgetLabel.isHidden = snapshot.budgetLine == nil
-        budgetLabel.textColor = .systemOrange
-    }
-
-    @objc private func agentChanged() {
-        guard let id = agentPopup.selectedItem?.representedObject as? String else { return }
-        onAgentChosen?(id)
-    }
-
-    @objc private func modelChanged() {
-        guard let pair = modelPopup.selectedItem?.representedObject as? [String], pair.count == 2 else { return }
-        if pair[0].isEmpty { onModelChosen?(nil, nil) } else { onModelChosen?(pair[0], pair[1]) }
-    }
-
-
-
-}
 
 
 private final class ComposerTextView: NSTextView {
@@ -3977,7 +3568,6 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     /// send or stop based on the runner's phase.
     var onAction: (() -> Void)?
     /// Shift+Tab — cycle the agent's tool scope without leaving the keyboard.
-    var onCycleMode: (() -> Void)?
     /// Escape with no candidate list showing. Returns whether it was acted on.
     var onEscape: (() -> Bool)?
     /// The user's own past messages, newest first — supplied by the owner, which has the
@@ -4026,8 +3616,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     private let actionButton = CircularIconButton(diameter: 28)
     /// Replaces Send while no model is set up (§6).
-    private let setupButton = NSButton(title: "Set up a model…", target: nil, action: nil)
-    var onSetUpModel: (() -> Void)?
+    private let setupButton = NSButton(title: "", target: nil, action: nil)
+    var onSendReplacementTapped: (() -> Void)?
     private let micButton = NSButton()
     private var textHeightConstraint: NSLayoutConstraint!
     /// Includes the text container's own 8pt vertical padding each side.
@@ -4047,7 +3637,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
 
     var isEnabled: Bool = true {
         didSet {
-            textView.isEditable = isEnabled
+            textView.isEditable = isEnabled && !isSendReplaced
             actionButton.isEnabled = isEnabled
             alphaValue = isEnabled ? 1 : 0.6
         }
@@ -4346,9 +3936,19 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     }
 
     @objc private func actionTapped() { onAction?() }
-    @objc private func setupTapped() { onSetUpModel?() }
+    @objc private func setupTapped() { onSendReplacementTapped?() }
 
-    func setNeedsModelSetup(_ needed: Bool) {
+    /// A button in Send's place when nothing can be sent (a retired Heron), and the text read-only.
+    func setSendReplacement(_ title: String?) {
+        if let title { setupButton.title = title }
+        isSendReplaced = title != nil
+        showsSendReplacement(isSendReplaced)
+        textView.isEditable = isEnabled && !isSendReplaced
+    }
+    private var isSendReplaced = false
+    var sendReplacementForTesting: String? { isSendReplaced ? setupButton.title : nil }
+
+    func showsSendReplacement(_ needed: Bool) {
         setupButton.isHidden = !needed
         actionButton.isHidden = needed
         // Dictation sits beside Send; the wider setup button takes both places.
@@ -4396,10 +3996,6 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             default:
                 break
             }
-        }
-        if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
-            onCycleMode?()
-            return true
         }
         // Escape stops the run — with the candidate list already handled above, so Escape's
         // first job is still dismissing it. Reaching for the mouse should never be the only way

@@ -39,7 +39,7 @@ final class LibraryTests: XCTestCase {
         var files = InstructionFiles.discover(workingRoot: root, home: home)
         let agents = try XCTUnwrap(files.first { $0.displayPath == "AGENTS.md" })
         XCTAssertEqual(agents.heron, .inUse(acknowledged: false), "AGENTS.md comes before CLAUDE.md in Heron's order")
-        XCTAssertEqual(InstructionFiles.readerNames(agents).prefix(3), ["Heron", "Codex", "Pi"])
+        XCTAssertEqual(InstructionFiles.readerNames(agents).prefix(2), ["Codex", "Pi"], "Heron, retired, isn't named")
         XCTAssertEqual(files.first { $0.displayPath == "CLAUDE.md" }?.heron, .shadowed(by: "AGENTS.md"))
         XCTAssertEqual(files.first { $0.displayPath == "SIDE.md" }?.heron, .candidate)
         XCTAssertEqual(files.first { $0.displayPath == "SIDE.md" }?.exists, false)
@@ -82,7 +82,7 @@ final class LibraryTests: XCTestCase {
         library.loadViewIfNeeded()
         library.target = LibraryTarget(projectName: "project", projectRoot: root, workingRoot: root)
         let sideFile = try XCTUnwrap(library.instructions.files.first { $0.displayPath == "SIDE.md" })
-        XCTAssertEqual(InstructionsPaneViewController.stateText(sideFile), "Heron will ask before using this")
+        XCTAssertEqual(InstructionsPaneViewController.stateText(sideFile), "In this project", "Heron, retired, no longer reads it")
 
         library.select(.prompts)
         XCTAssertEqual(library.section, .prompts)

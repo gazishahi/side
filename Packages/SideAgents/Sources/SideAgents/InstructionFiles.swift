@@ -75,9 +75,8 @@ public enum InstructionFiles {
     }
 
     /// Everyone who reads the file, Heron first when it does.
-    public static func readerNames(_ file: InstructionFile) -> [String] {
-        (file.heron == nil ? [] : ["Heron"]) + file.readers
-    }
+    /// The agents that read it. Heron, retired, no longer counts (SIDE_RFC_HERON_RETIREMENT.md).
+    public static func readerNames(_ file: InstructionFile) -> [String] { file.readers }
 
     private static func hasContent(_ url: URL) -> Bool {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return false }

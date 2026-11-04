@@ -1,16 +1,16 @@
 import AppKit
 import Heron
 
-/// The first-run sheet (Direction 02 §6): three steps in one column — open a project, choose a
-/// model, create a track — each a button that does it. No tour, no tooltips; dismissed once,
+/// The first-run sheet (Direction 02 §6): three steps in one column — open a project, set up an
+/// agent, create a track — each a button that does it. No tour, no tooltips; dismissed once,
 /// gone for good.
 enum FirstRun {
     static let dismissedKey = "side.first-run-dismissed"
 
     /// First run means nothing to come back to and nothing to talk to: no recent projects and no
-    /// model that can take a message. Anyone past either has found their way already.
-    static func shouldPresent(dismissed: Bool, hasRecentProjects: Bool, modelReady: Bool) -> Bool {
-        !dismissed && !hasRecentProjects && !modelReady
+    /// agent installed. Anyone past either has found their way already.
+    static func shouldPresent(dismissed: Bool, hasRecentProjects: Bool, agentReady: Bool) -> Bool {
+        !dismissed && !hasRecentProjects && !agentReady
     }
 
     /// `-SideForceFirstRun YES`: show the sheet regardless, and never record its dismissal — for
@@ -22,13 +22,12 @@ enum FirstRun {
         set { HeronDefaults.store.set(newValue, forKey: dismissedKey) }
     }
 
-    /// The active provider can take a message right now.
-    static var modelReady: Bool {
-        if case .ready = ProviderRegistryStore.shared.resolveAdapter(providerId: ProviderRegistryStore.shared.activeProviderId) { return true }
-        return false
-    }
+    /// An agent is installed for new tracks to run on (Heron is retired,
+    /// SIDE_RFC_HERON_RETIREMENT.md). Its step opens Settings › Agents, where each agent's install
+    /// command is shown to copy; Side never runs one unasked.
+    @MainActor static var agentReady: Bool { DefaultAgent.agent != nil }
 
-    enum Step: CaseIterable { case project, model, track }
+    enum Step: CaseIterable { case project, agent, track }
 }
 
 final class FirstRunSheetController: NSViewController {
@@ -63,7 +62,7 @@ final class FirstRunSheetController: NSViewController {
 
         let steps: [(FirstRun.Step, String, String)] = [
             (.project, "Open a project", "Open Project…"),
-            (.model, "Choose a model", "Set Up…"),
+            (.agent, "Set up an agent", "Set Up…"),
             (.track, "Create a track", needsGit ? (DeveloperTools.gitInstalled ? "Initialize Git…" : "Install Git…") : "New Track"),
         ]
         // The first step not yet done is the one to do now; it alone takes the accent.

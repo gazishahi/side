@@ -379,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     typealias PreferencesPane = SettingsSplitViewController.Pane
 
-    /// Opens Preferences on a given pane: "Set up a model…" lands on Providers (§6).
+    /// Opens Preferences on a given pane: "Set Up an Agent…" lands on Agents (§6).
     func openPreferences(on pane: PreferencesPane) {
         showPreferences()
         (preferencesWindow?.contentViewController as? SettingsSplitViewController)?.select(pane)

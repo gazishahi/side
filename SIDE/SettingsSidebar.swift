@@ -1,7 +1,7 @@
 import AppKit
 
 /// One entry in a System Settings–style sidebar: a colored icon tile and a name, plus words a
-/// search should also match ("key" finds Providers).
+/// search should also match ("key" finds Agents).
 struct SidebarItem {
     let id: String
     let title: String
@@ -211,7 +211,7 @@ final class PaneHostController: NSViewController {
 @MainActor
 final class SettingsSplitViewController: NSSplitViewController {
     enum Pane: String, CaseIterable {
-        case general, notifications, providers, agents, usage, appearance, languages, shortcuts, history
+        case general, notifications, agents, usage, appearance, languages, shortcuts, history
     }
 
     static let items: [SidebarItem] = [
@@ -219,10 +219,8 @@ final class SettingsSplitViewController: NSSplitViewController {
                     keywords: ["stages", "pin", "file explorer", "library"], summary: "Which stages the stage control shows, where the Editor's file explorer opens, and the Library."),
         SidebarItem(id: Pane.notifications.rawValue, title: "Notifications", symbol: "bell.badge.fill", tint: .systemRed,
                     keywords: ["sound", "alert", "banner", "glass", "funk", "tink", "needs you", "attention", "focus"], summary: "Notifications and sounds when an agent needs you, only for what happens while you're looking elsewhere."),
-        SidebarItem(id: Pane.providers.rawValue, title: "Providers", symbol: "cpu.fill", tint: .systemBlue,
-                    keywords: ["model", "api key", "key", "anthropic", "openai", "ollama", "endpoint"], summary: "The model provider Heron talks to, its API key, and the default model."),
         SidebarItem(id: Pane.agents.rawValue, title: "Agents", symbol: "person.2.fill", tint: .systemIndigo,
-                    keywords: ["claude code", "codex", "gemini", "pi", "sign in", "subscription", "api key", "acp"], summary: "A track can run on Heron or an outside agent. Outside agents use your own account: your subscription through their own sign-in, or an API key you give Side."),
+                    keywords: ["claude code", "codex", "gemini", "pi", "opencode", "default", "sign in", "subscription", "api key", "key", "model", "acp"], summary: "The agent new tracks run on, and how each agent signs in: your subscription through its own sign-in, or an API key you give Side."),
         SidebarItem(id: Pane.usage.rawValue, title: "Usage", symbol: "chart.bar.fill", tint: .systemGreen,
                     keywords: ["tokens", "cost", "spend", "budget", "limit"], summary: "What agents have used and cost, by model and project, and a monthly budget."),
         SidebarItem(id: Pane.appearance.rawValue, title: "Appearance", symbol: "textformat.size", tint: .systemPurple,
@@ -284,7 +282,6 @@ final class SettingsSplitViewController: NSSplitViewController {
         switch pane {
         case .general: GeneralPreferencesViewController()
         case .notifications: NotificationsPreferencesViewController()
-        case .providers: PreferencesViewController()
         case .agents: AgentsPreferencesViewController()
         case .usage: UsageViewController()
         case .appearance: AppearanceViewController()
