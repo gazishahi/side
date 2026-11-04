@@ -29,6 +29,7 @@ func startD(options: Options, view: SurfaceHost) {
     confirm-close-surface = false
     wait-after-command = true
     scrollback-limit = 10000000
+    \(ProcessInfo.processInfo.environment["TERMBENCH_GHOSTTY_CONFIG"] ?? "")
     """
     try? config.write(toFile: configPath, atomically: true, encoding: .utf8)
     guard let cfg = ghostty_config_new() else { fatalError("ghostty_config_new") }
@@ -89,6 +90,11 @@ func startD(options: Options, view: SurfaceHost) {
         host.frame = NSRect(origin: .zero, size: points)
         ghostty_surface_set_size(made, UInt32(points.width * scale), UInt32(points.height * scale))
         ghostty_surface_set_occlusion(made, i == 0)
+        // As Ghostty.app does (SurfaceView_AppKit): the display its frames are paced to.
+        if ProcessInfo.processInfo.environment["TERMBENCH_NO_DISPLAY_ID"] == nil,
+           let n = view.window?.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            ghostty_surface_set_display_id(made, n.uint32Value)
+        }
         ghostty_surface_set_focus(made, i == 0)
         surfaces.append(made)
     }

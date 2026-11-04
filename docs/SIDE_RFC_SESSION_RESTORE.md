@@ -1,0 +1,245 @@
+# Session restore: terminals you can always get back
+
+Status: decisions pending. Drafted 2026-11-03; revised with the owner's answers the same day. One decision remains (end of document).
+
+## Why
+
+Closing a project, or quitting Side, ends every shell in it. On reopening, Run brings back the
+tabs (each one's folder and name, `TerminalSessionManager.rememberedDirectories`) but not what was
+running in them. With six Claude Code sessions on a project, that means six `claude --resume`
+runs, each picked from a list whose names don't say what the session was doing.
+
+That's the biggest daily cost of using Side today. It also breaks the constitution's fourth
+non-negotiable: work is durable.
+
+**The goal:** a terminal in Side is as recoverable as one in tmux with tmux-resurrect and
+tmux-continuum, whatever happens to Side, to the session machinery or to the Mac.
+
+Today's code says outright why it stops short. `restoreRememberedSessionsOrCreateOne` explains
+that a terminal is "a live PTY with a shell and whatever it was running; those die with the
+process and cannot be restored". That's true only while Side's own process owns the PTYs. The fix
+is to have processes that outlive Side own them, as tmux's server does. The owner doesn't want to
+depend on tmux.
+
+## The guarantee
+
+| What happens | What comes back |
+| --- | --- |
+| Quit Side, close a window, close a project | Everything, live: the same processes, screen, scrollback and cursor. Agents keep working meanwhile. |
+| Side crashes | The same: Side's process holds no terminals. |
+| One session's keeper crashes | That session's screen and scrollback from its last saved snapshot. Its process can't survive; agent and command recovery apply to that one session only. |
+| Restart, shutdown, logout, power loss | Each tab in its folder with its name, screen and scrollback from the last snapshot. Agent conversations resume by themselves; other programs as described under Programs after a restart. |
+
+The one thing nothing can do, Side or tmux, is keep a process alive across a restart. tmux-resurrect
+answers that by recreating panes and re-running known programs. Side does the same, and also
+resumes agent conversations exactly, which tmux-resurrect can't.
+
+## What the person sees
+
+- **Quit and reopen.** Every Run tab is as it was, with the same process still running. A Claude
+  session that was mid-turn is still mid-turn, or finished while Side was closed.
+- **Closing a tab still ends it.** Ending a running process asks first (the close warning from
+  the polish list). Detaching happens only on closing a window, closing a project or quitting,
+  never on closing a tab.
+- **Sessions keep running by default** (decided). Quitting doesn't ask. Settings can change it to
+  ending sessions on quit.
+- **Nothing is ended automatically** (decided). A detached session runs until its process exits or
+  the person ends it.
+- **The sessions list keeps it visible.** Every live terminal, across projects, shows what it's
+  running, how long it's been idle and its memory, with End and End All. Until the sessions board
+  from the direction work exists, this lives in Run's tab menu and the Window menu.
+- **Notifications while Side is closed** (decided). When a detached session asks for attention
+  (a bell, an OSC 9 or OSC 777 notification, or an agent finishing its turn), a macOS notification
+  says which project and tab. Clicking it opens Side on that tab.
+- **Tab names that say something.** A tab with no name of its own is named after what its program
+  last titled it; Claude Code sets the terminal title to its task. That name is remembered.
+- **After a restart, agent tabs resume by themselves** (decided). The first time each tab is shown,
+  it runs `claude --resume <id>`, after a line saying "Resumed after a restart", so a resumed
+  session is never mistaken for one that kept running.
+
+## How
+
+### One keeper per session
+
+Each terminal is owned by its own small process, a session keeper (the dtach/abduco model), not by
+one shared server.
+
+- **Isolation.** One server for everything (tmux's model) means one crash ends every session.
+  That's the limitation weighed in the first draft. With a keeper per session, a crash costs one
+  session, and Side never holds a terminal at all.
+- **Cost.** About 5–7 MB per session (a small process plus its terminal state), to be confirmed
+  by the measures below. Twenty-four sessions is roughly 150 MB, against roughly 30 MB for one
+  shared server. That's the price of the guarantee.
+- **Started by Side,** detached with `posix_spawn` and `POSIX_SPAWN_SETSID`, so it isn't Side's
+  child and quitting Side doesn't end it. It's shipped in the app bundle (`Contents/Helpers/`),
+  signed and notarized with Side. No launchd agent or login item: nothing it holds survives a
+  restart, so there's nothing to start at login.
+- **What it owns:** the PTY master, the child process, and a headless libghostty-vt terminal fed
+  every byte of output. That terminal is the source of truth for the screen and scrollback.
+- **When it exits:** after the process exits and Side has acknowledged it, so a tab can show
+  how it ended.
+
+At the 600+ MB/s measured for libghostty-vt's parser
+(`docs/SIDE_TERMINAL_BENCHMARKS_2026-11-03.md`), parsing in the keeper is noise next to the PTY's
+~200 MB/s ceiling. This makes session restore libghostty-vt's first production use in Side, ahead
+of the Run engine switch, which lowers that switch's risk.
+
+### Finding sessions
+
+`~/Library/Application Support/Side/run/`, mode 0700, holds per session:
+
+- `<id>.sock`: its socket.
+- `<id>.json`: its record. Project, track, Side's tab id, folder, the command it started with, its
+  current foreground command, program title, agent and agent session id, and created and
+  last-output times. Written on change, so it's never more than a moment stale.
+- `<id>.snap`: its snapshot (below).
+
+Side finds sessions by reading the records and connecting to each socket. A record whose socket
+doesn't answer belongs to a session that ended unexpectedly, and goes through recovery. The keeper
+checks each connection's peer with `getpeereid` and refuses any other user.
+
+### The protocol (per keeper)
+
+Length-prefixed messages; the first is a version handshake.
+
+| Message | Direction | Carries |
+| --- | --- | --- |
+| `hello` | both | protocol version, keeper build, client build |
+| `attach` | client → keeper | reply: a snapshot, then output streams |
+| `detach` | client → keeper | — |
+| `input` | client → keeper | bytes for the PTY |
+| `resize` | client → keeper | cols × rows (the PTY and its terminal together) |
+| `signal` | client → keeper | SIGINT, SIGTERM or SIGKILL, for the process group or the whole tree (today's `terminateProcessTree` moves here) |
+| `output` | keeper → client | bytes, in order |
+| `title` | keeper → client | the program's latest title (OSC 0/2) |
+| `attention` | keeper → client | a bell or notification, with its text |
+| `exited` | keeper → client | exit status |
+
+A session is created by starting its keeper with the command, environment, folder and size as
+arguments. A session has at most one attached client: a second `attach`, for example from another
+build of Side, takes it over and the first gets `detach`.
+
+### Reattaching
+
+On `attach`, the keeper sends the current state, then live output, with no gap or duplicate
+between them: the snapshot is taken and streaming begins under one lock.
+
+- **While Run is on SwiftTerm (now):** the snapshot is libghostty-vt's VT formatter output (`GHOSTTY_FORMATTER_FORMAT_VT`). That's escape sequences that redraw scrollback and screen, plus the mode state SwiftTerm needs: alternate screen, cursor position and visibility, scroll region, bracketed paste, mouse modes, keypad mode. Side feeds it into a fresh SwiftTerm terminal before showing the tab. Each mode needs a test, because a missed mode is a visible bug.
+- **After Run moves to libghostty-vt + Alloy:** libghostty-vt's binary snapshot (`ghostty_snapshot_encode`), restored straight into the client's terminal. It puts enough to render ahead of the older scrollback, so the tab draws as soon as the screen has arrived.
+
+After the snapshot, the client sends `resize` with its real size, so a TUI like Claude Code gets
+SIGWINCH and redraws to fit.
+
+### Snapshots on disk
+
+For the restart rows of the guarantee, each keeper writes its binary snapshot to `<id>.snap`:
+- every 30 seconds while there's new output, written to a temporary file and renamed into place;
+- on SIGTERM, which macOS sends at shutdown and logout before ending processes;
+- on SIGHUP.
+
+This reverses a deliberate rule in today's code: that a terminal's contents are not Side's to
+persist, because terminals routinely show tokens and passwords. tmux-resurrect makes the same
+trade behind an option. Here:
+- the files are readable only by the user (0600), in a 0700 directory;
+- they're excluded from Time Machine;
+- a session's file is deleted when the session is ended;
+- Settings can turn it off.
+
+On by default (decided).
+
+### Changes in Side
+
+- **`TerminalViewController`** stops using `LocalProcessTerminalView`'s own process. Its `SideTerminalView` becomes a plain SwiftTerm `TerminalView` fed from the keeper's socket, and `send(source:data:)` writes `input`. Its hooks (links, submitted lines, raw output for agent commands and unseen output, OSC 7 and OSC 133 marks) sit on the byte stream, so they keep working unchanged.
+- **`TerminalSessionManager`:**
+  - `makeSession` starts a keeper.
+  - On project open, it reads the records for that project and attaches each live session to its tab, matched by Side's tab id.
+  - `teardownAll` and quitting **detach**.
+  - `discardSessions` (track deleted) and closing a tab end the session with `signal`.
+- **Shell integration and ports** are unchanged. Side builds the environment (ZDOTDIR wrapper, `SIDE_MARK_NONCE`, `TrackPorts`) and passes it to the keeper.
+- **Command tabs** (an outside agent's `terminal/create`) and Heron's typed agent commands run in keepers too. An ACP agent process itself (`claude-agent-acp` behind Think) isn't a terminal and still ends with Side; out of scope here.
+
+### Agent sessions
+
+Each agent tab records its agent's own session id while it runs, so it can be resumed exactly:
+
+- **Claude Code** (2.1.312 has `--session-id <uuid>` and `--resume <id>`). Side's zsh integration defines a `claude` shell function:
+  - If the arguments include none of `--resume`/`-r`, `--continue`/`-c`, `--session-id` or `--print`/`-p`, it generates a UUID and runs `command claude --session-id <uuid> "$@"`.
+  - It reports the id to Side with a private OSC sequence (same nonce as the OSC 133 marks), which the keeper stores in the session's record. An explicit `--resume <id>` reports that id.
+  - `--continue` and a bare `--resume` picker report nothing at launch; the id is then taken from the newest transcript in `~/.claude/projects/<folder>/` written after the launch.
+  - Nothing in the user's Claude configuration or credentials is touched, in line with the subscription policy.
+- **Codex** (`codex resume <id>`) and other agent CLIs get the same pattern: a per-agent entry saying how to tag a new session and resume one. Claude Code first.
+
+### Programs after a restart
+
+What tmux-resurrect calls restoring programs. The keeper's record holds each session's foreground
+command line, from the process group leading the terminal. On restore:
+
+- **Agents** resume automatically, as above.
+- **Programs that are safe to re-run** start again by themselves in their folder. That's editors, pagers and watchers: `vim`, `nvim`, `less`, `man`, `top`, `htop`, `tail -f`, `watch`. It's a fixed list, extendable in Settings.
+- **Everything else** comes back as a shell with the old screen above it and a "Run again: `npm run dev`" button. Re-running an arbitrary command by itself could deploy something or delete files twice.
+
+### Notifications
+
+The keeper raises `attention` for a bell, an OSC 9 or OSC 777 notification, or, for an agent
+session, the end of a turn. A turn's end is the agent's title losing its working marker; Claude
+Code animates a spinner glyph there. When Side is attached, Side handles it as it does today.
+
+When Side isn't running, the keeper hands it to a small notifier app, Side Sessions.app, inside
+Side's bundle. It has no Dock icon, and it posts the notification under its own name, which macOS
+asks permission for once. Clicking the notification opens `side://run/<session id>`, which starts
+Side if needed and shows that tab. Several notifications within a few seconds from one project are
+grouped.
+
+### Updates
+
+Sparkle can replace Side while keepers keep running from the old build. The `hello` handshake
+carries both versions. New messages are added, never changed, so a new Side can always attach to
+an old keeper. A keeper is never ended because Side updated; it runs its old build until its
+session ends.
+
+## Measures
+
+The terminal benchmark harness (`Benchmarks/Terminal/`) gains a mode that runs through a keeper.
+Targets, measured before this ships:
+
+| Measure | Target |
+| --- | --- |
+| Keypress latency added by the keeper hop | ≤ 0.5 ms median |
+| End-to-end throughput through a keeper | ≥ 90% of direct |
+| Reattach to visible screen, 6 sessions with full scrollback | ≤ 150 ms |
+| Keeper memory per idle session | ≤ 7 MB |
+| Keeper CPU with no output | 0 (it blocks on reads) |
+| A snapshot write, 10,000 lines of scrollback | ≤ 20 ms, off the reading thread |
+
+Tests:
+- **Snapshot round-trips.** For every mode the VT path restores (alternate screen, scroll region, cursor, bracketed paste, mouse, keypad), a session is driven into the mode, detached, reattached, and checked against the keeper's own screen.
+- **Lifecycle.** Quit with sessions running, reopen and attach. Close a tab. Delete a track. Kill a keeper with SIGKILL mid-output and recover from its snapshot. Send SIGTERM as at shutdown and restore. Two clients attach to one session.
+- **The `claude` wrapper.** Every argument form: none, `--resume <id>`, `-r`, `-c`, `--session-id`, and `-p` (left alone).
+
+## Phases
+
+1. **Keepers and reattach.** The keeper, its protocol and headless libghostty-vt. Side as a client, SwiftTerm fed by VT replay. Quit and reopen reattach live. Behind a setting, on in the owner's builds first.
+2. **Restart recovery.** Snapshots on disk, agent ids and automatic resume, program re-runs, and remembered program titles.
+3. **Visibility.** The sessions list, End All, the close-tab warning, and notifications through Side Sessions.app.
+4. **Binary snapshots for reattach** once Run is on libghostty-vt + Alloy.
+
+## Decided (2026-11-03)
+
+1. Sessions keep running after quit, by default.
+2. Detached sessions are never ended automatically.
+3. Crash isolation matters, so one keeper per session rather than one shared server.
+4. Agent tabs resume automatically after a restart.
+5. Detached sessions post notifications.
+6. Snapshots on disk are on by default, with the protections above.
+
+## Open decisions
+
+1. **The cost of one keeper per session.** The first estimate, about 5–7 MB each and around 150 MB at 24 sessions, was too much for the owner. Being reworked to cut it substantially.
+
+## Not doing
+
+- Keeping processes alive across a restart. Nothing can; agent resume and program re-runs cover it.
+- Remote or SSH sessions.
+- Sharing a session between people.
+- tmux as a dependency, or tmux's keybindings and panes.
+- Restoring Make's open files. That's a separate bug (open files sometimes aren't restored) with its own fix.

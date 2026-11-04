@@ -164,6 +164,26 @@ Six sessions at 200×60, one shown, five hidden, each at about 260 KB/s for 10 s
 - Every libghostty surface keeps framebuffers at full window size (about 22 MB each), even while hidden. C draws only the visible session, so hidden ones have none. That is a hosting choice, not Ghostty being heavier: at one session the two are 18 MB apart.
 - About 150 MB in every setup is the same graphics baseline (Metal, the window's backing, the atlas). In Side, Make and Run would share most of it.
 
+## Scaling with sessions
+
+**C scales flattest. Going from 1 to 24 sessions, its CPU only doubles and its memory barely moves. D's memory grows by about 23 MB per session.** Same bursty Claude-shaped load as above (about 260 KB/s per session for 10 s), one session shown, at 200×60, median of 2 runs (`results/scaling.jsonl`).
+
+Process CPU (main-thread CPU in brackets), and footprint:
+
+| Sessions | A (Side today) | B | C | D |
+| --- | --- | --- | --- | --- |
+| 1 | 1.76 s (1.67), 74 MB | 0.69 s (0.29), 175 MB | 0.48 s (0.28), 176 MB | 0.78 s (0.35), 195 MB |
+| 6 | 3.35 s (2.80), 78 MB | 2.07 s (0.33), 177 MB | 0.89 s (0.36), 176 MB | 1.70 s (0.38), 323 MB |
+| 12 | 4.03 s (3.26), 82 MB | 3.45 s (0.29), 182 MB | 0.95 s (0.29), 177 MB | 2.12 s (0.24), 478 MB |
+| 24 | 5.39 s (4.16), 90 MB | 4.15 s (0.22), 190 MB | 1.02 s (0.22), 178 MB | 1.88 s (0.20), 750 MB |
+
+- **C** parses hidden sessions on background threads at libghostty-vt's speed and draws only the one shown. That's why its cost barely grows: 24 sessions cost 2.1× one session.
+- **D** has the same emulator, but every session is a full surface with its own renderer and framebuffers, hidden or not. Memory grows linearly, reaching 750 MB at 24. Its CPU at 24 (1.88 s) came in below 12 (2.12 s) in both runs; why isn't known, so treat the 12–24 range as roughly flat.
+- **A** does everything on the main thread. At 24 sessions the main thread was busy 4.2 s of about 12.5, a third of the time, before you type anything.
+- **B** shows that the emulator decides CPU: the same renderer as C, but SwiftTerm's parse makes it grow 6× from 1 to 24.
+
+**The cost of C's approach:** a hidden session has no frame ready, so showing it means building one. At 200×60 that's under 1 ms (Frame cost), well inside one frame.
+
 ## Keypress latency
 
 **Side's current CoreText view had the lowest latency: 6.8 ms median idle. C and B ran at 11–15 ms and D at about 20–22 ms.** All four stayed under 27 ms at the 95th percentile. That's below one frame at 60 Hz plus a little, and not something you'd feel day to day, but it's the one place C is behind A.
@@ -184,7 +204,10 @@ Key to pixels on screen, in ms (median across 3 runs):
   - Drawing as soon as output arrives, rather than at the next display-link tick, and cutting the drawables in flight from 3 to 2: about 15 → 12 ms. This is in the numbers above.
   - Presenting with the Core Animation transaction (`presentsWithTransaction`): worse, 16–17 ms. Reverted.
 - **B and C were slower idle than loaded (14.7 vs 11.4 ms).** The likely cause is ProMotion dropping the refresh rate when the screen is quiet, which delays a lone Metal frame. An earlier single run measured C at 12.9 ms idle. The best-case numbers (5–6 ms) show the pipeline can match A when a frame lines up.
-- **D is consistently slowest.** Ghostty draws on its own vsync-paced render thread, after its IO thread has parsed; that's a design that favors throughput. This is Ghostty as embedded here; Ghostty.app may differ.
+- **D is consistently slowest.** Ghostty draws on its own vsync-paced render thread, after its IO thread has parsed; that's a design that favors throughput. Two checks that this isn't the harness's doing:
+    - Telling Ghostty its display (`ghostty_surface_set_display_id`, as Ghostty.app does) changed nothing: 17.3–18.5 ms median with it, 17.5–18.2 ms without.
+    - Ghostty's own `window-vsync = false` brought it to about 16 ms. Ghostty documents that trade: it keeps vsync on by default because rendering out of sync can cause kernel panics on macOS 14.4+.
+    So D's latency is Ghostty's default behavior, not a hosting flaw.
 - Light agent load barely moves any setup: about 1.3 MB/s in total doesn't saturate even A's main thread. Heavier output would hit A hardest, as the Six sessions numbers show.
 
 ## Other findings
