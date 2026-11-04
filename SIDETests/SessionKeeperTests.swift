@@ -87,4 +87,22 @@ final class SessionKeeperTests: XCTestCase {
         XCTAssertTrue(waitUntil { kill(shell, 0) != 0 }, "the shell survived its tab closing")
         XCTAssertTrue(waitUntil { SessionKeepers.liveRecord(id) == nil })
     }
+
+    func testWithKeepRunningOffQuittingEndsTheShell() throws {
+        let saved = UserDefaults.standard.object(forKey: SessionKeepers.keepRunningKey)
+        defer { UserDefaults.standard.set(saved, forKey: SessionKeepers.keepRunningKey) }
+        SessionKeepers.keepsRunningOnQuit = false
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keepers-off-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let manager = TerminalSessionManager(projectRoot: root) { _ in root }
+        let session = manager.makeSession(forTrackKey: "t")
+        manager.setSessions([session], forTrackKey: "t")
+        let id = try XCTUnwrap(session.viewController.keeperID)
+        session.viewController.loadViewIfNeeded()
+        session.viewController.start()
+        XCTAssertTrue(waitUntil { SessionKeepers.liveRecord(id) != nil })
+        let shell = try XCTUnwrap(SessionKeepers.liveRecord(id)?.childPID)
+        manager.teardownAll()
+        XCTAssertTrue(waitUntil { kill(shell, 0) != 0 }, "the shell kept running with the setting off")
+    }
 }

@@ -392,6 +392,7 @@ final class GeneralPreferencesViewController: NSViewController {
     private var switches: [NSSwitch] = []
     private let foldingSwitch = NSSwitch()
     private let minimapSwitch = NSSwitch()
+    private let keepRunningSwitch = NSSwitch()
     private var writerSwitches: [WriterPreferences.Aid: NSSwitch] = [:]
     private var observer: NSObjectProtocol?
     private var sideObserver: NSObjectProtocol?
@@ -414,6 +415,10 @@ final class GeneralPreferencesViewController: NSViewController {
         minimapSwitch.action = #selector(minimapToggled(_:))
         minimapSwitch.controlSize = .small
         minimapSwitch.setAccessibilityLabel("Minimap")
+        keepRunningSwitch.target = self
+        keepRunningSwitch.action = #selector(keepRunningToggled(_:))
+        keepRunningSwitch.controlSize = .small
+        keepRunningSwitch.setAccessibilityLabel("Keep terminals running when Side quits")
         let sidePopup = SettingsForm.popup(FileExplorer.Side.allCases.map(\.title), selected: 0, self, #selector(explorerSideChanged(_:)))
         explorerPopup = sidePopup
         let page = SettingsForm.page([
@@ -423,6 +428,10 @@ final class GeneralPreferencesViewController: NSViewController {
                 SettingsForm.row("File explorer side", sidePopup),
                 SettingsForm.row("Code folding", detail: "Fold regions from the gutter's arrows.", foldingSwitch),
                 SettingsForm.row("Minimap", detail: "The file drawn small beside the text; click or drag it to scroll.", minimapSwitch),
+            ]),
+            SettingsForm.section("Run", footer: "Each terminal runs in a small helper outside Side, so closing a window or quitting doesn't end what's running in it. Reopen the project and each tab is as you left it. Closing a tab always ends its terminal.", [
+                SettingsForm.row("Keep terminals running when Side quits", detail: "Off, quitting or closing a project ends its terminals.",
+                                 keepRunningSwitch),
             ]),
             SettingsForm.section("Writer Mode", footer: "View \u{2192} Writer Mode: Make alone, one column of text, nothing else on screen.",
                                  WriterPreferences.Aid.allCases.map { aid in
@@ -457,6 +466,7 @@ final class GeneralPreferencesViewController: NSViewController {
         explorerPopup?.selectItem(withTitle: FileExplorer.Side.preferred.title)
         foldingSwitch.state = EditorPreferences.foldingEnabled ? .on : .off
         minimapSwitch.state = EditorPreferences.minimapShown ? .on : .off
+        keepRunningSwitch.state = SessionKeepers.keepsRunningOnQuit ? .on : .off
         for (aid, toggle) in writerSwitches { toggle.state = WriterPreferences.isOn(aid) ? .on : .off }
         let pinned = StagePins.pinned
         for toggle in switches {
@@ -472,6 +482,10 @@ final class GeneralPreferencesViewController: NSViewController {
     static var versionText: String {
         let info = Bundle.main.infoDictionary
         return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    @objc private func keepRunningToggled(_ sender: NSSwitch) {
+        SessionKeepers.keepsRunningOnQuit = sender.state == .on
     }
 
     @objc private func autoUpdateToggled(_ sender: NSSwitch) {

@@ -111,6 +111,21 @@ public struct Size: Codable, Sendable, Equatable {
     }
 }
 
+/// An attach: the client's grid, and how much history its own terminal keeps. The keeper keeps
+/// all of its scrollback either way; it sends only what the client can hold, since replaying
+/// lines a client then drops is work on the client's main thread for nothing.
+public struct Attach: Codable, Sendable, Equatable {
+    public var cols: Int
+    public var rows: Int
+    /// Lines of scrollback the client keeps; nil for everything.
+    public var history: Int?
+    public init(cols: Int, rows: Int, history: Int? = nil) {
+        self.cols = cols
+        self.rows = rows
+        self.history = history
+    }
+}
+
 public struct SignalRequest: Codable, Sendable, Equatable {
     public var signal: Int32
     /// Every descendant too: an interactive shell puts each background job in its own process

@@ -547,7 +547,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                               directory: workingDirectory ?? NSHomeDirectory(), cols: max(terminal.cols, 2), rows: max(terminal.rows, 2), client: facts)
         guard let link = try? KeeperLink.launch(spec) else { return false }
         wire(link)
-        link.attach(cols: terminal.cols, rows: terminal.rows)
+        link.attach(cols: terminal.cols, rows: terminal.rows, history: terminal.options.scrollback)
         return true
     }
 
@@ -564,7 +564,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         didTidyAfterSetup = true
         reattachedTitlePending = true
         wire(link)
-        link.attach(cols: terminal.cols, rows: terminal.rows)
+        link.attach(cols: terminal.cols, rows: terminal.rows, history: terminal.options.scrollback)
         return true
     }
 
@@ -591,10 +591,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         processTerminated(source: terminalView, exitCode: exitCode)
     }
 
-    /// Closing a window or quitting: a shell in a keeper is let go and keeps running; one in
-    /// Side's own process ends, as it always has.
+    /// Closing a window or quitting: a shell in a keeper is let go and keeps running (unless
+    /// Settings says to end terminals on quit); one in Side's own process ends, as it always has.
     func detachOrClose() {
-        if let keeper = terminalView.keeper {
+        if let keeper = terminalView.keeper, SessionKeepers.keepsRunningOnQuit {
             keeper.detach()
             terminalView.keeper = nil
         } else {

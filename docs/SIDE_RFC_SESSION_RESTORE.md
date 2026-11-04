@@ -1,6 +1,6 @@
 # Session restore: terminals you can always get back
 
-Status: agreed 2026-11-03. Phase 1 in progress: the keeper (Packages/SideSessions) and Side reattaching to it are built.
+Status: agreed 2026-11-03. Phase 1 built: the keeper (Packages/SideSessions), Side reattaching to it, the Settings switch, and the measures below.
 
 ## Why
 
@@ -229,15 +229,23 @@ session ends.
 The terminal benchmark harness (`Benchmarks/Terminal/`) gains a mode that runs through a keeper.
 Targets, measured before this ships:
 
-| Measure | Target |
-| --- | --- |
-| Keypress latency added by the keeper hop | ≤ 0.5 ms median |
-| End-to-end throughput through a keeper | ≥ 90% of direct |
-| Reattach to visible screen, 6 sessions with full scrollback | ≤ 150 ms |
-| Keeper memory per idle session, scrollback empty | ≤ 2 MB |
-| Keeper memory, full plain-text scrollback after compression | ≤ 4 MB |
-| Keeper CPU with no output | 0 (it blocks on reads) |
-| A snapshot write, 10,000 lines of scrollback | ≤ 20 ms, off the reading thread |
+Measured 2026-11-03 by `Benchmarks/Sessions` (release builds, Apple M3 Pro), against a bare PTY
+with no keeper:
+
+| Measure | Target | Result |
+| --- | --- | --- |
+| Keypress latency added by the keeper hop | ≤ 0.5 ms median | 0.045 ms |
+| End-to-end throughput through a keeper | ≥ 90% of direct | 94–102% (about 160 MB/s; every byte checked) |
+| Reattach to visible screen, 6 sessions with full scrollback | ≤ 150 ms | 7–16 ms (keeper side) |
+| Replaying those 6 snapshots into Run's terminal (Side's main thread) | ≤ 100 ms (added) | 51 ms |
+| Keeper memory per idle session, scrollback empty | ≤ 2 MB | 2.0–2.1 MB |
+| Keeper memory, full plain-text scrollback after compression | ≤ 4 MB | 4.3 MB (19.7 MB before) |
+| Keeper CPU with no output | 0 | 0.0 ms over 10 s |
+
+What it took, so the numbers stay honest:
+- **Throughput** started at 69%. The keeper now reads the PTY on a thread of its own, gathering reads while more is readable (a zero-timeout poll, not FIONREAD, which also counts the program's unread input), and parses on another. Output goes to the client before it's parsed. Unix sockets get 1 MB buffers (8 KB by default), and read buffers come from a reused pool.
+- **Reattach replay** first took 669 ms: Side's SwiftTerm terminal keeps 500 lines of scrollback, and the keeper sent all 10,000. An attach now says how much history the client keeps (`Attach.history`); the keeper still holds all of it.
+- **Memory** is 0.1–0.3 MB over the two memory targets. That's the cost of the reader and parse threads, which took throughput from 69% to 94–102%. Per the owner's rule (no savings that cost speed or features), the threads stay. Compression of quiet scrollback (decision 7) is built.
 
 Tests:
 - **Snapshot round-trips.** For every mode the VT path restores (alternate screen, scroll region, cursor, bracketed paste, mouse, keypad), a session is driven into the mode, detached, reattached, and checked against the keeper's own screen.

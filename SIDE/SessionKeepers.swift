@@ -18,7 +18,8 @@ enum SessionKeepers {
     /// with it (2026-11-03). A copy per build means a running keeper's file never changes.
     static var keeperURL: URL? {
         guard let bundled = bundledKeeperURL else { return nil }
-        if let installed = installedKeeper { return installed }
+        // Checked each time: the run directory can be cleared while Side runs.
+        if let installed = installedKeeper, FileManager.default.isExecutableFile(atPath: installed.path) { return installed }
         let attributes = try? FileManager.default.attributesOfItem(atPath: bundled.path)
         let size = (attributes?[.size] as? Int) ?? 0
         let modified = Int((attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
@@ -47,8 +48,15 @@ enum SessionKeepers {
     }
     nonisolated(unsafe) private static var installedKeeper: URL?
 
-    /// Settings → Terminal: "Keep terminals running when Side quits" (on unless turned off).
-    static let settingKey = "side.run.keepSessions"
+    /// Settings → General → Run: "Keep terminals running when Side quits" (on unless turned
+    /// off). Off, quitting or closing a project ends its shells, as before keepers; shells still
+    /// live in keepers either way, so a session left running always reattaches and can be ended.
+    static let keepRunningKey = "side.run.keepSessions"
+
+    static var keepsRunningOnQuit: Bool {
+        get { UserDefaults.standard.object(forKey: keepRunningKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: keepRunningKey) }
+    }
 
     /// Unit tests get the old in-process terminals unless a test turns keepers on: a test's
     /// shells must end with it, not outlive the run.
@@ -57,7 +65,7 @@ enum SessionKeepers {
     static var isEnabled: Bool {
         guard bundledKeeperURL != nil else { return false }
         if NSClassFromString("XCTestCase") != nil { return enabledForTesting }
-        return UserDefaults.standard.object(forKey: settingKey) as? Bool ?? true
+        return true
     }
 
     /// A live session's record: its keeper answers on its socket.
@@ -121,9 +129,10 @@ final class KeeperLink {
         return link
     }
 
-    func attach(cols: Int, rows: Int) {
+    /// `history`: the lines of scrollback this terminal keeps, so the keeper sends no more.
+    func attach(cols: Int, rows: Int, history: Int) {
         lastSize = Size(cols: cols, rows: rows)
-        connection?.send(Frame(.attach, json: Size(cols: cols, rows: rows)))
+        connection?.send(Frame(.attach, json: Attach(cols: cols, rows: rows, history: history)))
     }
 
     func input<C: Collection>(_ bytes: C) where C.Element == UInt8 { connection?.send(Frame(.input, Array(bytes))) }

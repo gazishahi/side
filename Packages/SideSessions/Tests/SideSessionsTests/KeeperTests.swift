@@ -78,6 +78,26 @@ final class KeeperTests: XCTestCase {
         XCTAssertTrue(screen.contains("line 60"))
     }
 
+    func testAnAttachGetsOnlyTheHistoryItsTerminalKeeps() throws {
+        let id = try launch("i=1; while [ $i -le 300 ]; do echo \"row-$i\"; i=$((i+1)); done; sleep 30", rows: 10)
+        let first = try TestClient(id)
+        try first.attach()
+        XCTAssertTrue(first.waitForText("row-300"))
+        first.close()
+        // A client keeping 50 lines gets the 50 above the screen, the screen, and nothing older.
+        let second = try TestClient(id)
+        second.send(Frame(.attach, json: Attach(cols: 80, rows: 10, history: 50)))
+        XCTAssertTrue(second.wait { $0.snapshot != nil })
+        let text = try XCTUnwrap(second.snapshotPlainText())
+        XCTAssertTrue(text.contains("row-300"))
+        XCTAssertTrue(text.contains("row-245\n"), text)
+        XCTAssertFalse(text.contains("row-200\n"), "older history sent")
+        // The keeper itself still has all of it.
+        let third = try TestClient(id)
+        try third.attach()
+        XCTAssertTrue(try XCTUnwrap(third.snapshotPlainText()).contains("row-1\n"))
+    }
+
     func testOutputWhileDetachedIsThereOnReattach() throws {
         let id = try launch("read go; echo 'while you were away'; sleep 30")
         let first = try TestClient(id)
@@ -89,6 +109,17 @@ final class KeeperTests: XCTestCase {
         let second = try TestClient(id)
         try second.attach()
         XCTAssertTrue(try XCTUnwrap(second.snapshotPlainText()).contains("while you were away"))
+    }
+
+    func testEchoAfterReturnInAProgramThatDoesntReadComesThrough() throws {
+        // The completed line waits unread in the program's input; its echo must still arrive.
+        let id = try launch("exec sleep 30")
+        let client = try TestClient(id)
+        try client.attach()
+        client.send(Frame(.input, Array("abc\r".utf8)))
+        XCTAssertTrue(client.waitForText("abc\r\n"), client.text)
+        client.send(Frame(.input, Array("def".utf8)))
+        XCTAssertTrue(client.waitForText("def"), "output stopped after Return: \(client.text)")
     }
 
     func testChildHasAControllingTerminal() throws {

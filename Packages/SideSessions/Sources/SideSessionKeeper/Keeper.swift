@@ -30,8 +30,7 @@ func writeRecord() {
 // MARK: - The client
 
 
-/// Bytes for the PTY, and for the client: both written as they can take them.
-var toPTY: [UInt8] = []
+/// Bytes for the client, written as it can take them.
 var client: Int32 = -1
 var attached = false
 var clientDecoder = FrameDecoder()
@@ -48,8 +47,16 @@ func watch(_ ident: Int32, _ filter: Int32, _ flags: Int32, fflags: UInt32 = 0, 
 
 func sendToClient(_ frame: Frame) {
     guard client >= 0 else { return }
+    frame.payload.withUnsafeBytes { sendToClient(frame.kind, $0) }
+}
+
+/// A frame straight into the client's buffer: header and payload, no intermediate copies.
+func sendToClient(_ kind: FrameKind, _ payload: UnsafeRawBufferPointer) {
+    guard client >= 0 else { return }
     let wasEmpty = toClientOffset == toClient.count
-    toClient.append(contentsOf: frame.encoded)
+    toClient.append(kind.rawValue)
+    withUnsafeBytes(of: UInt32(payload.count).littleEndian) { toClient.append(contentsOf: $0) }
+    toClient.append(contentsOf: payload)
     if toClient.count - toClientOffset > clientBacklogLimit { log("client stopped reading; letting it go"); dropClient(); return }
     if wasEmpty { flushClient() }
 }
@@ -64,7 +71,8 @@ func flushClient() {
         dropClient()
         return
     }
-    toClient.removeAll(keepingCapacity: true)
+    // Capacity kept for steady output, not a flood's peak.
+    toClient.removeAll(keepingCapacity: toClient.capacity <= 1 << 20)
     toClientOffset = 0
     // Gone only once the client has been told how the session ended.
     if exitReported { finish() }
@@ -81,15 +89,125 @@ func dropClient() {
     toClientOffset = 0
 }
 
-func flushPTY() {
-    while !toPTY.isEmpty {
-        let n = toPTY.withUnsafeBytes { write(master, $0.baseAddress!, $0.count) }
-        if n > 0 { toPTY.removeFirst(n); continue }
-        if n < 0, errno == EINTR { continue }
-        if n < 0, errno == EAGAIN { watch(master, EVFILT_WRITE, EV_ADD | EV_ENABLE | EV_ONESHOT); return }
-        toPTY.removeAll()
-        return
+/// Input for the program, written on a queue of its own: a program that stops reading its input
+/// blocks that queue, never the keeper's loop.
+let ptyWriter = DispatchQueue(label: "keeper.pty-writer")
+func writeToPTY(_ bytes: [UInt8]) {
+    ptyWriter.async {
+        bytes.withUnsafeBytes { raw in
+            var offset = 0
+            while offset < raw.count {
+                let n = write(master, raw.baseAddress! + offset, raw.count - offset)
+                if n > 0 { offset += n } else if n < 0, errno == EINTR { continue } else { return }
+            }
+        }
     }
+}
+
+// MARK: - The reader thread
+
+/// The PTY is read with blocking reads on a thread of its own, as a terminal reading its own PTY
+/// does: waiting on the kqueue between reads, the keeper spent most of a flood idle, and reached
+/// three quarters of a bare PTY's throughput (2026-11-03). The main loop takes what was read, in
+/// order, and does the rest (forwarding, the parse queue), so a snapshot stays in step with what
+/// a client was sent.
+/// A batch of output in one of the pool's buffers: read into it, forwarded from it, parsed from
+/// it, then handed back. One buffer, no copies on the way.
+struct Chunk {
+    let base: UnsafeMutableRawPointer
+    let count: Int
+    var bytes: UnsafeRawBufferPointer { UnsafeRawBufferPointer(start: base, count: count) }
+}
+
+/// Read buffers, reused: a fresh array per batch left megabytes of freed malloc memory dirty
+/// after a flood (2026-11-03). Mapped directly, so `trim` gives spare ones back to the system.
+enum ChunkPool {
+    static let size = 256 * 1024
+    /// Up to 16 MB in flight; past that the reader waits, so the PTY pushes back on the program
+    /// rather than the keeper growing (the parser is far faster than any program writes).
+    static let limit = 64
+    private static let condition = NSCondition()
+    private static var spare: [UnsafeMutableRawPointer] = []
+    private static var count = 0
+
+    static func take() -> UnsafeMutableRawPointer {
+        condition.lock()
+        defer { condition.unlock() }
+        while spare.isEmpty && count >= limit { condition.wait() }
+        if let buffer = spare.popLast() { return buffer }
+        count += 1
+        return mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
+    }
+
+    static func give(_ buffer: UnsafeMutableRawPointer) {
+        condition.lock()
+        spare.append(buffer)
+        condition.signal()
+        condition.unlock()
+    }
+
+    /// Spare buffers back to the system, for a session that's gone quiet.
+    static func trim() {
+        condition.lock()
+        for buffer in spare { munmap(buffer, size) }
+        count -= spare.count
+        spare.removeAll()
+        condition.unlock()
+    }
+}
+
+let readLock = NSLock()
+var readChunks: [Chunk] = []
+var readEnded = false
+let readIdent: UInt = 11
+
+func startReader() {
+    let thread = Thread {
+        let size = ChunkPool.size
+        while true {
+            let buffer = ChunkPool.take()
+            // A PTY hands output over a few kilobytes at a time. Reads are gathered while more is
+            // already readable (a zero-timeout poll), and handed over once it isn't: under a flood,
+            // a handoff per read (a copy, a lock and a wakeup) held the keeper to 58% of a plain
+            // reader's speed, while a single keystroke's echo still goes the moment it's read.
+            // Not FIONREAD: on a PTY master it also counts input the program hasn't read, so after
+            // Return in a program that doesn't read, the echo was held back indefinitely.
+            var filled = 0
+            var n = 0
+            repeat {
+                n = read(master, buffer + filled, size - filled)
+                if n < 0, errno == EINTR { n = 1; continue }
+                if n > 0 { filled += n }
+                var readable = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+                guard n > 0, filled < size, poll(&readable, 1, 0) == 1, readable.revents & Int16(POLLIN) != 0 else { break }
+            } while true
+            readLock.lock()
+            let wasEmpty = readChunks.isEmpty
+            if filled > 0 { readChunks.append(Chunk(base: buffer, count: filled)) } else { ChunkPool.give(buffer) }
+            if n <= 0 { readEnded = true }
+            readLock.unlock()
+            // One wakeup per batch: while the loop is busy, batches pile up and go together.
+            if wasEmpty || n <= 0 { trigger(readIdent) }
+            // EOF or EIO once the child and everything holding the PTY are gone.
+            if n <= 0 { return }
+        }
+    }
+    thread.qualityOfService = .userInteractive
+    thread.start()
+}
+
+func trigger(_ ident: UInt) {
+    var event = kevent(ident: ident, filter: Int16(EVFILT_USER), flags: 0, fflags: UInt32(NOTE_TRIGGER), data: 0, udata: nil)
+    _ = kevent(queue, &event, 1, nil, 0, nil)
+}
+
+/// What the reader has read since last time, forwarded and queued for parsing in order.
+func takeReads() {
+    readLock.lock()
+    let chunks = readChunks
+    readChunks.removeAll(keepingCapacity: true)
+    readLock.unlock()
+    for chunk in chunks { consume(chunk) }
 }
 
 // MARK: - Terminal callbacks
@@ -100,23 +218,114 @@ func currentTitle() -> String {
     return String(decoding: UnsafeBufferPointer(start: ptr, count: value.len), as: UTF8.self)
 }
 
-let titleChanged: GhosttyTerminalTitleChangedFn = { _, _ in
-    let title = currentTitle()
-    guard title != record.title else { return }
-    record.title = title
-    recordDirty = true
-    sendToClient(Frame(.title, Array(title.utf8)))
+// The callbacks run on the parse thread, inside a write: they read what they need from the
+// terminal there and hand the rest to the main loop.
+let titleChanged: GhosttyTerminalTitleChangedFn = { _, _ in post(.title(currentTitle())) }
+
+let bell: GhosttyTerminalBellFn = { _, _ in post(.bell) }
+
+// Replies to the program's queries (cursor position, device attributes); `handleEvents` decides.
+let writePTY: GhosttyTerminalWritePtyFn = { _, _, data, len in
+    guard let data, len > 0 else { return }
+    post(.reply(Array(UnsafeBufferPointer(start: data, count: len))))
 }
 
-let bell: GhosttyTerminalBellFn = { _, _ in sendToClient(Frame(.attention, Array("bell".utf8))) }
+// MARK: - The parse thread
 
-// Replies to the program's queries (cursor position, device attributes). While a client is
-// attached, its own terminal answers them, as it always has; answering here too would send every
-// reply twice. Detached, the keeper answers, so a program that asks doesn't wait forever.
-let writePTY: GhosttyTerminalWritePtyFn = { _, _, data, len in
-    guard !attached, let data, len > 0 else { return }
-    toPTY.append(contentsOf: UnsafeBufferPointer(start: data, count: len))
-    flushPTY()
+/// The keeper's copy of the screen is kept on a thread of its own, behind the client: output is
+/// forwarded as soon as it's read, and parsed meanwhile. One thread did both, and parsing was a
+/// third of the keeper's time under a flood (2026-11-03, 74% of a bare PTY's throughput).
+/// Whatever reads or changes the terminal from the main loop goes through `withTerminal`, which
+/// waits for the parser to catch up first, so a snapshot matches exactly what was forwarded.
+let parseCondition = NSCondition()
+var parseQueue: [Chunk] = []
+var parsing = false
+/// True while the parse thread waits for work: only then does queuing work need to wake it.
+var parserWaiting = false
+let terminalLock = NSLock()
+
+func startParser() {
+    let thread = Thread {
+        while true {
+            parseCondition.lock()
+            while parseQueue.isEmpty { parserWaiting = true; parseCondition.wait(); parserWaiting = false }
+            let batch = parseQueue
+            parseQueue.removeAll(keepingCapacity: true)
+            parsing = true
+            parseCondition.unlock()
+            terminalLock.lock()
+            for chunk in batch { ghostty_terminal_vt_write(terminal, chunk.base.assumingMemoryBound(to: UInt8.self), chunk.count) }
+            terminalLock.unlock()
+            for chunk in batch { ChunkPool.give(chunk.base) }
+            parseCondition.lock()
+            parsing = false
+            parseCondition.broadcast()
+            parseCondition.unlock()
+        }
+    }
+    thread.qualityOfService = .userInitiated
+    thread.start()
+}
+
+func enqueueParse(_ chunk: Chunk) {
+    parseCondition.lock()
+    parseQueue.append(chunk)
+    if parserWaiting { parseCondition.signal() }
+    parseCondition.unlock()
+}
+
+/// The terminal, with everything read so far parsed into it.
+func withTerminal<T>(_ body: () -> T) -> T {
+    parseCondition.lock()
+    while !parseQueue.isEmpty || parsing { parseCondition.wait() }
+    parseCondition.unlock()
+    terminalLock.lock()
+    defer { terminalLock.unlock() }
+    return body()
+}
+
+// MARK: - Events from the parse thread
+
+enum Event {
+    case title(String)
+    case bell
+    case reply([UInt8])
+}
+let eventLock = NSLock()
+var pendingEvents: [Event] = []
+/// The kqueue user event that wakes the main loop for them.
+let eventIdent: UInt = 10
+
+func post(_ event: Event) {
+    eventLock.lock()
+    pendingEvents.append(event)
+    eventLock.unlock()
+    var trigger = kevent(ident: eventIdent, filter: Int16(EVFILT_USER), flags: 0, fflags: UInt32(NOTE_TRIGGER), data: 0, udata: nil)
+    _ = kevent(queue, &trigger, 1, nil, 0, nil)
+}
+
+func handleEvents() {
+    eventLock.lock()
+    let pending = pendingEvents
+    pendingEvents.removeAll()
+    eventLock.unlock()
+    for event in pending {
+        switch event {
+        case .title(let title):
+            guard title != record.title else { continue }
+            record.title = title
+            recordDirty = true
+            sendToClient(Frame(.title, Array(title.utf8)))
+        case .bell:
+            sendToClient(Frame(.attention, Array("bell".utf8)))
+        case .reply(let bytes):
+            // While a client is attached, its own terminal answers the program's queries, as it
+            // always has; answering here too would send every reply twice. Detached, the keeper
+            // answers, so a program that asks doesn't wait forever.
+            guard !attached else { continue }
+            writeToPTY(bytes)
+        }
+    }
 }
 
 // MARK: - Snapshot
@@ -124,7 +333,7 @@ let writePTY: GhosttyTerminalWritePtyFn = { _, _, data, len in
 /// The terminal as escape sequences: scrollback and screen, styles, cursor, scroll region, tab
 /// stops, the working directory and every mode that isn't at its default. Not the palette:
 /// the client has its own theme.
-func formatted(_ term: GhosttyTerminal) -> [UInt8] {
+func formatted(_ term: GhosttyTerminal, history: Int? = nil) -> [UInt8] {
     var options = GhosttyFormatterTerminalOptions()
     options.size = MemoryLayout<GhosttyFormatterTerminalOptions>.size
     options.emit = GHOSTTY_FORMATTER_FORMAT_VT
@@ -144,6 +353,44 @@ func formatted(_ term: GhosttyTerminal) -> [UInt8] {
     options.extra.screen.protection = true
     options.extra.screen.kitty_keyboard = true
     options.extra.screen.charsets = true
+    // Only the last `history` lines of scrollback, then the screen.
+    var selection = GhosttySelection()
+    if let history, let range = recentRows(term, history: history) {
+        selection = range
+        return withUnsafePointer(to: &selection) { pointer in
+            options.selection = pointer
+            return format(term, options)
+        }
+    }
+    return format(term, options)
+}
+
+/// The rows from `history` lines above the screen to the bottom of it.
+func recentRows(_ term: GhosttyTerminal, history: Int) -> GhosttySelection? {
+    var total = 0, rows: UInt16 = 0, cols: UInt16 = 0
+    ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total)
+    ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+    ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+    let first = max(0, total - Int(rows) - history)
+    guard first > 0 else { return nil } // all of it fits: no selection needed
+    var start = GhosttyGridRef(), end = GhosttyGridRef()
+    start.size = MemoryLayout<GhosttyGridRef>.size
+    end.size = MemoryLayout<GhosttyGridRef>.size
+    var from = GhosttyPoint(), to = GhosttyPoint()
+    from.tag = GHOSTTY_POINT_TAG_SCREEN
+    from.value.coordinate = GhosttyPointCoordinate(x: 0, y: UInt32(first))
+    to.tag = GHOSTTY_POINT_TAG_SCREEN
+    to.value.coordinate = GhosttyPointCoordinate(x: cols > 0 ? cols - 1 : 0, y: UInt32(total - 1))
+    guard ghostty_terminal_grid_ref(term, from, &start) == GHOSTTY_SUCCESS, ghostty_terminal_grid_ref(term, to, &end) == GHOSTTY_SUCCESS else { return nil }
+    var selection = GhosttySelection()
+    selection.size = MemoryLayout<GhosttySelection>.size
+    selection.start = start
+    selection.end = end
+    selection.rectangle = false
+    return selection
+}
+
+func format(_ term: GhosttyTerminal, _ options: GhosttyFormatterTerminalOptions) -> [UInt8] {
     var formatter: GhosttyFormatter?
     guard ghostty_formatter_terminal_new(nil, &formatter, term, options) == GHOSTTY_SUCCESS, let formatter else { return [] }
     defer { ghostty_formatter_free(formatter) }
@@ -157,16 +404,18 @@ func formatted(_ term: GhosttyTerminal) -> [UInt8] {
 /// Everything a fresh client terminal needs to show this one: a full reset, then the screen.
 /// While a full-screen program has the alternate screen, the primary screen (the shell and its
 /// scrollback) comes first, rebuilt in a scratch copy, so it's there when the program exits.
-func snapshot() -> [UInt8] {
+func snapshot(history: Int? = nil) -> [UInt8] { withTerminal { snapshotLocked(history: history) } }
+
+func snapshotLocked(history: Int?) -> [UInt8] {
     var out = Array("\u{1b}c".utf8)
     var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
     ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
     if screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE, let primary = primaryCopy() {
-        out += formatted(primary)
+        out += formatted(primary, history: history)
         ghostty_terminal_free(primary)
         out += Array("\u{1b}[?1049h".utf8)
     }
-    out += formatted(terminal)
+    out += formatted(terminal, history: history)
     return out
 }
 
@@ -194,16 +443,16 @@ func handle(_ frame: Frame) {
         // Too new a client is still answered; it decides whether it can talk to this keeper.
         sendToClient(Frame(.welcome, json: Welcome(protocolVersion: SessionProtocol.version, build: build, record: record)))
     case .attach:
-        if let size = frame.decode(Size.self) { resize(size) }
+        let request = frame.decode(Attach.self)
+        if let request { resize(Size(cols: request.cols, rows: request.rows)) }
         attached = true
-        sendToClient(Frame(.snapshot, snapshot()))
+        sendToClient(Frame(.snapshot, snapshot(history: request?.history)))
         if !record.title.isEmpty { sendToClient(Frame(.title, Array(record.title.utf8))) }
         reportExit()
     case .detach:
         dropClient()
     case .input:
-        toPTY.append(contentsOf: frame.payload)
-        flushPTY()
+        writeToPTY(frame.payload)
     case .resize:
         if let size = frame.decode(Size.self) { resize(size) }
     case .signal:
@@ -217,7 +466,7 @@ func resize(_ size: Size) {
     guard size.cols > 0, size.rows > 0 else { return }
     var ws = winsize(ws_row: UInt16(size.rows), ws_col: UInt16(size.cols), ws_xpixel: 0, ws_ypixel: 0)
     _ = ioctl(master, TIOCSWINSZ, &ws)
-    ghostty_terminal_resize(terminal, UInt16(size.cols), UInt16(size.rows), 8, 16)
+    withTerminal { _ = ghostty_terminal_resize(terminal, UInt16(size.cols), UInt16(size.rows), 8, 16) }
 }
 
 /// The child and, for a whole-tree signal, every descendant, found before any is signalled: a
@@ -251,7 +500,16 @@ func reportExit() {
 func childExited() {
     var status: Int32 = 0
     guard waitpid(childPID, &status, WNOHANG) == childPID else { return }
-    drainPTY()
+    // Whatever the child wrote before it ended: the reader sees the PTY close moments after the
+    // exit (later, if a background job still holds it open; not waited for past a fifth of a
+    // second).
+    let deadline = Date().addingTimeInterval(0.2)
+    while Date() < deadline {
+        readLock.lock(); let ended = readEnded; readLock.unlock()
+        if ended { break }
+        usleep(2_000)
+    }
+    takeReads()
     let exitedNormally = (status & 0x7f) == 0
     record.exit = Exit(status: exitedNormally ? (status >> 8) & 0xff : nil, signal: exitedNormally ? nil : status & 0x7f)
     writeRecord()
@@ -262,23 +520,34 @@ func childExited() {
     watch(1, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: UInt32(NOTE_SECONDS), data: 24 * 3600)
 }
 
-/// Whatever the child wrote before it ended.
-func drainPTY() {
-    let buffer = UnsafeMutableRawPointer.allocate(byteCount: 64 * 1024, alignment: 16)
-    defer { buffer.deallocate() }
-    while true {
-        let n = read(master, buffer, 64 * 1024)
-        guard n > 0 else { return }
-        consume(UnsafeRawBufferPointer(start: buffer, count: n))
-    }
+
+func consume(_ chunk: Chunk) {
+    // To the client first: what it shows doesn't wait on the keeper's own parse.
+    if attached { sendToClient(.output, chunk.bytes) }
+    enqueueParse(chunk)
+    record.lastOutputAt = Date()
+    outputSinceTimers()
 }
 
-func consume(_ bytes: UnsafeRawBufferPointer) {
-    ghostty_terminal_vt_write(terminal, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
-    if attached { sendToClient(Frame(.output, Array(bytes))) }
-    record.lastOutputAt = Date()
+/// Timers are armed by output, never left ticking: an idle keeper doesn't wake at all. The
+/// record's last-output time is written within two seconds; compression is considered once the
+/// session has been quiet for five.
+var recordTimerArmed = false
+func outputSinceTimers() {
     recordDirty = true
+    if !recordTimerArmed {
+        recordTimerArmed = true
+        watch(2, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: UInt32(NOTE_SECONDS), data: 2)
+    }
+    // Re-adding a timer restarts it, so this fires five seconds after the last output. Not
+    // re-armed for every read: once a second at most.
+    let now = Date()
+    if now.timeIntervalSince(compressionTimerArmedAt) > 1 {
+        compressionTimerArmedAt = now
+        watch(3, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: 0 /* milliseconds */, data: Int(quietBeforeCompressing * 1000) + 100)
+    }
 }
+var compressionTimerArmedAt = Date.distantPast
 
 /// Exit for good: the client knows how the session ended, or a day passed.
 func finish() {
@@ -293,4 +562,44 @@ func registerTerminalCallbacks() {
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, unsafeBitCast(titleChanged, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_BELL, unsafeBitCast(bell, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, unsafeBitCast(writePTY, to: UnsafeRawPointer.self))
+}
+
+// MARK: - Compression
+
+/// Scrollback is compressed once the session has been quiet for a while
+/// (SIDE_RFC_SESSION_RESTORE.md, Memory): libghostty-vt's incremental steps, a bounded amount
+/// per tick, never while output flows. Scrolling back or a snapshot decompresses transparently.
+let quietBeforeCompressing: TimeInterval = 5
+var compressedAtActivity: UInt64?
+
+func compressIfQuiet() { withTerminal { compressIfQuietLocked() } }
+
+func compressIfQuietLocked() {
+    // The timer is re-armed at most once a second while output flows, so it can fire before
+    // five quiet seconds have passed: then it waits out the rest, rather than giving up.
+    let quiet = Date().timeIntervalSince(record.lastOutputAt)
+    guard quiet >= quietBeforeCompressing else {
+        watch(3, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: 0 /* milliseconds */, data: Int((quietBeforeCompressing - quiet) * 1000) + 50)
+        return
+    }
+    var activity: UInt64 = 0
+    ghostty_terminal_compression_activity(terminal, &activity)
+    guard activity != compressedAtActivity else { return }
+    let start = Date()
+    var result = GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING
+    // About 20 ms of steps a tick (a step is under a millisecond for text, a few for heavily
+    // styled output); the rest waits for the next tick, so the loop never stalls on it.
+    while result == GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING, Date().timeIntervalSince(start) < 0.02 {
+        ghostty_terminal_compress(terminal, GHOSTTY_TERMINAL_COMPRESSION_MODE_INCREMENTAL, &result)
+    }
+    if result == GHOSTTY_TERMINAL_COMPRESSION_RESULT_PENDING {
+        // More to do: the next slice shortly, not a second from now.
+        watch(3, EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags: 0 /* milliseconds */, data: 50)
+        return
+    }
+    compressedAtActivity = activity
+    // Freed pages back to the system now: macOS otherwise reclaims them only under pressure,
+    // so the keeper looked as big as before compressing.
+    ChunkPool.trim()
+    malloc_zone_pressure_relief(nil, 0)
 }

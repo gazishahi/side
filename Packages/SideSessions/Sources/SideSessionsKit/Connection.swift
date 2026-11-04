@@ -17,6 +17,15 @@ public enum SessionError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+/// A Unix socket's buffers are 8 KB each way by default (`net.local.stream.sendspace`), which
+/// made a flood of output a context switch every few kilobytes: a quarter of a bare PTY's
+/// throughput lost on the hop alone (2026-11-03). A megabyte each way.
+public func enlargeSocketBuffers(_ fd: Int32) {
+    var size: Int32 = 1 << 20
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+}
+
 /// Fills a `sockaddr_un` for `path`, which must fit in its 104 bytes with the terminator.
 func withUnixAddress<T>(_ path: String, _ body: (UnsafePointer<sockaddr>, socklen_t) -> T) throws -> T {
     var address = sockaddr_un()
@@ -48,6 +57,7 @@ public final class SessionConnection: @unchecked Sendable {
         guard fd >= 0 else { throw SessionError.socket("socket", errno) }
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        enlargeSocketBuffers(fd)
         let result = try withUnixAddress(socket.path) { Darwin.connect(fd, $0, $1) }
         guard result == 0 else {
             let code = errno
@@ -61,10 +71,11 @@ public final class SessionConnection: @unchecked Sendable {
     public func start(queue: DispatchQueue, onFrame: @escaping @Sendable (Frame) -> Void, onClose: @escaping @Sendable () -> Void) {
         var decoder = FrameDecoder()
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-        let buffer = UnsafeMutableRawPointer.allocate(byteCount: 64 * 1024, alignment: 16)
+        let size = 1 << 20
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 16)
         source.setEventHandler { [weak self] in
             guard let self else { return }
-            let n = read(self.fd, buffer, 64 * 1024)
+            let n = read(self.fd, buffer, size)
             if n > 0 {
                 decoder.append(UnsafeRawBufferPointer(start: buffer, count: n))
                 while let frame = decoder.next() { onFrame(frame) }

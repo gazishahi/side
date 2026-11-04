@@ -56,7 +56,7 @@ childPID = {
     return keeper_spawn(spec.executable, &cArgs, &cEnv, spec.directory, UInt16(spec.cols), UInt16(spec.rows), &master)
 }()
 guard childPID > 0 else { unlink(socketURL.path); fail("spawn \(spec.executable): \(String(cString: strerror(errno)))") }
-setNonBlocking(master)
+// Blocking: the reader thread reads it, and the writer queue writes it.
 
 // MARK: - The terminal
 
@@ -80,17 +80,20 @@ writeRecord()
 
 queue = kqueue()
 registerTerminalCallbacks()
+watch(Int32(eventIdent), EVFILT_USER, EV_ADD | EV_CLEAR)
+watch(Int32(readIdent), EVFILT_USER, EV_ADD | EV_CLEAR)
+startParser()
 
 
-watch(master, EVFILT_READ, EV_ADD)
 watch(listener, EVFILT_READ, EV_ADD)
 watch(childPID, EVFILT_PROC, EV_ADD | EV_ONESHOT, fflags: UInt32(NOTE_EXIT))
 watch(SIGTERM, EVFILT_SIGNAL, EV_ADD)
-// The record's last-output time, written at most every two seconds.
-watch(2, EVFILT_TIMER, EV_ADD, fflags: UInt32(NOTE_SECONDS), data: 2)
+// Timers 2 (the record's last-output time) and 3 (compression) are armed by output.
+startReader()
 log("session \(spec.id): \(spec.executable) as \(childPID)")
 
-let readBuffer = UnsafeMutableRawPointer.allocate(byteCount: 64 * 1024, alignment: 16)
+let readSize = 256 * 1024
+let readBuffer = UnsafeMutableRawPointer.allocate(byteCount: readSize, alignment: 16)
 var events = Array(repeating: kevent(), count: 16)
 while true {
     let count = kevent(queue, nil, 0, &events, Int32(events.count), nil)
@@ -98,12 +101,6 @@ while true {
     for event in events.prefix(Int(count)) {
         let ident = Int32(event.ident)
         switch Int32(event.filter) {
-        case EVFILT_READ where ident == master:
-            let n = read(master, readBuffer, 64 * 1024)
-            if n > 0 { consume(UnsafeRawBufferPointer(start: readBuffer, count: n)) }
-            // EOF or EIO once the child and everything holding the PTY are gone: the exit event
-            // follows (or already came), so stop watching an empty descriptor.
-            else if n == 0 || (errno != EAGAIN && errno != EINTR) { watch(master, EVFILT_READ, EV_DELETE) }
         case EVFILT_READ where ident == listener:
             let fd = accept(listener, nil, nil)
             guard fd >= 0 else { continue }
@@ -112,6 +109,7 @@ while true {
             if client >= 0 { sendToClient(Frame(.replaced)); flushClient(); dropClient() }
             var noSigPipe: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+            enlargeSocketBuffers(fd)
             setNonBlocking(fd)
             client = fd
             watch(fd, EVFILT_READ, EV_ADD)
@@ -126,8 +124,6 @@ while true {
             }
         case EVFILT_WRITE where ident == client:
             flushClient()
-        case EVFILT_WRITE where ident == master:
-            flushPTY()
         case EVFILT_PROC:
             childExited()
         case EVFILT_SIGNAL:
@@ -136,9 +132,16 @@ while true {
             log("SIGTERM")
             if recordDirty { writeRecord() }
             exit(0)
+        case EVFILT_USER where event.ident == readIdent:
+            takeReads()
+        case EVFILT_USER:
+            handleEvents()
         case EVFILT_TIMER where event.ident == 1:
             finish()
+        case EVFILT_TIMER where event.ident == 3:
+            compressIfQuiet()
         case EVFILT_TIMER:
+            recordTimerArmed = false
             if recordDirty { writeRecord() }
         default:
             break
