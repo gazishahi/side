@@ -157,6 +157,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("stage ") { shell.showStageForTesting(String(command.dropFirst(6))) }
                     if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
                     if command == "switcher" { shell.toggleTrackPopover(nil) }
+                    if command == "projects" { shell.projectChipForTesting.togglePopover() }
+                    if command.hasPrefix("stage-hover ") { shell.stageControlForTesting.hoverForTesting(Int(command.dropFirst(12))) }
                     if command.hasPrefix("theme-light ") { EditorThemes.lightThemeID = String(command.dropFirst(12)) }
                     if command.hasPrefix("theme-dark ") { EditorThemes.darkThemeID = String(command.dropFirst(11)) }
                     if command.hasPrefix("theme-import "), let data = FileManager.default.contents(atPath: String(command.dropFirst(13))),

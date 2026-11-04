@@ -107,6 +107,27 @@ final class ChromeTests: XCTestCase {
         XCTAssertLessThan(Item.State.needsYou.rank, Item.State.working.rank)
     }
 
+    /// The project chip shows a repository's own logo: a web project's favicon, an Icon Composer
+    /// bundle (as Side's own repository has), and none for a folder without one.
+    func testProjectLogosAreFoundWhereRepositoriesKeepThem() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("logos-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let svg = ##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" fill="#123456"/></svg>"##
+        let web = root.appendingPathComponent("web/public")
+        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+        try svg.write(to: web.appendingPathComponent("favicon.svg"), atomically: true, encoding: .utf8)
+        XCTAssertNotNil(ProjectLogo.find(in: root.appendingPathComponent("web")))
+        let app = root.appendingPathComponent("app/AppIcon.icon/Assets")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        try svg.write(to: app.appendingPathComponent("mark.svg"), atomically: true, encoding: .utf8)
+        let manifest = #"{"fill":{"solid":"srgb:1,1,1,1"},"groups":[{"layers":[{"image-name":"mark.svg","name":"mark"}]}]}"#
+        try manifest.write(to: root.appendingPathComponent("app/AppIcon.icon/icon.json"), atomically: true, encoding: .utf8)
+        XCTAssertNotNil(ProjectLogo.find(in: root.appendingPathComponent("app")))
+        let plain = root.appendingPathComponent("plain")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        XCTAssertNil(ProjectLogo.find(in: plain))
+    }
+
     /// Project switching (prototype, 2026-11-04): every project gets a symbol no other has, the
     /// order wraps for swipes, a choice of color or symbol sticks, and closing takes it out.
     func testProjectSpacesKeepTheirOrderSymbolsAndColors() {

@@ -68,6 +68,8 @@ enum DS {
         /// On glass, light mode's glass is itself near-white — a white thumb vanished into it, so
         /// light mode selects with a tint of the label colour instead.
         static let selectedCapsule = white(0.18, black: 0.09, contrast: 0.32, 0.2)
+        /// Under the pointer on a control on glass, before it's chosen: half the selected one.
+        static let hoverCapsule = white(0.09, black: 0.045, contrast: 0.16, 0.1)
         /// The active tab: lifted off the canvas — white with a soft shadow in light, a brighter
         /// tone in dark. Inactive tabs sit on `scrimSoft`.
         static let tabActive = dynamic(dark: NSColor(white: 1, alpha: 0.13), light: NSColor(white: 1, alpha: 1),

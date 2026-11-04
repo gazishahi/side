@@ -45,6 +45,8 @@ final class SlidingSegmentedControl: NSView {
     /// The glass rides inside a plain container, and the *container* is what animates: glass
     /// views don't reliably animate frame changes themselves.
     private let thumbContainer = NSView()
+    private let hoverCapsule = NSView()
+    private var hoveredIndex: Int?
     private let track = NSView()
     private var buttons: [NSButton] = []
     private var badges: [DS.StatusDot] = []
@@ -86,6 +88,15 @@ final class SlidingSegmentedControl: NSView {
             thumbContainer.layer?.shadowOpacity = 0.12
             thumbContainer.layer?.shadowRadius = 2
             thumbContainer.layer?.shadowOffset = CGSize(width: 0, height: -0.5)
+        }
+        if style == .capsule {
+            // Under the pointer, an unchosen segment shows its own faint capsule: icon-only
+            // segments otherwise gave no sign they were there to press (2026-11-04).
+            hoverCapsule.wantsLayer = true
+            hoverCapsule.layer?.cornerRadius = (height - 4) / 2
+            hoverCapsule.bindLayerBackground(DS.Color.hoverCapsule)
+            hoverCapsule.alphaValue = 0
+            addSubview(hoverCapsule)
         }
         addSubview(thumbContainer)
         heightAnchor.constraint(equalToConstant: height).isActive = true
@@ -370,6 +381,8 @@ final class SlidingSegmentedControl: NSView {
 
     func select(_ index: Int, animated: Bool) {
         guard buttons.indices.contains(index) else { return }
+        // The segments move as the selection does: the hover comes back with the pointer's next move.
+        hover(at: nil)
         let wasHidden = thumbContainer.isHidden
         let previous = selectedIndex
         thumbContainer.isHidden = false
@@ -436,6 +449,44 @@ final class SlidingSegmentedControl: NSView {
 
     /// For tests and the AX tree: what each segment says.
     var segmentAccessibilityLabels: [String] { buttons.compactMap { $0.accessibilityLabel() } }
+
+    // MARK: Hover
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        guard style == .capsule else { return }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) { hover(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseEntered(with event: NSEvent) { hover(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { hover(at: nil) }
+
+    /// UI testing: the pointer over segment `index` (nil: off the control).
+    func hoverForTesting(_ index: Int?) {
+        hover(at: index.flatMap { segmentFrames().indices.contains($0) ? NSPoint(x: segmentFrames()[$0].midX, y: bounds.midY) : nil })
+    }
+
+    private func hover(at point: NSPoint?) {
+        let index = point.flatMap { point in segmentFrames().firstIndex { $0.contains(point) } }
+        let shown = index.flatMap { $0 == selectedIndex ? nil : $0 }
+        guard shown != hoveredIndex else { return }
+        let wasShown = hoveredIndex != nil
+        hoveredIndex = shown
+        guard let shown else {
+            DS.Motion.fade({ hoverCapsule.animator().alphaValue = 0 })
+            return
+        }
+        let frame = segmentFrames()[shown].insetBy(dx: 2, dy: 2)
+        if wasShown, !DS.Motion.reduceMotion {
+            // From one segment to the next it slides, as the thumb does.
+            DS.Motion.animate(DS.Motion.snappy, { hoverCapsule.animator().frame = frame })
+        } else {
+            hoverCapsule.frame = frame
+            DS.Motion.fade({ hoverCapsule.animator().alphaValue = 1 })
+        }
+    }
 
     @objc private func segmentTapped(_ sender: NSButton) {
         guard isEnabledControl, sender.tag != selectedIndex else { return }

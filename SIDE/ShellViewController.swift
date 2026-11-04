@@ -514,6 +514,7 @@ final class ShellViewController: NSViewController {
         else {
             if landOn != .make { show(landOn) }
             trackPill.refresh()
+            chrome.projectChip.refresh()
             return
         }
         switchToTrack(track, landOn: landOn, completion: { _ in })
@@ -596,9 +597,11 @@ final class ShellViewController: NSViewController {
             self?.tracksVC.newTrackTapped()
         }
         trackPill.onOpenTracks = { [weak self] in self?.show(.tracks) }
-        trackPill.onSwipeProject = { [weak self] offset in self?.switchProject(offset: offset) }
-        trackPill.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
-        trackPill.onAddProject = { [weak self] in self?.presentOpenProject() }
+        let projectChip = chrome.projectChip
+        projectChip.currentProject = { [weak self] in self?.projectURL }
+        projectChip.onSwipeProject = { [weak self] offset in self?.switchProject(offset: offset) }
+        projectChip.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
+        projectChip.onAddProject = { [weak self] in self?.presentOpenProject() }
         makeVC.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
         trackPill.onNewTrackNamed = { [weak self] name in
             self?.show(.tracks)
@@ -606,11 +609,11 @@ final class ShellViewController: NSViewController {
         }
 
         chrome.install(in: view, content: container)
-        // Above the track pill: where you landed after a project switch.
+        // Above the project chip: where you landed after a project switch.
         view.addSubview(projectIndicator)
         NSLayoutConstraint.activate([
-            projectIndicator.leadingAnchor.constraint(equalTo: trackPill.leadingAnchor, constant: -DS.Spacing.xs),
-            projectIndicator.bottomAnchor.constraint(equalTo: trackPill.topAnchor, constant: -DS.Spacing.l - 6),
+            projectIndicator.leadingAnchor.constraint(equalTo: chrome.projectChip.leadingAnchor),
+            projectIndicator.bottomAnchor.constraint(equalTo: chrome.projectChip.topAnchor, constant: -DS.Spacing.l),
         ])
         // Make's surface is the editor theme's: the top row follows it.
         for name in [EditorThemes.didChangeNotification, DS.Appearance.didChangeNotification] {
@@ -628,6 +631,7 @@ final class ShellViewController: NSViewController {
         installPalette()
         refreshStageControl()
         trackPill.refresh()
+        chrome.projectChip.refresh()
     }
 
     // MARK: - Palette
@@ -723,6 +727,8 @@ final class ShellViewController: NSViewController {
     func paletteOriginForTesting() -> NSRect { chrome.paletteOrigin(in: view) }
     var updatePillForTesting: UpdatePill? { chrome.updatePill }
     var activityPillForTesting: ActivityPill? { chrome.activityPill }
+    var projectChipForTesting: ProjectChip { chrome.projectChip }
+    var stageControlForTesting: SlidingSegmentedControl { stageControl }
     var searchFrameForTesting: NSRect { searchButton.convert(searchButton.bounds, to: view) }
 
     /// Every stage — pinned or not — and every Navigate menu item, by name.
@@ -1217,7 +1223,6 @@ final class ShellViewController: NSViewController {
             self.makeVC.putAwayTabsForProjectSwitch()
             self.openProject(at: url, focusingTrackKey: nil)
             self.projectIndicator.show(current: url)
-            self.trackPill.nameProjectBriefly()
         }
     }
 
@@ -1316,6 +1321,7 @@ final class ShellViewController: NSViewController {
     private func updateStageLabels() {
         refreshStageControl()
         trackPill.refresh()
+        chrome.projectChip.refresh()
     }
 
     /// Run reports every terminal event (a command starting or ending, a `cd`, unseen output),
@@ -2010,6 +2016,7 @@ final class ShellViewController: NSViewController {
 
     private func applyWindowChrome() {
         trackPill.refresh()
+        chrome.projectChip.refresh()
         guard let window = view.window else { return }
         let track = trackStore?.tracks.first { $0.branchName == currentTrackKey }
         let title = Self.windowTitle(stage: current, fileName: currentFileURL?.lastPathComponent,

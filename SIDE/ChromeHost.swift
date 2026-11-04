@@ -65,6 +65,8 @@ final class ChromeHost {
     let topRow = TopRowView()
     private let topRowBackdrop = TopRowBackdrop()
     let pill: TrackPill
+    /// The project, in its own glass disc before the track pill.
+    let projectChip = ProjectChip(diameter: ChromeHost.barHeight)
     let stageControl: SlidingSegmentedControl
     let searchButton: GlassCircleButton
     private let stageSlot = NSView()
@@ -120,7 +122,7 @@ final class ChromeHost {
             zoomPill = zoom
             let activity = ActivityPill(glass: false, height: 28)
             activityPill = activity
-            for view in [pill, stageSlot, stageControl, activity.view, zoom, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
+            for view in [projectChip, pill, stageSlot, stageControl, activity.view, zoom, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
             row.setCustomSpacing(DS.Spacing.l, after: stageSlot)
         case .floatingBar:
             row.addArrangedSubview(stageSlot)
@@ -177,9 +179,11 @@ final class ChromeHost {
         cluster.setClippingResistancePriority(.defaultLow, for: .horizontal)
         cluster.translatesAutoresizingMaskIntoConstraints = false
         trailingCluster = cluster
-        for piece in [pillCapsule, stagesCapsule, cluster] as [NSView] { root.addSubview(piece) }
+        for piece in [projectChip, pillCapsule, stagesCapsule, cluster] as [NSView] { root.addSubview(piece) }
         NSLayoutConstraint.activate([
-            pillCapsule.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Self.barMargin),
+            projectChip.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Self.barMargin),
+            projectChip.centerYAnchor.constraint(equalTo: stagesCapsule.centerYAnchor),
+            pillCapsule.leadingAnchor.constraint(equalTo: projectChip.trailingAnchor, constant: DS.Spacing.m),
             pillCapsule.trailingAnchor.constraint(lessThanOrEqualTo: stagesCapsule.leadingAnchor, constant: -DS.Spacing.m),
             stagesCapsule.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             cluster.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -Self.barMargin),
@@ -189,7 +193,7 @@ final class ChromeHost {
             cluster.centerYAnchor.constraint(equalTo: stagesCapsule.centerYAnchor),
         ])
         bar = stagesCapsule
-        barPieces = [pillCapsule, stagesCapsule, cluster]
+        barPieces = [projectChip, pillCapsule, stagesCapsule, cluster]
         // The pill coming or going changes what fits beside the stage control.
         updateObserver = NotificationCenter.default.addObserver(forName: UpdateDriver.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.replaceAccessories() }
@@ -459,7 +463,7 @@ final class ChromeHost {
         guard let bar else { return 0 }
         func piece(_ view: NSView?) -> CGFloat { view.map { $0.fittingSize.width + DS.Spacing.m } ?? 0 }
         let pillWidth = min(pillPiece?.fittingSize.width ?? 0, 180)
-        let left = Self.barMargin + pillWidth + DS.Spacing.m + piece(leading)
+        let left = Self.barMargin + Self.barHeight + DS.Spacing.m + pillWidth + DS.Spacing.m + piece(leading)
         let right = Self.barMargin + (trailingCluster ?? searchButton).fittingSize.width + DS.Spacing.m + piece(trailing)
         return bar.fittingSize.width + 2 * max(left, right)
     }
