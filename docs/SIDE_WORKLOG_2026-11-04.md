@@ -36,13 +36,19 @@ Code, so the paths that broke were never run. Fixed first:
   about tracks again.
 - **Reattaching after a relaunch** happened at SwiftTerm's 80×25 placeholder before layout: the
   screen came back resized twice (cursor row off). Terminals now start and rejoin at their real
-  size. Known leftover: a powerline prompt's right segment can come back on its own row; likely a
-  character-width difference between the keeper's engine (ghostty) and SwiftTerm. Not yet fixed.
+  size. (A prompt segment that seemed to come back on its own row was my test's doing: the
+  relaunched window had a saved, narrower size. At the same width the screen comes back exactly;
+  a width change makes zsh's prompt redraw messily, as in any terminal, and SwiftTerm doesn't
+  re-join lines it wrapped, which a ghostty-based Run would.)
 
 - **Running Terminals**, seen populated for the first time: the End buttons were cut off and
   stretched, and labels sat at the rows' tops. Agents show by name ("Claude Code").
 - **Working tabs move in step:** every tab's shimmer, edge light or glint runs on one clock, so
   several working tabs move as one (the owner's worry about the edge light on many tabs).
+- **Activity pill keeps its size:** as wide as its longest state, the ring and the dot in one
+  slot, so "working" turning "finished" doesn't move it. Crowded (with the update pill, in a
+  narrow window) its title truncates instead of being cut off under its neighbour. The update
+  is no longer listed in it, since its own pill says so.
 - **A slip, caught:** I committed one batch while its test run had failed (a new doc's status
   word wasn't an allowed one); the commit was undone at once, never pushed, and redone after a
   passing run.

@@ -1216,8 +1216,13 @@ final class ShellViewController: NSViewController {
 
     /// This window moves to another project; the one it leaves stays open in the background, so
     /// its terminals and agents carry on (and the activity pill can say what they're doing).
-    func switchProject(to url: URL) {
-        guard url.standardizedFileURL.path != projectURL?.standardizedFileURL.path else { projectIndicator.show(current: url); return }
+    /// `then`: once this window shows the project (not called if the switch is cancelled).
+    func switchProject(to url: URL, then: ((ShellViewController) -> Void)? = nil) {
+        guard url.standardizedFileURL.path != projectURL?.standardizedFileURL.path else {
+            projectIndicator.show(current: url)
+            then?(self)
+            return
+        }
         confirmCloseAllUnsaved { [weak self] proceed in
             guard let self, proceed else { return }
             if let current = self.projectURL { ProjectSpaces.shared.hold(current) }
@@ -1225,6 +1230,7 @@ final class ShellViewController: NSViewController {
             self.makeVC.putAwayTabsForProjectSwitch()
             self.openProject(at: url, focusingTrackKey: nil)
             self.projectIndicator.show(current: url)
+            then?(self)
         }
     }
 

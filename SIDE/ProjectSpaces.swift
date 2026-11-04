@@ -83,6 +83,9 @@ final class ProjectSpaces {
         _ = ProjectContextRegistry.shared.acquire(projectRoot: url)
     }
 
+    /// Open in the background, left by a window that switched to another project.
+    func isHeld(_ url: URL) -> Bool { held.contains(Self.normalized(url)) }
+
     var isHoldingForTesting: Set<String> { held }
 
     /// Out of the switcher, and closed if nothing else has it open.

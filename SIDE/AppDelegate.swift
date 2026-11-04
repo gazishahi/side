@@ -96,7 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         let lines = sessions.map { "session \($0.title) working=\($0.viewController.isProgramWorking) program=\($0.viewController.runningProgramName ?? "-") unseen=\($0.hasUnseenOutput)" }
                             + ActivityCenter.shared.items.map { "item \($0.title) \($0.state) \($0.place)" }
                             + ["stage \(shell.currentStageForTesting ?? "-")", "pill \(shell.activityPillForTesting?.view.isShown == true ? (shell.activityPillForTesting?.view.title ?? "") + " " + (shell.activityPillForTesting?.view.countForTesting ?? "") : "-")",
-                               "popover \(shell.activityPillForTesting?.popoverForTesting?.isShown == true)"]
+                               "popover \(shell.activityPillForTesting?.popoverForTesting?.isShown == true)",
+                               "project \(shell.projectRootURL?.lastPathComponent ?? "-")",
+                               "windows \(self.shellViewControllers.count)"]
                         FileHandle.standardError.write(Data(("[activity]\n" + lines.joined(separator: "\n") + "\n").utf8))
                     }
                     // "stage-badge 3 needsYou": a status dot on a stage, as attention would set it.
@@ -410,6 +412,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func revealProject(_ project: URL, then: @escaping (ShellViewController) -> Void) {
         let path = project.standardizedFileURL.path
         if let shell = shellViewControllers.first(where: { $0.projectRootURL?.standardizedFileURL.path == path }) { then(shell); return }
+        // Held in the background by a window that switched away: the front window switches back,
+        // as the project chip would. A new window opened for it instead (2026-11-04).
+        if ProjectSpaces.shared.isHeld(project),
+           let front = (NSApp.keyWindow?.contentViewController as? ShellViewController) ?? shellViewControllers.first {
+            front.view.window?.makeKeyAndOrderFront(nil)
+            front.switchProject(to: project) { then($0) }
+            return
+        }
         if let empty = shellViewControllers.first(where: { !$0.hasProject }) {
             empty.openProject(at: project, focusingTrackKey: nil)
             then(empty)
