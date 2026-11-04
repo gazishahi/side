@@ -69,7 +69,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Shortcuts.defaults = volatile
             LanguageSettings.defaults = volatile
             ReviewViewedStore.shared = ReviewViewedStore(defaults: volatile)
-            DispatchQueue.main.async { (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded() }
+            DispatchQueue.main.async { [weak self] in
+                (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded()
+                // Nothing to restore here, and done: a side:// link (a notification's click)
+                // waits for this, and under UI testing it never came, so the link was dropped.
+                self?.didFinishRestoring = true
+            }
             // Measurement scripts drive Make directly (opening through the UI with synthetic
             // events proved unreliable): "open <path>" and "close-all", UI testing only.
             DistributedNotificationCenter.default().addObserver(forName: Notification.Name("side.uitesting.command"), object: nil, queue: .main) { note in
@@ -179,6 +184,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             _ = NSApp.mainMenu?.performKeyEquivalent(with: event)
                         }
                     }
+                    // "open-url side://run/<id>": a link as macOS hands one over (a notification's click).
+                    if command.hasPrefix("open-url "), let url = URL(string: String(command.dropFirst(9))) { self.application(NSApp, open: [url]) }
                     if command.hasPrefix("stage-hover ") { shell.stageControlForTesting.hoverForTesting(Int(command.dropFirst(12))) }
                     if command.hasPrefix("theme-light ") { EditorThemes.lightThemeID = String(command.dropFirst(12)) }
                     if command.hasPrefix("theme-dark ") { EditorThemes.darkThemeID = String(command.dropFirst(11)) }
@@ -381,6 +388,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let shells = shellViewControllers.sorted { $0.listsTerminal(keeperID: id) && !$1.listsTerminal(keeperID: id) }
         if shells.contains(where: { $0.revealTerminal(keeperID: id, inProject: project, trackKey: track) }) { return }
         guard let project else { return }
+        // Held in the background by a window that switched away: that window comes back to it,
+        // as `revealProject` does, rather than a new one opening.
+        if ProjectSpaces.shared.isHeld(project),
+           let front = (NSApp.keyWindow?.contentViewController as? ShellViewController) ?? shellViewControllers.first {
+            front.view.window?.makeKeyAndOrderFront(nil)
+            front.switchProject(to: project) { _ = $0.revealTerminal(keeperID: id, inProject: project, trackKey: track) }
+            return
+        }
         // Opened on the project's active track; revealing switches to the session's, landing on
         // Run (opening on that track would land on Make, and race the switch).
         if let empty = shellViewControllers.first(where: { !$0.hasProject }) {

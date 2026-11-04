@@ -35,6 +35,13 @@ check "and that it finished" '[[ $(field pill) == "Claude Code finished" ]]' "$(
 $U post "activity-open"; sleep 2.5
 check "its click brings this window back to that project" '[[ $(field project) == repo && $(field windows) == 1 ]]' "$(field project), $(field windows) windows"
 check "on its Terminal tab" '[[ $(field stage) == run && $(field pill) == "-" ]]' "$(field stage), pill $(field pill)"
+# A notification's click is a side://run/<session> link, handed to Side as macOS would: the
+# same way back.
+$U post "stage make" "project-switch $OTHER"; sleep 2.5
+session=$(ls $ROOT/run/*.json | xargs grep -l '"claude"' 2>/dev/null | head -1)
+[[ -z $session ]] && session=$(ls -t $ROOT/run/*.json | tail -1)
+$U post "open-url side://run/$(basename $session .json)"; sleep 3
+check "a notification's link brings this window back too" '[[ $(field project) == repo && $(field windows) == 1 && $(field stage) == run ]]' "$(field project), $(field windows) windows, $(field stage)"
 $U quit
 echo "$failures failed"
 exit $(( failures > 0 ))

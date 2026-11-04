@@ -84,7 +84,12 @@ final class ProjectSpaces {
     }
 
     /// Open in the background, left by a window that switched to another project.
-    func isHeld(_ url: URL) -> Bool { held.contains(Self.normalized(url)) }
+    /// By the folder itself: a session's record can name it through a symlink (`/tmp`) where
+    /// the window holds it resolved (`/private/tmp`), or the other way round.
+    func isHeld(_ url: URL) -> Bool {
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return held.contains { $0 == Self.normalized(url) || URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path == resolved }
+    }
 
     var isHoldingForTesting: Set<String> { held }
 
