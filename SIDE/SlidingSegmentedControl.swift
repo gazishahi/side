@@ -21,6 +21,8 @@ final class SlidingSegmentedControl: NSView {
     }
     /// Narrow windows: symbols instead of titles, with the title kept as tooltip and AX label.
     var compact = false { didSet { if compact != oldValue { rebuildContents() } } }
+    /// Each segment's symbol before its title (the stage control), not only when compact.
+    var showsSymbols = false { didSet { if showsSymbols != oldValue { rebuildContents() } } }
 
     private let style: ThumbStyle
     private let height: CGFloat
@@ -113,6 +115,12 @@ final class SlidingSegmentedControl: NSView {
                 button.image = image
                 button.imagePosition = .imageOnly
                 button.toolTip = title
+            } else if showsSymbols, let symbol = symbols[index],
+                      let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                        .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) {
+                button.image = image
+                button.imagePosition = .imageLeading
+                button.imageHugsTitle = true
             }
             button.setAccessibilityRole(.radioButton)
             addSubview(button)

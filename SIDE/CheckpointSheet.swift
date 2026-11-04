@@ -45,7 +45,7 @@ enum CheckpointUndo {
 }
 
 /// One checkpoint's Review section — heading, meta, files and diff — as a sheet over Think
-/// (Direction 02 §5.1), with "Open in Review" and "Undo…". Dismissed by Done, Escape, or a
+/// (Direction 02 §5.1), with "Open in Changes" and "Undo…". Dismissed by Done, Escape, or a
 /// stage change; nothing about it persists.
 final class CheckpointSheetController: NSViewController {
     private let checkpoint: Checkpoint
@@ -85,7 +85,7 @@ final class CheckpointSheetController: NSViewController {
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let openInReview = NSButton(title: "Open in Review", target: self, action: #selector(openInReviewTapped))
+        let openInReview = NSButton(title: "Open in Changes", target: self, action: #selector(openInReviewTapped))
         let undo = NSButton(title: "Undo…", target: self, action: #selector(undoTapped))
         undo.isEnabled = checkpoint.gitCommitSHA != nil
         let done = NSButton(title: "Done", target: self, action: #selector(closeTapped))

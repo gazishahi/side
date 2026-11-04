@@ -430,7 +430,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         if !empty { view.needsLayout = true }
     }
 
-    private static let defaultEmptyStateText = "Review shows what a track has changed."
+    private static let defaultEmptyStateText = "Changes shows what a track has changed."
     private static let promoteHeight: CGFloat = 26
     private static let margin: CGFloat = 16
     private static let accountLines = 3
@@ -506,9 +506,9 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
         if trackStore?.repoState == .notAGitRepo {
             if !DeveloperTools.gitInstalled {
-                showEmptyState(true, message: "Review works from commits. \(DeveloperTools.missingMessage)", action: ("Install Git…", .initializeGit))
+                showEmptyState(true, message: "Changes works from commits. \(DeveloperTools.missingMessage)", action: ("Install Git…", .initializeGit))
             } else {
-                showEmptyState(true, message: "Review works from commits, and this project isn't a git repository yet.", action: ("Initialize Git…", .initializeGit))
+                showEmptyState(true, message: "Changes works from commits, and this project isn't a git repository yet.", action: ("Initialize Git…", .initializeGit))
             }
             return
         }
@@ -562,7 +562,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             var built = CheckpointTimeline.build(baseRef: baseRef, branch: branchName, checkpoints: onBranch, tipSHA: aheadSHAs.first)
             built.keepSelection(of: previous)
             let blockedReason: String? = {
-                guard let target else { return "\u{201C}\(baseRef)\u{201D}\u{2019}s working copy has been removed. Resume it in Tracks to promote into it." }
+                guard let target else { return "\u{201C}\(baseRef)\u{201D}\u{2019}s working copy has been removed. Resume it in Bracks to promote into it." }
                 let name = target.isParent ? "\u{201C}\(baseRef)\u{201D}" : "Your main working copy"
                 // A status git couldn't read is not a clean tree (audit GIT-11).
                 guard let dirty = GitPaths.dirtyPaths(cwd: target.root.path) else { return "git couldn\u{2019}t read the status of \(name), so Side can\u{2019}t tell whether it has uncommitted changes." }
@@ -1051,7 +1051,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         guard let track = currentTrack, let trackStore, let window = view.window else { return }
         let baseRef = Self.baseRef(for: track, trackStore: trackStore)
         guard let target = mergeTarget(for: track, trackStore: trackStore) else {
-            setStatus("\u{201C}\(baseRef)\u{201D}'s working copy has been removed. Resume it in Tracks before promoting into it.", DS.Color.statusNeedsYou)
+            setStatus("\u{201C}\(baseRef)\u{201D}'s working copy has been removed. Resume it in Bracks before promoting into it.", DS.Color.statusNeedsYou)
             return
         }
         // Verification is the point of recording it: promoting known-broken work should take a

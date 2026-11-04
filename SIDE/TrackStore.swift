@@ -1166,7 +1166,7 @@ final class TrackStore {
             return
         }
         guard let cwd = track.workingDirectoryPath else {
-            completion(.failure(TrackError.gitWorktreeFailed("This track has no working copy. Resume it in Tracks first.")))
+            completion(.failure(TrackError.gitWorktreeFailed("This track has no working copy. Resume it in Branches first.")))
             return
         }
         let parentBranch = parent.branchName

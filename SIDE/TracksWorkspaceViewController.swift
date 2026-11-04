@@ -59,7 +59,7 @@ final class TracksWorkspaceViewController: NSViewController {
     private let headerStack = NSStackView()
     /// "Tracks" and its counts, in the window's top row (Direction 02 §3.2).
     private let topHeader = NSStackView()
-    private let topTitle = NSTextField(labelWithString: "Tracks")
+    private let topTitle = NSTextField(labelWithString: "Branches")
     private let topCounts = NSTextField(labelWithString: "")
     private let topControlsRow = NSStackView()
 
@@ -876,14 +876,14 @@ final class TracksWorkspaceViewController: NSViewController {
         guard DeveloperTools.gitInstalled else {
             return makeInfoBannerCard(
                 symbolName: "exclamationmark.circle",
-                text: "\(DeveloperTools.missingMessage) Tracks needs it to manage branches.",
+                text: "\(DeveloperTools.missingMessage) Branches needs it to manage them.",
                 buttonTitle: "Install Git…",
                 action: #selector(initializeGitTapped)
             )
         }
         return makeInfoBannerCard(
             symbolName: "exclamationmark.circle",
-            text: "This project isn't a git repository yet. Tracks needs one to manage branches.",
+            text: "This project isn't a git repository yet. Branches needs one.",
             buttonTitle: "Initialize Git…",
             action: #selector(initializeGitTapped)
         )
@@ -1447,7 +1447,7 @@ final class TracksWorkspaceViewController: NSViewController {
         }
         let alert = NSAlert()
         alert.messageText = "Change Base"
-        alert.informativeText = "What \u{201C}\(track.intent)\u{201D} builds on: Review shows its changes against this, and Promote lands it here. Its branch isn\u{2019}t changed; Pull from the new base to bring that base\u{2019}s work in."
+        alert.informativeText = "What \u{201C}\(track.intent)\u{201D} builds on: Changes shows what it changed against this, and Promote lands it here. Its branch isn\u{2019}t changed; Pull from the new base to bring that base\u{2019}s work in."
         alert.accessoryView = popup
         alert.addButton(withTitle: "Change Base")
         alert.addButton(withTitle: "Cancel")

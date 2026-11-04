@@ -207,7 +207,7 @@ final class SettingsSplitViewController: NSSplitViewController {
 
     static let items: [SidebarItem] = [
         SidebarItem(id: Pane.general.rawValue, title: "General", symbol: "gearshape.fill", tint: .systemGray,
-                    keywords: ["stages", "pin", "file explorer", "library"], summary: "Which stages the stage control shows, where Make's file explorer opens, and the Library."),
+                    keywords: ["stages", "pin", "file explorer", "library"], summary: "Which stages the stage control shows, where the Editor's file explorer opens, and the Library."),
         SidebarItem(id: Pane.notifications.rawValue, title: "Notifications", symbol: "bell.badge.fill", tint: .systemRed,
                     keywords: ["sound", "alert", "banner", "glass", "funk", "tink", "needs you", "attention", "focus"], summary: "Notifications and sounds when an agent needs you, only for what happens while you're looking elsewhere."),
         SidebarItem(id: Pane.providers.rawValue, title: "Providers", symbol: "cpu.fill", tint: .systemBlue,
@@ -224,7 +224,7 @@ final class SettingsSplitViewController: NSSplitViewController {
         SidebarItem(id: Pane.shortcuts.rawValue, title: "Shortcuts", symbol: "keyboard.fill", tint: .systemTeal,
                     keywords: ["keyboard", "keys", "hotkey", "key binding", "rebind", "command"], summary: "Every keyboard shortcut in Side, by area. Click one and press new keys to change it."),
         SidebarItem(id: Pane.history.rawValue, title: "History", symbol: "clock.fill", tint: .systemOrange,
-                    keywords: ["conversations", "retention", "delete", "privacy"], summary: "How long Think conversations are kept, and deleting them."),
+                    keywords: ["conversations", "retention", "delete", "privacy"], summary: "How long Agent conversations are kept, and deleting them."),
     ]
 
     private let sidebar = SidebarListController(items: SettingsSplitViewController.items, showsSearch: true)

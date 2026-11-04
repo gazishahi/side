@@ -24,9 +24,9 @@ final class HistoryViewController: NSViewController {
 
         let page = SettingsForm.page([
             SettingsSplitViewController.hero(.history),
-            SettingsForm.section("Conversations", footer: "Think conversations are stored in each project's own git directory, with the file contents and command output the agent read. That history is re-sent to the model provider with every message. Credential-shaped values are replaced before either happens.", [
+            SettingsForm.section("Conversations", footer: "Agent conversations are stored in each project's own git directory, with the file contents and command output the agent read. That history is re-sent to the model provider with every message. Credential-shaped values are replaced before either happens.", [
                 SettingsForm.row("Keep conversations", detail: "Expired ones are removed the next time you open the project. Checkpoints are kept either way.", retentionPopup),
-                SettingsForm.row("Delete conversations", detail: "Every Think conversation in the projects open now. Tracks, checkpoints and files stay.",
+                SettingsForm.row("Delete conversations", detail: "Every Agent conversation in the projects open now. Tracks, checkpoints and files stay.",
                                  SettingsForm.button("Delete\u{2026}", self, #selector(deleteAll), destructive: true)),
             ]),
         ])
@@ -57,7 +57,7 @@ final class HistoryViewController: NSViewController {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete conversations in \(names)?"
-        alert.informativeText = "Every Think conversation in \(contexts.count == 1 ? "this project" : "these projects") is deleted. Tracks, checkpoints, and your files are untouched. This can't be undone."
+        alert.informativeText = "Every Agent conversation in \(contexts.count == 1 ? "this project" : "these projects") is deleted. Tracks, checkpoints, and your files are untouched. This can't be undone."
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }

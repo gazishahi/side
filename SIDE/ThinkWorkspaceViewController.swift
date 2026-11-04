@@ -527,7 +527,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
                                  action: installed ? "Initialize Git…" : "Install Git…", handler: act(.initializeGit))
         } else if runner == nil {
             let hasTracks = trackStore?.tracks.contains { $0.status != .archived } ?? false
-            emptyState.configure("Think works on a track.", action: hasTracks ? "Choose a Track…" : "New Track", handler: act(hasTracks ? .chooseTrack : .newTrack))
+            emptyState.configure("Agent works on a track.", action: hasTracks ? "Choose a Track…" : "New Track", handler: act(hasTracks ? .chooseTrack : .newTrack))
         } else {
             emptyState.configure("Ask anything about this track. Every change waits for your approval.", action: nil, handler: nil)
         }
@@ -946,7 +946,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         // Written by the user, here, on purpose — asking them to acknowledge their own file
         // would be theatre.
         ProjectRules.acknowledge(url: url, contents: ProjectRules.template.trimmingCharacters(in: .whitespacesAndNewlines))
-        appendLocalNotice("Created \(ProjectRules.preferredFileName). What you write there is included in every Think request for this project.")
+        appendLocalNotice("Created \(ProjectRules.preferredFileName). What you write there is included in every Agent request for this project.")
         onRevealFileRequested?(url)
     }
 
@@ -3208,7 +3208,7 @@ private final class ChangedFilesViewController: NSViewController {
 
         // Review is where promoting and undoing live, so the panel points at it rather than
         // reimplementing either — this answers "which files", Review answers "now what".
-        let reviewButton = NSButton(title: "Open Review", target: self, action: #selector(reviewTapped))
+        let reviewButton = NSButton(title: "Open Changes", target: self, action: #selector(reviewTapped))
         reviewButton.bezelStyle = .rounded
         reviewButton.controlSize = .small
         reviewButton.font = DS.Text.caption()

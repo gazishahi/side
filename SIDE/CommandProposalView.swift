@@ -144,7 +144,7 @@ final class CommandProposalView: NSView {
     }
 
     /// The last `tailLineCount` lines of what the command printed, in code type on `overlay`
-    /// (the card is `raised`), radius 10, with "Open in Run" when there's a terminal to go to.
+    /// (the card is `raised`), radius 10, with "Open in Terminal" when there's a terminal to go to.
     func showOutputTail(_ output: String, onOpenInRun: (() -> Void)?) {
         tailStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
@@ -190,9 +190,9 @@ final class CommandProposalView: NSView {
             scroll.setAccessibilityLabel("Command output, last lines")
         }
         if let onOpenInRun {
-            let open = NSButton(title: "Open in Run", target: nil, action: nil)
+            let open = NSButton(title: "Open in Terminal", target: nil, action: nil)
             open.isBordered = false
-            open.attributedTitle = NSAttributedString(string: "Open in Run", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+            open.attributedTitle = NSAttributedString(string: "Open in Terminal", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
             openInRun = onOpenInRun
             open.target = self
             open.action = #selector(openInRunTapped)

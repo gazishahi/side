@@ -141,7 +141,7 @@ final class PreferencesViewController: NSViewController {
         } else if KeychainStore.hasSecret(account: provider.id) {
             keyStatusLabel.stringValue = "A key is saved in your Keychain."
         } else {
-            keyStatusLabel.stringValue = "No key set. Think can't reach \(provider.displayName) without one."
+            keyStatusLabel.stringValue = "No key set. Agent can't reach \(provider.displayName) without one."
         }
     }
 
@@ -224,7 +224,7 @@ final class PreferencesViewController: NSViewController {
                 case .refused(let status):
                     self.keyStatusLabel.stringValue = "Saved, but \(provider.displayName) refused it (HTTP \(status)). Check the key, or paste a new one."
                 case .unknown(let reason):
-                    self.keyStatusLabel.stringValue = "A key is saved in your Keychain. It couldn\u{2019}t be checked (\(reason)); a message in Think will tell."
+                    self.keyStatusLabel.stringValue = "A key is saved in your Keychain. It couldn\u{2019}t be checked (\(reason)); a message in Agent will tell."
                 }
             }
         }
@@ -249,7 +249,7 @@ final class PreferencesViewController: NSViewController {
 
     @objc private func removeKey() {
         guard let provider = selectedProvider else { return }
-        confirm("Remove the key for \(provider.displayName)?", detail: "It\u{2019}s deleted from your Keychain. Think can\u{2019}t reach \(provider.displayName) until you add one again.",
+        confirm("Remove the key for \(provider.displayName)?", detail: "It\u{2019}s deleted from your Keychain. Agent can\u{2019}t reach \(provider.displayName) until you add one again.",
                 button: "Remove Key") { [weak self] in
             KeychainStore.delete(account: provider.id)
             self?.refreshKeyStatus(for: provider)
@@ -404,9 +404,9 @@ final class GeneralPreferencesViewController: NSViewController {
         for stage in StagePins.pinnable {
             let toggle = SettingsForm.toggle(false, self, #selector(toggled(_:)))
             toggle.identifier = NSUserInterfaceItemIdentifier(stage.rawValue)
-            toggle.setAccessibilityLabel("Pin \(stage.rawValue)")
+            toggle.setAccessibilityLabel("Pin \(stage.title)")
             switches.append(toggle)
-            stageRows.append(SettingsForm.row(stage.rawValue, toggle))
+            stageRows.append(SettingsForm.row(stage.title, toggle))
         }
         foldingSwitch.target = self
         foldingSwitch.action = #selector(foldingToggled(_:))
@@ -429,18 +429,18 @@ final class GeneralPreferencesViewController: NSViewController {
         let page = SettingsForm.page([
             SettingsSplitViewController.hero(.general),
             SettingsForm.section("Stages", footer: "Pinned stages appear in the stage control. Unpinned ones stay on the Navigate menu, \u{2318}\u{2325}1\u{2013}4 and the palette, and show up on their own when they need you.", stageRows),
-            SettingsForm.section("Make", footer: "Folding and the minimap are also in the View menu, with their shortcuts in Shortcuts.", [
+            SettingsForm.section("Editor", footer: "Folding and the minimap are also in the View menu, with their shortcuts in Shortcuts.", [
                 SettingsForm.row("File explorer side", sidePopup),
                 SettingsForm.row("Code folding", detail: "Fold regions from the gutter's arrows.", foldingSwitch),
                 SettingsForm.row("Minimap", detail: "The file drawn small beside the text; click or drag it to scroll.", minimapSwitch),
             ]),
-            SettingsForm.section("Run", footer: "Each terminal runs in a small helper outside Side, so closing a window or quitting doesn't end what's running in it. Reopen the project and each tab is as you left it. Closing a tab always ends its terminal.", [
+            SettingsForm.section("Terminal", footer: "Each terminal runs in a small helper outside Side, so closing a window or quitting doesn't end what's running in it. Reopen the project and each tab is as you left it. Closing a tab always ends its terminal.", [
                 SettingsForm.row("Keep terminals running when Side quits", detail: "Off, quitting or closing a project ends its terminals.",
                                  keepRunningSwitch),
                 SettingsForm.row("Ask before closing a running terminal", detail: "When a program is running in a tab you close.",
                                  confirmCloseSwitch),
             ]),
-            SettingsForm.section("Writer Mode", footer: "View \u{2192} Writer Mode: Make alone, one column of text, nothing else on screen.",
+            SettingsForm.section("Writer Mode", footer: "View \u{2192} Writer Mode: the Editor alone, one column of text, nothing else on screen.",
                                  WriterPreferences.Aid.allCases.map { aid in
                                      let toggle = SettingsForm.toggle(WriterPreferences.isOn(aid), self, #selector(writerAidToggled(_:)))
                                      toggle.identifier = NSUserInterfaceItemIdentifier(aid.rawValue)

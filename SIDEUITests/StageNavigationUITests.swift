@@ -55,7 +55,7 @@ final class StageNavigationUITests: XCTestCase {
         // The seamless frame (Direction 02 §3.2): no toolbar, and the stage control is in the tree.
         XCTAssertEqual(app.windows.firstMatch.toolbars.count, 0)
         XCTAssertTrue(app.windows.firstMatch.radioGroups["Stage"].exists)
-        for stage in ["Make", "Think", "Review", "Run", "Tracks", "Make"] {
+        for stage in ["Editor", "Agent", "Changes", "Terminal", "Branches", "Editor"] {
             goToStage(stage)
             let window = app.windows.firstMatch
             XCTAssertTrue(window.exists, "window disappeared after going to \(stage)")
@@ -69,7 +69,7 @@ final class StageNavigationUITests: XCTestCase {
     }
 
     func testRunStageExposesTheTerminalAsATextArea() {
-        goToStage("Run")
+        goToStage("Terminal")
         let terminal = app.windows.firstMatch.textViews["Terminal"]
         // The audit found the SwiftTerm view completely absent from the live tree — this is the
         // assertion that keeps it there.
@@ -77,7 +77,7 @@ final class StageNavigationUITests: XCTestCase {
     }
 
     func testThinkComposerAcceptsKeyboardInput() {
-        goToStage("Think")
+        goToStage("Agent")
         let window = app.windows.firstMatch
         let composer = window.textViews.firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 5))

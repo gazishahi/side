@@ -225,7 +225,7 @@ final class UsageViewController: NSViewController {
         case .approaching(_, let limit):
             return "\(spent) of \(UsageFormatting.cost(limit)) estimated this month, close to the limit.\(caveat)"
         case .exceeded(_, let limit):
-            return "\(spent) of \(UsageFormatting.cost(limit)). The budget is reached, so Think won't send until you raise or clear it.\(caveat)"
+            return "\(spent) of \(UsageFormatting.cost(limit)). The budget is reached, so Agent won't send until you raise or clear it.\(caveat)"
         }
     }
 

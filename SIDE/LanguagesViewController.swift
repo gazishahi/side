@@ -137,7 +137,7 @@ final class LanguagesViewController: NSViewController, NSSearchFieldDelegate {
             }
         }
         if !debuggers.isEmpty {
-            views.append(SettingsForm.section("Debuggers", footer: "Make's debugger (Debug \u{2192} Start Debugging) uses these. Side installs js-debug and debugpy into its own folder, so they don't change your Node or Python.",
+            views.append(SettingsForm.section("Debuggers", footer: "The Editor's debugger (Debug \u{2192} Start Debugging) uses these. Side installs js-debug and debugpy into its own folder, so they don't change your Node or Python.",
                                               debuggers.map(debuggerRow)))
         }
         if languages.isEmpty && custom.isEmpty && !query.isEmpty {

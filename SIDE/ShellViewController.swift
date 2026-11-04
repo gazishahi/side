@@ -292,11 +292,36 @@ final class ShellViewController: NSViewController {
     // an agent works, so they get adjacent segments. Review sits right after Think (where its
     // checkpoints come from) and before Run (where its tests run) — the same order the
     // constitution's own stage table uses.
-    enum Stage: String, CaseIterable { case make = "Make", think = "Think", review = "Review", run = "Run", tracks = "Tracks" }
+    /// The raw values are stored keys (pins, the stage a window was on, UI tests); `title` is
+    /// what people read. Named as a developer would expect (the owner, 2026-11-04): the old
+    /// names didn't say what each stage was.
+    enum Stage: String, CaseIterable {
+        case make = "Make", think = "Think", review = "Review", run = "Run", tracks = "Tracks"
+
+        var title: String {
+            switch self {
+            case .make: return "Editor"
+            case .think: return "Agent"
+            case .review: return "Changes"
+            case .run: return "Terminal"
+            case .tracks: return "Branches"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .make: return "chevron.left.forwardslash.chevron.right"
+            case .think: return "sparkles"
+            case .review: return "plusminus"
+            case .run: return "terminal"
+            case .tracks: return "arrow.triangle.branch"
+            }
+        }
+    }
 
     /// Direction 02 §3: no title bar, no toolbar. The navigation components are plain views;
     /// `chrome` decides where they go.
-    private let stageControl = SlidingSegmentedControl(titles: StagePins.pinnable.map(\.rawValue), style: .capsule, height: 32)
+    private let stageControl = SlidingSegmentedControl(titles: StagePins.pinnable.map(\.title), style: .capsule, height: 32)
     private let trackPill = TrackPill()
     private let searchButton = GlassCircleButton(symbol: "magnifyingglass", accessibilityLabel: "Search")
     private lazy var chrome = ChromeHost(placement: ChromePlacement.current, pill: trackPill, stageControl: stageControl, searchButton: searchButton)
@@ -555,6 +580,7 @@ final class ShellViewController: NSViewController {
             guard let self, self.visibleStages.indices.contains(index) else { return }
             self.show(self.visibleStages[index])
         }
+        stageControl.showsSymbols = true
         stageControl.setAccessibilityLabel("Stage")
         stageControl.menu = pinsMenu()
         searchButton.button.target = self
@@ -688,7 +714,7 @@ final class ShellViewController: NSViewController {
     /// Every stage — pinned or not — and every Navigate menu item, by name.
     private func paletteCommands() -> [PaletteCommand] {
         var commands = Stage.allCases.map { stage in
-            PaletteCommand(title: "Go to \(stage.rawValue)", shortcut: Shortcuts.display("stage.\(stage)").nonEmpty) { [weak self] in
+            PaletteCommand(title: "Go to \(stage.title)", shortcut: Shortcuts.display("stage.\(stage)").nonEmpty) { [weak self] in
                 self?.show(stage)
             }
         }
@@ -738,7 +764,7 @@ final class ShellViewController: NSViewController {
         let menu = NSMenu(title: "Pinned Stages")
         let pinned = StagePins.pinned
         for stage in StagePins.pinnable {
-            let item = NSMenuItem(title: stage.rawValue, action: #selector(togglePinnedStage(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: stage.title, action: #selector(togglePinnedStage(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = stage.rawValue
             item.state = pinned.contains(stage) ? .on : .off
@@ -767,7 +793,7 @@ final class ShellViewController: NSViewController {
         let stages = StagePins.visible(pinned: StagePins.pinned, attention: attention, dismissed: dismissedAttention, current: current)
         if stages != visibleStages || stageControl.segmentAccessibilityLabels.count != stages.count {
             visibleStages = stages
-            stageControl.setSegments(stages.map(\.rawValue), selected: current.flatMap { stages.firstIndex(of: $0) } ?? -1)
+            stageControl.setSegments(stages.map(\.title), symbols: stages.map(\.symbol), selected: current.flatMap { stages.firstIndex(of: $0) } ?? -1)
         } else if let current, let index = stages.firstIndex(of: current) {
             if index != stageControl.selectedIndex { stageControl.select(index, animated: true) }
         } else {
@@ -1415,7 +1441,7 @@ final class ShellViewController: NSViewController {
                 if case .assistantText(let text) = entry.kind { return text }
                 return nil
             }.first
-            let text = answer ?? "No answer came back. The conversation in Think has the details."
+            let text = answer ?? "No answer came back. The conversation in Agent has the details."
             makeVC.instructAnswer(text)
             reviewInstructController?.showAnswer(text)
             endInstruct()

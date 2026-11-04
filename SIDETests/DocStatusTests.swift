@@ -67,7 +67,7 @@ final class DocStatusTests: XCTestCase {
 
     func testTheConstitutionsStageTableMatchesTheCode() throws {
         let text = try String(contentsOf: repoRoot.appendingPathComponent("docs/SIDE_PRODUCT_CONSTITUTION.md"), encoding: .utf8)
-        let realStages = Set(ShellViewController.Stage.allCases.map(\.rawValue))
+        let realStages = Set(ShellViewController.Stage.allCases.map(\.title))
         var checked = 0
         for line in text.components(separatedBy: "\n") where line.hasPrefix("| ") && line.contains("|") {
             let cells = line.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }

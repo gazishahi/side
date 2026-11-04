@@ -4861,7 +4861,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // §3.8). Every stage has an item whether or not it is pinned: unpinning never removes a
         // way in. ⌘1–⌘8 stay with tabs.
         for (index, stage) in ShellViewController.Stage.allCases.enumerated() {
-            let item = navigateMenu.addItem(withTitle: "Go to \(stage.rawValue)", action: #selector(ShellViewController.jumpToStage(_:)), keyEquivalent: "")
+            let item = navigateMenu.addItem(withTitle: "Go to \(stage.title)", action: #selector(ShellViewController.jumpToStage(_:)), keyEquivalent: "")
             Shortcuts.bind(item, "stage.\(stage)")
             item.tag = index
         }
@@ -4890,8 +4890,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // Targets nothing here — RunWorkspaceViewController implements these selectors and
         // picks them up via the responder chain while the Run stage is active, same pattern
         // as "New Window" targeting AppDelegate directly above.
-        let runItem = NSMenuItem(title: "Run", action: nil, keyEquivalent: "")
-        let runMenu = NSMenu(title: "Run")
+        let runItem = NSMenuItem(title: "Terminal", action: nil, keyEquivalent: "")
+        let runMenu = NSMenu(title: "Terminal")
         Shortcuts.bind(runMenu.addItem(withTitle: "New Terminal Tab", action: #selector(RunWorkspaceViewController.newSession), keyEquivalent: ""), "run.newTerminal")
         Shortcuts.bind(runMenu.addItem(withTitle: "Stop", action: #selector(RunWorkspaceViewController.stopActiveSession), keyEquivalent: ""), "run.stop")
         let restart = runMenu.addItem(withTitle: "Restart Terminal", action: #selector(RunWorkspaceViewController.restartActiveSession), keyEquivalent: "")
@@ -4927,7 +4927,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let stagesItem = NSMenuItem(title: "Pinned Stages", action: nil, keyEquivalent: "")
         let stagesMenu = NSMenu(title: "Pinned Stages")
         for stage in StagePins.pinnable {
-            let item = stagesMenu.addItem(withTitle: stage.rawValue, action: #selector(ShellViewController.togglePinnedStage(_:)), keyEquivalent: "")
+            let item = stagesMenu.addItem(withTitle: stage.title, action: #selector(ShellViewController.togglePinnedStage(_:)), keyEquivalent: "")
             item.representedObject = stage.rawValue
         }
         stagesItem.submenu = stagesMenu

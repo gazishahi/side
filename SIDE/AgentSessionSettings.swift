@@ -155,7 +155,7 @@ final class AgentSessionSettingsViewController: NSViewController {
             }
             if option.actsWithoutAsking {
                 // RFC D1: the product says plainly when an agent's edits aren't pre-approved.
-                let line = note("Edits land directly. Each turn is checkpointed, so you can review and undo it in Review.", color: .secondaryLabelColor)
+                let line = note("Edits land directly. Each turn is checkpointed, so you can review and undo it in Changes.", color: .secondaryLabelColor)
                 stack.addArrangedSubview(line)
                 last = line
             }

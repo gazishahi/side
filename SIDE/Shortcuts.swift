@@ -66,8 +66,8 @@ struct KeyChord: Equatable, Hashable, Codable {
 enum Shortcuts {
     enum Area: String, CaseIterable {
         case app = "Side", file = "File", edit = "Edit", find = "Find", view = "View", navigate = "Navigate"
-        case tabs = "Tabs", stages = "Stages", run = "Run", debug = "Debug", track = "Tracks", window = "Window"
-        case editor = "Editor", think = "Think", review = "Review", palette = "Palette", format = "Format"
+        case tabs = "Tabs", stages = "Stages", run = "Terminal", debug = "Debug", track = "Tracks", window = "Window"
+        case editor = "Editor", think = "Agent", review = "Changes", palette = "Palette", format = "Format"
     }
 
     /// A kind of file a command belongs to: its shortcut works only there, and there it wins
@@ -157,11 +157,11 @@ enum Shortcuts {
         c("navigate.goToSymbol", "Go to Symbol\u{2026}", .navigate, "o", [.command, .shift]),
         c("navigate.jumpToDefinition", "Jump to Definition", .navigate, "j", [.command, .control]),
 
-        c("stage.make", "Go to Make", .stages, "1", [.command, .option]),
-        c("stage.think", "Go to Think", .stages, "2", [.command, .option]),
-        c("stage.review", "Go to Review", .stages, "3", [.command, .option]),
-        c("stage.run", "Go to Run", .stages, "4", [.command, .option]),
-        c("stage.tracks", "Go to Tracks", .stages, "0", [.command, .option]),
+        c("stage.make", "Go to Editor", .stages, "1", [.command, .option]),
+        c("stage.think", "Go to Agent", .stages, "2", [.command, .option]),
+        c("stage.review", "Go to Changes", .stages, "3", [.command, .option]),
+        c("stage.run", "Go to Terminal", .stages, "4", [.command, .option]),
+        c("stage.tracks", "Go to Branches", .stages, "0", [.command, .option]),
 
         c("tabs.1", "Switch to Tab 1", .tabs, "1"), c("tabs.2", "Switch to Tab 2", .tabs, "2"),
         c("tabs.3", "Switch to Tab 3", .tabs, "3"), c("tabs.4", "Switch to Tab 4", .tabs, "4"),

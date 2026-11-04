@@ -47,7 +47,7 @@ enum InlineInstruct {
 }
 
 /// The ⌘K popover: one field and two verbs; then, for Ask, the answer in place with
-/// "Continue in Think". Escape closes it (transient popover).
+/// "Continue in Agent". Escape closes it (transient popover).
 final class InstructPopoverController: NSViewController, NSTextFieldDelegate {
     var onSubmit: ((InlineInstruct.Verb, String) -> Void)?
     var onContinueInThink: (() -> Void)?
@@ -138,7 +138,7 @@ final class InstructPopoverController: NSViewController, NSTextFieldDelegate {
         spinner.style = .spinning
         spinner.controlSize = .small
         spinner.startAnimation(nil)
-        let row = NSStackView(views: [spinner, caption("Asking in Think…")])
+        let row = NSStackView(views: [spinner, caption("Asking in Agent…")])
         row.orientation = .horizontal
         stack.addArrangedSubview(row)
     }
@@ -162,9 +162,9 @@ final class InstructPopoverController: NSViewController, NSTextFieldDelegate {
         scroll.heightAnchor.constraint(equalToConstant: max(40, height)).isActive = true
         stack.addArrangedSubview(scroll)
         scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
-        let cont = NSButton(title: "Continue in Think", target: self, action: #selector(continueTapped))
+        let cont = NSButton(title: "Continue in Agent", target: self, action: #selector(continueTapped))
         cont.isBordered = false
-        cont.attributedTitle = NSAttributedString(string: "Continue in Think", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
+        cont.attributedTitle = NSAttributedString(string: "Continue in Agent", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor])
         let row = NSStackView(views: [NSView(), cont])
         row.orientation = .horizontal
         stack.addArrangedSubview(row)
@@ -208,7 +208,7 @@ final class InstructProposalCard: NSView {
             button.attributedTitle = NSAttributedString(string: name, attributes: [.font: DS.Text.caption(emphasized ? .semibold : .regular), .foregroundColor: emphasized ? NSColor.labelColor : NSColor.secondaryLabelColor])
             return button
         }
-        let row = NSStackView(views: [title, NSView(), action("Open in Think", #selector(openTapped), emphasized: false), action("Reject", #selector(rejectTapped), emphasized: false), action("Apply", #selector(applyTapped), emphasized: true)])
+        let row = NSStackView(views: [title, NSView(), action("Open in Agent", #selector(openTapped), emphasized: false), action("Reject", #selector(rejectTapped), emphasized: false), action("Apply", #selector(applyTapped), emphasized: true)])
         row.orientation = .horizontal
         row.spacing = DS.Spacing.l
         row.edgeInsets = NSEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)

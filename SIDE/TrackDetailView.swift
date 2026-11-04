@@ -116,7 +116,7 @@ final class TrackDetailView: NSView {
         // What you can do with it.
         var actions: [NSView] = []
         if detail.isCurrent {
-            actions.append(Self.textButton("Open in Make", emphasized: true, target: self, action: #selector(openMake)))
+            actions.append(Self.textButton("Open in Editor", emphasized: true, target: self, action: #selector(openMake)))
         } else {
             let primary = NSButton(title: "Switch to Track", target: self, action: #selector(switchTapped))
             primary.bezelStyle = .push
@@ -124,8 +124,8 @@ final class TrackDetailView: NSView {
             primary.keyEquivalent = "\r"
             actions.append(primary)
         }
-        actions.append(Self.textButton("Think", emphasized: false, target: self, action: #selector(openThink)))
-        actions.append(Self.textButton("Review", emphasized: false, target: self, action: #selector(openReview)))
+        actions.append(Self.textButton("Agent", emphasized: false, target: self, action: #selector(openThink)))
+        actions.append(Self.textButton("Changes", emphasized: false, target: self, action: #selector(openReview)))
         let more = Self.textButton("\u{22EF}", emphasized: false, target: self, action: #selector(moreTapped(_:)))
         more.setAccessibilityLabel("More actions")
         more.toolTip = "Rename, open in a new window, park, archive, delete\u{2026}"
@@ -192,7 +192,7 @@ final class TrackDetailView: NSView {
                 line.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 add(line, width: inset)
             }
-            let review = Self.textButton("See them in Review", emphasized: false, target: self, action: #selector(openReview))
+            let review = Self.textButton("See them in Changes", emphasized: false, target: self, action: #selector(openReview))
             add(review)
         }
     }

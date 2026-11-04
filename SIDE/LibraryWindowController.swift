@@ -204,7 +204,7 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
     private(set) var files: [InstructionFile] = []
     private let table = NSTableView()
     private let preview = NSTextView()
-    private let primaryButton = NSButton(title: "Open in Make", target: nil, action: nil)
+    private let primaryButton = NSButton(title: "Open in Editor", target: nil, action: nil)
     private let acknowledgeButton = NSButton(title: "Use for Heron", target: nil, action: nil)
     private let stateLabel = NSTextField(wrappingLabelWithString: "")
 
@@ -314,7 +314,7 @@ final class InstructionsPaneViewController: NSViewController, NSTableViewDataSou
         preview.string = file.exists ? ((try? String(contentsOf: file.url, encoding: .utf8)) ?? "This file couldn't be read.") : ""
         stateLabel.stringValue = Self.stateText(file)
         primaryButton.isHidden = false
-        primaryButton.title = file.exists ? "Open in Make" : "Create"
+        primaryButton.title = file.exists ? "Open in Editor" : "Create"
         acknowledgeButton.isHidden = file.heron != .inUse(acknowledged: false)
     }
 
@@ -374,7 +374,7 @@ final class PromptsPaneViewController: NSViewController, NSTableViewDataSource, 
         let root = NSView()
         let heading = NSTextField(labelWithString: "Prompts")
         heading.font = DS.Text.title(.bold)
-        let note = NSTextField(wrappingLabelWithString: "Prompts you'd otherwise retype. Type /name in Think to put one in the composer. It never sends by itself.")
+        let note = NSTextField(wrappingLabelWithString: "Prompts you'd otherwise retype. Type /name in Agent to put one in the composer. It never sends by itself.")
         note.font = DS.Text.caption()
         note.textColor = .secondaryLabelColor
 
@@ -781,7 +781,7 @@ final class SkillsPaneViewController: NSViewController, NSTableViewDataSource, N
     private let descriptionLabel = NSTextField(wrappingLabelWithString: "")
     private let pathLabel = NSTextField(labelWithString: "")
     private let preview = NSTextView()
-    private let openButton = NSButton(title: "Open in Make", target: nil, action: nil)
+    private let openButton = NSButton(title: "Open in Editor", target: nil, action: nil)
     private let emptyLabel = NSTextField(wrappingLabelWithString: "No skills found. Claude Code looks in ~/.claude/skills and this project's .claude/skills; Codex and others in .agents/skills.")
 
     override func loadView() {

@@ -40,15 +40,19 @@ means the concern is real but lives elsewhere (decided 2026-09-03, RFC R6):
 Integration is Review's publishing half, and Library is a separate window. Neither
 adds a `Stage` case, and `DocStatusTests` asserts that.
 
+The stages were called Make, Think, Review, Run and Tracks until 2026-11-04, when they took
+names a developer reads at a glance. The code, settings and the rest of these documents still
+use the old names as keys (`Stage.make` is the Editor); the table uses the new ones.
+
 | Stage | Status | Owns the canvas for |
 |---|---|---|
-| Make | built | code, navigation, diagnostics, and edits |
-| Think | built | intent, plan, decisions, questions, agent workstreams, and scoped files |
-| Review | built | checkpoints, diffs, rationale, test evidence, and promotion decisions |
-| Run | built | terminals, tasks, tests, logs, debugging, and remote sessions |
-| Tracks | built | orienting, prioritizing, resuming, parking, and archiving work |
-| Integration | **not a stage** — Review's publishing half (push, PR, remote verification land in Review's decision header) | reconciling track change streams with `main`, verifying evidence, and publishing safely |
-| Library | **not a stage** — a separate window (⇧⌘L), also reachable from Think's + and Preferences | prompts, skills/plugins, agent instruction files, templates, and archive/storage management |
+| Editor | built | code, navigation, diagnostics, and edits |
+| Agent | built | intent, plan, decisions, questions, agent workstreams, and scoped files |
+| Changes | built | checkpoints, diffs, rationale, test evidence, and promotion decisions |
+| Terminal | built | terminals, tasks, tests, logs, debugging, and remote sessions |
+| Branches | built | orienting, prioritizing, resuming, parking, and archiving work |
+| Integration | **not a stage** — Changes' publishing half (push, PR, remote verification land in Changes' decision header) | reconciling track change streams with `main`, verifying evidence, and publishing safely |
+| Library | **not a stage** — a separate window (⇧⌘L), also reachable from Agent's + and Preferences | prompts, skills/plugins, agent instruction files, templates, and archive/storage management |
 
 The app opens a track at the stage that best matches its state; keyboard shortcuts and a quiet stage control move between stages while preserving return position.
 

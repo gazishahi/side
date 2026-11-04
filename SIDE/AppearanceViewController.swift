@@ -99,7 +99,7 @@ final class AppearanceViewController: NSViewController {
                 SettingsForm.row("Editor text", editorSizePopup),
                 SettingsForm.row("Terminal text", terminalSizePopup),
             ]),
-            SettingsForm.section("Editor theme", footer: "Colors the editor, Review's diffs and the terminal. Import a VS Code theme's .json (from an extension, or a theme's repository); its token colors are matched to Side's syntax.", [
+            SettingsForm.section("Editor theme", footer: "Colors the editor, the diffs in Changes and the terminal. Import a VS Code theme's .json (from an extension, or a theme's repository); its token colors are matched to Side's syntax.", [
                 SettingsForm.row("In light appearance", lightThemePopup),
                 SettingsForm.row("In dark appearance", darkThemePopup),
                 SettingsForm.row("Import a VS Code theme", SettingsForm.button("Import\u{2026}", self, #selector(importTheme))),
