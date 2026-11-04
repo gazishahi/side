@@ -331,7 +331,36 @@ final class RunWorkspaceViewController: NSViewController {
 
     @objc private func closeActiveTab() {
         guard let index = activeSessionIndex else { return }
-        closeSession(at: index)
+        requestClose(at: index)
+    }
+
+    /// Closing a tab ends what runs in it, so with something running it asks first (Settings →
+    /// General → Run, or "Don't ask again", turn that off).
+    private func requestClose(at index: Int) {
+        guard sessions.indices.contains(index) else { return }
+        let session = sessions[index]
+        guard SessionKeepers.confirmsClosingRunning, let program = session.viewController.runningProgramName, let window = view.window else {
+            return closeSession(at: index)
+        }
+        confirmClosing(message: "Close this terminal?", detail: "\(program) is still running in it. Closing the tab ends it.", in: window) { [weak self] in
+            guard let self, let current = self.sessions.firstIndex(where: { $0 === session }) else { return }
+            self.closeSession(at: current)
+        }
+    }
+
+    private func confirmClosing(message: String, detail: String, in window: NSWindow, then close: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Cancel")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Don\u{2019}t ask again"
+        alert.beginSheetModal(for: window) { response in
+            if alert.suppressionButton?.state == .on { SessionKeepers.confirmsClosingRunning = false }
+            if response == .alertFirstButtonReturn { close() }
+        }
     }
 
     @objc func stopActiveSession() {
@@ -584,7 +613,7 @@ final class RunWorkspaceViewController: NSViewController {
     private lazy var tabStrip: TabStrip = {
         let strip = TabStrip(bar: tabBar, stack: tabBarStack, accessibilityLabel: "Terminal sessions")
         strip.onSelect = { [weak self] index in self?.switchToSession(index) }
-        strip.onClose = { [weak self] index in self?.closeSession(at: index) }
+        strip.onClose = { [weak self] index in self?.requestClose(at: index) }
         strip.onMove = { [weak self] from, to in self?.moveSession(from: from, to: to) }
         strip.onTearOut = { [weak self] index, screenPoint in self?.tearOutSession(at: index, to: screenPoint) }
         strip.onRename = { [weak self] index, name in self?.renameSession(at: index, to: name) }
@@ -627,6 +656,9 @@ final class RunWorkspaceViewController: NSViewController {
         item("Close Others", #selector(closeOtherSessionsFromMenu(_:)))
         menu.addItem(NSMenuItem.separator())
         item("Move to New Window", #selector(moveSessionToNewWindowFromMenu(_:)))
+        menu.addItem(NSMenuItem.separator())
+        let all = menu.addItem(withTitle: "Running Terminals\u{2026}", action: #selector(AppDelegate.showRunningTerminals), keyEquivalent: "")
+        all.target = NSApp.delegate as? AppDelegate
         return menu
     }
 
@@ -662,11 +694,25 @@ final class RunWorkspaceViewController: NSViewController {
     }
 
     @objc private func closeSessionFromMenu(_ sender: NSMenuItem) {
-        if let index = sessionIndex(from: sender) { closeSession(at: index) }
+        if let index = sessionIndex(from: sender) { requestClose(at: index) }
     }
 
     @objc private func closeOtherSessionsFromMenu(_ sender: NSMenuItem) {
         guard let index = sessionIndex(from: sender) else { return }
+        let kept = sessions[index]
+        let running = sessions.filter { $0 !== kept }.compactMap { $0.viewController.runningProgramName }
+        if SessionKeepers.confirmsClosingRunning, !running.isEmpty, let window = view.window {
+            let what = running.count == 1 ? "\(running[0]) is" : "\(running.count) programs are"
+            confirmClosing(message: "Close the other terminals?", detail: "\(what) still running in them. Closing the tabs ends them.", in: window) { [weak self, weak kept] in
+                guard let self, let kept, let current = self.sessions.firstIndex(where: { $0 === kept }) else { return }
+                self.closeOthers(keeping: current)
+            }
+            return
+        }
+        closeOthers(keeping: index)
+    }
+
+    private func closeOthers(keeping index: Int) {
         let kept = sessions[index]
         for session in sessions where session !== kept { session.viewController.prepareForClose() }
         sessions = [kept]

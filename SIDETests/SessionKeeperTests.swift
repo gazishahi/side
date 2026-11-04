@@ -109,11 +109,17 @@ final class SessionKeeperTests: XCTestCase {
     func testWhatARecoveredTabDoesWithWhatWasRunning() {
         XCTAssertEqual(SessionKeepers.recovery(foreground: [], agentSession: nil), .nothing)
         XCTAssertEqual(SessionKeepers.recovery(foreground: ["-zsh"], agentSession: nil), .nothing)
-        XCTAssertEqual(SessionKeepers.recovery(foreground: ["claude"], agentSession: "1b2c"), .run("claude --resume 1b2c"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["claude"], agentSession: "1b2c", hasTranscript: { _ in true }), .run("claude --resume 1b2c"))
+        // Nothing typed yet: no transcript to resume, so a fresh session under the same id.
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["claude"], agentSession: "1b2c", hasTranscript: { _ in false }), .run("claude --session-id 1b2c"))
         XCTAssertEqual(SessionKeepers.recovery(foreground: ["/opt/homebrew/bin/claude", "--model", "opus"], agentSession: nil), .run("claude --continue"))
         XCTAssertEqual(SessionKeepers.recovery(foreground: ["nvim", "My Notes.md"], agentSession: nil), .run("nvim 'My Notes.md'"))
         XCTAssertEqual(SessionKeepers.recovery(foreground: ["tail", "-f", "log.txt"], agentSession: nil), .run("tail -f log.txt"))
         XCTAssertEqual(SessionKeepers.recovery(foreground: ["npm", "run", "dev"], agentSession: nil), .offer("npm run dev"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["lazygit"], agentSession: nil), .run("lazygit"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["/opt/homebrew/bin/opencode"], agentSession: nil), .run("opencode --continue"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["codex", "--model", "o4"], agentSession: nil), .run("codex resume --last"))
+        XCTAssertEqual(SessionKeepers.recovery(foreground: ["gemini"], agentSession: nil), .offer("gemini"))
         XCTAssertEqual(SessionKeepers.recovery(foreground: ["rm", "-rf", "it's"], agentSession: nil), .offer("rm -rf 'it'\\''s'"))
     }
 
@@ -175,5 +181,37 @@ final class SessionKeeperTests: XCTestCase {
         XCTAssertNil(manager.agentSession(forKeeper: id))
         session.viewController.terminalView.send(txt: "printf '\\e]6973;agent;claude;0f1e-real;%s\\a' \"$__SIDE_NONCE\"\r")
         XCTAssertTrue(waitUntil { manager.agentSession(forKeeper: id) == "0f1e-real" })
+    }
+
+    func testATabSaysWhatsRunningInIt() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keepers-running-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let manager = TerminalSessionManager(projectRoot: root) { _ in root }
+        let session = manager.makeSession(forTrackKey: "t")
+        manager.setSessions([session], forTrackKey: "t")
+        defer { manager.removeSession(session) }
+        session.viewController.loadViewIfNeeded()
+        session.viewController.start()
+        XCTAssertTrue(waitUntil { session.viewController.startupSettled })
+        XCTAssertNil(session.viewController.runningProgramName, "a shell at its prompt isn't running anything")
+        session.viewController.terminalView.send(txt: "sleep 30\r")
+        XCTAssertTrue(waitUntil { session.viewController.runningProgramName == "sleep" }, session.viewController.runningProgramName ?? "nil")
+    }
+
+    func testEndingASessionWithNoTabEndsIt() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keepers-end-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let manager = TerminalSessionManager(projectRoot: root) { _ in root }
+        let session = manager.makeSession(forTrackKey: "t")
+        manager.setSessions([session], forTrackKey: "t")
+        let id = try XCTUnwrap(session.viewController.keeperID)
+        session.viewController.loadViewIfNeeded()
+        session.viewController.start()
+        XCTAssertTrue(waitUntil { SessionKeepers.liveRecord(id) != nil })
+        manager.teardownAll() // the project closes; the shell keeps running, with no tab
+        let record = try XCTUnwrap(SessionKeepers.liveRecord(id))
+        SessionKeepers.end(record)
+        XCTAssertTrue(waitUntil { kill(record.childPID, 0) != 0 }, "the shell survived End")
+        XCTAssertTrue(waitUntil { SessionKeepers.liveRecord(id) == nil }, "the keeper stayed")
     }
 }

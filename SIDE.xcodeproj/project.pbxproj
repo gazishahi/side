@@ -83,6 +83,7 @@
 		A00000000000000000000416 /* Heron in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000415 /* Heron */; };
 		A00000000000000000000602 /* SideSessionsKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000601 /* SideSessionsKit */; };
 		A00000000000000000000604 /* SessionKeepers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000603 /* SessionKeepers.swift */; };
+		A00000000000000000000609 /* RunningTerminalsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000608 /* RunningTerminalsWindow.swift */; };
 		A00000000000000000000418 /* CheckpointSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000417 /* CheckpointSheet.swift */; };
 		A00000000000000000000420 /* InlineInstruct.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000419 /* InlineInstruct.swift */; };
 		A00000000000000000000422 /* FirstRunSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000421 /* FirstRunSheet.swift */; };
@@ -220,6 +221,7 @@
 		A00000000000000000000191 /* ProjectWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectWatcher.swift; sourceTree = "<group>"; };
 		A00000000000000000000193 /* TerminalSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionManager.swift; sourceTree = "<group>"; };
 		A00000000000000000000603 /* SessionKeepers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionKeepers.swift; sourceTree = "<group>"; };
+		A00000000000000000000608 /* RunningTerminalsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunningTerminalsWindow.swift; sourceTree = "<group>"; };
 		A00000000000000000000195 /* SlidingSegmentedControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlidingSegmentedControl.swift; sourceTree = "<group>"; };
 		A00000000000000000000197 /* StagePins.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StagePins.swift; sourceTree = "<group>"; };
 		A00000000000000000000199 /* TrackPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackPill.swift; sourceTree = "<group>"; };
@@ -423,6 +425,7 @@
 				A00000000000000000000191 /* ProjectWatcher.swift */,
 				A00000000000000000000193 /* TerminalSessionManager.swift */,
 				A00000000000000000000603 /* SessionKeepers.swift */,
+				A00000000000000000000608 /* RunningTerminalsWindow.swift */,
 				A00000000000000000000195 /* SlidingSegmentedControl.swift */,
 				A00000000000000000000197 /* StagePins.swift */,
 				A00000000000000000000199 /* TrackPill.swift */,
@@ -752,6 +755,7 @@
 				A00000000000000000000192 /* ProjectWatcher.swift in Sources */,
 				A00000000000000000000194 /* TerminalSessionManager.swift in Sources */,
 				A00000000000000000000604 /* SessionKeepers.swift in Sources */,
+				A00000000000000000000609 /* RunningTerminalsWindow.swift in Sources */,
 				A00000000000000000000196 /* SlidingSegmentedControl.swift in Sources */,
 				A00000000000000000000198 /* StagePins.swift in Sources */,
 				A00000000000000000000401 /* TrackPill.swift in Sources */,

@@ -53,6 +53,14 @@ enum SessionKeepers {
     /// live in keepers either way, so a session left running always reattaches and can be ended.
     static let keepRunningKey = "side.run.keepSessions"
 
+    /// Settings → General → Run: ask before closing a tab with something running in it.
+    static let confirmCloseKey = "side.run.confirmCloseRunning"
+
+    static var confirmsClosingRunning: Bool {
+        get { UserDefaults.standard.object(forKey: confirmCloseKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: confirmCloseKey) }
+    }
+
     static var keepsRunningOnQuit: Bool {
         get { UserDefaults.standard.object(forKey: keepRunningKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: keepRunningKey) }
@@ -104,6 +112,27 @@ enum SessionKeepers {
         SessionPaths.records().filter { $0.client[Fact.project] == project && $0.client[Fact.track] == track && $0.exit == nil && !isRunning($0) }
     }
 
+    /// Ends a session with no tab open on it, as closing its tab would: SIGTERM to the whole tree,
+    /// SIGHUP to the shell (which ignores SIGTERM when interactive). The keeper sees its child
+    /// end and goes.
+    static func end(_ record: SessionRecord) {
+        var targets = [record.childPID]
+        var frontier = [record.childPID]
+        while let pid = frontier.popLast() {
+            var children = [pid_t](repeating: 0, count: 512)
+            let bytes = proc_listchildpids(pid, &children, Int32(children.count * MemoryLayout<pid_t>.size))
+            for child in children.prefix(max(0, Int(bytes))) where child > 0 { targets.append(child); frontier.append(child) }
+        }
+        for pid in targets where pid > 0 { kill(pid, SIGTERM) }
+        if record.childPID > 0 { kill(record.childPID, SIGHUP) }
+        // No tab will come to hear how it ended (a keeper waits a day for one): once the shell
+        // is gone, the keeper and the session's files go too.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if isRunning(record) { kill(record.keeperPID, SIGKILL) }
+            SessionPaths.remove(record.id)
+        }
+    }
+
     // MARK: - After a restart
 
     /// The line between a recovered screen and the new shell.
@@ -112,7 +141,15 @@ enum SessionKeepers {
     /// Programs that are safe to start again by themselves in a recovered tab: editors, pagers,
     /// watchers (the RFC's list). Anything else is offered, never run unasked: re-running an
     /// arbitrary command could deploy something or delete files twice.
-    static let rerunnable: Set<String> = ["vim", "nvim", "vi", "less", "more", "man", "top", "htop", "btop", "tail", "watch"]
+    static let rerunnable: Set<String> = ["vim", "nvim", "vi", "less", "more", "man", "top", "htop", "btop", "tail", "watch", "lazygit", "tig"]
+
+    /// Agent CLIs without an exact session id from Side: each resumes the latest session in the
+    /// directory, which is the tab's own unless two tabs ran the same agent in one folder. Claude
+    /// is resumed exactly (the `claude` wrapper reports its id) and isn't here.
+    static let resumeLatest: [String: String] = [
+        "opencode": "opencode --continue",
+        "codex": "codex resume --last",
+    ]
 
     /// What a recovered tab does once its new shell is ready.
     enum Recovery: Equatable {
@@ -125,15 +162,28 @@ enum SessionKeepers {
 
     /// `foreground`: the program that was running (the record's), `agentSession`: its agent's own
     /// session id, when the `claude` wrapper reported one.
-    static func recovery(foreground: [String], agentSession: String?) -> Recovery {
+    static func recovery(foreground: [String], agentSession: String?, hasTranscript: (String) -> Bool = claudeTranscriptExists) -> Recovery {
         guard let program = foreground.first.map({ ($0 as NSString).lastPathComponent }) else { return .nothing }
         if ["zsh", "-zsh", "bash", "-bash", "sh", "fish", "login"].contains(program) { return .nothing }
         if program == "claude" {
-            // The exact conversation; without its id, the directory's latest one.
-            return .run(agentSession.map { "claude --resume \($0)" } ?? "claude --continue")
+            guard let session = agentSession else { return .run("claude --continue") } // the directory's latest
+            // A session nothing was typed into never wrote a transcript, and has nothing to
+            // resume: it starts fresh under the same id, so a later restart still finds it.
+            return .run(hasTranscript(session) ? "claude --resume \(session)" : "claude --session-id \(session)")
         }
+        if let resume = resumeLatest[program] { return .run(resume) }
         let line = foreground.map(shellQuoted).joined(separator: " ")
         return rerunnable.contains(program) ? .run(line) : .offer(line)
+    }
+
+    /// Whether Claude Code has a transcript for `session`: `<config>/projects/*/<session>.jsonl`,
+    /// with the config directory `CLAUDE_CONFIG_DIR` or `~/.claude`. Only looked at, never read.
+    static func claudeTranscriptExists(_ session: String) -> Bool {
+        let config = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+        let projects = config.appendingPathComponent("projects")
+        let folders = (try? FileManager.default.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
+        return folders.contains { FileManager.default.fileExists(atPath: $0.appendingPathComponent("\(session).jsonl").path) }
     }
 
     static func shellQuoted(_ word: String) -> String {

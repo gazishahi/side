@@ -4947,6 +4947,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let library = windowMenu.addItem(withTitle: "Library", action: #selector(AppDelegate.showLibrary), keyEquivalent: "")
         Shortcuts.bind(library, "window.library")
         library.target = NSApp.delegate as? AppDelegate
+        // Every terminal running in a keeper, across projects (SIDE_RFC_SESSION_RESTORE.md).
+        let terminals = windowMenu.addItem(withTitle: "Running Terminals", action: #selector(AppDelegate.showRunningTerminals), keyEquivalent: "")
+        Shortcuts.bind(terminals, "window.runningTerminals")
+        terminals.target = NSApp.delegate as? AppDelegate
         windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         windowItem.submenu = windowMenu

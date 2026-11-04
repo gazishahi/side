@@ -70,6 +70,9 @@ final class TerminalSessionManager {
     func sessions(forTrackKey key: String, holder: UUID? = nil) -> [TerminalSession] { sessionsByPool[Pool(trackKey: key, holder: holder)] ?? [] }
 
     /// Every terminal on a track, wherever it's showing.
+    /// Every tab's session in the project, every track and window.
+    func everySession() -> [TerminalSession] { sessionsByPool.values.flatMap { $0 } }
+
     private func allSessions(forTrackKey key: String) -> [TerminalSession] {
         sessionsByPool.filter { $0.key.trackKey == key }.sorted { $0.key.holder == nil && $1.key.holder != nil }.flatMap(\.value)
     }

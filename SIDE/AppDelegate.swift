@@ -255,6 +255,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Library for the frontmost project window (⇧⌘L).
+    @objc func showRunningTerminals() {
+        RunningTerminalsWindowController.shared.show()
+    }
+
     @objc func showLibrary() {
         LibraryWindowController.shared.show(for: nil)
     }

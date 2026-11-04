@@ -1,6 +1,6 @@
 # Session restore: terminals you can always get back
 
-Status: agreed 2026-11-03. Phases 1 and 2 built (keepers and reattach; restart recovery). Phase 3 (visibility) is next.
+Status: agreed 2026-11-03. Phases 1 and 2 built, and phase 3 apart from notifications (the close warning and Running Terminals). Notifications are next.
 
 ## Why
 
@@ -171,7 +171,8 @@ Each agent tab records its agent's own session id while it runs, so it can be re
   - It reports the id to Side with a private OSC sequence (same nonce as the OSC 133 marks), which the keeper stores in the session's record. An explicit `--resume <id>` reports that id.
   - `--continue` and a bare `--resume` picker report nothing at launch; the id is then taken from the newest transcript in `~/.claude/projects/<folder>/` written after the launch.
   - Nothing in the user's Claude configuration or credentials is touched, in line with the subscription policy.
-- **Codex** (`codex resume <id>`) and other agent CLIs get the same pattern: a per-agent entry saying how to tag a new session and resume one. Claude Code first.
+- **A Claude session nothing was typed into** has no transcript to resume, so it starts fresh under the same session id (`claude --session-id <id>`).
+- **OpenCode** (`opencode --continue`) and **Codex** (`codex resume --last`) resume the latest session in the tab's directory. That's the tab's own unless two tabs ran the same agent in one folder; an exact id would need a wrapper like Claude's. **Gemini** and other agents get Run Again, which starts a fresh session.
 
 ### Programs after a restart
 
@@ -179,7 +180,7 @@ What tmux-resurrect calls restoring programs. The keeper's record holds each ses
 command line, from the process group leading the terminal. On restore:
 
 - **Agents** resume automatically, as above.
-- **Programs that are safe to re-run** start again by themselves in their folder. That's editors, pagers and watchers: `vim`, `nvim`, `less`, `man`, `top`, `htop`, `tail -f`, `watch`. It's a fixed list, extendable in Settings.
+- **Programs that are safe to re-run** start again by themselves in their folder. That's editors, pagers, watchers and git UIs: `vim`, `nvim`, `less`, `man`, `top`, `htop`, `btop`, `tail -f`, `watch`, `lazygit`, `tig`. It's a fixed list (extendable in Settings later).
 - **Everything else** comes back as a shell with the old screen above it and a "Run again: `npm run dev`" button. Re-running an arbitrary command by itself could deploy something or delete files twice.
 
 ### Notifications

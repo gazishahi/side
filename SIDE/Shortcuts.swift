@@ -194,6 +194,7 @@ enum Shortcuts {
         c("window.minimize", "Minimize", .window, "m"),
         c("window.zoom", "Zoom", .window, nil),
         c("window.library", "Library", .window, "l", [.command, .shift]),
+        c("window.runningTerminals", "Running Terminals", .window, nil),
 
         c("editor.fold", "Fold", .editor, left, [.command, .option]),
         c("editor.unfold", "Unfold", .editor, right, [.command, .option]),

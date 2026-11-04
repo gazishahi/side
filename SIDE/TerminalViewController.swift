@@ -632,6 +632,21 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.whenShellIsReady(body, waited: waited + 1) }
     }
 
+    /// What's running in this terminal, named for a close warning, or nil when it's only the shell
+    /// at its prompt. From the shell's own marks; a shell without them, from the keeper's record
+    /// of its foreground program.
+    var runningProgramName: String? {
+        guard didStart, isAlive else { return nil }
+        if let launch = commandLaunch { return (launch.command as NSString).lastPathComponent }
+        if shellIntegration == .confirmed {
+            guard commandStatus.runningSince != nil else { return nil }
+            let typed = lastSubmittedCommand?.split(separator: " ").first.map(String.init)
+            return typed ?? programTitle ?? "A command"
+        }
+        guard let keeperID, let program = SessionKeepers.liveRecord(keeperID)?.foreground.first else { return nil }
+        return (program as NSString).lastPathComponent
+    }
+
     /// Run Again: types the offered command into the shell.
     func runOfferedCommand() {
         guard let command = rerunOffer else { return }
