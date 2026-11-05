@@ -1749,7 +1749,7 @@ final class UpdatePillTests: XCTestCase {
         var replies: [SPUUserUpdateChoice] = []
         driver.showReady { replies.append($0) }
         XCTAssertEqual(driver.stage, .ready)
-        XCTAssertEqual(driver.stage.title, "Relaunch to Update")
+        XCTAssertEqual(driver.stage.title, "Restart to update")
         XCTAssertEqual(replies, [])
         driver.relaunch()
         XCTAssertEqual(replies, [.install])
@@ -1766,18 +1766,27 @@ final class UpdatePillTests: XCTestCase {
         driver.setStageForTesting(.available(version: "0.3.0"))
         XCTAssertTrue(pill.view.isShown)
         XCTAssertEqual(pill.view.title, "Update to 0.3.0")
-        XCTAssertEqual(pill.view.mark, .none)
+        XCTAssertEqual(pill.view.mark, .symbol("arrow.down.circle.fill", nil))
+        XCTAssertNotNil(pill.view.tint, "an action waiting on you: filled")
+        XCTAssertNotNil(pill.view.onDismiss, "× is Later")
         driver.setStageForTesting(.downloading(fraction: 0.5))
         XCTAssertEqual(pill.view.mark, .ring(fraction: 0.5))
+        XCTAssertNil(pill.view.tint, "status: plain glass")
+        XCTAssertNil(pill.view.onDismiss)
         driver.setStageForTesting(.preparing)
-        XCTAssertEqual(pill.view.mark, .ring(fraction: nil))
-        if !DS.Motion.reduceMotion { XCTAssertTrue(pill.view.ringForTesting.isSpinningForTesting) }
+        XCTAssertEqual(pill.view.mark, .spinner)
+        XCTAssertEqual(pill.view.title, "Preparing update")
+        driver.setStageForTesting(.ready)
+        XCTAssertEqual(pill.view.title, "Restart to update")
+        XCTAssertEqual(pill.view.tint, DS.Color.updateReadyFill)
+        XCTAssertEqual(pill.view.titleColorForTesting, DS.Color.updateReadyText)
         driver.setStageForTesting(.failed(reason: "The signature didn't match."))
-        XCTAssertEqual(pill.view.mark, .dot(.failed))
+        XCTAssertEqual(pill.view.mark, .symbol("exclamationmark.circle.fill", DS.Color.statusFailed))
         XCTAssertEqual(pill.view.toolTip, "The signature didn't match.")
+        XCTAssertNotNil(pill.view.onDismiss, "× puts a failure away")
         driver.setStageForTesting(.none)
         XCTAssertFalse(pill.view.isShown)
-        settle(DS.Motion.fadeDuration + 0.2)
+        settle(DS.Motion.dismissDuration + 0.2)
         XCTAssertTrue(pill.view.isHidden)
     }
 
@@ -1786,7 +1795,7 @@ final class UpdatePillTests: XCTestCase {
         driver.setStageForTesting(.available(version: "0.3.0"), notes: ("## New\n\n- A pill for updates.", "markdown"))
         let available = UpdatePopoverViewController(driver: driver)
         available.loadView()
-        XCTAssertEqual(available.buttonTitlesForTesting, ["Later", "Install and Relaunch"])
+        XCTAssertEqual(available.buttonTitlesForTesting, ["Later", "Install and Restart"])
         XCTAssertTrue(available.notesForTesting.contains("A pill for updates."))
         XCTAssertFalse(available.notesForTesting.contains("##"), "rendered, not shown as source")
         driver.setStageForTesting(.downloading(fraction: 0.1))
@@ -1806,6 +1815,41 @@ final class UpdatePillTests: XCTestCase {
         popover.loadView()
         XCTAssertTrue(popover.notesForTesting.contains("Line numbers follow."))
         XCTAssertFalse(popover.notesForTesting.contains("<li>"))
+    }
+
+    func testTheXPutsUpToDateAndAFailureAway() {
+        let driver = UpdateDriver()
+        driver.setStageForTesting(.upToDate)
+        driver.dismissUpToDate()
+        XCTAssertEqual(driver.stage, .none)
+        var acknowledged = 0
+        driver.showUserInitiatedUpdateCheck {}
+        driver.showUpdaterError(NSError(domain: "t", code: 1, userInfo: [NSLocalizedDescriptionKey: "Offline"])) { acknowledged += 1 }
+        driver.dismissFailure()
+        XCTAssertEqual(driver.stage, .none)
+        XCTAssertEqual(acknowledged, 1, "Sparkle is told")
+    }
+
+    func testUpToDateClosesUpToItsMarkThenGoes() {
+        let driver = UpdateDriver()
+        let pill = UpdatePill(driver: driver, glass: true, height: ChromeHost.barHeight)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView?.addSubview(pill.view)
+        driver.setStageForTesting(.upToDate)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let full = pill.view.fittingSize.width
+        XCTAssertEqual(pill.view.mark, .symbol("checkmark", .secondaryLabelColor))
+        driver.setStageForTesting(.none)
+        guard !DS.Motion.reduceMotion else { return }
+        settle(DS.Motion.glanceDuration + 0.1)
+        XCTAssertLessThan(pill.view.fittingSize.width, full - 40, "the words went first")
+        settle(DS.Motion.smooth.duration + DS.Motion.dismissDuration + 0.3)
+        XCTAssertTrue(pill.view.isHidden)
+        driver.setStageForTesting(.available(version: "1.0"))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(pill.view.fittingSize.width, full - 40, "the words are back next time")
     }
 
     func testLaterPutsItAway() {

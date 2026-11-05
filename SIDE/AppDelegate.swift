@@ -131,6 +131,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         case "downloading": Updates.shared.driver.setStageForTesting(.downloading(fraction: parts.count > 2 ? Double(parts[2]) : nil))
                         case "preparing": Updates.shared.driver.setStageForTesting(.preparing)
                         case "ready": Updates.shared.driver.setStageForTesting(.ready)
+                        case "checking": Updates.shared.driver.setStageForTesting(.checking)
+                        case "uptodate": Updates.shared.driver.setStageForTesting(.upToDate)
+                        case "failed": Updates.shared.driver.setStageForTesting(.failed(reason: "The network connection was lost."))
+                        case "hover": shell.updatePillForTesting?.view.setHovered(parts.count < 3 || parts[2] != "off")
                         default: Updates.shared.driver.setStageForTesting(.none)
                         }
                     }

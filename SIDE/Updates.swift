@@ -58,19 +58,20 @@ final class UpdateDriver: NSObject, SPUUserDriver {
         var title: String {
             switch self {
             case .none: ""
-            case .checking: "Checking for Updates"
+            case .checking: "Checking for updates"
             case .upToDate: "Side is up to date"
             case .available(let version): "Update to \(version)"
             case .downloading(let fraction): fraction.map { "Downloading \(Int(($0 * 100).rounded()))%" } ?? "Downloading"
-            case .preparing: "Preparing"
-            case .ready: "Relaunch to Update"
-            case .failed: "Update failed"
+            case .preparing: "Preparing update"
+            // "Restart", not "Relaunch": the owner's word, and the one people use.
+            case .ready: "Restart to update"
+            case .failed: "Update failed \u{2014} Retry"
             }
         }
     }
 
     /// How long "Side is up to date" stays before the pill leaves.
-    static let upToDateDuration: TimeInterval = 3
+    static let upToDateDuration: TimeInterval = 2.5
 
     private(set) var stage: Stage = .none { didSet { if stage != oldValue { post() } } }
     /// The release notes for the version on offer, as Markdown, HTML or plain text.
@@ -80,7 +81,7 @@ final class UpdateDriver: NSObject, SPUUserDriver {
     private var cancellation: (() -> Void)?
     private var acknowledgement: (() -> Void)?
     private var userInitiated = false
-    /// Clicked Install and Relaunch: once it's downloaded, it installs without asking again.
+    /// Clicked Install and Restart: once it's downloaded, it installs without asking again.
     private var installRequested = false
     /// Later: the version stays out of the bar until the next launch, or a newer one.
     private var laterVersion: String?
@@ -108,6 +109,20 @@ final class UpdateDriver: NSObject, SPUUserDriver {
     }
 
     func relaunch() { reply(.install) }
+
+    /// The pill's × on "Side is up to date": gone now rather than in a moment.
+    func dismissUpToDate() {
+        guard stage == .upToDate else { return }
+        stage = .none
+    }
+
+    /// The pill's × on a failure: Sparkle is told, and the pill goes.
+    func dismissFailure() {
+        guard isFailed else { return }
+        acknowledgement?()
+        acknowledgement = nil
+        stage = .none
+    }
 
     func tryAgain() {
         acknowledgement?()
@@ -276,6 +291,7 @@ final class UpdatePill {
     init(driver: UpdateDriver = Updates.shared.driver, glass: Bool, height: CGFloat) {
         self.driver = driver
         view = GlassPill(height: height, glass: glass)
+        view.setMarkSize(16)
         view.isHidden = true
         view.onClick = { [weak self] in self?.clicked() }
         observer = NotificationCenter.default.addObserver(forName: UpdateDriver.didChangeNotification, object: driver, queue: .main) { [weak self] _ in
@@ -284,13 +300,23 @@ final class UpdatePill {
         refresh(animated: false)
     }
 
+    /// The stage, as SIDE_DESIGN_POLISH_0.5.md §4 has it: a fill only for an action waiting on
+    /// you (accent to install, green to restart); status stays plain glass.
     func refresh(animated: Bool) {
         let stage = driver.stage
         let mark: GlassPill.Mark = switch stage {
-        case .checking, .preparing: .ring(fraction: nil)
+        case .none: .none
+        case .checking, .preparing: .spinner
+        case .upToDate: .symbol("checkmark", .secondaryLabelColor)
+        case .available: .symbol("arrow.down.circle.fill", nil)
         case .downloading(let fraction): .ring(fraction: fraction)
-        case .failed: .dot(.failed)
-        default: .none
+        case .ready: .symbol("arrow.clockwise.circle.fill", nil)
+        case .failed: .symbol("exclamationmark.circle.fill", DS.Color.statusFailed)
+        }
+        switch stage {
+        case .available: view.setTint(.controlAccentColor, text: .white)
+        case .ready: view.setTint(DS.Color.updateReadyFill, text: DS.Color.updateReadyText)
+        default: view.setTint(nil)
         }
         if stage != .none { view.set(title: stage.title, mark: mark) }
         // Room for the longest count while it downloads and prepares, so the pill holds its
@@ -299,19 +325,28 @@ final class UpdatePill {
         case .downloading, .preparing: view.reserveWidth(for: UpdateDriver.Stage.downloading(fraction: 1).title)
         default: view.reserveWidth(for: nil)
         }
-        // Ready to relaunch: done, and waiting on one click. Green, as Ready for review is.
-        view.setTint(stage == .ready ? DS.Color.statusVerified : nil)
+        view.onDismiss = switch stage {
+        case .upToDate: { [weak driver] in driver?.dismissUpToDate() }
+        case .available: { [weak driver] in driver?.later() }
+        case .failed: { [weak driver] in driver?.dismissFailure() }
+        default: nil
+        }
         view.toolTip = driver.failureReason
-        view.setShown(stage != .none, animated: animated)
+        // Up to date and done: it closes up to its checkmark, then goes.
+        if stage == .none, lastStage == .upToDate, animated { view.collapseAndLeave() } else { view.setShown(stage != .none, animated: animated) }
+        lastStage = stage
         if stage == .none || stage == .upToDate || stage == .checking || stage == .preparing { popover?.close() }
         (popover?.contentViewController as? UpdatePopoverViewController)?.show(driver)
     }
+    private var lastStage: UpdateDriver.Stage = .none
 
     private func clicked() {
         switch driver.stage {
         case .ready:
             driver.relaunch()
-        case .available, .downloading, .failed:
+        case .failed:
+            driver.tryAgain()
+        case .available, .downloading:
             togglePopover()
         default:
             break
@@ -333,7 +368,7 @@ final class UpdatePill {
     func clickForTesting() { clicked() }
 }
 
-/// What the pill opens: the release notes with Install and Relaunch and Later; the download
+/// What the pill opens: the release notes with Install and Restart and Later; the download
 /// with Cancel; or what went wrong with Try Again.
 @MainActor
 final class UpdatePopoverViewController: NSViewController {
@@ -410,7 +445,7 @@ final class UpdatePopoverViewController: NSViewController {
             heading.stringValue = "Side \(version)"
             detail.stringValue = "Side downloads it, then relaunches to install it."
             notesScroll.isHidden = renderNotes()
-            if !sameKind { setButtons([("Later", false, #selector(later)), ("Install and Relaunch", true, #selector(install))]) }
+            if !sameKind { setButtons([("Later", false, #selector(later)), ("Install and Restart", true, #selector(install))]) }
         case .downloading:
             heading.stringValue = stage.title
             detail.stringValue = "Side relaunches when it's ready."

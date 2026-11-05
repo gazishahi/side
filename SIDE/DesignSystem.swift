@@ -103,6 +103,10 @@ enum DS {
         static let statusWorking = dynamic(dark: NSColor(white: 1, alpha: 0.6), light: NSColor(white: 0, alpha: 0.6))
         static let statusVerified = hex(0x5FBF7A, 0x2E8B57)
         static let statusFailed = hex(0xE0655C, 0xC9433A)
+        /// The update pill ready to restart into (SIDE_DESIGN_POLISH_0.5.md §4): Verified's green
+        /// at 18% under words in a deeper green that reads at 4.5:1 or better on it.
+        static let updateReadyFill = dynamic(dark: rgb(0x5FBF7A).withAlphaComponent(0.18), light: rgb(0x2E8B57).withAlphaComponent(0.18))
+        static let updateReadyText = hex(0x7BD896, 0x17643A)
         static let statusIdle = NSColor.quaternaryLabelColor
 
         /// Full-row diff tints. No gutter bars, no `+`/`−` fills.
@@ -468,8 +472,10 @@ enum DS {
             trackingAreas.forEach(removeTrackingArea)
             addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
         }
-        override func mouseEntered(with event: NSEvent) { fill.color = Color.selectedCapsule; contentTintColor = .labelColor }
-        override func mouseExited(with event: NSEvent) { fill.color = Color.hoverCapsule; contentTintColor = .secondaryLabelColor }
+        /// The glyph's color on a tinted surface (the update pill's), at rest and on hover alike.
+        var tint: NSColor? { didSet { contentTintColor = tint ?? .secondaryLabelColor } }
+        override func mouseEntered(with event: NSEvent) { fill.color = Color.selectedCapsule; contentTintColor = tint ?? .labelColor }
+        override func mouseExited(with event: NSEvent) { fill.color = Color.hoverCapsule; contentTintColor = tint ?? .secondaryLabelColor }
     }
 
     static func makeGlass(cornerRadius: CGFloat) -> NSView {

@@ -155,6 +155,10 @@ class GlassPill: NSView {
         case none
         case dot(DS.StatusState)
         case ring(fraction: Double?)
+        /// The system's own spinner, for work with no count (checking, preparing).
+        case spinner
+        /// An SF Symbol; nil color is the words' color.
+        case symbol(String, NSColor?)
     }
 
     var onClick: (() -> Void)?
@@ -165,6 +169,29 @@ class GlassPill: NSView {
     private let ring = ProgressRing()
     private let markSlot = NSView()
     private let dot = DS.StatusDot(state: .failed)
+    private let symbolView = NSImageView()
+    private let spinner = NSProgressIndicator()
+    /// The × in the mark's place on hover, when there's something to dismiss: in the slot, so
+    /// hovering never changes the pill's width (SIDE_DESIGN_POLISH_0.5.md §1).
+    private lazy var dismissButton: DS.CircleButton = {
+        let button = DS.CircleButton(symbol: "xmark", diameter: markSize, label: "Dismiss")
+        button.target = self
+        button.action = #selector(dismissTapped)
+        button.alphaValue = 0
+        markSlot.addSubview(button)
+        NSLayoutConstraint.activate([button.centerXAnchor.constraint(equalTo: markSlot.centerXAnchor), button.centerYAnchor.constraint(equalTo: markSlot.centerYAnchor)])
+        return button
+    }()
+    /// Set, the pill offers an × on hover that calls it.
+    var onDismiss: (() -> Void)? {
+        didSet {
+            if onDismiss == nil { setHovered(false) }
+            updateTrackingAreas()
+        }
+    }
+    private var markSlotWidth: NSLayoutConstraint?
+    private var markSlotHeight: NSLayoutConstraint?
+    private var markSize = ProgressRing.diameter
     let row = NSStackView()
     private var glass: NSView?
     private let height: CGFloat
@@ -204,15 +231,18 @@ class GlassPill: NSView {
         // The ring and the dot share one slot, the ring's size, so a pill whose mark changes
         // (working, then finished) keeps its width.
         markSlot.translatesAutoresizingMaskIntoConstraints = false
-        for view in [ring, dot] as [NSView] {
+        symbolView.imageScaling = .scaleNone
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        for view in [ring, dot, symbolView, spinner] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             markSlot.addSubview(view)
             NSLayoutConstraint.activate([view.centerXAnchor.constraint(equalTo: markSlot.centerXAnchor), view.centerYAnchor.constraint(equalTo: markSlot.centerYAnchor)])
         }
-        NSLayoutConstraint.activate([
-            markSlot.widthAnchor.constraint(equalToConstant: ProgressRing.diameter),
-            markSlot.heightAnchor.constraint(equalToConstant: ProgressRing.diameter),
-        ])
+        markSlotWidth = markSlot.widthAnchor.constraint(equalToConstant: ProgressRing.diameter)
+        markSlotHeight = markSlot.heightAnchor.constraint(equalToConstant: ProgressRing.diameter)
+        NSLayoutConstraint.activate([markSlotWidth!, markSlotHeight!])
         for view in [markSlot, label, countBadge] as [NSView] { row.addArrangedSubview(view) }
         addSubview(row)
         let inset = glass ? DS.Spacing.l : DS.Spacing.s
@@ -269,10 +299,19 @@ class GlassPill: NSView {
         return constraint
     }()
 
-    /// A capsule tinted for a state that's done and waiting on you, as an update ready to
-    /// relaunch is: the color fills the glass and the words go white. Nil is plain glass.
-    func setTint(_ color: NSColor?) {
-        guard color != tint else { return }
+    /// The mark's slot, for marks bigger than the ring (the update pill's symbols and spinner).
+    func setMarkSize(_ size: CGFloat) {
+        markSize = size
+        markSlotWidth?.constant = size
+        markSlotHeight?.constant = size
+    }
+
+    /// A capsule tinted for an action waiting on you, as an update to install or restart into
+    /// is: `color` fills the glass, `text` colors the words and the mark (white by default).
+    /// Nil is plain glass.
+    func setTint(_ color: NSColor?, text: NSColor? = nil) {
+        let textColor = color == nil ? NSColor.labelColor : (text ?? .white)
+        guard color != tint || textColor != label.textColor else { return }
         tint = color
         if window != nil { DS.Motion.crossfade(self) }
         if #available(macOS 26.0, *), let glass = glass as? NSGlassEffectView {
@@ -281,9 +320,17 @@ class GlassPill: NSView {
             glass?.wantsLayer = true
             glass?.layer?.backgroundColor = color?.cgColor
         }
-        label.textColor = color == nil ? .labelColor : .white
+        label.textColor = textColor
+        dismissButton.tint = color == nil ? nil : textColor
+        applySymbolColor()
     }
     private(set) var tint: NSColor?
+    var titleColorForTesting: NSColor? { label.textColor }
+
+    private func applySymbolColor() {
+        guard case .symbol(_, let color) = mark else { return }
+        symbolView.contentTintColor = color ?? label.textColor
+    }
 
     /// How many more it has besides what it says, as a "+2" after the words; 0 is none. The words
     /// stay the same as the count changes, so the pill keeps its size.
@@ -307,20 +354,106 @@ class GlassPill: NSView {
         if changingInPlace, wordsChange { DS.Motion.crossfade(row) }
         label.stringValue = title
         setAccessibilityLabel(title)
-        markSlot.isHidden = mark == .none
+        markSlot.isHidden = mark == .none && onDismiss == nil
+        ring.isHidden = true
+        dot.isHidden = true
+        symbolView.isHidden = true
+        spinner.stopAnimation(nil)
         switch mark {
         case .none:
-            ring.isHidden = true
-            dot.isHidden = true
+            break
         case .dot(let state):
-            ring.isHidden = true
             dot.state = state
             dot.isHidden = false
         case .ring(let fraction):
-            dot.isHidden = true
             ring.fraction = fraction
             ring.isHidden = false
+        case .spinner:
+            spinner.startAnimation(nil)
+        case .symbol(let name, _):
+            symbolView.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+            symbolView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: markSize - 3, weight: .semibold)
+            symbolView.isHidden = false
+            applySymbolColor()
         }
+    }
+
+    // MARK: Hover: the ×
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        hoverArea = nil
+        guard onDismiss != nil else { return }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+    private var hoverArea: NSTrackingArea?
+    private(set) var isHovered = false
+
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+
+    /// The mark gives its place to the ×: a fade, never a change of size.
+    func setHovered(_ hovered: Bool) {
+        let hovered = hovered && onDismiss != nil
+        guard hovered != isHovered else { return }
+        isHovered = hovered
+        if hovered { markSlot.isHidden = false }
+        let marks: [NSView] = [ring, dot, symbolView, spinner]
+        DS.Motion.fade(duration: DS.Motion.glanceDuration, {
+            dismissButton.animator().alphaValue = hovered ? 1 : 0
+            marks.forEach { $0.animator().alphaValue = hovered ? 0 : 1 }
+        })
+    }
+
+    @objc private func dismissTapped() {
+        setHovered(false)
+        onDismiss?()
+    }
+
+    /// Done and going: the words fade, the pill closes up to its mark on the `pillResize` spring,
+    /// then it leaves as any pill does ("Side is up to date", SIDE_DESIGN_POLISH_0.5.md §4).
+    func collapseAndLeave() {
+        guard isShown, window != nil, !DS.Motion.reduceMotion, !markSlot.isHidden else { return setShown(false, animated: true) }
+        DS.Motion.fade(duration: DS.Motion.glanceDuration, { label.animator().alphaValue = 0 }, completion: { [weak self] in
+            guard let self, self.isShown else { return }
+            // Its width held, the words taken out, and the width let go on a constraint, so the
+            // glass resizes with it each frame: a frame animation moved the pill but snapped
+            // the glass to a circle at once.
+            let width = self.widthAnchor.constraint(equalToConstant: self.bounds.width)
+            width.isActive = true
+            self.collapseWidth = width
+            self.label.isHidden = true
+            self.reservedWidth.isActive = false
+            let closed = self.fittingWidthWithoutTitle
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = DS.Motion.presentDuration
+                context.timingFunction = DS.Motion.easeOut
+                context.allowsImplicitAnimation = true
+                width.animator().constant = closed
+            }, completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.label.isHidden else { return }
+                    self.setShown(false, animated: true)
+                }
+            })
+        })
+    }
+    private var collapseWidth: NSLayoutConstraint?
+    /// The mark alone in the capsule, at least round.
+    private var fittingWidthWithoutTitle: CGFloat {
+        max(height, markSize + 2 * (glass != nil ? DS.Spacing.l : DS.Spacing.s))
+    }
+
+    /// The words back, after a collapse.
+    private func restoreLabel() {
+        collapseWidth?.isActive = false
+        collapseWidth = nil
+        guard label.isHidden || label.alphaValue < 1 else { return }
+        label.isHidden = false
+        label.alphaValue = 1
     }
 
     /// Comes out of the bar on the smooth spring and goes back on a fade. Purely layer animation
@@ -334,6 +467,7 @@ class GlassPill: NSView {
             return
         }
         if shown {
+            restoreLabel()
             isHidden = false
             alphaValue = 1
             superview?.layoutSubtreeIfNeeded()
@@ -352,11 +486,25 @@ class GlassPill: NSView {
             layer.add(fade, forKey: "growFade")
         } else {
             shownGoingAway = true
-            DS.Motion.fade({ animator().alphaValue = 0 }, completion: { [weak self] in
+            setHovered(false)
+            // Back the way it came, a little smaller as it fades (`dismiss`): it had only faded.
+            let cx = bounds.midX, cy = bounds.midY
+            let small = CATransform3DConcat(CATransform3DConcat(CATransform3DMakeTranslation(-cx, -cy, 0), CATransform3DMakeScale(0.85, 0.85, 1)), CATransform3DMakeTranslation(cx, cy, 0))
+            let shrink = CABasicAnimation(keyPath: "transform")
+            shrink.fromValue = layer.presentation()?.transform ?? CATransform3DIdentity
+            shrink.toValue = small
+            shrink.duration = DS.Motion.dismissDuration
+            shrink.timingFunction = DS.Motion.fadeCurve
+            shrink.fillMode = .forwards
+            shrink.isRemovedOnCompletion = false
+            layer.add(shrink, forKey: "grow")
+            DS.Motion.fade(duration: DS.Motion.dismissDuration, { animator().alphaValue = 0 }, completion: { [weak self] in
                 guard let self, self.shownGoingAway else { return }
                 self.shownGoingAway = false
                 self.isHidden = true
                 self.alphaValue = 1
+                self.layer?.removeAnimation(forKey: "grow")
+                self.restoreLabel()
             })
         }
     }

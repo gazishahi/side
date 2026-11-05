@@ -1,9 +1,11 @@
 # Polish after 0.5.0: switcher, ⌃⇥, Settings, update pill
 
-Status: in progress — every question decided 2026-11-05; Settings (§5), the switcher (§2) and ⌃⇥ (§3) built; the update pill not yet. Governs four
+Status: built 2026-11-05 — every question decided; Settings (§5), the switcher (§2), ⌃⇥ (§3) and the update pill (§4) built; the owner judges them in use. Governs four
 surfaces the owner found rough in 0.5.0; written as rules first, then each component
 (`design-coherence`: one system, not four one-offs). Builds on `SIDE_DESIGN.md` and the motion
 tokens already in `DS.Motion`.
+
+Symbols: `ProjectSwitcherOverlay` `ProjectCycleStrip` `UpdatePill` `GlassPill` `SectionFlow` `ShortcutAreaCard` `AppearancePreview`
 
 ## 0. What's wrong today, from the code
 
@@ -307,3 +309,20 @@ Fixed after the owner's pass (2026-11-05):
   as ended; taken by another Side, a key brings it back. The keeper logs why it let a client go.
 - The single tab has its X, after its name on hover.
 - On screen: `check-switcher.sh` (explorer checks added), `check-keeper-lost.sh`.
+
+## As built: the update pill (2026-11-05)
+
+- `GlassPill` marks: the system spinner (checking, preparing), SF Symbols (checkmark, arrow down,
+  restart arrow, red exclamation), the ring for a counted download. `setTint(_:text:)` fills for
+  an action waiting on you: accent with white for Update to x; `updateReadyFill` with
+  `updateReadyText` for Restart to update (light green deepened from #1F7A45 to #17643A: measured
+  on screen, #1F7A45 drew at 4.0:1 on its fill; #17643A draws at 5.4:1).
+- The × on hover takes the mark's slot (no change of width): Later on Update to x, dismiss on
+  Side is up to date and on a failure. Update failed — Retry retries on a click; the reason is
+  its tooltip.
+- Up to date stays 2.5 s, then its words fade, it closes up to its checkmark (a width constraint
+  animated, so the glass follows), and leaves. Every pill now leaves a little smaller as it fades
+  (0.85, `dismissDuration`) instead of only fading.
+- Restart, not Relaunch, in the pill and the popover (Install and Restart).
+- On screen: `scripts/uitest/check-update-pill.sh` (every state, light and dark, the × on hover,
+  frames of the up-to-date leaving).

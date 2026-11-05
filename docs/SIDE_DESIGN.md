@@ -62,6 +62,10 @@ and nothing else: Needs you (amber, the only colour that asks for you), Working 
 breathing, the only thing that moves on its own), Ready for review (green), Failed (red), Idle
 (a still quaternary ring). A dot shown without its word carries it as a tooltip. Unsaved and
 unseen output are marks, not states, and never take a status colour (Direction 03 §3).
+The one exception is the update pill, and only for an action waiting on you: an update to
+install fills with the accent, one ready to restart into with a soft green
+(`DS.Color.updateReadyFill` under `updateReadyText`); its status (checking, downloading,
+failed) stays plain glass (SIDE_DESIGN_POLISH_0.5.md §4).
 
 **Type — five roles** on `DS.Text`, each scaled by `DS.Text.Scale` (Compact / Default / Large /
 Larger, Settings › Appearance): `title` 20, `heading` 15, `body` 13, `caption` 11, `code`
