@@ -735,28 +735,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             content.topAnchor.constraint(equalTo: padded.topAnchor, constant: padding), content.leadingAnchor.constraint(equalTo: padded.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: padded.trailingAnchor), content.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -padding)
         ])
-
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            glass.contentView = padded
-            glass.cornerRadius = cornerRadius
-            glass.style = .regular
-            return glass
-        } else {
-            let effect = NSVisualEffectView()
-            effect.material = .popover
-            effect.state = .active
-            effect.blendingMode = .withinWindow
-            effect.wantsLayer = true
-            effect.layer?.cornerRadius = cornerRadius
-            effect.layer?.masksToBounds = true
-            effect.addSubview(padded)
-            NSLayoutConstraint.activate([
-                padded.topAnchor.constraint(equalTo: effect.topAnchor), padded.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-                padded.trailingAnchor.constraint(equalTo: effect.trailingAnchor), padded.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
-            ])
-            return effect
-        }
+        return DS.makeFloatingSurface(embedding: padded, cornerRadius: cornerRadius)
     }
 
     private static let paletteWidth: CGFloat = 640
@@ -816,6 +795,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let window = view.window ?? NSApp.keyWindow
         if mode == .find && (activeTabIndex == nil || openTabs[activeTabIndex!].kind == .image) { return }
         if !paletteIsOpen { paletteReturnResponder = window?.firstResponder }
+        explorer.hide()
         endHover()
         hideSignatureHelp()
         endCompletion()
@@ -1265,11 +1245,21 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     @objc func toggleFileExplorer() {
         guard let window = view.window else { return }
+        if !explorer.isShown { hideQuickOpenPanel() }
         explorer.toggle(in: window)
     }
 
+    private var revealsExplorerWhenEmpty = false
+
+    /// The explorer, or the palette, Find, the switcher: one floating surface at a time. The
+    /// explorer is a child window, so anything drawn in the window went under it.
+    func hideFileExplorer() { explorer.hide() }
+    /// UI testing: "explorer=<shown> palette=<open>".
+    var floatingStateForTesting: String { "explorer=\(explorer.isShown) palette=\(paletteIsOpen)" }
+
     func showFileExplorer() {
         guard let window = view.window, !explorer.isShown else { return }
+        hideQuickOpenPanel()
         explorer.show(in: window)
     }
 
@@ -1659,6 +1649,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// to load a project into a freshly-created window — the same entry point "Open Project…"
     /// and session restore already go through, just invoked from outside this file.
     func loadProject(at url: URL) {
+        // The explorer showed the last project's files; and only a window's first project may
+        // bring it out on its own — on a switch it came out over whatever stage the person was
+        // on, took the keyboard, and sat over the palette (the owner, 2026-11-05).
+        revealsExplorerWhenEmpty = projectURL == nil
+        if projectURL != nil { explorer.hide() }
         projectURL = url
         LaunchSignposts.begin("retarget")
         retarget(to: url)
@@ -2061,12 +2056,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     // Written once, at the end: the per-open saves are suppressed above so a
                     // crash mid-restore can't persist a half-restored tab set over the real one.
                     self.rememberOpenTabs(forProject: memoryRoot)
-                } else {
-                    // No remembered file for this project/track — a fully blank canvas isn't a
+                } else if self.revealsExplorerWhenEmpty, self.view.window?.isKeyWindow == true {
+                    // No remembered file in a window just opened — a fully blank canvas isn't a
                     // good first impression. Surface the file tree instead so there's immediately
                     // something to act on, rather than guessing which file to auto-open.
-                    self.toggleFileExplorer()
+                    self.showFileExplorer()
                 }
+                self.revealsExplorerWhenEmpty = false
             }
         }
     }

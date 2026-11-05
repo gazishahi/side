@@ -68,7 +68,7 @@ func sendToClient(_ kind: FrameKind, _ payload: UnsafeRawBufferPointer) {
     toClient.append(kind.rawValue)
     withUnsafeBytes(of: UInt32(payload.count).littleEndian) { toClient.append(contentsOf: $0) }
     toClient.append(contentsOf: payload)
-    if toClient.count - toClientOffset > clientBacklogLimit { log("client stopped reading; letting it go"); dropClient(); return }
+    if toClient.count - toClientOffset > clientBacklogLimit { dropClient(why: "it stopped reading"); return }
     if wasEmpty { flushClient() }
 }
 
@@ -79,7 +79,7 @@ func flushClient() {
         if n > 0 { toClientOffset += n; continue }
         if n < 0, errno == EINTR { continue }
         if n < 0, errno == EAGAIN { watch(client, EVFILT_WRITE, EV_ADD | EV_ENABLE | EV_ONESHOT); return }
-        dropClient()
+        dropClient(why: n < 0 ? "write: \(String(cString: strerror(errno)))" : "write: nothing written")
         return
     }
     // Capacity kept for steady output, not a flood's peak.
@@ -89,8 +89,11 @@ func flushClient() {
     if exitReported { finish() }
 }
 
-func dropClient() {
+/// `why`: logged, so a terminal that lost its connection leaves a reason in the session's log
+/// (two did, 2026-11-05, and nothing said why).
+func dropClient(why: String? = nil) {
     guard client >= 0 else { return }
+    if let why { log("client let go: \(why)") }
     exitReported = false
     close(client) // closing removes its kqueue filters
     client = -1

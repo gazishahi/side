@@ -690,13 +690,24 @@ final class ShellViewController: NSViewController {
     /// into the bar (the collapsed state took the capsule's proportions); and a dismiss during the
     /// open turns it around from where it is, rather than ending it at once.
     private func animatePalette(_ host: NSView, in appearing: Bool) {
-        guard let layer = host.layer else { host.isHidden = !appearing; return }
-        guard !DS.Motion.reduceMotion else { host.isHidden = !appearing; paletteClosing = false; return }
-        paletteAnimationGeneration += 1
-        let generation = paletteAnimationGeneration
         paletteClosing = !appearing
-        let source = chrome.paletteOrigin(in: view)
-        // Evenly, to the capsule's width, about its centre. Layer-backed views transform about
+        morph(host, appearing: appearing, key: "palette") { [weak self, weak host] in
+            if !appearing { host?.isHidden = true }
+            self?.paletteClosing = false
+        }
+    }
+
+    /// Grows `host` out of the stage bar's piece (`ChromeHost.paletteOrigin`) or shrinks it back
+    /// in: the palette's motion, shared by every panel summoned from the bottom of the window (the
+    /// project switcher, ⌃⇥), so they arrive one way (SIDE_DESIGN_POLISH_0.5.md §1). Evenly scaled
+    /// about the piece's centre, faded with it; turned around mid-way from where it is.
+    /// `completion` runs only if no later morph of the same `key` took over.
+    func morph(_ host: NSView, appearing: Bool, key: String, completion: (() -> Void)? = nil) {
+        guard let layer = host.layer, !DS.Motion.reduceMotion else { completion?(); return }
+        let generation = (morphGenerations[key] ?? 0) + 1
+        morphGenerations[key] = generation
+        let source = view.convert(chrome.paletteOrigin(in: view), to: host.superview)
+        // Evenly, to the piece's width, about its centre. Layer-backed views transform about
         // their origin, so the scale is placed by hand.
         let scale = max(min(source.width / max(host.bounds.width, 1), 1), 0.05)
         let collapsedSize = NSSize(width: host.bounds.width * scale, height: host.bounds.height * scale)
@@ -706,7 +717,7 @@ final class ShellViewController: NSViewController {
                                          source.midY - collapsedSize.height / 2 - host.frame.minY, 0))
         // From what's on screen when it's turned around mid-way.
         let shown = layer.presentation()
-        let inFlight = layer.animation(forKey: "palette") != nil && shown != nil
+        let inFlight = layer.animation(forKey: key) != nil && shown != nil
         let transform = CABasicAnimation(keyPath: "transform")
         transform.fromValue = inFlight ? shown!.transform : (appearing ? collapsed : CATransform3DIdentity)
         transform.toValue = appearing ? CATransform3DIdentity : collapsed
@@ -715,24 +726,26 @@ final class ShellViewController: NSViewController {
         fade.toValue = appearing ? 1 : 0
         let group = CAAnimationGroup()
         group.animations = [transform, fade]
-        group.duration = appearing ? 0.22 : 0.18
+        group.duration = appearing ? DS.Motion.presentDuration : DS.Motion.dismissDuration
         group.timingFunction = DS.Motion.easeOut
         group.fillMode = .forwards
         group.isRemovedOnCompletion = false
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self, weak host] in
             MainActor.assumeIsolated {
-                guard let self, let host, self.paletteAnimationGeneration == generation else { return }
-                if !appearing { host.isHidden = true }
-                self.paletteClosing = false
-                host.layer?.removeAnimation(forKey: "palette")
+                guard let self, self.morphGenerations[key] == generation else { return }
+                // Hidden or gone first, then the held last frame lets go: the other way round
+                // a closing panel flashed back at full size for a frame.
+                completion?()
+                host?.layer?.removeAnimation(forKey: key)
             }
         }
-        layer.add(group, forKey: "palette")
+        layer.add(group, forKey: key)
         CATransaction.commit()
     }
 
-    private var paletteAnimationGeneration = 0
+    private var morphGenerations: [String: Int] = [:]
+
     private var paletteClosing = false
     var paletteLayerForTesting: CALayer? { paletteHost?.layer }
     func paletteOriginForTesting() -> NSRect { chrome.paletteOrigin(in: view) }
@@ -1053,6 +1066,8 @@ final class ShellViewController: NSViewController {
     func runTypeForTesting(_ text: String) { runVC.typeForTesting(text) }
     var terminalBackgroundForTesting: String { runVC.terminalBackgroundForTesting }
     func runSelectForTesting(_ index: Int) { runVC.selectTab(number: index) }
+    var floatingStateForTesting: String { makeVC.floatingStateForTesting }
+    func hoverSoloTabForTesting() { (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).hoverSoloForTesting() }
     func clickTabCloseForTesting(_ index: Int) {
         (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).clickCloseForTesting(index)
     }
@@ -1273,27 +1288,41 @@ final class ShellViewController: NSViewController {
 
     func toggleProjectSwitcher() {
         if projectSwitcher != nil { closeProjectSwitcher(); return }
+        finishCycle(commit: false)
+        makeVC.hideFileExplorer()
         let overlay = ProjectSwitcherOverlay(current: projectURL)
         overlay.frame = view.bounds
         overlay.autoresizingMask = [.width, .height]
+        overlay.placePanel = { [weak self, weak overlay] size in
+            guard let self, let overlay else { return .zero }
+            return self.view.convert(self.chrome.paletteFrame(size: size, in: self.view), to: overlay)
+        }
         overlay.onPick = { [weak self] url in self?.goToProject(url) }
         overlay.onOpenInNewWindow = { url in AppDelegate.shared?.openTrackInNewWindow(projectRoot: url, trackKey: nil) }
         overlay.onOpenProject = { [weak self] in self?.presentOpenProject() }
         overlay.onClose = { [weak self] in self?.closeProjectSwitcher() }
         view.addSubview(overlay, positioned: .above, relativeTo: nil)
+        overlay.layoutSubtreeIfNeeded()
         projectSwitcher = overlay
         overlay.focus()
-        guard !DS.Motion.reduceMotion else { return }
-        overlay.alphaValue = 0
-        DS.Motion.fade(duration: 0.14, { overlay.animator().alphaValue = 1 })
+        // Out of the stage bar, as the palette and Find come (the owner, 2026-11-05).
+        morph(overlay.panelHost, appearing: true, key: Self.morphKey(overlay))
     }
 
     private func closeProjectSwitcher() {
         guard let overlay = projectSwitcher else { return }
         projectSwitcher = nil
+        overlay.onClose = nil
+        // Clicks go through while it goes back into the bar: the window under it is back.
+        overlay.passesClicksThrough = true
+        if view.window?.firstResponder is NSText { view.window?.makeFirstResponder(nil) }
         guard !DS.Motion.reduceMotion else { overlay.removeFromSuperview(); return }
-        DS.Motion.fade(duration: 0.1, { overlay.animator().alphaValue = 0 }, completion: { overlay.removeFromSuperview() })
+        morph(overlay.panelHost, appearing: false, key: Self.morphKey(overlay)) { [weak overlay] in overlay?.removeFromSuperview() }
     }
+
+    /// Each switcher its own: one opened while the last is still closing mustn't cancel the
+    /// last one's removal.
+    private static func morphKey(_ overlay: ProjectSwitcherOverlay) -> String { "projectSwitcher-\(ObjectIdentifier(overlay).hashValue)" }
 
     /// A project picked in the switcher or the strip: the window that shows it comes forward;
     /// otherwise this one moves there.
@@ -1312,7 +1341,8 @@ final class ShellViewController: NSViewController {
     private func installCycleMonitor() {
         guard cycleMonitor == nil else { return }
         cycleMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            guard let self, event.window === self.view.window else { return event }
+            // Its child windows too: ⌃⇥ from the file explorer still switches.
+            guard let self, let window = self.view.window, event.window === window || event.window?.parent === window else { return event }
             return self.handleCycle(event) ? nil : event
         }
     }
@@ -1326,22 +1356,49 @@ final class ShellViewController: NSViewController {
         if cycleStrip != nil, event.keyCode == 53 { finishCycle(commit: false); return true }
         guard event.keyCode == 48, flags.contains(.control), !flags.contains(.command), !flags.contains(.option) else { return false }
         let back = flags.contains(.shift)
-        if let strip = cycleStrip { strip.move(back ? -1 : 1); return true }
-        let entries = ProjectSwitcherModel.entries(current: projectURL)
+        if let strip = cycleStrip { strip.move(back ? -1 : 1); revealCycleStrip(); return true }
+        // Open projects only: the ones not open are the switcher's (the owner, 2026-11-05).
+        let entries = ProjectSwitcherModel.entries(current: projectURL).filter(\.isOpen)
         guard entries.count > 1 else { NSSound.beep(); return true }
         closeProjectSwitcher()
         let strip = ProjectCycleStrip(entries: entries, start: back ? entries.count - 1 : 1)
+        strip.frame = chrome.paletteFrame(size: ProjectCycleStrip.size(for: entries), in: view)
+        strip.isHidden = true
         view.addSubview(strip, positioned: .above, relativeTo: nil)
-        NSLayoutConstraint.activate([strip.centerXAnchor.constraint(equalTo: view.centerXAnchor), strip.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
         cycleStrip = strip
+        // A quick ⌃⇥ just switches, as the system's app switcher does: the panel shows only if
+        // ⌃ is still down after a moment.
+        let generation = cycleGeneration + 1
+        cycleGeneration = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.cycleRevealDelay) { [weak self] in
+            guard let self, self.cycleGeneration == generation else { return }
+            self.revealCycleStrip()
+        }
         return true
+    }
+
+    static let cycleRevealDelay: TimeInterval = 0.12
+    private var cycleGeneration = 0
+
+    private func revealCycleStrip() {
+        guard let strip = cycleStrip, strip.isHidden else { return }
+        makeVC.hideFileExplorer()
+        strip.isHidden = false
+        morph(strip, appearing: true, key: "cycleStrip")
     }
 
     private func finishCycle(commit: Bool) {
         guard let strip = cycleStrip else { return }
         cycleStrip = nil
+        cycleGeneration += 1
         let picked = strip.selected?.space.url
-        strip.removeFromSuperview()
+        if strip.isHidden || DS.Motion.reduceMotion {
+            strip.removeFromSuperview()
+        } else {
+            // It fades where it is while the window crossfades to the project: one motion each,
+            // not a shrink competing with the switch.
+            DS.Motion.fade(duration: DS.Motion.dismissDuration, { strip.animator().alphaValue = 0 }, completion: { strip.removeFromSuperview() })
+        }
         if commit, let picked { goToProject(picked) }
     }
 

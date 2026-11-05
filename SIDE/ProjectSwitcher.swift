@@ -407,25 +407,39 @@ enum ProjectSwitcherModel {
     }
 }
 
-/// The project switcher: projects as cards in a panel over the window, as Spotlight opens
-/// (the owner, 2026-11-04: it "gives greater importance to the list of projects"). A grid by
-/// default, or a list; open projects first, then the ones not open, dimmed; nine before "More
-/// projects". Type to narrow, arrows to move, Return to switch, ⌘Return for a new window, ⌘⌫ to
-/// put a held project away, Escape or a click outside to leave.
+/// The project switcher (⌃⌘P, the project chip): a glass panel that grows out of the stage bar,
+/// as the palette and Find do (SIDE_DESIGN_POLISH_0.5.md §2). Open projects first, then the ones
+/// not open, dimmed; nine before "Show more". A list, or cards (Settings → General). Type to
+/// narrow, arrows to move, Return to switch, ⌘Return for a new window, ⌘⌫ to put a held project
+/// away, Escape or a click outside to leave.
 @MainActor
 final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
-    enum Layout: String { case grid, list }
+    enum Layout: String, CaseIterable {
+        case list, grid
+        var title: String { self == .list ? "List" : "Grid" }
+    }
 
     var onPick: ((URL) -> Void)?
     var onOpenInNewWindow: ((URL) -> Void)?
     var onOpenProject: (() -> Void)?
     var onClose: (() -> Void)?
+    /// Where the panel goes for a size: above the stage bar, centred (the shell's chrome).
+    var placePanel: ((NSSize) -> NSRect)?
 
-    static let layoutKey = "side.projectSwitcher.layout"
+    /// A list unless chosen otherwise (the owner, 2026-11-05). A new key: the old toggle's saved
+    /// "grid" would otherwise outlive the decision.
+    static let layoutKey = "side.projectSwitcher.style"
     static var layout: Layout {
-        get { Layout(rawValue: ProjectSpaces.defaults.string(forKey: layoutKey) ?? "") ?? .grid }
-        set { ProjectSpaces.defaults.set(newValue.rawValue, forKey: layoutKey) }
+        get { Layout(rawValue: ProjectSpaces.defaults.string(forKey: layoutKey) ?? "") ?? .list }
+        set { ProjectSpaces.defaults.set(newValue.rawValue, forKey: layoutKey); NotificationCenter.default.post(name: layoutDidChange, object: nil) }
     }
+    static let layoutDidChange = Notification.Name("SideProjectSwitcherLayoutDidChange")
+
+    static let listWidth: CGFloat = 560
+    static let gridWidth: CGFloat = 700
+    static let headerHeight: CGFloat = 54
+    static let footerHeight: CGFloat = 40
+    static let rowHeight: CGFloat = 48
 
     private let current: URL?
     private var all: [ProjectSwitcherEntry] = []
@@ -434,28 +448,24 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
     private(set) var selectedIndex = 0
     private var cards: [ProjectSwitcherCard] = []
 
-    private let shadowHost = NSView()
-    private let panel = NSVisualEffectView()
+    /// What grows out of the bar: the surface and its shadow.
+    let panelHost = NSView()
     private let field = NSTextField()
-    private let gridButton = NSButton()
-    private let listButton = NSButton()
     private let content = NSStackView()
+    private let document = FlippedView()
     private let scroll = NSScrollView()
+    private let selection = DS.Fill(DS.Color.selectedCapsule, cornerRadius: DS.Radius.surface)
     private let hint = NSTextField(labelWithString: "")
-    private let moreButton = NSButton(title: "", target: nil, action: nil)
     private var scrollHeight: NSLayoutConstraint?
-    private var panelWidth: NSLayoutConstraint?
     private var observers: [NSObjectProtocol] = []
     private let openedAtPointer = NSEvent.mouseLocation
 
     init(current: URL?) {
         self.current = current
         super.init(frame: .zero)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.001).cgColor
         build()
         reload()
-        for name in [ActivityCenter.didChangeNotification, ProjectSpaces.didChangeNotification] {
+        for name in [ActivityCenter.didChangeNotification, ProjectSpaces.didChangeNotification, Self.layoutDidChange] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.reload() }
             })
@@ -469,120 +479,101 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
     // MARK: Building
 
     private func build() {
-        shadowHost.translatesAutoresizingMaskIntoConstraints = false
-        shadowHost.wantsLayer = true
-        shadowHost.shadow = NSShadow()
-        shadowHost.layer?.shadowOpacity = 0.3
-        shadowHost.layer?.shadowRadius = 28
-        shadowHost.layer?.shadowOffset = CGSize(width: 0, height: -10)
-        addSubview(shadowHost)
+        panelHost.wantsLayer = true
+        // Glass brings its own depth on macOS 26; before it, a shadow under the popover material.
+        if #unavailable(macOS 26.0) {
+            panelHost.shadow = NSShadow()
+            panelHost.layer?.shadowOpacity = 0.18
+            panelHost.layer?.shadowRadius = 18
+            panelHost.layer?.shadowOffset = CGSize(width: 0, height: -4)
+        }
+        addSubview(panelHost)
 
-        panel.material = .popover
-        panel.blendingMode = .withinWindow
-        panel.state = .active
-        panel.wantsLayer = true
-        panel.layer?.cornerRadius = DS.Radius.palette
-        panel.layer?.masksToBounds = true
-        panel.translatesAutoresizingMaskIntoConstraints = false
-        shadowHost.addSubview(panel)
-
-        let searchBox = NSView()
-        searchBox.bindLayerBackground(DS.Color.hoverCapsule)
-        searchBox.layer?.cornerRadius = DS.Radius.surface
         let magnifier = NSImageView(image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil) ?? NSImage())
-        magnifier.symbolConfiguration = .init(pointSize: 15, weight: .medium)
+        magnifier.symbolConfiguration = .init(pointSize: 14, weight: .medium)
         magnifier.contentTintColor = .secondaryLabelColor
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = DS.Text.custom(18)
+        field.font = DS.Text.custom(16)
         field.placeholderString = "Switch to a project"
         field.delegate = self
         field.setAccessibilityLabel("Find a project")
-        for view in [magnifier, field] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; searchBox.addSubview(view) }
-        searchBox.translatesAutoresizingMaskIntoConstraints = false
+        let header = NSView()
+        for view in [magnifier, field] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; header.addSubview(view) }
 
-        for (button, symbol, label) in [(gridButton, "square.grid.2x2", "Grid"), (listButton, "list.bullet", "List")] {
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-            button.symbolConfiguration = .init(pointSize: 13, weight: .medium)
-            button.isBordered = false
-            button.wantsLayer = true
-            button.layer?.cornerRadius = DS.Radius.capsule(height: 26)
-            button.target = self
-            button.action = #selector(layoutTapped(_:))
-            button.toolTip = label
-            button.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant: 34), button.heightAnchor.constraint(equalToConstant: 26)])
-        }
-        let toggle = NSStackView(views: [gridButton, listButton])
-        toggle.spacing = 2
-        toggle.edgeInsets = NSEdgeInsets(top: 3, left: 3, bottom: 3, right: 3)
-        toggle.wantsLayer = true
-        toggle.bindLayerBackground(DS.Color.hoverCapsule)
-        toggle.layer?.cornerRadius = DS.Radius.capsule(height: 32)
-
-        let header = NSStackView(views: [searchBox, toggle])
-        header.spacing = DS.Spacing.l
-        header.alignment = .centerY
+        let divider = NSBox()
+        divider.boxType = .custom
+        divider.borderWidth = 0
+        divider.fillColor = DS.Color.hairline
 
         content.orientation = .vertical
         content.alignment = .leading
-        content.spacing = DS.Spacing.m
+        content.spacing = 2
         content.translatesAutoresizingMaskIntoConstraints = false
-        let document = FlippedView()
         document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(selection)
         document.addSubview(content)
         scroll.documentView = document
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
 
-        hint.font = DS.Text.caption()
-        hint.textColor = .secondaryLabelColor
-        hint.stringValue = "Return opens \u{00B7} \u{2318}Return in a new window \u{00B7} \u{2318}\u{232B} puts a project away"
-        moreButton.isBordered = false
-        moreButton.target = self
-        moreButton.action = #selector(moreTapped)
+        // Keys, not sentences: a glyph and a word each.
+        hint.attributedStringValue = Self.hints([("\u{21A9}", "Open"), ("\u{2318}\u{21A9}", "New Window"), ("\u{2318}\u{232B}", "Close")])
         let open = NSButton(title: "", target: self, action: #selector(openTapped))
         open.isBordered = false
-        open.attributedTitle = NSAttributedString(string: "Open Project\u{2026}", attributes: [.font: DS.Text.body(.medium), .foregroundColor: NSColor.controlAccentColor])
-        let footer = NSStackView(views: [hint, NSView(), moreButton, open])
-        footer.spacing = DS.Spacing.xl
+        let openKeys = Shortcuts.display("file.openProject")
+        let openTitle = NSMutableAttributedString(string: "Open\u{2026}", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.controlAccentColor])
+        if !openKeys.isEmpty { openTitle.append(NSAttributedString(string: "  " + openKeys, attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.tertiaryLabelColor])) }
+        open.attributedTitle = openTitle
+        open.setAccessibilityLabel("Open a project")
+        let footer = NSStackView(views: [hint, NSView(), open])
         footer.alignment = .centerY
+        footer.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 14)
 
-        let column = NSStackView(views: [header, scroll, footer])
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = DS.Spacing.xl
-        column.translatesAutoresizingMaskIntoConstraints = false
-        panel.addSubview(column)
+        let body = NSView()
+        for view in [header, divider, scroll, footer] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; body.addSubview(view) }
+        let surface = DS.makeFloatingSurface(embedding: body)
+        surface.frame = panelHost.bounds
+        surface.autoresizingMask = [.width, .height]
+        panelHost.addSubview(surface)
 
-        let height = scroll.heightAnchor.constraint(equalToConstant: 100)
+        let height = scroll.heightAnchor.constraint(equalToConstant: Self.rowHeight)
         scrollHeight = height
-        let width = shadowHost.widthAnchor.constraint(equalToConstant: 760)
-        panelWidth = width
         NSLayoutConstraint.activate([
-            shadowHost.centerXAnchor.constraint(equalTo: centerXAnchor),
-            shadowHost.topAnchor.constraint(equalTo: topAnchor, constant: 110),
-            width,
-            panel.topAnchor.constraint(equalTo: shadowHost.topAnchor), panel.bottomAnchor.constraint(equalTo: shadowHost.bottomAnchor),
-            panel.leadingAnchor.constraint(equalTo: shadowHost.leadingAnchor), panel.trailingAnchor.constraint(equalTo: shadowHost.trailingAnchor),
-            column.topAnchor.constraint(equalTo: panel.topAnchor, constant: 16), column.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -14),
-            column.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -16),
-            header.widthAnchor.constraint(equalTo: column.widthAnchor), footer.widthAnchor.constraint(equalTo: column.widthAnchor),
-            scroll.widthAnchor.constraint(equalTo: column.widthAnchor), height,
-            searchBox.heightAnchor.constraint(equalToConstant: 44),
-            magnifier.leadingAnchor.constraint(equalTo: searchBox.leadingAnchor, constant: 14), magnifier.centerYAnchor.constraint(equalTo: searchBox.centerYAnchor),
-            field.leadingAnchor.constraint(equalTo: magnifier.trailingAnchor, constant: 10), field.trailingAnchor.constraint(equalTo: searchBox.trailingAnchor, constant: -12),
-            field.centerYAnchor.constraint(equalTo: searchBox.centerYAnchor),
+            header.topAnchor.constraint(equalTo: body.topAnchor), header.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: body.trailingAnchor), header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
+            magnifier.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 18), magnifier.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            field.leadingAnchor.constraint(equalTo: magnifier.trailingAnchor, constant: 10), field.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+            field.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            divider.topAnchor.constraint(equalTo: header.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
+            divider.leadingAnchor.constraint(equalTo: body.leadingAnchor), divider.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: divider.bottomAnchor), scroll.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 6),
+            scroll.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -6), height,
+            footer.topAnchor.constraint(equalTo: scroll.bottomAnchor), footer.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: body.trailingAnchor), footer.heightAnchor.constraint(equalToConstant: Self.footerHeight),
+            footer.bottomAnchor.constraint(equalTo: body.bottomAnchor),
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             content.topAnchor.constraint(equalTo: document.topAnchor), content.leadingAnchor.constraint(equalTo: document.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: document.trailingAnchor), content.bottomAnchor.constraint(equalTo: document.bottomAnchor),
         ])
+    }
+
+    /// "↩ Open   ⌘↩ New Window": keys a step brighter than their words.
+    static func hints(_ pairs: [(String, String)]) -> NSAttributedString {
+        let text = NSMutableAttributedString()
+        for (index, (keys, word)) in pairs.enumerated() {
+            if index > 0 { text.append(NSAttributedString(string: "    ")) }
+            text.append(NSAttributedString(string: keys + " ", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.secondaryLabelColor]))
+            text.append(NSAttributedString(string: word, attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        return text
     }
 
     // MARK: Contents
@@ -598,17 +589,8 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
         let matching = all.filter { ProjectSwitcherModel.matches(query, $0.space.name) }
         shown = showingAll || !query.isEmpty ? matching : Array(matching.prefix(ProjectSwitcherModel.limit))
         let hidden = matching.count - shown.count
-        moreButton.isHidden = hidden <= 0
-        moreButton.attributedTitle = NSAttributedString(string: "More projects (\(hidden))\u{2026}", attributes: [.font: DS.Text.body(), .foregroundColor: NSColor.controlAccentColor])
 
         let layout = Self.layout
-        panelWidth?.constant = layout == .grid ? 760 : 640
-        for (button, mode) in [(gridButton, Layout.grid), (listButton, .list)] {
-            let on = layout == mode
-            button.contentTintColor = on ? .labelColor : .secondaryLabelColor
-            Self.paint(button, on ? DS.Color.selectedCapsule : .clear)
-            button.setAccessibilityValue(on ? "selected" : nil)
-        }
         content.arrangedSubviews.forEach { $0.removeFromSuperview() }
         cards = shown.enumerated().map { index, entry in
             let card = ProjectSwitcherCard(entry: entry, style: layout)
@@ -627,16 +609,16 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
             return card
         }
         if layout == .grid {
+            content.spacing = DS.Spacing.s
             for start in stride(from: 0, to: cards.count, by: 3) {
                 var row = Array(cards[start..<min(start + 3, cards.count)]) as [NSView]
                 while row.count < 3 { row.append(NSView()) }
                 let line = NSStackView(views: row)
                 line.distribution = .fillEqually
-                line.spacing = DS.Spacing.m
+                line.spacing = DS.Spacing.s
                 line.alignment = .top
                 content.addArrangedSubview(line)
                 line.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-                // One height per row: the tallest card's.
                 for view in row where view is ProjectSwitcherCard { view.heightAnchor.constraint(equalTo: line.heightAnchor).isActive = true }
             }
         } else {
@@ -645,23 +627,30 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
             for card in cards {
                 if !card.entry.isOpen, !headed {
                     headed = true
-                    let heading = NSTextField(labelWithString: "Not open")
-                    heading.font = DS.Text.caption(.semibold)
-                    heading.textColor = .secondaryLabelColor
-                    let inset = NSStackView(views: [heading])
-                    inset.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 2, right: 12)
-                    content.addArrangedSubview(inset)
+                    content.addArrangedSubview(Self.heading("Not open"))
                 }
                 content.addArrangedSubview(card)
                 card.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
             }
         }
-        content.spacing = layout == .grid ? DS.Spacing.m : 2
+        if hidden > 0 {
+            // A row like the others, not a footer button.
+            let more = NSButton(title: "", target: self, action: #selector(moreTapped))
+            more.isBordered = false
+            more.alignment = .left
+            more.attributedTitle = NSAttributedString(string: "Show \(hidden) more", attributes: [.font: DS.Text.body(), .foregroundColor: NSColor.secondaryLabelColor])
+            let row = NSStackView(views: [more])
+            row.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+            row.heightAnchor.constraint(equalToConstant: 36).isActive = true
+            content.addArrangedSubview(row)
+        }
         if shown.isEmpty {
             let none = NSTextField(labelWithString: query.isEmpty ? "No projects yet. Open one to start." : "No project matches \u{201C}\(query)\u{201D}.")
             none.font = DS.Text.body()
             none.textColor = .secondaryLabelColor
-            content.addArrangedSubview(none)
+            let row = NSStackView(views: [none])
+            row.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+            content.addArrangedSubview(row)
         }
         if let selectedPath, let index = shown.firstIndex(where: { $0.space.path == selectedPath }) {
             selectedIndex = index
@@ -670,36 +659,65 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
             selectedIndex = shown.firstIndex { $0.openness != .current } ?? 0
             if !query.isEmpty { selectedIndex = 0 }
         }
-        applySelection()
-        fitScroll()
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        applySelection(animated: false)
     }
 
-    /// As tall as the projects, up to what the window has room for.
-    private func fitScroll() {
-        guard bounds.height > 0 else { needsLayout = true; return }
+    static func heading(_ text: String) -> NSView {
+        let heading = NSTextField(labelWithString: text)
+        heading.font = DS.Text.caption(.semibold)
+        heading.textColor = .tertiaryLabelColor
+        let inset = NSStackView(views: [heading])
+        inset.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 4, right: 12)
+        return inset
+    }
+
+    override func layout() {
+        super.layout()
+        placePanelHost()
+        // The rows reach their width only once the panel has its own: the capsule follows,
+        // or it hugged the name (found on screen, 2026-11-05).
+        if selection.layer?.animationKeys()?.isEmpty ?? true { applySelection(animated: false, reveal: false) }
+    }
+
+    /// The panel's size from what it holds, up to 60% of the window; placed by the shell above
+    /// the stage bar. The list scrolls past that.
+    private func placePanelHost() {
+        guard bounds.height > 0 else { return }
+        let width = min(Self.layout == .grid ? Self.gridWidth : Self.listWidth, bounds.width - 24)
         content.layoutSubtreeIfNeeded()
-        let fitting = content.fittingSize.height
-        let room = max(160, bounds.height - 110 - 170)
-        let height = min(max(fitting, 60), room)
-        if scrollHeight?.constant != height { scrollHeight?.constant = height }
+        let fitting = content.fittingSize.height + 12
+        let chrome = Self.headerHeight + 1 + Self.footerHeight
+        let room = max(Self.rowHeight * 2, bounds.height * 0.6 - chrome)
+        let listHeight = min(max(fitting, Self.rowHeight), room)
+        if scrollHeight?.constant != listHeight { scrollHeight?.constant = listHeight }
+        let size = NSSize(width: width, height: chrome + listHeight)
+        let frame = placePanel?(size) ?? NSRect(x: bounds.midX - width / 2, y: 80, width: width, height: size.height)
+        // Not while it grows or shrinks: the transform is figured from where it is.
+        if panelHost.frame != frame, panelHost.layer?.animationKeys()?.isEmpty ?? true { panelHost.frame = frame }
     }
 
-    /// A layer's color, resolved in this view's appearance: one resolved before the view was in
-    /// its window came out in the app's other appearance (found on screen, 2026-11-04).
-    static func paint(_ view: NSView, _ color: NSColor) {
-        view.wantsLayer = true
-        view.effectiveAppearance.performAsCurrentDrawingAppearance { view.layer?.backgroundColor = color.cgColor }
-    }
-
-    private func applySelection() {
-        for (index, card) in cards.enumerated() { card.isSelected = index == selectedIndex }
-        if cards.indices.contains(selectedIndex) { cards[selectedIndex].scrollToVisible(cards[selectedIndex].bounds) }
+    /// The selection is one capsule that slides to the selected project, not cards repainting.
+    private func applySelection(animated: Bool, reveal: Bool = true) {
+        guard cards.indices.contains(selectedIndex) else { selection.isHidden = true; return }
+        let card = cards[selectedIndex]
+        document.layoutSubtreeIfNeeded()
+        let target = card.convert(card.bounds, to: document)
+        selection.isHidden = false
+        if animated, !selection.frame.isEmpty {
+            DS.Motion.animate(DS.Motion.snappy, { selection.animator().frame = target })
+        } else {
+            if selection.frame != target { selection.frame = target }
+        }
+        for (index, each) in cards.enumerated() where each.isSelected != (index == selectedIndex) { each.isSelected = index == selectedIndex }
+        if reveal { card.scrollToVisible(card.bounds) }
     }
 
     private func select(_ index: Int) {
         guard cards.indices.contains(index), index != selectedIndex else { return }
         selectedIndex = index
-        applySelection()
+        applySelection(animated: true)
     }
 
     // MARK: Actions
@@ -807,14 +825,8 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
 
     private static let colorNames = ["Graphite", "Blue", "Purple", "Pink", "Red", "Orange", "Yellow", "Green", "Teal"]
 
-    @objc private func layoutTapped(_ sender: NSButton) {
-        Self.layout = sender === gridButton ? .grid : .list
-        rebuild(keepingSelection: true)
-    }
-
     @objc private func moreTapped() {
         showingAll = true
-        Self.layout = .list
         rebuild(keepingSelection: true)
     }
 
@@ -847,27 +859,21 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
 
     private func move(_ delta: Int) {
         guard !cards.isEmpty else { return }
-        selectedIndex = min(max(selectedIndex + delta, 0), cards.count - 1)
-        applySelection()
+        let next = min(max(selectedIndex + delta, 0), cards.count - 1)
+        guard next != selectedIndex else { return }
+        selectedIndex = next
+        applySelection(animated: true)
     }
 
     func focus() { window?.makeFirstResponder(field) }
 
+    /// On its way out: the window under it takes clicks again at once.
+    var passesClicksThrough = false
+    override func hitTest(_ point: NSPoint) -> NSView? { passesClicksThrough ? nil : super.hitTest(point) }
+
     override func mouseDown(with event: NSEvent) {
         // A click outside the panel leaves.
-        if !shadowHost.frame.contains(convert(event.locationInWindow, from: nil)) { onClose?() }
-    }
-
-    override func layout() {
-        super.layout()
-        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(dark ? 0.4 : 0.12).cgColor
-        fitScroll()
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        rebuild(keepingSelection: true)
+        if !panelHost.frame.contains(convert(event.locationInWindow, from: nil)) { onClose?() }
     }
 
     // MARK: Testing
@@ -879,8 +885,18 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
         guard let editor = field.currentEditor() as? NSTextView else { _ = control(field, textView: NSTextView(), doCommandBy: selector); return }
         _ = control(field, textView: editor, doCommandBy: selector)
     }
-    var isShowingMoreForTesting: Bool { !moreButton.isHidden }
-    var framesForTesting: String { "overlay \(frame) panel \(shadowHost.frame) scroll \(scrollHeight?.constant ?? 0) content \(content.fittingSize.height)" }
+    var isShowingMoreForTesting: Bool { shown.count < all.count && field.stringValue.isEmpty && !showingAll }
+    var framesForTesting: String { "overlay \(frame) panel \(panelHost.frame) scroll \(scrollHeight?.constant ?? 0) content \(content.fittingSize.height)" }
+    var selectionFrameForTesting: NSRect { selection.frame }
+    func hoverForTesting(_ index: Int) { cards.enumerated().forEach { $0.element.hoverForTesting($0.offset == index) } }
+    var hoverReflowsForTesting: Bool {
+        guard let card = cards.first else { return false }
+        let before = card.frame
+        card.hoverForTesting(true)
+        layoutSubtreeIfNeeded()
+        defer { card.hoverForTesting(false) }
+        return card.frame != before
+    }
 }
 
 /// A menu item's action as a closure.
@@ -895,149 +911,140 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// One project in the switcher, a card (grid) or a row (list): its mark, name and place, what
-/// it's doing, its terminals and tracks; ⋯ and, held, × on hover. A project that isn't open is
-/// dimmed, on no fill, and says so (no outline: nothing in Side is enclosed by a border).
+/// One project in the switcher, a row (list) or a card (grid): its mark, name, and a line for
+/// what it's doing or where it is; its shortcut at the end. On hover, ⋯ and (held) × fade in over
+/// the shortcut's place, which keeps its width: hover never moves anything. The selection is the
+/// panel's capsule underneath; a project that isn't open is dimmed and says so.
 @MainActor
 final class ProjectSwitcherCard: NSView {
     var onPick: (() -> Void)?
     var onMenu: (() -> Void)?
     var onPutAway: (() -> Void)?
     var onHover: (() -> Void)?
-    var isSelected = false { didSet { refreshBackground() } }
+    var isSelected = false { didSet { refreshHover() } }
     let entry: ProjectSwitcherEntry
-    private var hovered = false { didSet { refreshBackground(); refreshTrailing() } }
+    private var hovered = false { didSet { refreshHover() } }
+    private let hoverFill = DS.Fill(DS.Color.hoverCapsule, cornerRadius: DS.Radius.surface)
     private let shortcut = NSTextField(labelWithString: "")
-    private let menuButton = NSButton()
-    private let closeButton = NSButton()
+    private let menuButton: DS.CircleButton
+    private let closeButton: DS.CircleButton
+    private let trailing = NSView()
+
+    static let trailingWidth: CGFloat = 52
 
     init(entry: ProjectSwitcherEntry, style: ProjectSwitcherOverlay.Layout) {
         self.entry = entry
+        menuButton = DS.CircleButton(symbol: "ellipsis", diameter: 22, label: "More for \(entry.space.name)")
+        closeButton = DS.CircleButton(symbol: "xmark", diameter: 22, label: "Put \(entry.space.name) away")
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        layer?.cornerRadius = DS.Radius.surface
-        let markSize: CGFloat = style == .grid ? 32 : 28
+        hoverFill.alphaValue = 0
+        hoverFill.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hoverFill)
+        let markSize: CGFloat = style == .grid ? 32 : 24
         let mark = NSImageView(image: ProjectSpaces.mark(for: entry.space, size: markSize) ?? NSImage())
         mark.imageScaling = .scaleProportionallyUpOrDown
         mark.translatesAutoresizingMaskIntoConstraints = false
         let name = NSTextField(labelWithString: entry.space.name)
-        name.font = style == .grid ? DS.Text.heading() : DS.Text.body(.semibold)
+        name.font = DS.Text.body(.semibold)
         name.lineBreakMode = .byTruncatingTail
-        let place = NSTextField(labelWithString: entry.place)
-        place.font = DS.Text.caption()
-        place.textColor = .secondaryLabelColor
-        place.lineBreakMode = .byTruncatingTail
-        let titles = NSStackView(views: [name, place])
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // One line under the name: what it's doing when something is, else where it is.
+        let second: NSView
+        if let activity = entry.activity {
+            second = DS.StatusLabel(state: activity.state.status, text: "\(activity.title) \(activity.state.word.lowercased())")
+        } else {
+            let place = NSTextField(labelWithString: [entry.place, entry.detail].compactMap { $0 }.joined(separator: " \u{00B7} "))
+            place.font = DS.Text.caption()
+            place.textColor = .secondaryLabelColor
+            place.lineBreakMode = .byTruncatingTail
+            place.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            second = place
+        }
+        let titles = NSStackView(views: [name, second])
         titles.orientation = .vertical
         titles.alignment = .leading
-        titles.spacing = 1
+        titles.spacing = 2
         titles.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titles.translatesAutoresizingMaskIntoConstraints = false
 
         shortcut.stringValue = entry.shortcut ?? ""
         shortcut.font = DS.Text.caption()
         shortcut.textColor = .tertiaryLabelColor
-        for (button, symbol, label) in [(menuButton, "ellipsis", "More for \(entry.space.name)"), (closeButton, "xmark", "Put \(entry.space.name) away")] {
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-            button.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
-            button.isBordered = false
-            button.wantsLayer = true
-            button.bindLayerBackground(DS.Color.hoverCapsule)
-            button.layer?.cornerRadius = DS.Radius.capsule(height: 24)
-            button.contentTintColor = .secondaryLabelColor
-            button.target = self
-            button.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant: 24), button.heightAnchor.constraint(equalToConstant: 24)])
-        }
+        shortcut.alignment = .right
+        menuButton.target = self
         menuButton.action = #selector(menuTapped)
+        closeButton.target = self
         closeButton.action = #selector(closeTapped)
-        let trailing = NSStackView(views: [shortcut, menuButton, closeButton])
-        trailing.spacing = 2
-        trailing.setContentHuggingPriority(.required, for: .horizontal)
+        for view in [shortcut, menuButton, closeButton] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; trailing.addSubview(view) }
+        menuButton.alphaValue = 0
+        closeButton.alphaValue = 0
+        menuButton.isHidden = true
+        closeButton.isHidden = true
+        trailing.translatesAutoresizingMaskIntoConstraints = false
 
-        var activityView: NSView?
-        if let activity = entry.activity {
-            let label = DS.StatusLabel(state: activity.state.status, text: "\(activity.state.word) \u{00B7} \(activity.title)")
-            activityView = label
-        } else if !entry.isOpen {
-            let label = NSTextField(labelWithString: "Opens as you left it")
-            label.font = DS.Text.caption()
-            label.textColor = .secondaryLabelColor
-            activityView = label
-        }
-        let detail = entry.detail.map { text -> NSTextField in
-            let label = NSTextField(labelWithString: text)
-            label.font = DS.Text.caption()
-            label.textColor = .secondaryLabelColor
-            return label
-        }
-
-        let root: NSStackView
-        if style == .grid {
-            let top = NSStackView(views: [mark, titles, NSView(), trailing])
-            top.spacing = DS.Spacing.l
-            top.alignment = .top
-            root = NSStackView(views: [top] + [activityView, detail].compactMap { $0 })
-            root.orientation = .vertical
-            root.alignment = .leading
-            root.spacing = DS.Spacing.l
-            root.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
-            top.translatesAutoresizingMaskIntoConstraints = false
-            top.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -24).isActive = true
-            titles.centerYAnchor.constraint(equalTo: mark.centerYAnchor).isActive = true
-            heightAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
-        } else {
-            titles.widthAnchor.constraint(equalToConstant: 170).isActive = true
-            let middle = NSStackView(views: [activityView, detail].compactMap { $0 })
-            middle.spacing = DS.Spacing.m
-            middle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            root = NSStackView(views: [mark, titles, middle, NSView(), trailing])
-            root.spacing = DS.Spacing.xl
-            root.alignment = .centerY
-            root.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
-            heightAnchor.constraint(equalToConstant: entry.isOpen ? 52 : 44).isActive = true
-        }
-        root.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(root)
+        let body = NSView()
+        body.translatesAutoresizingMaskIntoConstraints = false
+        for view in [mark, titles, trailing] as [NSView] { body.addSubview(view) }
+        addSubview(body)
+        let showsClose = entry.openness == .held
         NSLayoutConstraint.activate([
+            hoverFill.topAnchor.constraint(equalTo: topAnchor), hoverFill.bottomAnchor.constraint(equalTo: bottomAnchor),
+            hoverFill.leadingAnchor.constraint(equalTo: leadingAnchor), hoverFill.trailingAnchor.constraint(equalTo: trailingAnchor),
+            body.topAnchor.constraint(equalTo: topAnchor), body.bottomAnchor.constraint(equalTo: bottomAnchor),
+            body.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), body.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             mark.widthAnchor.constraint(equalToConstant: markSize), mark.heightAnchor.constraint(equalToConstant: markSize),
-            root.topAnchor.constraint(equalTo: topAnchor), root.bottomAnchor.constraint(equalTo: bottomAnchor),
-            root.leadingAnchor.constraint(equalTo: leadingAnchor), root.trailingAnchor.constraint(equalTo: trailingAnchor),
+            mark.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            titles.leadingAnchor.constraint(equalTo: mark.trailingAnchor, constant: 12),
+            titles.trailingAnchor.constraint(lessThanOrEqualTo: trailing.leadingAnchor, constant: -8),
+            trailing.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            trailing.widthAnchor.constraint(equalToConstant: Self.trailingWidth), trailing.heightAnchor.constraint(equalToConstant: 22),
+            shortcut.trailingAnchor.constraint(equalTo: trailing.trailingAnchor), shortcut.centerYAnchor.constraint(equalTo: trailing.centerYAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: trailing.trailingAnchor), closeButton.centerYAnchor.constraint(equalTo: trailing.centerYAnchor),
+            menuButton.trailingAnchor.constraint(equalTo: showsClose ? closeButton.leadingAnchor : trailing.trailingAnchor, constant: showsClose ? -6 : 0),
+            menuButton.centerYAnchor.constraint(equalTo: trailing.centerYAnchor),
         ])
-        // Not open: the card is quieter, and says so in words too.
-        if !entry.isOpen { root.alphaValue = 0.62 }
-        refreshBackground()
-        refreshTrailing()
+        if style == .grid {
+            NSLayoutConstraint.activate([
+                mark.topAnchor.constraint(equalTo: body.topAnchor, constant: 12),
+                titles.centerYAnchor.constraint(equalTo: mark.centerYAnchor),
+                trailing.topAnchor.constraint(equalTo: body.topAnchor, constant: 11),
+                heightAnchor.constraint(equalToConstant: 56),
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                mark.centerYAnchor.constraint(equalTo: body.centerYAnchor),
+                titles.centerYAnchor.constraint(equalTo: body.centerYAnchor),
+                trailing.centerYAnchor.constraint(equalTo: body.centerYAnchor),
+                heightAnchor.constraint(equalToConstant: ProjectSwitcherOverlay.rowHeight),
+            ])
+        }
+        // Not open: quieter, and it says so in words too.
+        if !entry.isOpen { body.alphaValue = 0.62 }
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        let state = entry.activity.map { ", \($0.state.word)" } ?? ""
+        let state = entry.activity.map { ", \($0.title) \($0.state.word.lowercased())" } ?? ""
         setAccessibilityLabel("\(entry.space.name), \(entry.place)\(state)")
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    /// Selected, Side's selected capsule; an open project at rest, the hover capsule; one not open,
-    /// none (it's dimmed, and says so). Resolved in the card's own appearance.
-    private func refreshBackground() {
-        let fill: NSColor = isSelected ? DS.Color.selectedCapsule : entry.isOpen ? DS.Color.hoverCapsule : .clear
-        ProjectSwitcherOverlay.paint(self, fill)
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        refreshBackground()
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        refreshBackground()
-    }
-
-    /// The shortcut at rest; ⋯ (and × for a held project) on hover.
-    private func refreshTrailing() {
-        shortcut.isHidden = hovered || entry.shortcut == nil
-        menuButton.isHidden = !hovered
-        closeButton.isHidden = !hovered || entry.openness != .held
+    /// Hover: a faint fill (none under the selection, which is already there) and the shortcut
+    /// giving its place to ⋯ and ×, crossfaded. Nothing is laid out again.
+    private func refreshHover() {
+        let showControls = hovered
+        let fill: CGFloat = hovered && !isSelected ? 1 : 0
+        if showControls { menuButton.isHidden = false; closeButton.isHidden = entry.openness != .held }
+        DS.Motion.fade(duration: DS.Motion.glanceDuration, {
+            hoverFill.animator().alphaValue = fill
+            shortcut.animator().alphaValue = showControls ? 0 : 1
+            menuButton.animator().alphaValue = showControls ? 1 : 0
+            closeButton.animator().alphaValue = showControls ? 1 : 0
+        }, completion: { [weak self] in
+            guard let self, !self.hovered else { return }
+            self.menuButton.isHidden = true
+            self.closeButton.isHidden = true
+        })
     }
 
     override func updateTrackingAreas() {
@@ -1056,61 +1063,91 @@ final class ProjectSwitcherCard: NSView {
 
     func hoverForTesting(_ on: Bool) { hovered = on }
     var showsPutAwayForTesting: Bool { !closeButton.isHidden }
+    var closeButtonSizeForTesting: NSSize { closeButton.frame.size }
 }
 
-/// ⌃⇥ held: the projects as tiles in a small panel at the window's centre, the next one picked;
-/// ⇥ again moves on, ⌃⇧⇥ back, letting go of ⌃ switches, Escape stays. As the system's app
-/// switcher works, with each tile's status dot and a line for the one picked.
+/// ⌃⇥ held: the open projects as tiles in a glass panel grown out of the stage bar, the next
+/// one picked; ⇥ again moves on, ⌃⇧⇥ back, letting go of ⌃ switches, Escape stays. A quick tap
+/// switches with no panel (the shell waits before showing it). The caption is one centred line
+/// the panel's width, its words crossfading: it never moves as the selection does.
 @MainActor
 final class ProjectCycleStrip: NSView {
     private(set) var entries: [ProjectSwitcherEntry]
     private(set) var selectedIndex: Int
     private var tiles: [NSView] = []
-    private let line = NSStackView()
-    private let panel = NSVisualEffectView()
+    private let selection = DS.Fill(DS.Color.selectedCapsule, cornerRadius: DS.Radius.surface)
+    private let caption = NSTextField(labelWithString: "")
+    private let row = NSView()
+
+    static let tileWidth: CGFloat = 88
+    static let tileHeight: CGFloat = 84
+    static let captionHeight: CGFloat = 30
+    static let inset: CGFloat = 12
+
+    static let maxWidth: CGFloat = 520
+
+    /// The tiles' width: the row is exactly its tiles.
+    private static func rowWidth(_ count: Int) -> CGFloat {
+        tileWidth * CGFloat(count) + DS.Spacing.xs * CGFloat(max(0, count - 1))
+    }
+
+    /// The panel's size for these entries: its tiles, or wider for the longest caption — two
+    /// tiles left the line under them 180 pt, and "main · 2 terminals" cut off (the owner,
+    /// 2026-11-05). Capped; past that it truncates.
+    static func size(for entries: [ProjectSwitcherEntry]) -> NSSize {
+        let captionWidth = entries.map { ceil(caption(for: $0).size().width) + DS.Spacing.l * 2 }.max() ?? 0
+        let content = min(maxWidth - inset * 2, max(rowWidth(entries.count), captionWidth))
+        return NSSize(width: inset * 2 + content, height: inset + tileHeight + captionHeight + 6)
+    }
 
     init(entries: [ProjectSwitcherEntry], start: Int) {
         self.entries = entries
         self.selectedIndex = start
         super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        shadow = NSShadow()
-        layer?.shadowOpacity = 0.3
-        layer?.shadowRadius = 24
-        layer?.shadowOffset = CGSize(width: 0, height: -8)
-        panel.material = .popover
-        panel.blendingMode = .withinWindow
-        panel.state = .active
-        panel.wantsLayer = true
-        panel.layer?.cornerRadius = DS.Radius.palette
-        panel.layer?.masksToBounds = true
-        panel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(panel)
-        let row = NSStackView()
-        row.spacing = DS.Spacing.s
+        if #unavailable(macOS 26.0) {
+            shadow = NSShadow()
+            layer?.shadowOpacity = 0.18
+            layer?.shadowRadius = 18
+            layer?.shadowOffset = CGSize(width: 0, height: -4)
+        }
+        let body = NSView()
+        let surface = DS.makeFloatingSurface(embedding: body)
+        surface.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(surface)
+        NSLayoutConstraint.activate([
+            surface.topAnchor.constraint(equalTo: topAnchor), surface.bottomAnchor.constraint(equalTo: bottomAnchor),
+            surface.leadingAnchor.constraint(equalTo: leadingAnchor), surface.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(selection)
+        body.addSubview(row)
+        caption.alignment = .center
+        caption.lineBreakMode = .byTruncatingTail
+        caption.translatesAutoresizingMaskIntoConstraints = false
+        body.addSubview(caption)
+        var previous: NSView?
         for entry in entries {
             let tile = NSView()
-            tile.wantsLayer = true
-            tile.layer?.cornerRadius = DS.Radius.surface
             tile.translatesAutoresizingMaskIntoConstraints = false
-            let mark = NSImageView(image: ProjectSpaces.mark(for: entry.space, size: 52) ?? NSImage())
+            let mark = NSImageView(image: ProjectSpaces.mark(for: entry.space, size: 44) ?? NSImage())
             mark.imageScaling = .scaleProportionallyUpOrDown
             mark.translatesAutoresizingMaskIntoConstraints = false
-            if !entry.isOpen { mark.alphaValue = 0.55 }
             let name = NSTextField(labelWithString: entry.space.name)
             name.font = DS.Text.caption(.medium)
             name.lineBreakMode = .byTruncatingTail
             name.alignment = .center
-            name.textColor = entry.isOpen ? .labelColor : .secondaryLabelColor
             name.translatesAutoresizingMaskIntoConstraints = false
             tile.addSubview(mark)
             tile.addSubview(name)
+            row.addSubview(tile)
             var constraints = [
-                tile.widthAnchor.constraint(equalToConstant: 104), tile.heightAnchor.constraint(equalToConstant: 98),
-                mark.widthAnchor.constraint(equalToConstant: 52), mark.heightAnchor.constraint(equalToConstant: 52),
-                mark.centerXAnchor.constraint(equalTo: tile.centerXAnchor), mark.topAnchor.constraint(equalTo: tile.topAnchor, constant: 12),
-                name.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: 8),
+                tile.widthAnchor.constraint(equalToConstant: Self.tileWidth), tile.heightAnchor.constraint(equalToConstant: Self.tileHeight),
+                tile.topAnchor.constraint(equalTo: row.topAnchor),
+                tile.leadingAnchor.constraint(equalTo: previous?.trailingAnchor ?? row.leadingAnchor, constant: previous == nil ? 0 : DS.Spacing.xs),
+                mark.widthAnchor.constraint(equalToConstant: 44), mark.heightAnchor.constraint(equalToConstant: 44),
+                mark.centerXAnchor.constraint(equalTo: tile.centerXAnchor), mark.topAnchor.constraint(equalTo: tile.topAnchor, constant: 10),
+                name.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: 6),
                 name.leadingAnchor.constraint(equalTo: tile.leadingAnchor, constant: 6), name.trailingAnchor.constraint(equalTo: tile.trailingAnchor, constant: -6),
             ]
             if let activity = entry.activity {
@@ -1120,23 +1157,25 @@ final class ProjectCycleStrip: NSView {
                 constraints += [dot.centerXAnchor.constraint(equalTo: mark.trailingAnchor, constant: -2), dot.centerYAnchor.constraint(equalTo: mark.topAnchor, constant: 2)]
             }
             NSLayoutConstraint.activate(constraints)
-            row.addArrangedSubview(tile)
             tiles.append(tile)
+            previous = tile
         }
-        line.spacing = DS.Spacing.s
-        let column = NSStackView(views: [row, line])
-        column.orientation = .vertical
-        column.spacing = DS.Spacing.xl
-        column.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 14, right: 16)
-        column.translatesAutoresizingMaskIntoConstraints = false
-        panel.addSubview(column)
+        // The row is exactly its tiles, centred: the panel is theirs or the caption's width, and
+        // the tiles sit in its middle (pinned to the leading edge they had drawn ~28 pt off).
+        previous?.trailingAnchor.constraint(equalTo: row.trailingAnchor).isActive = true
         NSLayoutConstraint.activate([
-            panel.topAnchor.constraint(equalTo: topAnchor), panel.bottomAnchor.constraint(equalTo: bottomAnchor),
-            panel.leadingAnchor.constraint(equalTo: leadingAnchor), panel.trailingAnchor.constraint(equalTo: trailingAnchor),
-            column.topAnchor.constraint(equalTo: panel.topAnchor), column.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
-            column.leadingAnchor.constraint(equalTo: panel.leadingAnchor), column.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
+            row.topAnchor.constraint(equalTo: body.topAnchor, constant: Self.inset),
+            row.centerXAnchor.constraint(equalTo: body.centerXAnchor),
+            row.widthAnchor.constraint(equalToConstant: Self.rowWidth(entries.count)),
+            row.heightAnchor.constraint(equalToConstant: Self.tileHeight),
+            caption.topAnchor.constraint(equalTo: row.bottomAnchor, constant: 6),
+            caption.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: Self.inset),
+            caption.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -Self.inset),
         ])
-        refresh()
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Projects")
+        refresh(animated: false)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -1144,22 +1183,46 @@ final class ProjectCycleStrip: NSView {
     func move(_ delta: Int) {
         guard !entries.isEmpty else { return }
         selectedIndex = ((selectedIndex + delta) % entries.count + entries.count) % entries.count
-        refresh()
+        refresh(animated: true)
     }
 
     var selected: ProjectSwitcherEntry? { entries.indices.contains(selectedIndex) ? entries[selectedIndex] : nil }
 
-    private func refresh() {
-        for (index, tile) in tiles.enumerated() { ProjectSwitcherOverlay.paint(tile, index == selectedIndex ? DS.Color.selectedCapsule : .clear) }
-        line.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        guard let entry = selected else { return }
-        if let activity = entry.activity {
-            line.addArrangedSubview(DS.StatusLabel(state: activity.state.status, text: "\(activity.state.word) \u{00B7} \(activity.title)"))
-        } else {
-            let place = NSTextField(labelWithString: "\(entry.space.name) \u{00B7} \(entry.place)")
-            place.font = DS.Text.caption()
-            place.textColor = .secondaryLabelColor
-            line.addArrangedSubview(place)
+    /// The capsule slides to the picked tile; the caption's words crossfade in place.
+    private func refresh(animated: Bool) {
+        layoutSubtreeIfNeeded()
+        if tiles.indices.contains(selectedIndex) {
+            let target = NSRect(x: (Self.tileWidth + DS.Spacing.xs) * CGFloat(selectedIndex), y: 0, width: Self.tileWidth, height: Self.tileHeight)
+            if animated { DS.Motion.animate(DS.Motion.snappy, { selection.animator().frame = target }) } else { selection.frame = target }
         }
+        if animated { DS.Motion.crossfade(caption, duration: DS.Motion.glanceDuration) }
+        caption.attributedStringValue = Self.caption(for: selected)
+        setAccessibilityValue(selected?.space.name)
     }
+
+    /// "● Claude Code finished" or "main · 2 terminals": one string, its dot a glyph in it, so
+    /// the line is one centred field whatever it says.
+    static func caption(for entry: ProjectSwitcherEntry?) -> NSAttributedString {
+        guard let entry else { return NSAttributedString() }
+        let text = NSMutableAttributedString()
+        defer {
+            // Centred by the string itself: its own (default, left) alignment overrode the
+            // field's, and the line sat at the left edge.
+            let centered = NSMutableParagraphStyle()
+            centered.alignment = .center
+            centered.lineBreakMode = .byTruncatingTail
+            text.addAttribute(.paragraphStyle, value: centered, range: NSRange(location: 0, length: text.length))
+        }
+        if let activity = entry.activity {
+            text.append(NSAttributedString(string: "\u{25CF} ", attributes: [.font: DS.Text.caption(), .foregroundColor: activity.state.status.color]))
+            text.append(NSAttributedString(string: "\(activity.title) \(activity.state.word.lowercased())", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor]))
+        } else {
+            let line = [entry.place, entry.detail].compactMap { $0 }.joined(separator: " \u{00B7} ")
+            text.append(NSAttributedString(string: line, attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        return text
+    }
+
+    var captionForTesting: String { caption.stringValue }
+    var selectionFrameForTesting: NSRect { selection.frame }
 }

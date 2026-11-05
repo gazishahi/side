@@ -390,6 +390,88 @@ enum DS {
         view.layer?.cornerRadius = radius
     }
 
+    /// A floating panel's surface around `content`: Liquid Glass on macOS 26, the popover
+    /// material before it. The palette's, and every panel that grows out of the stage bar.
+    static func makeFloatingSurface(embedding content: NSView, cornerRadius: CGFloat = Radius.palette) -> NSView {
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.contentView = content
+            glass.cornerRadius = cornerRadius
+            glass.style = .regular
+            return glass
+        }
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.state = .active
+        effect.blendingMode = .withinWindow
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = cornerRadius
+        effect.layer?.masksToBounds = true
+        content.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: effect.topAnchor), content.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: effect.trailingAnchor), content.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+        ])
+        return effect
+    }
+
+    /// A rounded fill in a token color, colored when its layer is drawn: right in whatever
+    /// appearance it's drawn in, on screen or not. Selection capsules, hover fills.
+    final class Fill: NSView {
+        var color: NSColor { didSet { needsDisplay = true } }
+        init(_ color: NSColor, cornerRadius: CGFloat) {
+            self.color = color
+            super.init(frame: .zero)
+            wantsLayer = true
+            layer?.cornerRadius = cornerRadius
+            layer?.cornerCurve = .continuous
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override var wantsUpdateLayer: Bool { true }
+        override func updateLayer() { layer?.backgroundColor = color.cgColor }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    /// A round button: width and height equal and required, the layer clipped to a circle, so it
+    /// can't come out a pill whatever its content wants (the switcher's ×, 2026-11-05).
+    final class CircleButton: NSButton {
+        private let fill: Fill
+        init(symbol: String, diameter: CGFloat, label: String) {
+            fill = Fill(Color.hoverCapsule, cornerRadius: diameter / 2)
+            super.init(frame: .zero)
+            isBordered = false
+            image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+            symbolConfiguration = .init(pointSize: diameter * 0.42, weight: .semibold)
+            contentTintColor = .secondaryLabelColor
+            imagePosition = .imageOnly
+            wantsLayer = true
+            layer?.cornerRadius = diameter / 2
+            layer?.masksToBounds = true
+            translatesAutoresizingMaskIntoConstraints = false
+            fill.frame = NSRect(x: 0, y: 0, width: diameter, height: diameter)
+            fill.autoresizingMask = [.width, .height]
+            addSubview(fill, positioned: .below, relativeTo: nil)
+            let width = widthAnchor.constraint(equalToConstant: diameter)
+            let height = heightAnchor.constraint(equalToConstant: diameter)
+            width.priority = .required
+            height.priority = .required
+            NSLayoutConstraint.activate([width, height])
+            setContentHuggingPriority(.required, for: .horizontal)
+            setContentHuggingPriority(.required, for: .vertical)
+            setAccessibilityLabel(label)
+            toolTip = label
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        }
+        override func mouseEntered(with event: NSEvent) { fill.color = Color.selectedCapsule; contentTintColor = .labelColor }
+        override func mouseExited(with event: NSEvent) { fill.color = Color.hoverCapsule; contentTintColor = .secondaryLabelColor }
+    }
+
     static func makeGlass(cornerRadius: CGFloat) -> NSView {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
@@ -462,6 +544,10 @@ enum DS {
         static var easeOut: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.2, 0.85, 0.25, 1.0) }
         /// Opacity only, never a spring: alpha that overshoots flashes.
         static let fadeDuration: TimeInterval = 0.15
+        /// A floating panel growing out of the stage bar (the palette, the project switcher, ⌃⇥),
+        /// and going back into it; `easeOut` both ways (SIDE_DESIGN_POLISH_0.5.md §1).
+        static let presentDuration: TimeInterval = 0.22
+        static let dismissDuration: TimeInterval = 0.18
         static var fadeCurve: CAMediaTimingFunction { CAMediaTimingFunction(name: .easeOut) }
         /// A view of the same content changing form (the editor and its Markdown preview, Writer
         /// mode): just enough to soften the cut, short enough to barely register.

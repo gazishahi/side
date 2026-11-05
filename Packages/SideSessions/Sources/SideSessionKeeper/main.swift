@@ -146,7 +146,7 @@ while true {
                     _ = welcome.withUnsafeBytes { write(candidate, $0.baseAddress!, $0.count) }
                 case .attach:
                     // The takeover: the attached client is told, then the candidate becomes it.
-                    sendToClient(Frame(.replaced)); flushClient(); dropClient()
+                    sendToClient(Frame(.replaced)); flushClient(); dropClient(why: "another client attached")
                     client = candidate
                     clientDecoder = candidateDecoder
                     candidate = -1
@@ -162,9 +162,9 @@ while true {
             if n > 0 {
                 clientDecoder.append(UnsafeRawBufferPointer(start: readBuffer, count: n))
                 while client >= 0, let frame = clientDecoder.next() { handle(frame) }
-                if clientDecoder.isCorrupt { dropClient() }
+                if clientDecoder.isCorrupt { dropClient(why: "unreadable frames") }
             } else if n == 0 || (errno != EAGAIN && errno != EINTR) {
-                dropClient()
+                dropClient(why: n == 0 ? "it hung up" : "read: \(String(cString: strerror(errno)))")
             }
         case EVFILT_WRITE where ident == client:
             flushClient()

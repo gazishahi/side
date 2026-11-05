@@ -216,7 +216,7 @@ final class SettingsSplitViewController: NSSplitViewController {
 
     static let items: [SidebarItem] = [
         SidebarItem(id: Pane.general.rawValue, title: "General", symbol: "gearshape.fill", tint: .systemGray,
-                    keywords: ["stages", "pin", "file explorer", "library"], summary: "Which stages the stage control shows, where the Editor's file explorer opens, and the Library."),
+                    keywords: ["stages", "pin", "file explorer", "library", "project switcher", "grid", "list"], summary: "Which stages the stage control shows, where the Editor's file explorer opens, and the Library."),
         SidebarItem(id: Pane.notifications.rawValue, title: "Notifications", symbol: "bell.badge.fill", tint: .systemRed,
                     keywords: ["sound", "alert", "banner", "glass", "funk", "tink", "needs you", "attention", "focus"], summary: "Notifications and sounds when an agent needs you, only for what happens while you're looking elsewhere."),
         SidebarItem(id: Pane.agents.rawValue, title: "Agents", symbol: "person.2.fill", tint: .systemIndigo,

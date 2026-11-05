@@ -288,6 +288,44 @@ final class TabStrip: NSObject {
         ])
         return view
     }()
+    /// The single tab's X, after its name, on hover as a tab's is. Without it ⌘W was the only
+    /// way to close the last tab (the owner, 2026-11-05).
+    private lazy var soloClose: TabCloseButton = {
+        let close = TabCloseButton()
+        close.target = self
+        close.action = #selector(soloCloseTapped)
+        close.isHidden = true
+        close.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(close)
+        NSLayoutConstraint.activate([
+            close.leadingAnchor.constraint(equalTo: soloLabel.trailingAnchor, constant: DS.Spacing.s),
+            close.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -DS.Spacing.l),
+            close.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+        ])
+        return close
+    }()
+    /// Where the pointer shows the X: the icon, the name and the X.
+    private lazy var soloHover: SoloHoverArea = {
+        let area = SoloHoverArea()
+        area.translatesAutoresizingMaskIntoConstraints = false
+        area.onHover = { [weak self] inside in
+            guard let self else { return }
+            self.soloClose.isHidden = !(inside && self.soloShown)
+        }
+        bar.addSubview(area, positioned: .below, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            area.leadingAnchor.constraint(equalTo: soloIcon.leadingAnchor, constant: -DS.Spacing.s),
+            area.trailingAnchor.constraint(equalTo: soloClose.trailingAnchor, constant: DS.Spacing.s),
+            area.topAnchor.constraint(equalTo: bar.topAnchor), area.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
+        ])
+        return area
+    }()
+    /// UI testing: the pointer over the single tab's name.
+    func hoverSoloForTesting() { soloHover.onHover?(true) }
+    @objc private func soloCloseTapped() {
+        soloClose.isHidden = true
+        onClose?(0)
+    }
     private var soloLeading: NSLayoutConstraint?
     var soloTitleForTesting: String? { soloLabel.alphaValue > 0 || soloShown ? soloLabel.stringValue : nil }
     private var soloShown = false
@@ -317,6 +355,8 @@ final class TabStrip: NSObject {
             }
         }
         let views: [NSView] = [soloLabel, soloIcon]
+        _ = soloHover
+        if !shown { soloClose.isHidden = true }
         guard shown != soloShown else { return }
         soloShown = shown
         guard bar.window != nil, !DS.Motion.reduceMotion else { views.forEach { $0.alphaValue = shown ? 1 : 0 }; return }
@@ -614,6 +654,14 @@ final class TabStrip: NSObject {
     /// UI testing: a click on the X of the tab at `index`, as the pointer makes one: hit-tested
     /// at the X's centre, so a view over it (a tab on its way out) takes the click instead.
     func clickCloseForTesting(_ index: Int) {
+        // One tab: the X after its name, shown as the pointer would show it.
+        if soloShown, index == 0, let window = bar.window, let content = window.contentView {
+            soloClose.isHidden = false
+            bar.layoutSubtreeIfNeeded()
+            let point = content.convert(NSPoint(x: soloClose.bounds.midX, y: soloClose.bounds.midY), from: soloClose)
+            if let hit = content.hitTest(point) as? NSControl { hit.sendAction(hit.action, to: hit.target) }
+            return
+        }
         guard chips.indices.contains(index), let close = chips[index].closeButton, let window = bar.window,
               let content = window.contentView else { return }
         close.isHidden = false
@@ -1985,6 +2033,19 @@ private final class SoloLabel: NSView {
         let rect = NSRect(x: 0, y: (bounds.height - size.height) / 2, width: min(size.width, bounds.width) + 1, height: size.height)
         text.draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
+}
+
+/// Tracks the pointer over the single tab's name; never takes a click.
+private final class SoloHoverArea: NSView {
+    var onHover: ((Bool) -> Void)?
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil))
+    }
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
 }
 
 private final class SoloIcon: NSImageView {

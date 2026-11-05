@@ -96,6 +96,12 @@ final class GeneralPreferencesViewController: NSViewController {
                 SettingsForm.row("Code folding", detail: "Fold regions from the gutter's arrows.", foldingSwitch),
                 SettingsForm.row("Minimap", detail: "The file drawn small beside the text; click or drag it to scroll.", minimapSwitch),
             ]),
+            SettingsForm.section("Projects", [
+                SettingsForm.row("Project switcher", detail: "How \u{2303}\u{2318}P shows your projects.",
+                                 SettingsForm.popup(ProjectSwitcherOverlay.Layout.allCases.map(\.title),
+                                                    selected: ProjectSwitcherOverlay.Layout.allCases.firstIndex(of: ProjectSwitcherOverlay.layout) ?? 0,
+                                                    self, #selector(switcherLayoutChanged(_:)))),
+            ]),
             SettingsForm.section("Terminal", footer: "Each terminal runs in a small helper outside Side, so closing a window or quitting doesn't end what's running in it. Reopen the project and each tab is as you left it. Closing a tab always ends its terminal.", [
                 SettingsForm.row("Keep terminals running when Side quits", detail: "Off, quitting or closing a project ends its terminals.",
                                  keepRunningSwitch),
@@ -152,6 +158,10 @@ final class GeneralPreferencesViewController: NSViewController {
     static var versionText: String {
         let info = Bundle.main.infoDictionary
         return "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    @objc private func switcherLayoutChanged(_ sender: NSPopUpButton) {
+        ProjectSwitcherOverlay.layout = ProjectSwitcherOverlay.Layout.allCases[max(0, sender.indexOfSelectedItem)]
     }
 
     @objc private func confirmCloseToggled(_ sender: NSSwitch) {

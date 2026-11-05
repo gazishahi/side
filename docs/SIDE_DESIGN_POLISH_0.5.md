@@ -1,6 +1,6 @@
 # Polish after 0.5.0: switcher, ⌃⇥, Settings, update pill
 
-Status: in progress — every question decided 2026-11-05; Settings (§5) built, the rest not yet. Governs four
+Status: in progress — every question decided 2026-11-05; Settings (§5), the switcher (§2) and ⌃⇥ (§3) built; the update pill not yet. Governs four
 surfaces the owner found rough in 0.5.0; written as rules first, then each component
 (`design-coherence`: one system, not four one-offs). Builds on `SIDE_DESIGN.md` and the motion
 tokens already in `DS.Motion`.
@@ -279,3 +279,31 @@ cards sit in columns.
   appearance change no longer comes back in the old colors.
 - Settings opens at 980 × 680, minimum 900 wide.
 - On screen: `SETTINGS_SIZE="1500 860" scripts/uitest/check-settings.sh [pane…]`.
+
+## As built: switcher and ⌃⇥ (2026-11-05)
+
+- `ShellViewController.morph(_:appearing:key:)`: the palette's grow-from-the-stage-bar motion,
+  now shared; `DS.Motion.presentDuration` / `dismissDuration` (0.22 / 0.18 s, `easeOut`).
+- `DS.makeFloatingSurface` (Liquid Glass on 26, popover material before), `DS.Fill` (token
+  fills colored when drawn), `DS.CircleButton` (required square, clipped circle).
+- Switcher: placed by `ChromeHost.paletteFrame` above the stage bar; list by default, grid in
+  Settings → General (`side.projectSwitcher.style`); one sliding selection capsule; hover fades
+  a fill and swaps the shortcut for ⋯/× in a fixed-width slot; "Show n more" row; footer hints
+  and Open… ⌘O. A switcher on its way out passes clicks through.
+- ⌃⇥: open projects only; shows after 120 ms with ⌃ still down (a tap just switches); tiles in a
+  row exactly their width; sliding capsule; one centred caption whose words crossfade; fades on
+  release while the window switches.
+- On screen: `scripts/uitest/check-switcher.sh` (placement, order, typing, put away, quick tap,
+  open-only strip; frames of the open and close in `$SIDE_UIT/check-switcher`).
+
+Fixed after the owner's pass (2026-11-05):
+
+- The file explorer no longer comes out by itself on a project switch (only in a window's first
+  project, when it is key), and a switch puts it away. One floating surface at a time: the
+  palette and Find, the switcher and ⌃⇥ put it away, and opening it puts the palette away.
+  ⌃⇥ works with the explorer focused.
+- ⌃⇥'s panel is as wide as its longest caption (to 520 pt), the tiles centred in it.
+- A terminal whose connection to its keeper ends while the keeper runs is rejoined, not reported
+  as ended; taken by another Side, a key brings it back. The keeper logs why it let a client go.
+- The single tab has its X, after its name on hover.
+- On screen: `check-switcher.sh` (explorer checks added), `check-keeper-lost.sh`.

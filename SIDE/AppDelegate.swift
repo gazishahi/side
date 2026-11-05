@@ -90,6 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("tab-click-title "), let index = Int(command.dropFirst(16)) { shell.clickTabTitleForTesting(index) }
                     // "tab-x 2": a click on the third tab's X, in Editor or Terminal, whichever shows.
                     if command.hasPrefix("tab-x "), let index = Int(command.dropFirst(6)) { shell.clickTabCloseForTesting(index) }
+                    if command == "tab-solo-hover" { shell.hoverSoloTabForTesting() }
+                    if command == "floating-dump" { FileHandle.standardError.write(Data("[floating] \(shell.floatingStateForTesting)\n".utf8)) }
                     if command == "tabs-dump" {
                         FileHandle.standardError.write(Data("[tabs] \(shell.tabsDumpForTesting)\n".utf8))
                     }
@@ -182,6 +184,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         if shell.projectSwitcherForTesting != nil { shell.toggleProjectSwitcher(); shell.toggleProjectSwitcher() }
                     }
                     if command == "switcher-dump" { FileHandle.standardError.write(Data("[switcher] \(shell.projectSwitcherForTesting?.framesForTesting ?? "closed") entries=\(shell.projectSwitcherForTesting?.entryNamesForTesting ?? []) selected=\(shell.projectSwitcherForTesting?.selectedNameForTesting ?? "-")\n".utf8)) }
+                    if command.hasPrefix("switcher-hover "), let index = Int(command.dropFirst(15)) { shell.projectSwitcherForTesting?.hoverForTesting(index) }
+                    if command == "cycle-dump" {
+                        let strip = shell.cycleStripForTesting
+                        FileHandle.standardError.write(Data("[cycle] \(strip.map { "shown=\(!$0.isHidden) entries=\($0.entries.map(\.space.name)) selected=\($0.selected?.space.name ?? "-") caption=\($0.captionForTesting) frame=\($0.frame) drawn=\($0.subviews.first?.frame ?? .zero)" } ?? "closed")\n".utf8))
+                    }
                     if command == "cycle" { shell.cycleForTesting(back: false) }
                     if command == "cycle-back" { shell.cycleForTesting(back: true) }
                     if command == "cycle-release" { shell.cycleReleaseForTesting() }

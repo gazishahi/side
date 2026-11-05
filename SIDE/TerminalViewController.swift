@@ -16,6 +16,9 @@ final class SideTerminalView: LocalProcessTerminalView {
         didSet { syncKeeperSize() }
     }
     var onFileLinkRequested: ((String) -> Bool)?
+    /// Input with no keeper attached: true if it was handled (a session taken by another Side,
+    /// rejoined), and the bytes go nowhere.
+    var onInputWithoutKeeper: (() -> Bool)?
     /// A bell from the program (BEL): the activity pill says so when the tab is out of sight.
     var onBell: (() -> Void)?
 
@@ -166,7 +169,7 @@ final class SideTerminalView: LocalProcessTerminalView {
                 break
             }
         }
-        if let keeper { keeper.input(data) } else { super.send(source: source, data: data) }
+        if let keeper { keeper.input(data) } else if onInputWithoutKeeper?() != true { super.send(source: source, data: data) }
     }
 
     /// SwiftTerm tells only its own process about a new size, so a keeper's terminal is told
@@ -530,6 +533,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        terminalView.onInputWithoutKeeper = { [weak self] in self?.rejoinIfTaken() ?? false }
         terminalView.onBell = { [weak self] in
             guard let self else { return }
             // Rung where you can see it: nothing to tell you later.
@@ -712,7 +716,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             self.setProgramTitle(Self.cleanProgramTitle(title))
         }
         link.onExit = { [weak self] exit in self?.keeperSessionEnded(exitCode: exit.status) }
-        link.onLost = { [weak self] in self?.keeperSessionEnded(exitCode: nil, lost: true) }
+        link.onLost = { [weak self] replaced in self?.keeperConnectionLost(replaced: replaced) }
     }
 
     /// Once the new shell is ready: Claude resumes its conversation, an editor or watcher starts
@@ -777,6 +781,48 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     func dismissRerunOffer() {
         rerunOffer = nil
         onRerunOfferChanged?()
+    }
+
+    /// The connection to the keeper ended without an exit. Only a keeper that's gone ends the
+    /// session: one still running is rejoined, its screen fresh from its snapshot. Two Claude
+    /// Code sessions said they had ended while their keepers and Claude ran on, with no way back
+    /// but a new tab (the owner, 2026-11-05). Taken by another Side, it's rejoined on the next
+    /// key, not at once: two Sides would take it back and forth.
+    private func keeperConnectionLost(replaced: Bool) {
+        terminalView.keeper = nil
+        guard isAlive else { return }
+        guard let keeperID, let record = SessionKeepers.liveRecord(keeperID) else { return keeperSessionEnded(exitCode: nil, lost: true) }
+        if replaced {
+            terminalView.feed(text: "\r\n\u{1B}[2m[This terminal is open in another Side. Press a key to bring it back here.]\u{1B}[0m\r\n")
+            rejoinsOnInput = true
+            return
+        }
+        // A keeper that keeps letting go isn't chased: three drops in a minute end it.
+        let now = Date()
+        rejoins = rejoins.filter { now.timeIntervalSince($0) < 60 } + [now]
+        guard rejoins.count <= 3 else { return keeperSessionEnded(exitCode: nil, lost: true) }
+        rejoin(record)
+    }
+    private var rejoins: [Date] = []
+    private var rejoinsOnInput = false
+
+    /// Back to a keeper still running: the screen is reset and drawn again from its snapshot.
+    private func rejoin(_ record: SessionRecord) {
+        rejoinsOnInput = false
+        terminalView.feed(text: "\u{1B}c")
+        if !reattach(record) { keeperSessionEnded(exitCode: nil, lost: true) }
+    }
+
+    /// A key in a terminal another Side took: it comes back here (the key itself isn't sent).
+    func rejoinIfTaken() -> Bool {
+        guard rejoinsOnInput, isAlive else { return false }
+        guard let keeperID, let record = SessionKeepers.liveRecord(keeperID) else {
+            rejoinsOnInput = false
+            keeperSessionEnded(exitCode: nil, lost: true)
+            return true
+        }
+        rejoin(record)
+        return true
     }
 
     /// `lost`: the keeper went away without saying how the session ended (it crashed, or was

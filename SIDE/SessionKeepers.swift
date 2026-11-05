@@ -232,8 +232,9 @@ final class KeeperLink {
     var onTitle: ((String) -> Void)?
     var onAttention: (() -> Void)?
     var onExit: ((Exit) -> Void)?
-    /// The keeper went away without saying how the session ended, or another Side took it.
-    var onLost: (() -> Void)?
+    /// The connection ended without the keeper saying how the session ended: the keeper went
+    /// away, dropped this client, or (`replaced`) another Side attached to the session.
+    var onLost: ((_ replaced: Bool) -> Void)?
 
     private init(id: String) { self.id = id }
 
@@ -303,6 +304,7 @@ final class KeeperLink {
     }
 
     private var ended = false
+    private var replaced = false
 
     private func received(_ frame: Frame) {
         switch frame.kind {
@@ -314,7 +316,7 @@ final class KeeperLink {
         case .exited:
             ended = true
             onExit?(frame.decode(Exit.self) ?? Exit(status: nil, signal: nil))
-        case .replaced: closed()
+        case .replaced: replaced = true; closed()
         default: break
         }
     }
@@ -324,6 +326,6 @@ final class KeeperLink {
         guard !ended else { return }
         let lost = onLost
         onLost = nil
-        lost?()
+        lost?(replaced)
     }
 }
