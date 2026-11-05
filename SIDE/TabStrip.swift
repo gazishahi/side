@@ -1048,6 +1048,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         // A stage taken out of the window and put back lost the shimmer's animation; it stayed
         // still until another tab was chosen (the owner, 2026-11-05).
         if isWorking, window != nil { updateWorkingIndicator() }
+        dropDragOnLeavingWindow()
     }
 
     override func setFrameOrigin(_ newOrigin: NSPoint) {
@@ -1294,6 +1295,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let overlay = TabDragOverlay(chip: image, title: titleImage(), icon: cardIcon(), card: windowImage, sourceWindow: window, chipFrame: frame,
                                      grab: NSPoint(x: grabOffset.x / max(1, bounds.width), y: grabOffset.y),
                                      chipTitleX: textX, chipIconCenterX: Self.iconCenterX)
+        overlay.onAbandoned = { [weak self] in self?.finishLostDrag() ?? false }
         overlay.show()
         self.overlay = overlay
         alphaValue = 0
@@ -1386,6 +1388,29 @@ final class TabChipView: NSView, PointerHoverSyncing {
             guard let self, self.superview != nil else { return }
             self.strip?.chipStayed(self)
         }
+    }
+
+    /// The button came up without this tab hearing it: the drag ends as a release would, in
+    /// the strip; torn out, back home. False if it can't (it has left the window).
+    private func finishLostDrag() -> Bool {
+        guard window != nil, strip != nil else { return false }
+        switch phase {
+        case .lifted: setDown(velocity: .zero)
+        case .torn: returnHome(to: nil)
+        default: return false
+        }
+        window?.isMovable = true
+        return true
+    }
+
+    /// Taken out of the window mid-drag (closed, or the strip rebuilt): its layer goes with it.
+    private func dropDragOnLeavingWindow() {
+        guard window == nil, phase != .idle else { return }
+        phase = .idle
+        removeEscapeMonitor()
+        overlay?.abandon()
+        overlay = nil
+        alphaValue = 1
     }
 
     private func removeEscapeMonitor() {
@@ -1656,8 +1681,56 @@ final class TabDragOverlay {
         return out
     }
 
-    func show() { panel.orderFrontRegardless() }
-    func close() { panel.orderOut(nil) }
+    func show() {
+        panel.orderFrontRegardless()
+        watchForLostRelease()
+    }
+    func close() {
+        stopWatching()
+        panel.orderOut(nil)
+    }
+
+    // MARK: A drag that lost its tab
+
+    /// Held while the button is down. If it's let go and nothing set the layer down (the tab was
+    /// rebuilt or closed under the drag, or its mouse-up went elsewhere), the tab is asked to
+    /// finish the drag (`onAbandoned`, true if it did); with no tab left to ask, the layer fades
+    /// away itself. A README.md tab stayed frozen over the strip, on top of every window, after
+    /// its tab was closed (the owner, 2026-11-05).
+    var onAbandoned: (() -> Bool)?
+    private var releaseWatch: Timer?
+    /// Whether the button is down. Unit tests drag with made-up events, the real button up: they
+    /// count it down unless a test says otherwise.
+    static var isButtonDown: () -> Bool = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+        ? { NSEvent.pressedMouseButtons & 1 != 0 } : { true }
+
+    private func watchForLostRelease() {
+        var released = 0
+        // Holds the overlay while it runs: with the tab gone, nothing else would, and the panel
+        // would outlive it on screen.
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [self] _ in
+            MainActor.assumeIsolated {
+                released = Self.isButtonDown() ? 0 : released + 1
+                guard released >= 2 else { return }
+                stopWatching()
+                if onAbandoned?() != true { abandon() }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        releaseWatch = timer
+    }
+
+    private func stopWatching() {
+        releaseWatch?.invalidate()
+        releaseWatch = nil
+    }
+
+    /// No tab to go back to: it fades where it is.
+    func abandon() {
+        stopWatching()
+        Self.landing.append(self)
+        fadeAway()
+    }
 
     private func local(_ screenRect: NSRect) -> NSRect {
         screenRect.offsetBy(dx: -panel.frame.minX, dy: -panel.frame.minY)
@@ -1800,6 +1873,7 @@ final class TabDragOverlay {
 
     /// Set down: springs into the slot as a chip, carrying the hand's speed.
     func settle(into screenFrame: NSRect, velocity: CGVector, completion: @escaping () -> Void) {
+        stopWatching()
         if isCard {
             isCard = false
             crossfade(toCard: false)
@@ -1843,6 +1917,7 @@ final class TabDragOverlay {
     /// Dropped outside the window: the card grows into the new window as it opens, then gives
     /// way to it. If no window comes (the tab couldn't close), the card fades where it is.
     func landInNewWindow(from source: NSWindow?) {
+        stopWatching()
         // Held until it has faded and closed its panel: the tab lets go of it at the drop, and
         // with only weak references left the overlay went away mid-landing and its panel stayed
         // over every app (the owner, 2026-10-31).

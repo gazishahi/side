@@ -639,6 +639,43 @@ final class EditorParityTests: XCTestCase {
         XCTAssertEqual(TabDragOverlay.panelsOnScreenForTesting, before, "the card is gone")
     }
 
+    /// 2026-11-05, the owner: a dragged README.md stayed frozen over the strip, over every
+    /// window, after its tab was closed. A release the tab never hears still sets it down, and
+    /// a tab taken away mid-drag takes its layer with it.
+    func testADragThatLosesItsReleaseOrItsTabStillEnds() throws {
+        for name in ["a.swift", "b.swift", "c.swift"] { _ = try open(name, "let \(name.first!) = 1\n") }
+        make.view.layoutSubtreeIfNeeded()
+        let before = TabDragOverlay.panelsOnScreenForTesting
+        defer { TabDragOverlay.isButtonDown = { true } }
+        func waitForPanels(_ count: Int) {
+            let deadline = Date().addingTimeInterval(3)
+            while Date() < deadline, TabDragOverlay.panelsOnScreenForTesting != count { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        }
+
+        // The button comes up; the tab never hears it.
+        var chip = make.tabStripForTesting.chips[0]
+        var start = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
+        chip.mouseDown(with: mouse(.leftMouseDown, start))
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 10)))
+        XCTAssertEqual(chip.phase, .lifted)
+        TabDragOverlay.isButtonDown = { false }
+        waitForPanels(before)
+        XCTAssertEqual(chip.phase, .idle, "set down as a release would")
+        XCTAssertEqual(chip.alphaValue, 1, "back in its slot")
+        XCTAssertEqual(TabDragOverlay.panelsOnScreenForTesting, before, "and its layer gone")
+
+        // Its tab is taken away mid-drag.
+        TabDragOverlay.isButtonDown = { true }
+        chip = make.tabStripForTesting.chips[1]
+        start = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
+        chip.mouseDown(with: mouse(.leftMouseDown, start))
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 10)))
+        XCTAssertEqual(TabDragOverlay.panelsOnScreenForTesting, before + 1)
+        chip.removeFromSuperview()
+        waitForPanels(before)
+        XCTAssertEqual(TabDragOverlay.panelsOnScreenForTesting, before, "the layer left with its tab")
+    }
+
     /// The drag's two looks, for the eye (SIDE_PREVIEW_SNAPSHOT): the lifted chip and the card.
     func testTheDragLayerSnapshots() throws {
         guard let directory = ProcessInfo.processInfo.environment["SIDE_PREVIEW_SNAPSHOT"] else { throw XCTSkip("snapshot not asked for") }
