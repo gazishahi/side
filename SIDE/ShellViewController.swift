@@ -506,6 +506,9 @@ final class ShellViewController: NSViewController {
         isTornOut = soleFile != nil || soleSession != nil
         makeVC.soleFile = soleFile
         makeVC.loadProject(at: url)
+        // When it was last opened: the switcher says, for a project that isn't open now.
+        ProjectSpaces.shared.space(for: url)
+        ProjectSpaces.shared.touch(url)
         if let soleSession { runVC.adoptTornOutSession(soleSession, trackKey: focusingTrackKey ?? "") }
         let landOn: Stage = soleSession != nil ? .run : .make
         guard let focusingTrackKey, let store = trackStore,
@@ -524,6 +527,8 @@ final class ShellViewController: NSViewController {
     private var isTornOut = false
 
     func prepareForClose() {
+        if let cycleMonitor { NSEvent.removeMonitor(cycleMonitor) }
+        cycleMonitor = nil
         makeVC.prepareForClose()
         thinkVC.prepareForClose()
         runVC.prepareForClose()
@@ -538,6 +543,7 @@ final class ShellViewController: NSViewController {
     override func viewDidAppear() {
         super.viewDidAppear()
         LaunchSignposts.begin("shellViewDidAppear")
+        installCycleMonitor()
         // Normally already installed by `makeWindow` before the window was shown; this is the
         // fallback for a window that acquired this controller some other way.
         if let window = view.window, window.titleVisibility != .hidden { installChrome(in: window) }
@@ -600,8 +606,7 @@ final class ShellViewController: NSViewController {
         let projectChip = chrome.projectChip
         projectChip.currentProject = { [weak self] in self?.projectURL }
         projectChip.onSwipeProject = { [weak self] offset in self?.switchProject(offset: offset) }
-        projectChip.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
-        projectChip.onAddProject = { [weak self] in self?.presentOpenProject() }
+        projectChip.onOpenSwitcher = { [weak self] in self?.toggleProjectSwitcher() }
         makeVC.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
         trackPill.onNewTrackNamed = { [weak self] name in
             self?.show(.tracks)
@@ -1238,6 +1243,98 @@ final class ShellViewController: NSViewController {
     }
 
     static let projectSwitchFade: TimeInterval = 0.12
+
+    // MARK: - The project switcher (⌃⌘P, the chip) and the ⌃⇥ strip
+
+    private var projectSwitcher: ProjectSwitcherOverlay?
+    private var cycleStrip: ProjectCycleStrip?
+    private var cycleMonitor: Any?
+
+    @objc func showProjectSwitcher(_ sender: Any?) { toggleProjectSwitcher() }
+
+    func toggleProjectSwitcher() {
+        if projectSwitcher != nil { closeProjectSwitcher(); return }
+        let overlay = ProjectSwitcherOverlay(current: projectURL)
+        overlay.frame = view.bounds
+        overlay.autoresizingMask = [.width, .height]
+        overlay.onPick = { [weak self] url in self?.goToProject(url) }
+        overlay.onOpenInNewWindow = { url in AppDelegate.shared?.openTrackInNewWindow(projectRoot: url, trackKey: nil) }
+        overlay.onOpenProject = { [weak self] in self?.presentOpenProject() }
+        overlay.onClose = { [weak self] in self?.closeProjectSwitcher() }
+        view.addSubview(overlay, positioned: .above, relativeTo: nil)
+        projectSwitcher = overlay
+        overlay.focus()
+        guard !DS.Motion.reduceMotion else { return }
+        overlay.alphaValue = 0
+        DS.Motion.fade(duration: 0.14, { overlay.animator().alphaValue = 1 })
+    }
+
+    private func closeProjectSwitcher() {
+        guard let overlay = projectSwitcher else { return }
+        projectSwitcher = nil
+        guard !DS.Motion.reduceMotion else { overlay.removeFromSuperview(); return }
+        DS.Motion.fade(duration: 0.1, { overlay.animator().alphaValue = 0 }, completion: { overlay.removeFromSuperview() })
+    }
+
+    /// A project picked in the switcher or the strip: the window that shows it comes forward;
+    /// otherwise this one moves there.
+    func goToProject(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        if path == projectURL?.standardizedFileURL.path { return }
+        if let other = NSApp.windows.first(where: { ($0.contentViewController as? ShellViewController)?.projectRootURL?.standardizedFileURL.path == path && $0 !== view.window }) {
+            other.makeKeyAndOrderFront(nil)
+            return
+        }
+        switchProject(to: url)
+    }
+
+    /// ⌃⇥ (⌃⇧⇥ back) while this window is key: the strip, the next project picked; ⇥ again moves
+    /// on; letting go of ⌃ switches; Escape stays.
+    private func installCycleMonitor() {
+        guard cycleMonitor == nil else { return }
+        cycleMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self, event.window === self.view.window else { return event }
+            return self.handleCycle(event) ? nil : event
+        }
+    }
+
+    private func handleCycle(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.type == .flagsChanged {
+            if cycleStrip != nil, !flags.contains(.control) { finishCycle(commit: true) }
+            return false
+        }
+        if cycleStrip != nil, event.keyCode == 53 { finishCycle(commit: false); return true }
+        guard event.keyCode == 48, flags.contains(.control), !flags.contains(.command), !flags.contains(.option) else { return false }
+        let back = flags.contains(.shift)
+        if let strip = cycleStrip { strip.move(back ? -1 : 1); return true }
+        let entries = ProjectSwitcherModel.entries(current: projectURL)
+        guard entries.count > 1 else { NSSound.beep(); return true }
+        closeProjectSwitcher()
+        let strip = ProjectCycleStrip(entries: entries, start: back ? entries.count - 1 : 1)
+        view.addSubview(strip, positioned: .above, relativeTo: nil)
+        NSLayoutConstraint.activate([strip.centerXAnchor.constraint(equalTo: view.centerXAnchor), strip.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
+        cycleStrip = strip
+        return true
+    }
+
+    private func finishCycle(commit: Bool) {
+        guard let strip = cycleStrip else { return }
+        cycleStrip = nil
+        let picked = strip.selected?.space.url
+        strip.removeFromSuperview()
+        if commit, let picked { goToProject(picked) }
+    }
+
+    var projectSwitcherForTesting: ProjectSwitcherOverlay? { projectSwitcher }
+    var cycleStripForTesting: ProjectCycleStrip? { cycleStrip }
+    /// UI testing: ⌃⇥ (or ⌃⇧⇥) pressed, and ⌃ let go.
+    func cycleForTesting(back: Bool) {
+        let flags: NSEvent.ModifierFlags = back ? [.control, .shift] : [.control]
+        if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: view.window?.windowNumber ?? 0,
+                                        context: nil, characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48) { _ = handleCycle(event) }
+    }
+    func cycleReleaseForTesting() { finishCycle(commit: true) }
 
     /// Previous or next project in the switcher's order (a swipe on the pill, ⌃⇥).
     func switchProject(offset: Int) {

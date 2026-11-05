@@ -4998,6 +4998,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // Project switching in one window (prototype): ⌃1–9, and next and previous.
         let projectsItem = NSMenuItem(title: "Projects", action: nil, keyEquivalent: "")
         let projectsMenu = NSMenu(title: "Projects")
+        Shortcuts.bind(projectsMenu.addItem(withTitle: "Switch Project\u{2026}", action: #selector(ShellViewController.showProjectSwitcher(_:)), keyEquivalent: ""), "project.switcher")
         Shortcuts.bind(projectsMenu.addItem(withTitle: "Next Project", action: #selector(ShellViewController.switchToNextProject(_:)), keyEquivalent: ""), "project.next")
         Shortcuts.bind(projectsMenu.addItem(withTitle: "Previous Project", action: #selector(ShellViewController.switchToPreviousProject(_:)), keyEquivalent: ""), "project.previous")
         projectsMenu.addItem(NSMenuItem.separator())

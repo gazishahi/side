@@ -77,6 +77,25 @@ final class ChromeTests: XCTestCase {
         XCTAssertNotNil(DS.Glyph.image(named: "magnifyingglass"), "other names are SF Symbols")
     }
 
+    /// The project switcher (the owner, 2026-11-04): a query matches its characters in order, as
+    /// Quick Open does; a project remembers when it was opened, and putting it away keeps it listed.
+    func testTheSwitcherMatchesNamesAndKeepsPutAwayProjects() throws {
+        XCTAssertTrue(ProjectSwitcherModel.matches("wb", "webapp"))
+        XCTAssertTrue(ProjectSwitcherModel.matches("", "anything"))
+        XCTAssertTrue(ProjectSwitcherModel.matches("Web App", "webapp"), "case and spaces don't count")
+        XCTAssertFalse(ProjectSwitcherModel.matches("bw", "webapp"), "in order")
+        let spaces = ProjectSpaces(store: throwawayDefaults())
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("switcher-\(UUID().uuidString)")
+        spaces.space(for: folder)
+        XCTAssertNil(spaces.spaces.first?.lastOpenedAt)
+        spaces.touch(folder)
+        XCTAssertNotNil(spaces.spaces.first?.lastOpenedAt)
+        spaces.putAway(folder)
+        XCTAssertEqual(spaces.spaces.map(\.path), [folder.standardizedFileURL.path], "put away, not removed")
+        XCTAssertFalse(spaces.isHeld(folder))
+        XCTAssertEqual(ProjectSwitcherModel.limit, 9, "as many as ⌃1–9 reach")
+    }
+
     func testShortcutHintsNumberTheFirstEightAndTheLastTab() {
         XCTAssertEqual(TabShortcutHints.hint(at: 0, count: 3), Shortcuts.display("tabs.1"))
         XCTAssertEqual(TabShortcutHints.hint(at: 7, count: 12), Shortcuts.display("tabs.8"))

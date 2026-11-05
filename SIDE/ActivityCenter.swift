@@ -147,6 +147,17 @@ final class ActivityCenter {
     /// just working (the project switcher's dots).
     func attention(forProject path: String) -> DS.StatusState? { attentionItem(forProject: path)?.state.status }
 
+    /// What a project is doing that most wants saying, working included (the switcher's cards).
+    func mostPressingItem(forProject path: String) -> Item? {
+        let target = URL(fileURLWithPath: path).standardizedFileURL.path
+        return items.first { item in
+            switch item.target {
+            case .terminal(let project, _), .agent(let project, _): return project.standardizedFileURL.path == target
+            case .update: return false
+            }
+        }
+    }
+
     /// The item behind `attention`, for its own word ("Finished", not the status's generic name).
     func attentionItem(forProject path: String) -> Item? {
         let target = URL(fileURLWithPath: path).standardizedFileURL.path

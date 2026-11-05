@@ -14,6 +14,8 @@ final class ProjectSpaces {
         let path: String
         var symbol: String
         var colorIndex: Int
+        /// When a window last opened it: a project that isn't open says how long ago.
+        var lastOpenedAt: Date? = nil
 
         var url: URL { URL(fileURLWithPath: path) }
         var name: String { url.lastPathComponent }
@@ -92,6 +94,21 @@ final class ProjectSpaces {
     }
 
     var isHoldingForTesting: Set<String> { held }
+
+    /// A window opened it now.
+    func touch(_ url: URL) {
+        guard let index = index(of: url) else { return }
+        spaces[index].lastOpenedAt = Date()
+        save()
+    }
+
+    /// No longer held in the background: closed unless a window has it, still in the switcher
+    /// (under Not open) to come back to.
+    func putAway(_ url: URL) {
+        let path = Self.normalized(url)
+        if held.remove(path) != nil { ProjectContextRegistry.shared.release(projectRoot: url) }
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
 
     /// Out of the switcher, and closed if nothing else has it open.
     func remove(_ url: URL) {

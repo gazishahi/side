@@ -164,7 +164,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("stage ") { shell.showStageForTesting(String(command.dropFirst(6))) }
                     if command == "toggle-preview" { shell.toggleMarkdownPreviewForTesting() }
                     if command == "switcher" { shell.toggleTrackPopover(nil) }
-                    if command == "projects" { shell.projectChipForTesting.togglePopover() }
+                    if command == "projects" { shell.toggleProjectSwitcher() }
+                    // The switcher open: "switcher-type <text>", "switcher-key down|up|left|right|return", its layout.
+                    if command.hasPrefix("switcher-type ") { shell.projectSwitcherForTesting?.typeForTesting(String(command.dropFirst(14))) }
+                    if command.hasPrefix("switcher-key "), let overlay = shell.projectSwitcherForTesting {
+                        let selectors: [String: Selector] = ["down": #selector(NSResponder.moveDown(_:)), "up": #selector(NSResponder.moveUp(_:)),
+                                                             "left": #selector(NSResponder.moveLeft(_:)), "right": #selector(NSResponder.moveRight(_:)),
+                                                             "return": #selector(NSResponder.insertNewline(_:)), "escape": #selector(NSResponder.cancelOperation(_:)),
+                                                             "putaway": #selector(NSResponder.deleteToBeginningOfLine(_:))]
+                        if let selector = selectors[String(command.dropFirst(13))] { overlay.commandForTesting(selector) }
+                    }
+                    if command.hasPrefix("switcher-layout "), let layout = ProjectSwitcherOverlay.Layout(rawValue: String(command.dropFirst(16))) {
+                        ProjectSwitcherOverlay.layout = layout
+                        if shell.projectSwitcherForTesting != nil { shell.toggleProjectSwitcher(); shell.toggleProjectSwitcher() }
+                    }
+                    if command == "switcher-dump" { FileHandle.standardError.write(Data("[switcher] \(shell.projectSwitcherForTesting?.framesForTesting ?? "closed") entries=\(shell.projectSwitcherForTesting?.entryNamesForTesting ?? []) selected=\(shell.projectSwitcherForTesting?.selectedNameForTesting ?? "-")\n".utf8)) }
+                    if command == "cycle" { shell.cycleForTesting(back: false) }
+                    if command == "cycle-back" { shell.cycleForTesting(back: true) }
+                    if command == "cycle-release" { shell.cycleReleaseForTesting() }
                     // "key cmd+2", "key ctrl+shift+tab": a chord as the menu bar receives it; "… repeat",
                     // as a held key's repeats arrive.
                     if command.hasPrefix("key ") {

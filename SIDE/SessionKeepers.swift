@@ -113,6 +113,17 @@ enum SessionKeepers {
         SessionPaths.records().filter { $0.client[Fact.project] == project && $0.client[Fact.track] == track && isRunning($0) }
     }
 
+    /// How many sessions are live for a project, any track (the switcher's cards). A record can
+    /// name the folder through a symlink, so both spellings count.
+    static func liveCount(project: URL) -> Int {
+        let wanted = Set([project.standardizedFileURL.path, project.resolvingSymlinksInPath().standardizedFileURL.path])
+        return SessionPaths.records().filter { record in
+            guard let path = record.client[Fact.project] else { return false }
+            let url = URL(fileURLWithPath: path)
+            return (wanted.contains(url.standardizedFileURL.path) || wanted.contains(url.resolvingSymlinksInPath().standardizedFileURL.path)) && isRunning(record)
+        }.count
+    }
+
     /// Every ended, unfinished session for a project's track, oldest first.
     static func endedRecords(project: String, track: String) -> [SessionRecord] {
         SessionPaths.records().filter { $0.client[Fact.project] == project && $0.client[Fact.track] == track && $0.exit == nil && !isRunning($0) }

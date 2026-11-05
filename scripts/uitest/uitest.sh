@@ -69,14 +69,22 @@ case ${1:-} in
 " ;;
   quit)
     pkill -f "$APP/Contents/MacOS/Side" || true
+    # Gone before anything else starts: an app with several projects held takes a while to
+    # close, and a launch meanwhile found it still running and its commands went there.
+    for _ in {1..50}; do pgrep -f "$APP/Contents/MacOS/Side" >/dev/null || break; sleep 0.1; done
+    pkill -9 -f "$APP/Contents/MacOS/Side" 2>/dev/null || true
     # Keepers outlive Side on purpose; the test ones don't.
     pkill -f "SideSessionKeeper.*$ROOT/run/" || true
+    for _ in {1..30}; do pgrep -f "SideSessionKeeper.*$ROOT/run/" >/dev/null || break; sleep 0.1; done
+    pkill -9 -f "SideSessionKeeper.*$ROOT/run/" 2>/dev/null || true
     rm -rf $ROOT/run
     # Tracks' working copies, and their branches: left over, the next run's track couldn't be made.
     rm -rf "$(getconf DARWIN_USER_TEMP_DIR)SideUITests"
     if [[ -d $ROOT/repo/.git ]]; then
       git -C $ROOT/repo worktree prune
-      git -C $ROOT/repo for-each-ref --format='%(refname:short)' refs/heads | grep -vxE "main|$(git -C $ROOT/repo branch --show-current)" | xargs -n1 git -C $ROOT/repo branch -D -q 2>/dev/null || true
+      # Only the tracks UI tests make (think-track's "Measurement"): deleting the project's own
+      # branches sent the next launch through a track reconcile that reset its stage.
+      git -C $ROOT/repo for-each-ref --format='%(refname:short)' 'refs/heads/measurement*' | xargs -n1 git -C $ROOT/repo branch -D -q 2>/dev/null || true
     fi ;;
   *)
     sed -n 2,10p $0; exit 1 ;;
