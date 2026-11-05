@@ -1876,3 +1876,31 @@ final class UpdatePillTests: XCTestCase {
         XCTAssertEqual(frame.midY, search.midY, accuracy: 1, "on the bar's line")
     }
 }
+
+/// Disk space in the bar (`DiskSpace`): said when low, louder when nearly full; × puts it away
+/// until it gets worse.
+@MainActor
+final class DiskSpaceTests: XCTestCase {
+    override func tearDown() { DiskSpace.shared.setForTesting(bytes: nil) }
+
+    func testItSpeaksUpWhenLowAndAgainWhenItGetsWorse() {
+        let disk = DiskSpace.shared
+        disk.setForTesting(bytes: 50_000_000_000)
+        XCTAssertFalse(disk.isShown, "plenty: nothing to say")
+        disk.setForTesting(bytes: 3_200_000_000)
+        XCTAssertEqual(disk.level, .low)
+        XCTAssertTrue(disk.isShown)
+        XCTAssertTrue(disk.text.hasSuffix("left on disk"), disk.text)
+        disk.dismiss()
+        XCTAssertFalse(disk.isShown, "put away")
+        disk.setForTesting(bytes: 3_000_000_000)
+        XCTAssertFalse(disk.isShown, "still low: stays away")
+        disk.setForTesting(bytes: 600_000_000)
+        XCTAssertEqual(disk.level, .critical)
+        XCTAssertTrue(disk.isShown, "worse: back")
+        XCTAssertTrue(disk.text.hasPrefix("Disk almost full"), disk.text)
+        disk.setForTesting(bytes: 40_000_000_000)
+        disk.setForTesting(bytes: 4_000_000_000)
+        XCTAssertTrue(disk.isShown, "recovered, then low again: said again")
+    }
+}

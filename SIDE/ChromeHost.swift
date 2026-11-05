@@ -75,6 +75,7 @@ final class ChromeHost {
     private var barPieces: [NSView] = []
     /// The update pill, beside search (Direction 03 §5.1).
     private(set) var updatePill: UpdatePill?
+    private(set) var diskPill: DiskSpacePill?
     /// The activity pill (prototype): what's happening out of sight, beside zoom and update.
     private(set) var activityPill: ActivityPill?
     /// Zoom's pill, beside the update pill: only while you're zooming.
@@ -82,6 +83,7 @@ final class ChromeHost {
     /// Search and the update pill, as one trailing piece of the bar.
     private var trailingCluster: NSView?
     private var updateObserver: NSObjectProtocol?
+    private var diskObserver: NSObjectProtocol?
     private var activityObserver: NSObjectProtocol?
     private var leadingInset: NSLayoutConstraint?
 
@@ -118,11 +120,13 @@ final class ChromeHost {
             searchButton.setGlass(false)
             let update = UpdatePill(glass: false, height: 28)
             updatePill = update
+            let disk = DiskSpacePill(glass: false, height: 28)
+            diskPill = disk
             let zoom = ZoomPill(height: 28, glass: false)
             zoomPill = zoom
             let activity = ActivityPill(glass: false, height: 28)
             activityPill = activity
-            for view in [projectChip, pill, stageSlot, stageControl, activity.view, zoom, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
+            for view in [projectChip, pill, stageSlot, stageControl, activity.view, zoom, disk.view, update.view, searchButton] as [NSView] { row.addArrangedSubview(view) }
             row.setCustomSpacing(DS.Spacing.l, after: stageSlot)
         case .floatingBar:
             row.addArrangedSubview(stageSlot)
@@ -166,11 +170,13 @@ final class ChromeHost {
         searchButton.setGlass(true)
         let update = UpdatePill(glass: true, height: Self.barHeight)
         updatePill = update
+        let disk = DiskSpacePill(glass: true, height: Self.barHeight)
+        diskPill = disk
         let zoom = ZoomPill(height: Self.barHeight, glass: true)
         zoomPill = zoom
         let activity = ActivityPill(glass: true, height: Self.barHeight)
         activityPill = activity
-        let cluster = NSStackView(views: [activity.view, zoom, update.view, searchButton])
+        let cluster = NSStackView(views: [activity.view, zoom, disk.view, update.view, searchButton])
         cluster.orientation = .horizontal
         cluster.alignment = .centerY
         cluster.spacing = DS.Spacing.m
@@ -200,6 +206,9 @@ final class ChromeHost {
             MainActor.assumeIsolated { self?.replaceAccessories() }
         }
         zoom.onShownChanged = { [weak self] in self?.replaceAccessories() }
+        diskObserver = NotificationCenter.default.addObserver(forName: DiskSpace.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.replaceAccessories() }
+        }
         activityObserver = NotificationCenter.default.addObserver(forName: ActivityCenter.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.replaceAccessories() }
         }

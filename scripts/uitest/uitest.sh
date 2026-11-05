@@ -42,8 +42,8 @@ case ${1:-} in
   launch)
     tools
     $0 quit 2>/dev/null || true
-    mkdir -p $ROOT/run
-    SIDE_SESSIONS_DIR=$ROOT/run "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
+    mkdir -p $ROOT/run $ROOT/claude-config/sessions
+    SIDE_SESSIONS_DIR=$ROOT/run CLAUDE_CONFIG_DIR=$ROOT/claude-config "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
     echo $! > $ROOT/side.pid
     sleep 4
     ;;
@@ -51,7 +51,7 @@ case ${1:-} in
     # Side quits and comes back; its keepers, and what runs in them, carry on (session restore).
     $BIN/post "action terminate:"; sleep 2
     pkill -f "$APP/Contents/MacOS/Side" || true; sleep 0.5
-    SIDE_SESSIONS_DIR=$ROOT/run "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
+    SIDE_SESSIONS_DIR=$ROOT/run CLAUDE_CONFIG_DIR=$ROOT/claude-config "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
     echo $! > $ROOT/side.pid
     sleep 4
     ;;
@@ -65,7 +65,7 @@ case ${1:-} in
     shift; text="$*"; $BIN/post "run-type $text"; sleep $(( ${#text} * 0.1 + 0.5 )) ;;
   claude)
     # The shell's own startup files set PATH after Side's environment, so it's set in the shell.
-    $0 type "export PATH=$BIN/agents:\$PATH; clear
+    $0 type "export PATH=$BIN/agents:\$PATH FAKE_CLAUDE_SESSIONS=$ROOT/claude-config/sessions; clear
 " ;;
   quit)
     pkill -f "$APP/Contents/MacOS/Side" || true

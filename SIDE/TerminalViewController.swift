@@ -1388,6 +1388,12 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             keeper.terminate()
             return
         }
+        // A keeper's terminal this tab isn't attached to (another Side took it): closing the tab
+        // still ends it, or it would run on with no tab, as two Claude Code sessions did.
+        if let keeperID, SessionKeepers.liveRecord(keeperID) != nil {
+            SessionKeepers.endSession(keeperID)
+            return
+        }
         let pid = terminalView.process.shellPid
         guard pid != 0 else {
             terminalView.process.terminate()

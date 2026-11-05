@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Self.shared = self
         TextScaleFollower.start()
         SystemNotifier.shared.start()
+        DiskSpace.shared.start()
         // This run is unfinished until a normal quit; the next launch offers a crash only then.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil, !Self.isUITesting { CrashReports.runStarted() }
         // Which agents are installed, off the main thread: the default agent new tracks take.
@@ -91,6 +92,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // "tab-x 2": a click on the third tab's X, in Editor or Terminal, whichever shows.
                     if command.hasPrefix("tab-x "), let index = Int(command.dropFirst(6)) { shell.clickTabCloseForTesting(index) }
                     if command == "tab-solo-hover" { shell.hoverSoloTabForTesting() }
+                    if command == "duplicate-dump" { FileHandle.standardError.write(Data("[duplicate] \(shell.duplicateNoticeForTesting)\n".utf8)) }
+                    if command == "duplicate-end" { shell.endDuplicateForTesting() }
+                    // "disk 3200000000": free space as if the disk had that much; "disk real" goes back.
+                    if command.hasPrefix("disk ") { DiskSpace.shared.setForTesting(bytes: Int64(command.dropFirst(5))) }
+                    if command == "disk-hover" { shell.diskPillForTesting?.view.setHovered(true) }
                     if command == "floating-dump" { FileHandle.standardError.write(Data("[floating] \(shell.floatingStateForTesting)\n".utf8)) }
                     if command == "tabs-dump" {
                         FileHandle.standardError.write(Data("[tabs] \(shell.tabsDumpForTesting)\n".utf8))
@@ -212,9 +218,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             default: break
                             }
                         }
-                        let key = parts.last.map { $0 == "tab" ? "\t" : $0 } ?? ""
+                        // Named keys carry their key codes ("down", "return", "escape"), which some views read.
+                        let named: [String: (String, UInt16)] = ["tab": ("\t", 48), "return": ("\r", 36), "escape": ("\u{1B}", 53),
+                                                                 "down": (String(UnicodeScalar(NSDownArrowFunctionKey)!), 125), "up": (String(UnicodeScalar(NSUpArrowFunctionKey)!), 126)]
+                        let name = parts.last ?? ""
+                        let (key, code) = named[name] ?? (name, 0)
                         if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
-                                                        windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: isRepeat, keyCode: 0) {
+                                                        windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: isRepeat, keyCode: code) {
                             // Through the event queue, as a real one comes: then it's the current event.
                             NSApp.postEvent(event, atStart: false)
                         }
@@ -467,6 +477,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// first frame), so this waits for that first: opening the project again then would put it
     /// in a second window. Then the window with the session among its tabs (a torn-out one
     /// included), else one on its project, else a window with no project, else a new one.
+    /// Brings the tab of the terminal `keeperID` forward, wherever it is.
+    func revealTerminal(keeperID: String) { revealTerminal(keeperID, attempts: 1) }
+
     private func revealTerminal(_ id: String, attempts: Int) {
         guard attempts > 0 else { return }
         guard didFinishRestoring else {
@@ -657,7 +670,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Every window's shell — the track pill's "Other projects" section reads across them.
     /// View › Toggle File Explorer, for the window in front, wherever its focus is.
     @objc func toggleFileExplorer(_ sender: Any?) {
-        // The main window: with the explorer focused, the key window is its panel.
+        // The main window, wherever its focus is (the explorer included).
         (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleFileExplorer()
     }
 

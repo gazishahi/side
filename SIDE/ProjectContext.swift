@@ -203,6 +203,9 @@ final class ProjectContextRegistry {
 
     private var contexts: [String: ProjectContext] = [:]
 
+    /// Every terminal tab in every open project, background ones included.
+    var everyTerminalSession: [TerminalSession] { contexts.values.flatMap { $0.terminals.everySession() } }
+
     /// The common git dir's own path when this resolves to a real repo — so opening the main
     /// checkout in one window and one of its linked worktrees in another still collapses to the
     /// same `ProjectContext`, same `TrackStore`, same ledger, per the plan's own verification

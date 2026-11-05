@@ -1,21 +1,11 @@
 import AppKit
 import SideAgents
 
-final class FileExplorerPanel: NSPanel {
-    convenience init() {
-        self.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
-        level = .floating
-        isFloatingPanel = true
-        hidesOnDeactivate = false
-        isReleasedWhenClosed = false
-        collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
-    }
-
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
+/// The explorer in the window: it takes the clicks it covers, and a press on it never drags the
+/// window.
+final class ExplorerHost: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) {}
 }
 
 final class ExplorerOutlineView: NSOutlineView {

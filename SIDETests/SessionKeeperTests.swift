@@ -215,3 +215,29 @@ final class SessionKeeperTests: XCTestCase {
         XCTAssertTrue(waitUntil { SessionKeepers.liveRecord(id) == nil }, "the keeper stayed")
     }
 }
+
+/// One Claude Code conversation in two of Side's terminals (`ClaudeConversations`).
+final class ClaudeConversationsTests: XCTestCase {
+    func testAProcessIsNamedByItsOwnSessionFileOnly() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cc-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try #"{"pid": 4242, "sessionId": "abc", "status": "idle"}"#.write(to: dir.appendingPathComponent("4242.json"), atomically: true, encoding: .utf8)
+        try #"{"pid": 1, "sessionId": "stale"}"#.write(to: dir.appendingPathComponent("4343.json"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(ClaudeConversations.conversation(ofProcess: 4242, in: dir), "abc")
+        XCTAssertNil(ClaudeConversations.conversation(ofProcess: 4343, in: dir), "a file naming another process isn't this one's")
+        XCTAssertNil(ClaudeConversations.conversation(ofProcess: 4444, in: dir), "no file, no conversation")
+    }
+
+    func testTwoTerminalsOnOneConversationAreFound() {
+        func record(_ id: String, shell: Int32) -> SessionRecord {
+            SessionRecord(id: id, keeperPID: 1, childPID: shell, executable: "/bin/zsh", arguments: [], directory: "/", client: [:], createdAt: Date(), lastOutputAt: Date())
+        }
+        let records = [record("a", shell: 10), record("b", shell: 20), record("c", shell: 30)]
+        let conversations: [Int32: String] = [10: "x", 20: "y", 30: "x"]
+        let found = ClaudeConversations.duplicate(ofKeeper: "a", records: records, conversationInShell: { conversations[$0] })
+        XCTAssertEqual(found, ClaudeConversations.Duplicate(conversation: "x", otherKeeperID: "c"))
+        XCTAssertNil(ClaudeConversations.duplicate(ofKeeper: "b", records: records, conversationInShell: { conversations[$0] }), "alone on its conversation")
+        XCTAssertNil(ClaudeConversations.duplicate(ofKeeper: "a", records: records, conversationInShell: { _ in nil }), "no Claude Code, nothing to say")
+    }
+}

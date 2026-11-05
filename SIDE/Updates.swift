@@ -500,3 +500,112 @@ final class UpdatePopoverViewController: NSViewController {
     @objc private func tryAgain() { driver.tryAgain(); onDone?() }
     @objc private func close() { onDone?() }
 }
+
+// MARK: - Disk space
+
+/// Free space on the disk Side keeps its work on (the home folder's). On a full disk terminals'
+/// snapshots and records couldn't be written, saves fail, and an update can't download: Claude
+/// Code sessions froze on a Mac out of storage (the owner, 2026-11-04). The bar says so before
+/// that, while there's still room to act.
+@MainActor
+final class DiskSpace {
+    static let shared = DiskSpace()
+    static let didChangeNotification = Notification.Name("SideDiskSpaceDidChange")
+
+    enum Level: Int, Comparable {
+        case fine, low, critical
+        static func < (a: Level, b: Level) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    /// Below these, the bar says so: low, then nearly full.
+    static let lowBytes: Int64 = 5_000_000_000
+    static let criticalBytes: Int64 = 1_000_000_000
+    static let interval: TimeInterval = 60
+
+    private(set) var available: Int64?
+    private(set) var level: Level = .fine
+    /// The level the × put away: the pill stays away until it gets worse, or recovers first.
+    private var dismissedLevel: Level?
+    private var timer: Timer?
+    private var testingBytes: Int64?
+
+    var isShown: Bool { level > .fine && (dismissedLevel.map { level > $0 } ?? true) }
+
+    static func level(for bytes: Int64) -> Level {
+        bytes < criticalBytes ? .critical : bytes < lowBytes ? .low : .fine
+    }
+
+    func start() {
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.check() } }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.check() }
+        }
+        check()
+    }
+
+    /// What the system says can be had for important work (purgeable space counted, as Finder
+    /// counts it).
+    func check() {
+        let bytes = testingBytes ?? (try? FileManager.default.homeDirectoryForCurrentUser
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage)
+        guard let bytes else { return }
+        let wasShown = isShown, oldLevel = level, oldText = text
+        available = bytes
+        level = Self.level(for: bytes)
+        if level == .fine { dismissedLevel = nil }
+        if wasShown != isShown || oldLevel != level || oldText != text { NotificationCenter.default.post(name: Self.didChangeNotification, object: self) }
+    }
+
+    func dismiss() {
+        dismissedLevel = level
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+
+    /// "4.2 GB left on disk", or nearly full.
+    var text: String {
+        guard let available else { return "" }
+        let amount = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
+        return level == .critical ? "Disk almost full \u{00B7} \(amount) left" : "\(amount) left on disk"
+    }
+
+    func setForTesting(bytes: Int64?) {
+        testingBytes = bytes
+        if bytes == nil { available = nil; level = .fine; dismissedLevel = nil }
+        check()
+        if bytes == nil { NotificationCenter.default.post(name: Self.didChangeNotification, object: self) }
+    }
+}
+
+/// The bar's word on disk space (`DiskSpace`): amber when low, red when nearly full; a click opens
+/// Storage in System Settings, × puts it away until it gets worse.
+@MainActor
+final class DiskSpacePill {
+    let view: GlassPill
+    private let disk: DiskSpace
+    private var observer: NSObjectProtocol?
+
+    init(disk: DiskSpace = .shared, glass: Bool, height: CGFloat) {
+        self.disk = disk
+        view = GlassPill(height: height, glass: glass)
+        view.setMarkSize(16)
+        view.isHidden = true
+        view.toolTip = "Open Storage in System Settings"
+        view.onClick = { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.settings.Storage")!) }
+        view.onDismiss = { [weak disk] in disk?.dismiss() }
+        observer = NotificationCenter.default.addObserver(forName: DiskSpace.didChangeNotification, object: disk, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh(animated: true) }
+        }
+        refresh(animated: false)
+    }
+
+    func refresh(animated: Bool) {
+        if disk.isShown {
+            let color = disk.level == .critical ? DS.Color.statusFailed : DS.Color.statusNeedsYou
+            view.set(title: disk.text, mark: .symbol("externaldrive.fill.badge.exclamationmark", color))
+        }
+        view.setShown(disk.isShown, animated: animated)
+    }
+}

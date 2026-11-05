@@ -5,6 +5,10 @@ import UniformTypeIdentifiers
 /// Make's file explorer: a transient glass overlay over the leading edge, never a permanent
 /// sidebar (Direction 02 rules those out). Its own component so Make only hosts it.
 ///
+/// A view in the window, not a window of its own: as a child window it floated over everything
+/// the window drew, the palette and Find included, and as the key window it took the keyboard,
+/// so ⌃⇥ and the window's own keys stopped (the owner, 2026-11-05).
+///
 /// Built to stay fast on any project: folders load their contents the first time they are
 /// expanded (the old tree was built from the whole 25 000-file index before it could show a
 /// row), rows are reused, icons are cached per file type, and file-system changes reload only
@@ -64,10 +68,19 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
     private var globalMonitor: Any?
     private var renaming: Node?
 
-    private lazy var panel: FileExplorerPanel = {
-        let panel = FileExplorerPanel()
-        panel.contentView = surface
-        return panel
+    private lazy var panel: ExplorerHost = {
+        let host = ExplorerHost()
+        host.wantsLayer = true
+        surface.frame = host.bounds
+        surface.autoresizingMask = [.width, .height]
+        host.addSubview(surface)
+        if #unavailable(macOS 26.0) {
+            host.shadow = NSShadow()
+            host.layer?.shadowOpacity = 0.18
+            host.layer?.shadowRadius = 18
+            host.layer?.shadowOffset = CGSize(width: 0, height: -4)
+        }
+        return host
     }()
     private let outline = ExplorerOutlineView()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -76,7 +89,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
     static let width: CGFloat = 300
     private static let rowHeight: CGFloat = 24
 
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panel.superview != nil && !panel.isHidden }
 
     // MARK: Root and loading
 
@@ -125,33 +138,34 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         isShown ? hide() : show(in: window)
     }
 
+    /// Where it sits in `content`: under the top row, above the floating bar, at its side.
+    private func frame(in content: NSView) -> NSRect {
+        let bounds = content.bounds
+        let top = bounds.maxY - ChromeHost.rowHeight - 8
+        let bottom = bounds.minY + ChromeHost.barGap + ChromeHost.barHeight + 12
+        let x = Side.preferred == .left ? bounds.minX + 10 : bounds.maxX - Self.width - 10
+        return NSRect(x: x, y: bottom, width: Self.width, height: max(200, top - bottom))
+    }
+
     /// Slides in from the leading edge, under the top row and above the floating bar.
     func show(in window: NSWindow) {
-        guard rootNode != nil else { return }
+        guard rootNode != nil, let content = window.contentView else { return }
         isShown = true
         hostWindow = window
-        let frame = window.frame
-        let top = frame.maxY - ChromeHost.rowHeight - 8
-        let bottom = frame.minY + ChromeHost.barGap + ChromeHost.barHeight + 12
         let side = Side.preferred
-        let x = side == .left ? frame.minX + 10 : frame.maxX - Self.width - 10
-        let target = NSRect(x: x, y: bottom, width: Self.width, height: max(200, top - bottom))
+        let target = frame(in: content)
+        panel.autoresizingMask = [.height, side == .left ? .maxXMargin : .minXMargin]
+        if panel.superview !== content { content.addSubview(panel, positioned: .above, relativeTo: nil) }
+        panel.isHidden = false
         panel.alphaValue = 0
-        panel.setFrame(target.offsetBy(dx: side == .left ? -24 : 24, dy: 0), display: false)
-        if panel.parent == nil { window.addChildWindow(panel, ordered: .above) }
-        panel.orderFront(nil)
+        panel.frame = target.offsetBy(dx: side == .left ? -24 : 24, dy: 0)
         refreshGitStatus()
         revealCurrentFile()
         installDismissMonitors()
+        window.makeFirstResponder(outline)
         // In from its edge on the smooth spring; its opacity on the fade, which never springs.
         DS.Motion.fade { panel.animator().alphaValue = 1 }
-        DS.Motion.animate(DS.Motion.smooth, {
-            panel.animator().setFrame(target, display: true)
-        }, completion: { [weak self] in
-            guard let self, self.isShown else { return }
-            self.panel.makeKey()
-            self.panel.makeFirstResponder(self.outline)
-        })
+        DS.Motion.animate(DS.Motion.smooth, { panel.animator().frame = target })
     }
 
     func hide() {
@@ -160,23 +174,20 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         isShown = false
         let end = panel.frame.offsetBy(dx: Side.preferred == .left ? -20 : 20, dy: 0)
         // Out the way it came, quicker: leaving shouldn't hold the eye.
-        DS.Motion.animate(DS.Motion.snappy, {
-            panel.animator().setFrame(end, display: true)
-        })
+        DS.Motion.animate(DS.Motion.snappy, { panel.animator().frame = end })
         DS.Motion.fade({ panel.animator().alphaValue = 0 }, completion: { [weak self] in
             guard let self, !self.isShown else { return }
-            self.hostWindow?.removeChildWindow(self.panel)
-            self.panel.orderOut(nil)
+            self.panel.removeFromSuperview()
             self.panel.alphaValue = 1
         })
+        if let window = hostWindow, let responder = window.firstResponder as? NSView, responder.isDescendant(of: panel) { window.makeFirstResponder(nil) }
         onHidden?()
     }
 
     func tearDown() {
         removeDismissMonitors()
         isShown = false
-        if panel.parent != nil { hostWindow?.removeChildWindow(panel) }
-        panel.orderOut(nil)
+        panel.removeFromSuperview()
     }
 
     /// Expands down to the file open in the editor and selects it.
@@ -199,7 +210,9 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         guard localMonitor == nil else { return }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self else { return event }
-            if event.window !== self.panel, self.renaming == nil { self.hide() }
+            guard self.renaming == nil else { return event }
+            let inside = event.window === self.hostWindow && self.panel.superview.map { self.panel.frame.contains($0.convert(event.locationInWindow, from: nil)) } == true
+            if !inside { self.hide() }
             return event
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -283,18 +296,9 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
             scroll.bottomAnchor.constraint(equalTo: body.bottomAnchor, constant: -8),
         ])
 
-        // Behind-window material, not in-window glass: the explorer is its own child window, and
-        // glass only refracts content inside the window it lives in.
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.state = .active
-        effect.blendingMode = .behindWindow
-        effect.maskImage = DS.roundedMask(radius: 16)
-        effect.addSubview(body)
-        NSLayoutConstraint.activate([
-            body.topAnchor.constraint(equalTo: effect.topAnchor), body.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            body.trailingAnchor.constraint(equalTo: effect.trailingAnchor), body.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-        ])
+        // The floating panels' one surface: glass over the window's content, now that it's in
+        // the window (as a child window it had to use behind-window material).
+        let effect = DS.makeFloatingSurface(embedding: body, cornerRadius: 16)
         effect.setAccessibilityElement(true)
         effect.setAccessibilityRole(.group)
         effect.setAccessibilityLabel("Files")
@@ -317,11 +321,10 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
 
     /// The side changed (here or in Settings): move without hiding, so nothing is lost.
     private func sideDidChange() {
-        guard panel.isVisible, let window = hostWindow else { return }
-        let frame = window.frame
-        var target = panel.frame
-        target.origin.x = Side.preferred == .left ? frame.minX + 10 : frame.maxX - Self.width - 10
-        DS.Motion.animate(DS.Motion.smooth, { panel.animator().setFrame(target, display: true) })
+        guard isVisible, let content = panel.superview else { return }
+        let target = frame(in: content)
+        panel.autoresizingMask = [.height, Side.preferred == .left ? .maxXMargin : .minXMargin]
+        DS.Motion.animate(DS.Motion.smooth, { panel.animator().frame = target })
     }
 
     override init() {
@@ -467,7 +470,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
             guard let node = loadedDirectories[path] else { continue }  // never expanded: nothing to redo
             reload(node)
         }
-        if panel.isVisible { refreshGitStatus() }
+        if isVisible { refreshGitStatus() }
     }
 
     /// Re-reads one folder, reusing the nodes that are still there so expansion survives.
@@ -535,7 +538,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         outline.scrollRowToVisible(row)
         renaming = node
         field.isEditable = true
-        panel.makeFirstResponder(field)
+        hostWindow?.makeFirstResponder(field)
         // Select the name without its extension, as Finder does.
         let name = node.name as NSString
         let stem = node.isDirectory || name.pathExtension.isEmpty ? name.length : name.length - name.pathExtension.count - 1
@@ -547,7 +550,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         renaming = nil
         field.isEditable = false
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        panel.makeFirstResponder(outline)
+        hostWindow?.makeFirstResponder(outline)
         guard !name.isEmpty, name != node.name, !name.contains("/") else { field.stringValue = node.name; return }
         move(node, to: node.url.deletingLastPathComponent().appendingPathComponent(name))
     }

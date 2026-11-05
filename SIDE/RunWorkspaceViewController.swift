@@ -120,7 +120,68 @@ final class RunWorkspaceViewController: NSViewController {
     }
 
     /// The session this view has in its container, if any.
-    private var displayedSession: TerminalSession?
+    private var displayedSession: TerminalSession? { didSet { if displayedSession !== oldValue { checkForDuplicateConversation() } } }
+
+    // MARK: One conversation, two tabs
+
+    /// The tab on screen holds a Claude Code conversation another of Side's terminals holds too
+    /// (`ClaudeConversations`): said in the task row, with the way to the other or to end it.
+    private var duplicate: ClaudeConversations.Duplicate?
+    private var dismissedDuplicates: Set<String> = []
+    private var duplicateTimer: Timer?
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        duplicateTimer?.invalidate()
+        // Every few seconds, only while Run shows: a resume picks its conversation after it starts.
+        let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.checkForDuplicateConversation() } }
+        RunLoop.main.add(timer, forMode: .common)
+        duplicateTimer = timer
+        checkForDuplicateConversation()
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        duplicateTimer?.invalidate()
+        duplicateTimer = nil
+    }
+
+    func checkForDuplicateConversation() {
+        var found: ClaudeConversations.Duplicate?
+        if SessionKeepers.isEnabled, let id = displayedSession?.viewController.keeperID {
+            found = ClaudeConversations.duplicate(ofKeeper: id)
+            if let candidate = found, dismissedDuplicates.contains(candidate.conversation + candidate.otherKeeperID) { found = nil }
+        }
+        guard found != duplicate else { return }
+        duplicate = found
+        renderTaskRow()
+    }
+
+    /// Where the other copy is: a tab's name, or nil when no tab shows it.
+    private func tabShowing(keeperID: String) -> TerminalSession? {
+        ProjectContextRegistry.shared.everyTerminalSession.first { $0.viewController.keeperID == keeperID }
+    }
+
+    @objc private func goToDuplicate() {
+        guard let duplicate else { return }
+        AppDelegate.shared?.revealTerminal(keeperID: duplicate.otherKeeperID)
+    }
+
+    @objc private func endDuplicate() {
+        guard let duplicate else { return }
+        SessionKeepers.endSession(duplicate.otherKeeperID)
+        self.duplicate = nil
+        renderTaskRow()
+    }
+
+    @objc private func dismissDuplicate() {
+        guard let duplicate else { return }
+        dismissedDuplicates.insert(duplicate.conversation + duplicate.otherKeeperID)
+        self.duplicate = nil
+        renderTaskRow()
+    }
+    func endDuplicateForTesting() { endDuplicate() }
+    var duplicateNoticeForTesting: String? { duplicate.map { tabShowing(keeperID: $0.otherKeeperID) == nil ? "background \($0.otherKeeperID)" : "tab \($0.otherKeeperID)" } }
 
     /// A task chip: the task's command typed into the terminal on screen and run, as if typed
     /// there; its exit then gets Run's usual offer to record it on the checkpoint. Refused while a
@@ -816,10 +877,33 @@ final class RunWorkspaceViewController: NSViewController {
         guard isViewLoaded else { return }
         taskRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let rerun = displayedSession?.viewController.rerunOffer
-        let hasContent = !state.tasks.isEmpty || state.pendingCommand != nil || state.attachOffer != nil || rerun != nil
+        let hasContent = !state.tasks.isEmpty || state.pendingCommand != nil || state.attachOffer != nil || rerun != nil || duplicate != nil
         taskRow.isHidden = !hasContent
         updateStatusLine()
         guard hasContent else { return }
+
+        if let duplicate, state.pendingCommand == nil {
+            // Both copies answer and write the same transcript: say so, and offer the way out.
+            let other = tabShowing(keeperID: duplicate.otherKeeperID)
+            let line = NSTextField(labelWithString: "")
+            let text = NSMutableAttributedString(string: "This Claude Code conversation is also ", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor])
+            if let other {
+                text.append(NSAttributedString(string: "open in ", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]))
+                text.append(NSAttributedString(string: "\u{201C}\(other.title)\u{201D}", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor]))
+            } else {
+                text.append(NSAttributedString(string: "running in the background, in a terminal no tab shows", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]))
+            }
+            line.attributedStringValue = text
+            line.lineBreakMode = .byTruncatingTail
+            taskRow.addArrangedSubview(line)
+            if other != nil {
+                taskRow.addArrangedSubview(Self.textAction("Go There", emphasized: true, target: self, action: #selector(goToDuplicate)))
+            } else {
+                taskRow.addArrangedSubview(Self.textAction("End That One", emphasized: true, target: self, action: #selector(endDuplicate)))
+            }
+            taskRow.addArrangedSubview(Self.textAction("Dismiss", emphasized: false, target: self, action: #selector(dismissDuplicate)))
+            return
+        }
 
         if let rerun, state.pendingCommand == nil {
             // After a restart (SIDE_RFC_SESSION_RESTORE.md): what this tab was running, which

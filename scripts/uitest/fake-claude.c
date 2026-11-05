@@ -10,7 +10,9 @@
 // - reads a message in raw mode; Enter starts a turn of FAKE_CLAUDE_TURN seconds (default 4);
 // - rings the bell when a turn ends;
 // - redraws its screen and title when the window changes size (as Ink does), with no turn;
-// - ^C or ^D quits.
+// - ^C or ^D quits;
+// - with FAKE_CLAUDE_SESSIONS set, writes <it>/<pid>.json naming its conversation (the id after
+//   --session-id or --resume), as Claude Code does in <config>/sessions.
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +78,26 @@ static void turn(double seconds) {
     prompt();
 }
 
-int main(void) {
+static char session_file[1024];
+static void remove_session_file(void) { if (session_file[0]) unlink(session_file); }
+
+static void write_session_file(int argc, char **argv) {
+    const char *dir = getenv("FAKE_CLAUDE_SESSIONS");
+    if (!dir) return;
+    const char *id = NULL;
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--session-id") || !strcmp(argv[i], "--resume")) id = argv[i + 1];
+    if (!id) return;
+    snprintf(session_file, sizeof session_file, "%s/%d.json", dir, getpid());
+    FILE *file = fopen(session_file, "w");
+    if (!file) { session_file[0] = 0; return; }
+    fprintf(file, "{\"pid\": %d, \"sessionId\": \"%s\"}", getpid(), id);
+    fclose(file);
+    atexit(remove_session_file);
+}
+
+int main(int argc, char **argv) {
+    write_session_file(argc, argv);
     const char *turn_env = getenv("FAKE_CLAUDE_TURN");
     double seconds = turn_env ? atof(turn_env) : 4;
     tcgetattr(STDIN_FILENO, &original);

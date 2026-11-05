@@ -750,6 +750,7 @@ final class ShellViewController: NSViewController {
     var paletteLayerForTesting: CALayer? { paletteHost?.layer }
     func paletteOriginForTesting() -> NSRect { chrome.paletteOrigin(in: view) }
     var updatePillForTesting: UpdatePill? { chrome.updatePill }
+    var diskPillForTesting: DiskSpacePill? { chrome.diskPill }
     var activityPillForTesting: ActivityPill? { chrome.activityPill }
     var projectChipForTesting: ProjectChip { chrome.projectChip }
     var stageControlForTesting: SlidingSegmentedControl { stageControl }
@@ -1067,6 +1068,8 @@ final class ShellViewController: NSViewController {
     var terminalBackgroundForTesting: String { runVC.terminalBackgroundForTesting }
     func runSelectForTesting(_ index: Int) { runVC.selectTab(number: index) }
     var floatingStateForTesting: String { makeVC.floatingStateForTesting }
+    var duplicateNoticeForTesting: String { runVC.checkForDuplicateConversation(); return runVC.duplicateNoticeForTesting ?? "none" }
+    func endDuplicateForTesting() { runVC.endDuplicateForTesting() }
     func hoverSoloTabForTesting() { (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).hoverSoloForTesting() }
     func clickTabCloseForTesting(_ index: Int) {
         (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).clickCloseForTesting(index)

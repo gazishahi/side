@@ -203,6 +203,21 @@ enum SessionKeepers {
         return folders.contains { FileManager.default.fileExists(atPath: $0.appendingPathComponent("\(session).jsonl").path) }
     }
 
+    /// Ends a session no tab shows: attached just long enough to end its whole process tree,
+    /// as closing its tab would.
+    @MainActor
+    static func endSession(_ id: String) {
+        guard let link = try? KeeperLink.connect(id) else { return }
+        ending.append(link)
+        link.attach(cols: 0, rows: 0, history: 0)
+        link.terminate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            link.detach()
+            ending.removeAll { $0 === link }
+        }
+    }
+    @MainActor private static var ending: [KeeperLink] = []
+
     static func shellQuoted(_ word: String) -> String {
         let safe = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_./=:,+@%"))
         if !word.isEmpty, word.unicodeScalars.allSatisfy(safe.contains) { return word }
@@ -216,6 +231,52 @@ enum SessionKeepers {
         static let nonce = "nonce"
         /// "rc" (zsh's ZDOTDIR wrapper), "typed" (bash), or "none".
         static let integration = "integration"
+    }
+}
+
+/// Which Claude Code conversation a running `claude` holds, from the file Claude Code keeps for
+/// each of its processes (`<config>/sessions/<pid>.json`, its `sessionId`). Read, never
+/// written; a Claude Code that no longer keeps the file just finds no duplicates.
+///
+/// Two tabs can end up on one conversation: a tab resumed while the conversation was still
+/// running in another, or in a terminal no tab showed any more. Both then answered, and wrote
+/// into the same transcript (the owner, 2026-11-05).
+enum ClaudeConversations {
+    static var sessionsDirectory: URL {
+        let config = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+        return config.appendingPathComponent("sessions")
+    }
+
+    /// The conversation the `claude` process `pid` holds.
+    static func conversation(ofProcess pid: pid_t, in directory: URL = sessionsDirectory) -> String? {
+        guard let data = FileManager.default.contents(atPath: directory.appendingPathComponent("\(pid).json").path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["pid"] as? NSNumber)?.int32Value == pid,
+              let id = object["sessionId"] as? String, !id.isEmpty else { return nil }
+        return id
+    }
+
+    /// The conversation of the Claude Code in the foreground of the terminal whose shell is
+    /// `shell`, if that's what's running there.
+    static func conversation(inShell shell: pid_t, in directory: URL = sessionsDirectory) -> String? {
+        guard let group = ForegroundProgram.group(ofShell: shell),
+              ForegroundProgram.name(arguments: ForegroundProgram.arguments(of: group)) == "claude" else { return nil }
+        return conversation(ofProcess: group, in: directory)
+    }
+
+    /// Another of Side's terminals holding the conversation the terminal `keeperID` holds.
+    struct Duplicate: Equatable {
+        let conversation: String
+        let otherKeeperID: String
+    }
+
+    static func duplicate(ofKeeper keeperID: String, records: [SessionRecord] = SessionPaths.records().filter(SessionKeepers.isRunning),
+                          conversationInShell: (pid_t) -> String? = { conversation(inShell: $0) }) -> Duplicate? {
+        guard let mine = records.first(where: { $0.id == keeperID }), mine.childPID > 0,
+              let conversation = conversationInShell(mine.childPID) else { return nil }
+        guard let other = records.first(where: { $0.id != keeperID && $0.childPID > 0 && conversationInShell($0.childPID) == conversation }) else { return nil }
+        return Duplicate(conversation: conversation, otherKeeperID: other.id)
     }
 }
 
