@@ -77,9 +77,16 @@ var clustering = GhosttyTerminalModeConfig()
 clustering.mode = ghostty_mode_new(2027, false)
 clustering.value = true
 ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &clustering)
-if spec.restoreFrom != nil, let banner = spec.banner {
+if spec.restoreFrom != nil {
+    // The old screen, but none of the old program's input modes: the new one never asked for
+    // them. Mouse reporting carried over typed every movement of the mouse into the new shell as
+    // numbers that never stopped (the owner, 2026-11-05, after a restart). Off: mouse tracking
+    // and its encodings, focus events, bracketed paste, application cursor keys and keypad, the
+    // color-scheme reports, the kitty keyboard flags; the cursor shown.
+    let reset = "\u{1b}[?1000l\u{1b}[?1001l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1004l\u{1b}[?1005l\u{1b}[?1006l\u{1b}[?1015l\u{1b}[?1016l"
+        + "\u{1b}[?2004l\u{1b}[?1l\u{1b}>\u{1b}[?2031l\u{1b}[=0;1u\u{1b}[?25h"
     // Out of a full-screen program's alternate screen, below what was there, dimmed.
-    let line = Array("\u{1b}[?1049l\u{1b}[0m\r\n\u{1b}[2m\(banner)\u{1b}[0m\r\n".utf8)
+    let line = Array(("\u{1b}[?1049l" + reset + "\u{1b}[0m" + (spec.banner.map { "\r\n\u{1b}[2m\($0)\u{1b}[0m\r\n" } ?? "")).utf8)
     line.withUnsafeBufferPointer { ghostty_terminal_vt_write(terminal, $0.baseAddress, $0.count) }
 }
 

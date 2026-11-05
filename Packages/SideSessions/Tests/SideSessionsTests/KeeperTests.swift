@@ -148,6 +148,40 @@ final class KeeperTests: XCTestCase {
         XCTAssertEqual(order, order.sorted(), "out of order:\n\(text)")
     }
 
+    /// After the owner's Mac restarted (2026-11-05), recovered tabs filled with numbers that never
+    /// stopped: the saved screen kept the modes Claude Code had turned on, mouse reporting among
+    /// them, and the new shell under it got every movement of the mouse typed in. A new program
+    /// starts with none of the old one's input modes.
+    func testARestartDoesntHandTheOldProgramsModesToTheNewOne() throws {
+        let modes = ["?1000", "?1002", "?1003", "?1004", "?1006", "?2004", "?1"]
+        let set = modes.map { "\\033[\($0)h" }.joined()
+        let id = try launch("printf '\(set)'; echo modes-on; sleep 30")
+        let first = try TestClient(id)
+        try first.attach()
+        XCTAssertTrue(first.waitForText("modes-on"))
+        first.close()
+        let reattached = try TestClient(id)
+        try reattached.attach()
+        XCTAssertTrue(waitUntil { reattached.snapshot != nil })
+        let live = String(decoding: reattached.snapshot ?? [], as: UTF8.self)
+        XCTAssertTrue(live.contains("\u{1b}[?1003h") || live.contains("1003"), "the running program keeps its modes on a reattach:\n\(live.debugDescription)")
+        reattached.close()
+        let old = try XCTUnwrap(SessionPaths.records().first { $0.id == id })
+        kill(old.keeperPID, SIGTERM)
+        XCTAssertTrue(waitUntil { kill(old.keeperPID, 0) != 0 })
+        kill(old.childPID, SIGKILL)
+        try launch("echo after-the-restart; sleep 30", id: id, restoreFrom: SessionPaths.snapshot(id).path, banner: "Restored after a restart")
+        let second = try TestClient(id)
+        try second.attach()
+        XCTAssertTrue(second.waitForText("after-the-restart"))
+        XCTAssertTrue(waitUntil { second.snapshot != nil })
+        let restored = String(decoding: second.snapshot ?? [], as: UTF8.self)
+        for mode in modes {
+            XCTAssertFalse(restored.contains("\u{1b}[\(mode)h"), "\(mode) carried over to the new program:\n\(restored.debugDescription)")
+        }
+        XCTAssertTrue(second.text.contains("modes-on"), "the old screen is still there")
+    }
+
     func testTheRecordKeepsTheForegroundProgramAndDirectory() throws {
         // An interactive zsh with no rc files: job control puts a command in its own group.
         let id = try launch("", executable: "/bin/zsh", arguments: ["-f", "-i"])
