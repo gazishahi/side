@@ -10,6 +10,7 @@ enum CrashReports {
     static var defaults = UserDefaults.standard
     static var directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports", isDirectory: true)
     private static let seenKey = "crashReports.lastSeen"
+    private static let runKey = "crashReports.runStarted"
     /// With nothing seen yet (the first launch with this), a crash this recent is still offered.
     private static let firstLookBack: TimeInterval = 3 * 24 * 3600
     private static let frameLimit = 30
@@ -43,6 +44,31 @@ enum CrashReports {
 
     static func markSeen(_ report: Report) {
         defaults.set(report.date, forKey: seenKey)
+    }
+
+    // MARK: Whether the last run crashed
+
+    /// When the run before this one started, if it never quit normally; set at launch.
+    /// A crash is offered only from a run like that: the owner was asked to report a crash on
+    /// the first launch after an update (2026-11-04), though the update had quit Side normally.
+    /// Any Side report from the last three days was offered, the session's or not.
+    private(set) static var unfinishedRunStartedAt: Date?
+
+    /// Launched: until a normal quit, this run is unfinished.
+    static func runStarted(now: Date = Date()) {
+        unfinishedRunStartedAt = defaults.object(forKey: runKey) as? Date
+        defaults.set(now, forKey: runKey)
+    }
+
+    /// Quitting normally, as an update's relaunch does too.
+    static func runEnded() {
+        defaults.removeObject(forKey: runKey)
+    }
+
+    /// The crash behind an unfinished last run: one written after that run began.
+    static func crashOfLastRun() -> Report? {
+        guard let started = unfinishedRunStartedAt, let report = unseen(), report.date >= started else { return nil }
+        return report
     }
 
     /// The report's first line is a JSON header, the rest one JSON object. Nil for anything that
@@ -112,9 +138,9 @@ enum CrashReports {
         return components.url!
     }
 
-    /// Asks once per crash, as a sheet on the window.
+    /// Asks once per crash, as a sheet on the window: only when the last run ended in one.
     static func offer(in window: NSWindow) {
-        guard let report = unseen() else { return }
+        guard let report = crashOfLastRun() else { return }
         markSeen(report)
         let alert = NSAlert()
         alert.messageText = "Side quit unexpectedly"

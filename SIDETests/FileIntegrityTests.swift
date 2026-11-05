@@ -1141,6 +1141,19 @@ final class CrashReportTests: XCTestCase {
         CrashReports.markSeen(found)
         XCTAssertNil(CrashReports.unseen(), "offered once")
 
+        // Offered only for a run that never quit normally (the owner, 2026-11-04: asked to report
+        // a crash right after an update, which quits Side normally).
+        CrashReports.runStarted(now: Date(timeIntervalSince1970: 0))
+        CrashReports.runEnded()
+        CrashReports.runStarted()
+        XCTAssertNil(CrashReports.unfinishedRunStartedAt, "the last run quit normally")
+        defaults.removeObject(forKey: "crashReports.lastSeen")
+        XCTAssertNil(CrashReports.crashOfLastRun(), "so its leftover reports aren't its crash")
+        CrashReports.runStarted(now: Date(timeIntervalSince1970: 0))
+        CrashReports.runStarted()
+        XCTAssertNotNil(CrashReports.unfinishedRunStartedAt, "this one didn't")
+        XCTAssertEqual(CrashReports.crashOfLastRun()?.file.lastPathComponent, "Side-2026-10-27-175710.ips", "and a report from after it began is its crash")
+
         let url = CrashReports.issueURL(for: found)
         XCTAssertTrue(url.absoluteString.hasPrefix("https://github.com/gazishahi/side-releases/issues/new?"))
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []

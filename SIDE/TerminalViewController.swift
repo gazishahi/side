@@ -705,7 +705,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             self.setProgramTitle(Self.cleanProgramTitle(title))
         }
         link.onExit = { [weak self] exit in self?.keeperSessionEnded(exitCode: exit.status) }
-        link.onLost = { [weak self] in self?.keeperSessionEnded(exitCode: nil) }
+        link.onLost = { [weak self] in self?.keeperSessionEnded(exitCode: nil, lost: true) }
     }
 
     /// Once the new shell is ready: Claude resumes its conversation, an editor or watcher starts
@@ -772,9 +772,14 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         onRerunOfferChanged?()
     }
 
-    private func keeperSessionEnded(exitCode: Int32?) {
+    /// `lost`: the keeper went away without saying how the session ended (it crashed, or was
+    /// killed). The terminal says so, rather than sit there taking input that goes nowhere.
+    private func keeperSessionEnded(exitCode: Int32?, lost: Bool = false) {
         terminalView.keeper = nil
         guard isAlive else { return }
+        if lost {
+            terminalView.feed(text: "\r\n\u{1B}[2m[This terminal's session ended unexpectedly, and what ran in it has stopped. Open a new tab (\u{2318}T) to carry on.]\u{1B}[0m\r\n")
+        }
         processTerminated(source: terminalView, exitCode: exitCode)
     }
 

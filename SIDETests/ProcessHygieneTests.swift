@@ -40,6 +40,24 @@ final class ProcessHygieneTests: XCTestCase {
         XCTAssertTrue(offenders.isEmpty, "pipes nobody reads (use FileHandle.nullDevice): \(offenders)")
     }
 
+    /// The session keeper writes its log to a file in the sessions folder. `FileHandle.write`
+    /// raises an Objective-C exception when a write fails, and on a full disk the keeper aborted
+    /// on its own log line, leaving its terminal dead (2026-11-04, reproduced on a full disk
+    /// image). It writes with `write(2)`, which returns the error.
+    func testTheKeeperNeverWritesWithFileHandle() throws {
+        let keeper = SourceTree.repoRoot.appendingPathComponent("Packages/SideSessions/Sources/SideSessionKeeper")
+        let files = (FileManager.default.enumerator(at: keeper, includingPropertiesForKeys: nil)?.compactMap { $0 as? URL } ?? []).filter { $0.pathExtension == "swift" }
+        XCTAssertFalse(files.isEmpty)
+        var offenders: [String] = []
+        for file in files {
+            for (index, line) in try String(contentsOf: file, encoding: .utf8).components(separatedBy: "\n").enumerated()
+            where line.range(of: #"FileHandle\.[a-zA-Z]+\.write\(|\.write\(Data\("#, options: .regularExpression) != nil && !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") {
+                offenders.append("\(file.lastPathComponent):\(index + 1)")
+            }
+        }
+        XCTAssertEqual(offenders, [])
+    }
+
     func testNoWaitBeforeRead() throws {
         var offenders: [String] = []
         for file in sourceFiles {

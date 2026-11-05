@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Self.shared = self
         TextScaleFollower.start()
         SystemNotifier.shared.start()
+        // This run is unfinished until a normal quit; the next launch offers a crash only then.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil, !Self.isUITesting { CrashReports.runStarted() }
         // Which agents are installed, off the main thread: the default agent new tracks take.
         if DefaultAgent.detects { AgentAvailability.refresh {} }
         // Persistence failures used to be swallowed by `try?` — a full disk or a revoked
@@ -586,6 +588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// before decided" tool results — leaving `think.json` with an orphaned `tool_use` the
     /// Messages API rejects outright on the next launch.
     func applicationWillTerminate(_ notification: Notification) {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil, !Self.isUITesting { CrashReports.runEnded() }
         // Debugger servers (js-debug's node, Delve) don't end with their client.
         DAPSocketTransport.terminateAllServers()
         // The session index and usage are written a moment after they change; not after quit.

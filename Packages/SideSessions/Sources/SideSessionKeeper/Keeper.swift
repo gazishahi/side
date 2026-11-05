@@ -18,7 +18,14 @@ var record: SessionRecord!
 var recordDirty = true
 var queue: Int32 = -1
 
-func log(_ message: String) { FileHandle.standardError.write(Data("[keeper \(getpid())] \(message)\n".utf8)) }
+/// A line on stderr (the session's log file), dropped if it can't be written. `FileHandle.write`
+/// raises an Objective-C exception on a failed write, and on a full disk the keeper logged that
+/// its record couldn't be saved, and aborted on the log line: its terminal stopped taking input
+/// (the owner, 2026-11-04, Claude Code sessions frozen while the Mac was out of storage).
+func log(_ message: String) {
+    let line = Array("[keeper \(getpid())] \(message)\n".utf8)
+    _ = line.withUnsafeBytes { write(STDERR_FILENO, $0.baseAddress, $0.count) }
+}
 func fail(_ message: String) -> Never { log(message); exit(1) }
 func setNonBlocking(_ fd: Int32) { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) }
 
