@@ -1040,6 +1040,7 @@ final class ShellViewController: NSViewController {
 
     /// UI testing: typing into Run's terminal.
     func runTypeForTesting(_ text: String) { runVC.typeForTesting(text) }
+    var terminalBackgroundForTesting: String { runVC.terminalBackgroundForTesting }
     func runSelectForTesting(_ index: Int) { runVC.selectTab(number: index) }
     func clickTabCloseForTesting(_ index: Int) {
         (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).clickCloseForTesting(index)

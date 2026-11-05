@@ -200,6 +200,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("keymap "), let keymap = Shortcuts.Keymap(rawValue: String(command.dropFirst(7))) { Shortcuts.keymap = keymap }
                     if command.hasPrefix("pin-only ") { StagePins.pinned = [ShellViewController.Stage(rawValue: String(command.dropFirst(9)))].compactMap { $0 }.reduce(into: Set()) { $0.insert($1) } }
                     if command.hasPrefix("run-type ") { shell.runTypeForTesting(String(command.dropFirst(9))) }
+                    // The terminal on screen's background, as "r g b" (0–255): checks a light/dark change.
+                    if command == "terminal-colors" { FileHandle.standardError.write(Data("[terminal] background \(shell.terminalBackgroundForTesting)\n".utf8)) }
+                    // Settings' own light/dark choice ("appearance" sets NSApp's directly), and a
+                    // window taken off screen and back, as another Space does.
+                    if command.hasPrefix("appearance-pref "), let preference = DS.Appearance.Preference(rawValue: String(command.dropFirst(16))) { DS.Appearance.preference = preference }
+                    if command == "window-out" { window.orderOut(nil) }
+                    if command == "window-in" { window.makeKeyAndOrderFront(nil) }
                     if command.hasPrefix("run-select "), let index = Int(command.dropFirst(11)) { shell.runSelectForTesting(index) }
                     // Any menu action, down the responder chain: "action foldAll:".
                     if command.hasPrefix("action ") { NSApp.sendAction(NSSelectorFromString(String(command.dropFirst(7))), to: nil, from: nil) }

@@ -19,6 +19,33 @@ final class SideTerminalView: LocalProcessTerminalView {
     /// A bell from the program (BEL): the activity pill says so when the tab is out of sight.
     var onBell: (() -> Void)?
 
+    // MARK: Light and dark (DEC mode 2031)
+
+    /// What the program asked for of light/dark notices. Claude Code picks its theme from the
+    /// terminal and listens for these; without them it kept the theme it started with, light in a
+    /// window gone dark (the owner, 2026-11-04).
+    private var colorScheme = ColorSchemeReports()
+    /// Whether the terminal's background reads as dark: the program's notion of "dark".
+    var isDarkBackground: () -> Bool = { true }
+    /// A restored terminal doesn't know what its program asked before Side reattached; a program
+    /// known to listen still hears of a change.
+    var programListensForColorScheme: () -> Bool = { false }
+    static func colorSchemeReport(dark: Bool) -> String { "\u{1B}[?997;\(dark ? 1 : 2)n" }
+
+    /// Side's light/dark or theme changed: a program that listens hears which it is now. Told on
+    /// every change, not only when it differs from the last told: a terminal's first colors can be
+    /// resolved before the app has finished switching, and a repeated notice only redraws. Read
+    /// a turn later, once every window has the new appearance.
+    func colorSchemeChanged() {
+        guard colorScheme.enabled || programListensForColorScheme() else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.send(txt: Self.colorSchemeReport(dark: self.isDarkBackground()))
+        }
+    }
+
+    var reportsColorSchemeForTesting: Bool { colorScheme.enabled }
+
     override func bell(source: Terminal) {
         super.bell(source: source)
         onBell?()
@@ -152,6 +179,7 @@ final class SideTerminalView: LocalProcessTerminalView {
     override func dataReceived(slice: ArraySlice<UInt8>) {
         onDataReceived?()
         onRawDataReceived?(slice)
+        for event in colorScheme.consume(slice) where event == .query { send(txt: Self.colorSchemeReport(dark: isDarkBackground())) }
         receiving = true
         super.dataReceived(slice: slice)
         receiving = false
@@ -532,6 +560,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             guard parts.count == 4, parts[0] == "agent", parts[3] == self.markNonce, !parts[2].isEmpty else { return }
             self.onAgentSessionReported?(parts[1], parts[2])
         }
+        terminalView.isDarkBackground = { [weak self] in
+            guard let color = self?.terminalView.nativeBackgroundColor.usingColorSpace(.sRGB) else { return true }
+            return 0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent < 0.5
+        }
+        terminalView.programListensForColorScheme = { [weak self] in self?.runningProgramName == "claude" }
         terminalView.onFileLinkRequested = { [weak self] link in self?.onFileLinkRequested?(link) ?? false }
         terminalView.onLineSubmitted = { [weak self] line in self?.lastSubmittedCommand = line }
         terminalView.onDataReceived = { [weak self] in self?.onOutputReceived?() }
@@ -1320,7 +1353,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     // MARK: - Theme
 
-    @objc private func appearanceChanged() { applyTerminalTheme() }
+    @objc private func appearanceChanged() {
+        applyTerminalTheme()
+        terminalView.colorSchemeChanged()
+    }
 
     /// Foreground, background, and the sixteen ANSI colours, from the design tokens for the
     /// current appearance. SwiftTerm's own defaults are a dim gray on pure black and know nothing
@@ -1683,5 +1719,48 @@ struct EscapeSkipper {
             state = .text
         }
         return true
+    }
+}
+
+/// A program's light/dark requests in its output, as DEC mode 2031 has them: `CSI ? 2031 h`
+/// asks to be told when the terminal goes light or dark, `l` stops, and `CSI ? 996 n` asks now;
+/// the answer is `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light). Fed every read; a sequence split
+/// across reads is still read whole.
+struct ColorSchemeReports {
+    enum Event: Equatable { case query }
+    private(set) var enabled = false
+    private enum State { case ground, escape, csi }
+    private var state = State.ground
+    private var params: [UInt8] = []
+
+    mutating func consume<Bytes: Sequence>(_ bytes: Bytes) -> [Event] where Bytes.Element == UInt8 {
+        var events: [Event] = []
+        for byte in bytes {
+            switch state {
+            case .ground:
+                if byte == 0x1B { state = .escape }
+            case .escape:
+                if byte == 0x5B { state = .csi; params = [] } else if byte != 0x1B { state = .ground }
+            case .csi:
+                if (0x20...0x3F).contains(byte) {
+                    if params.count < 32 { params.append(byte) }
+                } else {
+                    if (0x40...0x7E).contains(byte) { finish(byte, &events) }
+                    state = byte == 0x1B ? .escape : .ground
+                }
+            }
+        }
+        return events
+    }
+
+    private mutating func finish(_ final: UInt8, _ events: inout [Event]) {
+        guard params.first == UInt8(ascii: "?") else { return }
+        let modes = String(decoding: params.dropFirst(), as: UTF8.self).split(separator: ";")
+        switch final {
+        case UInt8(ascii: "h") where modes.contains("2031"): enabled = true
+        case UInt8(ascii: "l") where modes.contains("2031"): enabled = false
+        case UInt8(ascii: "n") where modes == ["996"]: events.append(.query)
+        default: break
+        }
     }
 }

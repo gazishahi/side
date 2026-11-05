@@ -131,6 +131,13 @@ final class RunWorkspaceViewController: NSViewController {
         return true
     }
 
+    /// UI testing: the terminal on screen's background, "r g b" in 0–255.
+    var terminalBackgroundForTesting: String {
+        guard let color = displayedSession?.viewController.terminalView.nativeBackgroundColor.usingColorSpace(.sRGB) else { return "-" }
+        let rgb = [color.redComponent, color.greenComponent, color.blueComponent].map { String(Int(($0 * 255).rounded())) }.joined(separator: " ")
+        return rgb + " reports=\(displayedSession?.viewController.terminalView.reportsColorSchemeForTesting == true)"
+    }
+
     /// UI testing: characters typed into the terminal on screen, one per `interval`.
     func typeForTesting(_ text: String, interval: TimeInterval = 0.1) {
         guard let terminal = displayedSession?.viewController.terminalView else { return }

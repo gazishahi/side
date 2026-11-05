@@ -176,3 +176,23 @@ final class VerificationStalenessTests: XCTestCase {
         XCTAssertEqual(session.title, "project", "back to the folder once it ends")
     }
 }
+
+/// Light/dark notices (DEC mode 2031): Claude Code picks its theme from the terminal and kept
+/// the one it started with when Side changed (the owner, 2026-11-04: light inside a dark window).
+final class ColorSchemeReportsTests: XCTestCase {
+    func testAProgramTurnsNoticesOnAndOffAndAsksAcrossReads() {
+        var reports = ColorSchemeReports()
+        XCTAssertFalse(reports.enabled)
+        XCTAssertTrue(reports.consume(Array("hello \u{1B}[?20".utf8)).isEmpty)
+        _ = reports.consume(Array("31h world".utf8))
+        XCTAssertTrue(reports.enabled, "split across two reads")
+        XCTAssertEqual(reports.consume(Array("\u{1B}[?996n".utf8)), [.query])
+        _ = reports.consume(Array("\u{1B}[?1049;2031l".utf8))
+        XCTAssertFalse(reports.enabled, "one of several modes in one sequence")
+        _ = reports.consume(Array("\u{1B}[2031h\u{1B}[?2004h".utf8))
+        XCTAssertFalse(reports.enabled, "without ? it isn't the private mode, and 2004 isn't 2031")
+        XCTAssertTrue(reports.consume(Array("\u{1B}[?996;1n\u{1B}[6n".utf8)).isEmpty, "other reports aren't the question")
+        XCTAssertEqual(SideTerminalView.colorSchemeReport(dark: true), "\u{1B}[?997;1n")
+        XCTAssertEqual(SideTerminalView.colorSchemeReport(dark: false), "\u{1B}[?997;2n")
+    }
+}
