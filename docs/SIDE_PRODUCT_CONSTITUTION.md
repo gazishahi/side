@@ -60,30 +60,42 @@ The app opens a track at the stage that best matches its state; keyboard shortcu
 
 A stage (above) is a place in the UI — what the user navigates to and sees. Some stages are backed by a named, independently-architected engine that the stage is a thin client of, rather than code inseparable from the stage's own view controller. Keeping the engine and the stage distinct — and distinctly named — is deliberate: it's what let Think's agent loop survive being torn down and rebuilt across stage switches, track switches, and even window closures, instead of dying with whatever view happened to be showing it. Two such engines exist so far:
 
-#### Heron — powers Think
+#### SideAgents — powers Agent
 
-Heron is the agent harness: the provider-agnostic conversation loop, tool execution, and human-approval machinery that Think's UI merely renders and forwards user actions into. It does not assume a view is watching — it is built to run headless of any particular one, to survive that view detaching and reattaching, and to serve more than one observer at once (Think itself today; a live Tracks dashboard and stage badges as of the "B1" phase of its build).
+*Update 2026-11-04: Heron, Side's own agent harness, is retired (`SIDE_RFC_HERON_RETIREMENT.md`).
+A solo project can't out-build Claude Code or Codex; Side's part is the editor, the tracks and the
+tools it offers every agent. Agent runs outside agents only, through `Packages/SideAgents`.
+Heron's entry as it stood is in git history; its conversations stay readable on their tracks.*
 
-As built:
+SideAgents is what Agent's UI renders and forwards actions into. Like Heron before it, it does not
+assume a view is watching: it runs headless, survives a view detaching and reattaching, and serves
+several observers at once (Agent, Branches' ledger, stage badges, the activity pill).
 
-- **Provider abstraction.** One protocol, `ChatModelProvider`, with a single streaming method (`streamTurn`) — no non-streaming call exists, because "stream and buffer" is trivial for a caller that wants one. Two adapters cover the entire target list: `AnthropicMessagesProvider` (the built-in provider) and `OpenAICompatibleChatProvider` (built) — a single adapter that covers OpenAI bring-your-own-key *and* any local model server (Ollama, LM Studio) speaking the same wire shape, so "use your own key" and "run it locally" are never two separate code paths.
-- **Transport.** `SSEHTTPClient`: a dedicated session (not `URLSession.shared`) with incremental Server-Sent-Events parsing and an explicit request timeout, playing the same role for Heron that `JSONRPCTransport` plays for the LSP layer underneath Make.
-- **The runner.** `AgentRunner` — one per `(project, trackKey)`, `@MainActor` — owns the actual loop: send, stream, run tools, pause for approval, resume. It exposes a renderable transcript (`RunTranscriptEntry`: meta / user text / assistant text / tool call / tool result / failure / proposal-with-resolution — never an `NSView`, so it isn't AppKit-specific) and a coarse `AgentRunPhase` (idle / streaming / runningTools / awaitingApproval / blocked / finishedTurn), which projects further into `AgentActivity` (none / working / needsYou / doneUnread / doneSeen) for anything that wants to show status without understanding the loop itself — this is the concrete mechanism behind "attention is explicit." A small multicast (`addObserver`/`removeObserver`) lets several observers watch one runner at once.
-- **Lifecycle.** Runners are owned by `AgentRunnerManager` — one per project, shaped like `LSPManager` (lazy per-key creation, explicit discard, teardown-all) — which is itself owned by `ProjectContext`, a refcounted object shared by every window that has a given project open. That sharing is what lets a runner outlive the window that started it, as long as another window keeps the project open, and what makes "opening the same project in two windows" behave like one project instead of two silently diverging copies of it.
-- **Tools.** `read_file` / `list_files` / `search_files` auto-run — pure reads, nothing to promote. `edit_file` / `write_file` never touch disk directly: they produce a `ProposedEdit`, rendered inline in the transcript as a diff card, that a human must explicitly Apply or Reject. This is the literal mechanism behind "agents propose; people promote," not just a principle stated in prose.
-- **File references (built 2026-08-27).** `@path/to/file` in a Think message is a *pointer*, never inlined content. Typing `@` completes against the track's own working directory (its worktree, not the project root) using the same fuzzy scorer Quick Open uses, through AppKit's native completion so arrows/Return/Escape behave correctly. On send, mentions resolve to real paths and travel as a short note — "read these with read_file if you need them" — with typo'd and out-of-project references reported so the agent asks instead of inventing a file. Inlining the contents was rejected deliberately: a conversation mentioning six files would then persist six copies *and* re-send all of them on every later turn, which is exactly the unbounded-growth shape the session store was restructured to remove.
-- **Modes (built 2026-08-27).** A track's mode is two independent axes, not a flat list. **Tool scope** — Ask / Plan / Build — decides which tools the model is even shown, so a read-only scope is a boundary rather than an instruction (`ToolExecutor.specs(for:)`). **Autonomy** — Manual / Guarded / Full — decides what happens without a human: Manual waits on everything, Guarded auto-runs allowlisted commands (exactly what the old per-track `autoRunCommands` bool meant, and what it migrates to), Full also auto-applies edits. `CommandAutoRunPolicy`'s allowlist is a floor at *every* level, Full included: a mode is a statement about routine work, never permission to run anything. **Full autonomy is the one setting that steps past "agents propose; people promote,"** and it exists deliberately: clicking through forty mechanical renames is how people start approving without reading. Auto-applied edits still produce checkpoints, so they stay reviewable and revertable rather than invisible. Scope is chosen in Think's header (next to the conversation it shapes); autonomy also appears in the Tracks context menu (it's a property of the track a ledger reader wants to see).
-- **Persistence.** One `AgentSession` per track (its turns, provider, model), stored under `.git/side/think/` — same state directory `TrackStore` uses. **Superseded shape:** this was one `think.json` holding every track's full history, which was loaded eagerly at launch and never evicted; it is now a lightweight `index.json`, a `checkpoints.json`, and one file per track's session, so a track's turns load only when that track is actually opened. Existing single-file state migrates on first launch.
-- **Safety properties.** A `WorkspaceBridge` (live editor-buffer access, apply-into-open-tab, reveal-after-apply) is resolved fresh from whichever window is both frontmost and actually showing the relevant track — never captured once — so an agent can never land an edit into the wrong window's editor. A stall watchdog (90 seconds with no stream event) plus an explicit transport timeout mean a hung connection surfaces as a visible blocked state, never as an agent that merely looks busy forever.
+- **The harness.** One protocol, `Harness`, per `(project, trackKey)`: a renderable transcript
+  (`RunTranscriptEntry`, never an `NSView`), a coarse `AgentRunPhase` projected into
+  `AgentActivity` for anything that shows status, a multicast of changes, and the actions a person
+  can take. `ACPHarness` speaks the Agent Client Protocol to the agent the track runs on (Claude
+  Code, Codex, Gemini CLI, Pi, OpenCode, or any added by its command), on the user's own account.
+  New tracks take the default agent (Settings › Agents).
+- **Lifecycle.** Harnesses are owned by `AgentRunnerManager`, one per project, owned in turn by the
+  refcounted `ProjectContext` every window on that project shares, so a conversation outlives the
+  window that started it.
+- **Approval and autonomy.** The agent asks through its own permission requests, drawn as cards;
+  writes it routes through Side are proposals under Manual and Guarded, applied under Full. Every
+  turn that changed files ends in a checkpoint on the track's branch.
+- **Side's tools.** Each conversation gets Side's MCP server at its own URL: the project's other
+  tracks and the files it shares with them, subtracks for a coordinator, the editor's diagnostics,
+  the debugger's state and the track's ports. The editor's abilities are offered to any agent,
+  rather than built into one.
+- **Persistence.** What the agent showed is kept under `.git/side/think/outside` per conversation,
+  so a relaunch brings it back; the agent keeps its own session as well.
+- **Safety properties.** A `WorkspaceBridge` is resolved fresh from whichever window is frontmost
+  and showing the track, so nothing lands in the wrong window's editor; a stall watchdog turns a
+  hung agent into a visible blocked state.
 
-**Outside harnesses (accepted 2026-09-23, `SIDE_RFC_BYO_HARNESS.md`).** Heron is the default,
-not the only engine: a track may run on an outside agent (Claude Code, Codex, Gemini CLI, Pi…)
-through the Agent Client Protocol, on the user's own account. Such an agent may write straight to
-disk; non-negotiable 5 then holds as it does for Full autonomy — every change lands in the
-track's own worktree, is checkpointed at the end of the turn, and stays reviewable and
-reversible, and promotion toward `main` is still an explicit human action.
-
-Named to stay distinct from "Think," the stage that hosts it. Code lives under a `Heron/` directory, mirroring the existing `LSP/` directory's role for Make's language-server support.
+An outside agent may write straight to disk; non-negotiable 5 holds as it does for Full autonomy:
+every change lands in the track's own worktree, is checkpointed at the end of the turn, and stays
+reviewable and reversible, and promotion toward `main` is still an explicit human action.
 
 #### Alloy — powers Make (name reserved; not yet designed or built)
 

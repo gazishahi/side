@@ -2,6 +2,9 @@
 
 *2026-09-24. Status: **in progress**: signing, packaging and updates built; notarization waits on the owner's credentials; the open-source packages are next.*
 *Companion to `SIDE_PRODUCT_CONSTITUTION.md` (Heron and Alloy are engines Side is a client of).*
+*Update 2026-11-04: Heron is retired (`SIDE_RFC_HERON_RETIREMENT.md`): `Packages/Heron` is gone,
+nothing of it ships, and `gazishahi/heron` is archived. Alloy is the one package published. The
+Heron rows and sections below are the plan as it stood.*
 
 ## What ships
 

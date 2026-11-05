@@ -1,7 +1,9 @@
 # Retiring Heron's agent
 
-Status: in progress (2026-11-04: the owner decided to retire Heron, and took the three
-recommendations below). Steps 1–5 built.
+Status: built (2026-11-04: the owner decided to retire Heron, and took the three
+recommendations below). All six steps done.
+
+Symbols: `DefaultAgent`, `CheckpointCommit`, `AgentRunnerManager`, `RetiredHeronHarness`, `SideToolServer`.
 
 ## What goes, what stays
 
@@ -78,8 +80,11 @@ live there (`GitPaths`, `SpawnEnvironment`, `HeronDefaults`, `JSONStore`, …).
    for that copy, errors only on request), `read_debug_state` (the paused program's stack,
    locals, watches and console) and `read_ports` (the track's port block); the ports are in the
    server's instructions too. Tasks stay with Run's chips for now.
-6. **Outside the app:** the README, the landing page, `scripts/test.sh`, third-party notices; the
-   public Heron repository archived with a note, not deleted.
+6. **Outside the app. Done 2026-11-04.** The README (and its stage names), the constitution (its
+   Heron entry is now SideAgents'), the distribution plan, `scripts/test.sh`,
+   `scripts/publish-package.sh` (Alloy only) and the third-party notices. `gazishahi/heron` is
+   archived with a note in its description, nothing deleted. The landing page drafts are the
+   owner's, uncommitted, and still name Heron.
 
 Each step ships on its own, with the suite passing; steps 1 and 2 change nothing you see but
 the default.

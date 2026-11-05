@@ -1,12 +1,13 @@
 #!/bin/zsh
-# Publishes Alloy or Heron to its public repository: every version is a tag *and* a GitHub
-# Release, made in one go so the two can't drift apart.
+# Publishes Alloy to its public repository: every version is a tag *and* a GitHub Release, made
+# in one go so the two can't drift apart. (Heron was published here too until it was retired,
+# 2026-11-04; its repository is archived.)
 #
 #   scripts/publish-package.sh Alloy 0.7.4 "0.7.4: what changed"   copy, commit, push, wait for
 #                                                                   CI, tag, release
-#   scripts/publish-package.sh --release-only Heron 0.1.1          the Release for a tag that
+#   scripts/publish-package.sh --release-only Alloy 0.7.4          the Release for a tag that
 #                                                                   already exists (backfill)
-#   DRY_RUN=1 scripts/publish-package.sh --release-only Heron 0.1.1  print those notes only
+#   DRY_RUN=1 scripts/publish-package.sh --release-only Alloy 0.7.4  print those notes only
 #
 # The commit message's first argument is its subject; set NOTES_BODY for a body (its "- " lines
 # become sub-bullets in the release notes). Notes are the commits since the previous tag.
@@ -15,8 +16,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 RELEASE_ONLY=0; [[ "${1:-}" == "--release-only" ]] && { RELEASE_ONLY=1; shift; }
-PACKAGE="${1:?Alloy or Heron}"; VERSION="${2:?version, e.g. 0.7.4}"
-case "$PACKAGE" in Alloy|Heron) ;; *) echo "Alloy or Heron, not $PACKAGE" >&2; exit 1;; esac
+PACKAGE="${1:?Alloy}"; VERSION="${2:?version, e.g. 0.7.4}"
+case "$PACKAGE" in Alloy) ;; *) echo "Alloy only, not $PACKAGE (Heron is retired)" >&2; exit 1;; esac
 [[ "$VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || { echo "version must be X.Y.Z" >&2; exit 1; }
 REPO="gazishahi/${PACKAGE:l}"
 AUTHOR_NAME="Gazi Shahi"; AUTHOR_EMAIL="74158471+gazishahi@users.noreply.github.com"

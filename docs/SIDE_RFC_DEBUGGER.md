@@ -4,7 +4,7 @@
 The debugger lives in Make; a breakpoint is a click on the line number; a project's
 `.vscode/launch.json` is read, with consent; agents get read-only access first. Q4, the first
 languages, took the recommendation (default).*
-Symbols: `DAPClient`, `DAPSocketTransport`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `DebugLaunchFile`, `DebugProcesses`, `DebugAdapters`, `MakeDebugger`, `DebugBar`, `DebugInspector`, `DebugSnapshot` (Heron).
+Symbols: `DAPClient`, `DAPSocketTransport`, `DebugSession`, `BreakpointStore`, `DebugLaunch`, `DebugLaunchFile`, `DebugProcesses`, `DebugAdapters`, `MakeDebugger`, `DebugBar`, `DebugInspector`, `DebugSnapshot` (SideAgents).
 *Companion to `SIDE_RFC_IDE_ESSENTIALS.md` (the language-server client this mirrors, and
 Settings → Languages, which gains a debugger per language) and `SIDE_RFC_ALLOY.md` (the gutter
 and line tints the debugger draws with).*
