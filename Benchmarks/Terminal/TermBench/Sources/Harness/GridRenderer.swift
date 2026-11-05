@@ -94,7 +94,13 @@ public final class GridView: NSView {
         metal.device = device
         metal.pixelFormat = .bgra8Unorm
         metal.framebufferOnly = true
-        metal.maximumDrawableCount = 2
+        metal.maximumDrawableCount = Self.experiments.contains("drawables3") ? 3 : 2
+        // Latency experiments (docs/SIDE_RFC_TERMINAL_ENGINE.md, Phase 0), TERMBENCH_EXP=a,b:
+        // nosync presents without waiting for the display's vsync (CAMetalLayer.displaySyncEnabled,
+        // macOS only); opaque marks the layer opaque, which the window server can composite more
+        // cheaply.
+        if Self.experiments.contains("nosync") { metal.displaySyncEnabled = false }
+        if Self.experiments.contains("opaque") { metal.isOpaque = true }
         // TERMBENCH_TXN=1: present with the Core Animation transaction, as AppKit's own drawing
         // does, instead of on Metal's schedule.
         metal.presentsWithTransaction = Self.withTransaction
@@ -118,6 +124,12 @@ public final class GridView: NSView {
 
     public override var acceptsFirstResponder: Bool { true }
 
+    /// A typed key (TERMBENCH_KEYS=events): the setup writes its text to the PTY. It goes through
+    /// the text input system first (interpretKeyEvents, as an NSTextInputClient), as SwiftTerm's
+    /// view and Ghostty.app's do, since that's the path a real terminal view's keys take (IME).
+    public var onKey: ((String) -> Void)?
+    public override func keyDown(with event: NSEvent) { interpretKeyEvents([event]) }
+
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window else { return }
@@ -131,6 +143,7 @@ public final class GridView: NSView {
     /// Output arrived: draw now rather than at the next display-link tick (which added up to a
     /// refresh interval of latency). Callable from any thread; coalesced to one pending frame.
     static let withTransaction = ProcessInfo.processInfo.environment["TERMBENCH_TXN"] == "1"
+    static let experiments = Set((ProcessInfo.processInfo.environment["TERMBENCH_EXP"] ?? "").split(separator: ",").map(String.init))
 
     public nonisolated func requestFrame() {
         guard !framePending.exchange(true, ordering: .acquiringAndReleasing) else { return }
@@ -362,3 +375,23 @@ public let xterm256: [UInt32] = {
     for i in 0..<24 { let v = UInt32(8 + i * 10); p.append(v << 16 | v << 8 | v) }
     return p
 }()
+
+
+/// The least a terminal view needs to be a text input client: text is inserted, nothing is ever
+/// marked. Enough for the input system to run its usual path for every key.
+extension GridView: @preconcurrency NSTextInputClient {
+    public func insertText(_ string: Any, replacementRange: NSRange) {
+        let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        onKey?(text)
+    }
+    public override func doCommand(by selector: Selector) {}
+    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
+    public func unmarkText() {}
+    public func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    public func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    public func hasMarkedText() -> Bool { false }
+    public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
+    public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+    public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect { window?.convertToScreen(convert(bounds, to: nil)) ?? .zero }
+    public func characterIndex(for point: NSPoint) -> Int { 0 }
+}

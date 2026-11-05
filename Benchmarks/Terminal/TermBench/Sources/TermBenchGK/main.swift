@@ -11,6 +11,46 @@ import Harness
 
 final class SurfaceHost: NSView {
     override var acceptsFirstResponder: Bool { true }
+    var surface: ghostty_surface_t?
+
+    /// A typed key (TERMBENCH_KEYS=events), handed to Ghostty as Ghostty.app's keyDown hands it
+    /// (SurfaceView_AppKit): through the text input system first (interpretKeyEvents, as an
+    /// NSTextInputClient), then a press with its keycode, the text the input system produced and
+    /// the unshifted codepoint.
+    private var typed: String?
+    override func keyDown(with event: NSEvent) {
+        guard let surface else { return }
+        typed = nil
+        interpretKeyEvents([event])
+        let text = typed ?? ""
+        text.withCString { c in
+            var key = ghostty_input_key_s()
+            key.action = GHOSTTY_ACTION_PRESS
+            key.mods = GHOSTTY_MODS_NONE
+            key.consumed_mods = GHOSTTY_MODS_NONE
+            key.keycode = UInt32(event.keyCode)
+            key.text = text.isEmpty ? nil : c
+            key.unshifted_codepoint = (event.charactersIgnoringModifiers ?? "").unicodeScalars.first.map { $0.value } ?? 0
+            key.composing = false
+            _ = ghostty_surface_key(surface, key)
+        }
+    }
+}
+
+extension SurfaceHost: @preconcurrency NSTextInputClient {
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        typed = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+    }
+    override func doCommand(by selector: Selector) {}
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
+    func unmarkText() {}
+    func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    func hasMarkedText() -> Bool { false }
+    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect { window?.convertToScreen(convert(bounds, to: nil)) ?? .zero }
+    func characterIndex(for point: NSPoint) -> Int { 0 }
 }
 
 @MainActor
@@ -96,6 +136,7 @@ func startD(options: Options, view: SurfaceHost) {
             ghostty_surface_set_display_id(made, n.uint32Value)
         }
         ghostty_surface_set_focus(made, i == 0)
+        host.surface = made
         surfaces.append(made)
     }
     ghostty_app_set_focus(app, true)

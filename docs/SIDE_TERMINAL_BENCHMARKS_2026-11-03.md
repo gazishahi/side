@@ -8,6 +8,11 @@ Status: decisions pending — benchmark findings (2026-11-03) for choosing Run's
 
 The prototype hasn't been tuned for either yet.
 
+**Corrections, 2026-11-05** (Phase 0 of `docs/SIDE_RFC_TERMINAL_ENGINE.md`; the runs and notes are in `Benchmarks/Terminal/results/validation/2026-11-05/NOTES.md`). The numbers below reproduce, but three conclusions don't hold:
+- **Keypress latency:** no setup here received a real key. A wrote through SwiftTerm's `send(txt:)`, B and C wrote to the PTY and D called `ghostty_surface_text`. With a real keyDown through AppKit and the input system in every setup, idle medians are A 16.1, C 18.4 and D 23.3 ms. SwiftTerm's lead is about 2 ms, not 7, and C is ahead under load. With `displaySyncEnabled = false`, C answers in 6.3 ms; the risks of that are in the notes.
+- **The throughput gap isn't the lock.** C's reader waited 2.5 ms for it over a whole ascii run. macOS hands the master about 1 KB per read, which Ghostty's termio handles with a gather-and-parse pipeline. Even so, that pipeline didn't move C in this harness, and C's process reads the PTY at only about 150 MB/s with parsing turned off. That gap is in the harness's host code, not libghostty-vt, and its cause is still open.
+- **Each setup's own clock was unfair to short runs.** On the writer's clock, tui is a tie (C 196, D 199 MB/s). Behind Side's session keeper, as Side really runs, C′ and D′ are equal on every workload (about 90–100 MB/s), capped by the keeper.
+
 **Correction, 2026-11-03.** The first version of this report understated C's work. libghostty-vt's C API caps scrollback at 10,000 bytes by default, which silently overrode the 10,000-line limit, so C kept about 390 rows. Every libghostty-vt result below was re-run with the cap removed. The biggest change: plain text emulator-only went from 856 to 462 MB/s, and C's end-to-end plain-text throughput from 178 to 136 MB/s.
 
 ## The question

@@ -80,6 +80,20 @@ D also fits Side worse:
 
 ## Phase 0: validate before building
 
+**Where it stands (2026-11-05;** notes in `Benchmarks/Terminal/results/validation/2026-11-05/NOTES.md`**):**
+- **Steps 2–4 are done, and the gate is met** with one condition: C′ presents without waiting for
+  vsync. Behind the keeper, it answers a real key in 7.7 ms median (p95 11.5), against
+  SwiftTerm's 15.4 ms (p95 22.2). Its throughput matches D′'s.
+- **With vsync, the latency gate is not met** (18.4 against 15.4 ms).
+- **Still open:**
+  - step 1, the real capture;
+  - six and 24 sessions behind the keeper;
+  - whether presenting without vsync is safe (tearing, power, external displays, and the kernel
+    panics Ghostty has seen with out-of-sync rendering);
+  - what holds the harness's own process to about 150 MB/s from a PTY.
+- **The design follows from it:** present at once for the first frame after quiet (a key's
+  echo), and pace to the display while output streams.
+
 Each item adds to the benchmark harness (`Benchmarks/Terminal`) and re-runs it; results go into
 the benchmarks write-up as a dated section.
 

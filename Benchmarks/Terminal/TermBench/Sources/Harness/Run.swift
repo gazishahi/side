@@ -21,8 +21,15 @@ public struct Options {
     public var load = 0
     public var loadWorkload = ""
     public var loadCommand: [String] {
-        ["/bin/sh", "-c", "i=0; while [ $i -lt 2000 ]; do /bin/cat '\(loadWorkload)'; /bin/sleep 0.05; i=$((i+1)); done"]
+        Self.relay + ["/bin/sh", "-c", "i=0; while [ $i -lt 2000 ]; do /bin/cat '\(loadWorkload)'; /bin/sleep 0.05; i=$((i+1)); done"]
     }
+    /// TERMBENCH_RELAY="<keeper-relay> <SideSessionKeeper> <run dir>": every command runs behind
+    /// Side's session keeper, through Keeper/relay.c, as Side's terminals do (with one more PTY
+    /// hop than Side's own client, the same for every setup).
+    public static let relay: [String] = {
+        guard let r = ProcessInfo.processInfo.environment["TERMBENCH_RELAY"], !r.isEmpty else { return [] }
+        return r.split(separator: " ").map(String.init) + ["--"]
+    }()
     public var rows = 60
 
     public static func parse() -> Options {
@@ -50,11 +57,20 @@ public struct Options {
     /// setup sizes itself to the grid first, then sends the line and starts the clock, so no
     /// setup's startup (Ghostty's login wrapper included) is measured.
     public var command: [String] {
-        if mode == "latency" { return Latency.command }
+        if mode == "latency" { return Self.relay + Latency.command }
         if mode == "sessions" {
-            return ["/bin/sh", "-c", "read _; i=0; while [ $i -lt 200 ]; do /bin/cat '\(workload)'; /bin/sleep 0.05; i=$((i+1)); done"]
+            return Self.relay + ["/bin/sh", "-c", "read _; i=0; while [ $i -lt 200 ]; do /bin/cat '\(workload)'; /bin/sleep 0.05; i=$((i+1)); done"]
         }
-        return ["/bin/sh", "-c", "read _; exec /bin/cat '\(workload)'"]
+        // TERMBENCH_WRITER_CLOCK=<file>: the writer's own clock, the same for every setup: the time
+        // before cat starts and after it has written its last byte (it blocks while the terminal
+        // isn't reading), so a setup's own idea of when the run ended doesn't enter into it.
+        if let clock = ProcessInfo.processInfo.environment["TERMBENCH_WRITER_CLOCK"] {
+            let stamp = "/usr/bin/perl -MTime::HiRes=time -e 'printf(\"%.6f\\n\", time)' >> '\(clock)'"
+            // TERMBENCH_PRE: a command run first, inside the terminal (e.g. stty -a > file).
+            let pre = ProcessInfo.processInfo.environment["TERMBENCH_PRE"].map { "\($0); " } ?? ""
+            return Self.relay + ["/bin/sh", "-c", "read _; \(pre)\(stamp); /bin/cat '\(workload)'; \(stamp)"]
+        }
+        return Self.relay + ["/bin/sh", "-c", "read _; exec /bin/cat '\(workload)'"]
     }
 }
 
@@ -152,6 +168,7 @@ public final class Run {
         """
         print(json)
         fflush(stdout)
+        ReaderStats.report()
         // --hold keeps the window up for a screenshot.
         let hold = Double(ProcessInfo.processInfo.environment["TERMBENCH_HOLD"] ?? "0") ?? 0
         if hold > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + hold) { exit(0) } } else { exit(0) }
@@ -194,6 +211,14 @@ public final class PTYProcess: @unchecked Sendable {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
+        // TERMBENCH_CHILD_QOS=user-initiated|user-interactive|utility: the child's QoS class. Ghostty
+        // forks its child from a thread it set to user-initiated, and a forked child keeps it.
+        switch ProcessInfo.processInfo.environment["TERMBENCH_CHILD_QOS"] {
+        case "user-initiated": posix_spawnattr_set_qos_class_np(&attr, QOS_CLASS_USER_INITIATED)
+        case "user-interactive": posix_spawnattr_set_qos_class_np(&attr, QOS_CLASS_USER_INTERACTIVE)
+        case "utility": posix_spawnattr_set_qos_class_np(&attr, QOS_CLASS_UTILITY)
+        default: break
+        }
         var env: [UnsafeMutablePointer<CChar>?] = (["TERM=xterm-256color", "LANG=en_US.UTF-8"] as [String]).map { strdup($0) } + [nil]
         var argv: [UnsafeMutablePointer<CChar>?] = command.map { strdup($0) } + [nil]
         var child: pid_t = 0
@@ -204,14 +229,32 @@ public final class PTYProcess: @unchecked Sendable {
         pid = child
     }
 
+    /// TERMBENCH_READER=pipeline: two threads, as Ghostty's termio reader has (Exec.zig, gather
+    /// and parse stages). macOS hands out a PTY's output about 1 KB per read; one thread that reads
+    /// and then parses leaves the writer blocked while it parses. Here a gather thread only reads,
+    /// appending to a batch, and a parse thread takes whole batches, so the two overlap.
+    public static let pipelined = ["pipeline", "bridge"].contains(ProcessInfo.processInfo.environment["TERMBENCH_READER"] ?? "")
+    /// TERMBENCH_READER=bridge: the gather thread also bridges refill gaps as Ghostty's does
+    /// (Exec.zig: non-blocking reads; once a full ~1 KiB read says the writer is saturated, up to
+    /// 16 immediate retries, then polls of 1 ms, within 3 ms per batch) instead of sleeping in
+    /// read(2) for every kilobyte.
+    public static let bridging = ProcessInfo.processInfo.environment["TERMBENCH_READER"] == "bridge"
+
     /// Reads on a thread of its own until EOF, handing each read to `consume`; then `done`.
     public func startReading(consume: @escaping @Sendable (UnsafeRawBufferPointer) -> Void, done: @escaping @Sendable () -> Void) {
+        if Self.pipelined { return startPipeline(consume: consume, done: done) }
         let fd = master
         let thread = Thread {
             let buffer = UnsafeMutableRawPointer.allocate(byteCount: 64 * 1024, alignment: 16)
             while true {
+                let t0 = ReaderStats.on ? Metrics.now() : 0
                 let n = read(fd, buffer, 64 * 1024)
-                if n > 0 { consume(UnsafeRawBufferPointer(start: buffer, count: n)); continue }
+                if n > 0 {
+                    let t1 = ReaderStats.on ? Metrics.now() : 0
+                    consume(UnsafeRawBufferPointer(start: buffer, count: n))
+                    if ReaderStats.on { ReaderStats.record(bytes: n, read: t1 - t0, consume: Metrics.now() - t1) }
+                    continue
+                }
                 if n < 0, errno == EINTR { continue }
                 break // EOF, or EIO once the child has gone and the slave is closed
             }
@@ -219,6 +262,117 @@ public final class PTYProcess: @unchecked Sendable {
         }
         thread.qualityOfService = .userInteractive
         thread.start()
+    }
+}
+
+extension PTYProcess {
+    func startPipeline(consume: @escaping @Sendable (UnsafeRawBufferPointer) -> Void, done: @escaping @Sendable () -> Void) {
+        final class Batch: @unchecked Sendable {
+            let lock = NSLock()
+            var pending: [UInt8] = []
+            var finished = false
+            let ready = DispatchSemaphore(value: 0)
+        }
+        let batch = Batch()
+        batch.pending.reserveCapacity(1 << 20)
+        let fd = master
+        let gather = Thread {
+            let buffer = UnsafeMutableRawPointer.allocate(byteCount: 64 * 1024, alignment: 16)
+            if Self.bridging {
+                _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+                var ended = false
+                while !ended {
+                    var total = 0, spins = 0
+                    let started = Metrics.now()
+                    gather: while total < 64 * 1024 {
+                        let n = read(fd, buffer + total, 64 * 1024 - total)
+                        if n > 0 { total += n; continue }
+                        if n == 0 { ended = true; break }
+                        if errno == EINTR { continue }
+                        guard errno == EAGAIN else { ended = true; break }
+                        if total < 1024 {
+                            if total > 0 { break gather }
+                            var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                            _ = poll(&p, 1, -1)
+                            continue
+                        }
+                        if spins < 16 { spins += 1; continue }
+                        if Metrics.now() - started > 0.003 { break gather }
+                        var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                        if poll(&p, 1, 1) <= 0 { break gather }
+                    }
+                    if total > 0 {
+                        batch.lock.lock()
+                        let wasEmpty = batch.pending.isEmpty
+                        batch.pending.append(contentsOf: UnsafeRawBufferPointer(start: buffer, count: total))
+                        batch.lock.unlock()
+                        if ReaderStats.on { ReaderStats.record(bytes: total, read: 0, consume: 0) }
+                        if wasEmpty { batch.ready.signal() }
+                    }
+                }
+                batch.lock.lock(); batch.finished = true; batch.lock.unlock()
+                batch.ready.signal()
+                return
+            }
+            while true {
+                let t0 = ReaderStats.on ? Metrics.now() : 0
+                let n = read(fd, buffer, 64 * 1024)
+                if n > 0 {
+                    batch.lock.lock()
+                    let wasEmpty = batch.pending.isEmpty
+                    batch.pending.append(contentsOf: UnsafeRawBufferPointer(start: buffer, count: n))
+                    batch.lock.unlock()
+                    if ReaderStats.on { ReaderStats.record(bytes: n, read: Metrics.now() - t0, consume: 0) }
+                    if wasEmpty { batch.ready.signal() }
+                    continue
+                }
+                if n < 0, errno == EINTR { continue }
+                break
+            }
+            batch.lock.lock(); batch.finished = true; batch.lock.unlock()
+            batch.ready.signal()
+        }
+        let parse = Thread {
+            var working: [UInt8] = []
+            working.reserveCapacity(1 << 20)
+            while true {
+                batch.ready.wait()
+                while true {
+                    batch.lock.lock()
+                    swap(&working, &batch.pending)
+                    let finished = batch.finished
+                    batch.lock.unlock()
+                    if working.isEmpty {
+                        if finished { done(); return }
+                        break
+                    }
+                    let t0 = ReaderStats.on ? Metrics.now() : 0
+                    working.withUnsafeBytes { consume($0) }
+                    if ReaderStats.on { ReaderStats.batches += 1; ReaderStats.batchConsume += Metrics.now() - t0 }
+                    working.removeAll(keepingCapacity: true)
+                }
+            }
+        }
+        gather.qualityOfService = .userInteractive
+        parse.qualityOfService = .userInteractive
+        gather.start()
+        parse.start()
+    }
+}
+
+/// TERMBENCH_STATS=1: where the reader thread's time goes (in read(2), in the setup's consume,
+/// and within that, waiting for the frame's lock and parsing), printed to stderr at exit.
+public enum ReaderStats {
+    public static let on = ProcessInfo.processInfo.environment["TERMBENCH_STATS"] == "1"
+    nonisolated(unsafe) static var reads = 0, bytes = 0, readTime = 0.0, consumeTime = 0.0
+    nonisolated(unsafe) public static var lockWait = 0.0, parse = 0.0, yields = 0, batches = 0, batchConsume = 0.0
+    static func record(bytes n: Int, read: Double, consume: Double) {
+        reads += 1; bytes += n; readTime += read; consumeTime += consume
+    }
+    public static func report() {
+        guard on, reads > 0 else { return }
+        FileHandle.standardError.write(String(format: "{\"stats\":1,\"reads\":%d,\"avgRead\":%d,\"readMs\":%.1f,\"consumeMs\":%.1f,\"lockWaitMs\":%.1f,\"parseMs\":%.1f,\"yields\":%d,\"batches\":%d,\"batchConsumeMs\":%.1f}\n",
+                                                  reads, bytes / reads, readTime * 1000, consumeTime * 1000, lockWait * 1000, parse * 1000, yields, batches, batchConsume * 1000).data(using: .utf8)!)
     }
 }
 
@@ -233,14 +387,22 @@ public final class FairLock: @unchecked Sendable {
     private let readerWaiting = Atomic<Bool>(false)
     public init() {}
     public func readerSlice(_ body: () -> Void) {
-        if frameWaiting.load(ordering: .acquiring) {
+        let t0 = ReaderStats.on ? Metrics.now() : 0
+        if !Self.greedy, frameWaiting.load(ordering: .acquiring) {
             readerWaiting.store(true, ordering: .releasing)
             // Re-checked after announcing: the frame may have finished in between.
             if frameWaiting.load(ordering: .acquiring) { _ = frameDone.wait(timeout: .now() + .milliseconds(4)) }
             readerWaiting.store(false, ordering: .releasing)
+            if ReaderStats.on { ReaderStats.yields += 1 }
         }
-        lock.lock(); body(); lock.unlock()
+        lock.lock()
+        let t1 = ReaderStats.on ? Metrics.now() : 0
+        body()
+        lock.unlock()
+        if ReaderStats.on { ReaderStats.lockWait += t1 - t0; ReaderStats.parse += Metrics.now() - t1 }
     }
+    /// TERMBENCH_READER=greedy: the reader never steps aside for a waiting frame.
+    static let greedy = ProcessInfo.processInfo.environment["TERMBENCH_READER"] == "greedy"
     public func frame<T>(_ body: () -> T) -> T {
         frameWaiting.store(true, ordering: .releasing)
         lock.lock()
@@ -252,7 +414,7 @@ public final class FairLock: @unchecked Sendable {
         return result
     }
     /// The reader's input in slices of this many bytes.
-    public static let slice = 16 * 1024
+    public static let slice = Int(ProcessInfo.processInfo.environment["TERMBENCH_SLICE"] ?? "") ?? 16 * 1024
 }
 
 // MARK: - Frame cost (offscreen)
@@ -321,8 +483,26 @@ public enum Latency {
 
     /// `cell(i)`: key i's cell in screen coordinates (top-left origin), in points.
     /// `send`: sends one key on the main thread.
+    /// TERMBENCH_KEYS=events: each key is a real keyDown and keyUp posted to the app's event queue,
+    /// so it takes the path a typed key takes: AppKit's dispatch, the first responder's keyDown and
+    /// the setup's own key handling. Otherwise `send` hands the key to the setup directly, which
+    /// skips that path and isn't the same path in every setup (setups A to D first used that).
+    public static let realKeys = ProcessInfo.processInfo.environment["TERMBENCH_KEYS"] == "events"
+
     @MainActor
-    public static func run(window: NSWindow, keys: Int = 60, cell: @escaping @Sendable (Int) -> CGRect, send: @escaping @MainActor () -> Void) {
+    static func postKey(window: NSWindow) {
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                            windowNumber: window.windowNumber, context: nil, characters: "x", charactersIgnoringModifiers: "x",
+                                            isARepeat: false, keyCode: 7) {
+                NSApp.postEvent(event, atStart: false)
+            }
+        }
+    }
+
+    @MainActor
+    public static func run(window: NSWindow, keys: Int = 60, cell: @escaping @Sendable (Int) -> CGRect, send direct: @escaping @MainActor () -> Void) {
+        let send: @MainActor () -> Void = realKeys ? { [weak window] in if let window { postKey(window: window) } } : direct
         let id = UInt32(window.windowNumber)
         if let dir = ProcessInfo.processInfo.environment["TERMBENCH_DEBUG"] {
             // What the capture sees: the whole window and the echo row, before any key.
@@ -358,8 +538,8 @@ public enum Latency {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     let o = Run.shared.options
-                    print(String(format: "{\"setup\":\"%@\",\"mode\":\"latency\",\"load\":%d,\"grid\":\"%dx%d\",\"keys\":%d,\"timeouts\":%d,\"minMs\":%.2f,\"medianMs\":%.2f,\"p95Ms\":%.2f,\"maxMs\":%.2f}",
-                                 o.setup, o.load, o.cols, o.rows, results.count, timeouts, pick(0), pick(0.5), pick(0.95), results.last ?? -1))
+                    print(String(format: "{\"setup\":\"%@\",\"mode\":\"latency\",\"input\":\"%@\",\"exp\":\"%@\",\"load\":%d,\"grid\":\"%dx%d\",\"keys\":%d,\"timeouts\":%d,\"minMs\":%.2f,\"medianMs\":%.2f,\"p95Ms\":%.2f,\"maxMs\":%.2f}",
+                                 o.setup, realKeys ? "events" : "direct", ProcessInfo.processInfo.environment["TERMBENCH_EXP"] ?? "", o.load, o.cols, o.rows, results.count, timeouts, pick(0), pick(0.5), pick(0.95), results.last ?? -1))
                     fflush(stdout)
                     exit(0)
                 }

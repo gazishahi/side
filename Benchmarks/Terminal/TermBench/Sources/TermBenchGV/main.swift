@@ -30,7 +30,11 @@ final class GhosttySource: GridSource, @unchecked Sendable {
         ghostty_render_state_row_cells_new(nil, &cells)
     }
 
+    /// TERMBENCH_NOPARSE=1: read and drop (a diagnosis: the PTY's pace in this process, unparsed).
+    static let noParse = ProcessInfo.processInfo.environment["TERMBENCH_NOPARSE"] == "1"
+
     func feed(_ bytes: UnsafeRawBufferPointer) {
+        if Self.noParse { return }
         let base = bytes.bindMemory(to: UInt8.self).baseAddress!
         var offset = 0
         while offset < bytes.count {
@@ -138,6 +142,11 @@ final class SetupC {
                 loadKeep.append(extra)
             }
             let cell = GridView.cellSize(fontName: options.fontName, fontSize: options.fontSize)
+            // A typed key goes to the PTY as its characters, as a terminal view's keyDown does.
+            view.onKey = { text in
+                let bytes = Array(text.utf8)
+                _ = bytes.withUnsafeBytes { write(pty.master, $0.baseAddress, $0.count) }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [view] in
                 let row = Latency.echoRow(view: view, cellSize: cell)
                 Latency.run(window: view.window!, cell: { _ in row }, send: { _ = write(pty.master, "X", 1) })
