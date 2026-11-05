@@ -92,7 +92,7 @@ public final class DebugSnapshot: @unchecked Sendable {
 
     public func report(projectRoot: URL) -> String {
         guard let state = state(projectRoot: projectRoot) else {
-            return "No debugging session in this project. The user starts one in Make (Debug \u{2192} Start Debugging); you can't start or control it."
+            return "No debugging session in this project. The user starts one in Side's Editor (Debug \u{2192} Start Debugging); you can't start or control it."
         }
         var lines = ["Debugging \u{201C}\(state.program)\u{201D} with \(state.adapter): \(Self.describe(state))."]
         if let exception = state.exception, !exception.isEmpty { lines.append("Exception: " + Self.clip(exception, 600)) }

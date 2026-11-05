@@ -28,7 +28,7 @@ final class SideToolServerTests: XCTestCase {
 
         let (_, list) = try await post(registration.url, ["jsonrpc": "2.0", "id": 2, "method": "tools/list"])
         let names = ((list?["result"] as? [String: Any])?["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String }
-        XCTAssertEqual(names, ["list_tracks", "read_track_overlap"])
+        XCTAssertEqual(names, ["list_tracks", "read_track_overlap", "read_diagnostics", "read_debug_state", "read_ports"])
 
         let (_, call) = try await post(registration.url, ["jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": ["name": "list_tracks", "arguments": [String: Any]()]])
         let text = (((call?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
@@ -46,6 +46,41 @@ final class SideToolServerTests: XCTestCase {
         server.unregister(token: registration.token)
         let (gone, _) = try await post(registration.url, ["jsonrpc": "2.0", "id": 5, "method": "tools/list"])
         XCTAssertEqual(gone, 404)
+    }
+
+    /// SIDE_RFC_HERON_RETIREMENT.md, step 5: what only Heron could read, any agent can now — the
+    /// editor's diagnostics, the debugger's state and the track's ports, for its own working copy.
+    func testAnAgentReadsTheEditorsDiagnosticsDebuggerAndPorts() async throws {
+        let server = SideToolServer()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tools-\(UUID().uuidString)", isDirectory: true)
+        let elsewhere = FileManager.default.temporaryDirectory.appendingPathComponent("tools-\(UUID().uuidString)", isDirectory: true)
+        DiagnosticsSnapshot.shared.publish([.init(relativePath: "Sources/App.swift", line: 12, severity: "error", message: "cannot find 'cache' in scope", source: "sourcekit")],
+                                           forFile: "Sources/App.swift", projectRoot: root)
+        DiagnosticsSnapshot.shared.publish([.init(relativePath: "Other.swift", line: 1, severity: "warning", message: "not this track's", source: nil)],
+                                           forFile: "Other.swift", projectRoot: elsewhere)
+        let project = "/projects-\(UUID().uuidString)"
+        TrackPorts.set([root.path: TrackPorts.Block(base: 4310, trackName: "Billing")], forProject: project)
+        defer {
+            DiagnosticsSnapshot.shared.clear(projectRoot: root)
+            DiagnosticsSnapshot.shared.clear(projectRoot: elsewhere)
+            TrackPorts.set([:], forProject: project)
+        }
+        let registration = try XCTUnwrap(server.register(.init(trackKey: "billing", root: root, tracks: { [] })))
+        func call(_ name: String, _ arguments: [String: Any] = [:]) async throws -> String {
+            let (_, response) = try await post(registration.url, ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["name": name, "arguments": arguments]])
+            return (((response?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        }
+        let diagnostics = try await call("read_diagnostics")
+        XCTAssertTrue(diagnostics.contains("Sources/App.swift:12: error: cannot find 'cache' in scope [sourcekit]"), diagnostics)
+        XCTAssertFalse(diagnostics.contains("not this track's"), "only this track's working copy")
+        let debug = try await call("read_debug_state")
+        XCTAssertTrue(debug.hasPrefix("No debugging session"), debug)
+        XCTAssertFalse(debug.contains("Make"), "the stage is called Editor now")
+        let ports = try await call("read_ports")
+        XCTAssertTrue(ports.contains("4310\u{2013}4319") && ports.contains("PORT=4310"), ports)
+        let (_, initialize) = try await post(registration.url, ["jsonrpc": "2.0", "id": 2, "method": "initialize", "params": ["protocolVersion": "2025-06-18"]])
+        let instructions = (initialize?["result"] as? [String: Any])?["instructions"] as? String ?? ""
+        XCTAssertTrue(instructions.contains("PORT=4310"), "the ports come with the server's instructions too: \(instructions)")
     }
 
     /// An agent that takes HTTP MCP servers is handed Side's with its session; one that doesn't

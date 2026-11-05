@@ -564,7 +564,7 @@ public final class ACPHarness: Harness {
             let bridge = coordinator.map { CoordinationBridge(parentKey: trackKey, coordinator: $0) }
             let box = WeakHarness(self)
             toolServerRegistration = toolServer.register(.init(
-                trackKey: trackKey, tracks: trackContext, coordination: bridge, agentChoices: coordinator?.agentChoices ?? [],
+                trackKey: trackKey, root: rootProvider(), tracks: trackContext, coordination: bridge, agentChoices: coordinator?.agentChoices ?? [],
                 authorize: { tool, title, fullMaySkip, decided in
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {

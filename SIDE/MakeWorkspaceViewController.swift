@@ -1730,7 +1730,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let diagnostics = diagnostics + (self.buildDiagnostics[fileURL] ?? [])
             self.applyDiagnostics(diagnostics, to: fileURL)
             self.recordProblems(diagnostics, for: fileURL)
-            // Also published for Heron's read_diagnostics tool: an agent that can read the
+            // Also published for agents' read_diagnostics (Side's MCP server): an agent that can read the
             // errors its own edit just caused closes the loop inside one turn, instead of
             // waiting for the user to notice and paste them back.
             self.publishDiagnosticsForAgent(diagnostics, fileURL: fileURL, root: root)

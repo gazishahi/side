@@ -8,8 +8,10 @@ import Network
 /// This is that server: Streamable HTTP on 127.0.0.1, one unguessable URL per conversation, so an
 /// agent can call exactly the tools of the track it's working on and nothing else.
 ///
-/// Step 1 serves the read-only track tools (`list_tracks`, `read_track_overlap`, RFC R4), the
-/// same implementations Heron's `ToolExecutor` uses. Later steps add the subtrack tools.
+/// It serves the read-only track tools (`list_tracks`, `read_track_overlap`, RFC R4), the
+/// coordinator's subtrack tools, and the editor's view of the working copy that only Heron had
+/// before it was retired: the language servers' diagnostics, the debugger's state, and the
+/// track's ports (SIDE_RFC_HERON_RETIREMENT.md, step 5).
 public final class SideToolServer: @unchecked Sendable {
     public static let shared = SideToolServer()
 
@@ -17,6 +19,8 @@ public final class SideToolServer: @unchecked Sendable {
     /// (main-actor state, snapshotted on the main thread for each call).
     public struct Registration: Sendable {
         public let trackKey: String
+        /// The track's working copy: what diagnostics, the debugger and the ports are read for.
+        public let root: URL?
         public let tracks: @MainActor @Sendable () -> [AgentTrackSummary]
         /// The coordinator's tools, when this track may coordinate (step 2).
         public let coordination: CoordinationBridge?
@@ -25,10 +29,11 @@ public final class SideToolServer: @unchecked Sendable {
         /// skip the card). The conversation shows a card unless Full may skip it or the user
         /// already allowed this call on the agent's own card.
         public let authorize: (@Sendable (String, String, Bool, @escaping @Sendable (Bool) -> Void) -> Void)?
-        public init(trackKey: String, tracks: @escaping @MainActor @Sendable () -> [AgentTrackSummary], coordination: CoordinationBridge? = nil,
+        public init(trackKey: String, root: URL? = nil, tracks: @escaping @MainActor @Sendable () -> [AgentTrackSummary], coordination: CoordinationBridge? = nil,
                     agentChoices: [(id: String, name: String)] = [],
                     authorize: (@Sendable (String, String, Bool, @escaping @Sendable (Bool) -> Void) -> Void)? = nil) {
             self.trackKey = trackKey
+            self.root = root
             self.tracks = tracks
             self.coordination = coordination
             self.agentChoices = agentChoices
@@ -144,12 +149,12 @@ public final class SideToolServer: @unchecked Sendable {
                 "protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                 "capabilities": ["tools": [String: Any]()],
                 "serverInfo": ["name": "side", "title": "Side", "version": "1"],
-                "instructions": "Side's tools for the track you are working on: see the project's other tracks and which files you share with them.",
+                "instructions": Self.instructions(root: registration.root),
             ])
         case "ping":
             result([:])
         case "tools/list":
-            var tools: [[String: Any]] = Self.tools.map { ["name": $0.name, "description": $0.description, "inputSchema": ["type": "object", "properties": [String: Any]()]] }
+            var tools: [[String: Any]] = Self.tools.map { ["name": $0.name, "description": $0.description, "inputSchema": ["type": "object", "properties": $0.properties.mapValues(Self.plain)]] }
             if registration.coordination != nil {
                 for spec in CoordinationBridge.toolSpecs(agentChoices: registration.agentChoices) {
                     tools.append(["name": spec.name, "description": spec.description, "inputSchema": Self.plain(spec.inputSchema)])
@@ -195,6 +200,12 @@ public final class SideToolServer: @unchecked Sendable {
                 return failure(-32602, "Unknown tool.")
             }
             let registration = registration
+            if Self.editorTools.contains(name) {
+                // Snapshots the editor keeps up to date; reading one is a lock, not a trip to main.
+                let input = Self.jsonValue(params["arguments"] ?? [String: Any]())
+                let text = Self.runEditorTool(name, input: input, root: registration.root)
+                return result(["content": [["type": "text", "text": text]], "isError": false])
+            }
             DispatchQueue.main.async {
                 let tracks = MainActor.assumeIsolated { registration.tracks() }
                 // git, one call per track: off the main thread, like Heron's executor.
@@ -208,10 +219,36 @@ public final class SideToolServer: @unchecked Sendable {
         }
     }
 
-    static let tools: [(name: String, description: String)] = [
-        ("list_tracks", "List the other tracks in this project: each one's branch, status, intent, base branch, and how many files it has changed. Read-only. Use it to understand what else is in flight before planning a change that touches shared code."),
-        ("read_track_overlap", "Which other tracks in this project have changed the same files as this track, and which files. Read-only. A shared file is a merge conflict waiting to happen at promotion; check before editing files another track is in the middle of."),
+    static let tools: [(name: String, description: String, properties: [String: JSONValue])] = [
+        ("list_tracks", "List the other tracks in this project: each one's branch, status, intent, base branch, and how many files it has changed. Read-only. Use it to understand what else is in flight before planning a change that touches shared code.", [:]),
+        ("read_track_overlap", "Which other tracks in this project have changed the same files as this track, and which files. Read-only. A shared file is a merge conflict waiting to happen at promotion; check before editing files another track is in the middle of.", [:]),
+        ("read_diagnostics", "The errors and warnings Side's language servers currently report for this track's files, as the person sees them in Side's editor. Use it after an edit to check whether it introduced a problem, and before claiming a change works. Covers only files opened in the editor, so it is no substitute for building or running the tests.",
+         ["errors_only": .object(["type": .string("boolean"), "description": .string("Omit warnings and report only errors. Defaults to false.")])]),
+        ("read_debug_state", "The state of the program the person is debugging in Side: whether it's paused and why (a breakpoint, an exception), its call stack with file and line, the selected frame's local variables, the watch expressions, and the debug console's last lines. Use it when they ask why something crashes or holds a wrong value while debugging, so the answer rests on the actual values. Read-only: ask them to pause or step where you need to look.", [:]),
+        ("read_ports", "The ports this track's work should use. Each track has its own block, so several tracks can run servers at once; commands Side runs get PORT set to the first. Use these rather than defaults like 3000 or 8080.", [:]),
     ]
+
+    static let editorTools: Set<String> = ["read_diagnostics", "read_debug_state", "read_ports"]
+
+    /// What the server says it's for, with the track's ports when it has a block.
+    static func instructions(root: URL?) -> String {
+        var text = "Side's tools for the track you are working on: the project's other tracks and the files you share with them, the editor's diagnostics, and the debugger's state."
+        if let root, let ports = TrackPorts.promptSection(forDirectory: root.path) { text += " " + ports }
+        return text
+    }
+
+    static func runEditorTool(_ name: String, input: JSONValue, root: URL?) -> String {
+        guard let root else { return "This conversation isn't attached to a working copy, so there is nothing to read." }
+        switch name {
+        case "read_diagnostics":
+            let errorsOnly: Bool = { if case .object(let object) = input, case .bool(let value)? = object["errors_only"] { return value } else { return false } }()
+            return DiagnosticsSnapshot.shared.report(projectRoot: root, errorsOnly: errorsOnly)
+        case "read_debug_state":
+            return DebugSnapshot.shared.report(projectRoot: root)
+        default:
+            return TrackPorts.promptSection(forDirectory: root.path) ?? "This track has no port block of its own; use the project's usual ports."
+        }
+    }
 
     /// A `JSONValue` schema as plain JSON for the wire.
     static func plain(_ value: JSONValue) -> Any {

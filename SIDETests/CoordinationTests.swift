@@ -319,7 +319,7 @@ for line in sys.stdin:
         }
         let list = try await post(["jsonrpc": "2.0", "id": 1, "method": "tools/list"])
         let names = ((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
-        XCTAssertEqual(Set(names), ["list_tracks", "read_track_overlap", "create_subtrack", "message_track", "read_track", "promote_subtrack", "wait_for_tracks"])
+        XCTAssertEqual(Set(names), ["list_tracks", "read_track_overlap", "read_diagnostics", "read_debug_state", "read_ports", "create_subtrack", "message_track", "read_track", "promote_subtrack", "wait_for_tracks"])
         let call = try await post(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "create_subtrack", "arguments": ["intent": "No", "agent": worker.id, "instructions": "x"]]])
         let text = (((call["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
         XCTAssertTrue(text.contains("declined"), text)

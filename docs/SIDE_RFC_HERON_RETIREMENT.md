@@ -1,7 +1,7 @@
 # Retiring Heron's agent
 
 Status: in progress (2026-11-04: the owner decided to retire Heron, and took the three
-recommendations below). Steps 1–4 built.
+recommendations below). Steps 1–5 built.
 
 ## What goes, what stays
 
@@ -73,7 +73,11 @@ live there (`GitPaths`, `SpawnEnvironment`, `HeronDefaults`, `JSONStore`, …).
    into SideAgents, and the app imports `SideAgents` directly. Run's task chips type their
    command into the terminal on screen (they were Heron's command cards); coordinators offer only
    installed agents, the default first.
-5. **Extend `SideToolServer`:** diagnostics, debugger state, ports, later tasks.
+5. **Extend `SideToolServer`. Built 2026-11-04.** Each conversation's server knows its track's
+   working copy and offers `read_diagnostics` (the Editor's language-server errors and warnings
+   for that copy, errors only on request), `read_debug_state` (the paused program's stack,
+   locals, watches and console) and `read_ports` (the track's port block); the ports are in the
+   server's instructions too. Tasks stay with Run's chips for now.
 6. **Outside the app:** the README, the landing page, `scripts/test.sh`, third-party notices; the
    public Heron repository archived with a note, not deleted.
 
