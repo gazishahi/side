@@ -21,7 +21,10 @@ public struct Options {
     public var load = 0
     public var loadWorkload = ""
     public var loadCommand: [String] {
-        Self.relay + ["/bin/sh", "-c", "i=0; while [ $i -lt 2000 ]; do /bin/cat '\(loadWorkload)'; /bin/sleep 0.05; i=$((i+1)); done"]
+        // TERMBENCH_LOAD_PACE="<pace> [flags] <recording>": each load session replays a real
+        // recording at its own pace (Capture/pace.c) instead of the synthetic burst loop.
+        if let pace = ProcessInfo.processInfo.environment["TERMBENCH_LOAD_PACE"] { return Self.relay + ["/bin/sh", "-c", "exec \(pace)"] }
+        return Self.relay + ["/bin/sh", "-c", "i=0; while [ $i -lt 2000 ]; do /bin/cat '\(loadWorkload)'; /bin/sleep 0.05; i=$((i+1)); done"]
     }
     /// TERMBENCH_RELAY="<keeper-relay> <SideSessionKeeper> <run dir>": every command runs behind
     /// Side's session keeper, through Keeper/relay.c, as Side's terminals do (with one more PTY
@@ -58,6 +61,11 @@ public struct Options {
     /// setup's startup (Ghostty's login wrapper included) is measured.
     public var command: [String] {
         if mode == "latency" { return Self.relay + Latency.command }
+        // TERMBENCH_PACE="<pace> [flags] <recording>": the session replays a real recording in place
+        // of cat (throughput) or of the burst loop (sessions).
+        if let pace = ProcessInfo.processInfo.environment["TERMBENCH_PACE"], mode != "latency" {
+            return Self.relay + ["/bin/sh", "-c", "read _; exec \(pace)"]
+        }
         if mode == "sessions" {
             return Self.relay + ["/bin/sh", "-c", "read _; i=0; while [ $i -lt 200 ]; do /bin/cat '\(workload)'; /bin/sleep 0.05; i=$((i+1)); done"]
         }

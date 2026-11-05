@@ -26,8 +26,36 @@ final class GhosttySource: GridSource, @unchecked Sendable {
         clustering.value = true
         ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &clustering)
         ghostty_render_state_new(nil, &state)
+        ghostty_render_state_new(nil, &holdState)
         ghostty_render_state_row_iterator_new(nil, &rowIterator)
         ghostty_render_state_row_cells_new(nil, &cells)
+        // Synchronized output (mode 2026), which Claude Code wraps nearly every update in: the
+        // frame on screen when a hold begins is kept until it ends (render.h, Render Holds), as
+        // SwiftTerm and Ghostty both do. TERMBENCH_NOHOLD=1 ignores holds (the 11-03 prototype).
+        if ProcessInfo.processInfo.environment["TERMBENCH_NOHOLD"] != "1" {
+            var me: UnsafeMutableRawPointer? = Unmanaged.passUnretained(self).toOpaque()
+            ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, me)
+            let hold: GhosttyTerminalRenderHoldFn = { terminal, userdata, held in
+                Unmanaged<GhosttySource>.fromOpaque(userdata!).takeUnretainedValue().renderHold(held)
+            }
+            ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, unsafeBitCast(hold, to: UnsafeRawPointer.self))
+            _ = me
+        }
+    }
+
+    // A hold's frame is captured into its own render state on the reader thread (which holds the
+    // lock during vt_write); a frame swaps it in under the lock, so the state the main thread
+    // reads outside the lock is never the one the reader writes.
+    var holdState: GhosttyRenderState?
+    var held = false, holdCaptured = false, holdStart = 0.0
+    func renderHold(_ on: Bool) {
+        if on {
+            ghostty_render_state_update(holdState, terminal)
+            held = true; holdCaptured = true; holdStart = Metrics.now()
+        } else {
+            held = false
+        }
+        dirtySinceFrame = true
     }
 
     /// TERMBENCH_NOPARSE=1: read and drop (a diagnosis: the PTY's pace in this process, unparsed).
@@ -51,6 +79,13 @@ final class GhosttySource: GridSource, @unchecked Sendable {
 
     func snapshot(into grid: Grid) -> Bool {
         let changed: Bool = lock.frame {
+            if held, Metrics.now() - holdStart < 1 {
+                // Held: show the frame from when the hold began, once, then nothing new.
+                guard holdCaptured else { return false }
+                holdCaptured = false
+                swap(&state, &holdState)
+                return true
+            }
             guard dirtySinceFrame else { return false }
             dirtySinceFrame = false
             ghostty_render_state_update(state, terminal)

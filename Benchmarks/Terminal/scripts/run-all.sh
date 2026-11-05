@@ -4,10 +4,12 @@
 # (Ghostty stops drawing an occluded surface). Results go to results/*.jsonl.
 set -uo pipefail
 here=${0:A:h}/..; T=$here/TermBench/.build/release; W=$here/workloads; R=$here/results
+# The ascii workload is a directory of Swift sources: Side's own for the committed results.
+src=${SOURCE:-$here/../../SIDE}; [[ -d $src ]] || { echo "set SOURCE to a directory of Swift sources (the ascii workload)" >&2; exit 2; }
 (cd $here/TermBench && for p in TermBenchST TermBenchGV TermBenchGK; do swift build -c release --product $p; done) || exit 1
 bin() { case $1 in A|B) echo TermBenchST;; C) echo TermBenchGV;; D) echo TermBenchGK;; esac }
 setups=(${=SETUPS:-A B C D})
-$here/VTBench/.build/release/VTBench $here/../../SIDE | grep -v "screen check" > $R/emulator-only.txt
+$here/VTBench/.build/release/VTBench $src | grep -v "screen check" > $R/emulator-only.txt
 : > $R/throughput.jsonl; : > $R/framecost.jsonl; : > $R/sessions.jsonl; : > $R/latency.jsonl
 for run in 1 2 3; do
   for grid in "80 24" "200 60"; do set -- ${=grid}

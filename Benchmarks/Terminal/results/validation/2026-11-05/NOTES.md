@@ -100,3 +100,65 @@ The keeper adds under 1 ms to any setup.
 - Throughput within 15% of D′: **met** (behind the keeper, within noise on all three).
 - CPU and memory no worse than 11-03's C: CPU met; six and 24 sessions were not re-run.
 - Not done: a real Claude Code capture (needs a recording; `Capture/pace.c` replays one).
+
+## 7. A real Claude Code session (`../2026-11-05-capture/`, `scripts/replay.sh`)
+
+**macOS changed between sections 6 and 7.** The Mac updated from macOS 26.4.1 (Xcode 26) to
+27.2 (Xcode 27.2, which needs the Metal Toolchain downloaded to build SwiftTerm's shaders).
+Everything in this section ran on 27.2; nothing above was re-run on it, so don't compare across
+the two without re-running.
+
+**The recording.** It's the owner's own session: 45 minutes of `claude` under `script -r`. It
+holds a real conversation, so it stays out of git; only numbers are committed. Its output:
+- **Volume:** 2.6 MB in 21,280 writes of a median 93 bytes (max 1,024). In the seconds with
+  output, the median rate is 1 KB/s, the p95 3 KB/s and the peak 30 KB/s.
+- **Shape:** nearly every write is a synchronized update (DEC 2026, 19,222 times), with the cursor
+  hidden, and truecolor text throughout (37,220 SGR 38;2). Bulk throughput is irrelevant to this
+  workload; what each update costs, and keypress latency, are what matter.
+
+**C now honors synchronized output.** The 11-03 prototype ignored DEC 2026 and would draw
+half-finished frames. It now uses libghostty-vt's render-hold callback, keeping the frame from
+when a hold began until it ends, with a 1 s limit, as render.h describes. SwiftTerm and Ghostty
+both honor the mode. `TERMBENCH_NOHOLD=1` gives the old behavior; on this recording the frame
+counts hardly differ, because holds are shorter than a frame.
+
+Final screens of a replay through C and D were compared by screenshot and match.
+
+**All runs below were behind the keeper**, 3 runs each, interleaved; the load average was 5–8
+throughout (a system service was busy after the update).
+
+**Full speed (`pace --fast`):** each setup takes 74–78 ms for all 45 minutes of output, about
+32 MB/s for every setup. That's the cost of writing 21,280 small records through the keeper,
+not of the terminals.
+
+**Six sessions, each replaying the recording, one shown (CPU s, footprint):**
+
+| | Real pace, 60 s | | | 10× pace, 20 s | | |
+|---|---|---|---|---|---|---|
+| | Process | Main | MB | Process | Main | MB |
+| A′ SwiftTerm | 7.27 | 6.28 | 227 | 5.88 | 5.14 | 228 |
+| C′ libghostty-vt + Alloy | 1.62 | 0.80 | 182 | 2.62 | 0.90 | 183 |
+| D′ full libghostty | 3.46 | 1.93 | 324 | 3.87 | 0.99 | 327 |
+
+At real pace, C′ uses 22% of A′'s CPU and 47% of D′'s. A′'s main thread is busy 10% of the time
+with six Claude sessions doing nothing unusual. C′ drew 396 frames in that minute (only the
+shown session draws).
+
+**Latency, real keys, ms (median; p95):**
+
+| | Idle | 5 replaying at real pace |
+|---|---|---|
+| A′ | 8.9; 16.7 | 9.2; 17.0 |
+| C′ | 15.8; 20.6 | 15.6; 20.9 |
+| C′, `displaySyncEnabled = false` | 3.5; 12.3 | 3.5; 8.6 |
+| D′ | 20.3; 28.2 | 20.8; 27.5 |
+
+On 27.2, SwiftTerm's key path is much faster than on 26.4.1 (8.9 against 15.4 ms behind the
+keeper); C's and D's moved by under 3 ms. Why is not established.
+
+**The gate on real output:**
+- With vsync, C′ fails latency clearly (15.8 against 8.9 ms).
+- Without vsync, it passes everything: latency 3.5 ms (p95 8.6 under load), CPU at a fifth of
+  SwiftTerm's, and the least memory.
+- Presenting without vsync is therefore the condition of the whole design, and its safety
+  (section 3) is now the deciding open question.

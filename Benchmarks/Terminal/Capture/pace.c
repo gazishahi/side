@@ -4,6 +4,7 @@
 //   pace session.rec                    write its output at the pace it was recorded
 //   pace --fast session.rec             write its output as fast as the terminal takes it
 //   pace --dump session.rec out.bin     its output alone, as a workload file
+//   pace --speed 10 --limit 60 s.rec    ten times the recorded pace, the first 60 s of the result
 //
 // The recording is script's own format (script.c, struct stamp): for each record a 24-byte
 // header (length, seconds, microseconds, direction), then the bytes. Only output ('o') is
@@ -33,14 +34,16 @@ static double now(void) {
 }
 
 int main(int argc, char **argv) {
-    int fast = 0, dump = 0; double max_gap = 2.0;
+    int fast = 0, dump = 0; double max_gap = 2.0, speed = 1.0, limit = 0;
     int i = 1;
     for (; i < argc && argv[i][0] == '-'; i++) {
         if (!strcmp(argv[i], "--fast")) fast = 1;
         else if (!strcmp(argv[i], "--dump")) dump = 1;
         else if (!strcmp(argv[i], "--max-gap") && i + 1 < argc) max_gap = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--speed") && i + 1 < argc) speed = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atof(argv[++i]);
     }
-    if (i >= argc) { fprintf(stderr, "usage: pace [--fast|--dump] [--max-gap s] session.rec [out.bin]\n"); return 2; }
+    if (i >= argc) { fprintf(stderr, "usage: pace [--fast|--dump] [--max-gap s] [--speed x] [--limit s] session.rec [out.bin]\n"); return 2; }
     FILE *in = fopen(argv[i], "rb");
     if (!in) { perror(argv[i]); return 1; }
     int out = STDOUT_FILENO;
@@ -63,6 +66,8 @@ int main(int argc, char **argv) {
         if (!fast && last >= 0) {
             double gap = t - last;
             if (gap > max_gap) gap = max_gap;
+            gap /= speed;
+            if (limit > 0 && behind + gap > limit) break;
             if (gap > 0) {
                 // Sleep to the record's time on our own clock, so small gaps don't drift.
                 behind += gap;

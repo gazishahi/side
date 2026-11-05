@@ -3,3 +3,5 @@
 .ghostty/
 workloads/
 Keeper/keeper
+# Session recordings (script -r) hold real conversations
+*.rec

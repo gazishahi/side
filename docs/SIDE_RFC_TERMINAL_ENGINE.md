@@ -85,9 +85,15 @@ D also fits Side worse:
   vsync. Behind the keeper, it answers a real key in 7.7 ms median (p95 11.5), against
   SwiftTerm's 15.4 ms (p95 22.2). Its throughput matches D′'s.
 - **With vsync, the latency gate is not met** (18.4 against 15.4 ms).
+- **Step 1, the real capture, is done** (on macOS 27.2; notes section 7):
+  - It was 45 minutes of the owner's Claude Code. That's 2.6 MB of small, synchronized updates,
+    about 1 KB/s.
+  - Six sessions replaying it cost C′ 1.62 s of CPU a minute. SwiftTerm takes 7.27 s and full
+    libghostty 3.46 s.
+  - A real key, behind the keeper, takes C′ 3.5 ms without vsync. SwiftTerm, which got faster on
+    27.2, takes 8.9 ms. C′ with vsync takes 15.8 ms, which fails the gate.
 - **Still open:**
-  - step 1, the real capture;
-  - six and 24 sessions behind the keeper;
+  - 24 sessions behind the keeper;
   - whether presenting without vsync is safe (tearing, power, external displays, and the kernel
     panics Ghostty has seen with out-of-sync rendering);
   - what holds the harness's own process to about 150 MB/s from a PTY.
