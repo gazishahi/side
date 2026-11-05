@@ -181,7 +181,7 @@ final class ActivityCenter {
     static func icon(for item: Item) -> NSImage {
         switch item.target {
         case .terminal: return ProgramMarks.image(forProgram: item.program)
-        case .agent: return NSImage(systemSymbolName: ShellViewController.Stage.think.symbol, accessibilityDescription: nil) ?? NSImage()
+        case .agent: return DS.Glyph.image(named: ShellViewController.Stage.think.symbol) ?? NSImage()
         case .update: return NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil) ?? NSImage()
         }
     }

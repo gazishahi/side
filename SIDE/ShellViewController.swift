@@ -310,11 +310,11 @@ final class ShellViewController: NSViewController {
 
         var symbol: String {
             switch self {
-            case .make: return "chevron.left.forwardslash.chevron.right"
-            case .think: return "sparkles"
-            case .review: return "plusminus"
-            case .run: return "terminal"
-            case .tracks: return "arrow.triangle.branch"
+            case .make: return DS.Glyph.name("editor")
+            case .think: return DS.Glyph.name("agent")
+            case .review: return DS.Glyph.name("changes")
+            case .run: return DS.Glyph.name("terminal")
+            case .tracks: return DS.Glyph.name("branches")
             }
         }
     }

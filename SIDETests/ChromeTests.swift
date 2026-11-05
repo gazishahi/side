@@ -51,6 +51,32 @@ final class ChromeTests: XCTestCase {
         XCTAssertFalse(chip.isShowingWorkingLightForTesting)
     }
 
+    /// Set A (the owner, 2026-11-04): Side's own stage glyphs, an outline at rest and solid when
+    /// selected; every stage has one, and anything else is still an SF Symbol.
+    func testEveryStageHasItsGlyphInBothStates() throws {
+        func ink(_ image: NSImage) -> Int {
+            let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 32, pixelsHigh: 32, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                       isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            image.draw(in: NSRect(x: 0, y: 0, width: 32, height: 32))
+            NSGraphicsContext.restoreGraphicsState()
+            var count = 0
+            for x in 0..<32 { for y in 0..<32 where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 { count += 1 } }
+            return count
+        }
+        for stage in ShellViewController.Stage.allCases {
+            XCTAssertTrue(stage.symbol.hasPrefix(DS.Glyph.prefix), "\(stage.title) uses Side's glyph")
+            let rest = try XCTUnwrap(DS.Glyph.image(named: stage.symbol, pointSize: 32))
+            let selected = try XCTUnwrap(DS.Glyph.image(named: stage.symbol, selected: true, pointSize: 32))
+            XCTAssertTrue(rest.isTemplate && selected.isTemplate, "tinted like the symbols they replace")
+            let restInk = ink(rest), selectedInk = ink(selected)
+            XCTAssertGreaterThan(restInk, 40, "\(stage.title) draws at rest")
+            XCTAssertGreaterThan(selectedInk, restInk, "\(stage.title) is solid when selected")
+        }
+        XCTAssertNotNil(DS.Glyph.image(named: "magnifyingglass"), "other names are SF Symbols")
+    }
+
     func testShortcutHintsNumberTheFirstEightAndTheLastTab() {
         XCTAssertEqual(TabShortcutHints.hint(at: 0, count: 3), Shortcuts.display("tabs.1"))
         XCTAssertEqual(TabShortcutHints.hint(at: 7, count: 12), Shortcuts.display("tabs.8"))

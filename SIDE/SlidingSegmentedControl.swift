@@ -181,7 +181,7 @@ final class SlidingSegmentedControl: NSView {
             if expandsSelected {
                 button.title = ""
                 let icon = NSImageView()
-                icon.image = symbols[index].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+                icon.image = DS.Glyph.image(named: symbols[index], selected: index == selectedIndex)
                 icon.symbolConfiguration = .init(pointSize: 13, weight: .medium)
                 icon.imageScaling = .scaleProportionallyDown
                 // The name fades inside the segment as it narrows, never over its neighbour.
@@ -197,13 +197,13 @@ final class SlidingSegmentedControl: NSView {
                 icons.append(icon)
                 names.append(name)
                 button.toolTip = index == selectedIndex ? nil : title
-            } else if compact, let symbol = symbols[index], let image = NSImage(systemSymbolName: symbol, accessibilityDescription: title) {
+            } else if compact, let image = DS.Glyph.image(named: symbols[index], selected: index == selectedIndex) {
                 button.image = image
                 button.imagePosition = .imageOnly
                 button.toolTip = title
-            } else if showsSymbols, let symbol = symbols[index],
-                      let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-                        .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) {
+            } else if showsSymbols, let image = (symbols[index].map { $0.hasPrefix(DS.Glyph.prefix) } == true
+                        ? DS.Glyph.image(named: symbols[index], selected: index == selectedIndex, pointSize: 14)
+                        : DS.Glyph.image(named: symbols[index])?.withSymbolConfiguration(.init(pointSize: 11, weight: .medium))) {
                 button.image = image
                 button.imagePosition = .imageLeading
                 button.imageHugsTitle = true
@@ -433,6 +433,8 @@ final class SlidingSegmentedControl: NSView {
             let color: NSColor = index == selectedIndex ? .labelColor : .secondaryLabelColor
             button.contentTintColor = color
             if icons.indices.contains(index) {
+                // Selected, the glyph turns solid (set A, 2026-11-04).
+                icons[index].image = DS.Glyph.image(named: symbols.indices.contains(index) ? symbols[index] : nil, selected: index == selectedIndex)
                 icons[index].contentTintColor = color
                 names[index].textColor = color
             }

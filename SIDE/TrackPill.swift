@@ -97,8 +97,7 @@ final class TrackPill: NSView {
         extraLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         projectGlyph.imageScaling = .scaleProportionallyDown
         projectGlyph.setAccessibilityElement(false)
-        projectGlyph.image = NSImage(systemSymbolName: ShellViewController.Stage.tracks.symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
+        projectGlyph.image = DS.Glyph.image(named: ShellViewController.Stage.tracks.symbol, pointSize: 15)
         projectGlyph.contentTintColor = .secondaryLabelColor
         for view in [projectGlyph, dot, titleLabel, extraLabel, tornOutGlyph] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
         extraTrailing = extraLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m)

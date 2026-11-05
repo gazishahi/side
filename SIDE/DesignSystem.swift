@@ -1261,7 +1261,7 @@ extension DS {
         /// which stage it is (the visual audit: a sentence and a button in an empty canvas).
         var symbol: String? {
             didSet {
-                icon.image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+                icon.image = DS.Glyph.image(named: symbol, pointSize: 36)
                 icon.isHidden = symbol == nil
             }
         }
@@ -1440,5 +1440,128 @@ enum TextScaleFollower {
             if let font = value as? NSFont { text.addAttribute(.font, value: scaled(font, ratio), range: range) }
         }
         text.endEditing()
+    }
+}
+
+// MARK: - Stage glyphs
+
+extension DS {
+    /// Side's own stage icons (the owner chose set A, 2026-11-04): one family on a 24 pt grid,
+    /// 1.75 pt stroke, round caps and joins, 3 pt corners. At rest an outline; selected, the same
+    /// shape solid with its detail cut out. Template images, so they take the tint they're given.
+    /// Names that aren't a stage's fall through to SF Symbols.
+    @MainActor
+    enum Glyph {
+        nonisolated static let prefix = "side.stage."
+        nonisolated static func name(_ stage: String) -> String { prefix + stage }
+
+        /// A stage glyph, or the SF Symbol of that name.
+        static func image(named name: String?, selected: Bool = false, pointSize: CGFloat = 16) -> NSImage? {
+            guard let name else { return nil }
+            guard name.hasPrefix(prefix) else { return NSImage(systemSymbolName: name, accessibilityDescription: nil) }
+            let key = "\(name)|\(selected)|\(pointSize)"
+            if let cached = cache[key] { return cached }
+            let kind = String(name.dropFirst(prefix.count))
+            let image = NSImage(size: NSSize(width: pointSize, height: pointSize), flipped: true) { rect in
+                guard let context = NSGraphicsContext.current?.cgContext else { return false }
+                context.scaleBy(x: rect.width / 24, y: rect.height / 24)
+                draw(kind, selected: selected, in: context)
+                return true
+            }
+            image.isTemplate = true
+            cache[key] = image
+            return image
+        }
+
+        private static var cache: [String: NSImage] = [:]
+        private static let stroke: CGFloat = 1.75
+
+        private static func line(_ points: [(CGFloat, CGFloat)], in context: CGContext) {
+            guard let first = points.first else { return }
+            context.move(to: CGPoint(x: first.0, y: first.1))
+            for point in points.dropFirst() { context.addLine(to: CGPoint(x: point.0, y: point.1)) }
+        }
+
+        private static func strokeDetail(_ context: CGContext, knockout: Bool, _ build: () -> Void) {
+            context.saveGState()
+            if knockout { context.setBlendMode(.clear) }
+            context.setLineWidth(stroke)
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            context.beginPath()
+            build()
+            context.strokePath()
+            context.restoreGState()
+        }
+
+        private static func body(_ path: CGPath, selected: Bool, in context: CGContext) {
+            context.addPath(path)
+            if selected {
+                context.fillPath()
+            } else {
+                context.setLineWidth(stroke)
+                context.setLineJoin(.round)
+                context.strokePath()
+            }
+        }
+
+        private static func draw(_ kind: String, selected: Bool, in context: CGContext) {
+            context.setFillColor(NSColor.black.cgColor)
+            context.setStrokeColor(NSColor.black.cgColor)
+            func rounded(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGPath {
+                CGPath(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerWidth: 3, cornerHeight: 3, transform: nil)
+            }
+            switch kind {
+            case "editor":
+                body(rounded(4.5, 3, 15, 18), selected: selected, in: context)
+                strokeDetail(context, knockout: selected) {
+                    line([(8.5, 8.5), (15.5, 8.5)], in: context)
+                    line([(8.5, 12), (13.5, 12)], in: context)
+                    line([(8.5, 15.5), (11.5, 15.5)], in: context)
+                }
+            case "agent":
+                let spark = CGMutablePath()
+                spark.move(to: CGPoint(x: 12, y: 3.5))
+                spark.addCurve(to: CGPoint(x: 20.5, y: 12), control1: CGPoint(x: 12.7, y: 8.1), control2: CGPoint(x: 15.9, y: 11.3))
+                spark.addCurve(to: CGPoint(x: 12, y: 20.5), control1: CGPoint(x: 15.9, y: 12.7), control2: CGPoint(x: 12.7, y: 15.9))
+                spark.addCurve(to: CGPoint(x: 3.5, y: 12), control1: CGPoint(x: 11.3, y: 15.9), control2: CGPoint(x: 8.1, y: 12.7))
+                spark.addCurve(to: CGPoint(x: 12, y: 3.5), control1: CGPoint(x: 8.1, y: 11.3), control2: CGPoint(x: 11.3, y: 8.1))
+                spark.closeSubpath()
+                if selected {
+                    context.addPath(spark)
+                    context.fillPath()
+                }
+                context.addPath(spark)
+                context.setLineWidth(stroke)
+                context.setLineJoin(.round)
+                context.strokePath()
+            case "changes":
+                body(rounded(4, 4, 16, 16), selected: selected, in: context)
+                strokeDetail(context, knockout: selected) {
+                    line([(12, 7.5), (12, 12.5)], in: context)
+                    line([(9.5, 10), (14.5, 10)], in: context)
+                    line([(9.5, 16), (14.5, 16)], in: context)
+                }
+            case "terminal":
+                body(rounded(3, 5, 18, 14), selected: selected, in: context)
+                strokeDetail(context, knockout: selected) {
+                    line([(7.5, 10), (10, 12), (7.5, 14)], in: context)
+                    line([(12.5, 14.5), (16.5, 14.5)], in: context)
+                }
+            case "branches":
+                let radius: CGFloat = selected ? 3 : 2.25
+                for (x, y) in [(7.5, 6.0), (7.5, 18.0), (16.5, 8.0)] as [(CGFloat, CGFloat)] {
+                    let circle = CGPath(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2), transform: nil)
+                    body(circle, selected: selected, in: context)
+                }
+                strokeDetail(context, knockout: false) {
+                    line([(7.5, 8.25), (7.5, 15.75)], in: context)
+                    context.move(to: CGPoint(x: 16.5, y: 10.25))
+                    context.addCurve(to: CGPoint(x: 10, y: 15.5), control1: CGPoint(x: 16.5, y: 13.75), control2: CGPoint(x: 14, y: 14.75))
+                }
+            default:
+                break
+            }
+        }
     }
 }
