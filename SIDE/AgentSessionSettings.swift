@@ -20,7 +20,7 @@ enum AgentAvailability {
         return LanguageServerRegistry.resolveExecutable(named: agent.binary)
     }
 
-    static func refresh(then completion: @escaping () -> Void) {
+    static func refresh(then completion: @escaping @MainActor () -> Void) {
         guard !refreshing else { return }
         refreshing = true
         let agents = ACPAgent.known

@@ -1702,7 +1702,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     /// The whole file with the proposal's changes, computed off-main from the proposal's own
     /// base and proposed content (held until it's resolved).
-    private func wholeFileDiffProvider(for edit: ProposedEdit) -> ((@escaping (String) -> Void) -> Void)? {
+    private func wholeFileDiffProvider(for edit: ProposedEdit) -> ((@escaping @MainActor (String) -> Void) -> Void)? {
         guard !edit.proposedContent.isEmpty || edit.isNewFile, let projectPath else { return nil }
         let base = edit.baseContent, proposed = edit.proposedContent
         let root = URL(fileURLWithPath: projectPath)

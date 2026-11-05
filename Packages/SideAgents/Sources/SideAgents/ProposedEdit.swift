@@ -4,7 +4,7 @@ import Foundation
 /// mechanism behind the constitution's "agents propose; people promote": an `edit_file` or
 /// `write_file` tool call produces one of these and stops. Nothing is written until a human
 /// approves it, and rejecting one leaves the project byte-identical.
-public struct ProposedEdit: Identifiable {
+public struct ProposedEdit: Identifiable, Sendable {
     public let id: UUID
     public let toolUseId: String
     public let url: URL

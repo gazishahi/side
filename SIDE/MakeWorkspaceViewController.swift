@@ -2095,7 +2095,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let maxOpenableImageSize = 50_000_000
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "webp"]
 
-    private func open(_ url: URL, completion: (() -> Void)? = nil) {
+    private func open(_ url: URL, completion: (@MainActor () -> Void)? = nil) {
         // Captured now: `isRestoringTabs` is true only for the synchronous span of the restore
         // loop, and the work below finishes on a later main-queue turn.
         let deferLanguageServer = isRestoringTabs
@@ -2657,13 +2657,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let range = LSPRange(start: onLine.map(\.range.start).min { ($0.line, $0.character) < ($1.line, $1.character) }!,
                              end: onLine.map(\.range.end).max { ($0.line, $0.character) < ($1.line, $1.character) }!)
         let asked = openTextSnapshots()
+        // The menu and the click that asked for it, used again only on the main actor when the
+        // server's answer comes back.
+        nonisolated(unsafe) let pendingMenu = menu, click = event
         lspManager.codeActions(url: tab.url, range: range, diagnostics: onLine) { [weak self] actions in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let fixes = (actions ?? []).filter { $0.disabledReason == nil && ($0.isQuickFix || $0.kind == nil) }
-                if !fixes.isEmpty { menu.addItem(.separator()) }
-                for action in fixes.prefix(12) { menu.addItem(self.codeActionItem(action, url: tab.url, asked: asked)) }
-                NSMenu.popUpContextMenu(menu, with: event, for: self.gutter)
+                if !fixes.isEmpty { pendingMenu.addItem(.separator()) }
+                for action in fixes.prefix(12) { pendingMenu.addItem(self.codeActionItem(action, url: tab.url, asked: asked)) }
+                NSMenu.popUpContextMenu(pendingMenu, with: click, for: self.gutter)
             }
         }
     }
@@ -5229,7 +5232,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         }
     }
 
-    private func runFormatterIfNeeded(tabID: UUID, url: URL, contentAtSaveTime: String, completion: @escaping (Bool) -> Void) {
+    private func runFormatterIfNeeded(tabID: UUID, url: URL, contentAtSaveTime: String, completion: @escaping @MainActor (Bool) -> Void) {
         // Settings → Languages: off, on (the project's formatter, else the language server's),
         // or as before (the project's formatter when it has one).
         let setting = LanguageSettings.shared.formatOnSave(forExtension: url.languageExtension)

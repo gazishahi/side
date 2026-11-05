@@ -96,7 +96,7 @@ final class FileMentionTests: XCTestCase {
 
     // MARK: - Completion index
 
-    func testIndexSkipsVendoredDirectoriesAndFuzzyMatches() {
+    @MainActor func testIndexSkipsVendoredDirectoriesAndFuzzyMatches() {
         let index = ProjectFileIndex()
         let done = expectation(description: "indexed")
         index.refresh(root: root) { done.fulfill() }
@@ -143,7 +143,7 @@ final class MentionPresentationTests: XCTestCase {
         }
     }
 
-    func testBareAtOffersShallowPathsFirst() throws {
+    @MainActor func testBareAtOffersShallowPathsFirst() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bare-at-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("a/b/c"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }

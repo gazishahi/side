@@ -32,7 +32,7 @@ public enum GitDiffComputer {
     /// Spawns `git show`, so callers should fetch this once per tab (e.g. on open, and again
     /// after save) rather than on every debounced refresh — that's the expensive half of what
     /// used to be a two-subprocess round trip on every keystroke.
-    public static func fetchHeadContent(projectRoot: URL, relativePath: String, completion: @escaping (String?) -> Void) {
+    public static func fetchHeadContent(projectRoot: URL, relativePath: String, completion: @escaping @MainActor (String?) -> Void) {
         DispatchQueue.global(qos: .utility).async {
             let raw = runGit(["show", "HEAD:\(relativePath)"], cwd: projectRoot.path)
             DispatchQueue.main.async { completion(raw.isEmpty ? nil : raw) }
@@ -41,7 +41,7 @@ public enum GitDiffComputer {
 
     /// Diffs already-known HEAD content against the live buffer. No `git show` here — just the
     /// `--no-index` temp-file diff — so this stays cheap enough to call on every keystroke debounce.
-    public static func diff(headContent: String?, currentContent: String, projectRoot: URL, completion: @escaping (GitDiffResult) -> Void) {
+    public static func diff(headContent: String?, currentContent: String, projectRoot: URL, completion: @escaping @MainActor (GitDiffResult) -> Void) {
         DispatchQueue.global(qos: .utility).async {
             let result = diffResult(original: headContent, current: currentContent, projectRoot: projectRoot)
             DispatchQueue.main.async { completion(result) }

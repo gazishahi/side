@@ -29,7 +29,7 @@ import Foundation
 /// the main thread regardless, and anything that disagrees is corrected. A stale cache costs one
 /// frame of wrong branch name, never a wrong decision — every operation that acts on git state
 /// (promote, checkpoint, switch) re-reads it at the time it acts.
-public struct GitLaunchProbe: Codable, Equatable {
+public struct GitLaunchProbe: Codable, Equatable, Sendable {
     /// Where this type persists. `.standard` in the app; tests point it at a private suite, because
     /// parallel test processes sharing one defaults domain lose each other's writes — the flake
     /// that showed up as an acknowledgement or a cache entry vanishing between two lines of a test.

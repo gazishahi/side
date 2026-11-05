@@ -1067,6 +1067,9 @@ public final class ACPHarness: Harness {
         // Unannounced, and the track asks first: a card, like Heron's. The diff is computed off
         // the main thread (a `git diff` spawn), then the card appears.
         let original = base ?? ""
+        // The request's JSON-RPC id (a string or number, never mutated): passed through the diff's
+        // background hop untouched, and answered on the main actor.
+        nonisolated(unsafe) let id = id
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let diff = GitDiffComputer.unifiedDiffText(original: original, proposed: content, projectRoot: root)
             DispatchQueue.main.async {
@@ -1358,6 +1361,9 @@ public final class ACPHarness: Harness {
         let commands = turnCommands
         let (trackKey, conversationId, agent) = (self.trackKey, self.conversationId, self.agent)
         let logURL = self.logURL
+        // Only used back on the main actor, after the commit: it's carried through the background
+        // hop, never touched there.
+        nonisolated(unsafe) let ledger = sessionStore
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // Only touched paths that actually differ now: a path the agent changed and changed
             // back has nothing to commit, and `git add` of a vanished untracked path would fail.
@@ -1393,7 +1399,7 @@ public final class ACPHarness: Harness {
                             changedFilePaths: paths, commandsRun: commands,
                             provenance: AgentProvenance(providerId: "acp:\(agent.id)", modelId: agent.displayName, instructionSourceSummary: "\(agent.displayName) conversation"),
                             gitCommitSHA: sha, fileChanges: fileChanges)
-                        sessionStore.appendCheckpoint(checkpoint)
+                        ledger.appendCheckpoint(checkpoint)
                         lines.append(.checkpoint(id: checkpoint.id, text: CheckpointCommit.checkpointMarker(checkpoint)))
                         let sharedNames = shared.sorted().map { ($0 as NSString).lastPathComponent }
                         if !sharedNames.isEmpty {

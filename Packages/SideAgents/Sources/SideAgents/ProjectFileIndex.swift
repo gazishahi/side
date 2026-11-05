@@ -6,14 +6,15 @@ import Foundation
 /// project *that* window has open and is rebuilt on its own schedule, while Think needs the
 /// current track's working directory — which is a worktree, and often a different directory
 /// entirely. Sharing would couple two stages' lifecycles for a list that costs milliseconds.
+@MainActor
 public final class ProjectFileIndex {
     /// Same ceiling the project indexer uses. A monorepo shouldn't turn a completion list into a
     /// memory problem, and nobody scrolls past the first few matches anyway.
-    private static let maxFiles = 25_000
+    nonisolated private static let maxFiles = 25_000
 
     /// Directories never worth offering: generated, vendored, or enormous. Matches what the file
     /// explorer already hides, so completion and the tree agree about what "the project" is.
-    private static let skippedDirectories: Set<String> = [
+    nonisolated private static let skippedDirectories: Set<String> = [
         "node_modules", ".git", ".build", "DerivedData", "build", "dist", ".next",
         "Pods", ".venv", "venv", "__pycache__", ".swiftpm", ".gradle", "target",
     ]
@@ -29,7 +30,7 @@ public final class ProjectFileIndex {
 
     /// Rebuilds off the main thread when the root changes; a repeat call for the same root is
     /// free, so callers can invoke this on every attach without thinking about it.
-    public func refresh(root: URL, completion: @escaping () -> Void) {
+    public func refresh(root: URL, completion: @escaping @MainActor () -> Void) {
         guard indexedRoot != root || isStale else { return completion() }
         indexedRoot = root
         isStale = false
@@ -69,7 +70,7 @@ public final class ProjectFileIndex {
             .map(\.0)
     }
 
-    private static func scan(root: URL) -> [String] {
+    nonisolated private static func scan(root: URL) -> [String] {
         var paths: [String] = []
         let rootPath = root.standardizedFileURL.path
         guard let enumerator = FileManager.default.enumerator(

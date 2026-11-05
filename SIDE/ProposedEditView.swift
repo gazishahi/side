@@ -20,7 +20,7 @@ final class ProposedEditView: NSView {
     private let wholeFileButton = NSButton(title: "", target: nil, action: nil)
     /// Set while the proposal is pending (its full content is still held); computes the
     /// whole-file diff off-main. Nil once resolved — the content is dropped then.
-    var wholeFileDiff: ((@escaping (String) -> Void) -> Void)? { didSet { wholeFileButton.isHidden = wholeFileDiff == nil } }
+    var wholeFileDiff: ((@escaping @MainActor (String) -> Void) -> Void)? { didSet { wholeFileButton.isHidden = wholeFileDiff == nil } }
     private var changesOnlyText = ""
     private var showingWholeFile = false
     private var diffCap: NSLayoutConstraint!
