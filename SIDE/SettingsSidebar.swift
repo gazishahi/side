@@ -260,6 +260,9 @@ final class SettingsSplitViewController: NSSplitViewController {
         sidebar.select(id: Pane.general.rawValue)
     }
 
+    /// UI testing: the pane on screen.
+    var currentPaneForTesting: NSViewController? { panes[pane] }
+
     func select(_ pane: Pane) {
         loadViewIfNeeded()
         sidebar.select(id: pane.rawValue)
@@ -292,8 +295,8 @@ final class SettingsSplitViewController: NSSplitViewController {
     }
 
     /// The title card for a pane, from its sidebar item.
-    static func hero(_ pane: Pane) -> NSView {
+    static func hero(_ pane: Pane, width: CGFloat = SettingsForm.contentWidth) -> NSView {
         guard let item = items.first(where: { $0.id == pane.rawValue }) else { return NSView() }
-        return SettingsForm.hero(symbol: item.symbol, tint: item.tint, title: item.title, detail: item.summary)
+        return SettingsForm.hero(symbol: item.symbol, tint: item.tint, title: item.title, detail: item.summary, width: width)
     }
 }

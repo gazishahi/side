@@ -9,6 +9,7 @@
 //   it while working;
 // - reads a message in raw mode; Enter starts a turn of FAKE_CLAUDE_TURN seconds (default 4);
 // - rings the bell when a turn ends;
+// - redraws its screen and title when the window changes size (as Ink does), with no turn;
 // - ^C or ^D quits.
 #include <signal.h>
 #include <stdio.h>
@@ -20,6 +21,9 @@
 #include <unistd.h>
 
 static struct termios original;
+static volatile sig_atomic_t resized = 0;
+
+static void on_resize(int signal) { (void)signal; resized = 1; }
 
 static void restore(void) {
     tcsetattr(STDIN_FILENO, TCSANOW, &original);
@@ -87,11 +91,23 @@ int main(void) {
     fputs("fake claude: type a message and press Enter", stdout);
     prompt();
 
+    struct sigaction resize = { 0 };
+    resize.sa_handler = on_resize;
+    sigaction(SIGWINCH, &resize, NULL);
+
     char buffer[256];
     // Inside an escape sequence (the terminal's replies, arrow keys): not part of the message.
     int escape = 0;
     for (;;) {
         ssize_t count = read_some(buffer, sizeof buffer, 1000);
+        if (resized) {
+            resized = 0;
+            title("✳ Claude Code");
+            fputs("\033[2J\033[Hfake claude: type a message and press Enter", stdout);
+            prompt();
+            continue;
+        }
+        if (count < 0) continue;
         for (ssize_t i = 0; i < count; i++) {
             char c = buffer[i];
             if (escape) {

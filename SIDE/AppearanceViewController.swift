@@ -1,16 +1,18 @@
 import AppKit
 import SideAgents
 
-/// The Appearance pane of Preferences: light or dark, text sizes, and typefaces.
+/// The Appearance pane of Preferences: light or dark, text sizes, and typefaces, with a live
+/// preview beside them (SIDE_DESIGN_POLISH_0.5.md §5: form + preview, the one pane whose
+/// settings you judge by looking).
 ///
 /// macOS has no app-wide Dynamic Type, so an app built on hardcoded point sizes offers someone
 /// who needs bigger text nothing at all. This is that recourse.
 final class AppearanceViewController: NSViewController {
+    private let preview = AppearancePreview()
     private let scalePopup = NSPopUpButton()
     private let themePopup = NSPopUpButton()
     private let sampleLabel = NSTextField(labelWithString: "The quick brown fox jumps over the lazy dog.")
     private let sampleCaption = NSTextField(labelWithString: "Secondary text, captions, and status lines look like this.")
-    private let sampleCode = NSTextField(labelWithString: "let sample = \"code and diffs\"")
     private let editorSizePopup = NSPopUpButton()
     private let terminalSizePopup = NSPopUpButton()
     private var fontPopups: [DS.Text.Fonts.Role: NSPopUpButton] = [:]
@@ -83,7 +85,10 @@ final class AppearanceViewController: NSViewController {
             fontPopups[role] = popup
         }
 
-        let samples = NSStackView(views: [sampleLabel, sampleCaption, sampleCode])
+        let samples = NSStackView(views: [sampleLabel, sampleCaption])
+        sampleLabel.lineBreakMode = .byTruncatingTail
+        sampleCaption.lineBreakMode = .byTruncatingTail
+        for label in [sampleLabel, sampleCaption] { label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         samples.orientation = .vertical
         samples.alignment = .leading
         samples.spacing = DS.Spacing.s
@@ -110,9 +115,28 @@ final class AppearanceViewController: NSViewController {
                 SettingsForm.row("Terminal", fontPopups[.terminal]!),
                 SettingsForm.row("Reading", detail: "Markdown previews.", fontPopups[.reading]!),
             ]),
-            SettingsForm.section("Preview", [SettingsForm.content(samples)]),
         ])
-        SettingsForm.install(page, in: view)
+        preview.interfaceSamples = samples
+        let split = NSView()
+        for part in [page, preview] {
+            part.translatesAutoresizingMaskIntoConstraints = false
+            split.addSubview(part)
+        }
+        NSLayoutConstraint.activate([
+            page.topAnchor.constraint(equalTo: split.topAnchor),
+            page.bottomAnchor.constraint(equalTo: split.bottomAnchor),
+            page.leadingAnchor.constraint(equalTo: split.leadingAnchor),
+            // The two share the width, the settings a little more; neither has a fixed size.
+            page.widthAnchor.constraint(greaterThanOrEqualToConstant: SettingsForm.minColumnWidth + SettingsForm.pageInset * 2),
+            { let share = page.widthAnchor.constraint(equalTo: split.widthAnchor, multiplier: 0.55); share.priority = .defaultHigh; return share }(),
+            // Under the title bar, where the settings column's scroll view starts its content.
+            preview.topAnchor.constraint(equalTo: split.safeAreaLayoutGuide.topAnchor, constant: SettingsForm.pageInset - 4),
+            preview.leadingAnchor.constraint(equalTo: page.trailingAnchor),
+            preview.trailingAnchor.constraint(equalTo: split.trailingAnchor, constant: -SettingsForm.pageInset),
+            preview.widthAnchor.constraint(greaterThanOrEqualToConstant: 260),
+            preview.bottomAnchor.constraint(lessThanOrEqualTo: split.bottomAnchor, constant: -SettingsForm.pageInset),
+        ])
+        SettingsForm.install(split, in: view)
 
         fillThemePopups()
         NotificationCenter.default.addObserver(self, selector: #selector(fillThemePopups), name: EditorThemes.didChangeNotification, object: nil)
@@ -131,7 +155,7 @@ final class AppearanceViewController: NSViewController {
     @objc private func applyFonts() {
         sampleLabel.font = DS.Text.body()
         sampleCaption.font = DS.Text.caption()
-        sampleCode.font = DS.Text.Fonts.font(.editor, size: DS.Text.code().pointSize)
+        preview.refresh()
         view.layoutSubtreeIfNeeded()
     }
 
@@ -216,5 +240,159 @@ final class AppearanceViewController: NSViewController {
         guard let raw = scalePopup.selectedItem?.representedObject as? Double,
               let scale = DS.Text.Scale(rawValue: raw) else { return }
         DS.Text.Scale.current = scale
+    }
+}
+
+/// Appearance's live preview: the editor in its theme, font and size, a terminal in its own,
+/// and Side's interface text. Every choice on the left shows here as it's made.
+@MainActor
+final class AppearancePreview: NSView {
+    private let editor = NSTextField(labelWithString: "")
+    private let gutter = NSTextField(labelWithString: "")
+    private let terminal = NSTextField(labelWithString: "")
+    private let editorPane = NSView()
+    private let terminalPane = NSView()
+    private let stack = NSStackView()
+    /// Side's own text: set by the pane, which sizes it.
+    var interfaceSamples: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            guard let interfaceSamples else { return }
+            let card = SettingsForm.section("Interface", [SettingsForm.content(interfaceSamples)])
+            stack.addArrangedSubview(card)
+            card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        for pane in [editorPane, terminalPane] {
+            pane.wantsLayer = true
+            pane.layer?.cornerRadius = DS.Radius.surface
+            pane.layer?.cornerCurve = .continuous
+        }
+        gutter.alignment = .right
+        for label in [editor, gutter, terminal] {
+            label.maximumNumberOfLines = 0
+            label.lineBreakMode = .byClipping
+            label.isSelectable = false
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            TextScaleFollower.exempt(label)
+        }
+        place(gutter, editor, in: editorPane)
+        place(nil, terminal, in: terminalPane)
+        let editorCard = SettingsForm.section("Editor", [editorPane])
+        let terminalCard = SettingsForm.section("Terminal", [terminalPane])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Spacing.section
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        for card in [editorCard, terminalCard] {
+            stack.addArrangedSubview(card)
+            card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Preview")
+        for name in [EditorThemes.didChangeNotification, DS.Appearance.didChangeNotification, DS.Text.CodeSize.didChangeNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: name, object: nil)
+        }
+        refresh()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refresh()
+    }
+
+    private func place(_ gutter: NSTextField?, _ text: NSTextField, in pane: NSView) {
+        let inset = DS.Spacing.l
+        for view in [gutter, text].compactMap({ $0 }) {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            pane.addSubview(view)
+            view.topAnchor.constraint(equalTo: pane.topAnchor, constant: inset).isActive = true
+        }
+        if let gutter {
+            NSLayoutConstraint.activate([
+                gutter.leadingAnchor.constraint(equalTo: pane.leadingAnchor, constant: inset),
+                text.leadingAnchor.constraint(equalTo: gutter.trailingAnchor, constant: DS.Spacing.l),
+            ])
+        } else {
+            text.leadingAnchor.constraint(equalTo: pane.leadingAnchor, constant: inset).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            text.trailingAnchor.constraint(lessThanOrEqualTo: pane.trailingAnchor, constant: -inset),
+            text.bottomAnchor.constraint(equalTo: pane.bottomAnchor, constant: -inset),
+        ])
+    }
+
+    static let code: [[(String, String?)]] = [
+        [("// Greet everyone on the list", "comment")],
+        [("func", "keyword"), (" ", nil), ("greet", "function"), ("(_ names: [", nil), ("String", "type"), ("]) -> ", nil), ("Int", "type"), (" {", nil)],
+        [("    ", nil), ("for", "keyword"), (" name ", nil), ("in", "keyword"), (" names {", nil)],
+        [("        print(", nil), ("\"Hello, \\(name)!\"", "string"), (")", nil)],
+        [("    }", nil)],
+        [("    ", nil), ("return", "keyword"), (" names.count * ", nil), ("2", "number")],
+        [("}", nil)],
+    ]
+
+    @objc func refresh() {
+        let dark = DS.Appearance.isDark
+        let theme = EditorThemes.current(dark: dark)
+        let syntax = EditorThemes.syntax(dark: dark)
+        let editorFont = DS.Text.Fonts.font(.editor, size: DS.Text.CodeSize.editor)
+        let terminalFont = DS.Text.Fonts.font(.terminal, size: DS.Text.CodeSize.terminal)
+        let text = theme?.text.nsColor ?? NSColor.labelColor
+        func color(_ capture: String?) -> NSColor {
+            guard let capture, let rgba = syntax.color(for: capture) else { return text }
+            return NSColor(srgbRed: CGFloat(rgba.x), green: CGFloat(rgba.y), blue: CGFloat(rgba.z), alpha: CGFloat(rgba.w))
+        }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineHeightMultiple = 1.15
+        // Lines run off the pane's edge, as in the editor, rather than wrapping.
+        paragraph.lineBreakMode = .byClipping
+        let code = NSMutableAttributedString()
+        for (index, line) in Self.code.enumerated() {
+            for (piece, capture) in line {
+                code.append(NSAttributedString(string: piece, attributes: [.font: editorFont, .foregroundColor: color(capture), .paragraphStyle: paragraph]))
+            }
+            if index < Self.code.count - 1 { code.append(NSAttributedString(string: "\n", attributes: [.font: editorFont, .paragraphStyle: paragraph])) }
+        }
+        editor.attributedStringValue = code
+        gutter.attributedStringValue = NSAttributedString(string: (1...Self.code.count).map(String.init).joined(separator: "\n"), attributes: [
+            .font: editorFont, .foregroundColor: theme?.lineNumbers.nsColor ?? NSColor.tertiaryLabelColor, .paragraphStyle: paragraph,
+        ])
+        editorPane.bindLayerBackground(theme?.background.nsColor ?? DS.Color.canvas)
+
+        let ansi = theme?.ansi?.map(\.nsColor)
+        let fallback = TerminalViewController.ansiPalette(dark: dark).map {
+            NSColor(srgbRed: CGFloat($0.red) / 65535, green: CGFloat($0.green) / 65535, blue: CGFloat($0.blue) / 65535, alpha: 1)
+        }
+        let palette = ansi ?? fallback
+        let foreground = theme?.terminalText?.nsColor ?? NSColor.labelColor
+        func run(_ piece: String, _ ansiIndex: Int? = nil) -> NSAttributedString {
+            NSAttributedString(string: piece, attributes: [.font: terminalFont, .foregroundColor: ansiIndex.map { palette[$0] } ?? foreground, .paragraphStyle: paragraph])
+        }
+        let shell = NSMutableAttributedString()
+        [run("~/side ", 4), run("main ", 5), run("\u{276F} ", 2), run("git status\n"),
+         run("On branch main\n"),
+         run("Changes not staged for commit:\n"),
+         run("        modified:   ", 1), run("Settings.swift\n", 1),
+         run("~/side ", 4), run("main ", 5), run("\u{276F} ", 2)].forEach(shell.append)
+        terminal.attributedStringValue = shell
+        terminalPane.bindLayerBackground(theme?.terminalBackground?.nsColor ?? DS.Color.raised)
+        // The theme's own appearance on its panes, so a dark theme in light mode reads as dark.
+        let appearance = theme.map { NSAppearance(named: $0.isDark ? .darkAqua : .aqua) } ?? nil
+        editorPane.appearance = appearance
+        terminalPane.appearance = appearance
     }
 }

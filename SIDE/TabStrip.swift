@@ -257,11 +257,9 @@ final class TabStrip: NSObject {
 
     /// One tab is no strip (the owner, 2026-11-04: no tab for a single item), but it still says
     /// what's open: its name, plain, where the tab would start. It fades in as the strip goes.
-    private lazy var soloLabel: NSTextField = {
-        let label = NSTextField(labelWithString: "")
-        label.font = DS.Text.body(.medium)
-        label.textColor = .secondaryLabelColor
-        label.lineBreakMode = .byTruncatingMiddle
+    private lazy var soloLabel: SoloLabel = {
+        let label = SoloLabel()
+        label.wantsLayer = true
         label.alphaValue = 0
         label.translatesAutoresizingMaskIntoConstraints = false
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -276,7 +274,7 @@ final class TabStrip: NSObject {
     }()
     /// The tab's icon beside it, where the chip drew it, so the chip crossfades into the two.
     private lazy var soloIcon: NSImageView = {
-        let view = NSImageView()
+        let view = SoloIcon()
         view.imageScaling = .scaleProportionallyUpOrDown
         view.contentTintColor = .secondaryLabelColor
         view.symbolConfiguration = .init(pointSize: 11, weight: .medium)
@@ -295,6 +293,10 @@ final class TabStrip: NSObject {
     private var soloShown = false
     /// Set by `dismiss` when the tab that stays doesn't move: the name can come in under it.
     private var soloUnderKeptTab = false
+    /// Set by `dismiss` when the tab that stays ends its title in an ellipsis: how much of the
+    /// title it shows. The name comes in cut there too, then the rest is revealed once the tab
+    /// is gone; whole at once, the full name showed under the cut one (the owner, 2026-11-05).
+    private var soloRevealFrom: CGFloat?
 
     private func showSolo(_ item: Item?) {
         let shown = item != nil
@@ -303,6 +305,16 @@ final class TabStrip: NSObject {
             soloLabel.toolTip = item.toolTip
             soloIcon.image = item.icon
             soloLeading?.constant = stack.edgeInsets.left + TabChipView.textX(hasIcon: item.icon != nil)
+            // Sized for the new name now, outside whatever animation is running: laid out
+            // inside the close's, it grew from the last name's width with its picture squeezed
+            // to fit, a second, narrower title under the tab (2026-11-05).
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                CATransaction.setDisableActions(true)
+                bar.layoutSubtreeIfNeeded()
+                soloLabel.displayIfNeeded()
+            }
         }
         let views: [NSView] = [soloLabel, soloIcon]
         guard shown != soloShown else { return }
@@ -313,12 +325,59 @@ final class TabStrip: NSObject {
         // once, and the tab fades off a name already there: started together, both were half
         // there at once and the name all but blinked out between them. When the tab slides
         // there, the name waits for it.
-        let delay = shown && !soloUnderKeptTab ? max(0, DS.Motion.snappy.duration - DS.Motion.fadeDuration * 1.3) : 0
+        let tabFadesAt = max(0, DS.Motion.snappy.duration - DS.Motion.fadeDuration * 1.3)
+        let delay = shown && !soloUnderKeptTab ? tabFadesAt : 0
         soloUnderKeptTab = false
+        let revealFrom = shown ? soloRevealFrom : nil
+        soloRevealFrom = nil
+        if let revealFrom { coverSoloLabel(after: revealFrom) } else { soloLabel.layer?.mask = nil }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.soloShown == shown else { return }
             DS.Motion.fade { views.forEach { $0.animator().alphaValue = shown ? 1 : 0 } }
         }
+        guard revealFrom != nil else { return }
+        // The rest of the name, once the tab's ellipsis has faded off it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + tabFadesAt + DS.Motion.fadeDuration) { [weak self] in
+            guard let self, self.soloShown else { return }
+            self.revealSoloLabel()
+        }
+    }
+
+    /// The name hidden past `width` behind a short soft edge, where the tab's ellipsis sits.
+    private func coverSoloLabel(after width: CGFloat) {
+        bar.layoutSubtreeIfNeeded()
+        guard let layer = soloLabel.layer, layer.bounds.width > width else { soloLabel.layer?.mask = nil; return }
+        let mask = CAGradientLayer()
+        mask.frame = layer.bounds
+        mask.startPoint = CGPoint(x: 0, y: 0.5)
+        mask.endPoint = CGPoint(x: 1, y: 0.5)
+        mask.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor, NSColor.clear.cgColor]
+        let edge = width / layer.bounds.width
+        let soft = Self.soloRevealEdge / layer.bounds.width
+        mask.locations = [0, NSNumber(value: Double(edge - soft)), NSNumber(value: Double(edge)), 1]
+        layer.mask = mask
+    }
+
+    private static let soloRevealEdge: CGFloat = 14
+
+    /// The soft edge runs off the end of the name, and the mask goes.
+    private func revealSoloLabel() {
+        guard let layer = soloLabel.layer, let mask = layer.mask as? CAGradientLayer, layer.bounds.width > 0 else { return }
+        let soft = Double(Self.soloRevealEdge / layer.bounds.width)
+        let end: [NSNumber] = [0, 1, NSNumber(value: 1 + soft), NSNumber(value: 1 + soft)]
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self, weak mask] in
+            guard let self, let mask, self.soloLabel.layer?.mask === mask else { return }
+            self.soloLabel.layer?.mask = nil
+        }
+        let sweep = CABasicAnimation(keyPath: "locations")
+        sweep.fromValue = mask.locations
+        sweep.toValue = end
+        sweep.duration = DS.Motion.fadeDuration * 2
+        sweep.timingFunction = DS.Motion.easeOut
+        mask.locations = end
+        mask.add(sweep, forKey: "reveal")
+        CATransaction.commit()
     }
 
     /// Chips fading out with the strip, removed when the fade ends or the next reload comes.
@@ -400,6 +459,10 @@ final class TabStrip: NSObject {
         let others = gone.filter { $0 !== first }
         let shift = leading.frame.minX - first.frame.minX
         soloUnderKeptTab = shift == 0
+        // Drawn as the name under it is (selected, medium): in regular weight the two titles
+        // didn't line up, and showed doubled until the tab faded (2026-11-05).
+        first.isActive = true
+        soloRevealFrom = first.truncatedTitleWidth
         // Where the one that stays moves into their place, they're gone at once: even a short
         // fade showed them under it.
         if shift != 0 {
@@ -850,6 +913,16 @@ final class TabChipView: NSView, PointerHoverSyncing {
     static var iconCenterX: CGFloat { flare + 10 + iconSize / 2 }
     /// Where the title starts: after the icon when there is one.
     private var textX: CGFloat { Self.textX(hasIcon: dragIcon != nil) }
+
+    /// How much of the title the chip shows when it ends in an ellipsis, from where the title
+    /// starts to where the ellipsis does; nil when it's shown whole.
+    var truncatedTitleWidth: CGFloat? {
+        let font = DS.Text.body(isActive ? .medium : .regular)
+        let full = Self.label(title: title, detail: detail, attributes: [.font: font]).size().width
+        let shown = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
+        let ellipsis = NSAttributedString(string: "\u{2026}", attributes: [.font: font]).size().width
+        return full > shown ? max(0, shown - ellipsis) : nil
+    }
     static func textX(hasIcon: Bool) -> CGFloat { hasIcon ? flare + 10 + iconSize + 6 : flare + textInset }
     var dragPreview: (() -> NSImage?)?
     /// Holds the slot closed while the tab is torn out of the strip.
@@ -893,6 +966,14 @@ final class TabChipView: NSView, PointerHoverSyncing {
 
     /// The title, then the detail in a quieter color.
     static func label(title: String, detail: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        var attributes = attributes
+        // Cut short, a title kept its letters' spacing: tightened to fit more before the
+        // ellipsis (the system's way), it no longer lined up with the whole name that takes
+        // over from it when the strip goes, and showed doubled (2026-11-05).
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.allowsDefaultTighteningForTruncation = false
+        attributes[.paragraphStyle] = paragraph
         let label = NSMutableAttributedString(string: title, attributes: attributes)
         guard !detail.isEmpty else { return label }
         var quiet = attributes
@@ -916,6 +997,9 @@ final class TabChipView: NSView, PointerHoverSyncing {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if isActive { revealWhenLaidOut() }
+        // A stage taken out of the window and put back lost the shimmer's animation; it stayed
+        // still until another tab was chosen (the owner, 2026-11-05).
+        if isWorking, window != nil { updateWorkingIndicator() }
     }
 
     override func setFrameOrigin(_ newOrigin: NSPoint) {
@@ -1866,4 +1950,43 @@ enum TabShortcutHints {
     }
 
     static func setShowingForTesting(_ on: Bool) { set(on) }
+}
+
+/// The single tab's name and icon, laid over where the strip's first tab sits: while they're
+/// faded out, clicks go through to the tab under them (the owner, 2026-11-05: clicking a tab's
+/// title did nothing; its icon, beside the name, worked).
+private final class SoloLabel: NSView {
+    var attributedStringValue = NSAttributedString() {
+        didSet { invalidateIntrinsicContentSize(); needsDisplay = true; setAccessibilityValue(stringValue) }
+    }
+    var stringValue: String { attributedStringValue.string }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { alphaValue > 0 ? super.hitTest(point) : nil }
+
+    override var intrinsicContentSize: NSSize {
+        let size = attributedStringValue.size()
+        return NSSize(width: ceil(size.width) + 1, height: ceil(size.height))
+    }
+
+    /// Drawn as `TabChipView` draws its title, cut at the end as it is: a text field's cell set
+    /// the glyphs a little tighter, and over the tab it takes over from, the two titles showed
+    /// doubled (2026-11-05).
+    override func draw(_ dirtyRect: NSRect) {
+        let text = attributedStringValue
+        let size = text.size()
+        let rect = NSRect(x: 0, y: (bounds.height - size.height) / 2, width: min(size.width, bounds.width) + 1, height: size.height)
+        text.draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    }
+}
+
+private final class SoloIcon: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { alphaValue > 0 ? super.hitTest(point) : nil }
 }

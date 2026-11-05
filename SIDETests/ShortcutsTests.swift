@@ -134,4 +134,25 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertTrue(ShortcutsViewController.matches(instruct, "\u{2318}K"))
         XCTAssertFalse(ShortcutsViewController.matches(instruct, "terminal"))
     }
+
+    /// Settings → Shortcuts as a table (2026-11-05): areas head their commands, the filters
+    /// narrow them, and keys only a view's own list uses aren't counted as conflicts.
+    @MainActor
+    func testTheShortcutsTableFiltersByKeysChangesAndConflicts() {
+        let all = ShortcutsViewController.rows(query: "", keys: nil, area: nil, changedOnly: false, conflictsOnly: false)
+        XCTAssertEqual(all.filter { if case .command = $0 { return true } else { return false } }.count, Shortcuts.all.count)
+        if case .area = all.first {} else { XCTFail("an area heads the table") }
+        let byKeys = ShortcutsViewController.rows(query: "", keys: KeyChord("k"), area: nil, changedOnly: false, conflictsOnly: false)
+        let titles = byKeys.compactMap { row -> String? in if case .command(let command) = row { return command.title } else { return nil } }
+        XCTAssertTrue(titles.allSatisfy { title in Shortcuts.all.contains { $0.title == title && Shortcuts.chord($0.id) == KeyChord("k") } })
+        XCTAssertFalse(titles.isEmpty)
+        XCTAssertTrue(ShortcutsViewController.conflicting().allSatisfy { id in Shortcuts.command(id)?.isFixed == false })
+        let editorOnly = ShortcutsViewController.rows(query: "", keys: nil, area: .editor, changedOnly: false, conflictsOnly: false)
+        XCTAssertTrue(editorOnly.allSatisfy { row in
+            switch row {
+            case .area(let area, _): return area == .editor
+            case .command(let command): return command.area == .editor
+            }
+        })
+    }
 }

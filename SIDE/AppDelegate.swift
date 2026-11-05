@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("open ") { shell.revealFile(URL(fileURLWithPath: String(command.dropFirst(5)))) }
                     if command == "close-all" { shell.closeAllMakeTabsForTesting() }
                     if command == "run-close-tab" { shell.closeActiveRunTabForTesting() }
+                    if command.hasPrefix("tab-click-title "), let index = Int(command.dropFirst(16)) { shell.clickTabTitleForTesting(index) }
                     // "tab-x 2": a click on the third tab's X, in Editor or Terminal, whichever shows.
                     if command.hasPrefix("tab-x "), let index = Int(command.dropFirst(6)) { shell.clickTabCloseForTesting(index) }
                     if command == "tabs-dump" {
@@ -229,6 +230,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("run-select "), let index = Int(command.dropFirst(11)) { shell.runSelectForTesting(index) }
                     // Any menu action, down the responder chain: "action foldAll:".
                     if command.hasPrefix("action ") { NSApp.sendAction(NSSelectorFromString(String(command.dropFirst(7))), to: nil, from: nil) }
+                    // Settings → Shortcuts: "shortcuts-search <text>", "shortcuts-keys cmd k" (or "none"),
+                    // "shortcuts-filter changed|conflicts|none".
+                    if command.hasPrefix("shortcuts-"),
+                       let shortcuts = ((NSApp.delegate as? AppDelegate)?.preferencesWindow?.contentViewController as? SettingsSplitViewController)?.currentPaneForTesting as? ShortcutsViewController {
+                        if command.hasPrefix("shortcuts-search ") { shortcuts.searchForTesting(String(command.dropFirst(17))) }
+                        if command.hasPrefix("shortcuts-keys ") {
+                            let parts = command.dropFirst(15).split(separator: " ").map(String.init)
+                            var mods: NSEvent.ModifierFlags = []
+                            for part in parts.dropLast() {
+                                if part == "cmd" { mods.insert(.command) }
+                                if part == "opt" { mods.insert(.option) }
+                                if part == "ctrl" { mods.insert(.control) }
+                                if part == "shift" { mods.insert(.shift) }
+                            }
+                            shortcuts.keysForTesting(parts.last == "none" ? nil : parts.last.map { KeyChord($0, mods) })
+                        }
+                        if command.hasPrefix("shortcuts-toggle "), let area = Shortcuts.Area.allCases.first(where: { $0.rawValue == String(command.dropFirst(17)) }) {
+                            shortcuts.toggleForTesting(area)
+                        }
+                        if command == "shortcuts-foldall" { shortcuts.foldAllForTesting() }
+                        if command.hasPrefix("shortcuts-filter ") {
+                            let which = command.dropFirst(17)
+                            shortcuts.filterForTesting(changed: which == "changed", conflicts: which == "conflicts")
+                        }
+                    }
+                    if command.hasPrefix("settings-size ") {
+                        let parts = command.split(separator: " ").compactMap { Double($0) }
+                        if parts.count == 2 { (NSApp.delegate as? AppDelegate)?.preferencesWindow?.setContentSize(NSSize(width: parts[0], height: parts[1])) }
+                    }
                     if command.hasPrefix("settings "), let pane = SettingsSplitViewController.Pane(rawValue: String(command.dropFirst(9))) {
                         (NSApp.delegate as? AppDelegate)?.showPreferences()
                         ((NSApp.delegate as? AppDelegate)?.preferencesWindow?.contentViewController as? SettingsSplitViewController)?.select(pane)
@@ -511,7 +541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func showPreferences() {
         if preferencesWindow == nil {
             // System Settings' shape: full-height floating sidebar, no visible title bar.
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 640),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.title = "Preferences"
             window.titleVisibility = .hidden
@@ -520,8 +550,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.toolbarStyle = .unified
             window.isReleasedWhenClosed = false
             window.contentViewController = SettingsSplitViewController()
-            window.setContentSize(NSSize(width: 820, height: 640))
-            window.minSize = NSSize(width: 820, height: 420)
+            window.setContentSize(NSSize(width: 980, height: 680))
+            window.minSize = NSSize(width: 900, height: 420)
             window.backgroundColor = DS.Color.canvas
             window.setFrameAutosaveName("SidePreferences")
             preferencesWindow = window

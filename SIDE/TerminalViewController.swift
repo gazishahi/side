@@ -345,7 +345,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     var onNewsChanged: (() -> Void)?
 
     /// On screen in Side's front window.
-    var isOnScreen: Bool { NSApp.isActive && view.window?.isKeyWindow == true && !view.isHiddenOrHasHiddenAncestor }
+    var isOnScreen: Bool {
+        NSApp.isActive && view.window != nil && view.window === ShellViewController.frontmost?.view.window && !view.isHiddenOrHasHiddenAncestor
+    }
     private var didStart = false
     var workingDirectory: String?
     /// The session keeper this terminal's shell lives in (SIDE_RFC_SESSION_RESTORE.md), set
@@ -683,6 +685,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         }
         didTidyAfterSetup = true
         reattachedTitlePending = true
+        replayEndsAt = Date().addingTimeInterval(Self.replayDuration)
         wire(link)
         // At its real size when it has one (`ensureStarted` lays it out first); else unsized,
         // and the keeper keeps its own until this one has one (`KeeperLink.attach`).
@@ -694,6 +697,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private var terminal: Terminal { terminalView.terminal }
     /// The first title after a reattach names what was already running before it.
     private var reattachedTitlePending = false
+    /// Until then, a reattached tab is catching up on its screen: a spinner that stops in what
+    /// it replays is a turn that ended before Side came back, not one to report.
+    private var replayEndsAt: Date?
+    private static let replayDuration: TimeInterval = 2
 
     private func wire(_ link: KeeperLink) {
         terminalView.keeper = link
@@ -1478,7 +1485,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private func setProgramWorking(_ working: Bool) {
         guard working != isProgramWorking else { return }
         // A turn that ended out of sight: the activity pill says it finished until you look.
-        if !working, !isOnScreen { turnFinishedAt = Date() }
+        if !working, !isOnScreen, replayEndsAt.map({ Date() >= $0 }) ?? true { turnFinishedAt = Date() }
         if working { turnFinishedAt = nil }
         isProgramWorking = working
         onWorkingChanged?()

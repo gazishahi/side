@@ -16,6 +16,8 @@ final class ProjectSpaces {
         var colorIndex: Int
         /// When a window last opened it: a project that isn't open says how long ago.
         var lastOpenedAt: Date? = nil
+        /// A picture chosen for it, over the logo found in the repository.
+        var logoPath: String? = nil
 
         var url: URL { URL(fileURLWithPath: path) }
         var name: String { url.lastPathComponent }
@@ -115,6 +117,13 @@ final class ProjectSpaces {
         let path = Self.normalized(url)
         if held.remove(path) != nil { ProjectContextRegistry.shared.release(projectRoot: url) }
         spaces.removeAll { $0.path == path }
+        save()
+    }
+
+    /// `nil`: back to the logo found in the repository.
+    func set(logo: URL?, for url: URL) {
+        guard let index = index(of: url) else { return }
+        spaces[index].logoPath = logo?.standardizedFileURL.path
         save()
     }
 

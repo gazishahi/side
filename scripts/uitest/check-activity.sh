@@ -48,6 +48,15 @@ check "seeing one leaves the other, uncounted" '[[ $pill == "Claude Code finishe
 $U post "stage make"; sleep 1
 $U post "activity-open"; sleep 1.5
 check "with one, a click goes there" '[[ $(field stage) == run && $(field popover) == false ]]' "$(field stage) $(field popover)"
+# A Claude Code working in the tab on screen stays out of the pill while Settings is in front
+# of its window (2026-11-05: the pill came and went with the key window).
+$U post "stage run" "run-select 0"; sleep 0.5
+$U type "go
+"
+sleep 0.5
+check "working on screen, nothing to say" '[[ $(field pill) == "-" ]]' "$(field pill)"
+$U post "settings general"; sleep 1.5
+check "still nothing with Settings key" '[[ $(field pill) == "-" ]]' "$(field pill)"
 $U quit
 echo "$failures failed; captures in $OUT"
 exit $(( failures > 0 ))

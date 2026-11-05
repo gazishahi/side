@@ -159,7 +159,7 @@ final class AgentsPreferencesViewController: NSViewController {
     }
 
     private static func wrapping(_ text: String, width: CGFloat) -> NSTextField {
-        let label = NSTextField(wrappingLabelWithString: text)
+        let label = WrappingLabel(wrappingLabelWithString: text)
         label.font = DS.Text.caption()
         label.textColor = .secondaryLabelColor
         label.preferredMaxLayoutWidth = width

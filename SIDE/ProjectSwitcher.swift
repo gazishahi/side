@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// A project's own logo, when its repository has one: what the project chip and the switcher
 /// show before the space's symbol (the owner, 2026-11-04: "it would be neat if the repo's logo is
@@ -42,8 +43,68 @@ enum ProjectLogo {
             return image
         }
         // An app's icon: an Icon Composer bundle (as Side's own repository keeps it), else the
-        // largest picture in an asset catalog's AppIcon set.
-        return iconComposerBundle(in: root) ?? appIconSet(in: root)
+        // largest picture in an asset catalog's AppIcon set, a built `.icns` (Sill's
+        // Resources/AppIcon.icns), or the one an Expo app names in its app.json. Then a
+        // monorepo's packages, each looked at as a project of its own (Khidma's
+        // packages/mobile, packages/frontend/public): neither was found before (2026-11-05).
+        return iconComposerBundle(in: root) ?? appIconSet(in: root) ?? icns(in: root) ?? expoIcon(in: root)
+            ?? workspacePackages(in: root).lazy.compactMap { package in
+                candidates.lazy.compactMap { image(at: package.appendingPathComponent($0)) }.first ?? expoIcon(in: package)
+            }.first
+    }
+
+    private static func image(at url: URL) -> NSImage? {
+        guard FileManager.default.fileExists(atPath: url.path), let image = NSImage(contentsOf: url), image.isValid, image.size.width > 0 else { return nil }
+        return image
+    }
+
+    /// A `.icns` at the root, in Resources/, or in a folder's Resources/ one down.
+    private static func icns(in root: URL) -> NSImage? {
+        let fm = FileManager.default
+        let children = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        let folders = [root, root.appendingPathComponent("Resources")]
+            + children.filter { $0.hasDirectoryPath && !skippedFolders.contains($0.lastPathComponent) }.prefix(40).map { $0.appendingPathComponent("Resources") }
+        for folder in folders {
+            let files = ((try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension.lowercased() == "icns" }
+            // AppIcon.icns before any other a bundle carries (a document's icon).
+            for file in files.sorted(by: { ($0.lastPathComponent.lowercased().hasPrefix("appicon") ? 0 : 1) < ($1.lastPathComponent.lowercased().hasPrefix("appicon") ? 0 : 1) }) {
+                if let image = image(at: file) { return image }
+            }
+        }
+        return nil
+    }
+
+    /// The icon an Expo app names in its app.json (`expo.icon`, relative to it).
+    private static func expoIcon(in folder: URL) -> NSImage? {
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent("app.json")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let path = ((json["expo"] as? [String: Any]) ?? json)["icon"] as? String else { return nil }
+        return image(at: folder.appendingPathComponent(path))
+    }
+
+    /// A monorepo's packages: packages/*, apps/*.
+    private static func workspacePackages(in root: URL) -> [URL] {
+        ["packages", "apps"].flatMap { name -> [URL] in
+            let folder = root.appendingPathComponent(name)
+            let children = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+            return children.filter(\.hasDirectoryPath).sorted { $0.lastPathComponent < $1.lastPathComponent }.prefix(40).map { $0 }
+        }
+    }
+
+    private static let skippedFolders: Set<String> = ["node_modules", ".git", "build", "DerivedData", "Pods", ".build", "dist"]
+
+    /// A picture the owner chose for the project (the switcher's ⋯ → Choose Icon…), drawn as a
+    /// found logo is.
+    static func chosen(_ file: URL, size: CGFloat = 18) -> NSImage? {
+        let path = file.standardizedFileURL.path
+        let found: NSImage?
+        if let cached = cache[path] {
+            found = cached
+        } else {
+            found = image(at: file)
+            cache[path] = found
+        }
+        return found.map { rounded($0, size: size) }
     }
 
     /// An Icon Composer `.icon` bundle at the root or one folder down, drawn as its icon: the
@@ -153,7 +214,8 @@ enum ProjectLogo {
 extension ProjectSpaces {
     /// A project's mark: its logo, else its space's symbol in its color.
     static func mark(for space: Space, size: CGFloat = 18) -> NSImage? {
-        ProjectLogo.image(for: space.url, size: size) ?? image(for: space, pointSize: size * 0.72)
+        space.logoPath.flatMap { ProjectLogo.chosen(URL(fileURLWithPath: $0), size: size) }
+            ?? ProjectLogo.image(for: space.url, size: size) ?? image(for: space, pointSize: size * 0.72)
     }
 }
 
@@ -709,6 +771,10 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
         let symbolItem = NSMenuItem(title: "Symbol (without a logo)", action: nil, keyEquivalent: "")
         symbolItem.submenu = symbols
         menu.addItem(symbolItem)
+        item("Choose Icon\u{2026}") { [weak self] in self?.chooseIcon(for: url) }
+        if entry.space.logoPath != nil {
+            item("Use the Project\u{2019}s Own Icon") { ProjectSpaces.shared.set(logo: nil, for: url) }
+        }
         switch entry.openness {
         case .held:
             menu.addItem(.separator())
@@ -720,6 +786,23 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
             break
         }
         return menu
+    }
+
+    /// A picture of the owner's for the project's mark, when the one found isn't right or there's
+    /// none to find.
+    private func chooseIcon(for project: URL) {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a picture for \u{201C}\(project.lastPathComponent)\u{201D}"
+        panel.prompt = "Use Icon"
+        panel.allowedContentTypes = [.image]
+        panel.directoryURL = project
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        onClose?()
+        panel.begin { response in
+            guard response == .OK, let file = panel.url else { return }
+            MainActor.assumeIsolated { ProjectSpaces.shared.set(logo: file, for: project) }
+        }
     }
 
     private static let colorNames = ["Graphite", "Blue", "Purple", "Pink", "Red", "Orange", "Yellow", "Green", "Teal"]

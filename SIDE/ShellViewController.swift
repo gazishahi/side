@@ -288,6 +288,12 @@ final class AttentionCenter {
 }
 
 final class ShellViewController: NSViewController {
+    /// The project window nearest the front, whatever is key over it (Settings, a panel): what
+    /// it shows is what's in sight.
+    static var frontmost: ShellViewController? {
+        NSApp.orderedWindows.lazy.filter(\.isVisible).compactMap { $0.contentViewController as? ShellViewController }.first
+    }
+
     // Think sits next to Make — those are the two stages a user bounces between most while
     // an agent works, so they get adjacent segments. Review sits right after Think (where its
     // checkpoints come from) and before Run (where its tests run) — the same order the
@@ -1059,6 +1065,19 @@ final class ShellViewController: NSViewController {
         return "strip=\(strip.joined(separator: "|")) model=\(model.joined(separator: "|")) active=\(active)"
     }
     func closeActiveRunTabForTesting() { runVC.closeActiveTabForTesting() }
+    /// UI testing: a click on a tab's title, as the window delivers it (hit-tested, not sent to
+    /// the chip), so whatever lies over the title takes it as it would a person's.
+    func clickTabTitleForTesting(_ index: Int) {
+        let chips = (current == .run ? runVC.tabStripForTesting : makeVC.tabStripForTesting).chips
+        guard chips.indices.contains(index), let window = view.window else { return }
+        let chip = chips[index]
+        let point = chip.convert(NSPoint(x: chip.bounds.width * 0.55, y: chip.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { continue }
+            window.sendEvent(event)
+        }
+    }
     func stageBadgeForTesting(_ index: Int, state: DS.StatusState?) { stageControl.setBadge(state, spokenState: nil, at: index) }
 
     /// UI testing: a stage brought forward by name ("make", "think", "review", "run").

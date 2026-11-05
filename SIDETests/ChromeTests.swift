@@ -172,6 +172,38 @@ final class ChromeTests: XCTestCase {
         XCTAssertNil(ProjectLogo.find(in: plain))
     }
 
+    /// Where Sill and Khidma keep theirs (2026-11-05): a built `.icns` in Resources/, an Expo
+    /// app's icon named in its app.json, and a web package's inside a monorepo.
+    func testProjectLogosAreFoundInIcnsExpoAndMonorepoPackages() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("logos-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let png = try XCTUnwrap(NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in NSColor.red.setFill(); rect.fill(); return true }
+            .tiffRepresentation.flatMap(NSBitmapImageRep.init(data:))?.representation(using: .png, properties: [:]))
+        func write(_ path: String, _ data: Data) throws {
+            let url = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url)
+        }
+        try write("expo/assets/icon.png", png)
+        try write("expo/app.json", Data(#"{"expo":{"name":"x","icon":"./assets/icon.png"}}"#.utf8))
+        XCTAssertNotNil(ProjectLogo.find(in: root.appendingPathComponent("expo")))
+        try write("mono/packages/frontend/public/apple-touch-icon.png", png)
+        try write("mono/package.json", Data("{}".utf8))
+        XCTAssertNotNil(ProjectLogo.find(in: root.appendingPathComponent("mono")))
+        try write("mac/Sources/main.swift", Data())
+        let iconset = root.appendingPathComponent("mac/Resources")
+        try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
+        let built = Process()
+        built.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        try write("mac/source.png", png)
+        built.arguments = ["-s", "format", "icns", root.appendingPathComponent("mac/source.png").path, "--out", iconset.appendingPathComponent("AppIcon.icns").path]
+        built.standardOutput = FileHandle.nullDevice
+        try built.run()
+        built.waitUntilExit()
+        try FileManager.default.removeItem(at: root.appendingPathComponent("mac/source.png"))
+        XCTAssertNotNil(ProjectLogo.find(in: root.appendingPathComponent("mac")))
+    }
+
     /// Project switching (prototype, 2026-11-04): every project gets a symbol no other has, the
     /// order wraps for swipes, a choice of color or symbol sticks, and closing takes it out.
     func testProjectSpacesKeepTheirOrderSymbolsAndColors() {

@@ -1580,12 +1580,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     @objc func openProjectFromMenuAction() { openProject() }
+    /// Where a project's sheets go: the Editor's window, or the window it belongs to while
+    /// another stage is shown and it's out of it. Asked from the switcher in Terminal, Open
+    /// Project did nothing (the owner, 2026-11-05).
+    private var sheetWindow: NSWindow? { view.window ?? NSApp.mainWindow }
     /// Set by the shell: moves the window to another project, keeping this one open.
     var onSwitchProject: ((URL) -> Void)?
 
     @objc private func openProject() {
         confirmAllUnsavedChanges { [weak self] proceed in
-            guard let self, proceed, let window = self.view.window else { return }
+            guard let self, proceed, let window = self.sheetWindow else { return }
             let panel = NSOpenPanel()
             panel.message = "Choose a project to open in Side"
             panel.prompt = "Open project"
@@ -1613,7 +1617,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     @objc private func newProject() {
         confirmAllUnsavedChanges { [weak self] proceed in
-            guard let self, proceed, let window = self.view.window else { return }
+            guard let self, proceed, let window = self.sheetWindow else { return }
             let panel = NSSavePanel()
             panel.message = "Name your new project"
             panel.prompt = "Create"

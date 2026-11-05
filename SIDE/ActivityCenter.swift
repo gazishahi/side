@@ -92,8 +92,10 @@ final class ActivityCenter {
 
     func refresh() {
         var next: [Item] = []
-        // The window in front, if Side is: what it shows is in sight.
-        let front = NSApp.isActive ? (NSApp.keyWindow?.contentViewController as? ShellViewController) : nil
+        // The project window in front, if Side is: what it shows is in sight. Not the key window:
+        // with Settings, the switcher or a popover key, the tab you were looking at counted as
+        // out of sight, and the pill came and went with them (the owner, 2026-11-05).
+        let front = NSApp.isActive ? ShellViewController.frontmost : nil
         for context in ProjectContextRegistry.openContexts() {
             let project = context.projectRoot
             let projectName = project.lastPathComponent
@@ -106,7 +108,7 @@ final class ActivityCenter {
                 guard front?.isShowingTerminalSession(session.id) != true else { continue }
                 // What's running is asked only of a terminal with something to report: it can read
                 // the keeper's record from disk, and this runs every second.
-                guard vc.isProgramWorking || session.hasUnseenOutput || vc.lastBellAt != nil || vc.turnFinishedAt != nil else { continue }
+                guard vc.isProgramWorking || vc.lastBellAt != nil || vc.turnFinishedAt != nil else { continue }
                 let program = vc.runningProgramName
                 let name = Self.programName(program)
                 let place = "\(projectName) \u{00B7} \(tabTitle)"
@@ -115,7 +117,10 @@ final class ActivityCenter {
                 // It rang the bell and nobody has looked since: it wants you.
                 case .needsYou: state = .needsYou
                 case .finished: state = .finished
-                case nil: state = vc.isProgramWorking ? .working : session.hasUnseenOutput && ProgramMarks.hasMark(program) ? .finished : nil
+                // Output alone isn't a finished turn: an idle Claude Code redraws (a resize, a
+                // reattach, its own updates), and that read as "finished" with nothing done (the
+                // owner, 2026-11-05). Only a turn seen ending (`turnFinishedAt`) is.
+                case nil: state = vc.isProgramWorking ? .working : nil
                 }
                 if let state {
                     next.append(Item(id: "term-\(session.id)", state: state, title: name, place: place, program: program, target: .terminal(project: project, session: session.id)))
