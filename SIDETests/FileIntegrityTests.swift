@@ -1069,7 +1069,8 @@ final class SpawnEnvironmentTests: XCTestCase {
 final class ThirdPartyNoticesTests: XCTestCase {
     func testTheNoticesShipInTheApp() throws {
         let notices = try XCTUnwrap(AppDelegate.thirdPartyNotices, "ThirdPartyNotices.txt is in the app's resources")
-        for component in ["Sparkle", "SwiftTerm", "SwiftTreeSitter", "tree-sitter-swift", "tree-sitter-yaml"] {
+        for component in ["Sparkle", "SwiftTerm", "SwiftTreeSitter", "tree-sitter-swift", "tree-sitter-yaml",
+                          "Ghostty (libghostty-vt)", "simdutf", "Highway", "Wuffs", "uucode"] {
             XCTAssertTrue(notices.contains(component), component)
         }
         XCTAssertTrue(notices.contains("Permission is hereby granted, free of charge"), "the license texts, not just names")

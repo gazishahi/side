@@ -1,6 +1,6 @@
 # Terminal on libghostty-vt, drawn by Alloy
 
-Status: proposed (2026-11-04). Decisions pending, listed at the end. Nothing built yet. Phase 0
+Status: decisions pending (proposed 2026-11-04; the decisions are listed at the end). Nothing built yet. Phase 0
 is a validation gate: if it fails, this RFC changes before any of Phase 1 is written.
 
 ## Why

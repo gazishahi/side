@@ -89,6 +89,19 @@ def components():
                     open(os.path.join(math, "LICENSE"), encoding="utf-8").read().strip()))
     entries.append(("Latin Modern Math (font)", "1.959", "https://www.gust.org.pl/projects/e-foundry/lm-math", "GUST Font License",
                     open(os.path.join(math, "Sources/SwiftMath/mathFonts.bundle/GUST-FONT-LICENSE.txt"), encoding="utf-8", errors="replace").read().strip()))
+    # Linked statically into the session keeper: libghostty-vt, at the commit build-ghostty-vt.sh
+    # pins, with what it bundles at that commit (checked with nm: simdutf, Highway, Wuffs, and
+    # uucode's Unicode tables). A new Ghostty commit means checking these again.
+    commit = re.search(r"GHOSTTY_COMMIT:-([0-9a-f]+)", open(os.path.join(ROOT, "scripts/build-ghostty-vt.sh")).read()).group(1)
+    licenses = os.path.join(ROOT, "Packages/SideSessions/Licenses")
+    def read(*path):
+        return open(os.path.join(licenses, *path), encoding="utf-8").read().strip()
+    entries.append(("Ghostty (libghostty-vt)", commit[:7], "https://github.com/ghostty-org/ghostty", "MIT", read("ghostty", "LICENSE")))
+    entries.append(("simdutf", "9.0.0", "https://github.com/simdutf/simdutf", "MIT (dual MIT or Apache-2.0)", read("simdutf", "LICENSE")))
+    entries.append(("Highway", "66486a1", "https://github.com/google/highway", "BSD-3-Clause (dual Apache-2.0 or BSD-3-Clause)", read("highway", "LICENSE")))
+    entries.append(("Wuffs", "7411f48", "https://github.com/google/wuffs", "MIT (dual MIT or Apache-2.0)", read("wuffs", "LICENSE")))
+    entries.append(("uucode", "ea62149", "https://github.com/jacobsandlund/uucode", "MIT, with the Unicode License V3 for its data",
+                    "\n\n".join(read("uucode", name) for name in ("LICENSE.md", "LICENSE_Bjoern_Hoehrmann", "LICENSE_unicode"))))
     return entries
 
 
