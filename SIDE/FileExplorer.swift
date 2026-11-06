@@ -74,7 +74,7 @@ final class FileExplorer: NSObject, NSOutlineViewDataSource, NSOutlineViewDelega
         surface.frame = host.bounds
         surface.autoresizingMask = [.width, .height]
         host.addSubview(surface)
-        if #unavailable(macOS 26.0) {
+        if DS.Surfaces.needsShadow {
             host.shadow = NSShadow()
             host.layer?.shadowOpacity = 0.18
             host.layer?.shadowRadius = 18

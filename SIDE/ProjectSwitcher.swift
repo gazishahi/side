@@ -481,7 +481,7 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
     private func build() {
         panelHost.wantsLayer = true
         // Glass brings its own depth on macOS 26; before it, a shadow under the popover material.
-        if #unavailable(macOS 26.0) {
+        if DS.Surfaces.needsShadow {
             panelHost.shadow = NSShadow()
             panelHost.layer?.shadowOpacity = 0.18
             panelHost.layer?.shadowRadius = 18
@@ -1105,7 +1105,7 @@ final class ProjectCycleStrip: NSView {
         self.selectedIndex = start
         super.init(frame: .zero)
         wantsLayer = true
-        if #unavailable(macOS 26.0) {
+        if DS.Surfaces.needsShadow {
             shadow = NSShadow()
             layer?.shadowOpacity = 0.18
             layer?.shadowRadius = 18

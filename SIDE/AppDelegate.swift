@@ -72,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ProjectSpaces.defaults = volatile
             Shortcuts.defaults = volatile
             LanguageSettings.defaults = volatile
+            DS.Surfaces.defaults = volatile
             ReviewViewedStore.shared = ReviewViewedStore(defaults: volatile)
             DispatchQueue.main.async { [weak self] in
                 (window.contentViewController as? ShellViewController)?.presentFirstRunIfNeeded()
@@ -180,6 +181,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         FileHandle.standardError.write(Data("[loose] \(loose.looseChromeForTesting) preview=\(loose.markdownPreviewShownForTesting)\(inProjects ? " loose-in-projects" : "")\n".utf8))
                     }
                     if command == "loose-open-folder" { self.shellViewControllers.first { $0.isLooseFileWindow }?.openLooseFolderAsProject() }
+                    if command == "dock-dump", let menu = self.applicationDockMenu(NSApp) {
+                        func titles(_ menu: NSMenu) -> [String] { menu.items.map { $0.isSeparatorItem ? "—" : ($0.attributedTitle?.string ?? $0.title) + ($0.submenu.map { "[" + titles($0).joined(separator: ", ") + "]" } ?? "") } }
+                        FileHandle.standardError.write(Data("[dock] \(titles(menu).joined(separator: " | "))\n".utf8))
+                    }
                     if command == "windows-dump" {
                         let lines = self.shellViewControllers.map { other in
                             "\(other.projectRootURL?.lastPathComponent ?? "-")\(other.isLooseFileWindow ? "(loose)" : "")\(other.view.window?.isKeyWindow == true ? "*" : "") \(other.tabsDumpForTesting)"
@@ -493,6 +498,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let files = urls.filter(\.isFileURL)
         if !files.isEmpty { openFiles(files, attempts: 50) }
+    }
+
+    /// Quits and opens Side again (a setting that applies at launch): a shell waits for this
+    /// process to end, up to a minute, then opens the app. Quitting asks about unsaved work as
+    /// it always does; terminals carry on in their keepers and come back.
+    func relaunch() {
+        let waiter = Process()
+        waiter.executableURL = URL(fileURLWithPath: "/bin/sh")
+        waiter.arguments = ["-c", "for _ in $(seq 1 300); do kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null || exec open \"$0\"; sleep 0.2; done", Bundle.main.bundlePath]
+        try? waiter.run()
+        NSApp.terminate(nil)
+    }
+
+    // MARK: - The Dock icon's menu (2026-11-06)
+
+    /// Right-clicking Side in the Dock: the projects open now, each with what it's doing, then
+    /// the recent ones, then New Window and Open Project…. macOS adds the windows and its own
+    /// items around these.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let current = (NSApp.keyWindow?.contentViewController as? ShellViewController)?.projectRootURL
+        let entries = ProjectSwitcherModel.entries(current: current)
+        let open = entries.filter(\.isOpen)
+        for entry in open { menu.addItem(Self.dockItem(for: entry, target: self)) }
+        let recent = entries.filter { !$0.isOpen }.prefix(8)
+        if !recent.isEmpty {
+            let item = NSMenuItem(title: "Recent Projects", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            for entry in recent { submenu.addItem(Self.dockItem(for: entry, target: self)) }
+            item.submenu = submenu
+            if !open.isEmpty { menu.addItem(.separator()) }
+            menu.addItem(item)
+        }
+        if menu.numberOfItems > 0 { menu.addItem(.separator()) }
+        menu.addItem(withTitle: "New Window", action: #selector(newWindow), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Open Project\u{2026}", action: #selector(openProjectFromMenu), keyEquivalent: "").target = self
+        return menu
+    }
+
+    /// A project in the Dock menu: its mark, its name, and what it's doing ("Claude Code
+    /// finished") when there's something to say.
+    private static func dockItem(for entry: ProjectSwitcherEntry, target: AnyObject) -> NSMenuItem {
+        let item = NSMenuItem(title: entry.space.name, action: #selector(openProjectFromDock(_:)), keyEquivalent: "")
+        item.target = target
+        item.representedObject = entry.space.url
+        item.image = ProjectSpaces.mark(for: entry.space, size: 16)
+        if let activity = entry.activity {
+            let line = NSMutableAttributedString(string: entry.space.name, attributes: [.font: DS.Text.body()])
+            line.append(NSAttributedString(string: "  \u{25CF} \(activity.title) \(activity.state.word.lowercased())",
+                                           attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: DS.Text.body()]))
+            item.attributedTitle = line
+        }
+        return item
+    }
+
+    /// The window on that project, or the one holding it, or a new one: as the switcher goes.
+    @objc private func openProjectFromDock(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        revealProject(url) { shell in shell.view.window?.makeKeyAndOrderFront(nil) }
+        NSApp.activate()
     }
 
     /// Files and folders from Finder's Open With or the Dock icon (2026-11-06). Like a side://

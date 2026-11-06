@@ -20,6 +20,11 @@ final class AppearanceViewController: NSViewController {
     private let lightThemePopup = NSPopUpButton()
     private let darkThemePopup = NSPopUpButton()
     private let removeThemePopup = NSPopUpButton()
+    /// Liquid Glass or solid surfaces; applies on restart, hence the button beside it.
+    private let surfacesPopup = NSPopUpButton()
+    /// Beside the popup once the choice differs from what's drawn. (A row of its own, hidden,
+    /// still left its gap in the card.)
+    private lazy var restartButton = SettingsForm.button("Restart Side", self, #selector(restartForSurfaces))
 
     override func loadView() { view = NSView() }
 
@@ -85,6 +90,16 @@ final class AppearanceViewController: NSViewController {
             fontPopups[role] = popup
         }
 
+        for (mode, title) in [(DS.Surfaces.glass, "Liquid Glass"), (.solid, "Solid")] {
+            surfacesPopup.addItem(withTitle: title)
+            surfacesPopup.lastItem?.representedObject = mode.rawValue
+        }
+        surfacesPopup.selectItem(at: DS.Surfaces.chosen == .solid ? 1 : 0)
+        surfacesPopup.target = self
+        surfacesPopup.action = #selector(surfacesChanged)
+        surfacesPopup.setAccessibilityLabel("Surfaces")
+        refreshRestartButton()
+
         let samples = NSStackView(views: [sampleLabel, sampleCaption])
         sampleLabel.lineBreakMode = .byTruncatingTail
         sampleCaption.lineBreakMode = .byTruncatingTail
@@ -99,7 +114,7 @@ final class AppearanceViewController: NSViewController {
             SettingsForm.section([
                 SettingsForm.row("Appearance", themePopup),
                 SettingsForm.row("Text size", detail: "Side's own interface: stage headers, transcripts, diffs, lists, and this window.", scalePopup),
-            ]),
+            ] + surfacesRows()),
             SettingsForm.section("Code", [
                 SettingsForm.row("Editor text", editorSizePopup),
                 SettingsForm.row("Terminal text", terminalSizePopup),
@@ -235,6 +250,35 @@ final class AppearanceViewController: NSViewController {
         guard let size = terminalSizePopup.selectedItem?.representedObject as? Double else { return }
         DS.Text.CodeSize.terminal = CGFloat(size)
     }
+
+    /// Surfaces exist to choose only where there's Liquid Glass to turn off (macOS 26).
+    private func surfacesRows() -> [NSView] {
+        guard #available(macOS 26.0, *) else { return [] }
+        return [
+            SettingsForm.row("Surfaces", detail: "Solid surfaces blur nothing behind them, so scrolling takes less of the GPU. Applies on restart; your terminals carry on.", surfacesAccessory()),
+        ]
+    }
+
+    private func surfacesAccessory() -> NSView {
+        let row = NSStackView(views: [restartButton, surfacesPopup])
+        row.orientation = .horizontal
+        row.spacing = DS.Spacing.s
+        row.detachesHiddenViews = true
+        for view in [row, restartButton, surfacesPopup] as [NSView] { view.setContentHuggingPriority(.required, for: .horizontal) }
+        return row
+    }
+
+    @objc private func surfacesChanged() {
+        guard let raw = surfacesPopup.selectedItem?.representedObject as? String, let mode = DS.Surfaces(rawValue: raw) else { return }
+        DS.Surfaces.chosen = mode
+        refreshRestartButton()
+    }
+
+    private func refreshRestartButton() {
+        restartButton.isHidden = DS.Surfaces.chosen == DS.Surfaces.current
+    }
+
+    @objc private func restartForSurfaces() { AppDelegate.shared?.relaunch() }
 
     @objc private func scaleChanged() {
         guard let raw = scalePopup.selectedItem?.representedObject as? Double,

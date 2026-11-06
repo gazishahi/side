@@ -391,13 +391,94 @@ enum DS {
     /// Re-rounds a view made by `makeGlass` — for glass whose height changes with its context.
     static func setGlassCornerRadius(_ view: NSView, _ radius: CGFloat) {
         if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView { glass.cornerRadius = radius; return }
+        if let solid = view as? SolidSurface { solid.cornerRadius = radius; return }
         view.layer?.cornerRadius = radius
+    }
+
+    /// How Side's floating chrome is drawn (Settings › Appearance, 2026-11-06): Liquid Glass,
+    /// the blurred material from before it, or solid surfaces, which blur nothing. Glass is made
+    /// as views are, so the choice is read once, at launch: a change applies on restart.
+    enum Surfaces: String, CaseIterable {
+        case glass, vibrancy, solid
+
+        static let key = "appearance.surfaces"
+        nonisolated(unsafe) static var defaults: UserDefaults = .standard
+        static let didChangeNotification = Notification.Name("SideSurfacesDidChange")
+
+        /// What this launch draws. `SIDE_SURFACES` overrides it, for measuring one against another.
+        static let current: Surfaces = {
+            if let forced = ProcessInfo.processInfo.environment["SIDE_SURFACES"].flatMap(Surfaces.init(rawValue:)) { return forced }
+            // A test launch draws the default, not the person's own choice.
+            if AppDelegate.isUITesting { return .glass }
+            return chosen
+        }()
+
+        /// What Settings has chosen, for the next launch.
+        static var chosen: Surfaces {
+            get { defaults.string(forKey: key).flatMap(Surfaces.init(rawValue:)) ?? .glass }
+            set {
+                defaults.set(newValue.rawValue, forKey: key)
+                NotificationCenter.default.post(name: didChangeNotification, object: nil)
+            }
+        }
+
+        /// Liquid Glass is drawn: chosen, and the system has it.
+        static var usesGlass: Bool {
+            if #available(macOS 26.0, *) { return current == .glass }
+            return false
+        }
+
+        /// Floating pieces carry their own shadow: glass draws its own edge and depth.
+        static var needsShadow: Bool { !usesGlass }
+    }
+
+    /// A solid surface: the raised color and a hairline edge, drawn in whatever appearance it's
+    /// drawn in. Nothing behind it is read, so nothing is blurred.
+    final class SolidSurface: NSView {
+        var cornerRadius: CGFloat { didSet { needsDisplay = true } }
+        let contentView = NSView()
+
+        init(cornerRadius: CGFloat) {
+            self.cornerRadius = cornerRadius
+            super.init(frame: .zero)
+            wantsLayer = true
+            contentView.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(contentView)
+            NSLayoutConstraint.activate([
+                contentView.topAnchor.constraint(equalTo: topAnchor), contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
+                contentView.trailingAnchor.constraint(equalTo: trailingAnchor), contentView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ])
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+        override var isOpaque: Bool { false }
+
+        override func draw(_ dirtyRect: NSRect) {
+            let radius = min(cornerRadius, bounds.height / 2, bounds.width / 2)
+            let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)
+            Color.raised.setFill()
+            path.fill()
+            NSColor.separatorColor.setStroke()
+            path.lineWidth = 1
+            path.stroke()
+        }
     }
 
     /// A floating panel's surface around `content`: Liquid Glass on macOS 26, the popover
     /// material before it. The palette's, and every panel that grows out of the stage bar.
     static func makeFloatingSurface(embedding content: NSView, cornerRadius: CGFloat = Radius.palette) -> NSView {
-        if #available(macOS 26.0, *) {
+        if Surfaces.current == .solid {
+            let solid = SolidSurface(cornerRadius: cornerRadius)
+            content.translatesAutoresizingMaskIntoConstraints = false
+            solid.contentView.addSubview(content)
+            NSLayoutConstraint.activate([
+                content.topAnchor.constraint(equalTo: solid.topAnchor), content.leadingAnchor.constraint(equalTo: solid.leadingAnchor),
+                content.trailingAnchor.constraint(equalTo: solid.trailingAnchor), content.bottomAnchor.constraint(equalTo: solid.bottomAnchor),
+            ])
+            return solid
+        }
+        if #available(macOS 26.0, *), Surfaces.usesGlass {
             let glass = NSGlassEffectView()
             glass.contentView = content
             glass.cornerRadius = cornerRadius
@@ -479,7 +560,12 @@ enum DS {
     }
 
     static func makeGlass(cornerRadius: CGFloat) -> NSView {
-        if #available(macOS 26.0, *) {
+        if Surfaces.current == .solid {
+            let solid = SolidSurface(cornerRadius: cornerRadius)
+            solid.translatesAutoresizingMaskIntoConstraints = false
+            return solid
+        }
+        if #available(macOS 26.0, *), Surfaces.usesGlass {
             let glass = NSGlassEffectView()
             glass.cornerRadius = cornerRadius
             // The material renders *around a contentView* — an empty glass view draws nothing,
