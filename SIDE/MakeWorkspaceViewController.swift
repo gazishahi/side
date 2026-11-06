@@ -1,9 +1,10 @@
 import AlloyCore
 import AlloyAppKit
 import AppKit
+import PDFKit
 import SideAgents
 
-private enum TabKind { case text, image, csv }
+private enum TabKind { case text, image, csv, pdf }
 
 /// A text's size and a hash of its bytes: enough to tell "back to what's saved" from an edit.
 /// Hashes the UTF-8 bytes directly (`String.hashValue` normalizes first, ~8 ms on 3 MB).
@@ -82,6 +83,8 @@ private struct OpenTab {
     var diagnostics: [LSPDiagnostic] = []
     var isPreviewingMarkdown = false
     var cachedImage: NSImage?
+    /// A PDF's document, read-only (the owner, 2026-11-06: Side had no way to view one).
+    var cachedPDF: PDFDocument?
     var headCache: HeadContentCache = .notFetched
     var isSaving = false
 }
@@ -227,6 +230,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private let imageView = FocusableImageView()
     /// CSV, TSV and Excel files (CSVParser.swift).
     private let sheetView = SheetView()
+    private let pdfView = DocumentPDFView()
+    /// Find in a PDF: its pages' text, one after another; where each page starts in `findText`.
+    private var findPDFPageStarts: [Int] = []
     private var csvScroll: NSScrollView { sheetView.scrollView }
     private let markdownPreviewScroll = NSScrollView()
     private let markdownPreviewView = MarkdownPreviewTextView.make()
@@ -578,6 +584,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         sheetView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sheetView)
 
+        pdfView.backgroundColor = Self.editorBackground
+        pdfView.isHidden = true
+        pdfView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(pdfView)
+
         markdownPreviewView.isEditable = false
         markdownPreviewView.isSelectable = true
         markdownPreviewView.drawsBackground = true
@@ -632,6 +643,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             minimap.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight), minimapTrailing!,
             imageScroll.topAnchor.constraint(equalTo: view.topAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             sheetView.topAnchor.constraint(equalTo: view.topAnchor), sheetView.leadingAnchor.constraint(equalTo: view.leadingAnchor), sheetView.trailingAnchor.constraint(equalTo: view.trailingAnchor), sheetView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            pdfView.topAnchor.constraint(equalTo: view.topAnchor), pdfView.leadingAnchor.constraint(equalTo: view.leadingAnchor), pdfView.trailingAnchor.constraint(equalTo: view.trailingAnchor), pdfView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             markdownPreviewScroll.topAnchor.constraint(equalTo: view.topAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
@@ -889,7 +901,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if let selected = selectedEditorText(), let query = InFileFind.query(fromSelection: selected) { find.query = query }
         presentPalette(.find)
         // A preview or a sheet finds but doesn't replace: neither is edited here.
-        let readOnly = findingInPreview || findingInSheet
+        let readOnly = findingInPreview || findingInSheet || findingInPDF
         let replace = replace && !readOnly
         findReplaceToggle.isHidden = readOnly
         setReplaceRowShown((replace || findShowsReplace) && !readOnly)
@@ -923,6 +935,30 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         return openTabs[index].kind == .csv
     }
 
+    /// Find runs over a PDF's text while a PDF is what's showing.
+    private var findingInPDF: Bool {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return false }
+        return openTabs[index].kind == .pdf
+    }
+
+    /// The page (from 0) a match starts on, and its range within that page's text.
+    private func findPDFPlace(of range: NSRange) -> (page: Int, range: NSRange)? {
+        guard !findPDFPageStarts.isEmpty else { return nil }
+        var low = 0, high = findPDFPageStarts.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if findPDFPageStarts[middle] <= range.location { low = middle } else { high = middle - 1 }
+        }
+        return (low, NSRange(location: range.location - findPDFPageStarts[low], length: range.length))
+    }
+
+    /// A match as PDFKit selects it.
+    private func findPDFSelection(forMatch index: Int) -> PDFSelection? {
+        guard findMatches.indices.contains(index), let place = findPDFPlace(of: findMatches[index]),
+              let page = pdfView.document?.page(at: place.page) else { return nil }
+        return page.selection(for: place.range)
+    }
+
     /// The sheet cell a match is in.
     private func findSheetCell(forMatch match: Int) -> CellRef? {
         guard findMatches.indices.contains(match) else { return nil }
@@ -939,6 +975,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// sheet the active cell (the current match itself when that's the cell it's in).
     private var findSelection: NSRange {
         get {
+            if findingInPDF { return findCurrent.map { findMatches[$0] } ?? NSRange(location: 0, length: 0) }
             if findingInSheet {
                 guard let active = sheetView.anchor, !sheetView.header.isEmpty else { return NSRange(location: 0, length: 0) }
                 if let current = findCurrent, findSheetCell(forMatch: current) == active { return findMatches[current] }
@@ -948,13 +985,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return findingInPreview ? markdownPreviewView.selectedRange() : editor.selectedRange
         }
         set {
-            if findingInSheet { return }
+            if findingInSheet || findingInPDF { return }
             if findingInPreview { markdownPreviewView.setSelectedRange(newValue) } else { editor.selectedRange = newValue }
         }
     }
 
     private func selectedEditorText() -> String? {
         if findingInSheet { return nil }
+        if findingInPDF { return pdfView.currentSelection?.string }
         if findingInPreview {
             let range = markdownPreviewView.selectedRange()
             let text = markdownPreviewView.string as NSString
@@ -1006,6 +1044,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 text.append(cell.text.replacingOccurrences(of: "\n", with: " "))
             }
             findText = text
+        } else if findingInPDF, let document = openTabs[index].cachedPDF {
+            // Each page's text, a line break between them.
+            findPDFPageStarts = []
+            let text = NSMutableString()
+            for number in 0..<document.pageCount {
+                if number > 0 { text.append("\n") }
+                findPDFPageStarts.append(text.length)
+                text.append(document.page(at: number)?.string ?? "")
+            }
+            findText = text
         } else {
             findText = findingInPreview ? (markdownPreviewView.string as NSString) : (openTabs[index].document.string as NSString)
         }
@@ -1017,7 +1065,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             findMatches = findMatches.filter { text.rangeOfCharacter(from: .newlines, options: [], range: $0).location == NSNotFound }
         }
         findTruncated = result.truncated
-        let lines = Self.lineNumbers(of: findMatches[...], in: findText)
+        if findingInPDF {
+            // A match runs across no page break: it selects on one page.
+            let starts = findPDFPageStarts, text = findText
+            findMatches = findMatches.filter { range in
+                guard let page = starts.lastIndex(where: { $0 <= range.location }) else { return false }
+                let end = page + 1 < starts.count ? starts[page + 1] - 1 : text.length
+                return NSMaxRange(range) <= end
+            }
+        }
+        // In a PDF a row is a page: its number stands where a line's would.
+        let lines = findingInPDF ? findMatches.map { (findPDFPlace(of: $0)?.page ?? 0) + 1 } : Self.lineNumbers(of: findMatches[...], in: findText)
         findRows = []
         findRowOfMatch = []
         for (index, line) in lines.enumerated() {
@@ -1051,6 +1109,16 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func markFindMatches() {
+        if findingInPDF {
+            let all = findMatches.indices.prefix(2000).compactMap(findPDFSelection(forMatch:))
+            for selection in all { selection.color = NSColor.controlAccentColor.withAlphaComponent(0.3) }
+            pdfView.highlightedSelections = all.isEmpty ? nil : all
+            if let current = findCurrent.flatMap(findPDFSelection(forMatch:)) {
+                current.color = NSColor.findHighlightColor
+                pdfView.setCurrentSelection(current, animate: false)
+            }
+            return
+        }
         if findingInSheet {
             sheetView.setFindMarks(Set(findMatches.indices.compactMap(findSheetCell(forMatch:))), current: findCurrent.flatMap(findSheetCell(forMatch:)))
             return
@@ -1074,7 +1142,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// Stepping: only the current match's mark moves; the rest stay as they are (re-marking all
     /// of them was most of a step's cost in a file with thousands).
     private func markCurrentFindMatch(previous: Int?) {
-        if findingInSheet { markFindMatches(); return }
+        if findingInSheet || findingInPDF { markFindMatches(); return }
         let current = findCurrent.flatMap { findMatches.indices.contains($0) ? findMatches[$0] : nil }
         let currentColor = NSColor.findHighlightColor.withAlphaComponent(0.7)
         if findingInPreview, let layout = markdownPreviewView.layoutManager {
@@ -1090,6 +1158,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     private func clearFindMarks() {
         sheetView.setFindMarks([], current: nil)
+        pdfView.highlightedSelections = nil
         if let layout = markdownPreviewView.layoutManager {
             layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: (markdownPreviewView.string as NSString).length))
         }
@@ -1123,6 +1192,14 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func revealFindMatch(_ index: Int) {
         if findingInSheet {
             if let cell = findSheetCell(forMatch: index) { sheetView.select(cell) }
+            return
+        }
+        if findingInPDF {
+            if let selection = findPDFSelection(forMatch: index) {
+                pdfView.go(to: selection)
+                selection.color = NSColor.findHighlightColor
+                pdfView.setCurrentSelection(selection, animate: true)
+            }
             return
         }
         let range = findMatches[index]
@@ -1193,7 +1270,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     /// Replaces the match Find is on and moves to the next.
     @objc private func replaceCurrent() {
-        guard !findingInPreview else { return }
+        guard !findingInPreview, !findingInSheet, !findingInPDF else { return }
         guard let current = findCurrent, findMatches.indices.contains(current) else { findStep(forward: true); return }
         let range = findMatches[current]
         let replacement = find.replacement(for: range, in: findText, template: replaceField.stringValue)
@@ -1205,7 +1282,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     /// Every match, one undo step.
     @objc private func replaceAll() {
-        guard !findingInPreview else { return }
+        guard !findingInPreview, !findingInSheet, !findingInPDF else { return }
         let edits = find.replaceAllEdits(in: findText, template: replaceField.stringValue)
         guard !edits.isEmpty else { return }
         editor.applyEdits(edits)
@@ -1706,6 +1783,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         minimap.backgroundColor = Self.editorBackground
         imageScroll.backgroundColor = Self.editorBackground
         csvScroll.backgroundColor = Self.editorBackground
+        pdfView.backgroundColor = Self.editorBackground
         markdownPreviewView.backgroundColor = Self.editorBackground
         markdownPreviewScroll.backgroundColor = Self.editorBackground
     }
@@ -1809,6 +1887,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// sheet keeps its place (the sheet shown, the sort, the scroll). A read that fails, say a
     /// file caught mid-write, leaves what's shown and the stamp alone, so the next event retries.
     private func reloadReadOnlyTab(url: URL) {
+        if url.pathExtension.lowercased() == "pdf" { return reloadPDFTab(url: url) }
         let isImage = Self.imageExtensions.contains(url.pathExtension.lowercased())
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let stamp = DiskStamp(of: url)
@@ -1833,6 +1912,17 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 }
             }
         }
+    }
+
+    /// A PDF rewritten on disk (a build writing it again) reloads on the page it was on.
+    private func reloadPDFTab(url: URL) {
+        guard let index = openTabs.firstIndex(where: { $0.url == url }), let document = PDFDocument(url: url) else { return }
+        openTabs[index].cachedPDF = document
+        openTabs[index].knownDiskStamp = DiskStamp(of: url)
+        guard activeTabIndex == index else { return }
+        let page = pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) } ?? 0
+        pdfView.document = document
+        if let same = document.page(at: min(page, max(0, document.pageCount - 1))) { pdfView.go(to: same) }
     }
 
     /// A sheet file's sheets: an Excel workbook's, or one from delimited text.
@@ -2154,6 +2244,29 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             return
         }
 
+        // A PDF: its pages, read-only. PDFKit reads pages as they're shown, so opening is quick.
+        if ext == "pdf" {
+            let stamp = DiskStamp(of: url)
+            guard let document = PDFDocument(url: url) else {
+                showAlert(title: "Couldn't open PDF", message: "\(url.lastPathComponent) couldn't be read as a PDF.", window: window)
+                completion?()
+                return
+            }
+            if document.isLocked {
+                showAlert(title: "This PDF is locked", message: "\(url.lastPathComponent) needs a password. Open it in Preview to unlock it.", window: window)
+                completion?()
+                return
+            }
+            var tab = OpenTab(url: url, kind: .pdf, document: editor.makeDocument(""), undoManager: Self.makeUndoManager(), dirty: false, isUntitled: false, knownDiskStamp: stamp)
+            tab.cachedPDF = document
+            openTabs.append(tab)
+            activeTabIndex = openTabs.count - 1
+            loadActiveTabIntoEditor()
+            finishOpenUI(url: url)
+            completion?()
+            return
+        }
+
         // An Excel workbook: its sheets' values, read-only, in the sheet view.
         if ext == "xlsx" {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -2304,6 +2417,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .text: editor.focus()
         case .image: view.window?.makeFirstResponder(imageView)
         case .csv: view.window?.makeFirstResponder(sheetView.table)
+        case .pdf: view.window?.makeFirstResponder(pdfView)
         }
     }
 
@@ -2347,6 +2461,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         gutter.isHidden = tab.kind != .text || showingMarkdownPreview
         imageScroll.isHidden = tab.kind != .image
         sheetView.isHidden = tab.kind != .csv
+        pdfView.isHidden = tab.kind != .pdf
         if markdownPreviewScroll.isHidden == showingMarkdownPreview {
             markdownPreviewScroll.isHidden = !showingMarkdownPreview
             onScrollUnderTopRowChange?()
@@ -2381,6 +2496,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             editor.isEditable = false
             if sheetView.sheets != tab.sheets { sheetView.show(tab.sheets) }
             view.window?.makeFirstResponder(sheetView.table)
+        case .pdf:
+            editor.isEditable = false
+            if pdfView.document !== tab.cachedPDF { pdfView.document = tab.cachedPDF }
+            pdfView.applyInsets()
+            view.window?.makeFirstResponder(pdfView)
         }
 
         dirty = tab.dirty
@@ -2474,6 +2594,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     func toggleMarkdownPreviewForTesting() { toggleMarkdownPreview() }
     var markdownPreviewForTesting: NSTextView { markdownPreviewView }
+    /// "shown=true pages=3 page=2 find=1 of 3 marked=3 replace=false"
+    var pdfStateForTesting: String {
+        let page = pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) }.map { $0 + 1 } ?? 0
+        return "shown=\(!pdfView.isHidden && pdfView.document != nil) pages=\(pdfView.document?.pageCount ?? 0) page=\(page) find=\(findCountLabel.stringValue) marked=\(pdfView.highlightedSelections?.count ?? 0) replace=\(findReplaceShownForTesting)"
+    }
     var findReplaceShownForTesting: Bool { findShowsReplace && !findReplaceToggle.isHidden }
 
     /// What scrolls under the top row changed (the preview came or went): the shell re-watches.
@@ -2883,6 +3008,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         imageScroll.isHidden = true
         imageView.image = nil
         sheetView.isHidden = true
+        pdfView.isHidden = true
+        pdfView.document = nil
         if !markdownPreviewScroll.isHidden {
             markdownPreviewScroll.isHidden = true
             onScrollUnderTopRowChange?()
@@ -3539,7 +3666,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             cell.configure(icon: FileIcon.image(for: match.url, isDirectory: false), title: match.text, detail: nil, trailing: "\(match.relativePath):\(match.line)")
         case .find:
             let (line, text) = findLine(at: row)
-            let place = findingInSheet ? findSheetCell(forMatch: findRows[row].firstMatch).map(sheetView.name(of:)) ?? "" : "line \(line)"
+            let place = findingInSheet ? findSheetCell(forMatch: findRows[row].firstMatch).map(sheetView.name(of:)) ?? "" : findingInPDF ? "page \(line)" : "line \(line)"
             cell.configure(icon: Self.paletteSymbol("text.magnifyingglass"), title: text, detail: nil, trailing: place)
         case .problems:
             let problem = problemRows[row]
@@ -5717,6 +5844,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         let inset = height > 0 ? height + DS.Spacing.l : 0
         minimapBottom?.constant = -inset
         sheetView.setBottomInset(height)
+        pdfView.bottomInset = inset
         for scroll in [editorScroll, markdownPreviewScroll, imageScroll] {
             scroll.automaticallyAdjustsContentInsets = false
             scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: inset, right: 0)
@@ -6092,6 +6220,8 @@ extension MakeWorkspaceViewController: StageChromeProviding {
         switch tab.kind {
         case .image:
             return tab.cachedImage
+        case .pdf:
+            return tab.cachedPDF?.page(at: 0)?.thumbnail(of: stage.size, for: .mediaBox)
         case .csv:
             let sheet = SheetView(frame: NSRect(origin: .zero, size: stage.size))
             sheet.appearance = view.effectiveAppearance
@@ -6149,6 +6279,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
             scroll.automaticallyAdjustsContentInsets = false
             scroll.contentInsets.top = topObstruction + banners + (scroll === editorScroll ? debugTopInset : 0)
         }
+        pdfView.topInset = topObstruction + banners
         if isWriting { applyWriterInsets() }
     }
 
@@ -6574,4 +6705,46 @@ extension MakeWorkspaceViewController {
 /// An image tab's view, able to hold keyboard focus so ⌘W and the other menu commands reach Make.
 final class FocusableImageView: NSImageView {
     override var acceptsFirstResponder: Bool { true }
+}
+
+
+/// Make's PDF tab: the pages one after another, fitted to the width, on the editor's background.
+/// Read-only; text selects and copies, links open, ⌘+ and ⌘− and a pinch zoom (PDFView's own).
+/// Its pages sit between the top row and the stage bar, as the editor's text does.
+final class DocumentPDFView: PDFView {
+    var topInset: CGFloat = 0 { didSet { applyInsets() } }
+    var bottomInset: CGFloat = 0 { didSet { applyInsets() } }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        displayMode = .singlePageContinuous
+        displaysPageBreaks = true
+        autoScales = true
+        setAccessibilityLabel("PDF")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    /// PDFView's own scroll view, inside it.
+    private var scrollView: NSScrollView? {
+        var queue: [NSView] = subviews
+        while !queue.isEmpty {
+            let view = queue.removeFirst()
+            if let scroll = view as? NSScrollView { return scroll }
+            queue += view.subviews
+        }
+        return nil
+    }
+
+    func applyInsets() {
+        guard let scrollView else { return }
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 0)
+    }
+
+    override func layout() {
+        super.layout()
+        // PDFView makes its scroll view as it lays out; the insets go on once it's there.
+        if let scrollView, scrollView.contentInsets.top != topInset || scrollView.contentInsets.bottom != bottomInset { applyInsets() }
+    }
 }

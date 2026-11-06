@@ -173,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             }
                         }
                     }
+                    if command == "pdf-dump" { FileHandle.standardError.write(Data("[pdf] \(shell.pdfStateForTesting)\n".utf8)) }
                     if command.hasPrefix("find ") { shell.findForTesting(String(command.dropFirst(5))) }
                     if command.hasPrefix("think-track ") { shell.thinkTrackForTesting(agentId: String(command.dropFirst(12))) }
                     if command.hasPrefix("think-send ") { shell.thinkSendForTesting(String(command.dropFirst(11))) }

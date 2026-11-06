@@ -1121,6 +1121,7 @@ final class ShellViewController: NSViewController {
     func thinkSendForTesting(_ text: String) { thinkVC.sendAsTyped(text) }
 
     /// UI testing: Find and Replace open with a query typed, as ⌥⌘F and typing would.
+    var pdfStateForTesting: String { makeVC.pdfStateForTesting }
     func findForTesting(_ query: String) {
         makeVC.presentFind(replace: true)
         makeVC.searchField.stringValue = query
