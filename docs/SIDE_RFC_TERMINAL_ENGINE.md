@@ -111,7 +111,9 @@ D also fits Side worse:
 - **Where D's extra latency goes** (notes section 11): with vsync, Ghostty draws only on display-link
   ticks; each key drew a frame without the echo first, and the echo's frame waited for the next
   tick (handed off at 13.8 ms against C's 1.1). Its own `window-vsync = false` brings it to
-  16.9 ms against C's 14.5. The lead is scheduling, not rendering speed.
+  16.9 ms against C's 14.5. The lead is scheduling, not rendering speed. Handing frames over as
+  Ghostty does (IOSurface layer contents) gained nothing on the display (notes section 12), so
+  the engine keeps CAMetalLayer.
 - **The design follows from it:** draw on a render thread, present with vsync. Presenting at once
   for a key's echo is a possible later gain, to be decided on its own evidence.
 - **The prototype is not comparable to Ghostty's renderer.** It's about 450 lines against
