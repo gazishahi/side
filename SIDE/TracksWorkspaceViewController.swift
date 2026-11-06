@@ -883,6 +883,14 @@ final class TracksWorkspaceViewController: NSViewController {
                 action: #selector(initializeGitTapped)
             )
         }
+        if let repository = trackStore?.soleRepositoryInside {
+            return makeInfoBannerCard(
+                symbolName: "exclamationmark.circle",
+                text: "This folder isn\u{2019}t a git repository, but \u{201C}\(repository.lastPathComponent)\u{201D} inside it is.",
+                buttonTitle: "Open \u{201C}\(repository.lastPathComponent)\u{201D}",
+                action: #selector(openRepositoryInsideTapped)
+            )
+        }
         return makeInfoBannerCard(
             symbolName: "exclamationmark.circle",
             text: "This project isn't a git repository yet. Branches needs one.",
@@ -1089,6 +1097,8 @@ final class TracksWorkspaceViewController: NSViewController {
             }
         }
     }
+
+    @objc private func openRepositoryInsideTapped() { onEmptyStateAction?(.openRepositoryInside) }
 
     @objc private func initializeGitTapped() {
         guard let window = view.window else { return }

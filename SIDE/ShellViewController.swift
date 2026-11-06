@@ -594,6 +594,13 @@ final class ShellViewController: NSViewController {
             self.show(self.visibleStages[index])
         }
         stageControl.expandsSelected = true
+        // Each stage's name and its shortcut as it's bound now (the owner, 2026-11-06).
+        stageControl.toolTipProvider = { [weak self] index in
+            guard let self, self.visibleStages.indices.contains(index) else { return nil }
+            let stage = self.visibleStages[index]
+            let keys = Shortcuts.display("stage.\(stage.rawValue.lowercased())")
+            return keys.isEmpty ? stage.title : "\(stage.title)  \(keys)"
+        }
         // The symbols come with the segments: set here, since the refresh only sets segments
         // when the visible stages change, and at launch they don't (no icons, 2026-11-04).
         stageControl.setSegments(visibleStages.map(\.title), symbols: visibleStages.map(\.symbol), selected: stageControl.selectedIndex)
@@ -754,6 +761,7 @@ final class ShellViewController: NSViewController {
     var activityPillForTesting: ActivityPill? { chrome.activityPill }
     var projectChipForTesting: ProjectChip { chrome.projectChip }
     var stageControlForTesting: SlidingSegmentedControl { stageControl }
+    var agentPillTitleForTesting: String { thinkVC.sessionPillTitleForTesting }
     var searchFrameForTesting: NSRect { searchButton.convert(searchButton.bounds, to: view) }
 
     /// Every stage — pinned or not — and every Navigate menu item, by name.
@@ -1679,6 +1687,8 @@ final class ShellViewController: NSViewController {
         case .newTrack: trackPill.onNewTrack?()
         case .chooseTrack: trackPill.togglePopover()
         case .setUpAgent: AppDelegate.shared?.openPreferences(on: .agents)
+        case .openRepositoryInside:
+            if let repository = trackStore?.soleRepositoryInside { switchProject(to: repository) }
         }
     }
 

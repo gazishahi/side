@@ -131,6 +131,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     var attachedHarnessName: String? { runner?.harnessName }
     var isAttachedToRunner: Bool { runner != nil }
     var sendReplacementForTesting: String? { composer.sendReplacementForTesting }
+    var sessionPillTitleForTesting: String { sessionPill.title.trimmingCharacters(in: .whitespaces) }
     private var observerToken: UUID?
     /// Parallel to `runner.entries` — the view currently rendering each entry, so a streamed
     /// delta or a proposal resolution can update one block in place instead of rebuilding the
@@ -424,6 +425,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             self, selector: #selector(projectFilesDidChange(_:)),
             name: ProjectWatcher.didChangeNotification, object: nil
         )
+        // With no track yet, the pill names the default agent: it follows Settings › Agents.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(defaultAgentChanged),
+            name: DefaultAgent.changed, object: nil
+        )
 
         renderFull()
     }
@@ -553,6 +559,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         let act: (EmptyStateAction) -> () -> Void = { action in { [weak self] in self?.onEmptyStateAction?(action) } }
         if runnerManager == nil {
             emptyState.configure("Open a project to start a conversation.", action: "Open Project…", handler: act(.openProject))
+        } else if let repository = trackStore?.soleRepositoryInside {
+            emptyState.configure("Conversations happen on tracks, and tracks need git. This folder isn\u{2019}t a repository, but \u{201C}\(repository.lastPathComponent)\u{201D} inside it is.",
+                                 action: "Open \u{201C}\(repository.lastPathComponent)\u{201D}", handler: act(.openRepositoryInside))
         } else if trackStore?.repoState == .notAGitRepo {
             let installed = DeveloperTools.gitInstalled
             emptyState.configure(installed ? "Conversations happen on tracks, and tracks need git." : "Conversations happen on tracks, and tracks need git. \(DeveloperTools.missingMessage)",
@@ -932,8 +941,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         let settings = AgentSessionSettingsViewController()
         settings.harness = runner
         let key = attachedTrackKey ?? ""
-        settings.harnessId = trackStore?.harness(forTrackKey: key)?.id
-        settings.offersHeron = trackStore?.hasHeronHistory(key) ?? false
+        if runner == nil {
+            // No track yet: the choice is the agent the first one starts on.
+            settings.harnessId = DefaultAgent.agent?.id
+        } else {
+            settings.harnessId = trackStore?.harness(forTrackKey: key)?.id
+            settings.offersHeron = trackStore?.hasHeronHistory(key) ?? false
+        }
         settings.onAgentChosen = { [weak self] id in self?.chooseAgent(id) }
         presentSessionPopover(settings)
     }
@@ -951,7 +965,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// change swaps the engine and reattaches Think (`ShellViewController.syncHarnesses`).
     private func chooseAgent(_ id: String) {
         sessionPopover?.close()
-        guard let trackKey = attachedTrackKey, !trackKey.isEmpty else { return }
+        guard let trackKey = attachedTrackKey, !trackKey.isEmpty, runner != nil else {
+            // Before there's a track, picking an agent was silently dropped (the owner,
+            // 2026-11-06): it's the default agent, the one a new track starts on.
+            guard let agent = ACPAgent.agent(id: id), AgentAvailability.isInstalled(agent) != false else { return }
+            DefaultAgent.chosenId = agent.id
+            return
+        }
         let current = trackStore?.harness(forTrackKey: trackKey)?.id ?? ""
         guard id != current else { return }
         if let agent = ACPAgent.agent(id: id), AgentAvailability.isInstalled(agent) == false {
@@ -966,6 +986,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         trackStore?.setHarness(id.isEmpty ? nil : id, forTrackKey: trackKey)
     }
 
+
+    @objc private func defaultAgentChanged() { refreshSessionPill() }
 
     /// The directory `@`-mentions resolve against: the track's own worktree when it has one,
     /// which is the same directory `AgentRunner` hands its tools.
@@ -1074,8 +1096,12 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         if let runner, let agentName = runner.harnessName {
             let model = runner.agentOptions.first { $0.category == .model }?.currentChoice?.name
             title = [agentName, model].compactMap { $0 }.joined(separator: " · ")
-        } else {
+        } else if runner != nil {
             title = "Heron (retired)"
+        } else {
+            // No conversation yet: the agent one would start on, not Heron's name (the owner,
+            // 2026-11-06, in a project with no track).
+            title = DefaultAgent.agent?.displayName ?? "No agent"
         }
         var tint = NSColor.secondaryLabelColor
         // Context appears once the conversation has one: before the first message it's 0%

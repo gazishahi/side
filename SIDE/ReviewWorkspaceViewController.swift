@@ -531,6 +531,11 @@ final class ReviewWorkspaceViewController: NSViewController {
             showEmptyState(true, message: "Open a project to review its work.", action: ("Open Project…", .openProject))
             return
         }
+        if let repository = trackStore?.soleRepositoryInside {
+            showEmptyState(true, message: "Changes works from commits. This folder isn\u{2019}t a repository, but \u{201C}\(repository.lastPathComponent)\u{201D} inside it is.",
+                           action: ("Open \u{201C}\(repository.lastPathComponent)\u{201D}", .openRepositoryInside))
+            return
+        }
         if trackStore?.repoState == .notAGitRepo {
             if !DeveloperTools.gitInstalled {
                 showEmptyState(true, message: "Changes works from commits. \(DeveloperTools.missingMessage)", action: ("Install Git…", .initializeGit))

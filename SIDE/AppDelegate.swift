@@ -235,6 +235,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     }
                     // "open-url side://run/<id>": a link as macOS hands one over (a notification's click).
                     if command.hasPrefix("open-url "), let url = URL(string: String(command.dropFirst(9))) { self.application(NSApp, open: [url]) }
+                    if command == "stage-tips" { FileHandle.standardError.write(Data("[stage-tips] \(shell.stageControlForTesting.toolTipsForTesting.joined(separator: " | "))\n".utf8)) }
+                    if command == "agent-pill" { FileHandle.standardError.write(Data("[agent-pill] \(shell.agentPillTitleForTesting)\n".utf8)) }
                     if command.hasPrefix("stage-hover ") { shell.stageControlForTesting.hoverForTesting(Int(command.dropFirst(12))) }
                     if command.hasPrefix("theme-light ") { EditorThemes.lightThemeID = String(command.dropFirst(12)) }
                     if command.hasPrefix("theme-dark ") { EditorThemes.darkThemeID = String(command.dropFirst(11)) }

@@ -28,6 +28,13 @@ final class SlidingSegmentedControl: NSView {
     /// last one narrows, the thumb riding along. The selected slot is as wide as the widest
     /// name needs, so the control keeps one width whichever is selected.
     var expandsSelected = false { didSet { if expandsSelected != oldValue { rebuildContents() } } }
+    /// A segment's tooltip ("Terminal ⌥⌘4"), shown on every segment, the selected one too;
+    /// nil keeps the title alone, on the segments whose name isn't showing.
+    var toolTipProvider: ((Int) -> String?)?
+    private func toolTip(_ index: Int, nameShowing: Bool) -> String? {
+        if let toolTipProvider { return toolTipProvider(index) ?? titles[index] }
+        return nameShowing ? nil : titles[index]
+    }
     private static let collapsedWidth: CGFloat = 40
     private static let iconGap: CGFloat = 6
     private var expandedWidth: CGFloat = 0
@@ -196,11 +203,11 @@ final class SlidingSegmentedControl: NSView {
                 }
                 icons.append(icon)
                 names.append(name)
-                button.toolTip = index == selectedIndex ? nil : title
+                button.toolTip = toolTip(index, nameShowing: index == selectedIndex)
             } else if compact, let image = DS.Glyph.image(named: symbols[index], selected: index == selectedIndex) {
                 button.image = image
                 button.imagePosition = .imageOnly
-                button.toolTip = title
+                button.toolTip = toolTip(index, nameShowing: false)
             } else if showsSymbols, let image = (symbols[index].map { $0.hasPrefix(DS.Glyph.prefix) } == true
                         ? DS.Glyph.image(named: symbols[index], selected: index == selectedIndex, pointSize: 14)
                         : DS.Glyph.image(named: symbols[index])?.withSymbolConfiguration(.init(pointSize: 11, weight: .medium))) {
@@ -316,7 +323,7 @@ final class SlidingSegmentedControl: NSView {
                     names[index].frame = nameFrame
                     names[index].alphaValue = expanded ? 1 : 0
                 }
-                button.toolTip = expanded ? nil : titles[index]
+                button.toolTip = toolTip(index, nameShowing: expanded)
             }
             // On the title's centre line, just after it — a dot riding up like a superscript read
             // as misaligned. Title and dot centre as one group, so the dot never crowds the edge.
@@ -466,6 +473,8 @@ final class SlidingSegmentedControl: NSView {
     override func mouseExited(with event: NSEvent) { hover(at: nil) }
 
     /// UI testing: the pointer over segment `index` (nil: off the control).
+    var toolTipsForTesting: [String] { buttons.map { $0.toolTip ?? "-" } }
+
     func hoverForTesting(_ index: Int?) {
         hover(at: index.flatMap { segmentFrames().indices.contains($0) ? NSPoint(x: segmentFrames()[$0].midX, y: bounds.midY) : nil })
     }

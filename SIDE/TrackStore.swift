@@ -1315,6 +1315,24 @@ final class TrackStore {
     /// currently checked out. Tries the remote's default branch first (what GitHub/GitLab call
     /// the repo's primary branch), then falls back to a local `main` or `master`, then finally to
     /// whatever's currently checked out for a repo with neither (e.g. a brand-new local-only repo).
+    /// A folder that isn't a repository but holds exactly one just inside it, as
+    /// `~/Documents/side` holds `SIDE` (the owner, 2026-11-06): that one, which is probably the
+    /// project meant. "Initialize Git…" there would make a repository around the real one.
+    nonisolated static func soleRepository(inside folder: URL) -> URL? {
+        let manager = FileManager.default
+        guard !manager.fileExists(atPath: folder.appendingPathComponent(".git").path),
+              let children = try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        else { return nil }
+        let repositories = children.filter { child in
+            (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                && manager.fileExists(atPath: child.appendingPathComponent(".git").path)
+        }
+        return repositories.count == 1 ? repositories[0].standardizedFileURL : nil
+    }
+
+    /// `soleRepository(inside:)` for this project, when it isn't a repository itself.
+    var soleRepositoryInside: URL? { repoState == .notAGitRepo ? Self.soleRepository(inside: projectRoot) : nil }
+
     /// The cached answer where there is one — main-actor, because the cache is mutable state
     /// the launch probe writes.
     func defaultBranchName() -> String {

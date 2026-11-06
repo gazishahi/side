@@ -128,4 +128,19 @@ final class GitLaunchProbeTests: XCTestCase {
         XCTAssertLessThanOrEqual(survivors, 24)
         XCTAssertNotNil(GitLaunchProbe.cached(projectRoot: paths[paths.count - 1]))
     }
+
+    /// 2026-11-06, the owner: a project at `~/Documents/side` was told to initialize git, but the
+    /// repository is `side/SIDE`. One repository just inside is offered; two, or none, aren't.
+    func testTheOneRepositoryJustInsideAFolderIsFound() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("nested-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let manager = FileManager.default
+        try manager.createDirectory(at: folder.appendingPathComponent("SIDE/.git"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: folder.appendingPathComponent("design"), withIntermediateDirectories: true)
+        XCTAssertEqual(TrackStore.soleRepository(inside: folder)?.lastPathComponent, "SIDE")
+        try manager.createDirectory(at: folder.appendingPathComponent("prototype/.git"), withIntermediateDirectories: true)
+        XCTAssertNil(TrackStore.soleRepository(inside: folder), "two: which one is meant isn't clear")
+        try manager.createDirectory(at: folder.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        XCTAssertNil(TrackStore.soleRepository(inside: folder), "a repository itself")
+    }
 }

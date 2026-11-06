@@ -52,6 +52,73 @@ enum MarkdownPreview {
     /// Remote pictures loaded this session, by address.
     @MainActor static var remoteImages: [URL: NSImage] = [:]
 
+    /// Marks a picture's attachment, so its paragraph can be as tall as it is.
+    static let pictureKey = NSAttributedString.Key("SidePreviewPicture")
+
+    /// An `<img>` tag's picture: where it is, its words, the width asked for, and the link a
+    /// linked badge wraps it in.
+    struct HTMLPicture: Equatable {
+        var source: String
+        var alt: String
+        var width: CGFloat?
+        var link: String?
+    }
+
+    private static let imageTag = try! NSRegularExpression(pattern: #"<img\b[^>]*>"#, options: [.caseInsensitive])
+    private static let tagAttribute = try! NSRegularExpression(pattern: #"([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#)
+    private static let anyTag = try! NSRegularExpression(pattern: #"<[^>]+>"#)
+    /// A block of HTML's pictures and headings, in order.
+    static let htmlPieces = try! NSRegularExpression(pattern: #"<h([1-6])\b[^>]*>([\s\S]*?)</h\1\s*>|<img\b[^>]*>"#, options: [.caseInsensitive])
+
+    /// The pictures in a piece of HTML, in order. READMEs draw their logos and badges with
+    /// `<img>`, which the Markdown parser hands over as raw HTML (the owner, 2026-11-06).
+    static func htmlPictures(in html: String) -> [HTMLPicture] {
+        let ns = html as NSString
+        return imageTag.matches(in: html, range: NSRange(location: 0, length: ns.length)).compactMap { match in
+            let tag = ns.substring(with: match.range)
+            let tagNS = tag as NSString
+            var attributes: [String: String] = [:]
+            for found in tagAttribute.matches(in: tag, range: NSRange(location: 0, length: tagNS.length)) {
+                let value = (2...4).lazy.map { found.range(at: $0) }.first { $0.location != NSNotFound }.map { tagNS.substring(with: $0) } ?? ""
+                attributes[tagNS.substring(with: found.range(at: 1)).lowercased()] = value
+            }
+            guard let source = attributes["src"], !source.isEmpty else { return nil }
+            let width = attributes["width"].flatMap { Double($0.replacingOccurrences(of: "px", with: "")) }.map { CGFloat($0) }
+            return HTMLPicture(source: source, alt: attributes["alt"] ?? "", width: width, link: attributes["data-side-link"])
+        }
+    }
+
+    /// A block of HTML's own words, its tags taken out: `<h1>Side</h1>` is "Side".
+    static func htmlText(_ html: String) -> String {
+        let stripped = anyTag.stringByReplacingMatches(in: html, range: NSRange(location: 0, length: (html as NSString).length), withTemplate: " ")
+        let decoded = stripped.replacingOccurrences(of: "&nbsp;", with: " ").replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">").replacingOccurrences(of: "&quot;", with: "\"")
+        return decoded.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private static let linkedImage = try! NSRegularExpression(pattern: #"\[!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#)
+
+    /// `[![alt](picture)](link)`, a badge, as an `<img>` carrying its link: the parser drops a
+    /// picture inside a link and keeps only its words. Never inside a code fence.
+    static func linkedImagesAsHTML(_ markdown: String) -> String {
+        guard markdown.contains("[![") else { return markdown }
+        var inFence = false
+        return markdown.components(separatedBy: "\n").map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { inFence.toggle(); return line }
+            guard !inFence, line.contains("[![") else { return line }
+            func escaped(_ text: String) -> String { text.replacingOccurrences(of: "\"", with: "&quot;") }
+            let ns = line as NSString
+            var result = line
+            for match in linkedImage.matches(in: line, range: NSRange(location: 0, length: ns.length)).reversed() {
+                let alt = ns.substring(with: match.range(at: 1)), source = ns.substring(with: match.range(at: 2)), link = ns.substring(with: match.range(at: 3))
+                let tag = "<img src=\"\(escaped(source))\" alt=\"\(escaped(alt))\" data-side-link=\"\(escaped(link))\">"
+                result = (result as NSString).replacingCharacters(in: match.range, with: tag)
+            }
+            return result
+        }.joined(separator: "\n")
+    }
+
     /// A picture's file or address: relative paths are the Markdown file's folder's.
     static func resolve(_ image: URL, folder: URL?) -> URL? {
         if let scheme = image.scheme?.lowercased(), ["http", "https", "file"].contains(scheme) { return image }
@@ -67,7 +134,7 @@ enum MarkdownPreview {
         let front = frontMatter(markdown)
         // Math out first: Markdown would read its _ and * as emphasis. Each formula leaves a
         // marker, typeset back in once the rest is set.
-        let (markdown, formulas) = extractMath(front?.body ?? markdown)
+        let (markdown, formulas) = extractMath(linkedImagesAsHTML(front?.body ?? markdown))
         let options = AttributedString.MarkdownParsingOptions(allowsExtendedAttributes: true, interpretedSyntax: .full,
                                                               failurePolicy: .returnPartiallyParsedIfPossible)
         guard let parsed = try? AttributedString(markdown: markdown, options: options) else {
@@ -335,6 +402,10 @@ enum MarkdownPreview {
         /// Where the heading being built starts: its anchor slug is its whole text, set when it ends.
         private var headingStart: Int?
         private var previousWasList = false
+        /// Where the block being built starts in `out`.
+        private var blockStart = 0
+        /// Raw HTML blocks have no identity of their own; each gets one of these, counting down.
+        private var nextHTMLBlock = -2
 
         /// The Markdown file's folder, for pictures at relative paths.
         var folder: URL?
@@ -426,6 +497,11 @@ enum MarkdownPreview {
             }
             flushTable()
 
+            if inline.contains(.blockHTML) {
+                addHTMLBlock(text, components: components)
+                return
+            }
+
             let identity = components.first?.identity ?? -1
             if identity != block {
                 endBlock()
@@ -449,12 +525,85 @@ enum MarkdownPreview {
                     extra[MarkdownPreview.quoteKey] = quote.identity
                 }
             }
+            if inline.contains(.inlineHTML) {
+                // A tag inside a paragraph: its picture, a line break for <br>, else nothing (its
+                // words are the runs around it).
+                let pictures = MarkdownPreview.htmlPictures(in: text)
+                let piece = NSMutableAttributedString()
+                for (index, picture) in pictures.enumerated() {
+                    if index > 0 { piece.append(NSAttributedString(string: " ", attributes: [.font: font])) }
+                    piece.append(htmlPicture(picture, font: font, color: color))
+                }
+                if pictures.isEmpty, text.range(of: #"^<br\s*/?>$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                    piece.append(NSAttributedString(string: "\u{2028}", attributes: [.font: font]))
+                }
+                guard piece.length > 0 else { return }
+                piece.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: piece.length))
+                out.append(piece)
+                return
+            }
             // Soft line breaks inside a paragraph read as spaces.
             let piece = NSMutableAttributedString(attributedString: inlineText(text.replacingOccurrences(of: "\n", with: " "), font: font, color: color, inline: inline, link: link, image: image))
             let range = NSRange(location: 0, length: piece.length)
             piece.addAttribute(.paragraphStyle, value: paragraph, range: range)
             for (key, value) in extra { piece.addAttribute(key, value: value, range: range) }
             out.append(piece)
+        }
+
+        /// A block of raw HTML, as READMEs head themselves: its pictures in a row and its words,
+        /// centred when it asks to be. Other tags aren't drawn; their words are.
+        private mutating func addHTMLBlock(_ html: String, components: [PresentationIntent.IntentType]) {
+            let pictures = MarkdownPreview.htmlPictures(in: html)
+            let words = MarkdownPreview.htmlText(html)
+            guard !pictures.isEmpty || !words.isEmpty else { return }
+            endBlock()
+            block = nextHTMLBlock
+            nextHTMLBlock -= 1
+            startBlock(components)
+            let centered = html.range(of: #"align\s*=\s*["']?center"#, options: [.regularExpression, .caseInsensitive]) != nil
+            if centered, let p = paragraph.mutableCopy() as? NSMutableParagraphStyle {
+                p.alignment = .center
+                paragraph = p
+            }
+            // In order: pictures side by side, a heading or a run of words each on its own line.
+            // (The parser hands several HTML blocks over as one run: a logo, then a title.)
+            let piece = NSMutableAttributedString()
+            var lastWasPicture = false
+            func newLine() {
+                if piece.length > 0 { piece.append(NSAttributedString(string: "\u{2028}", attributes: [.font: style.body])) }
+            }
+            func addWords(_ fragment: String, font: NSFont) {
+                let text = MarkdownPreview.htmlText(fragment)
+                guard !text.isEmpty else { return }
+                newLine()
+                piece.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: style.textColor]))
+                lastWasPicture = false
+            }
+            let ns = html as NSString
+            var cursor = 0
+            for match in MarkdownPreview.htmlPieces.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
+                addWords(ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor)), font: style.body)
+                cursor = match.range.location + match.range.length
+                if match.range(at: 1).location != NSNotFound, let level = Int(ns.substring(with: match.range(at: 1))) {
+                    // `<h1 align="center">Side</h1>`, as a README titles itself, is a heading.
+                    addWords(ns.substring(with: match.range(at: 2)), font: style.heading(level))
+                } else if let picture = MarkdownPreview.htmlPictures(in: ns.substring(with: match.range)).first {
+                    if lastWasPicture { piece.append(NSAttributedString(string: " ", attributes: [.font: style.body])) } else { newLine() }
+                    piece.append(htmlPicture(picture, font: style.body, color: style.textColor))
+                    lastWasPicture = true
+                }
+            }
+            addWords(ns.substring(from: cursor), font: style.body)
+            piece.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: piece.length))
+            out.append(piece)
+        }
+
+        /// One `<img>`: drawn as a Markdown picture is (local now, remote on a click), linked
+        /// when a badge's link wraps it.
+        private func htmlPicture(_ picture: MarkdownPreview.HTMLPicture, font: NSFont, color: NSColor) -> NSAttributedString {
+            let source = picture.source.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? picture.source
+            return inlineText(picture.alt, font: font, color: color, inline: [], link: picture.link.flatMap { URL(string: $0) },
+                              image: URL(string: source), imageWidth: picture.width)
         }
 
         /// The indent from enclosing lists and quotes.
@@ -471,6 +620,7 @@ enum MarkdownPreview {
         }
 
         private mutating func startBlock(_ components: [PresentationIntent.IntentType]) {
+            blockStart = out.length
             let kinds = components.map(\.kind)
             let indent = indent(for: kinds)
             let body = style.bodySize
@@ -532,10 +682,20 @@ enum MarkdownPreview {
             }
             guard block != nil, out.length > 0 else { return }
             out.append(NSAttributedString(string: "\n", attributes: [.font: style.body, .paragraphStyle: paragraph]))
+            // A picture is as tall as it is: the pinned line height cut it down to one line.
+            let range = NSRange(location: blockStart, length: out.length - blockStart)
+            var hasPicture = false
+            out.enumerateAttribute(MarkdownPreview.pictureKey, in: range) { value, _, stop in if value != nil { hasPicture = true; stop.pointee = true } }
+            if hasPicture, let pinned = paragraph.mutableCopy() as? NSMutableParagraphStyle {
+                pinned.minimumLineHeight = 0
+                pinned.maximumLineHeight = 0
+                pinned.lineHeightMultiple = 1
+                out.addAttribute(.paragraphStyle, value: pinned, range: range)
+            }
             block = nil
         }
 
-        private func inlineText(_ text: String, font: NSFont, color: NSColor, inline: InlinePresentationIntent, link: URL?, image: URL?) -> NSAttributedString {
+        private func inlineText(_ text: String, font: NSFont, color: NSColor, inline: InlinePresentationIntent, link: URL?, image: URL?, imageWidth: CGFloat? = nil) -> NSAttributedString {
             var font = font
             var attributes: [NSAttributedString.Key: Any] = [.foregroundColor: color]
             var text = text
@@ -556,7 +716,10 @@ enum MarkdownPreview {
                 }
             }
             if let image {
-                if let picture = picture(image, alt: text) { return picture }
+                if let picture = picture(image, alt: text, width: imageWidth) {
+                    if let link = attributes[.link] { picture.addAttribute(.link, value: link, range: NSRange(location: 0, length: picture.length)) }
+                    return picture
+                }
                 attributes[.foregroundColor] = NSColor.secondaryLabelColor
                 let alt = text.isEmpty ? "Image" : text
                 if let url = MarkdownPreview.resolve(image, folder: folder), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
@@ -573,15 +736,17 @@ enum MarkdownPreview {
 
         /// A local picture, or a remote one already loaded, at its own size up to the column's
         /// width; nil when there's nothing to show yet.
-        private func picture(_ image: URL, alt: String) -> NSAttributedString? {
+        /// `width`: an `<img>`'s own, in points; the column's is the most either way.
+        private func picture(_ image: URL, alt: String, width: CGFloat? = nil) -> NSMutableAttributedString? {
             guard let url = MarkdownPreview.resolve(image, folder: folder) else { return nil }
             let loaded = url.isFileURL ? NSImage(contentsOf: url) : MarkdownPreview.remoteImages[url]
             guard let loaded, loaded.size.width > 0, loaded.size.height > 0 else { return nil }
-            let scale = min(1, style.columnWidth / loaded.size.width)
+            let scale = min(width.map { $0 / loaded.size.width } ?? 1, style.columnWidth / loaded.size.width)
             let attachment = NSTextAttachment()
             attachment.image = loaded
             attachment.bounds = NSRect(x: 0, y: 0, width: (loaded.size.width * scale).rounded(), height: (loaded.size.height * scale).rounded())
             let picture = NSMutableAttributedString(attachment: attachment)
+            picture.addAttribute(MarkdownPreview.pictureKey, value: true, range: NSRange(location: 0, length: picture.length))
             if !alt.isEmpty { picture.addAttribute(.toolTip, value: alt, range: NSRange(location: 0, length: picture.length)) }
             return picture
         }

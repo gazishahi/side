@@ -1474,6 +1474,8 @@ extension DS {
 /// initialise git or start a track on its own.
 enum EmptyStateAction {
     case openProject, initializeGit, newTrack, chooseTrack, setUpAgent
+    /// The one repository just inside a project folder that isn't one (`TrackStore.soleRepository`).
+    case openRepositoryInside
 }
 
 

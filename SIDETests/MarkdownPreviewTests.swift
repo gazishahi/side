@@ -48,6 +48,53 @@ final class MarkdownPreviewTests: XCTestCase {
         XCTAssertTrue(out.string.contains("Gone (not found)"))
     }
 
+    /// 2026-11-06, the owner: pictures still didn't show. READMEs draw theirs with `<img>` in raw
+    /// HTML and badges as `[![alt](picture)](link)`, which the parser handed over as tags and as
+    /// bare words; and a picture's paragraph kept text's pinned line height, cut down to a line.
+    func testReadmePicturesInHTMLAndBadgesAtTheirOwnHeight() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("preview-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let logo = NSImage(size: NSSize(width: 200, height: 100), flipped: false) { rect in NSColor.blue.setFill(); rect.fill(); return true }
+        try NSBitmapImageRep(data: logo.tiffRepresentation!)!.representation(using: .png, properties: [:])!.write(to: folder.appendingPathComponent("logo.png"))
+        let style = MarkdownPreview.Style(bodySize: 16, textColor: .labelColor, dark: false)
+        let markdown = "<p align=\"center\">\n  <img src=\"logo.png\" width=\"100\" alt=\"Logo\">\n</p>\n\n<h1 align=\"center\">Side</h1>\n\n"
+            + "[![Build](https://example.com/b.svg)](https://example.com/ci) and ![Again](logo.png)\n\n```\n[![Kept](x.png)](y)\n```\n"
+        let out = MarkdownPreview.render(markdown, style: style, folder: folder)
+        var pictures: [(NSTextAttachment, Int)] = []
+        out.enumerateAttribute(.attachment, in: NSRange(location: 0, length: out.length)) { value, range, _ in
+            if let attachment = value as? NSTextAttachment { pictures.append((attachment, range.location)) }
+        }
+        XCTAssertEqual(pictures.count, 2, "the <img> and the Markdown picture: \(out.string)")
+        let (html, at) = try XCTUnwrap(pictures.first)
+        XCTAssertEqual(html.bounds.size, NSSize(width: 100, height: 50), "at the width it asks for")
+        let paragraph = try XCTUnwrap(out.attribute(.paragraphStyle, at: at, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(paragraph.alignment, .center)
+        XCTAssertEqual(paragraph.maximumLineHeight, 0, "its line as tall as it is")
+        XCTAssertTrue(out.string.contains("Side"), "a block's words stay, its tags go: \(out.string)")
+        let titleFont = out.attribute(.font, at: (out.string as NSString).range(of: "Side").location, effectiveRange: nil) as? NSFont
+        XCTAssertEqual(titleFont?.pointSize, style.heading(1).pointSize, "an <h1> is a heading")
+        XCTAssertFalse(out.string.contains("<"), out.string.debugDescription)
+        XCTAssertTrue(out.string.contains("Build \u{00B7} Load from example.com"), "the badge waits for a click: \(out.string)")
+        XCTAssertTrue(out.string.contains("[![Kept](x.png)](y)"), "code is left alone")
+
+        // Laid out, the picture's line is as tall as the picture.
+        let storage = NSTextStorage(attributedString: out)
+        let layout = MarkdownPreviewLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: style.columnWidth, height: .greatestFiniteMagnitude))
+        layout.addTextContainer(container)
+        layout.ensureLayout(for: container)
+        let line = layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: at), effectiveRange: nil)
+        XCTAssertGreaterThanOrEqual(line.height, 50, "not cut down to a line of text")
+    }
+
+    func testBadgesBecomeLinkedImageTags() {
+        let converted = MarkdownPreview.linkedImagesAsHTML("See [![CI](https://x.io/b.svg)](https://x.io/ci) now")
+        XCTAssertEqual(converted, "See <img src=\"https://x.io/b.svg\" alt=\"CI\" data-side-link=\"https://x.io/ci\"> now")
+        XCTAssertEqual(MarkdownPreview.htmlPictures(in: converted), [.init(source: "https://x.io/b.svg", alt: "CI", width: nil, link: "https://x.io/ci")])
+    }
+
     func testOrderedAndNestedLists() {
         let text = render("1. first\n2. second\n   - inner\n").string
         XCTAssertTrue(text.contains("1.\tfirst"), text)
