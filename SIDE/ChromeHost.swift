@@ -76,6 +76,9 @@ final class ChromeHost {
     /// The update pill, beside search (Direction 03 §5.1).
     private(set) var updatePill: UpdatePill?
     private(set) var diskPill: DiskSpacePill?
+    /// A loose file's window: its folder, made a project, in place of the chip and track pill.
+    private(set) var openFolderPill: GlassPill?
+    var onOpenFolderAsProject: (() -> Void)?
     /// The activity pill (prototype): what's happening out of sight, beside zoom and update.
     private(set) var activityPill: ActivityPill?
     /// Zoom's pill, beside the update pill: only while you're zooming.
@@ -186,7 +189,15 @@ final class ChromeHost {
         cluster.setClippingResistancePriority(NSLayoutConstraint.Priority(490), for: .horizontal)
         cluster.translatesAutoresizingMaskIntoConstraints = false
         trailingCluster = cluster
-        for piece in [projectChip, pillCapsule, stagesCapsule, cluster] as [NSView] { root.addSubview(piece) }
+        let folder = GlassPill(height: Self.barHeight, glass: true)
+        folder.setMarkSize(16)
+        folder.set(title: "Open Folder as Project", mark: .symbol("folder", nil))
+        folder.toolTip = "Open this file's folder as a project, in this window"
+        folder.onClick = { [weak self] in self?.onOpenFolderAsProject?() }
+        folder.isHidden = true
+        folder.translatesAutoresizingMaskIntoConstraints = false
+        openFolderPill = folder
+        for piece in [projectChip, pillCapsule, stagesCapsule, cluster, folder] as [NSView] { root.addSubview(piece) }
         NSLayoutConstraint.activate([
             projectChip.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Self.barMargin),
             projectChip.centerYAnchor.constraint(equalTo: stagesCapsule.centerYAnchor),
@@ -198,6 +209,9 @@ final class ChromeHost {
             pillCapsule.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.barGap),
             stagesCapsule.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.barGap),
             cluster.centerYAnchor.constraint(equalTo: stagesCapsule.centerYAnchor),
+            folder.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Self.barMargin),
+            folder.centerYAnchor.constraint(equalTo: stagesCapsule.centerYAnchor),
+            folder.trailingAnchor.constraint(lessThanOrEqualTo: cluster.leadingAnchor, constant: -DS.Spacing.m),
         ])
         bar = stagesCapsule
         barPieces = [projectChip, pillCapsule, stagesCapsule, cluster]
@@ -233,6 +247,7 @@ final class ChromeHost {
     func setProjectPiecesHidden(_ hidden: Bool) {
         projectChip.isHidden = hidden
         (placement == .floatingBar ? pillPiece : pill)?.isHidden = hidden
+        openFolderPill?.isHidden = !hidden
     }
 
     private weak var barRoot: NSView?

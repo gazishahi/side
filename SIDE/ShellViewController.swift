@@ -554,6 +554,14 @@ final class ShellViewController: NSViewController {
     }
     var markdownPreviewShownForTesting: Bool { makeVC.markdownPreviewShownForTesting }
 
+    /// The bar's "Open Folder as Project": this window becomes a project window on the loose
+    /// file's folder, the file still open in it.
+    func openLooseFolderAsProject() {
+        guard isLooseFileWindow, let file = looseFile else { return }
+        openProject(at: file.deletingLastPathComponent(), focusingTrackKey: nil)
+        revealFile(file)
+    }
+
     /// The file a loose file's window shows.
     var looseFile: URL? { isLooseFileWindow ? makeVC.soleFile : nil }
 
@@ -649,6 +657,7 @@ final class ShellViewController: NSViewController {
         projectChip.currentProject = { [weak self] in self?.isLooseFileWindow == true ? nil : self?.projectURL }
         projectChip.onSwipeProject = { [weak self] offset in self?.switchProject(offset: offset) }
         projectChip.onOpenSwitcher = { [weak self] in self?.toggleProjectSwitcher() }
+        chrome.onOpenFolderAsProject = { [weak self] in self?.openLooseFolderAsProject() }
         makeVC.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
         trackPill.onNewTrackNamed = { [weak self] name in
             self?.show(.tracks)

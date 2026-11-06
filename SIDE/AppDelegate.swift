@@ -179,9 +179,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         let inProjects = ProjectSpaces.shared.spaces.contains { $0.url.lastPathComponent == "loose" }
                         FileHandle.standardError.write(Data("[loose] \(loose.looseChromeForTesting) preview=\(loose.markdownPreviewShownForTesting)\(inProjects ? " loose-in-projects" : "")\n".utf8))
                     }
+                    if command == "loose-open-folder" { self.shellViewControllers.first { $0.isLooseFileWindow }?.openLooseFolderAsProject() }
                     if command == "windows-dump" {
                         let lines = self.shellViewControllers.map { other in
-                            "\(other.projectRootURL?.lastPathComponent ?? "-")\(other.view.window?.isKeyWindow == true ? "*" : "") \(other.tabsDumpForTesting)"
+                            "\(other.projectRootURL?.lastPathComponent ?? "-")\(other.isLooseFileWindow ? "(loose)" : "")\(other.view.window?.isKeyWindow == true ? "*" : "") \(other.tabsDumpForTesting)"
                         }
                         FileHandle.standardError.write(Data("[windows] \(lines.joined(separator: " || "))\n".utf8))
                     }

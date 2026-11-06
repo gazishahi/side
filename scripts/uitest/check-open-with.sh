@@ -42,15 +42,19 @@ cp $A/doc.pdf $L/loose.pdf
 $U post "open-url file://$L/notes.md"; sleep 2
 $U post "open-url file://$L/loose.pdf"; sleep 2
 line=$(state); echo "     $line"
-check "each loose file opens alone in a window of its own" '[[ $line == *"|| loose"*"strip= model=notes.md"*"|| loose"*"strip= model=loose.pdf"* ]]' "$line"
+check "each loose file opens alone in a window of its own" '[[ $line == *"|| loose(loose)"*"model=notes.md"*"|| loose(loose)"*"model=loose.pdf"* ]]' "$line"
 $U post "open-url file://$L/notes.md"; sleep 1.5
 again=$(state)
 $U post "snapshot-last $OUT/loose-pdf.png"; sleep 1
-check "opening it again brings its window back, no new one" '[[ $(echo $again | grep -o "|| loose" | wc -l) -eq 2 ]]' "$again"
+check "opening it again brings its window back, no new one" '[[ $(echo $again | grep -o "(loose)" | wc -l) -eq 2 ]]' "$again"
 $U post "loose-dump"; sleep 0.6
 loose=$(grep '^\[loose\]' $ROOT/side.log | tail -1); echo "     $loose"
 $U post "open-url file://$L/notes.md"; sleep 1; $U post "snapshot-last $OUT/loose-last.png"; sleep 1
 check "the Editor alone, Markdown on its preview, and no project made of its folder" '[[ $loose == *"stages=hidden chip=hidden preview=true"* && $loose != *"loose-in-projects"* ]]' "$loose"
+$U post "loose-open-folder"; sleep 2.5
+line=$(state); echo "     $line"
+check "Open Folder as Project makes the window a project window, the file still open" '[[ $(echo $line | grep -o "(loose)" | wc -l) -eq 1 && $line == *"|| loose strip= model=notes.md"* ]]' "$line"
+$U post "snapshot-last $OUT/folder-project.png"; sleep 1
 $U quit
 echo "$failures failed; captures in $OUT"
 exit $(( failures > 0 ))
