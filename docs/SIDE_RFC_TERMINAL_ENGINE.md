@@ -103,8 +103,17 @@ D also fits Side worse:
     displays and the kernel panics Ghostty saw on macOS 14.4 with out-of-sync rendering;
   - `CAMetalDisplayLink`, which measured 38 ms in a first, untuned try;
   - what holds the harness's own process to about 150 MB/s from a PTY.
-- **The design follows from it:** present with vsync. Presenting at once for a key's echo is a
-  possible later gain, to be decided on its own evidence.
+- **Drawing on the main thread is ruled out** (notes section 10). Under bulk output the
+  prototype's main thread waited up to 46 ms for a drawable, which would freeze Side's UI. Drawing
+  on a thread of its own, as Ghostty does, keeps main-thread waits under 1 ms and keeps the latency
+  lead (14.2 ms against D's 23.8). Alloy can't render off the main thread yet (its glyph atlas is
+  `@MainActor`), so that comes first.
+- **The design follows from it:** draw on a render thread, present with vsync. Presenting at once
+  for a key's echo is a possible later gain, to be decided on its own evidence.
+- **The prototype is not comparable to Ghostty's renderer.** It's about 450 lines against
+  Ghostty's renderer, shaders, image support and font system; it has no ligatures, drawn box
+  characters, underline styles, images, selection or IME preedit. No claim about renderer cost
+  against Ghostty until the engine has those (Phase 1).
 
 Each item adds to the benchmark harness (`Benchmarks/Terminal`) and re-runs it; results go into
 the benchmarks write-up as a dated section.
