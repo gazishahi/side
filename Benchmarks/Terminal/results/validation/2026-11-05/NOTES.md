@@ -288,7 +288,7 @@ process CPU in six sessions was about the same (3.5 s).
 the terminal. The latency lead over D doesn't come from drawing on the main thread; where D's
 extra ~10 ms goes is still unexplained until D is profiled.
 
-## 11. Where full libghostty's extra latency goes (`../2026-11-05-stages/`)
+## 11. Where full libghostty's extra latency goes (`../2026-11-05-stages/`, `scripts/stages.sh`)
 
 `TERMBENCH_STAGES=1` timestamps each key's path in-process (SIP rules out system tracing): when
 the view got the key, when the key was sent, and every frame handoff to Core Animation (C's
