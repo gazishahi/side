@@ -95,8 +95,10 @@ D also fits Side worse:
     libghostty 3.46 s.
 - **Reproducible:** the harness and results are public (github.com/gazishahi/side-terminal-bench),
   and a clean clone reproduced the six-session results without the keeper.
+- **24 sessions behind the keeper** (notes section 9): C′ uses 0.79 s of CPU on the 11-03 load
+  against D′'s 1.60 s and SwiftTerm's 4.77 s, and 178 MB against D′'s 763 MB. On real output, C′
+  uses 19% of SwiftTerm's CPU. The keepers add about 8 MB per session for every setup.
 - **Still open:**
-  - 24 sessions behind the keeper;
   - whether to present without vsync at all: an optional ~4 ms, against tearing, power, external
     displays and the kernel panics Ghostty saw on macOS 14.4 with out-of-sync rendering;
   - `CAMetalDisplayLink`, which measured 38 ms in a first, untuned try;
