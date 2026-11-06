@@ -148,10 +148,23 @@ final class ProjectSpaces {
 
 /// Shown above the chip for a moment after each switch (Sill's indicator): a mark per project,
 /// the current one opened out with its name, so you see where you landed and what's either side.
+/// The marks are the projects' own, as on the chip; switching while it shows, the name moves to
+/// the next mark and the glass springs to its new width (the owner, 2026-11-05).
 @MainActor
 final class ProjectIndicator: NSView {
     private let row = NSStackView()
+    private let name = NSTextField(labelWithString: "")
+    /// Each project's mark, by its path, kept from one switch to the next so they can move.
+    private var marks: [String: NSImageView] = [:]
+    private var markSizes: [String: NSLayoutConstraint] = [:]
+    private var order: [String] = []
+    private var dots: [NSView] = []
+    private var isShown = false
     private var hide: DispatchWorkItem?
+    private lazy var widthSpring = DS.Motion.WidthSpring(self)
+
+    static let currentMarkSize: CGFloat = 18
+    static let otherMarkSize: CGFloat = 15
 
     init() {
         super.init(frame: .zero)
@@ -159,19 +172,33 @@ final class ProjectIndicator: NSView {
         wantsLayer = true
         let glass = DS.makeGlass(cornerRadius: DS.Radius.capsule(height: 34))
         addSubview(glass)
+        // The marks inside the glass while it springs to a wider width than it has yet.
+        let clip = NSView()
+        clip.wantsLayer = true
+        clip.layer?.masksToBounds = true
+        clip.layer?.cornerRadius = DS.Radius.capsule(height: 34)
+        clip.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(clip)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = DS.Spacing.m
         row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
+        clip.addSubview(row)
+        name.font = DS.Text.body(.medium)
+        name.wantsLayer = true
         NSLayoutConstraint.activate([
             glass.topAnchor.constraint(equalTo: topAnchor), glass.bottomAnchor.constraint(equalTo: bottomAnchor),
             glass.leadingAnchor.constraint(equalTo: leadingAnchor), glass.trailingAnchor.constraint(equalTo: trailingAnchor),
+            clip.topAnchor.constraint(equalTo: topAnchor), clip.bottomAnchor.constraint(equalTo: bottomAnchor),
+            clip.leadingAnchor.constraint(equalTo: leadingAnchor), clip.trailingAnchor.constraint(equalTo: trailingAnchor),
             heightAnchor.constraint(equalToConstant: 34),
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.xl),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.xl),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        // Its width, unless the spring holds another for a moment.
+        let fits = row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.xl)
+        fits.priority = .defaultHigh
+        fits.isActive = true
         alphaValue = 0
         isHidden = true
         setAccessibilityElement(false)
@@ -180,36 +207,86 @@ final class ProjectIndicator: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func show(current url: URL) {
-        row.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let spaces = ProjectSpaces.shared.shown(current: url)
         let currentPath = url.standardizedFileURL.path
-        for space in ProjectSpaces.shared.shown(current: url) {
+        // Showing already: the change animates from what's on screen, so whatever else is
+        // waiting for layout lands first, unanimated.
+        let moves = isShown && !DS.Motion.reduceMotion
+        if moves { superview?.layoutSubtreeIfNeeded() }
+        let oldWidth = widthSpring.currentWidth
+        if order != spaces.map(\.path) {
+            row.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            for space in spaces {
+                let mark = marks[space.path] ?? {
+                    let mark = NSImageView()
+                    mark.imageScaling = .scaleProportionallyUpOrDown
+                    mark.translatesAutoresizingMaskIntoConstraints = false
+                    let size = mark.widthAnchor.constraint(equalToConstant: Self.otherMarkSize)
+                    NSLayoutConstraint.activate([size, mark.heightAnchor.constraint(equalTo: mark.widthAnchor)])
+                    marks[space.path] = mark
+                    markSizes[space.path] = size
+                    return mark
+                }()
+                row.addArrangedSubview(mark)
+            }
+            order = spaces.map(\.path)
+        }
+        dots.forEach { $0.removeFromSuperview() }
+        dots = []
+        for space in spaces {
+            guard let mark = marks[space.path] else { continue }
             let isCurrent = space.path == currentPath
-            let icon = NSImageView(image: ProjectSpaces.image(for: space, pointSize: isCurrent ? 13 : 11) ?? NSImage())
-            icon.alphaValue = isCurrent ? 1 : 0.55
-            row.addArrangedSubview(icon)
+            mark.image = ProjectSpaces.mark(for: space, size: Self.currentMarkSize)
+            mark.alphaValue = isCurrent ? 1 : 0.55
+            markSizes[space.path]?.constant = isCurrent ? Self.currentMarkSize : Self.otherMarkSize
+            row.setCustomSpacing(NSStackView.useDefaultSpacing, after: mark)
             if !isCurrent, let state = ActivityCenter.shared.attention(forProject: space.path) {
                 let dot = DS.StatusDot(state: state)
-                icon.addSubview(dot)
+                mark.addSubview(dot)
                 NSLayoutConstraint.activate([
-                    dot.centerXAnchor.constraint(equalTo: icon.trailingAnchor),
-                    dot.centerYAnchor.constraint(equalTo: icon.bottomAnchor),
+                    dot.centerXAnchor.constraint(equalTo: mark.trailingAnchor),
+                    dot.centerYAnchor.constraint(equalTo: mark.bottomAnchor),
                 ])
-            }
-            if isCurrent {
-                let name = NSTextField(labelWithString: space.name)
-                name.font = DS.Text.body(.medium)
-                row.addArrangedSubview(name)
-                row.setCustomSpacing(DS.Spacing.xl, after: name)
-                row.setCustomSpacing(DS.Spacing.s, after: icon)
+                dots.append(dot)
             }
         }
+        // The name, after the current mark. Moved, not re-added, so it slides there.
+        // (Removing a view that isn't arranged throws.)
+        if row.arrangedSubviews.contains(name) { row.removeArrangedSubview(name) }
+        if let index = spaces.firstIndex(where: { $0.path == currentPath }), let mark = marks[currentPath] {
+            name.stringValue = spaces[index].name
+            row.insertArrangedSubview(name, at: index + 1)
+            row.setCustomSpacing(DS.Spacing.s, after: mark)
+            row.setCustomSpacing(DS.Spacing.xl, after: name)
+        } else {
+            name.removeFromSuperview()
+        }
+        if moves {
+            // The marks slide to their places, the glass springs to its width, and the name
+            // fades in on its way to the mark it now follows.
+            widthSpring.release()
+            widthSpring.run(from: oldWidth, to: fittingSize.width)
+            DS.Motion.animate(DS.Motion.snappy) { self.superview?.layoutSubtreeIfNeeded() }
+            // From nothing, a beat late, so the marks crossing its place have gone by. (Its
+            // alpha set to 0 and animated to 1 in one pass started from 1.)
+            let fadeIn = CABasicAnimation(keyPath: "opacity")
+            fadeIn.fromValue = 0
+            fadeIn.toValue = 1
+            fadeIn.beginTime = CACurrentMediaTime() + DS.Motion.glanceDuration
+            fadeIn.duration = DS.Motion.presentDuration
+            fadeIn.timingFunction = DS.Motion.fadeCurve
+            fadeIn.fillMode = .backwards
+            name.layer?.add(fadeIn, forKey: "nameFadeIn")
+        }
         hide?.cancel()
+        isShown = true
         isHidden = false
         DS.Motion.fade { self.animator().alphaValue = 1 }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            self.isShown = false
             DS.Motion.fade({ self.animator().alphaValue = 0 }, completion: { [weak self] in
-                if self?.alphaValue == 0 { self?.isHidden = true }
+                if self?.isShown == false { self?.isHidden = true }
             })
         }
         hide = work
@@ -217,4 +294,7 @@ final class ProjectIndicator: NSView {
     }
 
     var isShowingForTesting: Bool { !isHidden && alphaValue > 0 }
+    /// The projects' names as shown, the current one's after its mark: "·|·|side|·".
+    var layoutForTesting: String { row.arrangedSubviews.map { $0 === name ? name.stringValue : "\u{00B7}" }.joined(separator: "|") }
+    var widthForTesting: CGFloat { frame.width }
 }

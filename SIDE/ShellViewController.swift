@@ -909,7 +909,8 @@ final class ShellViewController: NSViewController {
         }
         let currentTrack = store.tracks.first { $0.branchName == currentTrackKey }
         var snapshot = TrackPill.Snapshot(
-            title: currentTrack.map { $0.intent.isEmpty ? $0.branchName : $0.intent } ?? "\(gitBranch ?? store.defaultBranchName()) · Base",
+            title: currentTrack.map { $0.intent.isEmpty ? $0.branchName : $0.intent } // Outside a repository there's no branch to name: "Base", not " · Base".
+            ?? [gitBranch ?? store.defaultBranchName(), "Base"].filter { !$0.isEmpty }.joined(separator: " · "),
             state: currentTrack.map(state) ?? .idle,
             stateName: currentTrack.map { state($0).name } ?? "Base"
         )
@@ -1256,6 +1257,8 @@ final class ShellViewController: NSViewController {
 
     private lazy var projectIndicator = ProjectIndicator()
     var projectIndicatorForTesting: ProjectIndicator { projectIndicator }
+    /// The track pill's words and the width of its glass.
+    var trackPillForTesting: (title: String, width: CGFloat) { (trackPill.snapshot.title, trackPill.superview?.frame.width ?? 0) }
 
     /// This window moves to another project; the one it leaves stays open in the background, so
     /// its terminals and agents carry on (and the activity pill can say what they're doing).

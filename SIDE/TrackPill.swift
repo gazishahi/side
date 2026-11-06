@@ -67,6 +67,9 @@ final class TrackPill: NSView {
     private var glyphAfterTitle: NSLayoutConstraint!
     private var glyphAfterExtra: NSLayoutConstraint!
     private var popover: NSPopover?
+    /// Under the window's stay-put priority (500) and the bar's limits; over the name's
+    /// resistance to truncating (490), so a longer name waits for the glass.
+    private lazy var widthSpring = DS.Motion.WidthSpring(self, priority: NSLayoutConstraint.Priority(495))
 
     init() {
         super.init(frame: .zero)
@@ -130,6 +133,18 @@ final class TrackPill: NSView {
         snapshot = snapshotProvider?() ?? .empty
         dot.state = snapshot.state
         dot.isHidden = snapshot.state == .idle
+        // A new name (another project, another track) on screen: the pill springs to its width
+        // and the words crossfade, rather than jumping (the owner, 2026-11-05). Whatever else is
+        // waiting for layout lands first, unanimated, so only the pill moves.
+        let root = window?.contentView
+        let retitles = root != nil && !titleLabel.stringValue.isEmpty && titleLabel.stringValue != snapshot.title && !DS.Motion.reduceMotion
+        if retitles {
+            root?.layoutSubtreeIfNeeded()
+            DS.Motion.crossfade(titleLabel, duration: DS.Motion.glanceDuration)
+            // The old words fading, inside the glass as it closes up.
+            titleLabel.layer?.masksToBounds = true
+        }
+        let oldWidth = widthSpring.currentWidth
         titleLabel.stringValue = snapshot.title
         extraLabel.stringValue = "+\(snapshot.othersNeedingYou)"
         let showsExtra = snapshot.othersNeedingYou > 0
@@ -142,6 +157,15 @@ final class TrackPill: NSView {
             NSLayoutConstraint.activate([glyphTrailing, showsExtra ? glyphAfterExtra : glyphAfterTitle])
         } else {
             (showsExtra ? extraTrailing : titleTrailing).isActive = true
+        }
+        if retitles {
+            // The name may stretch while a shorter one's glass closes up to it.
+            widthSpring.release()
+            let target = fittingSize.width
+            titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            widthSpring.run(from: oldWidth, to: target) { [weak self] in
+                self?.titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+            }
         }
         var tip = [snapshot.projectName, snapshot.branch].compactMap { $0 }.joined(separator: " · ")
         if showsGlyph { tip += "\n" + Self.tornOutNote }

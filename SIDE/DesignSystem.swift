@@ -677,6 +677,47 @@ enum DS {
             group.duration = smooth.duration
             layer.add(group, forKey: "dsAppear")
         }
+
+        /// A piece of glass whose content changed width springs from the width it had to the
+        /// one it fits now: held on a width constraint that's animated, then let go. Glass
+        /// follows a constraint each frame; an animated frame snapped it to its new size at
+        /// once (the update pill, 2026-11-05). One per view: a new change takes over from
+        /// wherever the last one has got to.
+        @MainActor
+        final class WidthSpring {
+            private weak var view: NSView?
+            private let priority: NSLayoutConstraint.Priority
+            private var hold: NSLayoutConstraint?
+
+            /// `priority`: under required, the window's and the bar's own limits win over it.
+            init(_ view: NSView, priority: NSLayoutConstraint.Priority = .required) {
+                self.view = view
+                self.priority = priority
+            }
+
+            /// The width it's at now, mid-spring or not: read before the content changes.
+            var currentWidth: CGFloat { view?.frame.width ?? 0 }
+
+            /// Lets go of the width it was held at, so `fittingSize` is the content's again.
+            func release() {
+                hold?.isActive = false
+                hold = nil
+            }
+
+            func run(from old: CGFloat, to new: CGFloat, completion: (@MainActor () -> Void)? = nil) {
+                release()
+                guard let view, !reduceMotion, old > 0, abs(old - new) > 0.5 else { completion?(); return }
+                let width = view.widthAnchor.constraint(equalToConstant: old)
+                width.priority = priority
+                width.isActive = true
+                hold = width
+                animate(snappy, { width.animator().constant = new }, completion: { [weak self] in
+                    guard let self, self.hold === width else { return }
+                    self.release()
+                    completion?()
+                })
+            }
+        }
     }
 }
 

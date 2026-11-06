@@ -195,6 +195,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     }
                     if command == "switcher-dump" { FileHandle.standardError.write(Data("[switcher] \(shell.projectSwitcherForTesting?.framesForTesting ?? "closed") entries=\(shell.projectSwitcherForTesting?.entryNamesForTesting ?? []) selected=\(shell.projectSwitcherForTesting?.selectedNameForTesting ?? "-")\n".utf8)) }
                     if command.hasPrefix("switcher-hover "), let index = Int(command.dropFirst(15)) { shell.projectSwitcherForTesting?.hoverForTesting(index) }
+                    if command == "indicator-dump" {
+                        let indicator = shell.projectIndicatorForTesting, pill = shell.trackPillForTesting
+                        FileHandle.standardError.write(Data("[indicator] shown=\(indicator.isShowingForTesting) layout=\(indicator.layoutForTesting) width=\(indicator.widthForTesting) pill=\(pill.title) pillWidth=\(pill.width)\n".utf8))
+                    }
                     if command == "cycle-dump" {
                         let strip = shell.cycleStripForTesting
                         FileHandle.standardError.write(Data("[cycle] \(strip.map { "shown=\(!$0.isHidden) entries=\($0.entries.map(\.space.name)) selected=\($0.selected?.space.name ?? "-") caption=\($0.captionForTesting) frame=\($0.frame) drawn=\($0.subviews.first?.frame ?? .zero)" } ?? "closed")\n".utf8))
