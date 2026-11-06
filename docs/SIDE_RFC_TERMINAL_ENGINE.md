@@ -151,7 +151,11 @@ RFC is revisited (D′, or a hybrid) before Phase 1:
   nothing about the emulator. They take a grid of cells (codepoints or graphemes, style, wide and
   spacer flags) with dirty rows, plus the cursor, selection and marks. They draw with Alloy's
   glyph atlas and quad shaders, the same ones the Editor uses, so the two look alike. Alloy stays
-  free of Zig and Ghostty.
+  free of Zig and Ghostty. Alloy becomes one Metal text renderer with two kinds of content,
+  laid-out documents and cell grids, which makes "a text editor's renderer" too narrow a
+  description of it.
+- **Alloy renders off the main thread first.** Its glyph atlas is `@MainActor` today; the
+  terminal must draw on a render thread (Phase 0, notes section 10).
 - **`SideTerminal`, a new package in Side.** The Swift wrapper over libghostty-vt's C API, shared
   with the keeper, which uses it for its headless terminal. It feeds the render state into
   `AlloyTerminal`'s grid. The one wrapper is also where the C API's instability is contained:
@@ -161,7 +165,8 @@ RFC is revisited (D′, or a hybrid) before Phase 1:
 - A reader thread parses socket bytes into libghostty-vt.
 - A frame takes the terminal's lock only for `ghostty_render_state_update`, then builds quads
   without it.
-- Drawing is wherever Phase 0 found the lowest latency.
+- Drawing is on a render thread of its own, presenting with vsync (Phase 0: the main thread
+  stalled up to 46 ms under bulk output; a render thread kept the latency lead).
 - Hidden tabs parse and never draw; showing one builds a frame (under 1 ms at 200×60).
 
 **Reattach** moves to libghostty-vt's binary snapshot (`ghostty_snapshot_encode`), restored
@@ -198,7 +203,8 @@ Today's features and where each comes from:
 **New for free:** find in the terminal (`search.h`); the 10,000 lines of scrollback the keeper
 already keeps, which SwiftTerm couldn't show without slowing down.
 
-**Later, not for the switch:** kitty graphics (`kitty_graphics.h`); ligatures.
+**Later, not for the switch:** Tier 2 below, kitty graphics (`kitty_graphics.h`) among it.
+Ligatures are Tier 1.
 
 **Known regression:** Arabic draws one letter per cell, unjoined, as Ghostty does. SwiftTerm
 shapes it.
@@ -211,13 +217,50 @@ shapes it.
 - the UI test hooks `typeForTesting` and `terminalBackgroundForTesting`;
 - the third-party notices check, which keeps SwiftTerm until it's removed.
 
+### Renderer parity with Ghostty, and the rule for claims
+
+The Phase 0 prototype is about 450 lines; Ghostty's renderer is about 3,700, with 850 of shaders,
+1,400 for images and a font system (discovery, fallback, two shapers, drawn box characters)
+under it. Its cost per frame isn't comparable to Ghostty's until it does the same work. Agreed
+2026-11-05:
+
+**Tier 1, needed before Terminal switches over:**
+- Shaping across runs, not per cell: ligatures and font features; font fallback and discovery;
+  bold, italic and bold-italic faces, synthetic when missing; wide characters and emoji.
+- Box drawing, block elements, braille, powerline and legacy-computing symbols drawn to the cell,
+  not taken from the font.
+- Faint, inverse, invisible, blink, strikethrough, overline; underline styles (single, double,
+  curly, dotted, dashed) with their own color.
+- Cursor styles (block, bar, underline, hollow when unfocused), blink and color.
+- Selection, search and link highlights (hover, OSC 8).
+- A scrolled-back viewport while output streams; IME preedit.
+- Padding and padding color; resize without stretching or jitter; scale and display changes.
+- Minimum contrast; color spaces and blending.
+
+**Tier 2, what power users expect:** kitty graphics (images and Unicode placeholders);
+background opacity and blur; unfocused-split dimming; font variations.
+
+**Tier 3, Ghostty's extras, out of scope and said so:** custom shaders, background images, link
+previews.
+
+**The rule for claims:**
+1. No claim about renderer cost against Ghostty until Tier 1 is done and benchmarked.
+2. No "comparable to Ghostty's renderer" until Tier 2 is done too.
+3. Every published result lists the features each renderer had on; Ghostty runs at its defaults
+   (custom shaders and background images off).
+4. New workloads exercise the features: ligature-heavy code, box drawing, styled underlines,
+   images, selection while streaming, a scrolled-back viewport.
+
+Claims that don't depend on the renderer's features (hidden sessions' CPU and memory, which never
+reach a renderer in either design) still need re-measuring once Tier 1 is in, not arguing.
+
 ## Phases
 
 0. **Validate** (above), with the gate.
 1. **`SideTerminal` and `AlloyTerminal`, behind a setting.** Draw, type, scroll, resize, theme and
    reattach by binary snapshot. On in the owner's builds first, SwiftTerm the default for
    everyone else.
-2. **Parity**: the table above, then the ported tests. UI checks on screen in light and dark,
+2. **Parity**: the table above, Tier 1, then the ported tests; the benchmarks re-run. UI checks on screen in light and dark,
    with Claude Code, vim, lazygit and htop.
 3. **The default**, with SwiftTerm kept one release as the fallback setting.
 4. **SwiftTerm removed**: the dependency, its build-plugin flag (`-skipPackagePluginValidation` in
@@ -239,3 +282,5 @@ on 2026-11-03.
    CoreText later.
 4. **The fallback**: keep SwiftTerm as a setting for one release, or switch outright once parity
    passes.
+5. **Alloy's public description**: say now that it renders cell grids as well as documents, or
+   after the terminal work proves the design.
