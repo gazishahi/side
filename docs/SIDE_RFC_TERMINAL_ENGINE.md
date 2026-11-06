@@ -42,7 +42,8 @@ SwiftTerm (1.20.0) Side ships today, so none of this has gone stale:
   Ghostty's own vsync-paced design, checked two ways.
 
 **Not settled:**
-1. **Latency against Side today.** SwiftTerm's view is still the quickest (6.8 ms median). C's
+1. **Latency against Side today** (since resolved: on the display, C with vsync is ahead; see
+   Phase 0). SwiftTerm's view is still the quickest (6.8 ms median). C's
    frames take under 0.5 ms; the gap is in how a Metal frame reaches the screen. Two fixes were
    tried; the promising ones (`CAMetalDisplayLink`, presenting at a chosen time, a render
    thread) weren't. Going from 7 ms to 13 ms is a regression in the one thing typing feels.
@@ -81,24 +82,27 @@ D also fits Side worse:
 ## Phase 0: validate before building
 
 **Where it stands (2026-11-05;** notes in `Benchmarks/Terminal/results/validation/2026-11-05/NOTES.md`**):**
-- **Steps 2–4 are done, and the gate is met** with one condition: C′ presents without waiting for
-  vsync. Behind the keeper, it answers a real key in 7.7 ms median (p95 11.5), against
-  SwiftTerm's 15.4 ms (p95 22.2). Its throughput matches D′'s.
-- **With vsync, the latency gate is not met** (18.4 against 15.4 ms).
+- **The gate is met, with vsync** (notes section 8). Every latency number before section 8
+  stopped the clock when a capture of the window showed the key, which doesn't wait for the
+  window server's composite. Measured at the composited display frame instead (macOS 27.2,
+  120 Hz, real keys, idle): C with vsync 14.5 ms, SwiftTerm 16.4 ms, full libghostty 24.7 ms. C
+  without vsync is 10.2 ms, about 4 ms better, not 12.
+- **Throughput:** behind the keeper, C′ matches D′ (steps 2–4).
 - **Step 1, the real capture, is done** (on macOS 27.2; notes section 7):
   - It was 45 minutes of the owner's Claude Code. That's 2.6 MB of small, synchronized updates,
     about 1 KB/s.
   - Six sessions replaying it cost C′ 1.62 s of CPU a minute. SwiftTerm takes 7.27 s and full
     libghostty 3.46 s.
-  - A real key, behind the keeper, takes C′ 3.5 ms without vsync. SwiftTerm, which got faster on
-    27.2, takes 8.9 ms. C′ with vsync takes 15.8 ms, which fails the gate.
+- **Reproducible:** the harness and results are public (github.com/gazishahi/side-terminal-bench),
+  and a clean clone reproduced the six-session results without the keeper.
 - **Still open:**
   - 24 sessions behind the keeper;
-  - whether presenting without vsync is safe (tearing, power, external displays, and the kernel
-    panics Ghostty has seen with out-of-sync rendering);
+  - whether to present without vsync at all: an optional ~4 ms, against tearing, power, external
+    displays and the kernel panics Ghostty saw on macOS 14.4 with out-of-sync rendering;
+  - `CAMetalDisplayLink`, which measured 38 ms in a first, untuned try;
   - what holds the harness's own process to about 150 MB/s from a PTY.
-- **The design follows from it:** present at once for the first frame after quiet (a key's
-  echo), and pace to the display while output streams.
+- **The design follows from it:** present with vsync. Presenting at once for a key's echo is a
+  possible later gain, to be decided on its own evidence.
 
 Each item adds to the benchmark harness (`Benchmarks/Terminal`) and re-runs it; results go into
 the benchmarks write-up as a dated section.
