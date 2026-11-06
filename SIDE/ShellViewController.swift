@@ -510,11 +510,15 @@ final class ShellViewController: NSViewController {
     /// this window holds it alone and lands on its stage, and the pill says it's a second view.
     func openProject(at url: URL, focusingTrackKey: String?, soleFile: URL? = nil, soleSession: TerminalSession? = nil) {
         isTornOut = soleFile != nil || soleSession != nil
+        if soleFile == nil, isLooseFileWindow { setLooseFileWindow(false) }
         makeVC.soleFile = soleFile
         makeVC.loadProject(at: url)
-        // When it was last opened: the switcher says, for a project that isn't open now.
-        ProjectSpaces.shared.space(for: url)
-        ProjectSpaces.shared.touch(url)
+        // When it was last opened: the switcher says, for a project that isn't open now. A
+        // loose file's folder isn't a project.
+        if !isLooseFileWindow {
+            ProjectSpaces.shared.space(for: url)
+            ProjectSpaces.shared.touch(url)
+        }
         if let soleSession { runVC.adoptTornOutSession(soleSession, trackKey: focusingTrackKey ?? "") }
         let landOn: Stage = soleSession != nil ? .run : .make
         guard let focusingTrackKey, let store = trackStore,
@@ -528,6 +532,30 @@ final class ShellViewController: NSViewController {
         }
         switchToTrack(track, landOn: landOn, completion: { _ in })
     }
+
+    /// A file from Finder in no project, alone in this window (2026-11-06): the Editor only, no
+    /// project chip or track pill, and its folder not added to the projects.
+    func openLooseFile(_ file: URL) {
+        setLooseFileWindow(true)
+        openProject(at: file.deletingLastPathComponent(), focusingTrackKey: nil, soleFile: file)
+        show(.make)
+    }
+
+    private(set) var isLooseFileWindow = false
+    private func setLooseFileWindow(_ loose: Bool) {
+        isLooseFileWindow = loose
+        makeVC.isLooseFile = loose
+        chrome.setProjectPiecesHidden(loose)
+        refreshStageControl()
+    }
+
+    var looseChromeForTesting: String {
+        "stages=\(chrome.stageControlHiddenForTesting ? "hidden" : "shown") chip=\(chrome.projectChip.isHidden ? "hidden" : "shown")"
+    }
+    var markdownPreviewShownForTesting: Bool { makeVC.markdownPreviewShownForTesting }
+
+    /// The file a loose file's window shows.
+    var looseFile: URL? { isLooseFileWindow ? makeVC.soleFile : nil }
 
     /// Opened for a tab or terminal torn out of another window on the same track.
     private var isTornOut = false
@@ -617,7 +645,8 @@ final class ShellViewController: NSViewController {
         }
         trackPill.onOpenTracks = { [weak self] in self?.show(.tracks) }
         let projectChip = chrome.projectChip
-        projectChip.currentProject = { [weak self] in self?.projectURL }
+        // A loose file's folder isn't a project: asking the chip's space for it made it one.
+        projectChip.currentProject = { [weak self] in self?.isLooseFileWindow == true ? nil : self?.projectURL }
         projectChip.onSwipeProject = { [weak self] offset in self?.switchProject(offset: offset) }
         projectChip.onOpenSwitcher = { [weak self] in self?.toggleProjectSwitcher() }
         makeVC.onSwitchProject = { [weak self] url in self?.switchProject(to: url) }
@@ -866,7 +895,7 @@ final class ShellViewController: NSViewController {
             let badge = stageBadge(stage)
             stageControl.setBadge(badge?.state, spokenState: badge?.spoken, at: index)
         }
-        chrome.setStageControlHidden(stages.count <= 1)
+        chrome.setStageControlHidden(stages.count <= 1 || isLooseFileWindow)
     }
 
     /// Unpinned stages with something that needs the user: Review has a review-ready or failed
@@ -1280,7 +1309,7 @@ final class ShellViewController: NSViewController {
         }
         confirmCloseAllUnsaved { [weak self] proceed in
             guard let self, proceed else { return }
-            if let current = self.projectURL { ProjectSpaces.shared.hold(current) }
+            if let current = self.projectURL, !self.isLooseFileWindow { ProjectSpaces.shared.hold(current) }
             ProjectSpaces.shared.space(for: url)
             self.makeVC.putAwayTabsForProjectSwitch()
             // Another place, briefly marked: the stage crossfades, quicker than a stage switch.
@@ -1466,6 +1495,8 @@ final class ShellViewController: NSViewController {
 
     private func show(_ stage: Stage) {
         guard current != stage else { return }
+        // A loose file's window is its Editor alone: no project for the other stages to show.
+        if isLooseFileWindow, stage != .make { return }
         // Writer mode is Make alone: going anywhere else leaves it.
         if isWriting, stage != .make { setWriterMode(false) }
         // Transient surfaces never outlive the stage they were opened on (§5 acceptance).
@@ -1957,7 +1988,7 @@ final class ShellViewController: NSViewController {
     }
 
     private func projectOpened(_ url: URL) {
-        ProjectSpaces.shared.space(for: url)
+        if !isLooseFileWindow { ProjectSpaces.shared.space(for: url) }
         // Opening a different project (or reopening after this window already had one) drops
         // this window's claim on whatever it held before — without this, the old project's
         // context would never hit zero refcount and would leak for the life of the app.

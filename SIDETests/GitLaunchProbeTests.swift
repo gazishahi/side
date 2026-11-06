@@ -143,4 +143,24 @@ final class GitLaunchProbeTests: XCTestCase {
         try manager.createDirectory(at: folder.appendingPathComponent(".git"), withIntermediateDirectories: true)
         XCTAssertNil(TrackStore.soleRepository(inside: folder), "a repository itself")
     }
+
+    /// A file from Finder's Open With goes to the project holding it: an open one first (the
+    /// deepest, so a nested project wins over its parent), then one Side knows, then its git
+    /// repository; in none, it's loose.
+    func testAFileOpenedFromOutsideFindsItsProject() throws {
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("open-with-\(UUID().uuidString)").resolvingSymlinksInPath()
+        defer { try? manager.removeItem(at: base) }
+        let repo = base.appendingPathComponent("repo"), nested = repo.appendingPathComponent("packages/app")
+        try manager.createDirectory(at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: nested.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: base.appendingPathComponent("loose"), withIntermediateDirectories: true)
+        let file = nested.appendingPathComponent("src/main.ts")
+        XCTAssertEqual(AppDelegate.projectRoot(for: file, open: [repo, nested], known: [])?.path, nested.path, "the deepest open project")
+        XCTAssertEqual(AppDelegate.projectRoot(for: file, open: [], known: [nested])?.path, nested.path, "a project Side knows")
+        XCTAssertEqual(AppDelegate.projectRoot(for: file, open: [], known: [])?.path, repo.path, "its repository")
+        XCTAssertNil(AppDelegate.projectRoot(for: base.appendingPathComponent("loose/notes.pdf"), open: [], known: []), "a loose file: a window of its own")
+        XCTAssertEqual(AppDelegate.projectRoot(for: repo.appendingPathComponent("README.md"), open: [nested], known: [])?.path, repo.path,
+                       "a project beside the file's isn't its project")
+    }
 }

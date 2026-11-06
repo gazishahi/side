@@ -148,6 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // or "snapshots <dir> <count> <ms>" for frames of a motion. An app may capture
                     // its own windows without screen-recording permission.
                     if command.hasPrefix("snapshot ") { Self.snapshot(window, to: String(command.dropFirst(9))) }
+                    // "snapshot-last <path>": the newest window (one opened from Finder, say).
+                    if command.hasPrefix("snapshot-last "), let last = self.shellViewControllers.last?.view.window { Self.snapshot(last, to: String(command.dropFirst(14))) }
                     // Every window on screen (Settings, popovers, sheets): "snapshot-all <dir>".
                     if command.hasPrefix("snapshot-all ") {
                         let dir = String(command.dropFirst(13))
@@ -172,6 +174,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 }
                             }
                         }
+                    }
+                    if command == "loose-dump", let loose = self.shellViewControllers.first(where: { $0.isLooseFileWindow && $0.looseFile?.pathExtension == "md" }) {
+                        let inProjects = ProjectSpaces.shared.spaces.contains { $0.url.lastPathComponent == "loose" }
+                        FileHandle.standardError.write(Data("[loose] \(loose.looseChromeForTesting) preview=\(loose.markdownPreviewShownForTesting)\(inProjects ? " loose-in-projects" : "")\n".utf8))
+                    }
+                    if command == "windows-dump" {
+                        let lines = self.shellViewControllers.map { other in
+                            "\(other.projectRootURL?.lastPathComponent ?? "-")\(other.view.window?.isKeyWindow == true ? "*" : "") \(other.tabsDumpForTesting)"
+                        }
+                        FileHandle.standardError.write(Data("[windows] \(lines.joined(separator: " || "))\n".utf8))
                     }
                     if command == "pdf-dump" { FileHandle.standardError.write(Data("[pdf] \(shell.pdfStateForTesting)\n".utf8)) }
                     if command.hasPrefix("find ") { shell.findForTesting(String(command.dropFirst(5))) }
@@ -478,6 +490,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard !id.isEmpty, id != "/" else { continue }
             revealTerminal(id, attempts: 50)
         }
+        let files = urls.filter(\.isFileURL)
+        if !files.isEmpty { openFiles(files, attempts: 50) }
+    }
+
+    /// Files and folders from Finder's Open With or the Dock icon (2026-11-06). Like a side://
+    /// link, they wait for the last session to be restored, so they don't open a second window
+    /// on a project that was about to come back. A folder opens as a project; a file opens in
+    /// the window whose project holds it, else the project it belongs to (`projectRoot(for:)`).
+    private func openFiles(_ urls: [URL], attempts: Int) {
+        guard attempts > 0 else { return }
+        guard didFinishRestoring else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.openFiles(urls, attempts: attempts - 1) }
+            return
+        }
+        for url in urls.map({ $0.standardizedFileURL }) {
+            let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            let projects = shellViewControllers.filter { !$0.isLooseFileWindow }.compactMap(\.projectRootURL)
+            guard let project = isFolder ? url : Self.projectRoot(for: url, open: projects, known: ProjectSpaces.shared.spaces.map(\.url)) else {
+                openLooseFile(url)
+                continue
+            }
+            revealProject(project) { shell in
+                shell.view.window?.makeKeyAndOrderFront(nil)
+                if !isFolder { shell.revealFile(url) }
+            }
+        }
+        NSApp.activate()
+    }
+
+    /// A file in no project, in a window of its own: the one already showing it, else a window
+    /// with nothing open, else a new one.
+    private func openLooseFile(_ file: URL) {
+        let path = file.resolvingSymlinksInPath().path
+        if let shown = shellViewControllers.first(where: { $0.looseFile?.resolvingSymlinksInPath().path == path }) {
+            shown.view.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let shell = shellViewControllers.first { !$0.hasProject } ?? (presentNewWindow().contentViewController as? ShellViewController)
+        shell?.view.window?.makeKeyAndOrderFront(nil)
+        shell?.openLooseFile(file)
+    }
+
+    /// The project a file opened from outside belongs to: the deepest open project holding it,
+    /// else the deepest project Side knows, else its git repository; nil for a loose file.
+    nonisolated static func projectRoot(for file: URL, open: [URL], known: [URL]) -> URL? {
+        let path = file.standardizedFileURL.resolvingSymlinksInPath().path
+        func holding(_ roots: [URL]) -> URL? {
+            roots.filter { root in
+                let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
+                return path.hasPrefix(rootPath.hasSuffix("/") ? rootPath : rootPath + "/")
+            }.max { $0.path.count < $1.path.count }
+        }
+        if let root = holding(open) ?? holding(known) { return root }
+        var folder = file.deletingLastPathComponent()
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        while folder.path != "/" && folder.standardizedFileURL.path != home {
+            if FileManager.default.fileExists(atPath: folder.appendingPathComponent(".git").path) { return folder }
+            folder = folder.deletingLastPathComponent()
+        }
+        return nil
     }
 
     /// A click that launched Side arrives before the last project is restored (a turn after the

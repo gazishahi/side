@@ -227,6 +227,14 @@ final class ChromeHost {
         (placement == .floatingBar ? bar : stageControl)?.isHidden = hidden
     }
 
+    var stageControlHiddenForTesting: Bool { (placement == .floatingBar ? bar : stageControl)?.isHidden ?? true }
+
+    /// A loose file's window has no project to show or switch: the chip and the track pill go.
+    func setProjectPiecesHidden(_ hidden: Bool) {
+        projectChip.isHidden = hidden
+        (placement == .floatingBar ? pillPiece : pill)?.isHidden = hidden
+    }
+
     private weak var barRoot: NSView?
     private weak var pillPiece: NSView?
     private var dockedAccessories: [NSView] = []

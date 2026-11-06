@@ -231,8 +231,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// CSV, TSV and Excel files (CSVParser.swift).
     private let sheetView = SheetView()
     private let pdfView = DocumentPDFView()
+    /// The PDF starts below the top row and banners: PDFKit's own scroll view didn't take a top
+    /// inset given after its document, and the first line sat under the title (2026-11-06).
+    private var pdfTop: NSLayoutConstraint!
     /// Find in a PDF: its pages' text, one after another; where each page starts in `findText`.
     private var findPDFPageStarts: [Int] = []
+    /// Between a project's opening and its remembered tabs coming back (its files are indexed
+    /// first): a file opened then is the one to show, not the last one used.
+    private var awaitingRestore = false
+    private var openedWhileRestoring: URL?
     private var csvScroll: NSScrollView { sheetView.scrollView }
     private let markdownPreviewScroll = NSScrollView()
     private let markdownPreviewView = MarkdownPreviewTextView.make()
@@ -368,6 +375,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// project's remembered tabs, and never writes its tabs back into that memory — a
     /// scratch window must not change what the main window restores next launch.
     var soleFile: URL?
+    /// A file opened from Finder that's in no project (2026-11-06): its window shows it alone,
+    /// at once, and its folder isn't indexed or remembered as a project.
+    var isLooseFile = false
     private let lastProjectKey = "side.last-project-path"
     private let lastFilesByProjectKey = "side.last-files-by-project"
     private let openTabsByProjectKey = "side.open-tabs-by-project"
@@ -585,6 +595,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         view.addSubview(sheetView)
 
         pdfView.backgroundColor = Self.editorBackground
+        pdfTop = pdfView.topAnchor.constraint(equalTo: view.topAnchor)
         pdfView.isHidden = true
         pdfView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pdfView)
@@ -643,7 +654,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             minimap.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight), minimapTrailing!,
             imageScroll.topAnchor.constraint(equalTo: view.topAnchor), imageScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), imageScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), imageScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             sheetView.topAnchor.constraint(equalTo: view.topAnchor), sheetView.leadingAnchor.constraint(equalTo: view.leadingAnchor), sheetView.trailingAnchor.constraint(equalTo: view.trailingAnchor), sheetView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            pdfView.topAnchor.constraint(equalTo: view.topAnchor), pdfView.leadingAnchor.constraint(equalTo: view.leadingAnchor), pdfView.trailingAnchor.constraint(equalTo: view.trailingAnchor), pdfView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            pdfTop, pdfView.leadingAnchor.constraint(equalTo: view.leadingAnchor), pdfView.trailingAnchor.constraint(equalTo: view.trailingAnchor), pdfView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             markdownPreviewScroll.topAnchor.constraint(equalTo: view.topAnchor), markdownPreviewScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), markdownPreviewScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), markdownPreviewScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor), emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30), detail.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         ])
@@ -1740,7 +1751,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // `onProjectOpened` callback below, before `reindexAndRestoreLastFile` reads it.
         currentTrackKey = nil
         emptyState.isHidden = true
-        if !AppDelegate.isUITesting {
+        // A window holding one file (torn out, or a loose file) isn't the project to reopen.
+        if !AppDelegate.isUITesting, soleFile == nil {
             HeronDefaults.store.set(url.path, forKey: lastProjectKey)
             rememberRecentProject(url)
         }
@@ -1922,6 +1934,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard activeTabIndex == index else { return }
         let page = pdfView.currentPage.flatMap { pdfView.document?.index(for: $0) } ?? 0
         pdfView.document = document
+        pdfView.opensAtTop = false
         if let same = document.page(at: min(page, max(0, document.pageCount - 1))) { pdfView.go(to: same) }
     }
 
@@ -2112,10 +2125,25 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// before deciding what to reopen.
     private func reindexAndRestoreLastFile() {
         guard let root = focusedRoot, let memoryRoot = projectURL else { return }
+        // A loose file shows at once; its folder (Downloads, say) isn't worth indexing.
+        if isLooseFile, let sole = soleFile {
+            open(sole) { [weak self] in
+                guard let self, sole.pathExtension.lowercased() == "md", let index = self.activeTabIndex,
+                      self.openTabs.indices.contains(index), !self.openTabs[index].isPreviewingMarkdown else { return }
+                // Markdown opened to read: the preview first, the source a toggle away.
+                self.toggleMarkdownPreview()
+            }
+            return
+        }
+        awaitingRestore = true
+        openedWhileRestoring = nil
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let indexed = Self.indexFiles(at: root)
             DispatchQueue.main.async {
                 guard let self, self.focusedRoot == root else { return }
+                self.awaitingRestore = false
+                let opened = self.openedWhileRestoring
+                self.openedWhileRestoring = nil
                 self.tabMemorySuspended = false
                 self.allFiles = indexed
                 self.searchField.placeholderString = "Find a file in \(root.lastPathComponent)"
@@ -2139,14 +2167,15 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     self.isRestoringTabs = true
                     for url in remembered { self.open(url) }
                     self.isRestoringTabs = false
-                    if let active = self.lastFile(forProject: memoryRoot),
+                    // A file opened meanwhile (from Finder, as Side started) stays in front.
+                    if let active = opened ?? self.lastFile(forProject: memoryRoot),
                        let position = self.openTabs.firstIndex(where: { $0.url.path == active.path }) {
                         self.switchToTab(position)
                     }
                     // Written once, at the end: the per-open saves are suppressed above so a
                     // crash mid-restore can't persist a half-restored tab set over the real one.
                     self.rememberOpenTabs(forProject: memoryRoot)
-                } else if self.revealsExplorerWhenEmpty, self.view.window?.isKeyWindow == true {
+                } else if self.revealsExplorerWhenEmpty, self.openTabs.isEmpty, self.view.window?.isKeyWindow == true {
                     // No remembered file in a window just opened — a fully blank canvas isn't a
                     // good first impression. Surface the file tree instead so there's immediately
                     // something to act on, rather than guessing which file to auto-open.
@@ -2186,6 +2215,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "webp"]
 
     private func open(_ url: URL, completion: (@MainActor () -> Void)? = nil) {
+        if awaitingRestore, !isRestoringTabs { openedWhileRestoring = url.standardizedFileURL.resolvingSymlinksInPath() }
         // Captured now: `isRestoringTabs` is true only for the synchronous span of the restore
         // loop, and the work below finishes on a later main-queue turn.
         let deferLanguageServer = isRestoringTabs
@@ -2498,7 +2528,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             view.window?.makeFirstResponder(sheetView.table)
         case .pdf:
             editor.isEditable = false
-            if pdfView.document !== tab.cachedPDF { pdfView.document = tab.cachedPDF }
+            if pdfView.document !== tab.cachedPDF {
+                pdfView.document = tab.cachedPDF
+                pdfView.opensAtTop = true
+                pdfView.needsLayout = true
+            }
             pdfView.applyInsets()
             view.window?.makeFirstResponder(pdfView)
         }
@@ -2593,6 +2627,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     // MARK: - Markdown preview
 
     func toggleMarkdownPreviewForTesting() { toggleMarkdownPreview() }
+    var markdownPreviewShownForTesting: Bool { !markdownPreviewScroll.isHidden }
     var markdownPreviewForTesting: NSTextView { markdownPreviewView }
     /// "shown=true pages=3 page=2 find=1 of 3 marked=3 replace=false"
     var pdfStateForTesting: String {
@@ -6279,7 +6314,7 @@ extension MakeWorkspaceViewController: StageChromeProviding {
             scroll.automaticallyAdjustsContentInsets = false
             scroll.contentInsets.top = topObstruction + banners + (scroll === editorScroll ? debugTopInset : 0)
         }
-        pdfView.topInset = topObstruction + banners
+        pdfTop?.constant = topObstruction + banners
         if isWriting { applyWriterInsets() }
     }
 
@@ -6710,10 +6745,14 @@ final class FocusableImageView: NSImageView {
 
 /// Make's PDF tab: the pages one after another, fitted to the width, on the editor's background.
 /// Read-only; text selects and copies, links open, ⌘+ and ⌘− and a pinch zoom (PDFView's own).
-/// Its pages sit between the top row and the stage bar, as the editor's text does.
+/// It starts below the top row; its pages scroll under the stage bar, as the editor's text does.
 final class DocumentPDFView: PDFView {
-    var topInset: CGFloat = 0 { didSet { applyInsets() } }
     var bottomInset: CGFloat = 0 { didSet { applyInsets() } }
+    /// A document just shown opens at the top of its first page, once laid out at its size:
+    /// PDFKit kept where it had been scrolled as its frame settled, a few lines down.
+    /// (Set where the document is, not by overriding `document`: PDFKit reads that from its
+    /// page analyzer's thread, and an override here is main-actor isolated, a crash.)
+    var opensAtTop = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -6739,12 +6778,16 @@ final class DocumentPDFView: PDFView {
     func applyInsets() {
         guard let scrollView else { return }
         scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets = NSEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 0)
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: bottomInset, right: 0)
     }
 
     override func layout() {
         super.layout()
         // PDFView makes its scroll view as it lays out; the insets go on once it's there.
-        if let scrollView, scrollView.contentInsets.top != topInset || scrollView.contentInsets.bottom != bottomInset { applyInsets() }
+        if let scrollView, scrollView.contentInsets.bottom != bottomInset { applyInsets() }
+        if opensAtTop, bounds.height > 0, let first = document?.page(at: 0) {
+            opensAtTop = false
+            go(to: PDFDestination(page: first, at: NSPoint(x: 0, y: first.bounds(for: displayBox).maxY)))
+        }
     }
 }
