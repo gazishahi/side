@@ -36,6 +36,11 @@ final class ProjectContext {
             return !(store.session(forTrackKey: key)?.turns.isEmpty ?? true) || !store.archivedConversations(forTrackKey: key).isEmpty
         }
         manager.acpLaunchProvider = { agent in
+            // UI checks run a stand-in for Claude Code, never the owner's real agent.
+            if AppDelegate.isUITesting, agent.id == "claude-code", let standIn = ProcessInfo.processInfo.environment["SIDE_UIT_ACP"] {
+                let config = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] ?? ""
+                return ACPLaunch(executable: URL(fileURLWithPath: "/usr/bin/python3"), arguments: [standIn, config], environment: ProcessInfo.processInfo.environment)
+            }
             guard let executable = AgentAvailability.executable(for: agent) else { return nil }
             // The user's subscription (every key variable removed) or the key they gave Side for
             // this agent (Settings › Agents).

@@ -74,6 +74,19 @@ final class RunWorkspaceViewController: NSViewController {
     var onTearOutRequested: ((TerminalSession, NSPoint) -> Void)?
     /// The tab's Show Beside Editor: the shell makes it the window's companion.
     var onShowBesideRequested: ((TerminalSession) -> Void)?
+    /// The tab's Open in Agent: its Claude Code chat, by session id
+    /// (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md).
+    var onOpenInAgentRequested: ((String) -> Void)?
+
+    /// A new tab on this track that runs `command` once its shell is ready, shown.
+    func openSession(command: String) {
+        guard hasProject else { return }
+        loadViewIfNeeded()
+        createSession()
+        guard let index = activeSessionIndex, sessions.indices.contains(index) else { return }
+        sessions[index].viewController.runWhenReady(command)
+        sessions[index].viewController.activate()
+    }
 
     /// The session the companion takes when none is named (View › Show Terminal Beside): the
     /// tab Terminal shows, its remembered tabs restored first as a visit to Terminal would.
@@ -816,6 +829,7 @@ final class RunWorkspaceViewController: NSViewController {
         item("Close Others", #selector(closeOtherSessionsFromMenu(_:)))
         menu.addItem(NSMenuItem.separator())
         item("Show Beside Editor", #selector(showBesideFromMenu(_:)))
+        item("Open in Agent", #selector(openInAgentFromMenu(_:)))
         item("Move to New Window", #selector(moveSessionToNewWindowFromMenu(_:)))
         menu.addItem(NSMenuItem.separator())
         let all = menu.addItem(withTitle: "Running Terminals\u{2026}", action: #selector(AppDelegate.showRunningTerminals), keyEquivalent: "")
@@ -849,9 +863,26 @@ final class RunWorkspaceViewController: NSViewController {
 
     // MARK: - Tab context-menu actions (sender.representedObject is the session's UUID)
 
-    private func sessionIndex(from sender: NSMenuItem) -> Int? {
+    fileprivate func sessionIndex(from sender: NSMenuItem) -> Int? {
         guard let id = sender.representedObject as? UUID else { return nil }
         return sessions.firstIndex { $0.id == id }
+    }
+
+    /// The Claude Code chat a tab is running, when it's running one Side knows the id of.
+    fileprivate func claudeChat(at index: Int) -> String? {
+        let vc = sessions[index].viewController
+        guard vc.runningProgramName == "claude" else { return nil }
+        return vc.recoveredAgentSession
+    }
+
+    @objc fileprivate func openInAgentFromMenu(_ sender: NSMenuItem) {
+        guard let index = sessionIndex(from: sender), let id = claudeChat(at: index) else { return }
+        onOpenInAgentRequested?(id)
+    }
+
+    func openInAgentForTesting() {
+        guard let index = activeSessionIndex, sessions.indices.contains(index), let id = claudeChat(at: index) else { return }
+        onOpenInAgentRequested?(id)
     }
 
     @objc private func closeSessionFromMenu(_ sender: NSMenuItem) {
@@ -1141,5 +1172,15 @@ private final class TaskChip: NSButton {
     override func draw(_ dirtyRect: NSRect) {
         let size = attributedTitle.size()
         attributedTitle.draw(at: NSPoint(x: leadingInset, y: (bounds.height - size.height) / 2))
+    }
+}
+
+extension RunWorkspaceViewController: NSMenuItemValidation {
+    /// Open in Agent shows only on a tab running a Claude Code chat Side knows the id of.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(openInAgentFromMenu(_:)) else { return true }
+        let eligible = sessionIndex(from: menuItem).map { claudeChat(at: $0) != nil } ?? false
+        menuItem.isHidden = !eligible
+        return eligible
     }
 }

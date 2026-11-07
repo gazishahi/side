@@ -321,6 +321,13 @@ public final class AgentSessionStore {
         return (try? FileManager.default.moveItem(at: file, to: outsideLogURL(trackKey: trackKey, agentId: agentId))) != nil
     }
 
+    /// The archived conversation that ran in the agent's session `agentSessionId`, if any: a
+    /// session listed by the agent that Side already keeps a record of.
+    public func outsideArchive(agentSessionId: String, trackKey: String, agentId: String) -> UUID? {
+        outsideArchiveFiles(trackKey: trackKey, agentId: agentId).lazy.map { OutsideSessionLog.read($0) }
+            .first { $0.agentSessionId == agentSessionId }?.conversationId
+    }
+
     private func outsideArchiveFiles(trackKey: String, agentId: String) -> [URL] {
         let prefix = outsideLogURL(trackKey: trackKey, agentId: agentId).deletingPathExtension().lastPathComponent + "-"
         return ((try? FileManager.default.contentsOfDirectory(at: outsideArchiveDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])

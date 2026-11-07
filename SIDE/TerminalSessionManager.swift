@@ -311,11 +311,17 @@ final class TerminalSessionManager {
     }
 
     func rememberAgentSession(agent: String, session: String, forKeeper id: String) {
+        for list in sessionsByPool.values { for s in list where s.viewController.keeperID == id { s.viewController.recoveredAgentSession = session } }
         guard !AppDelegate.isUITesting else { return }
         var map = HeronDefaults.store.dictionary(forKey: Self.agentSessionsKey) as? [String: String] ?? [:]
         map[id] = "\(agent):\(session)"
         HeronDefaults.store.set(map, forKey: Self.agentSessionsKey)
-        for list in sessionsByPool.values { for s in list where s.viewController.keeperID == id { s.viewController.recoveredAgentSession = session } }
+    }
+
+    /// The tab on `trackKey` running Claude Code session `id` right now, if any
+    /// (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md: Agent asks before both are live).
+    func sessionRunningClaude(_ id: String, trackKey: String) -> TerminalSession? {
+        allSessions(forTrackKey: trackKey).first { $0.viewController.recoveredAgentSession == id && $0.viewController.runningProgramName == "claude" }
     }
 
     func forgetAgentSession(forKeeper id: String) {

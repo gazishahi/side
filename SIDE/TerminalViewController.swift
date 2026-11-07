@@ -772,6 +772,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     private var keeperShellPID: pid_t?
 
     /// Run Again: types the offered command into the shell.
+    /// Types `command` into the shell once it's ready: Agent's Continue in Terminal.
+    func runWhenReady(_ command: String) {
+        whenShellIsReady { [weak self] in self?.terminalView.send(txt: command + "\r") }
+    }
+
     func runOfferedCommand() {
         guard let command = rerunOffer else { return }
         dismissRerunOffer()

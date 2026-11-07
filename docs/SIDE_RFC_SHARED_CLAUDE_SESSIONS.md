@@ -1,7 +1,24 @@
 # One Claude Code history: Terminal and Agent share chats
 
-Status: agreed (2026-11-04: the owner took both recommendations: the menu and an empty Agent
-stage both offer it; Claude Code first). Nothing built yet.
+Status: built (2026-11-07). Agreed 2026-11-04: the owner took both recommendations: the menu
+and an empty Agent stage both offer it; Claude Code first.
+Symbols: `ListedSession`, `ConversationHistoryViewController`.
+
+**As built (2026-11-07):**
+- Agent's + menu has "Continue a Claude Code Chat…" and, on a conversation with a session,
+  "Continue in Terminal". An empty Agent stage offers the first as its button.
+- The list is the agent's `session/list` for the track's folder, newest first, without the
+  conversation already shown. A chat running in a Terminal tab on the track reads "Running in
+  Terminal · <tab>".
+- Opening one Side has a record of (an archived Agent conversation with that session) reopens
+  the record. Otherwise the agent's replay is drawn, the user's messages included, and kept as
+  the record; the current conversation goes to History.
+- Continue in Terminal appends "Continued in Terminal.", closes Agent's session (`session/close`)
+  and runs `claude --resume <id>` in a new tab. The next message in Agent reopens the session.
+- A Terminal tab running a chat Side knows the id of has "Open in Agent" in its menu.
+- Both live: opening, or sending to, a chat running in a Terminal tab asks first.
+- UI checks use a stand-in agent (`scripts/uitest/fake-acp.py`), never the real Claude Code:
+  `scripts/uitest/check-shared-chats.sh`.
 
 ## Why
 

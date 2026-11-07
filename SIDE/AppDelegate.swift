@@ -201,6 +201,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "detail-dump" { FileHandle.standardError.write(Data("[detail] \(shell.trackDetailForTesting)\n".utf8)) }
                     if command == "board-dump" { FileHandle.standardError.write(Data("[board] \(shell.boardForTesting)\n".utf8)) }
                     if command.hasPrefix("board-beside ") { shell.boardShowBesideForTesting(String(command.dropFirst(13))) }
+                    if command == "agent-chats" { shell.agentChatsForTesting() }
+                    if command == "agent-chats-show" { shell.agentChatsShowForTesting() }
+                    if command.hasPrefix("agent-open-chat ") { shell.agentOpenChatForTesting(String(command.dropFirst(16))) }
+                    if command == "agent-continue-terminal" { shell.agentContinueInTerminalForTesting() }
+                    if command == "terminal-open-in-agent" { shell.terminalOpenInAgentForTesting() }
+                    if command == "agent-dump" { FileHandle.standardError.write(Data("[agent]\n\(shell.agentForTesting)\n".utf8)) }
                     if command == "companion-toggle" { shell.toggleCompanion() }
                     if command == "companion-dump" { FileHandle.standardError.write(Data("[companion] \(shell.companionForTesting)\n".utf8)) }
                     if command.hasPrefix("companion-type ") { shell.companionTypeForTesting(String(command.dropFirst(15)) + "\r") }

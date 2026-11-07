@@ -111,6 +111,15 @@ public final class ACPHarness: Harness {
     private var agentCanLoadSession = false
     /// While the agent replays a reopened session's history: Side's record already shows it.
     private var replaying = false
+    /// The replay is drawn after all: a session Side has no record of, opened from the agent's
+    /// list (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md).
+    private var drawingReplay = false
+    /// The replayed user message still arriving, in chunks.
+    private var replayUserIndex: Int?
+    /// The agent can list its sessions for a folder (`sessionCapabilities.list`).
+    private var agentCanListSessions = false
+    /// The agent's todo list for this conversation, as it last reported it (ACP `plan`).
+    public private(set) var plan: [AgentPlanItem] = []
     // Side's tools for the agent over MCP (multi-agent RFC step 1).
     private let toolServer: SideToolServer?
     private let trackContext: @MainActor @Sendable () -> [AgentTrackSummary]
@@ -130,8 +139,9 @@ public final class ACPHarness: Harness {
     private var launchSearchPath: String?
     /// How the agent was asked to sign in (Settings › Agents), for agents that ask.
     private var signIn: ACPAgent.SignIn = .subscription
-    /// Sends waiting for the session that's being opened (by a send, or by `prepareSession`).
-    private var sessionWaiters: [(String) -> Void] = []
+    /// Sends waiting for the session that's being opened (by a send, or by `prepareSession`);
+    /// called with nil when it couldn't be.
+    private var sessionWaiters: [(String?) -> Void] = []
     /// Fires when a turn has gone silent too long (`stallInterval`).
     private lazy var stallWatchdog = Watchdog(interval: { [weak self] in self?.stallInterval ?? 180 }, fire: { [weak self] in self?.stallFired() })
     /// `terminal/wait_for_exit` calls still waiting on a command — silence then is a command
@@ -400,6 +410,10 @@ public final class ACPHarness: Harness {
     /// Launches the agent, negotiates the protocol, and opens a session in the track's worktree
     /// — once; later messages reuse it.
     private func withSession(_ body: @escaping (String) -> Void) {
+        withSessionOrFailure { id in if let id { body(id) } }
+    }
+
+    private func withSessionOrFailure(_ body: @escaping (String?) -> Void) {
         if let sessionId, connection?.isRunning == true { body(sessionId); return }
         sessionWaiters.append(body)
         // Already being opened (by `prepareSession`, or an earlier send): join it.
@@ -445,7 +459,10 @@ public final class ACPHarness: Harness {
     /// ahead of time (nothing sent) it's a note, not a failed run.
     private func sessionFailed(_ message: String) {
         starting = false
+        drawingReplay = false
+        let waiters = sessionWaiters
         sessionWaiters.removeAll()
+        for waiter in waiters { waiter(nil) }
         // Side stopped it (the conversation closed while the agent was starting): nothing to
         // report. Its pending requests fail with "The agent was stopped." as the process goes,
         // and whether that beat the reply was a matter of timing: under load a notice was left
@@ -505,6 +522,7 @@ public final class ACPHarness: Harness {
                 let methods = (value as? [String: Any])?["authMethods"] as? [[String: Any]] ?? []
                 let capabilities = (value as? [String: Any])?["agentCapabilities"] as? [String: Any]
                 self.agentCanLoadSession = (capabilities?["loadSession"] as? Bool) ?? false
+                self.agentCanListSessions = (capabilities?["sessionCapabilities"] as? [String: Any])?["list"] != nil
                 self.agentTakesHTTPTools = ((capabilities?["mcpCapabilities"] as? [String: Any])?["http"] as? Bool) ?? false
                 self.signInIfAsked(methods: methods, on: connection) { [weak self] in self?.openSession(on: connection) }
             }
@@ -615,6 +633,7 @@ public final class ACPHarness: Harness {
                 switch result {
                 case .success(let value):
                     self.sessionId = stored
+                    if self.drawingReplay { self.finishDrawnReplay() }
                     let (options, backing) = Self.options(from: value)
                     if !options.isEmpty { (self.agentOptions, self.optionBacking) = (options, backing) }
                     self.applyPreferredOptions()
@@ -626,6 +645,12 @@ public final class ACPHarness: Harness {
                     // on. A crash is reported once, with its own output, by `onExit`.
                     guard !self.ended(connection) else { return }
                     self.storedAgentSessionId = nil
+                    if self.drawingReplay {
+                        self.drawingReplay = false
+                        self.append(.meta("\(self.agent.displayName) couldn't open that chat, so this is a new one."))
+                        self.openSession(on: connection)
+                        return
+                    }
                     self.append(.meta("\(self.agent.displayName) couldn't reopen its earlier session, so it starts a new one. The conversation above stays here, but the agent won't remember it."))
                     self.openSession(on: connection)
                 }
@@ -684,8 +709,22 @@ public final class ACPHarness: Harness {
         }
         guard method == "session/update", let update = params["update"] as? [String: Any],
               let kind = update["sessionUpdate"] as? String else { return }
-        if replaying, !["config_option_update", "current_mode_update", "usage_update"].contains(kind) { return }
+        if replaying, !drawingReplay, !["config_option_update", "current_mode_update", "usage_update", "plan"].contains(kind) { return }
+        if kind != "user_message_chunk" { replayUserIndex = nil }
         switch kind {
+        case "user_message_chunk":
+            // Only a replay says what the user said; live, Side drew it when it was sent.
+            guard drawingReplay, let text = Self.text(update["content"]) else { return }
+            streamingIndex = nil
+            thinkingIndex = nil
+            if let index = replayUserIndex, case .userText(let existing) = entries[index].kind {
+                replace(index, .userText(existing + text))
+            } else {
+                replayUserIndex = append(.userText(text))
+            }
+        case "plan":
+            plan = Self.planItems(update["entries"])
+            notify(.phaseChanged)
         case "agent_message_chunk":
             guard let text = Self.text(update["content"]) else { return }
             thinkingIndex = nil
@@ -768,7 +807,7 @@ public final class ACPHarness: Harness {
                 notify(.phaseChanged) // the pill's context %
             }
         default:
-            break // plans, command lists, mode changes: not shown yet
+            break // command lists, mode changes: not shown yet
         }
     }
 
@@ -912,6 +951,7 @@ public final class ACPHarness: Harness {
         toolCalls.removeAll()
         bases.removeAll()
         appliedCounts.removeAll()
+        plan = []
         conversationId = UUID()
         usage = nil
         agentOptions = seededOptions()
@@ -931,6 +971,7 @@ public final class ACPHarness: Harness {
         toolCalls.removeAll()
         bases.removeAll()
         appliedCounts.removeAll()
+        plan = []
         usage = nil
         sessionId = nil
         storedAgentSessionId = nil
@@ -942,6 +983,120 @@ public final class ACPHarness: Harness {
         setPhase(.idle)
         prepareSession()
         return true
+    }
+
+    // MARK: Claude Code's other chats (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md)
+
+    /// One of the agent's own sessions for this folder: started in a terminal, or here earlier.
+    public struct ListedSession: Equatable, Sendable {
+        public let id: String
+        public let title: String
+        public let updatedAt: Date?
+        public init(id: String, title: String, updatedAt: Date?) {
+            self.id = id
+            self.title = title
+            self.updatedAt = updatedAt
+        }
+    }
+
+    /// The agent's session this conversation runs in: for Claude Code, the id `claude --resume`
+    /// takes. Nil before the first one opens.
+    public var agentSessionId: String? { storedAgentSessionId ?? sessionId }
+
+    /// Every session the agent keeps for this track's folder, most recent first; nil when the
+    /// agent couldn't be asked or can't list them. Starts the agent if it isn't running.
+    public func listSessions(completion: @escaping ([ListedSession]?) -> Void) {
+        withSessionOrFailure { [weak self] id in
+            guard let self, id != nil, let connection = self.connection, self.agentCanListSessions else { return completion(nil) }
+            connection.request("session/list", params: ["cwd": self.rootProvider().path]) { result in
+                guard case .success(let value) = result else { return completion(nil) }
+                completion(Self.listedSessions(from: value))
+            }
+        }
+    }
+
+    nonisolated static func listedSessions(from result: Any) -> [ListedSession] {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        let sessions = ((result as? [String: Any])?["sessions"] as? [[String: Any]] ?? []).compactMap { raw -> ListedSession? in
+            guard let id = raw["sessionId"] as? String, !id.isEmpty else { return nil }
+            let stamp = raw["updatedAt"] as? String
+            let title = (raw["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return ListedSession(id: id, title: title, updatedAt: stamp.flatMap { iso.date(from: $0) ?? plain.date(from: $0) })
+        }
+        return sessions.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+    }
+
+    /// Opens one of the agent's sessions here: its history drawn from the agent's replay, then
+    /// the composer, ready to continue. The current conversation is filed in History. A session
+    /// this track already has a record of reopens from that record instead.
+    public func openListedSession(id: String) -> Bool {
+        guard !phase.isBusy, phase != .awaitingApproval else { return false }
+        guard id != agentSessionId else { return true }
+        persistNewEntries()
+        if let archived = sessionStore?.outsideArchive(agentSessionId: id, trackKey: trackKey, agentId: agent.id) {
+            return openArchivedConversation(id: archived)
+        }
+        if let url = logURL {
+            if entries.isEmpty { try? FileManager.default.removeItem(at: url) } else { sessionStore?.archiveOutsideLog(trackKey: trackKey, agentId: agent.id) }
+        }
+        entries.removeAll()
+        toolEntryIndex.removeAll()
+        toolCalls.removeAll()
+        bases.removeAll()
+        appliedCounts.removeAll()
+        plan = []
+        usage = nil
+        conversationId = UUID()
+        persistedCount = 0
+        headerWritten = false
+        sessionId = nil
+        storedAgentSessionId = id
+        drawingReplay = true
+        if let url = logURL {
+            OutsideSessionLog.append([.init(kind: .header, conversationId: conversationId, agentId: agent.id, agentSessionId: id)], to: url)
+            headerWritten = true
+        }
+        notify(.reset)
+        setPhase(.idle)
+        withSession { _ in }
+        return true
+    }
+
+    /// The replay is in: what it drew is the record now, and nothing in it is live.
+    private func finishDrawnReplay() {
+        drawingReplay = false
+        replayUserIndex = nil
+        streamingIndex = nil
+        thinkingIndex = nil
+        settleRunningCommands()
+        // Its diffs' old texts aren't what the files hold now.
+        bases.removeAll()
+        toolCalls.removeAll()
+        toolEntryIndex.removeAll()
+        turnTouched = []
+        persistNewEntries()
+        notify(.phaseChanged)
+    }
+
+    /// The conversation goes on in a terminal (`claude --resume`): Side lets go of the agent's
+    /// session so the two don't both write to it. The next message here reopens it.
+    public func handOffSession() {
+        guard !phase.isBusy, phase != .awaitingApproval, let id = agentSessionId else { return }
+        append(.meta("Continued in Terminal."))
+        persistNewEntries()
+        storedAgentSessionId = id
+        if let sessionId { connection?.request("session/close", params: ["sessionId": sessionId]) { _ in } }
+        sessionId = nil
+        notify(.phaseChanged)
+    }
+
+    nonisolated static func planItems(_ raw: Any?) -> [AgentPlanItem] {
+        (raw as? [[String: Any]] ?? []).compactMap { entry in
+            guard let content = entry["content"] as? String, !content.isEmpty else { return nil }
+            return AgentPlanItem(content: content, status: AgentPlanItem.Status(rawValue: entry["status"] as? String ?? "") ?? .pending)
+        }
     }
 
     public func contextUsage() -> (usedTokens: Int, windowTokens: Int, fraction: Double, status: ContextBudget.Status) {

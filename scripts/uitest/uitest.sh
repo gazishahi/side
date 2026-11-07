@@ -43,7 +43,7 @@ case ${1:-} in
     tools
     $0 quit 2>/dev/null || true
     mkdir -p $ROOT/run $ROOT/claude-config/sessions
-    SIDE_SESSIONS_DIR=$ROOT/run CLAUDE_CONFIG_DIR=$ROOT/claude-config "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
+    SIDE_SESSIONS_DIR=$ROOT/run CLAUDE_CONFIG_DIR=$ROOT/claude-config SIDE_UIT_ACP=$REPO/scripts/uitest/fake-acp.py "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
     echo $! > $ROOT/side.pid
     sleep 4
     ;;
@@ -51,7 +51,7 @@ case ${1:-} in
     # Side quits and comes back; its keepers, and what runs in them, carry on (session restore).
     $BIN/post "action terminate:"; sleep 2
     pkill -f "$APP/Contents/MacOS/Side" || true; sleep 0.5
-    SIDE_SESSIONS_DIR=$ROOT/run CLAUDE_CONFIG_DIR=$ROOT/claude-config "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
+    SIDE_SESSIONS_DIR=$ROOT/run CLAUDE_CONFIG_DIR=$ROOT/claude-config SIDE_UIT_ACP=$REPO/scripts/uitest/fake-acp.py "$APP/Contents/MacOS/Side" -SideUITesting YES -SideUITestingProject ${2:-$ROOT/repo} > $ROOT/side.log 2>&1 &
     echo $! > $ROOT/side.pid
     sleep 4
     ;;

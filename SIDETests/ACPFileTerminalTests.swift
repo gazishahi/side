@@ -411,6 +411,65 @@ for line in sys.stdin:
         XCTAssertTrue(h.archivedConversations[0].title.hasPrefix("unannounced "))
     }
 
+    /// Shared chats (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md): the agent's own sessions for the
+    /// folder are listed newest first; opening one Side has no record of draws its replay (the
+    /// user's words included), files the current conversation in History, settles what the
+    /// replay left running, and keeps the result, so a relaunch shows it without a replay.
+    func testAChatFromTerminalOpensWithItsHistoryDrawn() throws {
+        var h = try harness(autonomy: .full)
+        _ = run(h, "read")
+        var listed: [ACPHarness.ListedSession]?
+        h.listSessions { listed = $0 }
+        XCTAssertTrue(waitFor { listed != nil })
+        XCTAssertEqual(listed?.map(\.id), ["terminal-chat", "s", "older"], "newest first")
+        XCTAssertEqual(listed?.first?.title, "Fix the pill")
+        XCTAssertNotNil(listed?.first?.updatedAt)
+
+        XCTAssertTrue(h.openListedSession(id: "terminal-chat"))
+        XCTAssertTrue(waitFor { h.entries.contains { if case .assistantText(let t) = $0.kind { return t == "Fixed it." }; return false } })
+        XCTAssertTrue(waitFor { h.agentSessionId == "terminal-chat" && h.agentOptions.first?.current == "big" })
+        let users = h.entries.compactMap { if case .userText(let t) = $0.kind { return t } else { return nil } }
+        XCTAssertEqual(users, ["Fix the pill"], "the chunks are one message")
+        XCTAssertTrue(h.entries.contains { if case .agentCommand(let c) = $0.kind { return !c.isRunning }; return false }, "nothing replayed is left running")
+        XCTAssertEqual(h.plan.map(\.content), ["Read the pill", "Fix its width"])
+        XCTAssertEqual(h.plan.last?.status, .inProgress)
+        XCTAssertEqual(h.archivedConversations.count, 1, "the conversation before is in History")
+        XCTAssertEqual(h.phase, .idle)
+
+        // Relaunch: Side's record shows it; the reopen doesn't draw the replay twice.
+        h.teardown()
+        h = try harness(autonomy: .full)
+        defer { h.teardown() }
+        XCTAssertEqual(h.entries.compactMap { if case .userText(let t) = $0.kind { return t } else { return nil } }, ["Fix the pill"])
+        let count = h.entries.count
+        h.prepareSession()
+        XCTAssertTrue(waitFor { h.agentOptions.first?.current == "big" })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertEqual(h.entries.count, count, "no second copy")
+
+        // Opening the conversation History holds by its session reopens Side's record of it.
+        XCTAssertTrue(h.openListedSession(id: "s"))
+        XCTAssertTrue(h.entries.contains { if case .userText(let t) = $0.kind { return t.hasPrefix("read ") }; return false }, "\(h.entries.map(\.kind))")
+    }
+
+    /// Continue in Terminal: Agent says so, lets go of the session, and keeps its id so the
+    /// next message here reopens it.
+    func testHandingASessionOffKeepsItsId() throws {
+        let h = try harness(autonomy: .full)
+        defer { h.teardown() }
+        _ = run(h, "read")
+        XCTAssertEqual(h.agentSessionId, "s")
+        h.handOffSession()
+        XCTAssertEqual(h.agentSessionId, "s")
+        guard case .meta(let note)? = h.entries.last?.kind else { return XCTFail("\(h.entries.map(\.kind))") }
+        XCTAssertEqual(note, "Continued in Terminal.")
+    }
+
+    func testPlanEntriesAreRead() {
+        let items = ACPHarness.planItems([["content": "A", "status": "completed"], ["content": "", "status": "pending"], ["content": "B", "status": "odd"]])
+        XCTAssertEqual(items, [AgentPlanItem(content: "A", status: .completed), AgentPlanItem(content: "B", status: .pending)])
+    }
+
     /// A reopen cut short by Side itself (a window closing mid-load) isn't the agent refusing:
     /// nothing is said, and nothing is left in the record for the next launch.
     func testAReopenStoppedBySideLeavesNoNotice() throws {
@@ -565,10 +624,26 @@ def res(m, key):
     return ("ERR " + m["error"]["message"]) if "error" in m else m["result"].get(key, "ok")
 for line in sys.stdin:
     m = json.loads(line); meth = m.get("method"); p = m.get("params", {})
-    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}})
+    if meth == "initialize": send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"list": {}}}}})
     elif meth == "session/new": send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "s", "configOptions": options()}})
+    elif meth == "session/list":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessions": [
+            {"sessionId": "older", "cwd": p["cwd"], "title": "Older chat", "updatedAt": "2026-11-01T10:00:00.000Z"},
+            {"sessionId": "terminal-chat", "cwd": p["cwd"], "title": "Fix the pill", "updatedAt": "2026-11-06T10:00:00.000Z"},
+            {"sessionId": "s", "cwd": p["cwd"], "title": "This one", "updatedAt": "2026-11-05T10:00:00Z"}]}})
+    elif meth == "session/close": send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
     elif meth == "session/load":
-        if p["sessionId"] == "slow":
+        if p["sessionId"] == "terminal-chat":
+            # A chat started in a terminal: its replay is all Side will have of it.
+            up({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Fix the "}})
+            up({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "pill"}})
+            up({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Looking"}})
+            up({"sessionUpdate": "tool_call", "toolCallId": "r1", "title": "Run ls", "kind": "execute", "status": "pending", "rawInput": {"command": "ls"}})
+            up({"sessionUpdate": "plan", "entries": [{"content": "Read the pill", "status": "completed", "priority": "high"},
+                                                     {"content": "Fix its width", "status": "in_progress", "priority": "high"}]})
+            say("Fixed it.")
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"configOptions": options()}})
+        elif p["sessionId"] == "slow":
             time.sleep(3)
             send({"jsonrpc": "2.0", "id": m["id"], "result": {"configOptions": options()}})
         elif p["sessionId"] == "crash":

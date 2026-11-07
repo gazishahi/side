@@ -204,3 +204,15 @@ public protocol ChatModelProvider {
         onEvent: @escaping @Sendable (AgentStreamEvent) -> Void
     ) async throws
 }
+
+/// One item of an agent's todo list, as ACP's `plan` update carries it (Claude Code's TodoWrite,
+/// Codex's plan). The Agent panel shows the list (SIDE_RFC_AGENT_PANEL.md).
+public struct AgentPlanItem: Equatable, Sendable {
+    public enum Status: String, Sendable { case pending, inProgress = "in_progress", completed }
+    public let content: String
+    public let status: Status
+    public init(content: String, status: Status) {
+        self.content = content
+        self.status = status
+    }
+}

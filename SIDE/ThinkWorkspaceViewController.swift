@@ -87,6 +87,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     var onOpenTrack: ((String) -> Void)?
     /// Opens the Library window for this project (`/library`, the + popover).
     var onOpenLibrary: (() -> Void)?
+    /// The Terminal tab running Claude Code session `id` on this track right now, by name; nil
+    /// when none is (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md).
+    var terminalTabRunningAgentSession: ((String) -> String?)?
+    /// Runs a command in a new Terminal tab on this track and shows it: Continue in Terminal.
+    var onContinueInTerminal: ((String) -> Void)?
     /// The project's coordinator (multi-agent RFC): lists a coordinator track's subtracks.
     var coordinator: TrackCoordinator? { didSet { refreshSubtracks() } }
     /// A coordinator's subtracks, one chip each (status · intent · agent · state), floating just
@@ -571,6 +576,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             emptyState.configure("Agent works on a track.", action: hasTracks ? "Choose a Track…" : "New Track", handler: act(hasTracks ? .chooseTrack : .newTrack))
         } else if isRetiredHeron {
             emptyState.configure("Heron is retired. Set up an agent to start a conversation on this track.", action: nil, handler: nil)
+        } else if let acp = sharedChatHarness {
+            // The first offer on an empty stage: the chats the owner already has in Terminal.
+            emptyState.configure("Ask anything about this track, or pick up where you left off in Terminal.",
+                                 action: "Continue a \(acp.agent.displayName) Chat\u{2026}") { [weak self] in
+                guard let self else { return }
+                self.showAgentChats(relativeTo: self.emptyState, edge: .minY)
+            }
         } else {
             emptyState.configure("Ask anything about this track. Every change waits for your approval.", action: nil, handler: nil)
         }
@@ -709,6 +721,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         guard !text.isEmpty || !attachments.isEmpty else { return }
         // Nothing goes to a retired Heron; the message stays where it is.
         guard !isRetiredHeron else { return }
+        // Continued in Terminal and still running there: two processes on one chat each miss
+        // what the other says.
+        if let tab = liveTerminalTab(), !confirmBothLive(tab: tab, sending: true) { return }
         composer.clear()
         if let turnId = editingTurnId {
             endEditingMessage()
@@ -716,6 +731,121 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             return
         }
         runner.send(text, attachments: attachments)
+    }
+
+    // MARK: - Claude Code chats from Terminal (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md)
+
+    /// The runner, when it's an agent whose chats Terminal shares: Claude Code first (decision 2).
+    private var sharedChatHarness: ACPHarness? {
+        guard let acp = runner as? ACPHarness, acp.agent.id == "claude-code" else { return nil }
+        return acp
+    }
+
+    /// The Terminal tab this conversation's chat is running in, if it is.
+    private func liveTerminalTab(for id: String? = nil) -> String? {
+        guard let id = id ?? sharedChatHarness?.agentSessionId else { return nil }
+        return terminalTabRunningAgentSession?(id)
+    }
+
+    /// Answers for the "both live" question under UI testing, where a modal alert would block.
+    static var bothLiveAnswerForTesting: Bool?
+
+    private func confirmBothLive(tab: String, sending: Bool) -> Bool {
+        if let answer = Self.bothLiveAnswerForTesting { lastBothLiveWarningForTesting = tab; return answer }
+        let alert = NSAlert()
+        alert.messageText = "This chat is running in Terminal"
+        alert.informativeText = "It\u{2019}s open in the Terminal tab \u{201C}\(tab)\u{201D}. If both go on, each misses what the other says. "
+            + (sending ? "Send here as well?" : "Open it here as well?")
+        alert.addButton(withTitle: sending ? "Send Here Too" : "Open Here Too")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+    private(set) var lastBothLiveWarningForTesting: String?
+
+    /// "Continue a Claude Code Chat…": this folder's chats, newest first, the ones running in
+    /// Terminal marked. Asking starts the agent if it isn't running, so the list fills in.
+    private func showAgentChats(relativeTo anchor: NSView, edge: NSRectEdge = .maxY) {
+        guard let acp = sharedChatHarness else { return }
+        let picker = ConversationHistoryViewController()
+        picker.placeholder = "Search chats"
+        picker.emptyText = "No other \(acp.agent.displayName) chats in this folder yet."
+        picker.loadingText = "Looking for \(acp.agent.displayName) chats\u{2026}"
+        picker.items = nil
+        picker.onSelect = { [weak self] id in self?.openAgentChat(id) }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = picker
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: edge)
+        loadAgentChats { [weak picker] items in picker?.items = items ?? [] }
+    }
+
+    /// This folder's chats as the picker lists them; nil when the agent couldn't be asked.
+    private func loadAgentChats(_ completion: @escaping ([ConversationHistoryViewController.Item]?) -> Void) {
+        guard let acp = sharedChatHarness else { return completion(nil) }
+        acp.listSessions { [weak self, weak acp] sessions in
+            guard let self, let sessions else { return completion(nil) }
+            let current = acp?.agentSessionId
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .full
+            completion(sessions.filter { $0.id != current }.map { session in
+                let when = session.updatedAt.map { formatter.localizedString(for: $0, relativeTo: Date()) } ?? ""
+                let detail = self.liveTerminalTab(for: session.id).map { "Running in Terminal \u{00B7} \($0)" } ?? when
+                return .init(id: session.id, title: session.title.isEmpty ? "Untitled chat" : session.title, detail: detail)
+            })
+        }
+    }
+
+    /// Opens one of the agent's chats here. One running in Terminal asks first.
+    func openAgentChat(_ id: String) {
+        guard let acp = sharedChatHarness else {
+            appendLocalNotice("Claude Code chats open on a track whose agent is Claude Code. Choose it in the agent pill, then try again.")
+            return
+        }
+        guard id != acp.agentSessionId else { return }
+        if let tab = liveTerminalTab(for: id), !confirmBothLive(tab: tab, sending: false) { return }
+        guard acp.openListedSession(id: id) else {
+            appendLocalNotice("Finish or stop the current turn first, then open the chat.")
+            return
+        }
+        renderFull()
+        refreshSessionPill()
+    }
+
+    /// "Continue in Terminal": a new Terminal tab resumes this chat with `claude --resume`, and
+    /// Agent lets go of it.
+    private func continueInTerminal() {
+        guard let acp = sharedChatHarness, let id = acp.agentSessionId else { return }
+        guard !acp.phase.isBusy, acp.phase != .awaitingApproval else {
+            appendLocalNotice("Finish or stop the current turn first, then continue in Terminal.")
+            return
+        }
+        if let tab = liveTerminalTab(for: id) {
+            appendLocalNotice("This chat is already running in the Terminal tab \u{201C}\(tab)\u{201D}.")
+            return
+        }
+        acp.handOffSession()
+        onContinueInTerminal?("claude --resume \(id)")
+    }
+
+    func agentChatsForTesting(_ completion: @escaping ([String]?) -> Void) {
+        loadAgentChats { items in completion(items?.map { "\($0.id)\t\($0.title)\t\($0.detail)" }) }
+    }
+    func continueInTerminalForTesting() { continueInTerminal() }
+    func showAgentChatsForTesting() { showAgentChats(relativeTo: plusButton) }
+    var agentStateForTesting: String {
+        guard let runner else { return "runner none" }
+        var lines = ["session \((runner as? ACPHarness)?.agentSessionId ?? "-")", "phase \(runner.phase)",
+                     "warned \(lastBothLiveWarningForTesting ?? "-")", "empty-offer \(sharedChatHarness != nil && runner.entries.isEmpty)"]
+        for entry in runner.entries {
+            switch entry.kind {
+            case .userText(let t): lines.append("user \(t)")
+            case .assistantText(let t): lines.append("assistant \(t)")
+            case .meta(let t): lines.append("meta \(t)")
+            default: break
+            }
+        }
+        if let acp = runner as? ACPHarness { lines += acp.plan.map { "plan \($0.status.rawValue) \($0.content)" } }
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Editing a sent message
@@ -885,6 +1015,14 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         actions.onOpenLibrary = { [weak self] in self?.onOpenLibrary?() }
         actions.onShowHistory = { [weak self] in self?.showConversationHistory() }
         actions.onNewConversation = { [weak self] in self?.startNewConversation() }
+        if let acp = sharedChatHarness {
+            actions.agentName = acp.agent.displayName
+            actions.onContinueChat = { [weak self] in
+                guard let self else { return }
+                self.showAgentChats(relativeTo: self.plusButton)
+            }
+            if acp.agentSessionId != nil, !acp.entries.isEmpty { actions.onContinueInTerminal = { [weak self] in self?.continueInTerminal() } }
+        }
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = actions
@@ -902,9 +1040,19 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             return
         }
         let picker = ConversationHistoryViewController()
-        picker.conversations = conversations
-        picker.onSelect = { [weak self] id in
-            guard let self, let runner = self.runner else { return }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        picker.items = conversations.map { conversation in
+            // A branch is labelled as one: it shares a prefix with the conversation still open,
+            // so without this the picker offers two rows that differ only in a title nobody
+            // remembers choosing.
+            let kind = conversation.isBranch ? "branch · " : ""
+            let when = formatter.localizedString(for: conversation.archivedAt, relativeTo: Date())
+            return .init(id: conversation.id.uuidString, title: conversation.title.isEmpty ? "Untitled conversation" : conversation.title,
+                         detail: "\(kind)\(when) · \(conversation.turnCount) turn\(conversation.turnCount == 1 ? "" : "s")")
+        }
+        picker.onSelect = { [weak self] value in
+            guard let self, let runner = self.runner, let id = UUID(uuidString: value) else { return }
             guard runner.openArchivedConversation(id: id) else {
                 self.appendLocalNotice("Couldn't reopen that conversation.")
                 return
@@ -3162,9 +3310,19 @@ private final class ChangedFileRow: NSView {
 /// Rows lead with the conversation's own first message rather than a date, because that is what
 /// someone recognizes it by — "the one where I asked about the migration", not "the one from
 /// Tuesday". The date and size follow as secondary detail.
-private final class ConversationHistoryViewController: NSViewController, NSSearchFieldDelegate {
-    var conversations: [ArchivedConversation] = []
-    var onSelect: ((UUID) -> Void)?
+final class ConversationHistoryViewController: NSViewController, NSSearchFieldDelegate {
+    /// One row: a past conversation, or one of the agent's chats.
+    struct Item {
+        let id: String
+        let title: String
+        let detail: String
+    }
+    /// Nil while they're still being found.
+    var items: [Item]? = [] { didSet { if isViewLoaded { rebuildRows(matching: searchField.stringValue) } } }
+    var onSelect: ((String) -> Void)?
+    var placeholder = "Search conversations"
+    var emptyText = "No past conversations on this track yet."
+    var loadingText = ""
 
     private let searchField = NSSearchField()
     private let rows = NSStackView()
@@ -3179,7 +3337,7 @@ private final class ConversationHistoryViewController: NSViewController, NSSearc
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        searchField.placeholderString = "Search conversations"
+        searchField.placeholderString = placeholder
         searchField.delegate = self
         searchField.font = DS.Text.body()
         searchField.translatesAutoresizingMaskIntoConstraints = false
@@ -3233,29 +3391,29 @@ private final class ConversationHistoryViewController: NSViewController, NSSearc
 
     /// Matches on the conversation's own title, case- and diacritic-insensitively — the same
     /// leniency the rest of the app's search uses, since nobody types "café" to find "cafe".
-    private func matches(_ conversation: ArchivedConversation, _ query: String) -> Bool {
+    private func matches(_ item: Item, _ query: String) -> Bool {
         guard !query.isEmpty else { return true }
-        return conversation.title.range(
+        return item.title.range(
             of: query, options: [.caseInsensitive, .diacriticInsensitive]
         ) != nil
     }
 
     private func rebuildRows(matching query: String) {
         rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let filtered = conversations.filter { matches($0, query) }.prefix(Self.maxRows)
+        let filtered = (items ?? []).filter { matches($0, query) }.prefix(Self.maxRows)
 
         emptyLabel.isHidden = !filtered.isEmpty
-        if filtered.isEmpty {
-            emptyLabel.stringValue = query.isEmpty
-                ? "No past conversations on this track yet."
-                : "Nothing matches \u{201C}\(query)\u{201D}."
+        if items == nil {
+            emptyLabel.stringValue = loadingText
+        } else if filtered.isEmpty {
+            emptyLabel.stringValue = query.isEmpty ? emptyText : "Nothing matches \u{201C}\(query)\u{201D}."
         }
 
         var rowHeights: CGFloat = 0
-        for conversation in filtered {
-            let row = ConversationHistoryRow(conversation: conversation) { [weak self] in
+        for item in filtered {
+            let row = ConversationHistoryRow(title: item.title, detail: item.detail) { [weak self] in
                 self?.view.window?.performClose(nil)
-                self?.onSelect?(conversation.id)
+                self?.onSelect?(item.id)
             }
             rows.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
@@ -3281,7 +3439,7 @@ private final class ConversationHistoryRow: NSView {
     private let action: () -> Void
     private var trackingArea: NSTrackingArea?
 
-    init(conversation: ArchivedConversation, action: @escaping () -> Void) {
+    init(title: String, detail: String, action: @escaping () -> Void) {
         self.action = action
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -3293,21 +3451,14 @@ private final class ConversationHistoryRow: NSView {
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
 
-        titleLabel.stringValue = conversation.title.isEmpty ? "Untitled conversation" : conversation.title
+        titleLabel.stringValue = title
         titleLabel.font = DS.Text.body()
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        let when = formatter.localizedString(for: conversation.archivedAt, relativeTo: Date())
-        // A branch is labelled as one: it shares a prefix with the conversation still open, so
-        // without this the picker offers two rows that differ only in a title nobody remembers
-        // choosing.
-        let kind = conversation.isBranch ? "branch · " : ""
-        detailLabel.stringValue = "\(kind)\(when) · \(conversation.turnCount) turn\(conversation.turnCount == 1 ? "" : "s")"
+        detailLabel.stringValue = detail
         detailLabel.font = DS.Text.caption()
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -3362,18 +3513,29 @@ private final class PlusActionsViewController: NSViewController {
     var onOpenLibrary: (() -> Void)?
     var onShowHistory: (() -> Void)?
     var onNewConversation: (() -> Void)?
+    /// Shared chats (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md): set for an agent whose chats Terminal
+    /// shares.
+    var agentName = ""
+    var onContinueChat: (() -> Void)?
+    var onContinueInTerminal: (() -> Void)?
 
     override func loadView() { view = NSView() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        let rows = [
+        var rows = [
             PopoverActionRow(symbol: "photo", title: "Attach Image…") { [weak self] in self?.dismissThen(self?.onAttachImage) },
             PopoverActionRow(symbol: "books.vertical", title: "Library…") { [weak self] in self?.dismissThen(self?.onOpenLibrary) },
             PopoverActionRow(symbol: "clock.arrow.circlepath", title: "History…") { [weak self] in self?.dismissThen(self?.onShowHistory) },
             PopoverActionRow(symbol: "at", title: "Add File Reference") { [weak self] in self?.dismissThen(self?.onAttach) },
             PopoverActionRow(symbol: "square.and.pencil", title: "New Conversation…") { [weak self] in self?.dismissThen(self?.onNewConversation) },
         ]
+        if onContinueChat != nil {
+            rows.append(PopoverActionRow(symbol: "terminal", title: "Continue a \(agentName) Chat…") { [weak self] in self?.dismissThen(self?.onContinueChat) })
+        }
+        if onContinueInTerminal != nil {
+            rows.append(PopoverActionRow(symbol: "arrow.up.forward.app", title: "Continue in Terminal") { [weak self] in self?.dismissThen(self?.onContinueInTerminal) })
+        }
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.alignment = .leading

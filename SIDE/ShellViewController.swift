@@ -460,6 +460,22 @@ final class ShellViewController: NSViewController {
             MainActor.assumeIsolated { self?.refreshRunTasks() }
         }
         runVC.onShowBesideRequested = { [weak self] session in self?.openCompanion(session) }
+        // Shared chats (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md): Terminal's Claude Code chats open in
+        // Agent, and Agent's continue in Terminal.
+        runVC.onOpenInAgentRequested = { [weak self] id in
+            guard let self else { return }
+            self.show(.think)
+            self.thinkVC.openAgentChat(id)
+        }
+        thinkVC.terminalTabRunningAgentSession = { [weak self] id in
+            guard let self, let terminals = self.projectContext?.terminals else { return nil }
+            return terminals.sessionRunningClaude(id, trackKey: self.currentTrackKey ?? "")?.title
+        }
+        thinkVC.onContinueInTerminal = { [weak self] command in
+            guard let self else { return }
+            self.show(.run)
+            self.runVC.openSession(command: command)
+        }
         runVC.onTearOutRequested = { [weak self] session, screenPoint in
             guard let self, let projectURL = self.projectURL else { return }
             AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectURL, trackKey: self.currentTrackKey, soleSession: session, at: screenPoint)
@@ -1084,6 +1100,31 @@ final class ShellViewController: NSViewController {
     func closeAllMakeTabsForTesting() { makeVC.closeAllTabsForTesting() }
     var makeForTesting: MakeWorkspaceViewController { makeVC }
     /// UI testing: a new track on the given agent, shown in Think.
+    // UI testing: shared chats (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md). The "both live" question is
+    // answered yes, as a modal alert would block the run.
+    func agentChatsForTesting() {
+        thinkVC.agentChatsForTesting { items in
+            let lines = items.map { $0.map { "chat \($0)" }.joined(separator: "\n") } ?? "unlisted"
+            FileHandle.standardError.write(Data("[agent-chats]\n\(lines)\n[agent-chats-end]\n".utf8))
+        }
+    }
+    func agentOpenChatForTesting(_ id: String) {
+        ThinkWorkspaceViewController.bothLiveAnswerForTesting = true
+        thinkVC.openAgentChat(id)
+    }
+    func agentContinueInTerminalForTesting() { thinkVC.continueInTerminalForTesting() }
+    func agentChatsShowForTesting() { thinkVC.showAgentChatsForTesting() }
+    func terminalOpenInAgentForTesting() {
+        ThinkWorkspaceViewController.bothLiveAnswerForTesting = true
+        runVC.openInAgentForTesting()
+    }
+    var agentForTesting: String {
+        let tabs = (projectContext?.terminals.allSessions(forTrackKey: currentTrackKey ?? "") ?? []).map {
+            "tab \($0.title)|\($0.viewController.runningProgramName ?? "-")|\($0.viewController.recoveredAgentSession ?? "-")"
+        }
+        return ([thinkVC.agentStateForTesting, "stage \(currentStageForTesting ?? "-")"] + tabs).joined(separator: "\n")
+    }
+
     func thinkTrackForTesting(agentId: String) {
         guard let store = trackStore else { return }
         store.createTrack(intent: "Measurement") { [weak self] result in
