@@ -87,6 +87,8 @@
 		A00000000000000000000613 /* TerminalCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000612 /* TerminalCompanion.swift */; };
 		A00000000000000000000617 /* AgentBranchPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000616 /* AgentBranchPanel.swift */; };
 		A00000000000000000000619 /* JumpRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000618 /* JumpRail.swift */; };
+		A0000000000000000000061B /* RichBlocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061A /* RichBlocks.swift */; };
+		A0000000000000000000061D /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061C /* mermaid.min.js */; };
 		A00000000000000000000611 /* ProjectSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000610 /* ProjectSwitcher.swift */; };
 		A00000000000000000000418 /* CheckpointSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000417 /* CheckpointSheet.swift */; };
 		A00000000000000000000420 /* InlineInstruct.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000419 /* InlineInstruct.swift */; };
@@ -232,6 +234,8 @@
 		A00000000000000000000612 /* TerminalCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCompanion.swift; sourceTree = "<group>"; };
 		A00000000000000000000616 /* AgentBranchPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentBranchPanel.swift; sourceTree = "<group>"; };
 		A00000000000000000000618 /* JumpRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpRail.swift; sourceTree = "<group>"; };
+		A0000000000000000000061A /* RichBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichBlocks.swift; sourceTree = "<group>"; };
+		A0000000000000000000061C /* mermaid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = mermaid.min.js; sourceTree = "<group>"; };
 		A00000000000000000000610 /* ProjectSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSwitcher.swift; sourceTree = "<group>"; };
 		A00000000000000000000195 /* SlidingSegmentedControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlidingSegmentedControl.swift; sourceTree = "<group>"; };
 		A00000000000000000000197 /* StagePins.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StagePins.swift; sourceTree = "<group>"; };
@@ -440,6 +444,8 @@
 				A00000000000000000000612 /* TerminalCompanion.swift */,
 				A00000000000000000000616 /* AgentBranchPanel.swift */,
 				A00000000000000000000618 /* JumpRail.swift */,
+				A0000000000000000000061A /* RichBlocks.swift */,
+				A0000000000000000000061C /* mermaid.min.js */,
 				A00000000000000000000610 /* ProjectSwitcher.swift */,
 				A00000000000000000000195 /* SlidingSegmentedControl.swift */,
 				A00000000000000000000197 /* StagePins.swift */,
@@ -666,6 +672,7 @@
 			files = (
 				A00000000000000000000060 /* Assets.xcassets in Resources */,
 				A00000000000000000000901 /* ThirdPartyNotices.txt in Resources */,
+				A0000000000000000000061D /* mermaid.min.js in Resources */,
 				795FB477306D83ED000E2346 /* AppIcon.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -774,6 +781,7 @@
 				A00000000000000000000613 /* TerminalCompanion.swift in Sources */,
 				A00000000000000000000617 /* AgentBranchPanel.swift in Sources */,
 				A00000000000000000000619 /* JumpRail.swift in Sources */,
+				A0000000000000000000061B /* RichBlocks.swift in Sources */,
 				A00000000000000000000611 /* ProjectSwitcher.swift in Sources */,
 				A00000000000000000000196 /* SlidingSegmentedControl.swift in Sources */,
 				A00000000000000000000198 /* StagePins.swift in Sources */,

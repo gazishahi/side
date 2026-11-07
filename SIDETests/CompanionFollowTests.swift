@@ -60,3 +60,44 @@ final class AgentBranchPanelTests: XCTestCase {
         XCTAssertEqual(AgentBranchPanel.checkpointLine(checkpoint).word, "Unverified")
     }
 }
+
+/// Rich blocks (SIDE_DESIGN_SESSIONS_2026-11-06.md, session 2): which parts of a message are
+/// blocks, and what's read out of them.
+final class RichBlocksTests: XCTestCase {
+    func testAMessageIsCutIntoProseAndBlocks() {
+        let text = "Before\n\n```mermaid\ngraph TD\n  A --> B\n```\n\nMiddle\n\n| a | b |\n|---|--:|\n| 1 | x\\|y |\n\n```swift\nlet a = 1\n```\nAfter"
+        let segments = RichBlocks.segments(text)
+        guard segments.count == 5 else { return XCTFail("\(segments)") }
+        XCTAssertEqual(segments[0], .text("Before"))
+        guard case .block(let diagram) = segments[1], case .block(let table) = segments[3] else { return XCTFail("\(segments)") }
+        XCTAssertEqual(diagram.kind, .mermaid)
+        XCTAssertEqual(RichBlockView.fenceBody(diagram.source), "graph TD\n  A --> B")
+        XCTAssertEqual(table.rows, [["a", "b"], ["1", "x|y"]], "an escaped pipe stays in its cell")
+        guard case .text(let tail) = segments[4] else { return XCTFail("\(segments)") }
+        XCTAssertTrue(tail.contains("```swift"), "a fence in another language stays text")
+    }
+
+    func testPlainTextIsOneSegment() {
+        XCTAssertEqual(RichBlocks.segments("No blocks | here, really."), [.text("No blocks | here, really.")])
+        XCTAssertEqual(RichBlocks.segments("```mermaid\nunclosed"), [.text("```mermaid\nunclosed")])
+    }
+
+    func testCSVKeepsQuotedCommasAndQuotes() {
+        XCTAssertEqual(RichBlocks.csvRows("a,b\n\"x, y\",\"say \"\"hi\"\"\"\n"), [["a", "b"], ["x, y", "say \"hi\""]])
+    }
+
+    func testAnImageIsOnlyAFileTheProjectHas() {
+        let url = URL(fileURLWithPath: "/tmp/chart.png")
+        let segments = RichBlocks.segments("![chart](chart.png)\n![gone](gone.png)\n![web](https://x/y.png)", image: { $0 == "chart.png" ? url : nil })
+        guard case .block(let block) = segments.first else { return XCTFail("\(segments)") }
+        XCTAssertEqual(block.kind, .image)
+        XCTAssertEqual(block.url, url)
+        XCTAssertEqual(segments.count, 2, "the others stay text")
+    }
+
+    func testNumbersSortAsNumbers() {
+        let rows = [["b", "10"], ["a", "9"], ["c", "1,200"]]
+        XCTAssertEqual(TableBlockView.sorted(rows, column: 1, ascending: true).map { $0[0] }, ["a", "b", "c"])
+        XCTAssertEqual(TableBlockView.sorted(rows, column: 0, ascending: false).map { $0[0] }, ["c", "b", "a"])
+    }
+}

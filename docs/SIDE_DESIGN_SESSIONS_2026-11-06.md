@@ -120,7 +120,10 @@ main  · 1 uncommitted
    placed by where it falls in the conversation. Hover shows the message's first line; a click
    scrolls to it. ⌥⌘↑ and ⌥⌘↓ go to your previous and next message. Ticks for turns that failed
    or wait on you take the status colors, so the rail also shows where things went wrong.
-3. **Rich blocks.** An agent's fenced code block in a known form draws as the thing itself, with
+3. **Rich blocks** (first set built 2026-11-07: Mermaid, CSV/TSV and Markdown tables, SVG and
+   `![…](path)` images in the track's folder; `RichBlocks.swift`, `scripts/uitest/check-rich-blocks.sh`.
+   Mermaid 11.4.1 ships in the app and draws in a web view that loads nothing and navigates
+   nowhere, at Mermaid's strict security level. Charts and HTML are next). An agent's fenced code block in a known form draws as the thing itself, with
    a toggle back to its source:
    - `mermaid`: a diagram;
    - `csv` / `tsv`, and Markdown tables: a sortable table;

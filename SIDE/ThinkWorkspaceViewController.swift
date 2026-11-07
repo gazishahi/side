@@ -1834,6 +1834,30 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     /// One `RunTranscriptEntry` → exactly one view. Headers ("You"/"Assistant") aren't a
     /// separate entry — they're drawn as part of the same block as the text they belong to.
+    private func receivedBubble(_ text: String) -> NSView {
+        let bubble = TextBlockView(style: .received, body: text, maxBubbleWidth: 620, pathResolver: { [weak self] path in self?.mentionedFileExists(path) ?? false })
+        // The agent quotes paths back constantly; making those live too means "@" and a
+        // plain mention behave the same wherever they appear.
+        bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
+        return BubbleRowView(bubble: bubble, alignRight: false)
+    }
+
+    /// The message still arriving: the turn's latest entry while the agent works, or one the
+    /// stream is flushing into.
+    private func isStreaming(_ entry: RunTranscriptEntry) -> Bool {
+        guard let runner, let index = runner.entries.lastIndex(where: { $0.id == entry.id }) else { return false }
+        return activeStreamIndices.contains(index) || (runner.phase.isBusy && index == runner.entries.count - 1)
+    }
+
+    /// An image the agent wrote into the track's folder, by the path it gave.
+    private func projectImage(_ path: String) -> URL? {
+        guard let projectPath else { return nil }
+        let root = URL(fileURLWithPath: trackStore?.tracks.first { $0.branchName == (attachedTrackKey ?? "") }?.workingDirectoryPath ?? projectPath).standardizedFileURL
+        let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)).standardizedFileURL
+        guard url.path.hasPrefix(root.path + "/"), FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
     private func makeEntryView(_ entry: RunTranscriptEntry) -> NSView {
         switch entry.kind {
         case .meta(let text):
@@ -1878,11 +1902,15 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             }
             return row
         case .assistantText(let text):
-            let bubble = TextBlockView(style: .received, body: text, maxBubbleWidth: 620, pathResolver: { [weak self] path in self?.mentionedFileExists(path) ?? false })
-            // The agent quotes paths back constantly; making those live too means "@" and a
-            // plain mention behave the same wherever they appear.
-            bubble.onMentionClicked = { [weak self] path in self?.openMentionedFile(path) }
-            return BubbleRowView(bubble: bubble, alignRight: false)
+            // A finished message holding a diagram, a table or a picture draws them (rich
+            // blocks); one still arriving is plain text until it's done.
+            if !isStreaming(entry), RichBlocks.mayContainBlocks(text) {
+                let segments = RichBlocks.segments(text, image: { [weak self] path in self?.projectImage(path) })
+                if segments.contains(where: { if case .block = $0 { return true } else { return false } }) {
+                    return RichMessageView(segments: segments, bubble: { [weak self] part in self?.receivedBubble(part) ?? NSView() }, maxWidth: 620)
+                }
+            }
+            return receivedBubble(text)
         case .thinking(let text):
             // Italic and dimmer than a tool line: it reads as the model's aside rather than as
             // something it did. Wrapping, because reasoning is prose and truncating it mid-clause
@@ -2073,13 +2101,24 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         activeStreamIndices = []
         pendingStreamIndices = []
         guard let entries = runner?.entries else { return }
-        for index in indices {
+        var settled = indices
+        // A message that arrived whole is never flushed: it's settled here too.
+        if runner?.phase.isBusy != true, let last = entries.indices.last(where: { if case .assistantText = entries[$0].kind { return true } else { return false } }) {
+            settled.insert(last)
+        }
+        for index in settled {
             guard entries.indices.contains(index), entryViews.indices.contains(index),
                   case .assistantText(let text) = entries[index].kind,
                   let bubble = (entryViews[index] as? BubbleRowView)?.bubble else { continue }
-            bubble.setBody(text)
+            // Rich blocks: the message is built again, its blocks drawn.
+            if RichBlocks.mayContainBlocks(text), RichBlocks.segments(text, image: { [weak self] in self?.projectImage($0) }).contains(where: { if case .block = $0 { return true } else { return false } }),
+               let block = blocks.first(where: { $0.entries.contains(index) }), !block.isGroup, block.slot.isRealized {
+                block.slot.fill(buildBlock(block))
+                continue
+            }
+            if indices.contains(index) { bubble.setBody(text) }
         }
-        if !indices.isEmpty { transcriptContainer.layoutSubtreeIfNeeded() }
+        if !settled.isEmpty { transcriptContainer.layoutSubtreeIfNeeded() }
     }
 
     private func scrollToBottom() {
@@ -4423,6 +4462,30 @@ extension ThinkWorkspaceViewController {
         guard marks.indices.contains(target) else { return false }
         jump(toEntry: marks[target].id)
         return true
+    }
+
+    /// The newest message's rich blocks, and what each drew.
+    var richBlocksForTesting: String {
+        guard let index = runner?.entries.lastIndex(where: { if case .assistantText = $0.kind { return true } else { return false } }),
+              entryViews.indices.contains(index), let message = entryViews[index] as? RichMessageView else { return "none" }
+        return message.blockViews.map { view -> String in
+            var line = "block \(view.block.kind) source=\(view.isShowingSourceForTesting)"
+            if let problem = view.problem { line += " problem=\(problem)" }
+            if let mermaid = view.firstDescendant(MermaidView.self), let size = mermaid.drawnSize { line += " drawn=\(Int(size.width))x\(Int(size.height))" }
+            if let table = view.firstDescendant(TableBlockView.self) { line += " rows=\(table.rowsForTesting.count) first=\(table.rowsForTesting.first?.first ?? "-")" }
+            if let image = view.firstDescendant(NSImageView.self), let picture = image.image { line += " picture=\(Int(picture.size.width))x\(Int(picture.size.height))" }
+            return line
+        }.joined(separator: "\n") + "\nbubbles \(message.arrangedSubviews.count - message.blockViews.count)"
+    }
+
+    func richBlockActionForTesting(_ action: String) {
+        guard let index = runner?.entries.lastIndex(where: { if case .assistantText = $0.kind { return true } else { return false } }),
+              entryViews.indices.contains(index), let message = entryViews[index] as? RichMessageView else { return }
+        switch action {
+        case "source": message.blockViews.first?.toggleSource()
+        case "sort": message.blockViews.lazy.compactMap { $0.firstDescendant(TableBlockView.self) }.first?.sortForTesting(column: 1, ascending: false)
+        default: break
+        }
     }
 
     var jumpRailForTesting: String {

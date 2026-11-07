@@ -206,6 +206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "jump-dump" { FileHandle.standardError.write(Data("[jump]\n\(shell.jumpRailForTesting)\n[jump-end]\n".utf8)) }
                     if command == "jump-previous" { shell.jumpForTesting(next: false) }
                     if command == "jump-next" { shell.jumpForTesting(next: true) }
+                    if command == "rich-dump" { FileHandle.standardError.write(Data("[rich]\n\(shell.richBlocksForTesting)\n[rich-end]\n".utf8)) }
+                    if command.hasPrefix("rich-action ") { shell.richBlockActionForTesting(String(command.dropFirst(12))) }
                     if command == "agent-panel-dump" { FileHandle.standardError.write(Data("[agent-panel]\n\(shell.agentPanelForTesting)\n[agent-panel-end]\n".utf8)) }
                     if command == "agent-chats-show" { shell.agentChatsShowForTesting() }
                     if command.hasPrefix("agent-open-chat ") { shell.agentOpenChatForTesting(String(command.dropFirst(16))) }

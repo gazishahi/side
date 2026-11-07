@@ -54,6 +54,14 @@ for line in sys.stdin:
         if "FAIL" in said:
             send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32000, "message": "The stand-in failed on purpose."}})
             continue
+        if "RICH" in said:
+            folder = folders.get(sid) or "."
+            with open(os.path.join(folder, "chart.svg"), "w") as f:
+                f.write('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60"><rect width="200" height="60" rx="8" fill="#3b82f6"/><text x="16" y="36" fill="white" font-size="18">chart.svg</text></svg>')
+            diagram = "graph TD\n  A[Track pill] --> B{Too wide?}\n  B -->|yes| C[Measure once]\n  B -->|no| D[Done]" if "BAD" not in said else "graph TD\n  A[Track pill --> "
+            text(sid, "agent_message_chunk", "Here is how the pill decides its width:\n\n```mermaid\n" + diagram + "\n```\n\nTimings, before and after:\n\n```csv\nsurface,before ms,after ms\nTrack pill,12,3\nStage bar,8,8\n\"Tabs, wide\",30,9\n```\n\n| File | Lines |\n|---|---:|\n| TrackPill.swift | 40 |\n| ChromeHost.swift | 12 |\n\n```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"40\"><circle cx=\"20\" cy=\"20\" r=\"16\" fill=\"teal\"/></svg>\n```\n\n![The chart](chart.svg)\n\nThat's all.")
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
+            continue
         if "LONG" in said:
             text(sid, "agent_message_chunk", "\n\n".join("Paragraph %d of a long answer, so the conversation scrolls." % i for i in range(40)))
             send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
