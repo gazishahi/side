@@ -191,6 +191,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         }
                         FileHandle.standardError.write(Data("[windows] \(lines.joined(separator: " || "))\n".utf8))
                     }
+                    if command == "companion-toggle" { shell.toggleCompanion() }
+                    if command == "companion-dump" { FileHandle.standardError.write(Data("[companion] \(shell.companionForTesting)\n".utf8)) }
+                    if command.hasPrefix("companion-type ") { shell.companionTypeForTesting(String(command.dropFirst(15)) + "\r") }
+                    if command == "companion-editor-click" { shell.companionEditorClickForTesting() }
                     if command == "pdf-dump" { FileHandle.standardError.write(Data("[pdf] \(shell.pdfStateForTesting)\n".utf8)) }
                     if command.hasPrefix("find ") { shell.findForTesting(String(command.dropFirst(5))) }
                     if command.hasPrefix("think-track ") { shell.thinkTrackForTesting(agentId: String(command.dropFirst(12))) }
@@ -814,6 +818,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// same project double-count its tracks, an acceptable imprecision for a cosmetic badge.
     /// Every window's shell — the track pill's "Other projects" section reads across them.
     /// View › Toggle File Explorer, for the window in front, wherever its focus is.
+    /// View › Show Terminal Beside, for the window in front.
+    @objc func toggleTerminalBeside(_ sender: Any?) {
+        (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleCompanion()
+    }
+
     @objc func toggleFileExplorer(_ sender: Any?) {
         // The main window, wherever its focus is (the explorer included).
         (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleFileExplorer()

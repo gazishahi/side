@@ -4994,6 +4994,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(AppDelegate.toggleFileExplorer(_:)), keyEquivalent: "")
         explorer.target = AppDelegate.shared
         Shortcuts.bind(explorer, "view.fileExplorer")
+        // The window's companion (2026-11-07): the app's too, so it works from the terminal itself.
+        let beside = viewMenu.addItem(withTitle: "Show Terminal Beside", action: #selector(AppDelegate.toggleTerminalBeside(_:)), keyEquivalent: "")
+        beside.target = AppDelegate.shared
+        Shortcuts.bind(beside, "view.terminalBeside")
         // Folding lives in the editor (Alloy), which is in the responder chain while it has focus.
         let foldingItem = NSMenuItem(title: "Code Folding", action: nil, keyEquivalent: "")
         let foldingMenu = NSMenu(title: "Code Folding")
@@ -5694,15 +5698,19 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
     /// Entry point for cross-stage "open this file" requests (currently: clicking a
     /// file-path-shaped link in the Run stage's terminal output).
-    func revealFile(_ url: URL, line: Int?) {
+    /// `focus: false` leaves the line in view without the editor's caret claiming the keyboard
+    /// (Follow, beside a terminal being typed into); `completion` runs once it's shown.
+    func revealFile(_ url: URL, line: Int?, focus: Bool = true, completion: (() -> Void)? = nil) {
         open(url) { [weak self] in
+            defer { completion?() }
             guard let self, let line, line > 0,
-                  let index = self.openTabs.firstIndex(where: { $0.url == url }), self.openTabs[index].kind == .text else { return }
+                  let index = self.openTabs.firstIndex(where: { $0.url == url.standardizedFileURL.resolvingSymlinksInPath() || $0.url == url }),
+                  self.openTabs[index].kind == .text else { return }
             let ns = self.openTabs[index].document.text
             guard let range = self.nsRange(for: LSPRange(start: LSPPosition(line: line - 1, character: 0), end: LSPPosition(line: line - 1, character: 0)), in: ns) else { return }
             self.editor.selectedRange = NSRange(location: range.location, length: 0)
             self.editor.centerRange(range)
-            self.editor.focus()
+            if focus { self.editor.focus() }
         }
     }
 

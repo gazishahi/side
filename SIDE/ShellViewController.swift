@@ -360,7 +360,10 @@ final class ShellViewController: NSViewController {
     /// themselves get reloaded, so it never claims a track this window hasn't actually switched
     /// to yet. Backs `WorkspaceBridgeHost` — an `AgentRunner` uses it to decide whether *this*
     /// window is the one to write an approved edit into.
-    private(set) var currentTrackKey: String?
+    private(set) var currentTrackKey: String? {
+        // The companion shows the same track: another track's window has none.
+        didSet { if let companion, companion.trackKey != (currentTrackKey ?? "") { closeCompanion() } }
+    }
     /// Where `currentTrackKey`'s stages actually operate — its own worktree if it has one, else
     /// `projectURL`. Threaded into Make/Run's `reloadForTrackSwitch` and used as the root for
     /// this window's own git-status/branch introspection (`refreshGitInfo`), so the title bar
@@ -456,6 +459,7 @@ final class ShellViewController: NSViewController {
         NotificationCenter.default.addObserver(forName: AgentSessionStore.checkpointsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshRunTasks() }
         }
+        runVC.onShowBesideRequested = { [weak self] session in self?.openCompanion(session) }
         runVC.onTearOutRequested = { [weak self] session, screenPoint in
             guard let self, let projectURL = self.projectURL else { return }
             AppDelegate.shared?.openTrackInNewWindow(projectRoot: projectURL, trackKey: self.currentTrackKey, soleSession: session, at: screenPoint)
@@ -569,6 +573,7 @@ final class ShellViewController: NSViewController {
     private var isTornOut = false
 
     func prepareForClose() {
+        closeCompanion()
         if let cycleMonitor { NSEvent.removeMonitor(cycleMonitor) }
         cycleMonitor = nil
         makeVC.prepareForClose()
@@ -618,6 +623,7 @@ final class ShellViewController: NSViewController {
         super.viewDidLayout()
         if let window = view.window { chrome.positionTrafficLights(in: window) }
         chrome.adapt(toWidth: view.bounds.width)
+        layoutCompanion()
         if let host = paletteHost, !host.isHidden { host.frame = chrome.paletteFrame(size: host.frame.size, in: view) }
     }
 
@@ -1253,6 +1259,280 @@ final class ShellViewController: NSViewController {
         }
     }
 
+    // MARK: - The companion (SIDE_DESIGN_SESSIONS_2026-11-06.md, session 1)
+
+    /// A Terminal session docked beside Editor or Changes. Nil when the window has none.
+    private var companion: TerminalCompanionViewController?
+    private var stageTrailing: NSLayoutConstraint?
+    private var companionWidthConstraint: NSLayoutConstraint?
+    private var companionTop: NSLayoutConstraint?
+    private var companionBottom: NSLayoutConstraint?
+    /// Its width, dragged at its edge; this window's, starting from the last one dragged anywhere.
+    private var companionWidth: CGFloat = {
+        let saved = HeronDefaults.store.double(forKey: ShellViewController.companionWidthKey)
+        return saved > 0 ? CGFloat(saved) : 480
+    }()
+    private var companionDragStart: CGFloat?
+    /// Too narrow a window for both: hidden, until View › Show Terminal Beside floats it over the
+    /// stage's edge (the Agent panel's rule, decided 2026-11-04).
+    private var companionFloatingShown = false
+    private var followObserver: NSObjectProtocol?
+    private var followMonitor: Any?
+    /// The text Follow last saw of each file it showed: the next change is found against it.
+    private var followSnapshots: [String: String] = [:]
+    private var followPending: URL?
+
+    static let companionWidthKey = "companion.width"
+    private static let stageMinimumWidth: CGFloat = 600
+    private static let companionMinimumWidth: CGFloat = 360
+
+    private var companionDocks: Bool { view.bounds.width - Self.companionMinimumWidth >= Self.stageMinimumWidth }
+    private var companionStage: Bool { current == .make || current == .review }
+
+    /// View › Show Terminal Beside (⌥⌘T): the tab Terminal shows, beside the stage; again, back
+    /// to Terminal. In a window too narrow to dock it, shows and hides it floating.
+    func toggleCompanion() {
+        if companion != nil {
+            if !companionDocks, companionStage {
+                companionFloatingShown.toggle()
+                layoutCompanion()
+                if companionFloatingShown { companion?.focusTerminal() }
+                return
+            }
+            if companionStage { closeCompanion(); return }
+            return revealCompanion()
+        }
+        guard !isLooseFileWindow, let session = runVC.sessionForCompanion() else { NSSound.beep(); return }
+        openCompanion(session)
+    }
+
+    /// The tab's Show Beside Editor, or the toggle: `session` moves beside the stage.
+    func openCompanion(_ session: TerminalSession) {
+        guard !isLooseFileWindow, let terminals = projectContext?.terminals else { return }
+        if companion?.session === session { return revealCompanion() }
+        closeCompanion()
+        let companion = TerminalCompanionViewController(session: session, terminals: terminals, trackKey: currentTrackKey ?? "")
+        self.companion = companion
+        addChild(companion)
+        companion.view.translatesAutoresizingMaskIntoConstraints = false
+        // Over the top row (its header takes the row's trailing end), under the floating bar.
+        view.addSubview(companion.view, positioned: .above, relativeTo: chrome.topRow)
+        let width = companion.view.widthAnchor.constraint(equalToConstant: companionWidth)
+        let top = companion.view.topAnchor.constraint(equalTo: view.topAnchor)
+        let bottom = companion.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        companionWidthConstraint = width
+        companionTop = top
+        companionBottom = bottom
+        NSLayoutConstraint.activate([width, top, bottom, companion.view.trailingAnchor.constraint(equalTo: view.trailingAnchor)])
+        companion.onReturn = { [weak self] in self?.closeCompanion() }
+        companion.onEnded = { [weak self] in self?.closeCompanion() }
+        companion.onFollowChanged = { [weak self] on in if on { self?.followSnapshots = [:] } }
+        companion.onResize = { [weak self] offset in
+            guard let self else { return }
+            let start = self.companionDragStart ?? self.companionWidthConstraint?.constant ?? self.companionWidth
+            self.companionDragStart = start
+            self.companionWidth = max(Self.companionMinimumWidth, min(start + offset, self.view.bounds.width - Self.stageMinimumWidth))
+            self.layoutCompanion()
+        }
+        companion.onResizeEnded = { [weak self] in
+            guard let self else { return }
+            self.companionDragStart = nil
+            HeronDefaults.store.set(Double(self.companionWidth), forKey: Self.companionWidthKey)
+        }
+        companion.onFileLinkRequested = { [weak self, weak companion] link in
+            guard let self, let companion else { return false }
+            let vc = companion.session.viewController
+            guard let (url, line) = RunWorkspaceViewController.fileLink(link, cwd: vc.currentDirectory ?? vc.workingDirectory) else { return false }
+            if self.current != .make { self.show(.make) }
+            self.makeVC.revealFile(url, line: line)
+            return true
+        }
+        companionFloatingShown = true
+        installFollow()
+        if !companionStage { show(.make) }
+        layoutCompanion()
+        companion.focusTerminal()
+    }
+
+    /// The companion's session goes back to Terminal's tabs, still running.
+    func closeCompanion() {
+        guard let companion else { return }
+        self.companion = nil
+        companion.returnSession()
+        companion.view.removeFromSuperview()
+        companion.removeFromParent()
+        removeFollow()
+        companionFloatingShown = false
+        layoutCompanion()
+    }
+
+    /// The activity pill or a link names the companion's session: it comes into view.
+    private func revealCompanion() {
+        guard let companion else { return }
+        if !companionStage { show(.make) }
+        companionFloatingShown = true
+        layoutCompanion()
+        companion.focusTerminal()
+    }
+
+    /// Where the companion goes for this stage and width: docked, the stage ending where it
+    /// begins; floating over the stage's edge; or hidden (another stage, or not asked for).
+    private func layoutCompanion() {
+        guard let companion, companion.isViewLoaded else {
+            if stageTrailing?.constant != 0 { stageTrailing?.constant = 0 }
+            chrome.reserveTrailing(0)
+            return
+        }
+        let width = view.bounds.width
+        let docks = companionDocks
+        if docks { companionFloatingShown = false }
+        let shown = companionStage && (docks || companionFloatingShown)
+        let paneWidth = docks
+            ? max(Self.companionMinimumWidth, min(companionWidth, width - Self.stageMinimumWidth))
+            : max(min(Self.companionMinimumWidth, width - 2 * DS.Spacing.xl), min(companionWidth, width * 0.8))
+        companion.view.isHidden = !shown
+        if companionWidthConstraint?.constant != paneWidth { companionWidthConstraint?.constant = paneWidth }
+        companion.setFloating(!docks)
+        // Floating, it sits between the top row and the bar, as the file explorer does.
+        companionTop?.constant = docks ? 0 : ChromeHost.rowHeight + DS.Spacing.s
+        companionBottom?.constant = docks ? 0 : -(chrome.bottomObstruction + DS.Spacing.s)
+        companion.setBottomObstruction(docks ? chrome.bottomObstruction : 0)
+        let reserve = shown && docks ? paneWidth : 0
+        if stageTrailing?.constant != -reserve { stageTrailing?.constant = -reserve }
+        chrome.reserveTrailing(reserve)
+    }
+
+    // MARK: Follow
+
+    private func installFollow() {
+        removeFollow()
+        followObserver = NotificationCenter.default.addObserver(forName: ProjectWatcher.didChangeNotification, object: nil, queue: .main) { [weak self] note in
+            let paths = note.userInfo?[ProjectWatcher.pathsKey] as? [String] ?? []
+            MainActor.assumeIsolated { self?.projectFilesChanged(paths) }
+        }
+        // A click or a keystroke in the Editor is the person taking over: Follow stops pulling
+        // files under them.
+        followMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { [weak self] event in
+            self?.followInterrupted(by: event)
+            return event
+        }
+    }
+
+    private func removeFollow() {
+        if let followObserver { NotificationCenter.default.removeObserver(followObserver) }
+        if let followMonitor { NSEvent.removeMonitor(followMonitor) }
+        followObserver = nil
+        followMonitor = nil
+        followSnapshots = [:]
+        followPending = nil
+    }
+
+    private func followInterrupted(by event: NSEvent) {
+        guard let companion, companion.follows, current == .make, let window = view.window, event.window === window else { return }
+        let inEditor: Bool
+        if event.type == .leftMouseDown {
+            let hit = window.contentView?.hitTest(window.contentView?.convert(event.locationInWindow, from: nil) ?? .zero)
+            inEditor = hit?.isDescendant(of: makeVC.view) == true
+        } else {
+            // ⌘-shortcuts aren't editing (⌥⌘T itself, ⌘1, ⌘S).
+            let typing = !event.modifierFlags.contains(.command)
+            inEditor = typing && (window.firstResponder as? NSView)?.isDescendant(of: makeVC.view) == true
+        }
+        if inEditor { companion.setFollows(false) }
+    }
+
+    /// Files changed on disk while the companion's session runs a program: the newest one shows.
+    /// At the shell's prompt nothing is followed: the change was someone else's.
+    private func projectFilesChanged(_ paths: [String]) {
+        guard let companion, companion.follows, current == .make, !companion.view.isHidden,
+              companion.session.viewController.runningProgramName != nil,
+              let root = focusedRoot ?? projectURL,
+              let newest = Self.followCandidates(paths, root: root).last else { return }
+        let first = followPending == nil
+        followPending = newest
+        guard first else { return }
+        // A burst of writes (a formatter after an edit) shows once, at its last file.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, let url = self.followPending else { return }
+            self.followPending = nil
+            self.follow(url)
+        }
+    }
+
+    /// Files under `root` worth showing: not in a hidden folder (.git, .build), dependencies or
+    /// build output, and small enough to be source.
+    nonisolated static func followCandidates(_ paths: [String], root: URL) -> [URL] {
+        let roots = Set([root.standardizedFileURL.path, root.resolvingSymlinksInPath().path]).map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        let skipped: Set<String> = ["node_modules", "DerivedData", "build", "dist", "target", "Pods", "__pycache__", "venv"]
+        return paths.compactMap { path -> URL? in
+            guard let base = roots.first(where: { path.hasPrefix($0) }) else { return nil }
+            let components = path.dropFirst(base.count).split(separator: "/").map(String.init)
+            guard let name = components.last, !name.hasPrefix("."), !name.hasSuffix("~"),
+                  !components.dropLast().contains(where: { $0.hasPrefix(".") || skipped.contains($0) }) else { return nil }
+            let url = URL(fileURLWithPath: path)
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true, (values.fileSize ?? 0) < 4_000_000 else { return nil }
+            return url
+        }
+    }
+
+    /// The first line that differs, 1-based; nil when nothing does.
+    nonisolated static func firstChangedLine(_ old: String, _ new: String) -> Int? {
+        let a = old.split(separator: "\n", omittingEmptySubsequences: false)
+        let b = new.split(separator: "\n", omittingEmptySubsequences: false)
+        for index in 0..<max(a.count, b.count) {
+            if index >= a.count || index >= b.count || a[index] != b[index] { return min(index, max(b.count - 1, 0)) + 1 }
+        }
+        return nil
+    }
+
+    private func follow(_ url: URL) {
+        let new = try? String(contentsOf: url, encoding: .utf8)
+        let old = followSnapshots[url.path]
+        if followSnapshots.count > 40 { followSnapshots = [:] }
+        followSnapshots[url.path] = new
+        if let old, let new {
+            guard let line = Self.firstChangedLine(old, new) else { return }
+            return revealFollowed(url, line: line)
+        }
+        guard new != nil, let root = (focusedRoot ?? projectURL)?.path else { return revealFollowed(url, line: nil) }
+        // First sight of this file: where it differs from git's copy, its first changed hunk.
+        let path = url.path
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let diff = Self.runGit(["diff", "-U0", "--no-color", "--", path], in: root) ?? ""
+            let line = diff.split(separator: "\n").first { $0.hasPrefix("@@") }.flatMap { header -> Int? in
+                guard let plus = header.split(separator: " ").first(where: { $0.hasPrefix("+") }) else { return nil }
+                return Int(plus.dropFirst().split(separator: ",").first ?? "")
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.revealFollowed(url, line: line.map { max($0, 1) }) }
+            }
+        }
+    }
+
+    private func revealFollowed(_ url: URL, line: Int?) {
+        guard let companion, companion.follows, current == .make else { return }
+        // Typing into the terminal carries on: the file shows, the keyboard stays where it was.
+        let keepTerminal = companion.terminalHasFocus
+        makeVC.revealFile(url, line: line, focus: false) { [weak self] in
+            if keepTerminal { self?.companion?.focusTerminal() }
+        }
+    }
+
+    var companionForTesting: String {
+        guard let companion else { return "none" }
+        let mode = companion.view.isHidden ? "hidden" : (companionDocks ? "docked" : "floating")
+        return "mode=\(mode) width=\(Int(companion.view.frame.width)) stage=\(Int(container.subviews.first?.frame.width ?? 0)) \(companion.stateForTesting) file=\(currentFileURL?.lastPathComponent ?? "-") stageName=\(current?.title ?? "-")"
+    }
+    func companionTypeForTesting(_ text: String) { companion?.session.viewController.terminalView.send(txt: text) }
+    /// A click in the middle of the Editor, as the monitor sees it.
+    func companionEditorClickForTesting() {
+        guard let window = view.window else { return }
+        let point = makeVC.view.convert(NSPoint(x: makeVC.view.bounds.midX, y: makeVC.view.bounds.midY), to: nil)
+        if let event = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                                          context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { followInterrupted(by: event) }
+    }
+
     /// A tab torn out of another window landing here — jump to Make and show that file.
     func revealFile(_ url: URL) {
         show(.make)
@@ -1269,6 +1549,7 @@ final class ShellViewController: NSViewController {
         guard hasSession || onProject else { return false }
         view.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
+        if companion?.session.viewController.keeperID == id { revealCompanion(); return true }
         if let key = trackKey, key != (currentTrackKey ?? ""), !runVC.listsSession(keeperID: id),
            let track = trackStore?.tracks.first(where: { $0.branchName == key }) {
             switchToTrack(track, landOn: .run) { [weak self] outcome in
@@ -1286,6 +1567,7 @@ final class ShellViewController: NSViewController {
     func revealTerminalSession(_ id: UUID) {
         view.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
+        if companion?.session.id == id { return revealCompanion() }
         show(.run)
         if runVC.showSession(id: id) { return }
         // On another track: switch to it, as picking the track would.
@@ -1485,7 +1767,10 @@ final class ShellViewController: NSViewController {
     @objc func switchToPreviousProject(_ sender: Any?) { switchProject(offset: -1) }
 
     /// On the Terminal, on that session's tab: in sight.
-    func isShowingTerminalSession(_ id: UUID) -> Bool { current == .run && runVC.displayedSessionID == id }
+    func isShowingTerminalSession(_ id: UUID) -> Bool {
+        if let companion, companion.session.id == id { return companion.isViewLoaded && !companion.view.isHidden }
+        return current == .run && runVC.displayedSessionID == id
+    }
 
     /// The activity pill: the Agent stage on that track.
     func revealAgent(trackKey: String) {
@@ -1497,7 +1782,9 @@ final class ShellViewController: NSViewController {
     }
 
     /// Whether this window's Run has that keeper session among its own tabs.
-    func listsTerminal(keeperID id: String) -> Bool { runVC.listsSession(keeperID: id) }
+    func listsTerminal(keeperID id: String) -> Bool {
+        companion?.session.viewController.keeperID == id || runVC.listsSession(keeperID: id)
+    }
 
     var hasProject: Bool { projectURL != nil }
     var projectRootURL: URL? { projectURL }
@@ -1521,7 +1808,7 @@ final class ShellViewController: NSViewController {
 
         // Stages are places, not pages: the content crossfades, nothing slides (Direction 03 §2.3).
         if !children.isEmpty { DS.Motion.crossfade(container) }
-        for child in children {
+        for child in children where child !== companion {
             child.view.removeFromSuperview()
             child.removeFromParent()
         }
@@ -1537,10 +1824,12 @@ final class ShellViewController: NSViewController {
         addChild(next)
         next.view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(next.view)
+        let trailing = next.view.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        stageTrailing = trailing
         NSLayoutConstraint.activate([
             next.view.topAnchor.constraint(equalTo: container.topAnchor),
             next.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            next.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            trailing,
             next.view.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
 
@@ -1556,6 +1845,7 @@ final class ShellViewController: NSViewController {
         if stage == .run {
             runVC.activateActiveSession()
         }
+        layoutCompanion()
         applyWindowChrome()
     }
 
@@ -1997,6 +2287,8 @@ final class ShellViewController: NSViewController {
     }
 
     private func projectOpened(_ url: URL) {
+        // The companion's terminal is the project this window is leaving: it goes back to its tabs.
+        closeCompanion()
         if !isLooseFileWindow { ProjectSpaces.shared.space(for: url) }
         // Opening a different project (or reopening after this window already had one) drops
         // this window's claim on whatever it held before — without this, the old project's

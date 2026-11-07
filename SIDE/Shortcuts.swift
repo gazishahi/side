@@ -144,6 +144,7 @@ enum Shortcuts {
 
         c("view.markdownPreview", "Toggle Markdown Preview", .view, "v", [.command, .shift]),
         c("view.fileExplorer", "Toggle File Explorer", .view, "e", [.command, .shift]),
+        c("view.terminalBeside", "Show Terminal Beside", .view, "t", [.command, .option]),
         c("view.minimap", "Show Minimap", .view, "m", [.command, .control]),
         c("view.writerMode", "Writer Mode", .view, "w", [.command, .control]),
         c("view.liveMarkdown", "Live Markdown", .view, nil),

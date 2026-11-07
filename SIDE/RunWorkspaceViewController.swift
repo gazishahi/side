@@ -72,6 +72,18 @@ final class RunWorkspaceViewController: NSViewController {
     private static let taskRowHeight: CGFloat = 26
     /// A tab dragged out of the window: the shell opens a window that adopts the session.
     var onTearOutRequested: ((TerminalSession, NSPoint) -> Void)?
+    /// The tab's Show Beside Editor: the shell makes it the window's companion.
+    var onShowBesideRequested: ((TerminalSession) -> Void)?
+
+    /// The session the companion takes when none is named (View › Show Terminal Beside): the
+    /// tab Terminal shows, its remembered tabs restored first as a visit to Terminal would.
+    func sessionForCompanion() -> TerminalSession? {
+        guard hasProject else { return nil }
+        loadViewIfNeeded()
+        if activeSessionIndex.map({ !sessions.indices.contains($0) }) ?? true { restoreRememberedSessionsOrCreateOne() }
+        guard let index = activeSessionIndex, sessions.indices.contains(index) else { return nil }
+        return sessions[index]
+    }
 
     /// Across every track, not just the current one — a track running in the background with
     /// unseen output should still light up the stage badge even while you're looking elsewhere.
@@ -500,14 +512,18 @@ final class RunWorkspaceViewController: NSViewController {
         // Sessions whose keeper is gone without the session ending: a restart, or a crash.
         let ended = SessionKeepers.isEnabled ? SessionKeepers.endedRecords(project: project, track: trackKey) : []
         let endedByID = Dictionary(ended.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let orphans = (live + ended).filter { record in !keeperIDs.contains { $0 == record.id } }
-        guard !remembered.isEmpty || !orphans.isEmpty else { return createSession() }
+        // A remembered tab whose shell another view already holds (the companion, a torn-out
+        // window) isn't reattached here: a second tab on one keeper took it from the first.
+        let attached = Set(terminals?.everySession().compactMap { $0.viewController.keeperID } ?? [])
+        let orphans = (live + ended).filter { record in !keeperIDs.contains { $0 == record.id } && !attached.contains(record.id) }
+        let restorable = remembered.indices.filter { index in !(keeperIDs.indices.contains(index) && keeperIDs[index].map(attached.contains) == true) }
+        guard !restorable.isEmpty || !orphans.isEmpty else { return createSession() }
         // Created, not started: a shell starts when its tab is first shown. Starting all of them
         // here made every background tab's first prompt count as unseen output, so reopening a
         // project with three remembered tabs lit Run's badge for nothing. A live session is the
         // exception: it's already running, so it reattaches now and keeps its tab current.
         let names = terminals?.rememberedNames(forTrackKey: trackKey) ?? []
-        for (index, directory) in remembered.enumerated() {
+        for (index, directory) in remembered.enumerated() where restorable.contains(index) {
             let id = keeperIDs.indices.contains(index) ? keeperIDs[index] : nil
             let recovering = id.flatMap { endedByID[$0] }
             createSession(inDirectory: recovering.map(Self.recoveryDirectory) ?? directory, keeperID: id, show: false)
@@ -793,6 +809,7 @@ final class RunWorkspaceViewController: NSViewController {
         item("Close", #selector(closeSessionFromMenu(_:)))
         item("Close Others", #selector(closeOtherSessionsFromMenu(_:)))
         menu.addItem(NSMenuItem.separator())
+        item("Show Beside Editor", #selector(showBesideFromMenu(_:)))
         item("Move to New Window", #selector(moveSessionToNewWindowFromMenu(_:)))
         menu.addItem(NSMenuItem.separator())
         let all = menu.addItem(withTitle: "Running Terminals\u{2026}", action: #selector(AppDelegate.showRunningTerminals), keyEquivalent: "")
@@ -858,6 +875,10 @@ final class RunWorkspaceViewController: NSViewController {
         onActivityChanged?()
         rebuildTabBar()
         showActiveSession()
+    }
+
+    @objc private func showBesideFromMenu(_ sender: NSMenuItem) {
+        if let index = sessionIndex(from: sender) { onShowBesideRequested?(sessions[index]) }
     }
 
     @objc private func moveSessionToNewWindowFromMenu(_ sender: NSMenuItem) {
@@ -1019,22 +1040,28 @@ final class RunWorkspaceViewController: NSViewController {
     /// output) and asks the workspace to open them in Make; anything else (real URLs) falls
     /// through to the default NSWorkspace handling.
     private func handleFileLink(_ link: String) -> Bool {
-        guard !link.contains("://") else { return false }
+        let cwd = activeSessionIndex.flatMap { sessions.indices.contains($0) ? sessions[$0].viewController.currentDirectory : nil }
+        guard let (url, line) = Self.fileLink(link, cwd: cwd) else { return false }
+        onOpenFileRequested?(url, line)
+        return true
+    }
+
+    /// A clicked link that names a file on disk: the file, and its line when it says one.
+    static func fileLink(_ link: String, cwd: String?) -> (URL, Int?)? {
+        guard !link.contains("://") else { return nil }
         let parts = link.split(separator: ":")
-        guard let first = parts.first else { return false }
+        guard let first = parts.first else { return nil }
         let path = String(first)
         let candidateURL: URL
         if path.hasPrefix("/") {
             candidateURL = URL(fileURLWithPath: path)
-        } else if let cwd = activeSessionIndex.flatMap({ sessions.indices.contains($0) ? sessions[$0].viewController.currentDirectory : nil }) {
+        } else if let cwd {
             candidateURL = URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: cwd)).standardizedFileURL
         } else {
-            return false
+            return nil
         }
-        guard FileManager.default.fileExists(atPath: candidateURL.path) else { return false }
-        let line = parts.count > 1 ? Int(parts[1]) : nil
-        onOpenFileRequested?(candidateURL, line)
-        return true
+        guard FileManager.default.fileExists(atPath: candidateURL.path) else { return nil }
+        return (candidateURL, parts.count > 1 ? Int(parts[1]) : nil)
     }
 }
 

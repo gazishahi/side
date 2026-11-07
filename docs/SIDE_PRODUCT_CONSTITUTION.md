@@ -12,7 +12,7 @@ The primary unit is a **track**: a meaningful unit of work with an intent, a cur
 
 ## Non-negotiables
 
-1. **One stage owns the canvas.** The application never relies on a permanent file tree, chat rail, terminal panel, or inspector to remain functional.
+1. **One task owns the canvas.** A stage, and at most one companion beside it showing the same track (a Terminal session beside Editor or Changes; changed 2026-11-07, `SIDE_DESIGN_SESSIONS_2026-11-06.md`). The application never relies on a permanent file tree, chat rail, terminal panel, or inspector to remain functional.
 2. **Tracks are primary; threads are nested.** An agent thread is a workstream within a track, never the user's top-level navigation model.
 3. **Attention is explicit.** A user can always identify what is waiting on them, what changed, what failed, and what was last learned.
 4. **Work is durable.** A track preserves its intent, decisions, files, commands, tests, prompts, instructions, and review checkpoints so it can be safely resumed.

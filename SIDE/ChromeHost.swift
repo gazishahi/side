@@ -89,6 +89,14 @@ final class ChromeHost {
     private var diskObserver: NSObjectProtocol?
     private var activityObserver: NSObjectProtocol?
     private var leadingInset: NSLayoutConstraint?
+    private var rowTrailing: NSLayoutConstraint?
+
+    /// The companion docked at the trailing edge owns that part of the top row: the stage's
+    /// tabs end where it begins.
+    func reserveTrailing(_ width: CGFloat) {
+        let constant = -(DS.Spacing.m + width)
+        if rowTrailing?.constant != constant { rowTrailing?.constant = constant }
+    }
 
     init(placement: ChromePlacement, pill: TrackPill, stageControl: SlidingSegmentedControl, searchButton: GlassCircleButton) {
         self.placement = placement
@@ -140,13 +148,15 @@ final class ChromeHost {
 
         let inset = row.leadingAnchor.constraint(equalTo: topRow.leadingAnchor, constant: Self.trafficLightInset)
         leadingInset = inset
+        let rowTrailing = row.trailingAnchor.constraint(equalTo: topRow.trailingAnchor, constant: -DS.Spacing.m)
+        self.rowTrailing = rowTrailing
         NSLayoutConstraint.activate([
             topRow.topAnchor.constraint(equalTo: root.topAnchor),
             topRow.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             topRow.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             topRow.heightAnchor.constraint(equalToConstant: Self.rowHeight),
             inset,
-            row.trailingAnchor.constraint(equalTo: topRow.trailingAnchor, constant: -DS.Spacing.m),
+            rowTrailing,
             row.topAnchor.constraint(equalTo: topRow.topAnchor),
             row.bottomAnchor.constraint(equalTo: topRow.bottomAnchor),
             stageSlot.topAnchor.constraint(equalTo: row.topAnchor),

@@ -54,6 +54,7 @@
 		A00000000000000000000228 /* AccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000227 /* AccessibilityTests.swift */; };
 		A00000000000000000000230 /* TypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000229 /* TypographyTests.swift */; };
 		A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000251 /* GitLaunchProbeTests.swift */; };
+		A00000000000000000000615 /* CompanionFollowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000614 /* CompanionFollowTests.swift */; };
 		A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000257 /* WorkGroupViewTests.swift */; };
 		A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000271 /* DataIntegrityAuditTests.swift */; };
 		A00000000000000000000274 /* LSPOrderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000273 /* LSPOrderingTests.swift */; };
@@ -83,6 +84,7 @@
 		A0000000000000000000060B /* ProgramMarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000060A /* ProgramMarks.swift */; };
 		A0000000000000000000060D /* ActivityCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000060C /* ActivityCenter.swift */; };
 		A0000000000000000000060F /* ProjectSpaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000060E /* ProjectSpaces.swift */; };
+		A00000000000000000000613 /* TerminalCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000612 /* TerminalCompanion.swift */; };
 		A00000000000000000000611 /* ProjectSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000610 /* ProjectSwitcher.swift */; };
 		A00000000000000000000418 /* CheckpointSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000417 /* CheckpointSheet.swift */; };
 		A00000000000000000000420 /* InlineInstruct.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000419 /* InlineInstruct.swift */; };
@@ -225,6 +227,7 @@
 		A0000000000000000000060A /* ProgramMarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramMarks.swift; sourceTree = "<group>"; };
 		A0000000000000000000060C /* ActivityCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityCenter.swift; sourceTree = "<group>"; };
 		A0000000000000000000060E /* ProjectSpaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSpaces.swift; sourceTree = "<group>"; };
+		A00000000000000000000612 /* TerminalCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCompanion.swift; sourceTree = "<group>"; };
 		A00000000000000000000610 /* ProjectSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSwitcher.swift; sourceTree = "<group>"; };
 		A00000000000000000000195 /* SlidingSegmentedControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlidingSegmentedControl.swift; sourceTree = "<group>"; };
 		A00000000000000000000197 /* StagePins.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StagePins.swift; sourceTree = "<group>"; };
@@ -235,6 +238,7 @@
 		A00000000000000000000227 /* AccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000229 /* TypographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypographyTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000251 /* GitLaunchProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLaunchProbeTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000614 /* CompanionFollowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionFollowTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000257 /* WorkGroupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkGroupViewTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000271 /* DataIntegrityAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataIntegrityAuditTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000273 /* LSPOrderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LSPOrderingTests.swift; sourceTree = "<group>"; };
@@ -429,6 +433,7 @@
 				A0000000000000000000060A /* ProgramMarks.swift */,
 				A0000000000000000000060C /* ActivityCenter.swift */,
 				A0000000000000000000060E /* ProjectSpaces.swift */,
+				A00000000000000000000612 /* TerminalCompanion.swift */,
 				A00000000000000000000610 /* ProjectSwitcher.swift */,
 				A00000000000000000000195 /* SlidingSegmentedControl.swift */,
 				A00000000000000000000197 /* StagePins.swift */,
@@ -487,6 +492,7 @@
 				A00000000000000000000227 /* AccessibilityTests.swift */,
 				A00000000000000000000229 /* TypographyTests.swift */,
 				A00000000000000000000251 /* GitLaunchProbeTests.swift */,
+				A00000000000000000000614 /* CompanionFollowTests.swift */,
 				A00000000000000000000257 /* WorkGroupViewTests.swift */,
 				A00000000000000000000271 /* DataIntegrityAuditTests.swift */,
 				A00000000000000000000273 /* LSPOrderingTests.swift */,
@@ -759,6 +765,7 @@
 				A0000000000000000000060B /* ProgramMarks.swift in Sources */,
 				A0000000000000000000060D /* ActivityCenter.swift in Sources */,
 				A0000000000000000000060F /* ProjectSpaces.swift in Sources */,
+				A00000000000000000000613 /* TerminalCompanion.swift in Sources */,
 				A00000000000000000000611 /* ProjectSwitcher.swift in Sources */,
 				A00000000000000000000196 /* SlidingSegmentedControl.swift in Sources */,
 				A00000000000000000000198 /* StagePins.swift in Sources */,
@@ -796,6 +803,7 @@
 				A00000000000000000000228 /* AccessibilityTests.swift in Sources */,
 				A00000000000000000000230 /* TypographyTests.swift in Sources */,
 				A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */,
+				A00000000000000000000615 /* CompanionFollowTests.swift in Sources */,
 				A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */,
 				A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */,
 				A00000000000000000000274 /* LSPOrderingTests.swift in Sources */,
