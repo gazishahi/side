@@ -1,6 +1,6 @@
 # Tracks from git: every branch is a track
 
-Status: in progress (2026-11-07: phase 1 built; phase 2's board built; phase 3 not started). Agreed 2026-11-04,
+Status: in progress (2026-11-07: phases 1 and 2 built, switching in place included; phase 3, pull requests, not started). Agreed 2026-11-04,
 with the retention period adjustable. Drafted overnight from the direction agreed on 2026-11-03.
 
 **Phase 1 as built (2026-11-07):**
@@ -25,8 +25,14 @@ and docks the session beside the Editor (the companion); Open goes to its Termin
 already carried ahead/behind and uncommitted counts. The board redraws only when what it lists
 changes, not on every terminal event.
 
-- Not yet: switching checks out in place (decision 4). Switching still opens a worktree, as
-  before; that's the next step, with the board (phase 2).
+**Switching in place (decision 4, 2026-11-07):** a branch checked out nowhere is checked out in
+the main folder, as `git checkout` does. Only when that's safe, else it opens in a folder of its
+own and Branches says why:
+- the main folder has uncommitted changes to tracked files (nothing is carried across, stashed
+  or lost; untracked files stay where they are, as with git, and one in the way makes git refuse);
+- something runs there: a program in one of its terminals, or an agent turn on its branch.
+A branch already checked out in a worktree opens there. Work on the base checks the default
+branch out again under the same rules, and is refused, changing nothing, when it can't be.
 
 ## Why
 

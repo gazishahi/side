@@ -12,6 +12,11 @@ struct TrackSwitchOutcome {
     var stashedFileCount: Int?
     var restoredFileCount: Int?
     var restoreConflicted = false
+    /// The branch was checked out in the main folder, as `git checkout` does (SIDE_RFC_GIT_TRACKS.md,
+    /// decision 4).
+    var checkedOutInPlace = false
+    /// Why it opened in a folder of its own instead: said, so a worktree is never a surprise.
+    var ownFolderReason: String?
 }
 
 /// Owns the list of tracks for one open project. Persisted at a resolved state directory
@@ -172,6 +177,8 @@ final class TrackStore {
         /// A repository with no commits has nothing for a track to branch from (`git worktree add
         /// … HEAD` fails with "invalid reference"). The UI offers the initial commit.
         case repositoryHasNoCommits
+        /// The main folder can't go back to the base branch now: what's in the way.
+        case baseBlocked(String)
 
         var errorDescription: String? {
             switch self {
@@ -189,6 +196,8 @@ final class TrackStore {
                 return "This repository has no commits yet, so there's nothing for a track to branch from. Make an initial commit first."
             case .worktreeHasUncommittedChanges(let risk):
                 return risk.detail
+            case .baseBlocked(let reason):
+                return reason
             }
         }
     }
@@ -257,7 +266,12 @@ final class TrackStore {
                 // A create/switch/promote started (and possibly finished) while this was in
                 // flight — its own reading is already stale, so applying it now would clobber
                 // whatever that operation just established.
-                guard self.epoch == startEpoch else { return }
+                // Read again, now that it has landed: git may have moved meanwhile too (a branch
+                // made in a terminal while a switch ran), and nothing else would ask.
+                guard self.epoch == startEpoch else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.reconcile() }
+                    return
+                }
                 self.repoState = isRepo ? .ready : .notAGitRepo
                 guard isRepo else { self.notifyChange(); return }
                 if !base.isEmpty { self.cachedDefaultBranch = base }
@@ -563,7 +577,11 @@ final class TrackStore {
     /// to wait on. Only falls back to an actual git operation for a track that predates
     /// per-track worktrees (`workingDirectoryPath == nil`) or whose worktree directory vanished
     /// out from under Side (deleted by hand, moved), in which case it's lazily (re)materialized.
-    func switchTo(_ track: Track, completion: @escaping @Sendable (Result<TrackSwitchOutcome, Error>) -> Void) {
+    /// `mainCheckoutBusy`: nil keeps the worktree-per-track behavior; otherwise a branch checked
+    /// out nowhere is checked out in the main folder, as git does (SIDE_RFC_GIT_TRACKS.md,
+    /// decision 4), unless that's unsafe: something runs there (`true`), or it has uncommitted
+    /// changes. Then it opens in a folder of its own, and the outcome says why.
+    func switchTo(_ track: Track, mainCheckoutBusy: Bool? = nil, completion: @escaping @Sendable (Result<TrackSwitchOutcome, Error>) -> Void) {
         epoch += 1
         if let path = track.workingDirectoryPath, FileManager.default.fileExists(atPath: path) {
             markActive(track)
@@ -574,6 +592,7 @@ final class TrackStore {
         // in this file: the background side must not reach back into main-actor state.
         let defaultBranch = defaultBranchName()
         let base = tracks.first { $0.id == track.parentTrackId }?.branchName ?? defaultBranch
+        let root = projectRoot.path
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             // A landed track's branch was deleted once merged (`cleanUp`): resuming it starts the
@@ -581,7 +600,26 @@ final class TrackStore {
             if !self.runGit(["rev-parse", "--verify", "--quiet", "refs/heads/\(track.branchName)"], cwd: self.projectRoot.path).success {
                 _ = self.runGit(["branch", track.branchName, base], cwd: self.projectRoot.path)
             }
-            let result = self.materializeWorktree(for: track, defaultBranch: defaultBranch)
+            var reason: String?
+            if let busy = mainCheckoutBusy {
+                switch self.checkOutInPlace(track.branchName, root: root, busy: busy) {
+                case nil:
+                    DispatchQueue.main.async {
+                        self.movedMainCheckout(to: track)
+                        var outcome = TrackSwitchOutcome()
+                        outcome.checkedOutInPlace = true
+                        completion(.success(outcome))
+                    }
+                    return
+                case let why?:
+                    reason = why
+                }
+            }
+            let result = self.materializeWorktree(for: track, defaultBranch: defaultBranch).map { path, outcome in
+                var outcome = outcome
+                outcome.ownFolderReason = reason
+                return (path, outcome)
+            }
             DispatchQueue.main.async {
                 switch result {
                 case .failure(let error):
@@ -607,6 +645,68 @@ final class TrackStore {
         untrackedBranchWorkingDirectoryPath = nil
         save()
         notifyChange()
+    }
+
+    /// Back to the base branch in the main folder: checked out again when a switch in place
+    /// left another branch there, under the same rules as a switch (nothing running there, no
+    /// uncommitted changes). Refused, with the reason, when it can't; nothing changes then.
+    func switchToBase(mainCheckoutBusy: Bool, completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
+        let defaultBranch = defaultBranchName()
+        // Already there, as far as the last look said: no git needed, and none waited on.
+        if defaultBranch.isEmpty || lastSeenMainBranch == nil || lastSeenMainBranch == defaultBranch {
+            switchToBase()
+            return completion(.success(()))
+        }
+        epoch += 1
+        let root = projectRoot.path
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let current = self.currentBranchName(cwd: root)
+            let blocked = current == defaultBranch ? nil : self.checkOutInPlace(defaultBranch, root: root, busy: mainCheckoutBusy)
+            DispatchQueue.main.async {
+                if let blocked {
+                    let advice = blocked.hasPrefix("something is running") ? "Let it finish, or stop it, then try again."
+                        : blocked.hasPrefix("the main folder has") ? "Commit or stash \(blocked.contains(" 1 uncommitted") ? "it" : "them"), then try again." : "Try again once that\u{2019}s sorted out."
+                    return completion(.failure(TrackError.baseBlocked("Going back to \(defaultBranch) checks it out in the main folder, but \(blocked). \(advice)")))
+                }
+                self.lastSeenMainBranch = defaultBranch
+                for index in self.tracks.indices where self.tracks[index].workingDirectoryPath.map({ Self.samePath($0, root) }) == true {
+                    self.tracks[index].workingDirectoryPath = nil
+                }
+                self.switchToBase()
+                completion(.success(()))
+            }
+        }
+    }
+
+    /// Checks `branch` out in the main folder if that's safe, and says why not when it isn't
+    /// (nil: done). Safe: nothing running there, and no uncommitted changes to tracked files, so
+    /// nothing is carried from one branch to the other. Files git doesn't track stay where they
+    /// are, as they do with `git checkout`; one that would be overwritten makes git refuse.
+    nonisolated private func checkOutInPlace(_ branch: String, root: String, busy: Bool) -> String? {
+        if busy { return "something is running in the main folder" }
+        let status = runGit(["--no-optional-locks", "status", "--porcelain", "--untracked-files=no"], cwd: root)
+        guard status.success else { return "git couldn\u{2019}t read the main folder\u{2019}s status" }
+        let changed = status.output.split(separator: "\n").count
+        if changed > 0 { return "the main folder has \(changed) uncommitted change\(changed == 1 ? "" : "s")" }
+        let checkout = runGit(["checkout", "--quiet", branch], cwd: root)
+        guard checkout.success else { return "git refused the checkout (\(checkout.output.split(separator: "\n").first ?? ""))" }
+        return nil
+    }
+
+    /// The main folder now has `track`'s branch: that track's folder is the main folder, and
+    /// the branch that was there has none until it's switched to again.
+    private func movedMainCheckout(to track: Track) {
+        let root = projectRoot.path
+        lastSeenMainBranch = track.branchName
+        for index in tracks.indices {
+            if tracks[index].id == track.id {
+                tracks[index].workingDirectoryPath = root
+            } else if tracks[index].workingDirectoryPath.map({ Self.samePath($0, root) }) == true {
+                tracks[index].workingDirectoryPath = nil
+            }
+        }
+        markActive(track)
     }
 
     private func markActive(_ track: Track) {
@@ -1339,6 +1439,9 @@ final class TrackStore {
     }
 
     private func save() {
+        // Whatever was just written, a refresh still reading git began before it: its reading
+        // is stale (it saw a new track's branch missing, and set the track aside as deleted).
+        epoch += 1
         assignPorts()
         JSONStore.write(tracks + goneTracks, to: storeURL)
         publishPorts()

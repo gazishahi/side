@@ -2461,7 +2461,7 @@ final class ShellViewController: NSViewController {
     private func switchToTrack(_ track: Track, landOn: Stage = .make, completion: @escaping (TrackSwitchOutcome?) -> Void) {
         confirmCloseAllUnsaved { [weak self] proceed in
             guard let self, proceed, let store = self.trackStore else { completion(nil); return }
-            store.switchTo(track) { [weak self] result in
+            store.switchTo(track, mainCheckoutBusy: self.mainCheckoutBusy()) { [weak self] result in
                 guard let self else { completion(nil); return }
                 switch result {
                 case .success(let outcome):
@@ -2511,18 +2511,51 @@ final class ShellViewController: NSViewController {
         guard currentTrackKey != nil else { show(landOn); return }
         confirmCloseAllUnsaved { [weak self] proceed in
             guard let self, proceed, let store = self.trackStore else { return }
-            store.switchToBase()
-            let workingDirectory = self.workingDirectoryURL(for: nil)
-            self.focusedRoot = workingDirectory
-            self.refreshGitInfo(for: workingDirectory)
-            self.currentTrackKey = nil
-            self.makeVC.reloadForTrackSwitch(trackKey: nil, workingDirectory: workingDirectory)
-            self.runVC.reloadForTrackSwitch(trackKey: nil)
-            self.reloadProjectTasks()
-            self.thinkVC.reloadForTrackSwitch(trackKey: nil)
-            self.reviewVC.reloadForTrackSwitch(trackKey: nil, workingDirectory: workingDirectory)
-            self.show(landOn)
+            store.switchToBase(mainCheckoutBusy: self.mainCheckoutBusy()) { [weak self] result in
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    if let window = self.view.window {
+                        let alert = NSAlert()
+                        alert.alertStyle = .informational
+                        alert.messageText = "Still on \(self.gitBranch ?? "this branch")"
+                        alert.informativeText = error.localizedDescription
+                        alert.addButton(withTitle: "OK")
+                        alert.beginSheetModal(for: window)
+                    }
+                    return
+                }
+                self.landOnBase(landOn)
+            }
         }
+    }
+
+    /// Whether a checkout in the main folder would pull files out from under something: a
+    /// program running in one of its terminals (Claude Code, a dev server, an editor), or an
+    /// agent turn on its branch.
+    private func mainCheckoutBusy() -> Bool {
+        guard let store = trackStore, let context = projectContext, let root = projectURL else { return false }
+        let mainKey = store.tracks.first { $0.workingDirectoryPath.map { TrackStore.samePath($0, root.path) } ?? false }?.branchName
+        let keys = Set([""] + (mainKey.map { [$0] } ?? []))
+        let running = keys.flatMap { context.terminals.allSessions(forTrackKey: $0) }.contains { session in
+            let vc = session.viewController
+            return vc.isProgramWorking || vc.runningProgramName != nil
+        }
+        let agentWorking = keys.contains { context.runnerManager.existingRunner(forTrackKey: $0)?.activity == .working }
+        return running || agentWorking
+    }
+
+    /// The window on the base: the main folder, no track.
+    private func landOnBase(_ landOn: Stage) {
+        let workingDirectory = workingDirectoryURL(for: nil)
+        focusedRoot = workingDirectory
+        refreshGitInfo(for: workingDirectory)
+        currentTrackKey = nil
+        makeVC.reloadForTrackSwitch(trackKey: nil, workingDirectory: workingDirectory)
+        runVC.reloadForTrackSwitch(trackKey: nil)
+        reloadProjectTasks()
+        thinkVC.reloadForTrackSwitch(trackKey: nil)
+        reviewVC.reloadForTrackSwitch(trackKey: nil, workingDirectory: workingDirectory)
+        show(landOn)
     }
 
     /// The tracks a cleanup mustn't touch: the one any window shows (its files are open in Make,

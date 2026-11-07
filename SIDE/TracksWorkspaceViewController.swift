@@ -1271,6 +1271,8 @@ final class TracksWorkspaceViewController: NSViewController {
     /// silently ate their changes.
     private func announce(outcome: TrackSwitchOutcome) {
         var parts: [String] = []
+        // In its own folder, not the main one: always said, so a worktree is never a surprise.
+        if let reason = outcome.ownFolderReason { parts.append("Opened in a folder of its own: \(reason)") }
         if let stashed = outcome.stashedFileCount {
             parts.append("Stashed \(stashed) uncommitted change\(stashed == 1 ? "" : "s") from the track you left")
         }
