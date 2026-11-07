@@ -115,7 +115,8 @@ main  · 1 uncommitted
 
 1. **Build the two agreed plans first:** shared chats, then the panel. Until Agent can open the
    sessions the owner already has, nothing else in the stage gets used.
-2. **The jump bar.** A thin rail at the column's trailing edge with one tick per message you sent,
+2. **The jump bar** (built 2026-11-07: `JumpRail`, `scripts/uitest/check-jump-bar.sh`; shown from
+   two messages up, the current message's tick drawn longer). A thin rail at the column's trailing edge with one tick per message you sent,
    placed by where it falls in the conversation. Hover shows the message's first line; a click
    scrolls to it. ⌥⌘↑ and ⌥⌘↓ go to your previous and next message. Ticks for turns that failed
    or wait on you take the status colors, so the rail also shows where things went wrong.

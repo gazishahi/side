@@ -203,6 +203,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("board-beside ") { shell.boardShowBesideForTesting(String(command.dropFirst(13))) }
                     if command == "agent-chats" { shell.agentChatsForTesting() }
                     if command == "agent-panel-toggle" { shell.toggleAgentPanel() }
+                    if command == "jump-dump" { FileHandle.standardError.write(Data("[jump]\n\(shell.jumpRailForTesting)\n[jump-end]\n".utf8)) }
+                    if command == "jump-previous" { shell.jumpForTesting(next: false) }
+                    if command == "jump-next" { shell.jumpForTesting(next: true) }
                     if command == "agent-panel-dump" { FileHandle.standardError.write(Data("[agent-panel]\n\(shell.agentPanelForTesting)\n[agent-panel-end]\n".utf8)) }
                     if command == "agent-chats-show" { shell.agentChatsShowForTesting() }
                     if command.hasPrefix("agent-open-chat ") { shell.agentOpenChatForTesting(String(command.dropFirst(16))) }

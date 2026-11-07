@@ -50,6 +50,14 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
     elif meth == "session/prompt":
         sid = p["sessionId"]
+        said = "".join(block.get("text", "") for block in p.get("prompt", []))
+        if "FAIL" in said:
+            send({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32000, "message": "The stand-in failed on purpose."}})
+            continue
+        if "LONG" in said:
+            text(sid, "agent_message_chunk", "\n\n".join("Paragraph %d of a long answer, so the conversation scrolls." % i for i in range(40)))
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})
+            continue
         # Changes a file in the session's folder, as an agent's turn does: a checkpoint follows.
         if folders.get(sid):
             with open(os.path.join(folders[sid], "NOTES.md"), "a") as f: f.write("# Notes\n\nThe pill measures once.\n")

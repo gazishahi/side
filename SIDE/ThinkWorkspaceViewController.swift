@@ -46,6 +46,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private let header = AgentHeaderView()
     /// The branch beside the conversation (SIDE_RFC_AGENT_PANEL.md).
     private let branchPanel = AgentBranchPanel()
+    /// One tick per message sent, beside the column (the jump bar).
+    private let jumpRail = JumpRail()
+    private var jumpRailScheduled = false
+    private var jumpKeyMonitor: Any?
     /// The stage's width less the docked panel: the column centres in what's left.
     private let stageGuide = NSLayoutGuide()
     private var stageTrailing: NSLayoutConstraint!
@@ -349,6 +353,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         view.addLayoutGuide(column)
         view.addLayoutGuide(stageGuide)
         installBranchPanel()
+        installJumpRail(beside: column)
         stageTrailing = stageGuide.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         NSLayoutConstraint.activate([
             stageGuide.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -654,6 +659,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
 
     private func handle(_ event: AgentRunEvent) {
         if case .phaseChanged = event { scheduleBranchPanelRefresh() }
+        scheduleJumpRailRefresh()
         switch event {
         case .reset:
             scheduleBranchPanelRefresh()
@@ -1634,7 +1640,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         }
     }
 
-    @objc private func transcriptScrolled() { scheduleRealization() }
+    @objc private func transcriptScrolled() {
+        scheduleRealization()
+        updateJumpRailCurrent()
+    }
 
     /// Tests: blocks in the conversation, how many hold views, and live entry views.
     var transcriptStats: (blocks: Int, realized: Int, entryViews: Int) {
@@ -1686,6 +1695,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         refreshEmptyState()
         updateSendButton()
         scrollToBottom()
+        scheduleJumpRailRefresh()
     }
 
     private func appendEntryView(at index: Int) {
@@ -4312,6 +4322,112 @@ private final class ComposerView: NSView, NSTextViewDelegate {
             textView.didChangeText()
         }
         textView.setSelectedRange(NSRange(location: range.location + (replacement as NSString).length, length: 0))
+    }
+}
+
+// MARK: - The jump bar (SIDE_DESIGN_SESSIONS_2026-11-06.md, session 2)
+
+extension ThinkWorkspaceViewController {
+    fileprivate func installJumpRail(beside column: NSLayoutGuide) {
+        jumpRail.isHidden = true
+        jumpRail.onJump = { [weak self] index in self?.jump(toEntry: index) }
+        view.addSubview(jumpRail)
+        NSLayoutConstraint.activate([
+            jumpRail.leadingAnchor.constraint(equalTo: column.trailingAnchor, constant: DS.Spacing.s),
+            jumpRail.widthAnchor.constraint(equalToConstant: JumpRail.width),
+            jumpRail.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight + DS.Spacing.l),
+            jumpRail.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -DS.Spacing.l),
+        ])
+        // Where the ticks fall changes as blocks are built and measured.
+        transcriptContainer.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: transcriptContainer, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleJumpRailRefresh() }
+        }
+        // ⌥⌘↑ and ⌥⌘↓: your previous and next message, while Agent is in front.
+        jumpKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.view.window, self.view.window?.isKeyWindow == true, !self.view.isHiddenOrHasHiddenAncestor,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function]) == [.command, .option],
+                  event.keyCode == 126 || event.keyCode == 125 else { return event }
+            return self.jumpToMessage(next: event.keyCode == 125) ? nil : event
+        }
+    }
+
+    func scheduleJumpRailRefresh() {
+        guard isViewLoaded, !jumpRailScheduled else { return }
+        jumpRailScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.jumpRailScheduled = false
+            self?.refreshJumpRail()
+        }
+    }
+
+    /// Each message you sent, where its block sits in the conversation, and how its turn went.
+    private func refreshJumpRail() {
+        let entries = runner?.entries ?? []
+        let height = transcriptContainer.bounds.height
+        var marks: [JumpRail.Mark] = []
+        let userIndices = entries.indices.filter { if case .userText = entries[$0].kind { return true } else { return false } }
+        for (position, index) in userIndices.enumerated() {
+            guard case .userText(let text) = entries[index].kind, let top = blockTop(ofEntry: index), height > 0 else { continue }
+            let end = position + 1 < userIndices.count ? userIndices[position + 1] : entries.count
+            var state: DS.StatusState?
+            for later in entries[(index + 1)..<end] {
+                switch later.kind {
+                case .failure: state = .failed
+                case .permissionRequest(let p) where p.chosenOptionName == nil: if state == nil { state = .needsYou }
+                case .proposal(let p) where p.resolution == nil: if state == nil { state = .needsYou }
+                default: break
+                }
+            }
+            let line = text.split(separator: "\n").first.map(String.init) ?? text
+            marks.append(.init(id: index, fraction: top / height, text: line.count > 80 ? String(line.prefix(79)) + "\u{2026}" : line, state: state))
+        }
+        // One message has nowhere else to go.
+        jumpRail.marks = marks.count >= 2 ? marks : []
+        jumpRail.isHidden = marks.count < 2
+        updateJumpRailCurrent()
+    }
+
+    /// The top of the block holding an entry, in the transcript's (flipped) coordinates.
+    private func blockTop(ofEntry index: Int) -> CGFloat? {
+        guard let block = blocks.first(where: { $0.entries.contains(index) }), block.slot.superview != nil else { return nil }
+        return block.slot.convert(block.slot.bounds, to: transcriptContainer).minY
+    }
+
+    /// The message the view is showing: the last one whose top is above the view's upper third.
+    private func updateJumpRailCurrent() {
+        guard !jumpRail.isHidden else { return }
+        let visible = transcriptScroll.documentVisibleRect
+        let line = visible.minY + transcriptScroll.contentInsets.top + visible.height / 3
+        jumpRail.current = jumpRail.marks.last { (blockTop(ofEntry: $0.id) ?? .greatestFiniteMagnitude) <= line }?.id ?? jumpRail.marks.first?.id
+    }
+
+    /// Scrolls a message to the top of the view, under the top row.
+    func jump(toEntry index: Int) {
+        guard let top = blockTop(ofEntry: index) else { return }
+        let insets = transcriptScroll.contentInsets
+        let maxY = max(-insets.top, transcriptContainer.bounds.height - transcriptScroll.contentView.bounds.height + insets.bottom)
+        let y = min(max(top - insets.top - DS.Spacing.m, -insets.top), maxY)
+        transcriptScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        transcriptScroll.reflectScrolledClipView(transcriptScroll.contentView)
+        jumpRail.current = index
+    }
+
+    /// ⌥⌘↑ / ⌥⌘↓. False when there's no message that way.
+    @discardableResult
+    func jumpToMessage(next: Bool) -> Bool {
+        let marks = jumpRail.marks.isEmpty ? [] : jumpRail.marks
+        guard !marks.isEmpty else { return false }
+        let at = jumpRail.current.flatMap { current in marks.firstIndex { $0.id == current } } ?? marks.count - 1
+        let target = next ? at + 1 : at - 1
+        guard marks.indices.contains(target) else { return false }
+        jump(toEntry: marks[target].id)
+        return true
+    }
+
+    var jumpRailForTesting: String {
+        (["shown \(!jumpRail.isHidden)", "current \(jumpRail.current.map(String.init) ?? "-")"]
+            + jumpRail.marks.map { "mark \($0.id) \(String(format: "%.2f", $0.fraction)) \($0.state.map { "\($0)" } ?? "-") \($0.text)" }).joined(separator: "\n")
     }
 }
 

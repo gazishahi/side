@@ -1141,6 +1141,8 @@ final class ShellViewController: NSViewController {
         thinkVC.toggleBranchPanel()
     }
     var agentPanelForTesting: String { thinkVC.branchPanelStateForTesting }
+    var jumpRailForTesting: String { thinkVC.jumpRailForTesting }
+    func jumpForTesting(next: Bool) { thinkVC.jumpToMessage(next: next) }
     func agentChatsShowForTesting() { thinkVC.showAgentChatsForTesting() }
     func terminalOpenInAgentForTesting() {
         ThinkWorkspaceViewController.bothLiveAnswerForTesting = true
