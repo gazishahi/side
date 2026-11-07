@@ -602,17 +602,17 @@ final class DataIntegrityAuditTests: XCTestCase {
     // MARK: - H6: an adopted worktree does not follow the banner to a different branch
 
     @MainActor
-    func testTurningADifferentBranchIntoATrackDoesNotInheritAnotherBranchesWorktree() throws {
+    /// Every branch is a track now (SIDE_RFC_GIT_TRACKS.md), so there's no adopting step for a
+    /// stale path to leak through; the audit's rule still holds: a track's folder is wherever
+    /// git has its own branch checked out, never another branch's worktree.
+    func testEachBranchesTrackHasThatBranchesOwnFolder() throws {
         makeRepo()
         git(["branch", "alpha"])
         git(["branch", "beta"])
+        let alphaFolder = root.deletingLastPathComponent().appendingPathComponent("alpha-\(UUID().uuidString)")
+        git(["worktree", "add", "-q", alphaFolder.path, "alpha"])
+        defer { try? FileManager.default.removeItem(at: alphaFolder) }
         let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
-
-        // Adopt alpha: this materializes alpha's worktree and remembers its path.
-        let adopted = expectation(description: "adopt")
-        store.switchToExistingBranch("alpha") { _ in adopted.fulfill() }
-        wait(for: [adopted], timeout: 20)
-        XCTAssertEqual(store.untrackedBranch, "alpha")
 
         // The user moves the main tree to beta behind Side's back, and Side notices.
         git(["checkout", "-q", "beta"])
@@ -620,23 +620,15 @@ final class DataIntegrityAuditTests: XCTestCase {
         let settled = expectation(description: "reconciled")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { settled.fulfill() }
         wait(for: [settled], timeout: 5)
-        XCTAssertEqual(store.untrackedBranch, "beta")
 
-        let promoted = expectation(description: "promote")
-        let captured = Captured<Track>()
-        store.promoteCurrentBranch(intent: "beta work") { result in
-            if case .success(let made) = result { captured.value = made }
-            promoted.fulfill()
-        }
-        wait(for: [promoted], timeout: 5)
-        guard let track = captured.value else { return XCTFail("no track") }
-        XCTAssertEqual(track.branchName, "beta")
-        // Either no worktree (it will be materialized on demand) or one that is actually on
-        // beta — never alpha's.
-        if let path = track.workingDirectoryPath {
+        for name in ["alpha", "beta"] {
+            guard let track = store.tracks.first(where: { $0.branchName == name }) else { return XCTFail("no track for \(name)") }
+            guard let path = track.workingDirectoryPath else { return XCTFail("\(name) has no folder") }
             let onBranch = GitPaths.runGit(["symbolic-ref", "--short", "HEAD"], cwd: path).output
-            XCTAssertEqual(onBranch, "beta", "track beta is bound to a worktree on \(onBranch)")
+            XCTAssertEqual(onBranch, name, "track \(name) is bound to a folder on \(onBranch)")
         }
+        XCTAssertEqual(store.activeTrack?.branchName, "beta", "the main checkout's branch is the active track")
+        XCTAssertNil(store.untrackedBranch)
     }
 }
 

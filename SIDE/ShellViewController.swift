@@ -1521,6 +1521,19 @@ final class ShellViewController: NSViewController {
         }
     }
 
+    /// Every track as "branch:status[:folder]", the active one starred; then what Changes shows.
+    var tracksForTesting: String {
+        guard let store = trackStore else { return "no-store" }
+        let root = projectURL?.resolvingSymlinksInPath().path ?? ""
+        let rows = store.tracks.sorted { $0.branchName < $1.branchName }.map { track -> String in
+            let folder = track.workingDirectoryPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == root ? ":main" : ":worktree" } ?? ""
+            return "\(track.branchName):\(track.status.rawValue)\(folder)\(track.branchName == currentTrackKey ? "*" : "")"
+        }
+        return "tracks=\(rows.joined(separator: ",")) gone=\(store.goneTracksForTesting.map(\.branchName).sorted().joined(separator: ","))"
+    }
+    var changesForTesting: String { reviewVC.baseModeForTesting }
+    func refreshTracksForTesting() { trackStore?.reconcile() }
+
     var companionForTesting: String {
         guard let companion else { return "none" }
         let mode = companion.view.isHidden ? "hidden" : (companionDocks ? "docked" : "floating")
@@ -2402,6 +2415,7 @@ final class ShellViewController: NSViewController {
             // deliberately looking at two different tracks) the moment either one changed.
             self.applyWindowChrome()
             self.syncHarnesses()
+            self.followMainCheckout()
         }
         // Same multicast reasoning as the TrackStore observer above — `context.runnerManager`
         // is shared across every window on this project, so this can't be a single-assignment
@@ -2516,6 +2530,31 @@ final class ShellViewController: NSViewController {
     /// it, not a separate step — so there's no second checkout to wait on here, just reflecting
     /// what already happened: refresh git info, reload Make/Run onto this branch's own remembered
     /// state, and land on Make so there's somewhere to actually start working.
+    /// A checkout made outside Side (a terminal, another app) moves the main checkout to another
+    /// branch, and the store's active track with it: a window on the main checkout follows, as git
+    /// would (SIDE_RFC_GIT_TRACKS.md: the active track is the branch HEAD is on). A window on a
+    /// track's own worktree stays where it is, and one with unsaved edits waits for them.
+    private func followMainCheckout() {
+        guard let store = trackStore, let projectURL, !isLooseFileWindow, !isTornOut, !makeVC.hasUnsavedChanges else { return }
+        let onMainCheckout = focusedRoot.map { TrackStore.samePath($0.path, projectURL.path) } ?? true
+        guard onMainCheckout else { return }
+        let active = store.activeTrack
+        let activeHere = active?.workingDirectoryPath.map { TrackStore.samePath($0, projectURL.path) } ?? false
+        let target = activeHere ? active?.branchName : (active == nil ? nil : currentTrackKey)
+        guard target != currentTrackKey else { return }
+        let workingDirectory = workingDirectoryURL(for: target)
+        focusedRoot = workingDirectory
+        refreshGitInfo(for: workingDirectory)
+        currentTrackKey = target
+        makeVC.reloadForTrackSwitch(trackKey: target, workingDirectory: workingDirectory)
+        runVC.reloadForTrackSwitch(trackKey: target)
+        reloadProjectTasks()
+        thinkVC.reloadForTrackSwitch(trackKey: target)
+        reviewVC.reloadForTrackSwitch(trackKey: target, workingDirectory: workingDirectory)
+        trackPill.refresh()
+        applyWindowChrome()
+    }
+
     private func branchIsNowActive(_ branchName: String) {
         let workingDirectory = workingDirectoryURL(for: branchName)
         focusedRoot = workingDirectory

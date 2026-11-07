@@ -1,7 +1,25 @@
 # Tracks from git: every branch is a track
 
-Status: agreed (2026-11-04: the owner agreed with the recommendations, with the retention
-period adjustable). Drafted overnight from the direction agreed on 2026-11-03. Nothing built yet.
+Status: in progress (2026-11-07: phase 1 built; phases 2 and 3 not started). Agreed 2026-11-04,
+with the retention period adjustable. Drafted overnight from the direction agreed on 2026-11-03.
+
+**Phase 1 as built (2026-11-07):**
+- Every local branch is a track (`TrackStore.applyGitBranches`): one Side never saw gets a record
+  named for its branch, waiting when it's checked out somewhere, parked when it isn't, so a
+  repository's old branches don't each claim attention. Ports wait until it's opened.
+- A track's folder is where git has its branch checked out; the main checkout's branch has the
+  main checkout.
+- `GitRefsWatcher` watches the common git directory's `HEAD`, `refs/heads`, `packed-refs` and
+  `worktrees`: a branch made, deleted or checked out in a terminal shows within a second.
+- A checkout made outside Side makes its branch the active track, and a window on the main
+  checkout follows it. A window on a track's own worktree stays where it is.
+- A deleted branch's track is set aside (`goneAt`) and comes back if the branch does; kept 30
+  days by default, Settings › General › Projects.
+- Change Base also writes `branch.<name>.sideBase`; a branch that has one starts on that base.
+- Changes on the base shows its own work: uncommitted changes (new files included) and commits
+  not yet on its upstream.
+- Not yet: switching checks out in place (decision 4). Switching still opens a worktree, as
+  before; that's the next step, with the board (phase 2).
 
 ## Why
 

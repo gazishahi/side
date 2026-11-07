@@ -545,10 +545,16 @@ final class ReviewWorkspaceViewController: NSViewController {
             return
         }
         guard let track = currentTrack, let trackStore else {
-            let hasTracks = trackStore?.tracks.contains { $0.status != .archived } ?? false
-            showEmptyState(true, message: Self.defaultEmptyStateText, action: hasTracks ? ("Choose a Track…", .chooseTrack) : ("New Track", .newTrack))
+            // On the base itself, with no track: its own work (every branch has something to
+            // show in Changes, SIDE_RFC_GIT_TRACKS.md).
+            if let trackStore, let root = currentWorkingDirectory ?? canonicalRoot {
+                refreshBase(root: root, hasTracks: trackStore.tracks.contains { $0.status != .archived })
+                return
+            }
+            showEmptyState(true, message: Self.defaultEmptyStateText, action: ("New Track", .newTrack))
             return
         }
+        setBaseMode(nil)
         showEmptyState(false)
         setStatus("")
 
@@ -750,10 +756,9 @@ final class ReviewWorkspaceViewController: NSViewController {
     }
 
     private func showDiff(_ text: String, everything: Bool) {
-        guard let track = currentTrack else { return }
-        let trackKey = track.branchName
+        guard let trackKey = viewedKey else { return }
         let store = viewedStore
-        diffViewer.render(diffText: text, emptyMessage: everything ? "No changes against \(currentBaseRef)." : "No changes in this range.") { diff in
+        diffViewer.render(diffText: text, emptyMessage: baseBranchShown != nil ? "No changes." : everything ? "No changes against \(currentBaseRef)." : "No changes in this range.") { diff in
             Set(diff.files.indices.filter { store.isViewed(diff.files[$0], track: trackKey) })
         }
         let files = diffViewer.diff.files
@@ -780,8 +785,8 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     /// A check flipped in the list: remember it, and fold (or open) the file in the diff.
     private func setViewed(_ index: Int, _ viewed: Bool) {
-        guard let track = currentTrack, diffViewer.diff.files.indices.contains(index), rail.items.indices.contains(index) else { return }
-        viewedStore.set(viewed, diffViewer.diff.files[index], track: track.branchName)
+        guard let key = viewedKey, diffViewer.diff.files.indices.contains(index), rail.items.indices.contains(index) else { return }
+        viewedStore.set(viewed, diffViewer.diff.files[index], track: key)
         rail.items[index].viewed = viewed
         diffViewer.setFolded(index, viewed)
         refreshFoldAllButton()
@@ -903,6 +908,93 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// Where git runs for this track: its own worktree (the branch is checked out there), else
     /// the shared checkout. Any checkout of the repository sees every branch and remote.
     private var repositoryPath: String? { currentWorkingDirectory?.path ?? canonicalRoot?.path }
+
+    // MARK: - The base branch's own work
+
+    /// The branch shown when there's no track: the base, with its uncommitted work and its
+    /// commits not yet on its upstream. Nil when a track is shown.
+    private var baseBranchShown: String?
+    /// What the viewed checkmarks are remembered under: the track, or the base branch.
+    private var viewedKey: String? { currentTrack?.branchName ?? baseBranchShown }
+
+    struct BaseWork: Sendable {
+        var branch: String
+        var upstream: String?
+        var unpushed: Int
+        var uncommitted: Int
+        var diff: String
+
+        /// "3 uncommitted · 2 commits not on origin/main"
+        var summary: String {
+            var parts: [String] = []
+            if uncommitted > 0 { parts.append("\(uncommitted) uncommitted change\(uncommitted == 1 ? "" : "s")") }
+            if unpushed > 0, let upstream { parts.append("\(unpushed) commit\(unpushed == 1 ? "" : "s") not on \(upstream)") }
+            return parts.joined(separator: " \u{00B7} ")
+        }
+    }
+
+    /// The checkout's own work: against its upstream when it has one (what isn't pushed, and
+    /// what isn't committed), else against its last commit. New files are included.
+    nonisolated static func baseWork(cwd: String) -> BaseWork? {
+        let head = GitPaths.runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: cwd)
+        let branch = head.success ? head.output : "HEAD"
+        let upstreamRead = GitPaths.runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd: cwd)
+        let upstream = upstreamRead.success && !upstreamRead.output.isEmpty ? upstreamRead.output : nil
+        let unpushed = upstream.flatMap { Int(GitPaths.runGit(["rev-list", "--count", "\($0)..HEAD"], cwd: cwd).output) } ?? 0
+        guard let dirty = GitPaths.dirtyPaths(cwd: cwd) else { return nil }
+        guard GitPaths.runGit(["rev-parse", "--verify", "--quiet", "HEAD"], cwd: cwd).success else {
+            return BaseWork(branch: branch, upstream: nil, unpushed: 0, uncommitted: dirty.count, diff: "")
+        }
+        var diff = GitPaths.runGitRaw(["diff", "--no-color", "--no-ext-diff", upstream ?? "HEAD"], cwd: cwd).output
+        let untracked = GitPaths.runGitRaw(["ls-files", "--others", "--exclude-standard"], cwd: cwd).output
+            .split(separator: "\n").prefix(50)
+        for file in untracked {
+            // Exits 1 for a difference, which is the point: the output is what's wanted.
+            diff += GitPaths.runGitRaw(["diff", "--no-color", "--no-index", "--", "/dev/null", String(file)], cwd: cwd).output
+        }
+        // Without its last newline, as `refDiff` gives it: the parser read one more, empty line.
+        while diff.hasSuffix("\n") { diff.removeLast() }
+        return BaseWork(branch: branch, upstream: upstream, unpushed: unpushed, uncommitted: dirty.count, diff: diff)
+    }
+
+    private func refreshBase(root: URL, hasTracks: Bool) {
+        let cwd = root.path
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let work = Self.baseWork(cwd: cwd)
+            DispatchQueue.main.async {
+                guard let self, self.refreshGeneration == generation, self.currentTrack == nil else { return }
+                guard let work, !work.diff.isEmpty else {
+                    self.setBaseMode(nil)
+                    let message = work.map { "Nothing has changed on \($0.branch): no uncommitted work, and nothing waiting to be pushed." } ?? Self.defaultEmptyStateText
+                    self.showEmptyState(true, message: message, action: hasTracks ? ("Choose a Track\u{2026}", .chooseTrack) : ("New Track", .newTrack))
+                    return
+                }
+                self.showEmptyState(false)
+                self.setBaseMode(work)
+                self.showDiff(work.diff, everything: true)
+            }
+        }
+    }
+
+    /// The header and card for the base's own work, or (nil) back to a track's: no Promote or
+    /// Publish (the base is where things land), no checkpoints, a line saying what's there.
+    private func setBaseMode(_ work: BaseWork?) {
+        let base = work != nil
+        baseBranchShown = work?.branch
+        promoteHost.isHidden = base
+        publishHost.isHidden = base
+        guard let work else { return }
+        currentBaseRef = work.upstream ?? "HEAD"
+        titleLabel.stringValue = work.branch
+        headerDetail.stringValue = "Base \u{00B7} \(work.summary)"
+        for row in [accountRow, accountText, verificationLine, overlapLine, summaryHairline, timelineRow, rangeRow, noCheckpoints] as [NSView] { row.isHidden = true }
+        setStatus(work.upstream == nil ? "Uncommitted work on \(work.branch). It has no upstream, so this is against its last commit." : "What \(work.branch) has that \(work.upstream!) doesn\u{2019}t: commits not yet pushed, and uncommitted work.")
+        diffTitle.stringValue = work.upstream.map { "Changes vs \($0)" } ?? "Uncommitted changes"
+    }
+
+    var baseModeForTesting: String { baseBranchShown.map { "\($0) \(headerDetail.stringValue) files=\(rail.items.count)" } ?? (emptyState.isHidden ? "track" : "empty") }
 
     private func setStatus(_ text: String, _ color: NSColor = .secondaryLabelColor) {
         statusLabel.stringValue = text

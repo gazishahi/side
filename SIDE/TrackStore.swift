@@ -22,8 +22,27 @@ struct TrackSwitchOutcome {
 @MainActor
 final class TrackStore {
     private(set) var tracks: [Track] = []
+    /// Tracks whose branch was deleted in git (SIDE_RFC_GIT_TRACKS.md): in no list, their records
+    /// kept for `goneRetentionDays` in case the branch comes back (re-created, or fetched).
+    private var goneTracks: [Track] = []
     let projectRoot: URL
     private let storeURL: URL
+    /// Git's refs, watched: a branch made, deleted or checked out anywhere (a terminal, another
+    /// app) refreshes the tracks within a second.
+    private var refsWatcher: GitRefsWatcher?
+    /// The main checkout's branch as last seen, so a checkout made outside Side is noticed as a
+    /// change rather than re-read as the same state.
+    private var lastSeenMainBranch: String?
+    /// Base, chosen in Side: kept until the main checkout's branch changes.
+    private var baseChosen = false
+
+    /// How long a deleted branch's track is kept (Settings › General › Projects): 7, 30 or 90
+    /// days, or 0 for never deleted. 30 by default (the owner, 2026-11-04).
+    static let goneRetentionKey = "tracks.goneRetentionDays"
+    static var goneRetentionDays: Int {
+        get { HeronDefaults.store.object(forKey: goneRetentionKey) as? Int ?? 30 }
+        set { HeronDefaults.store.set(newValue, forKey: goneRetentionKey) }
+    }
 
     /// One `TrackStore` can now be shared by every window that has this project open (see
     /// `ProjectContext`), so change notification has to reach all of them — a plain
@@ -102,6 +121,14 @@ final class TrackStore {
             }
         } else if refreshRepoState(cwd: cwd) {
             applyReconciliation(currentBranch: currentBranchName(cwd: cwd), defaultBranch: defaultBranchName())
+        }
+        // Every branch is a track: read once the window is up (never on the launch path), then
+        // whenever git's refs change.
+        if let commonDir = probe?.commonGitDir {
+            refsWatcher = GitRefsWatcher(commonGitDir: URL(fileURLWithPath: commonDir)) { [weak self] in self?.reconcile() }
+        }
+        if repoState == .ready {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.reconcile() }
         }
     }
 
@@ -225,6 +252,7 @@ final class TrackStore {
             // Deliberately the git-reading form: this block *is* the refresh, so consulting
             // the cached value would answer with the thing being refreshed.
             let base = isRepo ? self.resolveDefaultBranchFromGit() : ""
+            let branches = isRepo ? self.readGitBranches(cwd: cwd) : nil
             DispatchQueue.main.async {
                 // A create/switch/promote started (and possibly finished) while this was in
                 // flight — its own reading is already stale, so applying it now would clobber
@@ -233,7 +261,9 @@ final class TrackStore {
                 self.repoState = isRepo ? .ready : .notAGitRepo
                 guard isRepo else { self.notifyChange(); return }
                 if !base.isEmpty { self.cachedDefaultBranch = base }
+                let branchesChanged = branches.map { self.applyGitBranches($0, defaultBranch: base) } ?? false
                 self.applyReconciliation(currentBranch: current, defaultBranch: base)
+                if branchesChanged { self.notifyChange() }
             }
         }
     }
@@ -246,7 +276,12 @@ final class TrackStore {
     /// one still relying on the shared checkout (`workingDirectoryPath == nil`), can genuinely
     /// drift this way, e.g. someone running `git checkout` by hand in the main tree.
     private func applyReconciliation(currentBranch: String?, defaultBranch: String) {
-        let activeHasOwnWorktree = activeTrack?.workingDirectoryPath != nil
+        // The main checkout isn't a track's own worktree, though a branch checked out there has
+        // it as its folder (every branch is a track, 2026-11-07).
+        let activeHasOwnWorktree = activeTrack?.workingDirectoryPath.map { !Self.samePath($0, projectRoot.path) } ?? false
+        let headMoved = lastSeenMainBranch.map { $0 != (currentBranch ?? "") } ?? false
+        lastSeenMainBranch = currentBranch ?? ""
+        if headMoved { baseChosen = false }
         guard let currentBranch else {
             // Detached — HEAD points directly at a commit, not a branch, so there's nothing to
             // mark active or offer as an untracked branch to promote, unless that's just the
@@ -264,6 +299,11 @@ final class TrackStore {
         if let index = tracks.firstIndex(where: { $0.branchName == currentBranch }) {
             untrackedBranch = nil
             guard tracks[index].status != .active else { return }
+            // The main checkout's branch takes over when it changed (a checkout made in a
+            // terminal), or when nothing else has the window: never from a track you switched to
+            // in its own worktree, nor from the base you chose.
+            let takesOver = headMoved || (activeTrack == nil ? !baseChosen : !activeHasOwnWorktree)
+            guard takesOver else { return }
             demoteActiveTrack()
             tracks[index].status = .active
             tracks[index].lastActiveAt = Date()
@@ -561,6 +601,7 @@ final class TrackStore {
     /// down where they were; nothing is checked out, so there's nothing to wait on.
     func switchToBase() {
         epoch += 1
+        baseChosen = true
         demoteActiveTrack()
         untrackedBranch = nil
         untrackedBranchWorkingDirectoryPath = nil
@@ -569,6 +610,7 @@ final class TrackStore {
     }
 
     private func markActive(_ track: Track) {
+        baseChosen = false
         demoteActiveTrack()
         if let index = tracks.firstIndex(where: { $0.id == track.id }) {
             tracks[index].status = .active
@@ -657,6 +699,19 @@ final class TrackStore {
         }
         save()
         notifyChange()
+        // Also where other tools can read it (the RFC's decision 2): `branch.<name>.sideBase`.
+        let parentBranch = parentId.flatMap { id in tracks.first { $0.id == id }?.branchName }
+        let branches = moving.map(\.branchName)
+        let cwd = projectRoot.path
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            for branch in branches {
+                if let parentBranch {
+                    _ = self?.runGit(["config", "branch.\(branch).sideBase", parentBranch], cwd: cwd)
+                } else {
+                    _ = self?.runGit(["config", "--unset", "branch.\(branch).sideBase"], cwd: cwd)
+                }
+            }
+        }
         return true
     }
 
@@ -1277,13 +1332,15 @@ final class TrackStore {
     // MARK: - Persistence
 
     private func load() {
-        tracks = JSONStore.read([Track].self, from: storeURL)?.payload ?? []
+        let stored = JSONStore.read([Track].self, from: storeURL)?.payload ?? []
+        tracks = stored.filter { $0.goneAt == nil }
+        goneTracks = stored.filter { $0.goneAt != nil }
         publishPorts()
     }
 
     private func save() {
         assignPorts()
-        JSONStore.write(tracks, to: storeURL)
+        JSONStore.write(tracks + goneTracks, to: storeURL)
         publishPorts()
     }
 
@@ -1292,7 +1349,10 @@ final class TrackStore {
     /// resuming it gets the same ports.
     private func assignPorts() {
         var taken = TrackPorts.takenBases.union(tracks.compactMap(\.portBase))
-        for index in tracks.indices where tracks[index].portBase == nil && tracks[index].status != .completed && tracks[index].status != .archived {
+        // A branch nobody has opened yet waits for its ports until it's opened: a repository can
+        // have hundreds of branches.
+        for index in tracks.indices where tracks[index].portBase == nil && tracks[index].status != .completed && tracks[index].status != .archived
+            && !(tracks[index].fromGit && tracks[index].status == .parked) {
             guard let base = TrackPorts.freeBase(excluding: taken) else { return }
             tracks[index].portBase = base
             taken.insert(base)
@@ -1376,6 +1436,116 @@ final class TrackStore {
         let result = runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd: cwd)
         return result.success ? result.output : nil
     }
+
+    // MARK: - Every branch is a track (SIDE_RFC_GIT_TRACKS.md, phase 1)
+
+    /// What git says exists: every local branch with its last commit's date, where each is
+    /// checked out, and the bases chosen for them (`branch.<name>.sideBase`).
+    struct GitBranches: Sendable {
+        var commitDates: [String: Date]
+        var worktrees: [String: String]
+        var chosenBases: [String: String]
+    }
+
+    /// Three git calls, off the main thread. Nil when git couldn't list the branches: nothing is
+    /// concluded from a failed read.
+    nonisolated func readGitBranches(cwd: String) -> GitBranches? {
+        let refs = runGit(["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)", "refs/heads"], cwd: cwd)
+        guard refs.success else { return nil }
+        var dates: [String: Date] = [:]
+        for line in refs.output.split(separator: "\n") {
+            let parts = line.split(separator: "\t")
+            guard let name = parts.first else { continue }
+            dates[String(name)] = parts.count > 1 ? Double(parts[1]).map(Date.init(timeIntervalSince1970:)) ?? Date() : Date()
+        }
+        var bases: [String: String] = [:]
+        // Exits 1 when no branch has one: that's none, not a failure.
+        let config = runGit(["config", "--get-regexp", "^branch\\..*\\.sidebase$"], cwd: cwd)
+        if config.success {
+            for line in config.output.split(separator: "\n") {
+                let parts = line.split(separator: " ", maxSplits: 1)
+                guard parts.count == 2, parts[0].hasPrefix("branch."), parts[0].hasSuffix(".sidebase") else { continue }
+                bases[String(parts[0].dropFirst("branch.".count).dropLast(".sidebase".count))] = String(parts[1])
+            }
+        }
+        return GitBranches(commitDates: dates, worktrees: existingWorktreesByBranch(cwd: cwd), chosenBases: bases)
+    }
+
+    nonisolated static func samePath(_ a: String, _ b: String) -> Bool {
+        URL(fileURLWithPath: a).resolvingSymlinksInPath().standardizedFileURL.path == URL(fileURLWithPath: b).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// Brings the tracks in line with git: a track for every branch (the default branch is the
+    /// base, not a track), each one's folder where git has it checked out, a deleted branch's
+    /// track set aside, and one whose branch came back restored. True when anything changed.
+    @discardableResult
+    func applyGitBranches(_ git: GitBranches, defaultBranch: String, now: Date = Date()) -> Bool {
+        var changed = false
+        let names = Set(git.commitDates.keys).subtracting([defaultBranch])
+        // Back: a branch re-created or fetched brings its track back as it was.
+        let returning = goneTracks.filter { names.contains($0.branchName) }
+        if !returning.isEmpty {
+            goneTracks.removeAll { names.contains($0.branchName) }
+            for var track in returning {
+                track.goneAt = nil
+                if track.status == .active { track.status = .waiting }
+                tracks.append(track)
+            }
+            changed = true
+        }
+        // Gone: a live track whose branch git no longer has. Completed and archived tracks are
+        // history (Side deletes a landed track's branch on purpose), and keep their place.
+        let leaving = tracks.filter { !names.contains($0.branchName) && $0.branchName != defaultBranch && $0.status != .completed && $0.status != .archived }
+        if !leaving.isEmpty {
+            let ids = Set(leaving.map(\.id))
+            tracks.removeAll { ids.contains($0.id) }
+            goneTracks += leaving.map { track in
+                var gone = track
+                gone.goneAt = now
+                return gone
+            }
+            changed = true
+        }
+        // New: a branch with no track gets one. Checked out somewhere it's in play; otherwise
+        // it's resting (parked), so a repository's old branches don't each claim attention.
+        let known = Set(tracks.map(\.branchName)).union(goneTracks.map(\.branchName))
+        for name in names.subtracting(known).sorted() {
+            let parent = git.chosenBases[name].flatMap { base in tracks.first { $0.branchName == base }?.id }
+            var track = Track(intent: name, branchName: name, parentTrackId: parent)
+            track.fromGit = true
+            track.harnessId = DefaultAgent.harnessIdForNewTrack
+            track.status = git.worktrees[name] != nil ? .waiting : .parked
+            track.lastActiveAt = git.commitDates[name] ?? now
+            tracks.append(track)
+            changed = true
+        }
+        // Each one's folder is where git has its branch checked out. A branch checked out in the
+        // main checkout has the main checkout; one checked out nowhere has none until switched to.
+        for index in tracks.indices {
+            let branch = tracks[index].branchName
+            if let path = git.worktrees[branch] {
+                if tracks[index].workingDirectoryPath.map({ !Self.samePath($0, path) }) ?? true {
+                    tracks[index].workingDirectoryPath = path
+                    changed = true
+                }
+            } else if let path = tracks[index].workingDirectoryPath, Self.samePath(path, projectRoot.path) {
+                tracks[index].workingDirectoryPath = nil
+                changed = true
+            }
+        }
+        // Kept long enough to come back, then let go.
+        let days = Self.goneRetentionDays
+        if days > 0 {
+            let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+            let before = goneTracks.count
+            goneTracks.removeAll { ($0.goneAt ?? now) < cutoff }
+            if goneTracks.count != before { changed = true }
+        }
+        if changed { save() }
+        return changed
+    }
+
+    var goneTracksForTesting: [Track] { goneTracks }
 
     // MARK: - Worktrees
 
@@ -1513,5 +1683,75 @@ final class TrackStore {
         process.waitUntilExit()
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus == 0, output)
+    }
+}
+
+/// Git's refs, watched (SIDE_RFC_GIT_TRACKS.md): `HEAD`, `refs/heads`, `packed-refs` and
+/// `worktrees` in the repository's common git directory, so linked worktrees are covered. A burst
+/// of changes (a rebase writes many) is one refresh, a quarter second after the last.
+@MainActor
+final class GitRefsWatcher {
+    private final class StreamBox: @unchecked Sendable { var ref: FSEventStreamRef? }
+    private let box = StreamBox()
+    private let root: String
+    private let onChange: () -> Void
+    private var pending = false
+
+    init(commonGitDir: URL, onChange: @escaping () -> Void) {
+        root = Self.eventPath(commonGitDir.resolvingSymlinksInPath().standardizedFileURL.path)
+        self.onChange = onChange
+        var context = FSEventStreamContext()
+        context.info = Unmanaged.passUnretained(self).toOpaque()
+        let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer)
+        guard let stream = FSEventStreamCreate(nil, Self.callback, &context, [root] as CFArray,
+                                               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.1, flags) else { return }
+        box.ref = stream
+        FSEventStreamSetDispatchQueue(stream, .main)
+        FSEventStreamStart(stream)
+    }
+
+    deinit {
+        if let stream = box.ref {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
+    }
+
+    /// Whether a changed path inside the git directory says something about branches.
+    nonisolated static func isAboutRefs(_ path: String, root: String) -> Bool {
+        let path = eventPath(path), root = eventPath(root)
+        guard path.hasPrefix(root + "/") else { return false }
+        let relative = String(path.dropFirst(root.count + 1))
+        if relative.hasSuffix(".lock") { return false }
+        return relative == "HEAD" || relative == "packed-refs" || relative.hasPrefix("refs/heads/")
+            || (relative.hasPrefix("worktrees/") && (relative.hasSuffix("/HEAD") || relative.split(separator: "/").count == 2))
+    }
+
+    /// One spelling for a path: FSEvents reports `/private/tmp/…` where Foundation's symlink
+    /// resolution gives `/tmp/…`, so the two never matched (found on screen, 2026-11-07).
+    nonisolated static func eventPath(_ path: String) -> String {
+        for prefix in ["/private/tmp/", "/private/var/", "/private/etc/"] where path.hasPrefix(prefix) { return String(path.dropFirst("/private".count)) }
+        return path
+    }
+
+    private static let callback: FSEventStreamCallback = { _, info, _, eventPaths, _, _ in
+        guard let info else { return }
+        let paths = (unsafeBitCast(eventPaths, to: CFArray.self) as? [String]) ?? []
+        let opaque = UInt(bitPattern: info)
+        MainActor.assumeIsolated {
+            guard let pointer = UnsafeRawPointer(bitPattern: opaque) else { return }
+            Unmanaged<GitRefsWatcher>.fromOpaque(pointer).takeUnretainedValue().deliver(paths)
+        }
+    }
+
+    private func deliver(_ paths: [String]) {
+        guard !pending, paths.contains(where: { Self.isAboutRefs($0, root: root) }) else { return }
+        pending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self else { return }
+            self.pending = false
+            self.onChange()
+        }
     }
 }

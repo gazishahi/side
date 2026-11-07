@@ -64,6 +64,12 @@ struct Track: Codable, Identifiable {
     var spawnedByCoordinator = false
     /// The first of this track's ten ports (`TrackPorts`): what its processes get as `PORT`.
     var portBase: Int?
+    /// Made for a branch that was already in git, not by New Track (SIDE_RFC_GIT_TRACKS.md,
+    /// 2026-11-07): every branch is a track. Its intent is its branch's name until it's named.
+    var fromGit = false
+    /// When its branch was deleted in git: the track is gone from every list, its record kept
+    /// (`TrackStore.goneRetentionDays`) in case the branch comes back.
+    var goneAt: Date?
 
     /// The status rows and dots show. A subtrack is stored as Waiting (it must never become the
     /// active track, which is "the one you're switched to") but reads as Active: an idle
@@ -101,6 +107,7 @@ struct Track: Codable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands, parentTrackId
         case providerId, modelId, effort, toolScope, autonomy, harnessId, harnessOptions, spawnedByCoordinator, portBase
+        case fromGit, goneAt
     }
 
     init(from decoder: Decoder) throws {
@@ -123,5 +130,7 @@ struct Track: Codable, Identifiable {
         harnessOptions = try container.decodeIfPresent([String: String].self, forKey: .harnessOptions)
         spawnedByCoordinator = try container.decodeIfPresent(Bool.self, forKey: .spawnedByCoordinator) ?? false
         portBase = try container.decodeIfPresent(Int.self, forKey: .portBase)
+        fromGit = try container.decodeIfPresent(Bool.self, forKey: .fromGit) ?? false
+        goneAt = try container.decodeIfPresent(Date.self, forKey: .goneAt)
     }
 }

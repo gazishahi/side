@@ -101,6 +101,10 @@ final class GeneralPreferencesViewController: NSViewController {
                                  SettingsForm.popup(ProjectSwitcherOverlay.Layout.allCases.map(\.title),
                                                     selected: ProjectSwitcherOverlay.Layout.allCases.firstIndex(of: ProjectSwitcherOverlay.layout) ?? 0,
                                                     self, #selector(switcherLayoutChanged(_:)))),
+                SettingsForm.row("Keep a deleted branch\u{2019}s track", detail: "Every branch is a track. When one is deleted in git, its conversation and checkpoints are kept this long, in case the branch comes back.",
+                                 SettingsForm.popup(Self.retentionChoices.map(\.title),
+                                                    selected: Self.retentionChoices.firstIndex { $0.days == TrackStore.goneRetentionDays } ?? 1,
+                                                    self, #selector(retentionChanged(_:)))),
             ]),
             SettingsForm.section("Terminal", footer: "Each terminal runs in a small helper outside Side, so closing a window or quitting doesn't end what's running in it. Reopen the project and each tab is as you left it. Closing a tab always ends its terminal.", [
                 SettingsForm.row("Keep terminals running when Side quits", detail: "Off, quitting or closing a project ends its terminals.",
@@ -154,6 +158,13 @@ final class GeneralPreferencesViewController: NSViewController {
     }
 
     private var explorerPopup: NSPopUpButton?
+
+    static let retentionChoices: [(title: String, days: Int)] = [("7 days", 7), ("30 days", 30), ("90 days", 90), ("Never delete", 0)]
+
+    @objc private func retentionChanged(_ sender: NSPopUpButton) {
+        guard Self.retentionChoices.indices.contains(sender.indexOfSelectedItem) else { return }
+        TrackStore.goneRetentionDays = Self.retentionChoices[sender.indexOfSelectedItem].days
+    }
 
     static var versionText: String {
         let info = Bundle.main.infoDictionary
