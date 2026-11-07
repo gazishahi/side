@@ -131,8 +131,8 @@ final class TrackDetailView: NSView {
         actions.append(Self.textButton("Changes", emphasized: false, target: self, action: #selector(openReview)))
         if let pr = detail.pullRequest {
             pullRequestURL = pr.url
-            let open = Self.textButton("PR #\(pr.number)", emphasized: false, target: self, action: #selector(openPullRequest))
-            open.toolTip = "Open the pull request on GitHub"
+            let open = Self.textButton(pr.shortName, emphasized: false, target: self, action: #selector(openPullRequest))
+            open.toolTip = pr.isMergeRequest ? "Open the merge request on GitLab" : "Open the pull request on GitHub"
             actions.append(open)
         }
         let more = Self.textButton("\u{22EF}", emphasized: false, target: self, action: #selector(moreTapped(_:)))
@@ -161,7 +161,7 @@ final class TrackDetailView: NSView {
         }
         if let pr = detail.pullRequest {
             let state = pr.isOpen ? (pr.isDraft ? "Draft" : "Open") : pr.state.capitalized
-            facts.append(("Pull request", "#\(pr.number) \u{00B7} \(state) \u{00B7} into \(pr.base)"))
+            facts.append((pr.isMergeRequest ? "Merge request" : "Pull request", "\(pr.isMergeRequest ? "!" : "#")\(pr.number) \u{00B7} \(state) \u{00B7} into \(pr.base)"))
         }
         if let path = track.workingDirectoryPath { facts.append(("Folder", (path as NSString).abbreviatingWithTildeInPath)) }
         facts.append(("Agent", detail.agent + (detail.autonomy.map { " \u{00B7} \($0)" } ?? "")))

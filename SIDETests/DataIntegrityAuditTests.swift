@@ -601,6 +601,33 @@ final class DataIntegrityAuditTests: XCTestCase {
 
     // MARK: - H6: an adopted worktree does not follow the banner to a different branch
 
+    /// Without `gh`: GitHub's public API (a fork's branch of the same name isn't this branch's PR,
+    /// and a merged one reads as merged) and GitLab's merge requests, from `glab` or its API.
+    func testPullRequestsFromThePublicAPIsAndGitLab() throws {
+        let github = """
+        [{"number":12,"state":"closed","draft":false,"merged_at":"2026-11-01T00:00:00Z","html_url":"https://github.com/o/r/pull/12",
+          "head":{"ref":"feature","repo":{"full_name":"o/r"}},"base":{"ref":"main","repo":{"full_name":"o/r"}}},
+         {"number":11,"state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/11",
+          "head":{"ref":"main","repo":{"full_name":"someone/r"}},"base":{"ref":"main","repo":{"full_name":"o/r"}}},
+         {"number":10,"state":"open","draft":false,"merged_at":null,"html_url":"https://github.com/o/r/pull/10",
+          "head":{"ref":"staging-fix","repo":{"full_name":"o/r"}},"base":{"ref":"staging","repo":{"full_name":"o/r"}}}]
+        """
+        let fromGitHub = try XCTUnwrap(PullRequestSources.parseGitHubAPI(github))
+        XCTAssertEqual(fromGitHub["feature"]?.label, "PR #12 merged")
+        XCTAssertNil(fromGitHub["main"], "a fork's branch named main isn't this repository's")
+        XCTAssertEqual(fromGitHub["staging-fix"]?.base, "staging")
+        XCTAssertEqual(fromGitHub["staging-fix"]?.isOpen, true)
+
+        let gitlab = """
+        [{"iid":4339,"state":"opened","draft":false,"source_branch":"ssh-config","target_branch":"main","web_url":"https://gitlab.com/g/p/-/merge_requests/4339"},
+         {"iid":4300,"state":"merged","draft":false,"source_branch":"old","target_branch":"main","web_url":"https://gitlab.com/g/p/-/merge_requests/4300"}]
+        """
+        let fromGitLab = try XCTUnwrap(PullRequestSources.parseGitLab(gitlab))
+        XCTAssertEqual(fromGitLab["ssh-config"]?.label, "MR !4339")
+        XCTAssertEqual(fromGitLab["ssh-config"]?.isOpen, true)
+        XCTAssertEqual(fromGitLab["old"]?.label, "MR !4300 merged")
+    }
+
     /// SIDE_RFC_GIT_TRACKS.md, phase 3: an open pull request's base is its branch's base (first in
     /// the order), a merged one moves nothing, and `gh pr list`'s answer keeps the newest per branch.
     @MainActor

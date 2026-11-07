@@ -32,12 +32,16 @@ enum GitHubCLI {
         let isDraft: Bool
         let head: String
         let base: String
+        /// GitLab's: a merge request, "MR !42".
+        var isMergeRequest = false
 
         var isOpen: Bool { state == "open" }
-        /// "PR #42", "draft PR #42", "PR #42 merged"
+        /// "PR #42" or "MR !42".
+        var shortName: String { isMergeRequest ? "MR !\(number)" : "PR #\(number)" }
+        /// "PR #42", "draft PR #42", "PR #7 merged"
         var label: String {
-            if isOpen { return isDraft ? "draft PR #\(number)" : "PR #\(number)" }
-            return "PR #\(number) \(state)"
+            if isOpen { return isDraft ? "draft \(shortName)" : shortName }
+            return "\(shortName) \(state)"
         }
     }
 
@@ -84,11 +88,16 @@ enum GitHubCLI {
 
     private static func run(_ arguments: [String], cwd: String) -> (status: Int32, output: String, error: String)? {
         guard let executable = executable() else { return nil }
+        return run(executable, arguments, cwd: cwd)
+    }
+
+    fileprivate static func run(_ executable: URL, _ arguments: [String], cwd: String) -> (status: Int32, output: String, error: String)? {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        var environment = LanguageServerRegistry.environmentForSpawning(keeping: ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"])
+        // Each tool's own login: gh's and glab's tokens pass through, nothing of Side's.
+        var environment = LanguageServerRegistry.environmentForSpawning(keeping: ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "GITLAB_HOST"])
         environment["GH_PROMPT_DISABLED"] = "1"
         environment["NO_COLOR"] = "1"
         process.environment = environment
@@ -114,4 +123,89 @@ enum GitHubCLI {
 
 private final class DataBox: @unchecked Sendable {
     var data = Data()
+}
+
+/// Where a branch's pull request comes from (SIDE_RFC_GIT_TRACKS.md, phase 3, widened
+/// 2026-11-07): the host's own tool when it's installed and signed in (`gh`, `glab`), else the
+/// host's public API, which answers for a public repository with no sign-in. A private
+/// repository without either has none, and bases follow the rest of the order. Side never reads
+/// a token of its own, nor the one git keeps for pushing.
+enum PullRequestSources {
+    /// Every branch's newest pull request, and what answered ("gh", "GitHub"); nil when nothing
+    /// could. Off the main thread: it runs a tool or asks the network.
+    static func fetch(cwd: String) -> (found: [String: GitHubCLI.BranchPullRequest], source: String)? {
+        guard let remote = Publishing.remote(cwd: cwd), let host = remote.web else { return nil }
+        switch host {
+        case .github(let owner, let repo):
+            if GitHubCLI.executable() != nil, let found = GitHubCLI.pullRequestsByBranch(cwd: cwd) { return (found, "gh") }
+            return fetchJSON("https://api.github.com/repos/\(owner)/\(repo)/pulls?state=all&per_page=100&sort=created&direction=desc")
+                .flatMap(parseGitHubAPI).map { ($0, "GitHub") }
+        case .gitlab(let hostName, let path):
+            if let glab = LanguageServerRegistry.resolveExecutable(named: "glab"),
+               let result = GitHubCLI.run(glab, ["mr", "list", "--all", "--per-page", "100", "--output", "json"], cwd: cwd), result.status == 0,
+               let found = parseGitLab(result.output) {
+                return (found, "glab")
+            }
+            let project = path.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? path
+            return fetchJSON("https://\(hostName)/api/v4/projects/\(project)/merge_requests?state=all&per_page=100&order_by=created_at&sort=desc")
+                .flatMap(parseGitLab).map { ($0, "GitLab") }
+        }
+    }
+
+    /// GitHub's REST answer (`GET /repos/{owner}/{repo}/pulls`): branches of this repository only,
+    /// not a fork's that happens to share a name. Told apart by the PR's own base repository, not
+    /// the remote's name: a repository that moved (apple/swift-format is swiftlang's now) answers
+    /// under its new one.
+    static func parseGitHubAPI(_ json: String) -> [String: GitHubCLI.BranchPullRequest]? {
+        guard let list = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]] else { return nil }
+        var byBranch: [String: GitHubCLI.BranchPullRequest] = [:]
+        for entry in list {
+            guard let number = entry["number"] as? Int, let url = (entry["html_url"] as? String).flatMap(URL.init(string:)),
+                  let head = entry["head"] as? [String: Any], let headRef = head["ref"] as? String,
+                  let baseInfo = entry["base"] as? [String: Any], let base = baseInfo["ref"] as? String, byBranch[headRef] == nil else { continue }
+            let headRepository = (head["repo"] as? [String: Any])?["full_name"] as? String
+            let baseRepository = (baseInfo["repo"] as? [String: Any])?["full_name"] as? String
+            guard headRepository != nil, headRepository == baseRepository else { continue }
+            let state = entry["merged_at"] is String ? "merged" : (entry["state"] as? String ?? "")
+            byBranch[headRef] = GitHubCLI.BranchPullRequest(number: number, url: url, state: state, isDraft: entry["draft"] as? Bool ?? false,
+                                                            head: headRef, base: base)
+        }
+        return byBranch
+    }
+
+    /// GitLab's merge requests, from its API or `glab mr list --output json` (the same fields).
+    static func parseGitLab(_ json: String) -> [String: GitHubCLI.BranchPullRequest]? {
+        guard let list = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]] else { return nil }
+        var byBranch: [String: GitHubCLI.BranchPullRequest] = [:]
+        for entry in list {
+            guard let number = entry["iid"] as? Int, let url = (entry["web_url"] as? String).flatMap(URL.init(string:)),
+                  let head = entry["source_branch"] as? String, let base = entry["target_branch"] as? String, byBranch[head] == nil else { continue }
+            let raw = entry["state"] as? String ?? ""
+            let draft = entry["draft"] as? Bool ?? entry["work_in_progress"] as? Bool ?? false
+            byBranch[head] = GitHubCLI.BranchPullRequest(number: number, url: url, state: raw == "opened" ? "open" : raw, isDraft: draft,
+                                                         head: head, base: base, isMergeRequest: true)
+        }
+        return byBranch
+    }
+
+    /// One GET, no credentials, ten seconds at most. Nil for anything but a 200: a private
+    /// repository is a 404, and the public API's hourly limit a 403.
+    private static func fetchJSON(_ address: String) -> String? {
+        guard let url = URL(string: address) else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Side", forHTTPHeaderField: "User-Agent")
+        let box = ResponseBox()
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            if (response as? HTTPURLResponse)?.statusCode == 200, let data { box.text = String(decoding: data, as: UTF8.self) }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 12)
+        return box.text
+    }
+}
+
+private final class ResponseBox: @unchecked Sendable {
+    var text: String?
 }

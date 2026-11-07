@@ -1,6 +1,6 @@
 # Tracks from git: every branch is a track
 
-Status: built (2026-11-07: phases 1 to 3, switching in place included; pull requests through `gh` only, see phase 3). Agreed 2026-11-04,
+Status: built (2026-11-07: phases 1 to 3, switching in place included; pull requests through `gh`, `glab` or the public APIs, see phase 3). Agreed 2026-11-04,
 with the retention period adjustable. Drafted overnight from the direction agreed on 2026-11-03.
 Symbols: `GitRefsWatcher`, `GitBranches`, `BoardSessionRow`, `BranchPullRequest`.
 
@@ -32,9 +32,15 @@ never at launch. An open PR's base becomes its branch's base (a base Side has: t
 branch or a branch it has as a track, never one that makes a loop), and the row's hover and the
 detail pane say "from PR #42". Rows show "PR #42", "draft PR #42", "PR #7 merged"; the detail
 pane has the PR's line and a button to open it. Ahead/behind now counts against the branch's own
-base (a stacked branch was counted against the default branch). Without `gh`, or signed out,
-nothing is shown and bases follow the rest of the order. Other ways in (no `gh`, GitLab) are
-open; see the owner's question, 2026-11-07.
+base (a stacked branch was counted against the default branch).
+
+Where the answer comes from (`PullRequestSources`, widened the same day at the owner's question):
+the host's own tool when it's installed and signed in (`gh` for GitHub, `glab` for GitLab), else
+the host's public API with no credentials, which answers for a public repository (GitHub allows
+60 unauthenticated requests an hour; one every five minutes fits). A private repository without
+the tool shows nothing, and bases follow the rest of the order. Side never uses a token of its
+own, nor the one git keeps for pushing. Still open: a GitHub sign-in in Settings (device flow,
+token in the Keychain) for private repositories, which needs an OAuth app registered for Side.
 
 **Switching in place (decision 4, 2026-11-07):** a branch checked out nowhere is checked out in
 the main folder, as `git checkout` does. Only when that's safe, else it opens in a folder of its

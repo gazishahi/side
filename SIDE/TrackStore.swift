@@ -1658,6 +1658,8 @@ final class TrackStore {
     /// Each branch's pull request, newest per branch, from `gh`. Empty until asked for, and
     /// without `gh`.
     private(set) var pullRequests: [String: GitHubCLI.BranchPullRequest] = [:]
+    /// What answered last: "gh", "glab", "GitHub" or "GitLab" (their public APIs).
+    private(set) var pullRequestSource: String?
     private var fetchingPullRequests = false
 
     /// Asked for when Branches is on screen, and every five minutes while it is: never at launch,
@@ -1667,11 +1669,14 @@ final class TrackStore {
         fetchingPullRequests = true
         let cwd = projectRoot.path
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let found = GitHubCLI.pullRequestsByBranch(cwd: cwd)
+            let fetched = PullRequestSources.fetch(cwd: cwd)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.fetchingPullRequests = false
-                if let found { self.applyPullRequests(found) }
+                if let fetched {
+                    self.pullRequestSource = fetched.source
+                    self.applyPullRequests(fetched.found)
+                }
             }
         }
     }
@@ -1708,7 +1713,7 @@ final class TrackStore {
     /// set it.
     func baseSource(for track: Track) -> String? {
         guard let pr = pullRequests[track.branchName], pr.isOpen else { return nil }
-        return "from PR #\(pr.number)"
+        return "from \(pr.shortName)"
     }
 
     // MARK: - Worktrees
