@@ -476,6 +476,8 @@ final class ShellViewController: NSViewController {
             self.switchToTrack(track, landOn: stage, completion: { _ in })
         }
         tracksVC.onBaseRequested = { [weak self] stage in self?.switchToBase(landOn: stage) }
+        tracksVC.onShowBesideRequested = { [weak self] key, id in self?.showSessionBeside(trackKey: key, sessionID: id) }
+        tracksVC.onOpenSessionRequested = { [weak self] id in self?.revealTerminalSession(id) }
         tracksVC.onCreateTrackRequested = { [weak self] completion in
             self?.confirmCloseAllUnsaved(completion: completion)
         }
@@ -1356,6 +1358,23 @@ final class ShellViewController: NSViewController {
         companion.focusTerminal()
     }
 
+    /// The board's Show Beside: the window moves to the session's branch if it isn't there, and
+    /// the session docks beside the Editor.
+    func showSessionBeside(trackKey: String, sessionID: UUID) {
+        guard let session = projectContext?.terminals.everySession().first(where: { $0.id == sessionID }) else { return }
+        if trackKey == (currentTrackKey ?? "") { return openCompanion(session) }
+        if trackKey.isEmpty {
+            switchToBase(landOn: .make)
+            if currentTrackKey == nil { openCompanion(session) }
+            return
+        }
+        guard let track = trackStore?.tracks.first(where: { $0.branchName == trackKey }) else { return }
+        switchToTrack(track, landOn: .make) { [weak self] outcome in
+            guard outcome != nil else { return }
+            self?.openCompanion(session)
+        }
+    }
+
     /// The companion's session goes back to Terminal's tabs, still running.
     func closeCompanion() {
         guard let companion else { return }
@@ -1532,6 +1551,8 @@ final class ShellViewController: NSViewController {
         return "tracks=\(rows.joined(separator: ",")) gone=\(store.goneTracksForTesting.map(\.branchName).sorted().joined(separator: ","))"
     }
     var changesForTesting: String { reviewVC.baseModeForTesting }
+    var boardForTesting: String { tracksVC.boardForTesting }
+    func boardShowBesideForTesting(_ key: String) { tracksVC.showBesideForTesting(trackKey: key) }
     func refreshTracksForTesting() { trackStore?.reconcile() }
 
     var companionForTesting: String {
@@ -2427,6 +2448,7 @@ final class ShellViewController: NSViewController {
             self.runnerActivityChanged()
         }
         tracksVC.configure(with: store, runnerManager: context.runnerManager, sessionStore: context.sessionStore)
+        tracksVC.terminals = context.terminals
         applyWindowChrome()
         refreshGitInfo(for: workingDirectory)
         refreshFirstRunIfShown()

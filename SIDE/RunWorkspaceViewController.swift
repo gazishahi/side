@@ -351,6 +351,12 @@ final class RunWorkspaceViewController: NSViewController {
         rebuildTabBar()
         if let index = activeSessionIndex, sessions.indices.contains(index) {
             showActiveSession()
+        } else if view.window != nil, !view.isHiddenOrHasHiddenAncestor {
+            // On screen: the track's terminals now, as a visit would. Switching tracks with
+            // Terminal in front left it blank, with no tab, until another stage and back (found
+            // on screen, 2026-11-07).
+            clearContainer()
+            activateActiveSession()
         } else {
             // No session for this track yet — don't eagerly create one (that's still
             // activateActiveSession()'s job for whenever the user actually visits Run), but don't

@@ -123,6 +123,97 @@ final class TracksWorkspaceViewController: NSViewController {
         trackStore = store
     }
 
+    // MARK: - The board: what's running on each branch (SIDE_RFC_GIT_TRACKS.md, phase 2)
+
+    /// The project's terminals: each branch's row lists what runs in them.
+    var terminals: TerminalSessionManager? {
+        didSet {
+            guard terminals !== oldValue else { return }
+            if let terminalsObserver { NotificationCenter.default.removeObserver(terminalsObserver) }
+            terminalsObserver = terminals.map { manager in
+                NotificationCenter.default.addObserver(forName: TerminalSessionManager.didChangeNotification, object: manager, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.terminalsChanged() }
+                }
+            }
+            boardSignature = ""
+        }
+    }
+    private var terminalsObserver: NSObjectProtocol?
+    /// A session's Show Beside: (its track's key, its id). The shell docks it beside the Editor.
+    var onShowBesideRequested: ((String, UUID) -> Void)?
+    /// A session's Open: Terminal, on its tab.
+    var onOpenSessionRequested: ((UUID) -> Void)?
+
+    struct BoardSession: Equatable {
+        let id: UUID
+        let title: String
+        let program: String?
+        let state: DS.StatusState
+        let word: String
+    }
+
+    /// What runs on a branch, worth a line on the board: a program working, waiting on you, done,
+    /// or just running. A shell at its prompt isn't news.
+    func boardSessions(forTrackKey key: String) -> [BoardSession] {
+        guard let terminals else { return [] }
+        return terminals.allSessions(forTrackKey: key).compactMap { session in
+            let vc = session.viewController
+            guard vc.isAliveOrUnstarted else { return nil }
+            let program = vc.runningProgramName
+            let state: (DS.StatusState, String)
+            if vc.isProgramWorking {
+                state = (.working, "Working")
+            } else {
+                switch vc.news {
+                case .needsYou?: state = (.needsYou, "Needs you")
+                case .finished?: state = (.verified, "Finished")
+                case nil:
+                    guard program != nil else { return nil }
+                    state = (.idle, "Running")
+                }
+            }
+            return BoardSession(id: session.id, title: session.title, program: program, state: state.0, word: state.1)
+        }
+    }
+
+    /// The board as it stands, so a terminal event that changes nothing on it (output, a `cd`)
+    /// doesn't redraw it.
+    private var boardSignature = ""
+    private func currentBoardSignature() -> String {
+        let keys = [""] + (trackStore?.tracks.map(\.branchName) ?? [])
+        return keys.map { key in key + ":" + boardSessions(forTrackKey: key).map { "\($0.id)|\($0.title)|\($0.word)" }.joined(separator: ",") }.joined(separator: ";")
+    }
+
+    private func terminalsChanged() {
+        let signature = currentBoardSignature()
+        guard signature != boardSignature else { return }
+        boardSignature = signature
+        refresh()
+    }
+
+    /// One line per session under its branch's row.
+    private func addSessionRows(forTrackKey key: String, to stack: NSStackView, indent: CGFloat) {
+        for session in boardSessions(forTrackKey: key) {
+            let row = BoardSessionRow(session: session, indent: indent)
+            row.onShowBeside = { [weak self] in self?.onShowBesideRequested?(key, session.id) }
+            row.onOpen = { [weak self] in self?.onOpenSessionRequested?(session.id) }
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+    }
+
+    var boardForTesting: String {
+        let keys = [""] + (trackStore?.tracks.map(\.branchName).sorted() ?? [])
+        return keys.compactMap { key -> String? in
+            let sessions = boardSessions(forTrackKey: key)
+            guard !sessions.isEmpty else { return nil }
+            return "\(key.isEmpty ? "(base)" : key): " + sessions.map { "\($0.title) \($0.word)" }.joined(separator: ", ")
+        }.joined(separator: " | ")
+    }
+    func showBesideForTesting(trackKey: String) {
+        if let first = boardSessions(forTrackKey: trackKey).first { onShowBesideRequested?(trackKey, first.id) }
+    }
+
     override func viewWillAppear() {
         super.viewWillAppear()
         // Catches drift from branch switches made outside Side (a terminal in Run, another git
@@ -421,6 +512,7 @@ final class TracksWorkspaceViewController: NSViewController {
     }
 
     private func renderLedger() {
+        boardSignature = currentBoardSignature()
         contentStack.arrangedSubviews.forEach {
             contentStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -485,6 +577,10 @@ final class TracksWorkspaceViewController: NSViewController {
             base.onWorkOnBase = { [weak self] in self?.onBaseRequested?(.make) }
             contentStack.addArrangedSubview(base)
             base.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            // Its sessions sit right under it, not a section's gap away.
+            if !boardSessions(forTrackKey: "").isEmpty { contentStack.setCustomSpacing(DS.Spacing.xxs, after: base) }
+            addSessionRows(forTrackKey: "", to: contentStack, indent: 14)
+            if let last = contentStack.arrangedSubviews.last, last !== base { contentStack.setCustomSpacing(DS.Spacing.section, after: last) }
         }
 
         let needsYou = needsYouTracks()
@@ -672,6 +768,7 @@ final class TracksWorkspaceViewController: NSViewController {
             row.layer?.cornerRadius = DS.Radius.control
             rowsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
+            addSessionRows(forTrackKey: entry.track.branchName, to: rowsStack, indent: entry.indent ? 14 + TrackRowView.indentWidth : 14)
             if index < ordered.count - 1 {
                 // When the next row is a child, inset the hairline past the connector column so
                 // the branch line runs unbroken from parent to child instead of being sliced.
@@ -1696,6 +1793,97 @@ enum TrackRowVerb: Equatable {
 /// primary button does too *unless* it's `.review`/`.markReviewReady`, per `alwaysVisible` above.
 /// The base branch's row at the head of the ledger: its name, whether you're on it, and how many
 /// tracks land in it. Laid out as a track's row is, with one verb: work on it.
+/// A session on the board, under its branch: what's running (its program's mark and the tab's
+/// name) and its state, with Show Beside and Open on hover.
+private final class BoardSessionRow: NSView {
+    var onShowBeside: (() -> Void)?
+    var onOpen: (() -> Void)?
+    private let actions = NSStackView()
+    private var trackingArea: NSTrackingArea?
+
+    init(session: TracksWorkspaceViewController.BoardSession, indent: CGFloat) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = DS.Radius.control
+        let icon = NSImageView(image: ProgramMarks.image(forProgram: session.program))
+        icon.symbolConfiguration = .init(pointSize: 11, weight: .medium)
+        icon.contentTintColor = .secondaryLabelColor
+        icon.imageScaling = .scaleProportionallyDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        let title = NSTextField(labelWithString: session.title)
+        title.font = DS.Text.caption(.medium)
+        title.textColor = .labelColor
+        title.lineBreakMode = .byTruncatingTail
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let status = DS.StatusLabel(state: session.state, text: session.word)
+        let text = NSStackView(views: [icon, title, status])
+        text.orientation = .horizontal
+        text.alignment = .centerY
+        text.spacing = DS.Spacing.s
+        text.setCustomSpacing(DS.Spacing.m, after: title)
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        let beside = NSButton(title: "", target: self, action: #selector(besideTapped))
+        TrackRowView.styleTextAction(beside, title: "Show Beside", emphasized: true)
+        let open = NSButton(title: "", target: self, action: #selector(openTapped))
+        TrackRowView.styleTextAction(open, title: "Open", emphasized: false)
+        for (button, label) in [(beside, "Show beside the Editor"), (open, "Open in Terminal")] { button.toolTip = label }
+        actions.setViews([open, beside], in: .leading)
+        actions.orientation = .horizontal
+        actions.spacing = DS.Spacing.l
+        actions.alphaValue = 0
+        actions.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(text)
+        addSubview(actions)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 14), icon.heightAnchor.constraint(equalToConstant: 14),
+            text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent + DS.Spacing.l),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -12),
+            actions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            actions.centerYAnchor.constraint(equalTo: centerYAnchor),
+            heightAnchor.constraint(equalToConstant: 30),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("\(session.title), \(session.word)")
+        setAccessibilityCustomActions([
+            NSAccessibilityCustomAction(name: "Show Beside") { [weak self] in self?.onShowBeside?(); return true },
+            NSAccessibilityCustomAction(name: "Open") { [weak self] in self?.onOpen?(); return true },
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func besideTapped() { onShowBeside?() }
+    @objc private func openTapped() { onOpen?() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        bindLayerBackground(DS.Color.raised)
+        DS.Motion.fade { actions.animator().alphaValue = 1 }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        unbindLayerBackground()
+        DS.Motion.fade { actions.animator().alphaValue = 0 }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        if event.clickCount == 2 { onOpen?() }
+    }
+}
+
 private final class BaseRowView: NSView {
     var onWorkOnBase: (() -> Void)?
     private let action = NSButton(title: "", target: nil, action: nil)

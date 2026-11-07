@@ -1,6 +1,6 @@
 # Tracks from git: every branch is a track
 
-Status: in progress (2026-11-07: phase 1 built; phases 2 and 3 not started). Agreed 2026-11-04,
+Status: in progress (2026-11-07: phase 1 built; phase 2's board built; phase 3 not started). Agreed 2026-11-04,
 with the retention period adjustable. Drafted overnight from the direction agreed on 2026-11-03.
 
 **Phase 1 as built (2026-11-07):**
@@ -18,6 +18,13 @@ with the retention period adjustable. Drafted overnight from the direction agree
 - Change Base also writes `branch.<name>.sideBase`; a branch that has one starts on that base.
 - Changes on the base shows its own work: uncommitted changes (new files included) and commits
   not yet on its upstream.
+**Phase 2, the board (2026-11-07):** under each branch's row in Branches, and under the base
+row, what runs on it: each Terminal program working, waiting on you, finished or running (a shell
+at its prompt isn't listed), with its program's mark. Show Beside moves the window to that branch
+and docks the session beside the Editor (the companion); Open goes to its Terminal tab. The rows
+already carried ahead/behind and uncommitted counts. The board redraws only when what it lists
+changes, not on every terminal event.
+
 - Not yet: switching checks out in place (decision 4). Switching still opens a worktree, as
   before; that's the next step, with the board (phase 2).
 

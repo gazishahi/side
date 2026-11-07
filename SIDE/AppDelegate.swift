@@ -195,6 +195,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "tracks-dump" { FileHandle.standardError.write(Data("[tracks] \(shell.tracksForTesting)\n".utf8)) }
                     if command == "changes-dump" { FileHandle.standardError.write(Data("[changes] \(shell.changesForTesting)\n".utf8)) }
                     if command == "tracks-refresh" { shell.refreshTracksForTesting() }
+                    if command.hasPrefix("track-switch ") { shell.focusTrack(key: String(command.dropFirst(13))) }
+                    if command == "board-dump" { FileHandle.standardError.write(Data("[board] \(shell.boardForTesting)\n".utf8)) }
+                    if command.hasPrefix("board-beside ") { shell.boardShowBesideForTesting(String(command.dropFirst(13))) }
                     if command == "companion-toggle" { shell.toggleCompanion() }
                     if command == "companion-dump" { FileHandle.standardError.write(Data("[companion] \(shell.companionForTesting)\n".utf8)) }
                     if command.hasPrefix("companion-type ") { shell.companionTypeForTesting(String(command.dropFirst(15)) + "\r") }
