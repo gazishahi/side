@@ -87,12 +87,13 @@
 		A00000000000000000000613 /* TerminalCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000612 /* TerminalCompanion.swift */; };
 		A00000000000000000000617 /* AgentBranchPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000616 /* AgentBranchPanel.swift */; };
 		A00000000000000000000619 /* JumpRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000618 /* JumpRail.swift */; };
+		A0000000000000000000061F /* WelcomeDemos.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061E /* WelcomeDemos.swift */; };
 		A0000000000000000000061B /* RichBlocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061A /* RichBlocks.swift */; };
 		A0000000000000000000061D /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061C /* mermaid.min.js */; };
 		A00000000000000000000611 /* ProjectSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000610 /* ProjectSwitcher.swift */; };
 		A00000000000000000000418 /* CheckpointSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000417 /* CheckpointSheet.swift */; };
 		A00000000000000000000420 /* InlineInstruct.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000419 /* InlineInstruct.swift */; };
-		A00000000000000000000422 /* FirstRunSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000421 /* FirstRunSheet.swift */; };
+		A00000000000000000000422 /* Welcome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000421 /* Welcome.swift */; };
 		A00000000000000000000424 /* ACPTerminalBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000423 /* ACPTerminalBroker.swift */; };
 		A00000000000000000000426 /* ACPFileTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000425 /* ACPFileTerminalTests.swift */; };
 		A00000000000000000000428 /* AgentSessionSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000427 /* AgentSessionSettings.swift */; };
@@ -234,6 +235,7 @@
 		A00000000000000000000612 /* TerminalCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCompanion.swift; sourceTree = "<group>"; };
 		A00000000000000000000616 /* AgentBranchPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentBranchPanel.swift; sourceTree = "<group>"; };
 		A00000000000000000000618 /* JumpRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpRail.swift; sourceTree = "<group>"; };
+		A0000000000000000000061E /* WelcomeDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeDemos.swift; sourceTree = "<group>"; };
 		A0000000000000000000061A /* RichBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichBlocks.swift; sourceTree = "<group>"; };
 		A0000000000000000000061C /* mermaid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = mermaid.min.js; sourceTree = "<group>"; };
 		A00000000000000000000610 /* ProjectSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSwitcher.swift; sourceTree = "<group>"; };
@@ -271,7 +273,7 @@
 		A00000000000000000000412 /* StageCompositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StageCompositionTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000417 /* CheckpointSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckpointSheet.swift; sourceTree = "<group>"; };
 		A00000000000000000000419 /* InlineInstruct.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineInstruct.swift; sourceTree = "<group>"; };
-		A00000000000000000000421 /* FirstRunSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstRunSheet.swift; sourceTree = "<group>"; };
+		A00000000000000000000421 /* Welcome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Welcome.swift; sourceTree = "<group>"; };
 		A00000000000000000000423 /* ACPTerminalBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ACPTerminalBroker.swift; sourceTree = "<group>"; };
 		A00000000000000000000425 /* ACPFileTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ACPFileTerminalTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000427 /* AgentSessionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSessionSettings.swift; sourceTree = "<group>"; };
@@ -423,7 +425,7 @@
 				A00000000000000000000121 /* ReviewWorkspaceViewController.swift */,
 				A00000000000000000000417 /* CheckpointSheet.swift */,
 				A00000000000000000000419 /* InlineInstruct.swift */,
-				A00000000000000000000421 /* FirstRunSheet.swift */,
+				A00000000000000000000421 /* Welcome.swift */,
 				A00000000000000000000123 /* DesignSystem.swift */,
 				A00000000000000000000125 /* DiffView.swift */,
 				A00000000000000000000129 /* UsageViewController.swift */,
@@ -444,6 +446,7 @@
 				A00000000000000000000612 /* TerminalCompanion.swift */,
 				A00000000000000000000616 /* AgentBranchPanel.swift */,
 				A00000000000000000000618 /* JumpRail.swift */,
+				A0000000000000000000061E /* WelcomeDemos.swift */,
 				A0000000000000000000061A /* RichBlocks.swift */,
 				A0000000000000000000061C /* mermaid.min.js */,
 				A00000000000000000000610 /* ProjectSwitcher.swift */,
@@ -760,7 +763,7 @@
 				A00000000000000000000122 /* ReviewWorkspaceViewController.swift in Sources */,
 				A00000000000000000000418 /* CheckpointSheet.swift in Sources */,
 				A00000000000000000000420 /* InlineInstruct.swift in Sources */,
-				A00000000000000000000422 /* FirstRunSheet.swift in Sources */,
+				A00000000000000000000422 /* Welcome.swift in Sources */,
 				A00000000000000000000124 /* DesignSystem.swift in Sources */,
 				A00000000000000000000126 /* DiffView.swift in Sources */,
 				A00000000000000000000130 /* UsageViewController.swift in Sources */,
@@ -781,6 +784,7 @@
 				A00000000000000000000613 /* TerminalCompanion.swift in Sources */,
 				A00000000000000000000617 /* AgentBranchPanel.swift in Sources */,
 				A00000000000000000000619 /* JumpRail.swift in Sources */,
+				A0000000000000000000061F /* WelcomeDemos.swift in Sources */,
 				A0000000000000000000061B /* RichBlocks.swift in Sources */,
 				A00000000000000000000611 /* ProjectSwitcher.swift in Sources */,
 				A00000000000000000000196 /* SlidingSegmentedControl.swift in Sources */,

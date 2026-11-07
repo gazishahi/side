@@ -18,6 +18,7 @@ Symbols: `ChromeHost` `TrackPill` `StatusDot` `StatusLabel` `EmptyState` `Inline
 - **Review:** line numbers are in the editor's gutter (old and new, `13b1f26`); the checkpoint meta line omits scope and autonomy, which checkpoints don't record;
   "Instruct…" is per file, not per hunk — a hunk has no row of its own to hover.
 - **Think requires a track** (§6) — conversations started with no track are no longer shown.
+- **First run:** replaced by the welcome (`SIDE_DESIGN_WELCOME.md`, 2026-11-07).
 - **No first-run preset step** (§3.1): the first-run sheet has three steps (open a project,
   choose a model, create a track); *How do you work?* wasn't built. Pins are set in Settings or
   from the stage control's menu.

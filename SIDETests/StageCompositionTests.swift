@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import Side
 @testable import SideAgents
 
@@ -104,18 +105,51 @@ final class StageCompositionTests: XCTestCase {
         XCTAssertEqual(FileMention.pointer(relativePath: "a.swift", lines: 7...7), "@a.swift#L7")
     }
 
-    /// The first-run sheet shows only on a true first run — no recent projects and no agent
-    /// installed — and never again once dismissed (§6 acceptance).
-    func testFirstRunShowsOnceAndOnlyOnAFirstRun() {
-        let cases: [(dismissed: Bool, recents: Bool, agent: Bool, shows: Bool)] = [
-            (false, false, false, true),
-            (true, false, false, false),
-            (false, true, false, false),
-            (false, false, true, false),
+    /// The welcome shows on a new install only: never once seen, and not to someone who already
+    /// has projects in Side (SIDE_DESIGN_WELCOME.md).
+    func testTheWelcomeShowsOnceAndOnlyOnANewInstall() {
+        let cases: [(seen: Bool, recents: Bool, shows: Bool)] = [
+            (false, false, true),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
         ]
         for c in cases {
-            XCTAssertEqual(FirstRun.shouldPresent(dismissed: c.dismissed, hasRecentProjects: c.recents, agentReady: c.agent), c.shows, "\(c)")
+            XCTAssertEqual(FirstRun.shouldPresent(seen: c.seen, hasRecentProjects: c.recents), c.shows, "\(c)")
         }
+    }
+
+    /// The open page's "Recently in your other editors": VS Code's and Zed's own records, read
+    /// only; local folders that exist, the editors taking turns, remote ones and files left out.
+    func testOtherEditorsRecentFoldersAreReadFromTheirOwnRecords() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("recents-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let folders = (1...3).map { home.appendingPathComponent("code/p\($0)", isDirectory: true) }
+        for folder in folders { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        func database(_ path: String, _ statements: [String]) throws {
+            let url = home.appendingPathComponent("Library/Application Support/\(path)")
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var connection: OpaquePointer?
+            XCTAssertEqual(sqlite3_open(url.path, &connection), SQLITE_OK)
+            for statement in statements { XCTAssertEqual(sqlite3_exec(connection, statement, nil, nil, nil), SQLITE_OK, statement) }
+            sqlite3_close(connection)
+        }
+        let list = #"{"entries":[{"folderUri":"\#(folders[0].absoluteString)"},{"folderUri":"vscode-remote://ssh/x"},{"fileUri":"file:///etc/hosts"},{"folderUri":"file:///gone/away"}]}"#
+        try database("Code/User/globalStorage/state.vscdb", [
+            "CREATE TABLE ItemTable (key TEXT, value TEXT)",
+            "INSERT INTO ItemTable VALUES ('history.recentlyOpenedPathsList', '\(list)')",
+        ])
+        try database("Zed/db/0-stable/db.sqlite", [
+            "CREATE TABLE workspaces (paths TEXT, remote_connection_id INTEGER, timestamp TEXT)",
+            "INSERT INTO workspaces VALUES ('\(folders[1].path)\n\(folders[2].path)', NULL, '2026-11-02')",
+            "INSERT INTO workspaces VALUES ('\(folders[2].path)', NULL, '2026-11-01')",
+            "INSERT INTO workspaces VALUES ('/remote/thing', 7, '2026-11-03')",
+            "INSERT INTO workspaces VALUES ('\(folders[0].path)', NULL, '2026-10-01')",
+        ])
+        let found = OtherEditorRecents.load(home: home)
+        XCTAssertEqual(found.map(\.url.lastPathComponent), ["p1", "p2", "p3"])
+        XCTAssertEqual(found.map(\.source), ["VS Code", "Zed", "Zed"])
+        XCTAssertEqual(OtherEditorRecents.load(home: home.appendingPathComponent("nobody")), [])
     }
 
     /// Step 2 of the harness RFC: an ACP agent streams into the same transcript Heron fills —

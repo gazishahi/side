@@ -424,6 +424,12 @@ enum DS {
         /// Timestamps and meta. 11. Section labels use this uppercase with +0.08 em tracking — the
         /// only uppercase on screen.
         static func caption(_ weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(11), weight: weight) }
+        /// A display title, for the few screens that introduce rather than work (the welcome):
+        /// SF at display size, medium, set a little tight (the owner chose it, 2026-11-07; never a
+        /// serif). Not a working role.
+        static func display(_ size: CGFloat) -> NSFont { .systemFont(ofSize: scaled(size), weight: .medium) }
+        /// Display type's tracking, as a fraction of its size.
+        static let displayTracking: CGFloat = -0.028
         /// A one-off size that still has to scale — markdown headers, the Usage pane's columns.
         /// Not a role; the escape hatch that keeps `ofSize:` out of every other file.
         static func custom(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: scaled(size), weight: weight) }

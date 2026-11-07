@@ -5187,9 +5187,23 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         windowItem.submenu = windowMenu
 
-        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(formatItem); main.addItem(viewItem); main.addItem(editorItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(debugItem); main.addItem(trackItem); main.addItem(windowItem)
+        // Help: the welcome, again (SIDE_DESIGN_WELCOME.md). Named the help menu, so macOS adds
+        // its search field.
+        let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(withTitle: "Welcome to Side", action: #selector(AppDelegate.showWelcome), keyEquivalent: "").target = NSApp.delegate as? AppDelegate
+        #if DEBUG
+        // The owner's quick replay while working on it: forget it was seen, start from page one.
+        let replay = helpMenu.addItem(withTitle: "Reset and Show Welcome", action: #selector(AppDelegate.resetAndShowWelcome), keyEquivalent: "w")
+        replay.keyEquivalentModifierMask = [.command, .option, .control]
+        replay.target = NSApp.delegate as? AppDelegate
+        #endif
+        helpItem.submenu = helpMenu
+
+        main.addItem(appItem); main.addItem(fileItem); main.addItem(editItem); main.addItem(formatItem); main.addItem(viewItem); main.addItem(editorItem); main.addItem(navigateItem); main.addItem(runItem); main.addItem(debugItem); main.addItem(trackItem); main.addItem(windowItem); main.addItem(helpItem)
         NSApp.mainMenu = main
         NSApp.windowsMenu = windowMenu
+        NSApp.helpMenu = helpMenu
     }
     @objc private func showGoToLine() {
         guard let window = view.window, activeTabIndex != nil else { return }

@@ -310,6 +310,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         }
                         FileHandle.standardError.write(Data("[tokens] canvas \(rgb(DS.Color.canvas)) | raised \(rgb(DS.Color.raised)) | accent \(rgb(DS.Color.accent))\n".utf8))
                     }
+                    // The welcome: shown at a page, its state, closed.
+                    if command.hasPrefix("welcome-show") { WelcomeWindowController.present(from: Int(command.split(separator: " ").last ?? "") ?? 0) }
+                    if command.hasPrefix("welcome-go ") { WelcomeWindowController.goForTesting(Int(command.dropFirst(11)) ?? 0) }
+                    if command == "welcome-state" { FileHandle.standardError.write(Data("[welcome] shown=\(WelcomeWindowController.isShownForTesting) page=\(WelcomeWindowController.pageForTesting)\n".utf8)) }
+                    if command == "welcome-close" { WelcomeWindowController.closeForTesting() }
+                    if command.hasPrefix("welcome-snapshot "), let welcome = NSApp.windows.first(where: { $0.title == "Welcome to Side" }) { Self.snapshot(welcome, to: String(command.dropFirst(17))) }
                     if command == "window-out" { window.orderOut(nil) }
                     if command == "window-in" { window.makeKeyAndOrderFront(nil) }
                     if command.hasPrefix("run-select "), let index = Int(command.dropFirst(11)) { shell.runSelectForTesting(index) }
@@ -470,6 +476,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func newProjectFromMenu() {
         if activeShell == nil { presentNewWindow() }
         activeShell?.presentNewProject()
+    }
+
+    /// Help › Welcome to Side.
+    @objc func showWelcome() { WelcomeWindowController.present() }
+
+    /// Help › Reset and Show Welcome (debug builds): as on a new install, from the first page.
+    @objc func resetAndShowWelcome() {
+        FirstRun.seen = false
+        WelcomeWindowController.closeForTesting()
+        WelcomeWindowController.present()
     }
 
     @objc func newWindow() {
