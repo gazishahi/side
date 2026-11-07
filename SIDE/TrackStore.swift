@@ -939,7 +939,10 @@ final class TrackStore {
     /// Reads main-actor state, so it must be called from the main actor — it exists to *gather*
     /// the inputs for the nonisolated worker below.
     func gitSummaryInputs(for track: Track) -> GitSummaryInputs {
-        GitSummaryInputs(track: track, projectRootPath: projectRoot.path, baseBranch: defaultBranchName())
+        // Against its own base: a stacked track was counted against the default branch, so it
+        // read as ahead by its parent's work too.
+        let base = track.parentTrackId.flatMap { id in tracks.first { $0.id == id }?.branchName } ?? defaultBranchName()
+        return GitSummaryInputs(track: track, projectRootPath: projectRoot.path, baseBranch: base)
     }
 
     /// The values `gitSummary` needs, snapshotted on the main actor so the git work that follows
@@ -1649,6 +1652,64 @@ final class TrackStore {
     }
 
     var goneTracksForTesting: [Track] { goneTracks }
+
+    // MARK: - Pull requests (SIDE_RFC_GIT_TRACKS.md, phase 3)
+
+    /// Each branch's pull request, newest per branch, from `gh`. Empty until asked for, and
+    /// without `gh`.
+    private(set) var pullRequests: [String: GitHubCLI.BranchPullRequest] = [:]
+    private var fetchingPullRequests = false
+
+    /// Asked for when Branches is on screen, and every five minutes while it is: never at launch,
+    /// never waited on. A failed answer (no `gh`, not signed in) keeps what was known.
+    func refreshPullRequests() {
+        guard repoState == .ready, !fetchingPullRequests else { return }
+        fetchingPullRequests = true
+        let cwd = projectRoot.path
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let found = GitHubCLI.pullRequestsByBranch(cwd: cwd)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.fetchingPullRequests = false
+                if let found { self.applyPullRequests(found) }
+            }
+        }
+    }
+
+    /// Takes in what `gh` said. An open pull request's base is its branch's base, first in the
+    /// order (the PR, the one chosen, the one it was made from, the default branch): a branch
+    /// whose PR targets `staging` is measured against `staging` with no setup. Only a base Side
+    /// has (the default branch, or a branch it has as a track), and never one that makes a loop.
+    func applyPullRequests(_ found: [String: GitHubCLI.BranchPullRequest]) {
+        let changed = found != pullRequests
+        pullRequests = found
+        let defaultBranch = defaultBranchName()
+        var moved = false
+        for index in tracks.indices {
+            guard let pr = found[tracks[index].branchName], pr.isOpen else { continue }
+            let parent: UUID?
+            if pr.base == defaultBranch {
+                parent = nil
+            } else if let base = tracks.first(where: { $0.branchName == pr.base && $0.id != tracks[index].id }),
+                      eligibleBases(for: tracks[index]).contains(where: { $0.id == base.id }) {
+                parent = base.id
+            } else {
+                continue
+            }
+            guard tracks[index].parentTrackId != parent else { continue }
+            tracks[index].parentTrackId = parent
+            moved = true
+        }
+        if moved { save() }
+        if changed || moved { notifyChange() }
+    }
+
+    /// Where a track's base comes from, for its hover: "from PR #42" when its open pull request
+    /// set it.
+    func baseSource(for track: Track) -> String? {
+        guard let pr = pullRequests[track.branchName], pr.isOpen else { return nil }
+        return "from PR #\(pr.number)"
+    }
 
     // MARK: - Worktrees
 

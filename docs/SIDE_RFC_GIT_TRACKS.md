@@ -1,7 +1,8 @@
 # Tracks from git: every branch is a track
 
-Status: in progress (2026-11-07: phases 1 and 2 built, switching in place included; phase 3, pull requests, not started). Agreed 2026-11-04,
+Status: built (2026-11-07: phases 1 to 3, switching in place included; pull requests through `gh` only, see phase 3). Agreed 2026-11-04,
 with the retention period adjustable. Drafted overnight from the direction agreed on 2026-11-03.
+Symbols: `GitRefsWatcher`, `GitBranches`, `BoardSessionRow`, `BranchPullRequest`.
 
 **Phase 1 as built (2026-11-07):**
 - Every local branch is a track (`TrackStore.applyGitBranches`): one Side never saw gets a record
@@ -24,6 +25,16 @@ at its prompt isn't listed), with its program's mark. Show Beside moves the wind
 and docks the session beside the Editor (the companion); Open goes to its Terminal tab. The rows
 already carried ahead/behind and uncommitted counts. The board redraws only when what it lists
 changes, not on every terminal event.
+
+**Phase 3, pull requests (2026-11-07):** one `gh pr list --state all` call gives every branch's
+newest pull request, when Branches comes on screen and every five minutes while it's there;
+never at launch. An open PR's base becomes its branch's base (a base Side has: the default
+branch or a branch it has as a track, never one that makes a loop), and the row's hover and the
+detail pane say "from PR #42". Rows show "PR #42", "draft PR #42", "PR #7 merged"; the detail
+pane has the PR's line and a button to open it. Ahead/behind now counts against the branch's own
+base (a stacked branch was counted against the default branch). Without `gh`, or signed out,
+nothing is shown and bases follow the rest of the order. Other ways in (no `gh`, GitLab) are
+open; see the owner's question, 2026-11-07.
 
 **Switching in place (decision 4, 2026-11-07):** a branch checked out nowhere is checked out in
 the main folder, as `git checkout` does. Only when that's safe, else it opens in a folder of its

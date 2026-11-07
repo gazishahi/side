@@ -16,6 +16,9 @@ struct TrackDetail {
     /// Newest first, a few; `checkpointCount` is all of them.
     var checkpoints: [Checkpoint]
     var checkpointCount: Int
+    /// Its pull request, when `gh` knows one; and where its base came from ("from PR #42").
+    var pullRequest: GitHubCLI.BranchPullRequest? = nil
+    var baseSource: String? = nil
 }
 
 /// The Tracks stage's detail pane (SIDE_RFC_FIND_REVIEW_TRACKS.md, T1): the selected track's
@@ -106,7 +109,7 @@ final class TrackDetailView: NSView {
         add(title, width: inset)
         let status = DS.StatusLabel(state: detail.state, text: detail.isCurrent ? "\(detail.stateText) \u{00B7} the current track" : detail.stateText)
         add(status)
-        let branch = NSTextField(labelWithString: "\(track.branchName) \u{2192} \(detail.baseRef)")
+        let branch = NSTextField(labelWithString: "\(track.branchName) \u{2192} \(detail.baseRef)" + (detail.baseSource.map { "  \u{00B7} \($0)" } ?? ""))
         branch.font = DS.Text.code(12)
         branch.textColor = .secondaryLabelColor
         branch.lineBreakMode = .byTruncatingMiddle
@@ -126,6 +129,12 @@ final class TrackDetailView: NSView {
         }
         actions.append(Self.textButton("Agent", emphasized: false, target: self, action: #selector(openThink)))
         actions.append(Self.textButton("Changes", emphasized: false, target: self, action: #selector(openReview)))
+        if let pr = detail.pullRequest {
+            pullRequestURL = pr.url
+            let open = Self.textButton("PR #\(pr.number)", emphasized: false, target: self, action: #selector(openPullRequest))
+            open.toolTip = "Open the pull request on GitHub"
+            actions.append(open)
+        }
         let more = Self.textButton("\u{22EF}", emphasized: false, target: self, action: #selector(moreTapped(_:)))
         more.setAccessibilityLabel("More actions")
         more.toolTip = "Rename, open in a new window, park, archive, delete\u{2026}"
@@ -149,6 +158,10 @@ final class TrackDetailView: NSView {
             if let uncommitted = summary.uncommittedCount { parts.append(uncommitted == 0 ? "nothing uncommitted" : "\(uncommitted) uncommitted") }
             facts.append(("Changes", parts.joined(separator: ", ")))
             if let bytes = summary.diskUsageBytes { facts.append(("Working copy", Self.bytes.string(fromByteCount: Int64(bytes)))) }
+        }
+        if let pr = detail.pullRequest {
+            let state = pr.isOpen ? (pr.isDraft ? "Draft" : "Open") : pr.state.capitalized
+            facts.append(("Pull request", "#\(pr.number) \u{00B7} \(state) \u{00B7} into \(pr.base)"))
         }
         if let path = track.workingDirectoryPath { facts.append(("Folder", (path as NSString).abbreviatingWithTildeInPath)) }
         facts.append(("Agent", detail.agent + (detail.autonomy.map { " \u{00B7} \($0)" } ?? "")))
@@ -245,6 +258,8 @@ final class TrackDetailView: NSView {
     @objc private func openMake() { onOpenStage?(.make) }
     @objc private func openThink() { onOpenStage?(.think) }
     @objc private func openReview() { onOpenStage?(.review) }
+    private var pullRequestURL: URL?
+    @objc private func openPullRequest() { if let pullRequestURL { NSWorkspace.shared.open(pullRequestURL) } }
     @objc private func moreTapped(_ sender: NSButton) { onMore?(sender) }
 }
 

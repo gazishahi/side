@@ -1554,6 +1554,10 @@ final class ShellViewController: NSViewController {
     var boardForTesting: String { tracksVC.boardForTesting }
     func boardShowBesideForTesting(_ key: String) { tracksVC.showBesideForTesting(trackKey: key) }
     func refreshTracksForTesting() { trackStore?.reconcile() }
+    /// What `gh pr list --json …` would have said, taken in as if it had.
+    func pullRequestsForTesting(_ json: String) { if let found = GitHubCLI.parsePullRequests(json) { trackStore?.applyPullRequests(found) } }
+    var trackDetailForTesting: String { tracksVC.detailTextForTesting }
+    func selectTrackForTesting(_ branch: String) { tracksVC.selectForTesting(branch: branch) }
 
     var companionForTesting: String {
         guard let companion else { return "none" }

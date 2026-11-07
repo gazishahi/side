@@ -219,6 +219,12 @@ final class TracksWorkspaceViewController: NSViewController {
         // Catches drift from branch switches made outside Side (a terminal in Run, another git
         // client) since the last time this stage was visible — not just at project-open time.
         trackStore?.reconcile()
+        // Pull requests: now, and every five minutes while Branches is on screen.
+        trackStore?.refreshPullRequests()
+        pullRequestTimer?.invalidate()
+        pullRequestTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.trackStore?.refreshPullRequests() }
+        }
         if ledgerIsStale { refreshUI() }
     }
 
@@ -232,6 +238,13 @@ final class TracksWorkspaceViewController: NSViewController {
     }
 
     private var showArchived = false
+    private var pullRequestTimer: Timer?
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        pullRequestTimer?.invalidate()
+        pullRequestTimer = nil
+    }
 
     private static let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -420,7 +433,9 @@ final class TracksWorkspaceViewController: NSViewController {
             parentIntent: parent.map { $0.intent.isEmpty ? $0.branchName : $0.intent },
             subtracks: store.tracks.filter { $0.parentTrackId == track.id }.count,
             checkpoints: Array(checkpoints.prefix(5)),
-            checkpointCount: checkpoints.count
+            checkpointCount: checkpoints.count,
+            pullRequest: store.pullRequests[track.branchName],
+            baseSource: store.baseSource(for: track)
         ))
     }
 
@@ -450,6 +465,8 @@ final class TracksWorkspaceViewController: NSViewController {
     var detailForTesting: TrackDetailView { detailView }
     var selectedTrackForTesting: Track? { selectedTrack }
     func selectForTesting(_ track: Track) { select(track) }
+    var detailTextForTesting: String { detailView.shownText.joined(separator: " | ") }
+    func selectForTesting(branch: String) { if let track = trackStore?.tracks.first(where: { $0.branchName == branch }) { select(track) } }
     func keyForTesting(_ event: NSEvent) -> Bool { handleListKey(event) }
 
     // MARK: - Building the grouped-card content
@@ -841,6 +858,7 @@ final class TracksWorkspaceViewController: NSViewController {
             let gitBits = gitSummaryText(summary, includeSize: !showsDetail)
             if !gitBits.isEmpty { metaText += " · \(gitBits)" }
         }
+        if let pr = trackStore?.pullRequests[track.branchName] { metaText += " · \(pr.label)" }
         // A coordinator's row carries its subtracks' state (multi-agent RFC, step 3): a subtrack
         // that needs you lights its coordinator too, so the umbrella never reads as quiet while
         // one of its children waits.
@@ -867,6 +885,9 @@ final class TracksWorkspaceViewController: NSViewController {
             connectorContinues: connectorContinues
         )
         row.menu = buildContextMenu(for: track)
+        if let store = trackStore {
+            row.toolTip = "base: \(ReviewWorkspaceViewController.baseRef(for: track, trackStore: store))" + (store.baseSource(for: track).map { ", \($0)" } ?? "")
+        }
         row.onDoubleClick = { [weak self] in self?.requestSwitch(to: track) }
         // Beside the detail pane, a click selects and the row stays compact: its verbs are the
         // pane's. Without the pane, the row is the whole story, as before.

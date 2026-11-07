@@ -23,6 +23,47 @@ enum GitHubCLI {
         return PullRequest(number: number, url: url, state: (json["state"] as? String ?? "").lowercased())
     }
 
+    /// A branch's pull request as Branches shows it (SIDE_RFC_GIT_TRACKS.md, phase 3).
+    struct BranchPullRequest: Equatable, Sendable {
+        let number: Int
+        let url: URL
+        /// "open", "merged" or "closed".
+        let state: String
+        let isDraft: Bool
+        let head: String
+        let base: String
+
+        var isOpen: Bool { state == "open" }
+        /// "PR #42", "draft PR #42", "PR #42 merged"
+        var label: String {
+            if isOpen { return isDraft ? "draft PR #\(number)" : "PR #\(number)" }
+            return "PR #\(number) \(state)"
+        }
+    }
+
+    /// Every branch's pull request in one call, the newest per branch: open, merged or closed.
+    /// Nil when `gh` isn't there or can't answer (not signed in, no GitHub remote). Off the main
+    /// thread.
+    static func pullRequestsByBranch(cwd: String) -> [String: BranchPullRequest]? {
+        guard let result = run(["pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,state,isDraft,headRefName,baseRefName"], cwd: cwd),
+              result.status == 0 else { return nil }
+        return parsePullRequests(result.output)
+    }
+
+    /// `gh pr list --json …`'s answer, newest first as gh lists it: the first one seen for a
+    /// branch is the one it has.
+    static func parsePullRequests(_ json: String) -> [String: BranchPullRequest]? {
+        guard let list = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]] else { return nil }
+        var byBranch: [String: BranchPullRequest] = [:]
+        for entry in list {
+            guard let number = entry["number"] as? Int, let url = (entry["url"] as? String).flatMap(URL.init(string:)),
+                  let head = entry["headRefName"] as? String, let base = entry["baseRefName"] as? String, byBranch[head] == nil else { continue }
+            byBranch[head] = BranchPullRequest(number: number, url: url, state: (entry["state"] as? String ?? "").lowercased(),
+                                               isDraft: entry["isDraft"] as? Bool ?? false, head: head, base: base)
+        }
+        return byBranch
+    }
+
     struct Failure: Error { let message: String }
 
     /// Opens a pull request; returns its URL, or what went wrong.

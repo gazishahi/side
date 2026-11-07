@@ -601,6 +601,37 @@ final class DataIntegrityAuditTests: XCTestCase {
 
     // MARK: - H6: an adopted worktree does not follow the banner to a different branch
 
+    /// SIDE_RFC_GIT_TRACKS.md, phase 3: an open pull request's base is its branch's base (first in
+    /// the order), a merged one moves nothing, and `gh pr list`'s answer keeps the newest per branch.
+    @MainActor
+    func testAnOpenPullRequestsBaseIsTheBranchsBase() throws {
+        makeRepo()
+        git(["branch", "staging"])
+        git(["branch", "feature"])
+        git(["branch", "done"])
+        let store = TrackStore(projectRoot: root, stateDirectory: root.appendingPathComponent(".git/side"))
+        store.reconcile()
+        let settled = expectation(description: "reconciled")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { settled.fulfill() }
+        wait(for: [settled], timeout: 5)
+        let json = """
+        [{"number":9,"url":"https://github.com/o/r/pull/9","state":"OPEN","isDraft":true,"headRefName":"feature","baseRefName":"staging"},
+         {"number":3,"url":"https://github.com/o/r/pull/3","state":"CLOSED","isDraft":false,"headRefName":"feature","baseRefName":"main"},
+         {"number":5,"url":"https://github.com/o/r/pull/5","state":"MERGED","isDraft":false,"headRefName":"done","baseRefName":"staging"}]
+        """
+        guard let found = GitHubCLI.parsePullRequests(json) else { return XCTFail("unparsed") }
+        XCTAssertEqual(found["feature"]?.number, 9, "the newest per branch")
+        XCTAssertEqual(found["feature"]?.label, "draft PR #9")
+        store.applyPullRequests(found)
+        let staging = store.tracks.first { $0.branchName == "staging" }
+        XCTAssertNotNil(staging)
+        XCTAssertEqual(store.tracks.first { $0.branchName == "feature" }?.parentTrackId, staging?.id)
+        guard let feature = store.tracks.first(where: { $0.branchName == "feature" }) else { return XCTFail("no feature track") }
+        XCTAssertEqual(store.baseSource(for: feature), "from PR #9")
+        XCTAssertNil(store.tracks.first { $0.branchName == "done" }?.parentTrackId, "a merged PR moves no base")
+        XCTAssertEqual(found["done"]?.label, "PR #5 merged")
+    }
+
     @MainActor
     /// Every branch is a track now (SIDE_RFC_GIT_TRACKS.md), so there's no adopting step for a
     /// stale path to leak through; the audit's rule still holds: a track's folder is wherever
