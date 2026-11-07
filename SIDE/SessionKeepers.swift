@@ -5,12 +5,16 @@ import SideSessionsKit
 /// outside Side, that owns the PTY and a copy of the screen. Closing a window or quitting detaches
 /// from them; reopening the project attaches again, to the same running shells.
 enum SessionKeepers {
-    /// The keeper in the app bundle (`Contents/Helpers`, from the "Embed session keeper" build
-    /// phase).
-    static let bundledKeeperURL: URL? = {
-        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/SideSessionKeeper")
-        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    /// The keeper app in Side's bundle (`Contents/Helpers`, from the "Embed session keeper" build
+    /// phase). An app, not a bare binary: a keeper outlives the Side that started it, so macOS's
+    /// privacy settings see it, not Side, behind every command in its terminal, and an app's
+    /// bundle identifier keeps a grant across updates (2026-11-07).
+    static let bundledKeeperAppURL: URL? = {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/\(keeperAppName)")
+        return FileManager.default.isExecutableFile(atPath: url.appendingPathComponent(keeperExecutablePath).path) ? url : nil
     }()
+    static let keeperAppName = "Side Session Keeper.app"
+    private static let keeperExecutablePath = "Contents/MacOS/SideSessionKeeper"
 
     /// The notifier app keepers run to post notifications (`Contents/Helpers/Side Notifier.app`).
     static let notifierURL: URL? = {
@@ -18,39 +22,62 @@ enum SessionKeepers {
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
     }()
 
-    /// What keepers run: a copy of the bundled one under the run directory, one per build.
-    /// Never the bundle's own file: a rebuild or an update that changes it in place makes the
-    /// kernel kill every process running it (an invalid code page), which took every session
-    /// with it (2026-11-03). A copy per build means a running keeper's file never changes.
+    /// What keepers run: a copy of the bundled app under the run directory, one per build.
+    /// Never the bundle's own: a rebuild or an update that changes it in place makes the kernel
+    /// kill every process running it (an invalid code page), which took every session with it
+    /// (2026-11-03). A copy per build means a running keeper's files never change.
     static var keeperURL: URL? {
-        guard let bundled = bundledKeeperURL else { return nil }
+        guard let bundledApp = bundledKeeperAppURL else { return nil }
         // Checked each time: the run directory can be cleared while Side runs.
         if let installed = installedKeeper, FileManager.default.isExecutableFile(atPath: installed.path) { return installed }
+        let bundled = bundledApp.appendingPathComponent(keeperExecutablePath)
         let attributes = try? FileManager.default.attributesOfItem(atPath: bundled.path)
         let size = (attributes?[.size] as? Int) ?? 0
         let modified = Int((attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
         let dir = SessionPaths.runDirectory.appendingPathComponent("bin/\(size)-\(modified)", isDirectory: true)
-        let copy = dir.appendingPathComponent("SideSessionKeeper")
+        let copy = dir.appendingPathComponent(keeperAppName).appendingPathComponent(keeperExecutablePath)
         if !FileManager.default.isExecutableFile(atPath: copy.path) {
             do {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                // Copied beside it, then renamed into place: a reader never sees half a file.
-                let temporary = dir.appendingPathComponent(".SideSessionKeeper.\(getpid())")
+                // Copied beside it, then renamed into place: a reader never sees half an app.
+                let temporary = dir.appendingPathComponent(".SideSessionKeeper.\(getpid()).app")
                 try? FileManager.default.removeItem(at: temporary)
-                try FileManager.default.copyItem(at: bundled, to: temporary)
-                guard rename(temporary.path, copy.path) == 0 else { return bundled }
+                try FileManager.default.copyItem(at: bundledApp, to: temporary)
+                guard rename(temporary.path, dir.appendingPathComponent(keeperAppName).path) == 0 else { return bundled }
             } catch {
                 return bundled
             }
         }
         installedKeeper = copy
-        // Other builds' copies go: deleting a running program's file is safe (it keeps the file
-        // it opened); only changing one in place isn't.
+        // Other builds' copies go once no keeper runs from them. A running program keeps the
+        // file it opened, but macOS reads an app's signature and Info.plist from disk when it
+        // checks a permission, so a running keeper's app stays where it is.
         let bin = dir.deletingLastPathComponent()
-        for other in (try? FileManager.default.contentsOfDirectory(at: bin, includingPropertiesForKeys: nil)) ?? [] where other.lastPathComponent != dir.lastPathComponent {
+        let running = runningKeeperPaths()
+        let realBin = realpath(bin.path, nil).map { defer { free($0) }; return String(cString: $0) } ?? bin.path
+        for other in (try? FileManager.default.contentsOfDirectory(at: bin, includingPropertiesForKeys: nil)) ?? []
+        where other.lastPathComponent != dir.lastPathComponent && !running.contains(where: { $0.hasPrefix(realBin + "/" + other.lastPathComponent + "/") }) {
             try? FileManager.default.removeItem(at: other)
         }
         return copy
+    }
+
+    /// The executables of this user's running processes under the run directory's `bin`.
+    static func runningKeeperPaths() -> [String] {
+        // The real path, as the kernel reports executables (`/tmp` is `/private/tmp`; Foundation's
+        // own resolving drops the `/private`).
+        let given = SessionPaths.runDirectory.appendingPathComponent("bin").path
+        let bin = realpath(given, nil).map { defer { free($0) }; return String(cString: $0) } ?? given
+        var pids = [pid_t](repeating: 0, count: 4096)
+        let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
+        var paths: [String] = []
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        for pid in pids.prefix(max(0, count)) where pid > 0 {
+            guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
+            let path = String(cString: buffer)
+            if path.hasPrefix(bin + "/") { paths.append(path) }
+        }
+        return paths
     }
     nonisolated(unsafe) private static var installedKeeper: URL?
 
@@ -77,7 +104,7 @@ enum SessionKeepers {
     nonisolated(unsafe) static var enabledForTesting = false
 
     static var isEnabled: Bool {
-        guard bundledKeeperURL != nil else { return false }
+        guard bundledKeeperAppURL != nil else { return false }
         if NSClassFromString("XCTestCase") != nil { return enabledForTesting }
         return true
     }

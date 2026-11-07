@@ -33,7 +33,7 @@ spec = {"id": sid, "executable": "/bin/zsh", "arguments": ["-f", "-i"], "directo
         "environment": [f"PATH={root}/bin/agents:/usr/bin:/bin", f"FAKE_CLAUDE_SESSIONS={root}/claude-config/sessions", "TERM=xterm-256color"]}
 launch = f"{run}/{sid}.launch.json"
 json.dump(spec, open(launch, "w"))
-keeper = f"{root}/dd/Build/Products/Release/Side.app/Contents/Helpers/SideSessionKeeper"
+keeper = f"{root}/dd/Build/Products/Release/Side.app/Contents/Helpers/Side Session Keeper.app/Contents/MacOS/SideSessionKeeper"
 subprocess.Popen([keeper, "--launch", launch], env={"SIDE_SESSIONS_DIR": run, "PATH": "/usr/bin:/bin"},
                  stdout=open(f"{run}/{sid}.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
 for _ in range(100):

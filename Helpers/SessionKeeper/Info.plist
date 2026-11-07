@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The session keeper as an app (embed-session-keeper.sh): what macOS's privacy settings
+	     see for every command run in Side's terminals. A bundle identifier keeps a grant across
+	     updates, where a bare binary's grant followed its path, which changes with each build. -->
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER).SessionKeeper</string>
+	<key>CFBundleName</key>
+	<string>Side Session Keeper</string>
+	<key>CFBundleDisplayName</key>
+	<string>Side Session Keeper</string>
+	<key>CFBundleExecutable</key>
+	<string>SideSessionKeeper</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSBackgroundOnly</key>
+	<true/>
+	<!-- macOS asks with these on a command's behalf; without one, the request is refused
+	     without asking. -->
+	<key>NSCameraUsageDescription</key>
+	<string>A program running in Side's terminal would like to use the camera.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>A program running in Side's terminal would like to use the microphone.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>A program running in Side's terminal would like to control another app.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>A program running in Side's terminal would like to access your contacts.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>A program running in Side's terminal would like to access your calendars.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>A program running in Side's terminal would like to access your reminders.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>A program running in Side's terminal would like to access your photos.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>A program running in Side's terminal would like to know your location.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>A program running in Side's terminal would like to use Bluetooth.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>A program running in Side's terminal would like to find and connect to devices on your local network.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>A program running in Side's terminal would like to access files on your Desktop.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>A program running in Side's terminal would like to access files in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>A program running in Side's terminal would like to access files in your Downloads folder.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>A program running in Side's terminal would like to access files on a removable volume.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>A program running in Side's terminal would like to access files on a network volume.</string>
+</dict>
+</plist>

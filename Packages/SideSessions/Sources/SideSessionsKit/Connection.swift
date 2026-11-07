@@ -149,6 +149,7 @@ public enum KeeperLauncher {
         defer { posix_spawnattr_destroy(&attributes) }
         // A session of its own, and nothing of ours inherited but the three it was given.
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
+        disclaimResponsibility(&attributes)
 
         var environment = ["PATH=/usr/bin:/bin:/usr/sbin:/sbin"]
         if let dir = ProcessInfo.processInfo.environment["SIDE_SESSIONS_DIR"] { environment.append("SIDE_SESSIONS_DIR=\(dir)") }
@@ -173,5 +174,27 @@ public enum KeeperLauncher {
         }
         let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
         throw SessionError.keeperDidNotStart(log.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The keeper answers for itself to macOS's privacy settings (camera, screen recording,
+    /// files…), not Side. It outlives the Side that started it, and a process whose responsible
+    /// app has quit was left answering for itself anyway, under a grant Side's never reached:
+    /// the same terminal had Side's permissions before a restart and none after (2026-11-07).
+    /// Disclaimed from the start, a terminal's permissions are the keeper app's, always.
+    ///
+    /// `responsibility_spawnattrs_setdisclaim` is in libSystem but not in its headers (Chromium
+    /// and Terminal-like apps call it the same way); looked up at run time, and without it the
+    /// keeper starts as before.
+    static func disclaimResponsibility(_ attributes: inout posix_spawnattr_t?) {
+        typealias SetDisclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else { return }
+        _ = unsafeBitCast(symbol, to: SetDisclaim.self)(&attributes, 1)
+    }
+
+    /// The process macOS holds responsible for `pid`'s requests (tests).
+    public static func responsiblePID(for pid: pid_t) -> pid_t? {
+        typealias Responsible = @convention(c) (pid_t) -> pid_t
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_get_pid_responsible_for_pid") else { return nil }
+        return unsafeBitCast(symbol, to: Responsible.self)(pid)
     }
 }

@@ -10,7 +10,7 @@ final class SessionKeeperTests: XCTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        try XCTSkipIf(SessionKeepers.bundledKeeperURL == nil, "No keeper in the test host's bundle.")
+        try XCTSkipIf(SessionKeepers.bundledKeeperAppURL == nil, "No keeper in the test host's bundle.")
         // Short: a socket path must fit in 103 bytes.
         runDirectory = URL(fileURLWithPath: "/tmp/skt-\(UUID().uuidString.prefix(8))", isDirectory: true)
         setenv("SIDE_SESSIONS_DIR", runDirectory.path, 1)
@@ -62,7 +62,17 @@ final class SessionKeeperTests: XCTestCase {
         let executable = String(cString: path)
         // `/tmp` is `/private/tmp`: compared by the run directory's own name.
         XCTAssertTrue(executable.contains("/\(runDirectory.lastPathComponent)/bin/"), executable)
-        XCTAssertFalse(executable.contains(".app/"), executable)
+        XCTAssertFalse(executable.contains("Side.app/"), executable)
+        // The keeper app, answering for its terminals to macOS's privacy settings itself, by a
+        // bundle identifier a grant survives updates under; not Side, which it outlives
+        // (2026-11-07).
+        XCTAssertTrue(executable.hasSuffix("/\(SessionKeepers.keeperAppName)/Contents/MacOS/SideSessionKeeper"), executable)
+        let app = URL(fileURLWithPath: executable).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        XCTAssertEqual(Bundle(url: app)?.bundleIdentifier, (Bundle.main.bundleIdentifier ?? "") + ".SessionKeeper")
+        if let responsible = KeeperLauncher.responsiblePID(for: keeperPID) {
+            XCTAssertEqual(responsible, keeperPID, "the keeper answers for itself")
+            XCTAssertEqual(KeeperLauncher.responsiblePID(for: shell), keeperPID, "and for its shell")
+        }
 
         // Quitting, or the project's last window closing: the shell keeps running.
         first.teardownAll()

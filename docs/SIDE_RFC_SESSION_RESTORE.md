@@ -74,6 +74,16 @@ one shared server.
   child and quitting Side doesn't end it. It's shipped in the app bundle (`Contents/Helpers/`),
   signed and notarized with Side. No launchd agent or login item: nothing it holds survives a
   restart, so there's nothing to start at login.
+- **Privacy permissions (2026-11-07).** A keeper outlives the Side that started it, and once that
+  Side quit, macOS held the keeper itself responsible for its terminal's commands: a grant made
+  to Side (Screen Recording, the camera) stopped applying to the same terminal after a restart.
+  The keeper is now an app, `Side Session Keeper.app` (bundle identifier
+  `<Side's>.SessionKeeper`), with the usage strings and hardened-runtime entitlements a
+  terminal's commands ask under, and it disclaims Side's responsibility when spawned, so every
+  terminal answers to that one identity from the start. A grant to "Side Session Keeper" in
+  System Settings › Privacy & Security covers every terminal and survives updates. Each build's
+  copy under `run/bin/` stays until no keeper runs from it: macOS reads the app's signature from
+  disk when it checks a permission.
 - **What it owns:** the PTY master, the child process, and a headless libghostty-vt terminal fed
   every byte of output. That terminal is the source of truth for the screen and scrollback.
 - **When it exits:** after the process exits and Side has acknowledged it, so a tab can show
