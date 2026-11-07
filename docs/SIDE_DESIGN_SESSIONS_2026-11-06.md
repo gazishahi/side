@@ -176,15 +176,28 @@ without its own work.
 | Setting | Choices | What changes | Applies |
 |---|---|---|---|
 | Surfaces | Liquid Glass, Solid | built | on restart |
-| Accent | System, Side's own, or six picks | selections, primary buttons, the focused stage | live |
+| Accent | System, Side's own, or five picks | primary buttons, sent messages, links, the caret | built, live |
 | Corners | Round (now), Squarer | every `DS.Radius` token scaled (about 0.5×) | on restart |
 | Density | Regular (now), Compact | row heights, the bar's height, paddings | on restart |
-| Interface theme | follows the editor theme, or not | Side's surfaces tinted from the editor theme's background | live |
+| Interface theme | follows the editor theme, or not | Side's surfaces tinted from the editor theme's background | built, live |
 
 - **Accent never stands for status.** Needs-you, failed and working keep their own colors under
   any accent (already the rule in DS).
 - **Solid on battery** (after the battery test): a third Surfaces choice, "Liquid Glass, Solid on
   battery". Only worth offering if the battery numbers show glass costs real power.
+
+**As built (2026-11-07): accent and interface theme** (`DS.Accent`, `DS.InterfaceTheme`,
+`AccentSwatches`; UI check `scripts/uitest/check-customization.sh`).
+- Accent: `DS.Color.accent`, one dynamic token, replaces every `controlAccentColor` in Side.
+  Swatches in Settings › Appearance: Match System, Side's own (an indigo; the logo is
+  monochrome, so it has no colour to borrow), Blue, Purple, Pink, Teal, Graphite. Five picks,
+  not six: orange, yellow, red and green are needs-you, failed and verified. AppKit's own
+  controls (focus rings, checkboxes, text selection) keep the system's accent: there is no
+  public way to change it for one app.
+- Interface theme: "Interface follows the theme" under Editor theme. Canvas is the theme's
+  background; raised, overlay and the received bubble step from it as Side's own do. A theme of
+  the other appearance leaves that appearance alone, and Increase Contrast keeps Side's
+  high-contrast tones.
 
 ### Decisions
 

@@ -34,7 +34,7 @@ enum DS {
         /// System Settings › Accessibility › Display › Increase Contrast; a test sets its own.
         nonisolated(unsafe) static var increaseContrast: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
 
-        private static func rgb(_ value: UInt32) -> NSColor {
+        fileprivate static func rgb(_ value: UInt32) -> NSColor {
             NSColor(red: CGFloat((value >> 16) & 0xff) / 255, green: CGFloat((value >> 8) & 0xff) / 255, blue: CGFloat(value & 0xff) / 255, alpha: 1)
         }
 
@@ -57,13 +57,69 @@ enum DS {
         // close to read on their own.
 
         /// Stage background.
-        static let canvas = hex(0x15171A, 0xF4F4F6, contrast: 0x0B0C0E, 0xE6E6EB)
+        static let canvas = surface(.canvas, 0x15171A, 0xF4F4F6, contrast: 0x0B0C0E, 0xE6E6EB)
         /// Cards, the pinned group, the terminal, the diff body, the active tab.
-        static let raised = hex(0x1C1F23, 0xFFFFFF, contrast: 0x262A30, 0xFFFFFF)
+        static let raised = surface(.raised, 0x1C1F23, 0xFFFFFF, contrast: 0x262A30, 0xFFFFFF)
         /// Selected segment, running chip, popover and menu bodies.
-        static let overlay = hex(0x25292E, 0xE8E8EC, contrast: 0x363B42, 0xD6D6DD)
+        static let overlay = surface(.overlay, 0x25292E, 0xE8E8EC, contrast: 0x363B42, 0xD6D6DD)
         /// Think's received message bubble: the system chat grey in light, the raised tone in dark.
-        static let bubbleReceived = hex(0x24272C, 0xE9E9EB)
+        static let bubbleReceived = surface(.bubble, 0x24272C, 0xE9E9EB)
+
+        /// The four surface tones taken from an editor theme's background (Settings › Appearance,
+        /// Interface theme). Nil for an appearance keeps Side's own.
+        struct SurfaceTint: Equatable {
+            enum Tone { case canvas, raised, overlay, bubble }
+            var canvas, raised, overlay, bubble: NSColor
+
+            /// Side's relationships, kept: raised a step lighter than canvas in both appearances,
+            /// overlay and the bubble a step away from it (lighter in dark, darker in light). A
+            /// near-white light theme has nothing lighter to raise to, so its canvas steps down.
+            init(background: NSColor, dark: Bool) {
+                let base = background.usingColorSpace(.sRGB) ?? background
+                func toward(_ target: NSColor, _ fraction: CGFloat) -> NSColor { base.blended(withFraction: fraction, of: target) ?? base }
+                if dark {
+                    canvas = base
+                    raised = toward(.white, 0.035)
+                    overlay = toward(.white, 0.075)
+                    bubble = toward(.white, 0.065)
+                } else {
+                    let nearWhite = base.brightnessComponent > 0.97 && base.saturationComponent < 0.04
+                    canvas = nearWhite ? toward(.black, 0.04) : base
+                    raised = nearWhite ? base : toward(.white, 0.7)
+                    overlay = toward(.black, nearWhite ? 0.09 : 0.06)
+                    bubble = toward(.black, nearWhite ? 0.085 : 0.055)
+                }
+            }
+
+            func color(_ tone: Tone) -> NSColor {
+                switch tone {
+                case .canvas: return canvas
+                case .raised: return raised
+                case .overlay: return overlay
+                case .bubble: return bubble
+                }
+            }
+        }
+
+        /// Set by `DS.InterfaceTheme`; read wherever a surface token resolves.
+        nonisolated(unsafe) static var surfaceTint: (dark: SurfaceTint?, light: SurfaceTint?) = (nil, nil)
+
+        /// A surface tone: Side's own, the editor theme's under Interface theme, and Side's
+        /// high-contrast values whenever Increase Contrast is on (a theme's tones don't promise it).
+        private static func surface(_ tone: SurfaceTint.Tone, _ dark: UInt32, _ light: UInt32, contrast contrastDark: UInt32? = nil, _ contrastLight: UInt32? = nil) -> NSColor {
+            NSColor(name: nil) { appearance in
+                let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                if increaseContrast(), let contrastDark, let contrastLight { return rgb(isDark ? contrastDark : contrastLight) }
+                if let tint = isDark ? surfaceTint.dark : surfaceTint.light { return tint.color(tone) }
+                return rgb(isDark ? dark : light)
+            }
+        }
+
+        /// The accent (Settings › Appearance): the system's, Side's own, or a pick. Primary
+        /// actions, sent messages, links and the caret; never status (see the status colours).
+        static let accent = NSColor(name: nil) { appearance in
+            Accent.resolved(dark: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        }
         /// The selected segment of a control sitting on glass — the toolbar segmented look.
         /// On glass, light mode's glass is itself near-white — a white thumb vanished into it, so
         /// light mode selects with a tint of the label colour instead.
@@ -95,7 +151,7 @@ enum DS {
         // MARK: Status — dot + text, never a filled pill (§2.4)
         //
         // Meaning is carried by text and shape; colour is reinforcement, so it survives any accent
-        // colour, colour-blindness, and both appearances. Never `controlAccentColor` — an orange
+        // colour, colour-blindness, and both appearances. Never the accent — an orange
         // accent would collide with needs-you.
         static let statusNeedsYou = hex(0xD9A441, 0xB8860B)
         /// Built per appearance, not `labelColor.withAlphaComponent(_:)`: that resolves the system
@@ -430,6 +486,90 @@ enum DS {
 
         /// Floating pieces carry their own shadow: glass draws its own edge and depth.
         static var needsShadow: Bool { !usesGlass }
+    }
+
+    /// The accent's choices. Orange, yellow, red and green are left out: they're needs-you,
+    /// failed and verified, and an accent that looks like a status would say one it doesn't mean.
+    enum Accent: String, CaseIterable {
+        case system, side, blue, purple, pink, teal, graphite
+
+        static let key = "appearance.accent"
+        nonisolated(unsafe) private static var cached: Accent?
+
+        static var chosen: Accent {
+            get {
+                if let cached { return cached }
+                let stored = HeronDefaults.store.string(forKey: key).flatMap(Accent.init(rawValue:)) ?? .system
+                cached = stored
+                return stored
+            }
+            set {
+                HeronDefaults.store.set(newValue.rawValue, forKey: key)
+                cached = newValue
+                MainActor.assumeIsolated { Appearance.refreshAll() }
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .system: return "Match System"
+            case .side: return "Side"
+            default: return rawValue.capitalized
+            }
+        }
+
+        /// This choice's colour, dark then light; nil for the system's.
+        private var values: (dark: UInt32, light: UInt32)? {
+            switch self {
+            case .system: return nil
+            case .side: return (0x7472F2, 0x5250D8)
+            case .blue: return (0x3D8BF5, 0x1A6BE0)
+            case .purple: return (0xA77BEA, 0x7E46CF)
+            case .pink: return (0xE064B6, 0xC0388F)
+            case .teal: return (0x34B3BD, 0x0F7F88)
+            case .graphite: return (0x8D9198, 0x676B72)
+            }
+        }
+
+        /// The swatch Settings shows for it.
+        var swatch: NSColor {
+            guard let values else { return .controlAccentColor }
+            return Color.dynamic(dark: Color.rgb(values.dark), light: Color.rgb(values.light))
+        }
+
+        static func resolved(dark: Bool) -> NSColor {
+            guard let values = chosen.values else { return .controlAccentColor }
+            return Color.rgb(dark ? values.dark : values.light)
+        }
+    }
+
+    /// Interface theme (Settings › Appearance): Side's surfaces take their tones from the editor
+    /// theme chosen for the appearance, so the editor and the chrome around it are one surface.
+    /// Side's own theme, or a theme of the other appearance (a dark theme in light), leaves that
+    /// appearance's tones as they are.
+    @MainActor
+    enum InterfaceTheme {
+        static let key = "appearance.interface-theme"
+
+        static var followsEditorTheme: Bool {
+            get { HeronDefaults.store.bool(forKey: key) }
+            set {
+                HeronDefaults.store.set(newValue, forKey: key)
+                refresh()
+            }
+        }
+
+        /// Recomputes the tint from the editor themes; redraws only when it changed.
+        static func refresh() {
+            func tint(dark: Bool) -> Color.SurfaceTint? {
+                guard followsEditorTheme, let theme = EditorThemes.current(dark: dark), theme.isDark == dark else { return nil }
+                return Color.SurfaceTint(background: theme.background.nsColor, dark: dark)
+            }
+            let next = (dark: tint(dark: true), light: tint(dark: false))
+            guard next.dark != Color.surfaceTint.dark || next.light != Color.surfaceTint.light else { return }
+            Color.surfaceTint = next
+            Appearance.refreshAll()
+        }
     }
 
     /// A solid surface: the raised color and a hairline edge, drawn in whatever appearance it's
@@ -1202,18 +1342,24 @@ extension DS {
         static func bootstrap() {
             apply()
             guard observation == nil else { return }
+            InterfaceTheme.refresh()
+            NotificationCenter.default.addObserver(forName: EditorThemes.didChangeNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { InterfaceTheme.refresh() }
+            }
             lastKnownIsDark = isDark
             observation = NSApp.observe(\.effectiveAppearance, options: [.new]) { _, _ in
                 DispatchQueue.main.async { appearanceMayHaveChanged() }
             }
             // Increase Contrast turned on or off: the same as a change of appearance.
             NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { contrastChanged() }
+                MainActor.assumeIsolated { refreshAll() }
             }
         }
 
+        /// Increase Contrast, the accent or the interface theme changed: every token may resolve
+        /// differently, as after a change of appearance.
         @MainActor
-        static func contrastChanged() {
+        static func refreshAll() {
             LayerBindings.reapplyAll()
             NotificationCenter.default.post(name: didChangeNotification, object: nil)
             func redraw(_ view: NSView) { view.needsDisplay = true; view.subviews.forEach(redraw) }
@@ -1500,7 +1646,7 @@ extension DS {
             label.alignment = .center
             label.preferredMaxLayoutWidth = 420
             button.bezelStyle = .push
-            button.bezelColor = .controlAccentColor
+            button.bezelColor = DS.Color.accent
             button.target = self
             button.action = #selector(performAction)
             icon.symbolConfiguration = .init(pointSize: 30, weight: .light)

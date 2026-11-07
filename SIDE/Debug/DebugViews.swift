@@ -442,7 +442,7 @@ final class DebugInspector: NSView, NSTableViewDataSource, NSTableViewDelegate, 
         switch style {
         case .program: color = .labelColor
         case .adapter: color = .secondaryLabelColor
-        case .input: color = .controlAccentColor
+        case .input: color = DS.Color.accent
         case .error: color = .systemRed
         }
         storage.append(NSAttributedString(string: output, attributes: [.font: DS.Text.code(11), .foregroundColor: color]))

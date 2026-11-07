@@ -923,7 +923,7 @@ final class MarkdownPreviewTextView: NSTextView {
         view.isVerticallyResizable = true
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.autoresizingMask = [.width]
-        view.linkTextAttributes = [.foregroundColor: NSColor.controlAccentColor, .cursor: NSCursor.pointingHand]
+        view.linkTextAttributes = [.foregroundColor: DS.Color.accent, .cursor: NSCursor.pointingHand]
         return view
     }
 

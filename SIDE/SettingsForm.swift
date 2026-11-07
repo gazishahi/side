@@ -157,9 +157,13 @@ enum SettingsForm {
         titleLabel.textColor = titleColor
         titleLabel.lineBreakMode = .byTruncatingTail
         let accessoryWidth = accessory.map { ceil($0.fittingSize.width) + DS.Spacing.xl } ?? 0
+        // A wide control beside a long explanation left the explanation a narrow strip (Agents'
+        // sign-in, 26 lines): under the text instead, at its start, and the explanation the
+        // row's full width. A short one ("Markdown previews.") keeps its control on the right.
+        let stacked = accessory != nil && (detail?.count ?? 0) > 80 && accessoryWidth > 220
         var texts: [NSView] = [titleLabel]
         if let detail {
-            texts.append(footnote(detail, width: max(120, minColumnWidth - rowInset * 2 - accessoryWidth)))
+            texts.append(footnote(detail, width: max(120, minColumnWidth - rowInset * 2 - (stacked ? 0 : accessoryWidth))))
         }
         let text = NSStackView(views: texts)
         text.orientation = .vertical
@@ -167,10 +171,7 @@ enum SettingsForm {
         text.spacing = 2
         text.setHuggingPriority(.defaultLow, for: .horizontal)
         text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        // A wide control beside a long explanation left the explanation a narrow strip (Agents'
-        // sign-in, 26 lines): under the text instead, at its start. A short one ("Markdown
-        // previews.") keeps its control on the right with the rest.
-        if let accessory, let detail, detail.count > 80, accessoryWidth > 220 {
+        if let accessory, stacked {
             accessory.setContentHuggingPriority(.required, for: .horizontal)
             let column = NSStackView(views: [text, accessory])
             column.orientation = .vertical

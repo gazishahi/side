@@ -276,7 +276,7 @@ final class RichBlockView: NSView {
 
     private func setSourceTitle() {
         sourceButton.attributedTitle = NSAttributedString(string: showingSource ? "Show Result" : "Source",
-                                                          attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.controlAccentColor])
+                                                          attributes: [.font: DS.Text.caption(.medium), .foregroundColor: DS.Color.accent])
         sourceButton.setAccessibilityLabel(showingSource ? "Show the result" : "Show the source")
     }
 

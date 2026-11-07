@@ -1122,7 +1122,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func markFindMatches() {
         if findingInPDF {
             let all = findMatches.indices.prefix(2000).compactMap(findPDFSelection(forMatch:))
-            for selection in all { selection.color = NSColor.controlAccentColor.withAlphaComponent(0.3) }
+            for selection in all { selection.color = DS.Color.accent.withAlphaComponent(0.3) }
             pdfView.highlightedSelections = all.isEmpty ? nil : all
             if let current = findCurrent.flatMap(findPDFSelection(forMatch:)) {
                 current.color = NSColor.findHighlightColor
@@ -1134,7 +1134,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             sheetView.setFindMarks(Set(findMatches.indices.compactMap(findSheetCell(forMatch:))), current: findCurrent.flatMap(findSheetCell(forMatch:)))
             return
         }
-        let all = NSColor.controlAccentColor.withAlphaComponent(0.2)
+        let all = DS.Color.accent.withAlphaComponent(0.2)
         if findingInPreview, let layout = markdownPreviewView.layoutManager {
             let whole = NSRange(location: 0, length: (markdownPreviewView.string as NSString).length)
             layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: whole)
@@ -1159,7 +1159,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         if findingInPreview, let layout = markdownPreviewView.layoutManager {
             let length = (markdownPreviewView.string as NSString).length
             if let previous, findMatches.indices.contains(previous), NSMaxRange(findMatches[previous]) <= length {
-                layout.addTemporaryAttribute(.backgroundColor, value: NSColor.controlAccentColor.withAlphaComponent(0.2), forCharacterRange: findMatches[previous])
+                layout.addTemporaryAttribute(.backgroundColor, value: DS.Color.accent.withAlphaComponent(0.2), forCharacterRange: findMatches[previous])
             }
             if let current, NSMaxRange(current) <= length { layout.addTemporaryAttribute(.backgroundColor, value: currentColor, forCharacterRange: current) }
             return

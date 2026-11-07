@@ -314,7 +314,7 @@ final class UpdatePill {
         case .failed: .symbol("exclamationmark.circle.fill", DS.Color.statusFailed)
         }
         switch stage {
-        case .available: view.setTint(.controlAccentColor, text: .white)
+        case .available: view.setTint(DS.Color.accent, text: .white)
         case .ready: view.setTint(DS.Color.updateReadyFill, text: DS.Color.updateReadyText)
         default: view.setTint(nil)
         }

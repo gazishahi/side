@@ -274,7 +274,7 @@ private final class ShareBar: NSView {
         track.fill()
         var filled = bounds
         filled.size.width = bounds.width * share
-        NSColor.controlAccentColor.setFill()
+        DS.Color.accent.setFill()
         NSBezierPath(roundedRect: filled, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
     }
 }

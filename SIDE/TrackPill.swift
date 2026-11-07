@@ -472,7 +472,7 @@ private final class TrackPopoverRow: NSView {
         case .newTrack(let name):
             let plus = NSImageView(image: NSImage(systemSymbolName: "plus", accessibilityDescription: nil)?
                 .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold)) ?? NSImage())
-            plus.contentTintColor = .controlAccentColor
+            plus.contentTintColor = DS.Color.accent
             leading = plus
             titleText = "New track \u{201C}\(name)\u{201D}"
             detailText = "Starts a branch for it"

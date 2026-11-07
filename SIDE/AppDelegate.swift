@@ -298,6 +298,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // Settings' own light/dark choice ("appearance" sets NSApp's directly), and a
                     // window taken off screen and back, as another Space does.
                     if command.hasPrefix("appearance-pref "), let preference = DS.Appearance.Preference(rawValue: String(command.dropFirst(16))) { DS.Appearance.preference = preference }
+                    // Customization: the accent, the interface theme, and the tokens they change, as
+                    // "r g b" (0–255) in the window's appearance.
+                    if command.hasPrefix("accent "), let accent = DS.Accent(rawValue: String(command.dropFirst(7))) { DS.Accent.chosen = accent }
+                    if command.hasPrefix("interface-theme ") { DS.InterfaceTheme.followsEditorTheme = command.hasSuffix(" on") }
+                    if command == "tokens" {
+                        func rgb(_ color: NSColor) -> String {
+                            var resolved = color
+                            window.effectiveAppearance.performAsCurrentDrawingAppearance { resolved = color.usingColorSpace(.sRGB) ?? color }
+                            return [resolved.redComponent, resolved.greenComponent, resolved.blueComponent].map { String(Int(($0 * 255).rounded())) }.joined(separator: " ")
+                        }
+                        FileHandle.standardError.write(Data("[tokens] canvas \(rgb(DS.Color.canvas)) | raised \(rgb(DS.Color.raised)) | accent \(rgb(DS.Color.accent))\n".utf8))
+                    }
                     if command == "window-out" { window.orderOut(nil) }
                     if command == "window-in" { window.makeKeyAndOrderFront(nil) }
                     if command.hasPrefix("run-select "), let index = Int(command.dropFirst(11)) { shell.runSelectForTesting(index) }

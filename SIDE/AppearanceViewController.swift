@@ -25,6 +25,8 @@ final class AppearanceViewController: NSViewController {
     /// Beside the popup once the choice differs from what's drawn. (A row of its own, hidden,
     /// still left its gap in the card.)
     private lazy var restartButton = SettingsForm.button("Restart Side", self, #selector(restartForSurfaces))
+    private let accentSwatches = AccentSwatches()
+    private lazy var interfaceThemeSwitch = SettingsForm.toggle(DS.InterfaceTheme.followsEditorTheme, self, #selector(interfaceThemeChanged))
 
     override func loadView() { view = NSView() }
 
@@ -100,7 +102,28 @@ final class AppearanceViewController: NSViewController {
         surfacesPopup.setAccessibilityLabel("Surfaces")
         refreshRestartButton()
 
-        let samples = NSStackView(views: [sampleLabel, sampleCaption])
+        // The accent as it's used: a primary action and a link.
+        let primary = NSTextField(labelWithString: "Send")
+        primary.font = DS.Text.caption(.semibold)
+        primary.textColor = .white
+        primary.alignment = .center
+        let pill = NSView()
+        pill.bindLayerBackground(DS.Color.accent)
+        pill.layer?.cornerRadius = DS.Radius.control
+        primary.translatesAutoresizingMaskIntoConstraints = false
+        pill.addSubview(primary)
+        NSLayoutConstraint.activate([
+            primary.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: DS.Spacing.l),
+            primary.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -DS.Spacing.l),
+            primary.topAnchor.constraint(equalTo: pill.topAnchor, constant: DS.Spacing.xs),
+            primary.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -DS.Spacing.xs),
+        ])
+        let link = NSTextField(labelWithString: "Open in Editor")
+        link.font = DS.Text.caption(.medium)
+        link.textColor = DS.Color.accent
+        let accentSample = NSStackView(views: [pill, link])
+        accentSample.spacing = DS.Spacing.l
+        let samples = NSStackView(views: [sampleLabel, sampleCaption, accentSample])
         sampleLabel.lineBreakMode = .byTruncatingTail
         sampleCaption.lineBreakMode = .byTruncatingTail
         for label in [sampleLabel, sampleCaption] { label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
@@ -113,6 +136,7 @@ final class AppearanceViewController: NSViewController {
             SettingsSplitViewController.hero(.appearance),
             SettingsForm.section([
                 SettingsForm.row("Appearance", themePopup),
+                SettingsForm.row("Accent", detail: "Primary buttons, your messages in Agent, links and the caret. Never a status: those keep their own colors.", accentSwatches),
                 SettingsForm.row("Text size", detail: "Side's own interface: stage headers, transcripts, diffs, lists, and this window.", scalePopup),
             ] + surfacesRows()),
             SettingsForm.section("Code", [
@@ -124,6 +148,7 @@ final class AppearanceViewController: NSViewController {
                 SettingsForm.row("In dark appearance", darkThemePopup),
                 SettingsForm.row("Import a VS Code theme", SettingsForm.button("Import\u{2026}", self, #selector(importTheme))),
                 SettingsForm.row("Remove an imported theme", removeThemePopup),
+                SettingsForm.row("Interface follows the theme", detail: "Side's surfaces take their tones from the theme's background. A dark theme in light appearance, or the other way round, leaves them as they are.", interfaceThemeSwitch),
             ]),
             SettingsForm.section("Fonts", [
                 SettingsForm.row("Editor", fontPopups[.editor]!),
@@ -155,6 +180,7 @@ final class AppearanceViewController: NSViewController {
 
         fillThemePopups()
         NotificationCenter.default.addObserver(self, selector: #selector(fillThemePopups), name: EditorThemes.didChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(syncInterfaceThemeSwitch), name: DS.Appearance.didChangeNotification, object: nil)
         applyFonts()
         // The samples set their own size; the rest of the pane follows with everything else.
         TextScaleFollower.exempt(sampleLabel)
@@ -279,6 +305,15 @@ final class AppearanceViewController: NSViewController {
     }
 
     @objc private func restartForSurfaces() { AppDelegate.shared?.relaunch() }
+
+    /// The switch, when the setting changed elsewhere (a test, or another window's pane).
+    @objc private func syncInterfaceThemeSwitch() {
+        interfaceThemeSwitch.state = DS.InterfaceTheme.followsEditorTheme ? .on : .off
+    }
+
+    @objc private func interfaceThemeChanged() {
+        DS.InterfaceTheme.followsEditorTheme = interfaceThemeSwitch.state == .on
+    }
 
     @objc private func scaleChanged() {
         guard let raw = scalePopup.selectedItem?.representedObject as? Double,
@@ -438,5 +473,87 @@ final class AppearancePreview: NSView {
         let appearance = theme.map { NSAppearance(named: $0.isDark ? .darkAqua : .aqua) } ?? nil
         editorPane.appearance = appearance
         terminalPane.appearance = appearance
+    }
+}
+
+/// The accent's choices as a row of swatches, as System Settings shows its own: Match System
+/// first (the six picks, a wheel of them), then Side's, then the picks. A ring marks the chosen.
+@MainActor
+final class AccentSwatches: NSStackView {
+    private static let diameter: CGFloat = 18
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        orientation = .horizontal
+        spacing = DS.Spacing.m
+        for accent in DS.Accent.allCases {
+            let swatch = Swatch(accent: accent, diameter: Self.diameter)
+            swatch.target = self
+            swatch.action = #selector(chose(_:))
+            addArrangedSubview(swatch)
+        }
+        setAccessibilityElement(true)
+        setAccessibilityRole(.radioGroup)
+        setAccessibilityLabel("Accent")
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: DS.Appearance.didChangeNotification, object: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func chose(_ sender: Swatch) { DS.Accent.chosen = sender.accent }
+
+    @objc private func refresh() { arrangedSubviews.forEach { $0.needsDisplay = true } }
+
+    final class Swatch: NSButton {
+        let accent: DS.Accent
+        private let diameter: CGFloat
+
+        init(accent: DS.Accent, diameter: CGFloat) {
+            self.accent = accent
+            self.diameter = diameter
+            super.init(frame: .zero)
+            isBordered = false
+            title = ""
+            toolTip = accent.displayName
+            setAccessibilityRole(.radioButton)
+            setAccessibilityLabel(accent.displayName)
+            translatesAutoresizingMaskIntoConstraints = false
+            // Room for the ring outside the circle.
+            NSLayoutConstraint.activate([
+                widthAnchor.constraint(equalToConstant: diameter + 6),
+                heightAnchor.constraint(equalToConstant: diameter + 6),
+            ])
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func accessibilityValue() -> Any? { DS.Accent.chosen == accent ? 1 : 0 }
+
+        override func draw(_ dirtyRect: NSRect) {
+            let circle = NSRect(x: (bounds.width - diameter) / 2, y: (bounds.height - diameter) / 2, width: diameter, height: diameter)
+            if accent == .system {
+                // A wheel of colours: the system's choice, whichever it is.
+                let picks = DS.Accent.allCases.filter { $0 != .system }
+                let centre = NSPoint(x: circle.midX, y: circle.midY)
+                for (index, pick) in picks.enumerated() {
+                    let slice = NSBezierPath()
+                    slice.move(to: centre)
+                    let start = 90 - CGFloat(index) * 360 / CGFloat(picks.count)
+                    slice.appendArc(withCenter: centre, radius: diameter / 2, startAngle: start, endAngle: start - 360 / CGFloat(picks.count), clockwise: true)
+                    slice.close()
+                    pick.swatch.setFill()
+                    slice.fill()
+                }
+            } else {
+                accent.swatch.setFill()
+                NSBezierPath(ovalIn: circle).fill()
+            }
+            if DS.Accent.chosen == accent {
+                NSColor.labelColor.withAlphaComponent(0.55).setStroke()
+                let ring = NSBezierPath(ovalIn: circle.insetBy(dx: -2.5, dy: -2.5))
+                ring.lineWidth = 1.5
+                ring.stroke()
+            }
+        }
     }
 }

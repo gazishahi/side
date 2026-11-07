@@ -527,7 +527,7 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
         let open = NSButton(title: "", target: self, action: #selector(openTapped))
         open.isBordered = false
         let openKeys = Shortcuts.display("file.openProject")
-        let openTitle = NSMutableAttributedString(string: "Open\u{2026}", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.controlAccentColor])
+        let openTitle = NSMutableAttributedString(string: "Open\u{2026}", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: DS.Color.accent])
         if !openKeys.isEmpty { openTitle.append(NSAttributedString(string: "  " + openKeys, attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.tertiaryLabelColor])) }
         open.attributedTitle = openTitle
         open.setAccessibilityLabel("Open a project")

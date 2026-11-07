@@ -123,7 +123,7 @@ final class TrackDetailView: NSView {
         } else {
             let primary = NSButton(title: "Switch to Track", target: self, action: #selector(switchTapped))
             primary.bezelStyle = .push
-            primary.bezelColor = .controlAccentColor
+            primary.bezelColor = DS.Color.accent
             primary.keyEquivalent = "\r"
             actions.append(primary)
         }
@@ -249,7 +249,7 @@ final class TrackDetailView: NSView {
         button.isBordered = false
         button.attributedTitle = NSAttributedString(string: title, attributes: [
             .font: DS.Text.body(emphasized ? .semibold : .medium),
-            .foregroundColor: emphasized ? NSColor.controlAccentColor : NSColor.labelColor,
+            .foregroundColor: emphasized ? DS.Color.accent : NSColor.labelColor,
         ])
         return button
     }

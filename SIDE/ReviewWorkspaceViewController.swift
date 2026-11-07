@@ -482,7 +482,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     }
 
     private func applyPromoteTitle() {
-        let color: NSColor = promoteButton.isEnabled ? .controlAccentColor : .tertiaryLabelColor
+        let color: NSColor = promoteButton.isEnabled ? DS.Color.accent : .tertiaryLabelColor
         // Both, and both are needed: a borderless NSButton tints its title with
         // `contentTintColor` on top of whatever an attributed title asks for.
         promoteButton.contentTintColor = color

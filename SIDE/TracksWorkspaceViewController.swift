@@ -284,7 +284,7 @@ final class TracksWorkspaceViewController: NSViewController {
         newTrackButton.action = #selector(newTrackTapped)
         newTrackButton.bezelStyle = .push
         // The screen's one accent-filled action (§4 shared rules).
-        newTrackButton.bezelColor = .controlAccentColor
+        newTrackButton.bezelColor = DS.Color.accent
         newTrackButton.keyEquivalent = "\r"
 
         searchField.placeholderString = "Search tracks"

@@ -78,7 +78,7 @@ final class FirstRunSheetController: NSViewController {
             // A track lives in a project: that step waits for the first.
             button.isEnabled = !isDone && (step != .track || done.contains(.project))
             button.tag = FirstRun.Step.allCases.firstIndex(of: step) ?? 0
-            if step == next { button.bezelColor = .controlAccentColor; button.keyEquivalent = "\r" }
+            if step == next { button.bezelColor = DS.Color.accent; button.keyEquivalent = "\r" }
             let row = NSStackView(views: [mark, text, NSView(), button])
             row.orientation = .horizontal
             row.alignment = .centerY

@@ -1281,7 +1281,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private func refreshSessionPill() {
         // No scope tint: modes were Heron's, and went with it (SIDE_RFC_HERON_RETIREMENT.md).
         pillModeTint.color = .clear
-        composer.setModeTint(.controlAccentColor)
+        composer.setModeTint(DS.Color.accent)
         // The popover is anchored to the pill: resizing the pill mid-edit visibly drags the
         // popover sideways. Hold the label until the popover closes.
         if sessionPopover?.isShown == true {
@@ -2167,7 +2167,7 @@ final class TextBlockView: NSView, NSTextViewDelegate {
 
         var fillColor: NSColor {
             switch self {
-            case .sent: return .controlAccentColor
+            case .sent: return DS.Color.accent
             case .received: return DS.Color.bubbleReceived
             case .error: return NSColor.systemRed.withAlphaComponent(0.18)
             }
@@ -2447,7 +2447,7 @@ final class TextBlockView: NSView, NSTextViewDelegate {
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
                 // On the accent-filled sent bubble, accent-on-accent would vanish; white already
                 // reads as emphasis there, so underline carries it instead.
-                .foregroundColor: style == .sent ? NSColor.white : NSColor.controlAccentColor,
+                .foregroundColor: style == .sent ? NSColor.white : DS.Color.accent,
                 .font: DS.Text.code(11.5, weight: .medium),
             ], range: range)
         }
@@ -2477,7 +2477,7 @@ final class TextBlockView: NSView, NSTextViewDelegate {
             rendered.addAttributes([
                 .link: url,
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
-                .foregroundColor: style == .sent ? NSColor.white : NSColor.controlAccentColor,
+                .foregroundColor: style == .sent ? NSColor.white : DS.Color.accent,
             ], range: range)
         }
     }
@@ -2599,7 +2599,7 @@ private final class LinkedTextLine: NSView, NSTextViewDelegate {
                 rendered.addAttributes([
                     .link: url,
                     .underlineStyle: NSUnderlineStyle.single.rawValue,
-                    .foregroundColor: NSColor.controlAccentColor,
+                    .foregroundColor: DS.Color.accent,
                 ], range: match.range)
             }
         }
@@ -3166,7 +3166,7 @@ private final class PopoverActionRow: NSView {
         // Concentric with the popover's own corner: inner radius ≈ outer radius − inset. The
         // control token (6) was tuned for chips and read as a mismatched rectangle in here.
         highlight.layer?.cornerRadius = DS.Radius.control
-        highlight.bindLayerBackground(NSColor.controlAccentColor)
+        highlight.bindLayerBackground(DS.Color.accent)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
@@ -3327,7 +3327,7 @@ private final class ChangedFileRow: NSView {
 
         highlight.wantsLayer = true
         highlight.layer?.cornerRadius = DS.Radius.control
-        highlight.bindLayerBackground(NSColor.controlAccentColor)
+        highlight.bindLayerBackground(DS.Color.accent)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
@@ -3538,7 +3538,7 @@ private final class ConversationHistoryRow: NSView {
 
         highlight.wantsLayer = true
         highlight.layer?.cornerRadius = DS.Radius.control
-        highlight.bindLayerBackground(NSColor.controlAccentColor)
+        highlight.bindLayerBackground(DS.Color.accent)
         highlight.alphaValue = 0
         highlight.translatesAutoresizingMaskIntoConstraints = false
         addSubview(highlight)
@@ -3969,7 +3969,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         micButton.toolTip = "Dictate"
         micButton.translatesAutoresizingMaskIntoConstraints = false
 
-        actionButton.setGradientFill(.controlAccentColor)
+        actionButton.setGradientFill(DS.Color.accent)
         actionButton.target = self
         actionButton.action = #selector(actionTapped)
         setBusy(false)
@@ -3990,7 +3990,7 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         addSubview(actionButton)
         setupButton.bezelStyle = .push
         setupButton.controlSize = .small
-        setupButton.bezelColor = .controlAccentColor
+        setupButton.bezelColor = DS.Color.accent
         setupButton.target = self
         setupButton.action = #selector(setupTapped)
         setupButton.isHidden = true
@@ -4311,8 +4311,8 @@ private final class ComposerView: NSView, NSTextViewDelegate {
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
         for range in FileMentionResolver.tokenRanges(in: textView.string) {
             layoutManager.addTemporaryAttributes([
-                .foregroundColor: NSColor.controlAccentColor,
-                .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.12),
+                .foregroundColor: DS.Color.accent,
+                .backgroundColor: DS.Color.accent.withAlphaComponent(0.12),
             ], forCharacterRange: range)
         }
     }

@@ -254,7 +254,7 @@ private final class PanelRow: NSView {
     var hoverAction: (title: String, perform: () -> Void)? {
         didSet {
             guard let hoverAction else { return }
-            actionButton.attributedTitle = NSAttributedString(string: hoverAction.title, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.controlAccentColor])
+            actionButton.attributedTitle = NSAttributedString(string: hoverAction.title, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: DS.Color.accent])
             actionButton.isHidden = false
         }
     }

@@ -86,6 +86,43 @@ final class AppearanceTests: XCTestCase {
         XCTAssertLessThan(red(dark) ?? 1, red(light) ?? 0, "the parent's dark appearance, not the window's light one")
     }
 
+    /// Customization (session 3): the accent is one dynamic token, so a pick reaches every use
+    /// at once; none of the picks is a status colour.
+    func testTheAccentFollowsTheChoiceAndNeverLooksLikeAStatus() {
+        let original = DS.Accent.chosen
+        defer { DS.Accent.chosen = original }
+        DS.Accent.chosen = .system
+        XCTAssertEqual(resolved(DS.Color.accent, in: .darkAqua), resolved(.controlAccentColor, in: .darkAqua))
+        DS.Accent.chosen = .teal
+        XCTAssertEqual(resolved(DS.Color.accent, in: .aqua), resolved(DS.Accent.teal.swatch, in: .aqua))
+        XCTAssertNotEqual(resolved(DS.Color.accent, in: .aqua), resolved(DS.Color.accent, in: .darkAqua))
+        func hue(_ color: NSColor, _ appearance: NSAppearance.Name) -> CGFloat { resolved(color, in: appearance).hueComponent * 360 }
+        for pick in DS.Accent.allCases where pick != .system && pick != .graphite {
+            for status in [DS.Color.statusNeedsYou, DS.Color.statusFailed, DS.Color.statusVerified] {
+                let apart = abs(hue(pick.swatch, .darkAqua) - hue(status, .darkAqua))
+                XCTAssertGreaterThan(min(apart, 360 - apart), 25, "\(pick) is too close to a status")
+            }
+        }
+    }
+
+    /// The interface theme: tones from the theme's background, Side's ordering kept, and Side's
+    /// own whenever Increase Contrast is on.
+    func testSurfaceTintKeepsTheOrderingAndYieldsToIncreaseContrast() {
+        let original = DS.Color.surfaceTint
+        let contrast = DS.Color.increaseContrast
+        defer { DS.Color.surfaceTint = original; DS.Color.increaseContrast = contrast }
+        let oneDark = NSColor(srgbRed: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
+        DS.Color.surfaceTint = (dark: DS.Color.SurfaceTint(background: oneDark, dark: true), light: DS.Color.SurfaceTint(background: .white, dark: false))
+        DS.Color.increaseContrast = { false }
+        XCTAssertEqual(resolved(DS.Color.canvas, in: .darkAqua).redComponent * 255, 40, accuracy: 0.5)
+        for appearance in [NSAppearance.Name.darkAqua, .aqua] {
+            XCTAssertGreaterThan(luminance(DS.Color.raised, in: appearance), luminance(DS.Color.canvas, in: appearance), "\(appearance.rawValue)")
+            XCTAssertNotEqual(luminance(DS.Color.overlay, in: appearance), luminance(DS.Color.raised, in: appearance))
+        }
+        DS.Color.increaseContrast = { true }
+        XCTAssertEqual(resolved(DS.Color.canvas, in: .darkAqua).redComponent * 255, 11, accuracy: 0.5, "Side's high-contrast canvas")
+    }
+
     func testThePreferenceRoundTripsAndMapsToAnAppAppearance() {
         let original = DS.Appearance.preference
         defer { DS.Appearance.preference = original }

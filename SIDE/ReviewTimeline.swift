@@ -174,7 +174,7 @@ final class CheckpointTimelineView: NSView, NSViewToolTipOwner {
     override func draw(_ dirtyRect: NSRect) {
         guard !positions.isEmpty else { return }
         let y = Self.trackY
-        let accent = NSColor.controlAccentColor
+        let accent = DS.Color.accent
         // The track, with a break where older nodes are hidden.
         let hidden = positions.count < timeline.nodes.count
         let track = NSBezierPath()

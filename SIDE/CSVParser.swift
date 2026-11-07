@@ -1393,7 +1393,7 @@ final class SheetHeaderCell: NSTableHeaderCell {
 
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
         if lit {
-            NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
+            DS.Color.accent.withAlphaComponent(0.14).setFill()
             cellFrame.fill()
         }
         let inset = cellFrame.insetBy(dx: 8, dy: 0)
@@ -1401,7 +1401,7 @@ final class SheetHeaderCell: NSTableHeaderCell {
         paragraph.alignment = corner ? .center : alignment
         paragraph.lineBreakMode = .byTruncatingTail
         let letterAttributes: [NSAttributedString.Key: Any] = [
-            .font: DS.Text.caption(lit ? .bold : .medium), .foregroundColor: lit ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor, .paragraphStyle: paragraph,
+            .font: DS.Text.caption(lit ? .bold : .medium), .foregroundColor: lit ? DS.Color.accent : NSColor.tertiaryLabelColor, .paragraphStyle: paragraph,
         ]
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: corner ? DS.Text.caption() : DS.Text.body(.medium), .foregroundColor: corner ? NSColor.tertiaryLabelColor : NSColor.secondaryLabelColor, .paragraphStyle: paragraph,
@@ -1448,7 +1448,7 @@ final class SheetCellView: NSTableCellView {
             guard mark != oldValue else { return }
             needsDisplay = true
             if mark == .lit || oldValue == .lit {
-                field.textColor = mark == .lit ? .controlAccentColor : .tertiaryLabelColor
+                field.textColor = mark == .lit ? DS.Color.accent : .tertiaryLabelColor
                 field.font = DS.Text.caption(mark == .lit ? .semibold : .regular)
             }
         }
@@ -1471,7 +1471,7 @@ final class SheetCellView: NSTableCellView {
 
     override func draw(_ dirtyRect: NSRect) {
         if let fill { fill.setFill(); bounds.fill() }
-        let accent = NSColor.controlAccentColor
+        let accent = DS.Color.accent
         switch mark {
         case .none: break
         case .gutter: DS.Color.scrimSoft.setFill(); bounds.fill()

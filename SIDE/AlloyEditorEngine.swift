@@ -273,6 +273,9 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
         blocks.onChange = { [weak self] in self?.view.stylesChanged() }
         applyAppearance(fontChanged: false)
         NotificationCenter.default.addObserver(self, selector: #selector(editorThemeChanged), name: EditorThemes.didChangeNotification, object: nil)
+        // The accent (the caret) and the interface theme (the background) change without a change
+        // of appearance.
+        NotificationCenter.default.addObserver(self, selector: #selector(editorThemeChanged), name: DS.Appearance.didChangeNotification, object: nil)
     }
 
     /// The system's appearance: what picks the editor theme (Make's own view may take the
@@ -298,7 +301,7 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
             view.minimap.backgroundColor = theme.background.nsColor
         } else {
             view.theme = RenderTheme(background: components(appearance.background), text: components(appearance.textColor),
-                                     selection: components(.selectedTextBackgroundColor), caret: components(.controlAccentColor),
+                                     selection: components(.selectedTextBackgroundColor), caret: components(DS.Color.accent),
                                      currentLine: components(DS.Color.scrimFaint))
             view.gutter.backgroundColor = DS.Color.canvas
             view.gutter.numberColor = .tertiaryLabelColor
