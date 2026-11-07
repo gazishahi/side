@@ -671,6 +671,8 @@ final class ShellViewController: NSViewController {
         }
 
         chrome.install(in: view, content: container)
+        // Made by the install: activity in this window's own project needs no mark.
+        chrome.activityPill?.currentProject = { [weak self] in self?.isLooseFileWindow == true ? nil : self?.projectURL }
         // Above the project chip: where you landed after a project switch.
         view.addSubview(projectIndicator)
         NSLayoutConstraint.activate([
@@ -2289,6 +2291,8 @@ final class ShellViewController: NSViewController {
     private func projectOpened(_ url: URL) {
         // The companion's terminal is the project this window is leaving: it goes back to its tabs.
         closeCompanion()
+        // The activity pill leaves out this window's project: which one that is just changed.
+        defer { chrome.activityPill?.refresh(animated: false) }
         if !isLooseFileWindow { ProjectSpaces.shared.space(for: url) }
         // Opening a different project (or reopening after this window already had one) drops
         // this window's claim on whatever it held before — without this, the old project's

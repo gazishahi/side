@@ -115,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             + ActivityCenter.shared.items.map { "item \($0.title) \($0.state) \($0.place)" }
                             + ["stage \(shell.currentStageForTesting ?? "-")", "pill \(shell.activityPillForTesting?.view.isShown == true ? (shell.activityPillForTesting?.view.title ?? "") + " " + (shell.activityPillForTesting?.view.countForTesting ?? "") : "-")",
                                "popover \(shell.activityPillForTesting?.popoverForTesting?.isShown == true)",
+                               "marks \(shell.activityPillForTesting?.projectsForTesting.joined(separator: ",") ?? "-")",
                                "project \(shell.projectRootURL?.lastPathComponent ?? "-")",
                                "windows \(self.shellViewControllers.count)"]
                         FileHandle.standardError.write(Data(("[activity]\n" + lines.joined(separator: "\n") + "\n").utf8))

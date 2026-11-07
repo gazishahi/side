@@ -194,6 +194,28 @@ final class ActivityCenter {
         refresh()
     }
 
+    /// The project an item happens in; nil for one that's Side's own (an update).
+    static func project(of item: Item) -> URL? {
+        switch item.target {
+        case .terminal(let project, _), .agent(let project, _): return project.standardizedFileURL
+        case .update: return nil
+        }
+    }
+
+    /// The projects the pill shows marks for: each once, most pressing first, at most `limit`,
+    /// leaving out the window's own (you know where you are).
+    static func projects(of items: [Item], except current: URL?, limit: Int = 3) -> [URL] {
+        let here = current?.standardizedFileURL.path
+        var seen: Set<String> = []
+        var projects: [URL] = []
+        for item in items {
+            guard let project = project(of: item), project.path != here, seen.insert(project.path).inserted else { continue }
+            projects.append(project)
+            if projects.count == limit { break }
+        }
+        return projects
+    }
+
     static func icon(for item: Item) -> NSImage {
         switch item.target {
         case .terminal: return ProgramMarks.image(forProgram: item.program)
@@ -210,9 +232,18 @@ final class ActivityPill {
     let view: GlassPill
     private var popover: NSPopover?
     private var observer: NSObjectProtocol?
+    /// The window's project: activity there needs no mark (the owner, 2026-11-07).
+    var currentProject: (() -> URL?)?
+    /// Where the activity is: the projects' marks, overlapping, before the state's mark.
+    private let projectMarks = NSImageView()
+    private var shownProjects: [URL] = []
 
     init(glass: Bool, height: CGFloat) {
         view = GlassPill(height: height, glass: glass)
+        projectMarks.translatesAutoresizingMaskIntoConstraints = false
+        projectMarks.imageScaling = .scaleNone
+        projectMarks.isHidden = true
+        view.row.insertArrangedSubview(projectMarks, at: 0)
         view.setShown(false, animated: false)
         view.onClick = { [weak self] in self?.togglePopover() }
         observer = NotificationCenter.default.addObserver(forName: ActivityCenter.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -240,6 +271,7 @@ final class ActivityPill {
                 .max { GlassPill.measure($0) < GlassPill.measure($1) })
             view.toolTip = items.map { "\($0.title) \u{2014} \($0.state.word), \($0.place)" }.joined(separator: "\n")
         }
+        setProjects(ActivityCenter.projects(of: items, except: currentProject?()))
         view.setShown(!items.isEmpty, animated: animated)
         if items.isEmpty { popover?.close() }
         (popover?.contentViewController as? ActivityListViewController)?.reload()
@@ -264,6 +296,106 @@ final class ActivityPill {
         self.popover = popover
         popover.show(relativeTo: view.bounds, of: view, preferredEdge: .maxY)
     }
+
+    private func setProjects(_ projects: [URL]) {
+        guard projects != shownProjects else { return }
+        let wasShown = !shownProjects.isEmpty
+        shownProjects = projects
+        if wasShown, view.window != nil, !view.isHidden { DS.Motion.crossfade(view.row) }
+        let marks = projects.map { Self.projectMark($0) }
+        projectMarks.image = marks.isEmpty ? nil : Self.stacked(marks)
+        projectMarks.isHidden = marks.isEmpty
+        let names = projects.map(\.lastPathComponent)
+        projectMarks.setAccessibilityLabel(names.isEmpty ? nil : "In \(ListFormatter.localizedString(byJoining: names))")
+    }
+
+    static let markSize: CGFloat = 18
+
+    /// A project's mark: its logo, else its symbol on a tile. Looked up, never made: a project
+    /// shows in the activity only once it's open, so it has a space.
+    static func projectMark(_ project: URL, size: CGFloat = markSize) -> NSImage {
+        let space = ProjectSpaces.shared.spaces.first { $0.url.standardizedFileURL.path == project.standardizedFileURL.path }
+        let logo = space?.logoPath.flatMap { ProjectLogo.chosen(URL(fileURLWithPath: $0), size: size) } ?? ProjectLogo.image(for: project, size: size)
+        return logo ?? tile(symbol: space?.symbol ?? "folder.fill", color: space?.color ?? .systemGray, size: size)
+    }
+
+    /// The list's mark for an item: its project's, with what's running there (Claude Code's
+    /// mark, the Agent's) on a small disc at the corner. Side's own items keep their icon.
+    static func listMark(for item: ActivityCenter.Item, size: CGFloat = 22) -> NSImage {
+        let program = ActivityCenter.icon(for: item)
+        guard let project = ActivityCenter.project(of: item) else { return program }
+        let base = projectMark(project, size: size)
+        let badge = size * 0.55
+        return NSImage(size: NSSize(width: size + 3, height: size + 3), flipped: false) { _ in
+            base.draw(in: NSRect(x: 0, y: 3, width: size, height: size))
+            let disc = NSRect(x: size + 3 - badge, y: 0, width: badge, height: badge)
+            DS.Color.raised.setFill()
+            NSBezierPath(ovalIn: disc).fill()
+            let glyph = disc.insetBy(dx: badge * 0.17, dy: badge * 0.17)
+            if program.isTemplate {
+                // A symbol: drawn in the secondary color, as the row's icon was.
+                let tinted = NSImage(size: glyph.size, flipped: false) { rect in
+                    program.draw(in: rect)
+                    NSColor.secondaryLabelColor.set()
+                    rect.fill(using: .sourceAtop)
+                    return true
+                }
+                tinted.draw(in: glyph)
+            } else {
+                program.draw(in: glyph)
+            }
+            return true
+        }
+    }
+
+    /// A project with no logo: its symbol on a tile of its color, the shape a logo has, so marks
+    /// overlap the same way whatever they are. Bare, two symbols ran into each other.
+    static func tile(symbol: String, color: NSColor, size: CGFloat = markSize) -> NSImage {
+        let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size * 0.5, weight: .semibold).applying(.init(paletteColors: [color])))
+        return NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            // Opaque, so a card behind doesn't show through it: the surface, then the tint.
+            let tile = NSBezierPath(roundedRect: rect, xRadius: size * 0.225, yRadius: size * 0.225)
+            DS.Color.raised.setFill()
+            tile.fill()
+            color.withAlphaComponent(0.2).setFill()
+            tile.fill()
+            if let glyph {
+                let fit = glyph.size
+                glyph.draw(in: NSRect(x: (size - fit.width) / 2, y: (size - fit.height) / 2, width: fit.width, height: fit.height))
+            }
+            return true
+        }
+    }
+    /// How far each card behind shows past the one in front of it.
+    static let markPeek: CGFloat = 6
+
+    /// The marks as a deck (after Rex's, 2026-11-07): the most pressing in front at full size,
+    /// each one behind it smaller and peeking out on the trailing side, with a soft shadow
+    /// between them for depth.
+    static func stacked(_ marks: [NSImage]) -> NSImage {
+        let size = markSize, peek = markPeek, margin: CGFloat = 2
+        let count = marks.count
+        let canvas = NSSize(width: size + peek * CGFloat(max(count - 1, 0)) + 2 * margin, height: size + 2 * margin)
+        return NSImage(size: canvas, flipped: false) { _ in
+            for (index, mark) in marks.enumerated().reversed() {
+                let side = size * (1 - 0.12 * CGFloat(index))
+                let rect = NSRect(x: margin + size + peek * CGFloat(index) - side, y: margin + (size - side) / 2, width: side, height: side)
+                NSGraphicsContext.saveGraphicsState()
+                let shadow = NSShadow()
+                shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+                shadow.shadowBlurRadius = 2.5
+                shadow.shadowOffset = NSSize(width: 1, height: -0.5)
+                shadow.set()
+                // Further back, a little fainter: the eye reads it as behind.
+                mark.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1 - 0.12 * CGFloat(index))
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            return true
+        }
+    }
+
+    var projectsForTesting: [String] { shownProjects.map(\.lastPathComponent) }
 
     var popoverForTesting: NSPopover? { popover }
     func clickForTesting() { togglePopover() }
@@ -316,9 +448,8 @@ private final class ActivityRow: NSView {
         self.item = item
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        let icon = NSImageView(image: ActivityCenter.icon(for: item))
-        icon.symbolConfiguration = .init(pointSize: 13, weight: .medium)
-        icon.contentTintColor = .secondaryLabelColor
+        // Where it is, with what's running there on its corner (the owner, 2026-11-07).
+        let icon = NSImageView(image: ActivityPill.listMark(for: item))
         icon.imageScaling = .scaleProportionallyDown
         let title = NSTextField(labelWithString: item.title)
         title.font = DS.Text.body(.medium)
@@ -339,7 +470,7 @@ private final class ActivityRow: NSView {
         words.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(row)
         NSLayoutConstraint.activate([
-            icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
+            icon.widthAnchor.constraint(equalToConstant: 25), icon.heightAnchor.constraint(equalToConstant: 25),
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
             row.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.s),
