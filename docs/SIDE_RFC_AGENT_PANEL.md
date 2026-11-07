@@ -1,7 +1,24 @@
 # Agent's side panel: the branch beside the conversation
 
-Status: agreed (2026-11-04: the owner took all three recommendations: hidden below the docking
-width and shown floating on request; all four sections; the empty stage's offer). Nothing built yet.
+Status: built (2026-11-07). Agreed 2026-11-04: the owner took all three recommendations: hidden
+below the docking width and shown floating on request; all four sections; the empty stage's offer.
+Symbols: `AgentBranchPanel`, `AgentHeaderView`, `AgentPlanItem`.
+
+**As built (2026-11-07):**
+- Docked at 1,240 pt and wider (`ThinkWorkspaceViewController.dockingWidth`): the column centres
+  in the stage less the panel. Narrower, hidden; the toggle floats it over the conversation's
+  edge, and Escape or a click in the conversation closes it. Floating is a view in the stage with
+  a shadow, not the explorer's child window: it follows the window and leaves with the stage all
+  the same.
+- The toggle is at the top row's far end (`AgentHeaderView`); View › Show Agent Panel, ⌥⌘J, goes
+  to Agent from any stage. Hidden or shown is remembered (the last choice, for every window).
+- Plan: ACP `plan` updates (`ACPHarness.plan`), replayed ones included. Changed files: the
+  track's folder against where it left its base, committed, uncommitted and untracked; a click
+  opens the file in Editor, "Changes" on hover shows it in Changes. Terminals: the board's rows
+  for the track. Checkpoints: the latest four, Verified, Failed or Unverified.
+- Refreshed when the agent's phase changes, a checkpoint is written, a terminal changes, and
+  every ten seconds while shown (files edited by hand).
+- UI check: `scripts/uitest/check-agent-panel.sh`.
 
 ## Why
 

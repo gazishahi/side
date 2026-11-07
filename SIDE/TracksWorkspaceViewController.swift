@@ -156,7 +156,12 @@ final class TracksWorkspaceViewController: NSViewController {
     /// or just running. A shell at its prompt isn't news.
     func boardSessions(forTrackKey key: String) -> [BoardSession] {
         guard let terminals else { return [] }
-        return terminals.allSessions(forTrackKey: key).compactMap { session in
+        return Self.boardSessions(terminals, forTrackKey: key)
+    }
+
+    /// The same, for the Agent panel's Terminals.
+    static func boardSessions(_ terminals: TerminalSessionManager, forTrackKey key: String) -> [BoardSession] {
+        terminals.allSessions(forTrackKey: key).compactMap { session in
             let vc = session.viewController
             guard vc.isAliveOrUnstarted else { return nil }
             let program = vc.runningProgramName

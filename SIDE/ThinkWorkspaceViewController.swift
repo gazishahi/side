@@ -42,6 +42,37 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     private var bottomObstruction: CGFloat = 0
     /// The conversation's title, shown in the window's top row (Direction 02 §3.2).
     private let conversationTitle = NSTextField(labelWithString: "")
+    /// The top row: the title, and the panel's toggle at the row's far end.
+    private let header = AgentHeaderView()
+    /// The branch beside the conversation (SIDE_RFC_AGENT_PANEL.md).
+    private let branchPanel = AgentBranchPanel()
+    /// The stage's width less the docked panel: the column centres in what's left.
+    private let stageGuide = NSLayoutGuide()
+    private var stageTrailing: NSLayoutConstraint!
+    private var panelBottom: NSLayoutConstraint!
+    /// Shown when the stage is wide enough to dock it; the choice is the last one made.
+    private var panelWanted = HeronDefaults.store.object(forKey: ThinkWorkspaceViewController.panelKey) as? Bool ?? true
+    private static let panelKey = "agent.panel"
+    /// Narrower than that, it floats over the conversation's edge on request (decision 1).
+    private var panelFloatingShown = false
+    private var panelMonitors: [Any] = []
+    private var panelRefreshScheduled = false
+    private var panelGeneration = 0
+    private var panelTimer: Timer?
+    private var panelObservers: [NSObjectProtocol] = []
+    /// The column, the panel and margins: below this the panel doesn't dock.
+    static let dockingWidth: CGFloat = columnWidth + AgentBranchPanel.width + 100
+    /// What the panel shows that the shell knows: the track's folder and base, its terminals
+    /// and checkpoints.
+    struct BranchPanelInputs {
+        let cwd: String
+        let base: String
+        let terminals: [TracksWorkspaceViewController.BoardSession]
+        let checkpoints: [Checkpoint]
+    }
+    var branchPanelInputs: (() -> BranchPanelInputs?)?
+    var onOpenTerminalSession: ((UUID) -> Void)?
+    var onShowFileInChanges: ((String) -> Void)?
     /// The composer holds text while focused — the window's chrome recedes then.
     var onComposerEngagedChanged: ((Bool) -> Void)?
     /// One glass pill above the composer's trailing end — "Claude Sonnet 5 · Build · 1%" —
@@ -316,8 +347,15 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         NSLayoutConstraint.activate(undockedPillConstraints + [editingChipLeading])
         let column = NSLayoutGuide()
         view.addLayoutGuide(column)
+        view.addLayoutGuide(stageGuide)
+        installBranchPanel()
+        stageTrailing = stageGuide.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         NSLayoutConstraint.activate([
-            emptyState.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            stageGuide.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stageGuide.topAnchor.constraint(equalTo: view.topAnchor),
+            stageGuide.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            stageTrailing,
+            emptyState.centerXAnchor.constraint(equalTo: stageGuide.centerXAnchor),
             emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
             // Full bleed to the window's bottom: the composer *floats over* the transcript on
@@ -326,7 +364,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // viewDidLayout so the last message can still clear the composer.
             transcriptScroll.topAnchor.constraint(equalTo: view.topAnchor),
             transcriptScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            transcriptScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            transcriptScroll.trailingAnchor.constraint(equalTo: stageGuide.trailingAnchor),
             transcriptScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             // Width pinned to the clip view so wrapping labels lay out against a known width
             // instead of growing horizontally forever.
@@ -345,10 +383,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             }(),
             transcriptStack.bottomAnchor.constraint(equalTo: transcriptContainer.bottomAnchor),
             // The + sits beside the capsule, its glass circle bottom-aligned with it.
-            column.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            column.centerXAnchor.constraint(equalTo: stageGuide.centerXAnchor),
             column.widthAnchor.constraint(lessThanOrEqualToConstant: Self.columnWidth),
             {
-                let fill = column.widthAnchor.constraint(equalTo: view.widthAnchor, constant: -DS.Spacing.xxl * 2)
+                let fill = column.widthAnchor.constraint(equalTo: stageGuide.widthAnchor, constant: -DS.Spacing.xxl * 2)
                 // Under the window's stay-put priority (500): stronger, it sized the window itself
                 // down to the column.
                 fill.priority = NSLayoutConstraint.Priority(490)
@@ -447,6 +485,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// because the composer grows with wrapped text.
     override func viewDidLayout() {
         super.viewDidLayout()
+        layoutBranchPanel()
         transcriptScroll.automaticallyAdjustsContentInsets = false
         let overlap = composer.frame.height + (pillsDocked ? 0 : 26) /* pill row */ + composerGap + DS.Spacing.l
         // The subtracks strip, when there is one, sits under the top row: the transcript starts
@@ -550,6 +589,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         if isViewLoaded {
             renderFull()
             if view.window != nil { runner?.acknowledgeCompletion() }
+            layoutBranchPanel()
+            scheduleBranchPanelRefresh()
         }
     }
 
@@ -612,8 +653,10 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     // MARK: - Runner events
 
     private func handle(_ event: AgentRunEvent) {
+        if case .phaseChanged = event { scheduleBranchPanelRefresh() }
         switch event {
         case .reset:
+            scheduleBranchPanelRefresh()
             renderFull()
             refreshConversationTitle()
         case .appended(let index):
@@ -4272,6 +4315,223 @@ private final class ComposerView: NSView, NSTextViewDelegate {
     }
 }
 
+// MARK: - The branch panel (SIDE_RFC_AGENT_PANEL.md)
+
+extension ThinkWorkspaceViewController {
+    fileprivate func installBranchPanel() {
+        branchPanel.isHidden = true
+        view.addSubview(branchPanel)
+        panelBottom = branchPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -DS.Spacing.l)
+        NSLayoutConstraint.activate([
+            branchPanel.widthAnchor.constraint(equalToConstant: AgentBranchPanel.width),
+            branchPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.l),
+            branchPanel.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight + DS.Spacing.s),
+            panelBottom,
+        ])
+        branchPanel.onOpenFile = { [weak self] path in
+            guard let self, let cwd = self.branchPanelInputs?()?.cwd else { return }
+            self.onRevealFileRequested?(URL(fileURLWithPath: cwd).appendingPathComponent(path))
+        }
+        branchPanel.onShowFileInChanges = { [weak self] path in self?.onShowFileInChanges?(path) }
+        branchPanel.onOpenTerminal = { [weak self] id in self?.onOpenTerminalSession?(id) }
+        branchPanel.onOpenCheckpoint = { [weak self] id in self?.onOpenCheckpointRequested?(id) }
+        // What changes the panel's content besides the agent: checkpoints written, terminals
+        // starting, working, finishing.
+        panelObservers.append(NotificationCenter.default.addObserver(forName: AgentSessionStore.checkpointsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleBranchPanelRefresh() }
+        })
+        panelObservers.append(NotificationCenter.default.addObserver(forName: TerminalSessionManager.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshBranchPanelTerminals() }
+        })
+    }
+
+    private var panelDocks: Bool { view.bounds.width >= Self.dockingWidth }
+
+    /// Docked when the stage is wide enough and the panel is wanted; narrower, floating only
+    /// when asked for. The column centres in the stage less the docked panel.
+    func layoutBranchPanel() {
+        guard isViewLoaded, stageTrailing != nil else { return }
+        let available = runner != nil
+        if panelDocks, panelFloatingShown {
+            // The window grew wide enough to dock it: it docks.
+            panelFloatingShown = false
+            panelWanted = true
+        }
+        let docked = available && panelDocks && panelWanted
+        let floating = available && !panelDocks && panelFloatingShown
+        let inset = docked ? AgentBranchPanel.width + DS.Spacing.l : 0
+        if stageTrailing.constant != -inset { stageTrailing.constant = -inset }
+        let bottom = -(bottomObstruction + DS.Spacing.l)
+        if panelBottom.constant != bottom { panelBottom.constant = bottom }
+        let wasHidden = branchPanel.isHidden
+        branchPanel.isHidden = !(docked || floating)
+        branchPanel.setFloating(floating)
+        header.setPanelShown(docked || floating, available: available)
+        floating ? installPanelMonitors() : removePanelMonitors()
+        if branchPanel.isHidden {
+            panelTimer?.invalidate()
+            panelTimer = nil
+        } else {
+            if wasHidden { scheduleBranchPanelRefresh() }
+            // Files the person edits themselves change it too; a slow look keeps up with them.
+            if panelTimer == nil {
+                panelTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.scheduleBranchPanelRefresh() }
+                }
+            }
+        }
+    }
+
+    /// The top row's toggle and View › Show Agent Panel.
+    func toggleBranchPanel() {
+        if panelDocks {
+            panelWanted.toggle()
+            HeronDefaults.store.set(panelWanted, forKey: Self.panelKey)
+        } else {
+            panelFloatingShown.toggle()
+        }
+        layoutBranchPanel()
+    }
+
+    func showBranchPanel() {
+        loadViewIfNeeded()
+        view.layoutSubtreeIfNeeded()
+        if panelDocks { panelWanted = true; HeronDefaults.store.set(true, forKey: Self.panelKey) } else { panelFloatingShown = true }
+        layoutBranchPanel()
+    }
+
+    /// Floating, it closes on Escape or a click in the conversation.
+    private func installPanelMonitors() {
+        guard panelMonitors.isEmpty else { return }
+        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
+            guard let self, event.keyCode == 53, event.window === self.view.window, self.panelFloatingShown else { return event }
+            self.panelFloatingShown = false
+            self.layoutBranchPanel()
+            return nil
+        }) { panelMonitors.append(keys) }
+        if let clicks = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] event in
+            guard let self, event.window === self.view.window, self.panelFloatingShown else { return event }
+            let point = self.view.convert(event.locationInWindow, from: nil)
+            let inPanel = self.branchPanel.frame.contains(point)
+            let onToggle = self.header.toggleContains(event.locationInWindow)
+            if self.view.bounds.contains(point), !inPanel, !onToggle {
+                self.panelFloatingShown = false
+                self.layoutBranchPanel()
+            }
+            return event
+        }) { panelMonitors.append(clicks) }
+    }
+
+    private func removePanelMonitors() {
+        for monitor in panelMonitors { NSEvent.removeMonitor(monitor) }
+        panelMonitors.removeAll()
+    }
+
+    /// Once per burst of changes: the files take a git run.
+    func scheduleBranchPanelRefresh() {
+        guard isViewLoaded, !branchPanel.isHidden, !panelRefreshScheduled else { return }
+        panelRefreshScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.refreshBranchPanelNow() }
+    }
+
+    private func refreshBranchPanelNow() {
+        panelRefreshScheduled = false
+        guard !branchPanel.isHidden, let inputs = branchPanelInputs?() else { return }
+        let plan = (runner as? ACPHarness)?.plan ?? []
+        let checkpoints = inputs.checkpoints.sorted { $0.createdAt > $1.createdAt }.prefix(4).map(AgentBranchPanel.checkpointLine)
+        panelGeneration += 1
+        let generation = panelGeneration
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let files = AgentBranchPanel.changedFiles(cwd: inputs.cwd, base: inputs.base)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, generation == self.panelGeneration else { return }
+                    self.branchPanel.show(.init(plan: plan, files: files, terminals: inputs.terminals, checkpoints: Array(checkpoints)))
+                }
+            }
+        }
+    }
+
+    /// Terminals change often (output, a title): only their part, and only when it differs.
+    private func refreshBranchPanelTerminals() {
+        guard isViewLoaded, !branchPanel.isHidden, let inputs = branchPanelInputs?() else { return }
+        var content = branchPanel.content
+        content.terminals = inputs.terminals
+        branchPanel.show(content)
+    }
+
+    var branchPanelStateForTesting: String {
+        let content = branchPanel.content
+        var lines = ["shown \(!branchPanel.isHidden)", "docked \(!branchPanel.isHidden && panelDocks)", "column-trailing \(Int(-stageTrailing.constant))"]
+        lines += content.plan.map { "plan \($0.status.rawValue) \($0.content)" }
+        lines += content.files.map { "file \($0.path) +\($0.added) -\($0.removed)" }
+        lines += content.terminals.map { "terminal \($0.title) \($0.word)" }
+        lines += content.checkpoints.map { "checkpoint \($0.text) \($0.word)" }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// Agent's top row: the conversation's title, and the branch panel's toggle at the far end.
+final class AgentHeaderView: NSView, TopRowFilling {
+    var onTogglePanel: (() -> Void)?
+    private let toggle = NSButton()
+    private weak var title: NSView?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        toggle.image = NSImage(systemSymbolName: "sidebar.trailing", accessibilityDescription: "Branch panel")
+        toggle.symbolConfiguration = .init(pointSize: 13, weight: .regular)
+        toggle.isBordered = false
+        toggle.bezelStyle = .regularSquare
+        toggle.imagePosition = .imageOnly
+        toggle.target = self
+        toggle.action = #selector(toggled)
+        toggle.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(toggle)
+        NSLayoutConstraint.activate([
+            toggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.l),
+            toggle.centerYAnchor.constraint(equalTo: centerYAnchor),
+            toggle.widthAnchor.constraint(equalToConstant: 26),
+            toggle.heightAnchor.constraint(equalToConstant: 22),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 22),
+        ])
+        setPanelShown(false, available: false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func install(title: NSView) {
+        guard self.title !== title else { return }
+        title.removeFromSuperview()
+        title.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(title)
+        self.title = title
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: leadingAnchor),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: toggle.leadingAnchor, constant: -DS.Spacing.l),
+            title.topAnchor.constraint(greaterThanOrEqualTo: topAnchor),
+            title.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+        ])
+    }
+
+    func setPanelShown(_ shown: Bool, available: Bool) {
+        toggle.isHidden = !available
+        toggle.contentTintColor = shown ? .labelColor : .secondaryLabelColor
+        let display = Shortcuts.display("view.agentPanel")
+        let shortcut = display.isEmpty ? "" : " (\(display))"
+        toggle.toolTip = (shown ? "Hide the Branch Panel" : "Show the Branch Panel") + shortcut
+        toggle.setAccessibilityLabel(shown ? "Hide the branch panel" : "Show the branch panel")
+    }
+
+    func toggleContains(_ windowPoint: NSPoint) -> Bool {
+        !toggle.isHidden && toggle.bounds.contains(toggle.convert(windowPoint, from: nil))
+    }
+
+    @objc private func toggled() { onTogglePanel?() }
+}
+
 extension ThinkWorkspaceViewController: StageChromeProviding {
     var scrollViewUnderTopRow: NSScrollView? { loadViewIfNeeded(); return transcriptScroll }
     var topRowContent: NSView? {
@@ -4281,7 +4541,9 @@ extension ThinkWorkspaceViewController: StageChromeProviding {
         conversationTitle.lineBreakMode = .byTruncatingTail
         conversationTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refreshConversationTitle()
-        return conversationTitle
+        header.install(title: conversationTitle)
+        header.onTogglePanel = { [weak self] in self?.toggleBranchPanel() }
+        return header
     }
 
     var barAccessories: (leading: NSView?, trailing: NSView?) {

@@ -202,6 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "board-dump" { FileHandle.standardError.write(Data("[board] \(shell.boardForTesting)\n".utf8)) }
                     if command.hasPrefix("board-beside ") { shell.boardShowBesideForTesting(String(command.dropFirst(13))) }
                     if command == "agent-chats" { shell.agentChatsForTesting() }
+                    if command == "agent-panel-toggle" { shell.toggleAgentPanel() }
+                    if command == "agent-panel-dump" { FileHandle.standardError.write(Data("[agent-panel]\n\(shell.agentPanelForTesting)\n[agent-panel-end]\n".utf8)) }
                     if command == "agent-chats-show" { shell.agentChatsShowForTesting() }
                     if command.hasPrefix("agent-open-chat ") { shell.agentOpenChatForTesting(String(command.dropFirst(16))) }
                     if command == "agent-continue-terminal" { shell.agentContinueInTerminalForTesting() }
@@ -837,6 +839,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// View › Show Terminal Beside, for the window in front.
     @objc func toggleTerminalBeside(_ sender: Any?) {
         (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleCompanion()
+    }
+
+    /// View › Show Agent Panel, for the window in front.
+    @objc func toggleAgentPanel(_ sender: Any?) {
+        (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleAgentPanel()
     }
 
     @objc func toggleFileExplorer(_ sender: Any?) {

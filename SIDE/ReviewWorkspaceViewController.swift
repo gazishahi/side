@@ -755,6 +755,18 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
     }
 
+    /// A file to show once the diff lists it: the Agent panel's "Changes" on a file.
+    private var pendingRevealPath: String?
+
+    func revealFile(path: String) {
+        if let file = diffViewer.diff.files.firstIndex(where: { $0.path == path }) {
+            diffViewer.scrollToFile(file)
+            rail.follow(file)
+        } else {
+            pendingRevealPath = path
+        }
+    }
+
     private func showDiff(_ text: String, everything: Bool) {
         guard let trackKey = viewedKey else { return }
         let store = viewedStore
@@ -774,6 +786,13 @@ final class ReviewWorkspaceViewController: NSViewController {
         diffTotals.setAccessibilityLabel("\(files.count) files, \(added) lines added, \(removed) removed")
         refreshFoldAllButton()
         view.needsLayout = true
+        if let path = pendingRevealPath, let file = files.firstIndex(where: { $0.path == path }) {
+            pendingRevealPath = nil
+            releasedAtFile = nil
+            diffViewer.scrollToFile(file)
+            rail.follow(file)
+            return
+        }
         if let file = releasedAtFile, files.indices.contains(file) {
             diffViewer.scrollToFile(file)
             rail.follow(file)

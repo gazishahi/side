@@ -471,6 +471,22 @@ final class ShellViewController: NSViewController {
             guard let self, let terminals = self.projectContext?.terminals else { return nil }
             return terminals.sessionRunningClaude(id, trackKey: self.currentTrackKey ?? "")?.title
         }
+        // Agent's branch panel (SIDE_RFC_AGENT_PANEL.md): the track's folder and base, its
+        // terminals and checkpoints.
+        thinkVC.branchPanelInputs = { [weak self] in
+            guard let self, let context = self.projectContext, let store = self.trackStore else { return nil }
+            let key = self.currentTrackKey ?? ""
+            let base = store.tracks.first { $0.branchName == key }.map { store.gitSummaryInputs(for: $0).baseBranch } ?? store.defaultBranchName()
+            return .init(cwd: context.workingDirectory(forTrackKey: key).path, base: base,
+                         terminals: TracksWorkspaceViewController.boardSessions(context.terminals, forTrackKey: key),
+                         checkpoints: context.sessionStore.checkpoints(forTrackKey: key))
+        }
+        thinkVC.onOpenTerminalSession = { [weak self] id in self?.revealTerminalSession(id) }
+        thinkVC.onShowFileInChanges = { [weak self] path in
+            guard let self else { return }
+            self.show(.review)
+            self.reviewVC.revealFile(path: path)
+        }
         thinkVC.onContinueInTerminal = { [weak self] command in
             guard let self else { return }
             self.show(.run)
@@ -1113,6 +1129,18 @@ final class ShellViewController: NSViewController {
         thinkVC.openAgentChat(id)
     }
     func agentContinueInTerminalForTesting() { thinkVC.continueInTerminalForTesting() }
+
+    /// View › Show Agent Panel: on Agent, its panel shows or hides; elsewhere it goes to Agent
+    /// with the panel shown.
+    func toggleAgentPanel() {
+        guard current == .think else {
+            show(.think)
+            thinkVC.showBranchPanel()
+            return
+        }
+        thinkVC.toggleBranchPanel()
+    }
+    var agentPanelForTesting: String { thinkVC.branchPanelStateForTesting }
     func agentChatsShowForTesting() { thinkVC.showAgentChatsForTesting() }
     func terminalOpenInAgentForTesting() {
         ThinkWorkspaceViewController.bothLiveAnswerForTesting = true

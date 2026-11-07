@@ -17,6 +17,7 @@ def plan(sid, done):
 options = [{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "standin",
             "options": [{"value": "standin", "name": "Stand-in"}]}]
 count = [0]
+folders = {}
 for line in sys.stdin:
     m = json.loads(line); meth = m.get("method"); p = m.get("params", {})
     if "id" not in m or meth is None: continue
@@ -24,7 +25,9 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"list": {}, "close": {}}}}})
     elif meth == "session/new":
         count[0] += 1
-        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": "agent-%d-%d" % (os.getpid(), count[0]), "configOptions": options}})
+        sid = "agent-%d-%d" % (os.getpid(), count[0])
+        folders[sid] = p.get("cwd")
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessionId": sid, "configOptions": options}})
     elif meth == "session/list":
         sessions = [{"sessionId": "earlier-chat", "cwd": p.get("cwd"), "title": "Earlier chat about the docs", "updatedAt": "2026-11-01T09:00:00.000Z"}]
         for path in glob.glob(os.path.join(config, "sessions", "*.json")):
@@ -36,6 +39,7 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"sessions": sessions}})
     elif meth == "session/load":
         sid = p["sessionId"]
+        folders[sid] = p.get("cwd")
         text(sid, "user_message_chunk", "The track pill is too wide. Fix its width.")
         text(sid, "agent_thought_chunk", "Looking at TrackPill.swift")
         up(sid, {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read TrackPill.swift", "kind": "read", "status": "completed"})
@@ -46,6 +50,9 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
     elif meth == "session/prompt":
         sid = p["sessionId"]
+        # Changes a file in the session's folder, as an agent's turn does: a checkpoint follows.
+        if folders.get(sid):
+            with open(os.path.join(folders[sid], "NOTES.md"), "a") as f: f.write("# Notes\n\nThe pill measures once.\n")
         plan(sid, True)
         text(sid, "agent_message_chunk", "Stand-in reply.")
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"stopReason": "end_turn"}})

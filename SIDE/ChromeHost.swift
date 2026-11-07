@@ -13,6 +13,9 @@ enum ChromePlacement: String {
     }
 }
 
+/// A stage header that spans the whole top row, so controls can sit at its trailing end.
+protocol TopRowFilling: NSView {}
+
 /// What a stage contributes to the window's chrome. Nothing here knows where the chrome is.
 @MainActor
 protocol StageChromeProviding: AnyObject {
@@ -413,11 +416,13 @@ final class ChromeHost {
         // `≤` it collapsed to zero the second time it was placed here — the tabs that vanished
         // after a trip to another stage and came back on resize. A header hugs its text.
         let isStrip = view is TabStripView
+        // A header with controls at the row's far end (Agent's panel toggle) fills it too.
+        let fills = isStrip || view is TopRowFilling
         NSLayoutConstraint.activate([
             isStrip ? view.topAnchor.constraint(equalTo: stageSlot.topAnchor) : view.centerYAnchor.constraint(equalTo: stageSlot.centerYAnchor),
             isStrip ? view.bottomAnchor.constraint(equalTo: stageSlot.bottomAnchor) : view.heightAnchor.constraint(lessThanOrEqualTo: stageSlot.heightAnchor),
             view.leadingAnchor.constraint(equalTo: stageSlot.leadingAnchor),
-            isStrip ? view.trailingAnchor.constraint(equalTo: stageSlot.trailingAnchor) : view.trailingAnchor.constraint(lessThanOrEqualTo: stageSlot.trailingAnchor),
+            fills ? view.trailingAnchor.constraint(equalTo: stageSlot.trailingAnchor) : view.trailingAnchor.constraint(lessThanOrEqualTo: stageSlot.trailingAnchor),
         ])
     }
 

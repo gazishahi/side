@@ -4998,6 +4998,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let beside = viewMenu.addItem(withTitle: "Show Terminal Beside", action: #selector(AppDelegate.toggleTerminalBeside(_:)), keyEquivalent: "")
         beside.target = AppDelegate.shared
         Shortcuts.bind(beside, "view.terminalBeside")
+        // Agent's branch panel (SIDE_RFC_AGENT_PANEL.md): from anywhere, it goes to Agent.
+        let agentPanel = viewMenu.addItem(withTitle: "Show Agent Panel", action: #selector(AppDelegate.toggleAgentPanel(_:)), keyEquivalent: "")
+        agentPanel.target = AppDelegate.shared
+        Shortcuts.bind(agentPanel, "view.agentPanel")
         // Folding lives in the editor (Alloy), which is in the responder chain while it has focus.
         let foldingItem = NSMenuItem(title: "Code Folding", action: nil, keyEquivalent: "")
         let foldingMenu = NSMenu(title: "Code Folding")
