@@ -155,6 +155,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var chromeFill: NSView?
     /// Shown when a project is open but nothing is — the charter's empty-state rule: one quiet
     /// sentence plus the action that fixes it.
+    /// A PDF's text for Find, kept for the document it was read from.
+    private var pdfFindText: (document: PDFDocument, text: NSString, starts: [Int])?
     private let noFileLabel = NSTextField(labelWithString: "No file open. Press ⌘P to find one.")
     private let tabBarStack = NSStackView()
     private let emptyState = NSStackView()
@@ -538,6 +540,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         tabBar.addSubview(problemsButton)
         noFileLabel.font = DS.Text.body()
         noFileLabel.textColor = .tertiaryLabelColor
+        // Hidden until a project is open with no file in it: shown from the start, it sat under
+        // the no-project state's buttons (the owner, 2026-11-07).
+        noFileLabel.isHidden = true
         noFileLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(noFileLabel)
         NSLayoutConstraint.activate([
@@ -1056,15 +1061,22 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             }
             findText = text
         } else if findingInPDF, let document = openTabs[index].cachedPDF {
-            // Each page's text, a line break between them.
-            findPDFPageStarts = []
-            let text = NSMutableString()
-            for number in 0..<document.pageCount {
-                if number > 0 { text.append("\n") }
-                findPDFPageStarts.append(text.length)
-                text.append(document.page(at: number)?.string ?? "")
+            // Each page's text, a line break between them: read once per document, not on every
+            // keystroke in Find (a long PDF stuttered as you typed).
+            if let cached = pdfFindText, cached.document === document {
+                findPDFPageStarts = cached.starts
+                findText = cached.text
+            } else {
+                findPDFPageStarts = []
+                let text = NSMutableString()
+                for number in 0..<document.pageCount {
+                    if number > 0 { text.append("\n") }
+                    findPDFPageStarts.append(text.length)
+                    text.append(document.page(at: number)?.string ?? "")
+                }
+                pdfFindText = (document, text, findPDFPageStarts)
+                findText = text
             }
-            findText = text
         } else {
             findText = findingInPreview ? (markdownPreviewView.string as NSString) : (openTabs[index].document.string as NSString)
         }

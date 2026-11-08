@@ -98,6 +98,12 @@ main  · 1 uncommitted
 
 ---
 
+**Split view, made visible (2026-11-07):** a terminal button at the top row's trailing end in
+Editor and Changes opens and closes the companion (⌥⌘T; View's item reads Show or Hide). The
+companion slides in and out, the stage giving way on the same spring; floating, a click outside
+puts it away. A click on a board session shows it beside, as decided above. The welcome's
+Terminal line names the shortcut.
+
 ## Session 2: the Agent stage beyond chat
 
 ### Where we are

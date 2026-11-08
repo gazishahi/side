@@ -70,6 +70,7 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// and checkpoints.
     struct BranchPanelInputs {
         let cwd: String
+        let branch: String
         let base: String
         let terminals: [TracksWorkspaceViewController.BoardSession]
         let checkpoints: [Checkpoint]
@@ -77,6 +78,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     var branchPanelInputs: (() -> BranchPanelInputs?)?
     var onOpenTerminalSession: ((UUID) -> Void)?
     var onShowFileInChanges: ((String) -> Void)?
+    /// The panel's Review Changes and Terminal: the branch in Changes, and its terminal.
+    var onReviewBranchChanges: (() -> Void)?
+    var onShowBranchTerminal: (() -> Void)?
     /// The composer holds text while focused — the window's chrome recedes then.
     var onComposerEngagedChanged: ((Bool) -> Void)?
     /// One glass pill above the composer's trailing end — "Claude Sonnet 5 · Build · 1%" —
@@ -622,6 +626,9 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             emptyState.configure("Agent works on a track.", action: hasTracks ? "Choose a Track…" : "New Track", handler: act(hasTracks ? .chooseTrack : .newTrack))
         } else if isRetiredHeron {
             emptyState.configure("Heron is retired. Set up an agent to start a conversation on this track.", action: nil, handler: nil)
+        } else if let acp = sharedChatHarness, acp.isOpeningChat {
+            // A chat just picked is on its way in: not the offer to pick one, as if it hadn't.
+            emptyState.configure("Opening the chat\u{2026}", action: nil, handler: nil)
         } else if let acp = sharedChatHarness {
             // The first offer on an empty stage: the chats the owner already has in Terminal.
             emptyState.configure("Ask anything about this track, or pick up where you left off in Terminal.",
@@ -772,14 +779,18 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         guard !isRetiredHeron else { return }
         // Continued in Terminal and still running there: two processes on one chat each miss
         // what the other says.
-        if let tab = liveTerminalTab(), !confirmBothLive(tab: tab, sending: true) { return }
-        composer.clear()
-        if let turnId = editingTurnId {
-            endEditingMessage()
-            runner.editAndResend(turnId: turnId, text: text, attachments: attachments)
-            return
+        let proceed = { [weak self, runner] in
+            guard let self else { return }
+            self.composer.clear()
+            if let turnId = self.editingTurnId {
+                self.endEditingMessage()
+                runner.editAndResend(turnId: turnId, text: text, attachments: attachments)
+                return
+            }
+            runner.send(text, attachments: attachments)
         }
-        runner.send(text, attachments: attachments)
+        if let tab = liveTerminalTab() { return confirmBothLive(tab: tab, sending: true, then: proceed) }
+        proceed()
     }
 
     // MARK: - Claude Code chats from Terminal (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md)
@@ -799,15 +810,26 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
     /// Answers for the "both live" question under UI testing, where a modal alert would block.
     static var bothLiveAnswerForTesting: Bool?
 
-    private func confirmBothLive(tab: String, sending: Bool) -> Bool {
-        if let answer = Self.bothLiveAnswerForTesting { lastBothLiveWarningForTesting = tab; return answer }
+    /// A sheet on the window, as Terminal's own questions are; `then` runs on yes.
+    private func confirmBothLive(tab: String, sending: Bool, then proceed: @escaping () -> Void) {
+        if let answer = Self.bothLiveAnswerForTesting {
+            lastBothLiveWarningForTesting = tab
+            if answer { proceed() }
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "This chat is running in Terminal"
         alert.informativeText = "It\u{2019}s open in the Terminal tab \u{201C}\(tab)\u{201D}. If both go on, each misses what the other says. "
             + (sending ? "Send here as well?" : "Open it here as well?")
         alert.addButton(withTitle: sending ? "Send Here Too" : "Open Here Too")
         alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+        guard let window = view.window else {
+            if alert.runModal() == .alertFirstButtonReturn { proceed() }
+            return
+        }
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { proceed() }
+        }
     }
     private(set) var lastBothLiveWarningForTesting: String?
 
@@ -825,7 +847,11 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         popover.behavior = .transient
         popover.contentViewController = picker
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: edge)
-        loadAgentChats { [weak picker] items in picker?.items = items ?? [] }
+        loadAgentChats { [weak picker] items in
+            // Nil is a failed ask, not an empty folder: say so.
+            if items == nil { picker?.emptyText = "\(acp.agent.displayName) couldn\u{2019}t list its chats. Try again in a moment." }
+            picker?.items = items ?? []
+        }
     }
 
     /// This folder's chats as the picker lists them; nil when the agent couldn't be asked.
@@ -851,7 +877,13 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             return
         }
         guard id != acp.agentSessionId else { return }
-        if let tab = liveTerminalTab(for: id), !confirmBothLive(tab: tab, sending: false) { return }
+        if let tab = liveTerminalTab(for: id) {
+            return confirmBothLive(tab: tab, sending: false) { [weak self] in self?.openConfirmedChat(id, acp: acp) }
+        }
+        openConfirmedChat(id, acp: acp)
+    }
+
+    private func openConfirmedChat(_ id: String, acp: ACPHarness) {
         guard acp.openListedSession(id: id) else {
             appendLocalNotice("Finish or stop the current turn first, then open the chat.")
             return
@@ -1165,7 +1197,22 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
         guard let trackKey = attachedTrackKey, !trackKey.isEmpty, runner != nil else {
             // Before there's a track, picking an agent was silently dropped (the owner,
             // 2026-11-06): it's the default agent, the one a new track starts on.
-            guard let agent = ACPAgent.agent(id: id), AgentAvailability.isInstalled(agent) != false else { return }
+            guard let agent = ACPAgent.agent(id: id) else { return }
+            guard AgentAvailability.isInstalled(agent) != false else {
+                // Not installed: say how, rather than closing the popover on nothing (the review).
+                let alert = NSAlert()
+                alert.messageText = "\(agent.displayName) isn\u{2019}t installed"
+                alert.informativeText = "Install it in a terminal, then pick it again:\n\n\(agent.installHint)"
+                alert.addButton(withTitle: "Copy Command")
+                alert.addButton(withTitle: "OK")
+                let copy = { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(agent.installHint, forType: .string) }
+                if let window = view.window {
+                    alert.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { copy() } }
+                } else if alert.runModal() == .alertFirstButtonReturn {
+                    copy()
+                }
+                return
+            }
             DefaultAgent.chosenId = agent.id
             return
         }
@@ -2113,6 +2160,8 @@ final class ThinkWorkspaceViewController: NSViewController, NSPopoverDelegate {
             // Rich blocks: the message is built again, its blocks drawn.
             if RichBlocks.mayContainBlocks(text), RichBlocks.segments(text, image: { [weak self] in self?.projectImage($0) }).contains(where: { if case .block = $0 { return true } else { return false } }),
                let block = blocks.first(where: { $0.entries.contains(index) }), !block.isGroup, block.slot.isRealized {
+                // The streamed text becomes its drawn blocks: one crossfade, not a cut.
+                DS.Motion.crossfade(block.slot, duration: DS.Motion.presentDuration)
                 block.slot.fill(buildBlock(block))
                 continue
             }
@@ -4423,7 +4472,15 @@ extension ThinkWorkspaceViewController {
         }
         // One message has nowhere else to go.
         jumpRail.marks = marks.count >= 2 ? marks : []
-        jumpRail.isHidden = marks.count < 2
+        let railShows = marks.count >= 2
+        if jumpRail.isHidden, railShows, view.window != nil {
+            // Its first appearance, at the second message: a fade, not a pop.
+            jumpRail.alphaValue = 0
+            jumpRail.isHidden = false
+            DS.Motion.fade(duration: DS.Motion.presentDuration) { jumpRail.animator().alphaValue = 1 }
+        } else {
+            jumpRail.isHidden = !railShows
+        }
         updateJumpRailCurrent()
     }
 
@@ -4447,8 +4504,14 @@ extension ThinkWorkspaceViewController {
         let insets = transcriptScroll.contentInsets
         let maxY = max(-insets.top, transcriptContainer.bounds.height - transcriptScroll.contentView.bounds.height + insets.bottom)
         let y = min(max(top - insets.top - DS.Spacing.m, -insets.top), maxY)
-        transcriptScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
-        transcriptScroll.reflectScrolledClipView(transcriptScroll.contentView)
+        // A glide to the message, so you see which way you went; at once under Reduce Motion.
+        let clip = transcriptScroll.contentView
+        DS.Motion.animate(DS.Motion.smooth, {
+            clip.animator().setBoundsOrigin(NSPoint(x: 0, y: y))
+        }, completion: { [weak self] in
+            guard let self else { return }
+            self.transcriptScroll.reflectScrolledClipView(clip)
+        })
         jumpRail.current = index
     }
 
@@ -4514,6 +4577,9 @@ extension ThinkWorkspaceViewController {
         branchPanel.onShowFileInChanges = { [weak self] path in self?.onShowFileInChanges?(path) }
         branchPanel.onOpenTerminal = { [weak self] id in self?.onOpenTerminalSession?(id) }
         branchPanel.onOpenCheckpoint = { [weak self] id in self?.onOpenCheckpointRequested?(id) }
+        branchPanel.onReviewChanges = { [weak self] in self?.onReviewBranchChanges?() }
+        branchPanel.onShowTerminal = { [weak self] in self?.onShowBranchTerminal?() }
+        branchPanel.onClose = { [weak self] in self?.toggleBranchPanel() }
         // What changes the panel's content besides the agent: checkpoints written, terminals
         // starting, working, finishing.
         panelObservers.append(NotificationCenter.default.addObserver(forName: AgentSessionStore.checkpointsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -4525,10 +4591,11 @@ extension ThinkWorkspaceViewController {
     }
 
     private var panelDocks: Bool { view.bounds.width >= Self.dockingWidth }
+    var branchPanelShown: Bool { isViewLoaded && !branchPanel.isHidden }
 
     /// Docked when the stage is wide enough and the panel is wanted; narrower, floating only
     /// when asked for. The column centres in the stage less the docked panel.
-    func layoutBranchPanel() {
+    func layoutBranchPanel(animated: Bool = false) {
         guard isViewLoaded, stageTrailing != nil else { return }
         let available = runner != nil
         if panelDocks, panelFloatingShown {
@@ -4539,15 +4606,35 @@ extension ThinkWorkspaceViewController {
         let docked = available && panelDocks && panelWanted
         let floating = available && !panelDocks && panelFloatingShown
         let inset = docked ? AgentBranchPanel.width + DS.Spacing.l : 0
-        if stageTrailing.constant != -inset { stageTrailing.constant = -inset }
-        let bottom = -(bottomObstruction + DS.Spacing.l)
+        // Floating, it stops above the composer: over it, it covered Send.
+        let bottom = floating ? -(composer.frame.maxY + DS.Spacing.l) : -(bottomObstruction + DS.Spacing.l)
         if panelBottom.constant != bottom { panelBottom.constant = bottom }
+        if stageTrailing.constant != -inset {
+            // The column re-centres on the same spring the panel comes in on.
+            if animated, view.window != nil {
+                DS.Motion.animate(DS.Motion.smooth, crossfading: view) {
+                    stageTrailing.animator().constant = -inset
+                    view.layoutSubtreeIfNeeded()
+                }
+            } else {
+                stageTrailing.constant = -inset
+            }
+        }
         let wasHidden = branchPanel.isHidden
-        branchPanel.isHidden = !(docked || floating)
+        let shows = docked || floating
         branchPanel.setFloating(floating)
+        if shows {
+            branchPanel.cancelDismiss()
+            if wasHidden {
+                if animated { branchPanel.reveal(floating: floating) } else { branchPanel.isHidden = false }
+            }
+        } else if !wasHidden {
+            if animated { branchPanel.dismiss(floating: !panelDocks) {} } else { branchPanel.isHidden = true }
+        }
+        let shownNow = shows
         header.setPanelShown(docked || floating, available: available)
         floating ? installPanelMonitors() : removePanelMonitors()
-        if branchPanel.isHidden {
+        if !shownNow {
             panelTimer?.invalidate()
             panelTimer = nil
         } else {
@@ -4569,14 +4656,14 @@ extension ThinkWorkspaceViewController {
         } else {
             panelFloatingShown.toggle()
         }
-        layoutBranchPanel()
+        layoutBranchPanel(animated: true)
     }
 
     func showBranchPanel() {
         loadViewIfNeeded()
         view.layoutSubtreeIfNeeded()
         if panelDocks { panelWanted = true; HeronDefaults.store.set(true, forKey: Self.panelKey) } else { panelFloatingShown = true }
-        layoutBranchPanel()
+        layoutBranchPanel(animated: true)
     }
 
     /// Floating, it closes on Escape or a click in the conversation.
@@ -4585,7 +4672,7 @@ extension ThinkWorkspaceViewController {
         if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard let self, event.keyCode == 53, event.window === self.view.window, self.panelFloatingShown else { return event }
             self.panelFloatingShown = false
-            self.layoutBranchPanel()
+            self.layoutBranchPanel(animated: true)
             return nil
         }) { panelMonitors.append(keys) }
         if let clicks = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] event in
@@ -4595,7 +4682,7 @@ extension ThinkWorkspaceViewController {
             let onToggle = self.header.toggleContains(event.locationInWindow)
             if self.view.bounds.contains(point), !inPanel, !onToggle {
                 self.panelFloatingShown = false
-                self.layoutBranchPanel()
+                self.layoutBranchPanel(animated: true)
             }
             return event
         }) { panelMonitors.append(clicks) }
@@ -4625,7 +4712,7 @@ extension ThinkWorkspaceViewController {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, generation == self.panelGeneration else { return }
-                    self.branchPanel.show(.init(plan: plan, files: files, terminals: inputs.terminals, checkpoints: Array(checkpoints)))
+                    self.branchPanel.show(.init(branch: inputs.branch, base: inputs.base, plan: plan, files: files, terminals: inputs.terminals, checkpoints: Array(checkpoints)))
                 }
             }
         }

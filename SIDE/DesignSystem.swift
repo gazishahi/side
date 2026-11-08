@@ -532,7 +532,8 @@ enum DS {
             case .blue: return (0x3D8BF5, 0x1A6BE0)
             case .purple: return (0xA77BEA, 0x7E46CF)
             case .pink: return (0xE064B6, 0xC0388F)
-            case .teal: return (0x34B3BD, 0x0F7F88)
+            // Deep enough in dark for white text on it (sent messages, Send): 0x34B3BD was 2.5:1.
+            case .teal: return (0x1F8F99, 0x0F7F88)
             case .graphite: return (0x8D9198, 0x676B72)
             }
         }
@@ -879,6 +880,78 @@ enum DS {
             fade.duration = duration
             fade.timingFunction = fadeCurve
             view.layer?.add(fade, forKey: "dsCrossfade")
+        }
+
+        /// A panel at the window's trailing edge comes in: a short slide from the edge on the
+        /// smooth spring and a fade. Floating over the stage, it also grows from a touch smaller,
+        /// as a popover does. The Agent panel and the companion both (2026-11-07).
+        @MainActor
+        static func revealEdgePanel(_ view: NSView, floating: Bool) {
+            view.isHidden = false
+            guard !reduceMotion else { return }
+            view.wantsLayer = true
+            guard let layer = view.layer else { return }
+            layer.removeAnimation(forKey: "edgeOut")
+            layer.removeAnimation(forKey: "edgeOutFade")
+            let move = spring(smooth, keyPath: "transform")
+            move.fromValue = edgeTransform(floating: floating, bounds: view.bounds)
+            move.toValue = CATransform3DIdentity
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            fade.duration = presentDuration
+            fade.timingFunction = fadeCurve
+            layer.add(move, forKey: "edgeIn")
+            layer.add(fade, forKey: "edgeInFade")
+        }
+
+        /// It leaves the way it came, quicker, then hides and runs `completion`. A reveal before
+        /// it's gone takes over, and `completion` doesn't run.
+        @MainActor
+        static func dismissEdgePanel(_ view: NSView, floating: Bool, completion: @escaping @MainActor () -> Void = {}) {
+            guard !view.isHidden else { return completion() }
+            view.wantsLayer = true
+            guard !reduceMotion, let layer = view.layer else { view.isHidden = true; return completion() }
+            CATransaction.begin()
+            CATransaction.setCompletionBlock { [weak view] in
+                MainActor.assumeIsolated {
+                    guard let view, let layer = view.layer, layer.animation(forKey: "edgeOut") != nil else { return }
+                    view.isHidden = true
+                    layer.removeAnimation(forKey: "edgeOut")
+                    layer.removeAnimation(forKey: "edgeOutFade")
+                    completion()
+                }
+            }
+            let move = CABasicAnimation(keyPath: "transform")
+            move.fromValue = layer.presentation()?.transform ?? CATransform3DIdentity
+            move.toValue = edgeTransform(floating: floating, bounds: view.bounds)
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = layer.presentation()?.opacity ?? 1
+            fade.toValue = 0
+            for animation in [move, fade] {
+                animation.duration = dismissDuration
+                animation.timingFunction = fadeCurve
+                animation.fillMode = .forwards
+                animation.isRemovedOnCompletion = false
+            }
+            layer.add(move, forKey: "edgeOut")
+            layer.add(fade, forKey: "edgeOutFade")
+            CATransaction.commit()
+        }
+
+        /// A dismissal under way stops: the panel is shown again at once.
+        @MainActor
+        static func cancelEdgeDismiss(_ view: NSView) {
+            view.layer?.removeAnimation(forKey: "edgeOut")
+            view.layer?.removeAnimation(forKey: "edgeOutFade")
+        }
+
+        private static func edgeTransform(floating: Bool, bounds: CGRect) -> CATransform3D {
+            let slide = CATransform3DMakeTranslation(floating ? 12 : 28, 0, 0)
+            guard floating else { return slide }
+            let cx = bounds.midX, cy = bounds.midY
+            let scale = CATransform3DConcat(CATransform3DConcat(CATransform3DMakeTranslation(-cx, -cy, 0), CATransform3DMakeScale(0.97, 0.97, 1)), CATransform3DMakeTranslation(cx, cy, 0))
+            return CATransform3DConcat(slide, scale)
         }
 
         /// The standard arrival: rise and a slight scale on the smooth spring, and a fade, which
@@ -1351,6 +1424,11 @@ extension DS {
             InterfaceTheme.refresh()
             NotificationCenter.default.addObserver(forName: EditorThemes.didChangeNotification, object: nil, queue: .main) { _ in
                 MainActor.assumeIsolated { InterfaceTheme.refresh() }
+            }
+            // Match System follows a change of the Mac's accent: what holds a resolved colour
+            // (layers, the editor's caret) is told, as for a change of appearance.
+            NotificationCenter.default.addObserver(forName: NSColor.systemColorsDidChangeNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { if Accent.chosen == .system { refreshAll() } }
             }
             lastKnownIsDark = isDark
             observation = NSApp.observe(\.effectiveAppearance, options: [.new]) { _, _ in

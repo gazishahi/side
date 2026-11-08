@@ -20,6 +20,8 @@ final class JumpRail: NSView {
         didSet {
             guard marks != oldValue else { return }
             if let hovered, !marks.contains(where: { $0.id == hovered }) { self.hovered = nil }
+            // The pointer is still over a tick that moved or changed: the tip follows it.
+            else if hovered != nil { showTip() }
             needsDisplay = true
             updateAccessibility()
         }
@@ -104,11 +106,21 @@ final class JumpRail: NSView {
     /// clipped to the rail.
     private func showTip() {
         guard let hovered, let mark = marks.first(where: { $0.id == hovered }), let host = superview else {
-            tip.removeFromSuperview()
+            // Fades out, then goes.
+            if tip.superview != nil {
+                DS.Motion.fade(duration: DS.Motion.glanceDuration, { tip.animator().alphaValue = 0 }, completion: { [weak self] in
+                    guard let self, self.hovered == nil else { return }
+                    self.tip.removeFromSuperview()
+                })
+            }
             return
         }
         tip.text = mark.text
-        if tip.superview !== host { host.addSubview(tip, positioned: .above, relativeTo: self) }
+        if tip.superview !== host {
+            host.addSubview(tip, positioned: .above, relativeTo: self)
+            tip.alphaValue = 0
+        }
+        DS.Motion.fade(duration: DS.Motion.glanceDuration) { tip.animator().alphaValue = 1 }
         let size = tip.fittingSize
         let anchor = convert(NSPoint(x: bounds.minX, y: y(of: mark)), to: host)
         let originY = host.isFlipped ? anchor.y - size.height / 2 : anchor.y - size.height / 2

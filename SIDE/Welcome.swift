@@ -135,7 +135,9 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         shown = controller
         controller.content.go(to: page, animated: false)
         controller.window?.center()
+        controller.window?.initialFirstResponder = controller.content.view
         controller.showWindow(nil)
+        controller.window?.makeFirstResponder(controller.content.view)
         controller.content.didAppear()
     }
 
@@ -201,7 +203,8 @@ final class WelcomeViewController: NSViewController {
     private let dots = WelcomeDots(count: WelcomeViewController.pageCount)
 
     override func loadView() {
-        let root = NSView()
+        let root = WelcomeRoot()
+        root.onKey = { [weak self] code in self?.handleKey(code) ?? false }
         root.bindLayerBackground(DS.Color.canvas)
         view = root
 
@@ -255,15 +258,17 @@ final class WelcomeViewController: NSViewController {
 
     @objc private func back() { go(to: page - 1) }
 
-    override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
+    /// ← and → page, Escape closes. From the root view, which is first responder: nothing else
+    /// in the welcome takes key focus without Full Keyboard Access.
+    private func handleKey(_ code: UInt16) -> Bool {
+        switch code {
         case 123 where page > 0: go(to: page - 1)
         case 124 where page < Self.pageCount - 1: go(to: page + 1)
-        default: super.keyDown(with: event)
+        case 53: view.window?.performClose(nil)
+        default: return false
         }
+        return true
     }
-
-    override func cancelOperation(_ sender: Any?) { view.window?.performClose(sender) }
 
     func stopDemos() { current?.willDisappear() }
 
@@ -338,6 +343,15 @@ final class WelcomeViewController: NSViewController {
             open.onOpened = { [weak self] in self?.onFinish?() }
             return open
         }
+    }
+}
+
+/// The welcome's root: it takes key focus so the arrows and Escape reach the pages.
+private final class WelcomeRoot: NSView {
+    var onKey: ((UInt16) -> Bool)?
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        if onKey?(event.keyCode) != true { super.keyDown(with: event) }
     }
 }
 
@@ -552,7 +566,7 @@ final class WelcomeStagesPage: WelcomePage {
             (.editor, "Editor", "Your code, with language servers and your keymap.", "stage.make"),
             (.agent, "Agent", "Answers with plans, diagrams and tables.", "stage.think"),
             (.changes, "Changes", "The branch's changes, ready to commit.", "stage.review"),
-            (.terminal, "Terminal", "Tabs that keep running when Side quits.", "stage.run"),
+            (.terminal, "Terminal", "Keeps running when Side quits. \(Shortcuts.display("view.terminalBeside")) puts it beside your code.", "stage.run"),
             (.branches, "Branches", "Every branch, with its agents and pull request.", "stage.tracks"),
         ]
         rows = items.map { item in
@@ -591,6 +605,8 @@ final class WelcomeStagesPage: WelcomePage {
         for row in rows { row.isCurrent = row.stage == stage }
         rows[stage.rawValue].startProgress(Self.dwell)
         timer?.invalidate()
+        // Under VoiceOver the list stays where it's put: moving on by itself is hard to follow.
+        guard !Spoken.isEnabled() else { return }
         timer = Timer.scheduledTimer(withTimeInterval: Self.dwell, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -703,6 +719,7 @@ final class WelcomeStageRow: NSView {
         }
         progress.isHidden = !isCurrent
         track.isHidden = !isCurrent
+        setAccessibilitySelected(isCurrent)
         glyph.contentTintColor = isCurrent ? .labelColor : .secondaryLabelColor
         titleLabel.textColor = isCurrent ? .labelColor : .secondaryLabelColor
         detailLabel.isHidden = false
@@ -737,16 +754,23 @@ final class WelcomeIdeasPage: WelcomePage {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private var active = false
+
     override func didAppear() {
+        active = true
         for (index, demo) in demos.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25 + Double(index) * 0.35) { [weak demo] in
-                guard let demo, demo.window != nil else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25 + Double(index) * 0.35) { [weak self, weak demo] in
+                // Not once the page has gone: it's still in the window while it slides out.
+                guard let self, self.active, let demo, demo.window != nil else { return }
                 demo.play()
             }
         }
     }
 
-    override func willDisappear() { demos.forEach { $0.stop() } }
+    override func willDisappear() {
+        active = false
+        demos.forEach { $0.stop() }
+    }
 }
 
 /// A raised card: an illustration, a heading, a line or two.
@@ -1070,7 +1094,8 @@ final class WelcomeAgentsPage: WelcomePage {
         footnote.preferredMaxLayoutWidth = 560
         stack.setCustomSpacing(16, after: card)
         addContent(footnote)
-        fill(detecting: true)
+        // What's known shows at once; a fresh look follows.
+        fill(detecting: ACPAgent.builtIn.contains { AgentAvailability.isInstalled($0) == nil })
         AgentAvailability.refresh { [weak self] in self?.fill(detecting: false) }
     }
 
@@ -1270,10 +1295,12 @@ final class WelcomeTile: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel(title)
-        NotificationCenter.default.addObserver(forName: DS.Appearance.didChangeNotification, object: nil, queue: .main) { [weak icon] _ in
-            MainActor.assumeIsolated { icon?.contentTintColor = DS.Color.accent }
-        }
+        self.icon = icon
+        NotificationCenter.default.addObserver(self, selector: #selector(accentChanged), name: DS.Appearance.didChangeNotification, object: nil)
     }
+
+    private weak var icon: NSImageView?
+    @objc private func accentChanged() { icon?.contentTintColor = DS.Color.accent }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 

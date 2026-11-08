@@ -299,12 +299,19 @@ final class ActivityPill {
 
     private func setProjects(_ projects: [URL]) {
         guard projects != shownProjects else { return }
-        let wasShown = !shownProjects.isEmpty
         shownProjects = projects
-        if wasShown, view.window != nil, !view.isHidden { DS.Motion.crossfade(view.row) }
+        // Marks coming, going or changing: the pill crossfades and springs to its new width.
+        if view.window != nil, !view.isHidden { DS.Motion.crossfade(view.row) }
         let marks = projects.map { Self.projectMark($0) }
         projectMarks.image = marks.isEmpty ? nil : Self.stacked(marks)
-        projectMarks.isHidden = marks.isEmpty
+        if view.window != nil, !view.isHidden, projectMarks.isHidden != marks.isEmpty {
+            DS.Motion.animate(DS.Motion.snappy) {
+                projectMarks.isHidden = marks.isEmpty
+                view.superview?.layoutSubtreeIfNeeded()
+            }
+        } else {
+            projectMarks.isHidden = marks.isEmpty
+        }
         let names = projects.map(\.lastPathComponent)
         projectMarks.setAccessibilityLabel(names.isEmpty ? nil : "In \(ListFormatter.localizedString(byJoining: names))")
     }

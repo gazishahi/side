@@ -796,6 +796,9 @@ final class TrackStore {
         let ids = Set(moving.map(\.id))
         for index in tracks.indices where ids.contains(tracks[index].id) {
             tracks[index].parentTrackId = parentId
+            // Chosen now: what a pull request later restores to.
+            tracks[index].baseFromPullRequest = false
+            tracks[index].baseBeforePullRequest = nil
         }
         save()
         notifyChange()
@@ -1661,9 +1664,10 @@ final class TrackStore {
     /// What answered last: "gh", "glab", "GitHub" or "GitLab" (their public APIs).
     private(set) var pullRequestSource: String?
     private var fetchingPullRequests = false
+    private var pullRequestFailures = 0
 
     /// Asked for when Branches is on screen, and every five minutes while it is: never at launch,
-    /// never waited on. A failed answer (no `gh`, not signed in) keeps what was known.
+    /// never waited on. A failed answer keeps what was known, once.
     func refreshPullRequests() {
         guard repoState == .ready, !fetchingPullRequests else { return }
         fetchingPullRequests = true
@@ -1674,8 +1678,20 @@ final class TrackStore {
                 guard let self else { return }
                 self.fetchingPullRequests = false
                 if let fetched {
+                    self.pullRequestFailures = 0
                     self.pullRequestSource = fetched.source
                     self.applyPullRequests(fetched.found)
+                } else {
+                    // One failed look keeps what was known (a blip); two in a row (ten minutes:
+                    // a remote removed, signed out, rate-limited) and the labels go, rather than
+                    // a stale "PR #7" staying for good. Bases aren't touched: that's for an
+                    // answer that says the pull request closed.
+                    self.pullRequestFailures += 1
+                    if self.pullRequestFailures >= 2, !self.pullRequests.isEmpty {
+                        self.pullRequests = [:]
+                        self.pullRequestSource = nil
+                        self.notifyChange()
+                    }
                 }
             }
         }
@@ -1691,7 +1707,16 @@ final class TrackStore {
         let defaultBranch = defaultBranchName()
         var moved = false
         for index in tracks.indices {
-            guard let pr = found[tracks[index].branchName], pr.isOpen else { continue }
+            guard let pr = found[tracks[index].branchName], pr.isOpen else {
+                // Its pull request closed or merged: the base it had before comes back.
+                if tracks[index].baseFromPullRequest {
+                    tracks[index].parentTrackId = tracks[index].baseBeforePullRequest
+                    tracks[index].baseFromPullRequest = false
+                    tracks[index].baseBeforePullRequest = nil
+                    moved = true
+                }
+                continue
+            }
             let parent: UUID?
             if pr.base == defaultBranch {
                 parent = nil
@@ -1702,6 +1727,10 @@ final class TrackStore {
                 continue
             }
             guard tracks[index].parentTrackId != parent else { continue }
+            if !tracks[index].baseFromPullRequest {
+                tracks[index].baseBeforePullRequest = tracks[index].parentTrackId
+                tracks[index].baseFromPullRequest = true
+            }
             tracks[index].parentTrackId = parent
             moved = true
         }

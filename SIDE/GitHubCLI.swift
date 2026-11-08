@@ -49,7 +49,7 @@ enum GitHubCLI {
     /// Nil when `gh` isn't there or can't answer (not signed in, no GitHub remote). Off the main
     /// thread.
     static func pullRequestsByBranch(cwd: String) -> [String: BranchPullRequest]? {
-        guard let result = run(["pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,state,isDraft,headRefName,baseRefName"], cwd: cwd),
+        guard let result = run(["pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,state,isDraft,headRefName,baseRefName,isCrossRepository"], cwd: cwd),
               result.status == 0 else { return nil }
         return parsePullRequests(result.output)
     }
@@ -62,6 +62,8 @@ enum GitHubCLI {
         for entry in list {
             guard let number = entry["number"] as? Int, let url = (entry["url"] as? String).flatMap(URL.init(string:)),
                   let head = entry["headRefName"] as? String, let base = entry["baseRefName"] as? String, byBranch[head] == nil else { continue }
+            // A fork's pull request from a branch of the same name isn't this branch's.
+            if entry["isCrossRepository"] as? Bool == true { continue }
             byBranch[head] = BranchPullRequest(number: number, url: url, state: (entry["state"] as? String ?? "").lowercased(),
                                                isDraft: entry["isDraft"] as? Bool ?? false, head: head, base: base)
         }
@@ -180,6 +182,8 @@ enum PullRequestSources {
         for entry in list {
             guard let number = entry["iid"] as? Int, let url = (entry["web_url"] as? String).flatMap(URL.init(string:)),
                   let head = entry["source_branch"] as? String, let base = entry["target_branch"] as? String, byBranch[head] == nil else { continue }
+            // A fork's merge request from a branch of the same name isn't this branch's.
+            if let source = entry["source_project_id"] as? Int, let target = entry["target_project_id"] as? Int, source != target { continue }
             let raw = entry["state"] as? String ?? ""
             let draft = entry["draft"] as? Bool ?? entry["work_in_progress"] as? Bool ?? false
             byBranch[head] = GitHubCLI.BranchPullRequest(number: number, url: url, state: raw == "opened" ? "open" : raw, isDraft: draft,

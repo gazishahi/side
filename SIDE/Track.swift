@@ -70,6 +70,11 @@ struct Track: Codable, Identifiable {
     /// When its branch was deleted in git: the track is gone from every list, its record kept
     /// (`TrackStore.goneRetentionDays`) in case the branch comes back.
     var goneAt: Date?
+    /// The base an open pull request set (SIDE_RFC_GIT_TRACKS.md: its base comes first), and the
+    /// one the track had before, which comes back when the pull request closes or merges. A
+    /// pull request never takes a chosen base for good.
+    var baseFromPullRequest = false
+    var baseBeforePullRequest: UUID?
 
     /// The status rows and dots show. A subtrack is stored as Waiting (it must never become the
     /// active track, which is "the one you're switched to") but reads as Active: an idle
@@ -107,7 +112,7 @@ struct Track: Codable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, intent, branchName, status, createdAt, lastActiveAt, workingDirectoryPath, autoRunCommands, parentTrackId
         case providerId, modelId, effort, toolScope, autonomy, harnessId, harnessOptions, spawnedByCoordinator, portBase
-        case fromGit, goneAt
+        case fromGit, goneAt, baseFromPullRequest, baseBeforePullRequest
     }
 
     init(from decoder: Decoder) throws {
@@ -132,5 +137,7 @@ struct Track: Codable, Identifiable {
         portBase = try container.decodeIfPresent(Int.self, forKey: .portBase)
         fromGit = try container.decodeIfPresent(Bool.self, forKey: .fromGit) ?? false
         goneAt = try container.decodeIfPresent(Date.self, forKey: .goneAt)
+        baseFromPullRequest = try container.decodeIfPresent(Bool.self, forKey: .baseFromPullRequest) ?? false
+        baseBeforePullRequest = try container.decodeIfPresent(UUID.self, forKey: .baseBeforePullRequest)
     }
 }

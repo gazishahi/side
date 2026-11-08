@@ -181,7 +181,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         let inProjects = ProjectSpaces.shared.spaces.contains { $0.url.lastPathComponent == "loose" }
                         FileHandle.standardError.write(Data("[loose] \(loose.looseChromeForTesting) preview=\(loose.markdownPreviewShownForTesting)\(inProjects ? " loose-in-projects" : "")\n".utf8))
                     }
-                    if command == "loose-open-folder" { self.shellViewControllers.first { $0.isLooseFileWindow }?.openLooseFolderAsProject() }
+                    // The loose window in front (the one the check last opened), not whichever is first.
+                    if command == "loose-open-folder" {
+                        let front = NSApp.orderedWindows.first { ($0.contentViewController as? ShellViewController)?.isLooseFileWindow == true }
+                        ((front?.contentViewController as? ShellViewController) ?? self.shellViewControllers.first { $0.isLooseFileWindow })?.openLooseFolderAsProject()
+                    }
                     if command == "dock-dump", let menu = self.applicationDockMenu(NSApp) {
                         func titles(_ menu: NSMenu) -> [String] { menu.items.map { $0.isSeparatorItem ? "—" : ($0.attributedTitle?.string ?? $0.title) + ($0.submenu.map { "[" + titles($0).joined(separator: ", ") + "]" } ?? "") } }
                         FileHandle.standardError.write(Data("[dock] \(titles(menu).joined(separator: " | "))\n".utf8))
@@ -309,6 +313,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             return [resolved.redComponent, resolved.greenComponent, resolved.blueComponent].map { String(Int(($0 * 255).rounded())) }.joined(separator: " ")
                         }
                         FileHandle.standardError.write(Data("[tokens] canvas \(rgb(DS.Color.canvas)) | raised \(rgb(DS.Color.raised)) | accent \(rgb(DS.Color.accent))\n".utf8))
+                    }
+                    // A window with no project (File › New Window), and the front window captured.
+                    if command == "new-window" { self.newWindow() }
+                    if command.hasPrefix("snapshot-front "), let front = NSApp.orderedWindows.first(where: { $0.contentViewController is ShellViewController }) { Self.snapshot(front, to: String(command.dropFirst(15))) }
+                    if command.hasPrefix("front-stage "), let front = NSApp.orderedWindows.first(where: { $0.contentViewController is ShellViewController })?.contentViewController as? ShellViewController {
+                        front.showStageForTesting(String(command.dropFirst(12)))
                     }
                     // The welcome: shown at a page, its state, closed.
                     if command.hasPrefix("welcome-show") { WelcomeWindowController.present(from: Int(command.split(separator: " ").last ?? "") ?? 0) }
@@ -483,8 +493,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Help › Reset and Show Welcome (debug builds): as on a new install, from the first page.
     @objc func resetAndShowWelcome() {
-        FirstRun.seen = false
+        // Closed first: closing marks it seen.
         WelcomeWindowController.closeForTesting()
+        FirstRun.seen = false
         WelcomeWindowController.present()
     }
 
@@ -559,11 +570,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// process to end, up to a minute, then opens the app. Quitting asks about unsaved work as
     /// it always does; terminals carry on in their keepers and come back.
     func relaunch() {
+        // The waiter starts only once quitting is certain (applicationWillTerminate): started
+        // here, a quit cancelled at the unsaved-work prompt left it waiting, and the next quit
+        // within a minute reopened Side.
+        relaunchWhenQuit = true
+        NSApp.terminate(nil)
+    }
+    private var relaunchWhenQuit = false
+
+    private func startRelaunchWaiter() {
         let waiter = Process()
         waiter.executableURL = URL(fileURLWithPath: "/bin/sh")
         waiter.arguments = ["-c", "for _ in $(seq 1 300); do kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null || exec open \"$0\"; sleep 0.2; done", Bundle.main.bundlePath]
         try? waiter.run()
-        NSApp.terminate(nil)
     }
 
     // MARK: - The Dock icon's menu (2026-11-06)
@@ -842,6 +861,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// before decided" tool results — leaving `think.json` with an orphaned `tool_use` the
     /// Messages API rejects outright on the next launch.
     func applicationWillTerminate(_ notification: Notification) {
+        if relaunchWhenQuit { startRelaunchWaiter() }
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil, !Self.isUITesting { CrashReports.runEnded() }
         // Debugger servers (js-debug's node, Delve) don't end with their client.
         DAPSocketTransport.terminateAllServers()
@@ -858,6 +878,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         confirmAll(dirtyShells) { proceed in
             if proceed { shells.forEach { $0.prepareForClose() } }
+            // Cancelled at the prompt: no relaunch waits for a later quit.
+            if !proceed { self.relaunchWhenQuit = false }
             NSApp.reply(toApplicationShouldTerminate: proceed)
         }
         return .terminateLater
@@ -877,6 +899,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// View › Show Agent Panel, for the window in front.
     @objc func toggleAgentPanel(_ sender: Any?) {
         (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleAgentPanel()
+    }
+
+    /// The toggles say which way they go: Show while hidden, Hide while shown.
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let shell = NSApp.mainWindow?.contentViewController as? ShellViewController
+        switch item.action {
+        case #selector(toggleTerminalBeside(_:)):
+            item.title = shell?.companionShowsForMenu == true ? "Hide Terminal Beside" : "Show Terminal Beside"
+        case #selector(toggleAgentPanel(_:)):
+            item.title = shell?.agentPanelShowsForMenu == true ? "Hide Agent Panel" : "Show Agent Panel"
+        default: break
+        }
+        return true
     }
 
     @objc func toggleFileExplorer(_ sender: Any?) {

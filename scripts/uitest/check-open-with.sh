@@ -53,7 +53,8 @@ $U post "open-url file://$L/notes.md"; sleep 1; $U post "snapshot-last $OUT/loos
 check "the Editor alone, Markdown on its preview, and no project made of its folder" '[[ $loose == *"stages=hidden chip=hidden preview=true"* && $loose != *"loose-in-projects"* ]]' "$loose"
 $U post "loose-open-folder"; sleep 2.5
 line=$(state); echo "     $line"
-check "Open Folder as Project makes the window a project window, the file still open" '[[ $(echo $line | grep -o "(loose)" | wc -l) -eq 1 && $line == *"|| loose strip= model=notes.md"* ]]' "$line"
+# (The key-window mark, "*", says nothing here: which window is key depends on timing.)
+check "Open Folder as Project makes the window a project window, the file still open" '[[ $(echo $line | grep -o "(loose)" | wc -l) -eq 1 && ${line//\*/} == *"|| loose strip= model=notes.md"* ]]' "$line"
 $U post "snapshot-last $OUT/folder-project.png"; sleep 1
 $U quit
 echo "$failures failed; captures in $OUT"

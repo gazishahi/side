@@ -114,6 +114,8 @@ public final class ACPHarness: Harness {
     /// The replay is drawn after all: a session Side has no record of, opened from the agent's
     /// list (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md).
     private var drawingReplay = false
+    /// A chat picked from the list is being read back in: the stage says so meanwhile.
+    public var isOpeningChat: Bool { drawingReplay }
     /// The replayed user message still arriving, in chunks.
     private var replayUserIndex: Int?
     /// The agent can list its sessions for a folder (`sessionCapabilities.list`).

@@ -657,6 +657,25 @@ final class DataIntegrityAuditTests: XCTestCase {
         XCTAssertEqual(store.baseSource(for: feature), "from PR #9")
         XCTAssertNil(store.tracks.first { $0.branchName == "done" }?.parentTrackId, "a merged PR moves no base")
         XCTAssertEqual(found["done"]?.label, "PR #5 merged")
+
+        // The pull request merges: the base the branch had before comes back (the polish review,
+        // 2026-11-07: a PR's base overwrote a chosen one for good).
+        let merged = """
+        [{"number":9,"url":"https://github.com/o/r/pull/9","state":"MERGED","isDraft":false,"headRefName":"feature","baseRefName":"staging"}]
+        """
+        store.applyPullRequests(try XCTUnwrap(GitHubCLI.parsePullRequests(merged)))
+        XCTAssertNil(store.tracks.first { $0.branchName == "feature" }?.parentTrackId, "back to the base it had: the default branch")
+        XCTAssertEqual(store.tracks.first { $0.branchName == "feature" }?.baseFromPullRequest, false)
+
+        // A fork's open pull request from a branch of the same name isn't this branch's.
+        let fork = """
+        [{"number":12,"url":"https://github.com/o/r/pull/12","state":"OPEN","isDraft":false,"headRefName":"feature","baseRefName":"staging","isCrossRepository":true}]
+        """
+        XCTAssertNil(GitHubCLI.parsePullRequests(fork)?["feature"])
+        let gitlabFork = """
+        [{"iid":4,"web_url":"https://gitlab.com/o/r/-/merge_requests/4","state":"opened","source_branch":"feature","target_branch":"staging","source_project_id":2,"target_project_id":1}]
+        """
+        XCTAssertNil(PullRequestSources.parseGitLab(gitlabFork)?["feature"])
     }
 
     @MainActor

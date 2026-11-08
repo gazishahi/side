@@ -271,7 +271,12 @@ final class RichBlockView: NSView {
     @objc func toggleSource() {
         showingSource.toggle()
         setSourceTitle()
-        show(showingSource ? makeSource() : (rendered ?? makeRendered()))
+        // One look becoming the other: a crossfade, and the card's height springs between them.
+        DS.Motion.crossfade(body)
+        DS.Motion.animate(DS.Motion.snappy) {
+            show(showingSource ? makeSource() : (rendered ?? makeRendered()))
+            window?.contentView?.layoutSubtreeIfNeeded()
+        }
     }
 
     private func setSourceTitle() {
@@ -317,10 +322,14 @@ final class RichBlockView: NSView {
         guard let image, image.size.width > 0, image.size.height > 0 else { return nil }
         let view = NSImageView(image: image)
         view.imageScaling = .scaleProportionallyDown
-        view.imageAlignment = .alignLeft
-        let height = min(image.size.height, 420)
-        view.heightAnchor.constraint(equalToConstant: height).isActive = true
+        view.imageAlignment = .alignTopLeft
+        // As tall as the picture is at the card's width, never taller than itself or 420: a
+        // wide picture shrunk to fit left an empty band under it at its own height.
+        let proportional = view.heightAnchor.constraint(equalTo: view.widthAnchor, multiplier: image.size.height / image.size.width)
+        proportional.priority = .defaultHigh
+        NSLayoutConstraint.activate([proportional, view.heightAnchor.constraint(lessThanOrEqualToConstant: min(image.size.height, 420))])
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         return view
     }
 
@@ -436,8 +445,13 @@ final class MermaidView: NSView, WKNavigationDelegate {
     private var webView: WKWebView?
     private let source: String
     private let width: CGFloat
-    private lazy var height = heightAnchor.constraint(equalToConstant: 60)
+    private lazy var height = heightAnchor.constraint(equalToConstant: Self.drawnHeights[cacheKey] ?? 60)
     private(set) var drawnSize: CGSize?
+    private var loadedDark: Bool?
+    /// Heights diagrams were drawn at, by source and width: a block rebuilt as it scrolls back
+    /// into view starts at its height, not 60 pt, so the text around it doesn't move.
+    private static var drawnHeights: [String: CGFloat] = [:]
+    private var cacheKey: String { "\(Int(width))|\(source)" }
 
     init(source: String, width: CGFloat) {
         self.source = source
@@ -446,9 +460,20 @@ final class MermaidView: NSView, WKNavigationDelegate {
         translatesAutoresizingMaskIntoConstraints = false
         height.isActive = true
         MermaidRuntime.shared.configuration { [weak self] configuration in
-            guard let self, let configuration else { self?.onProblem?("Diagrams can\u{2019}t be drawn: Side\u{2019}s copy of Mermaid is missing."); return }
+            guard let self, let configuration else { self?.onProblem?("This diagram couldn\u{2019}t be drawn here."); return }
             self.start(configuration)
         }
+    }
+
+    /// Mermaid's theme is chosen when the page loads: light and dark change, the page loads
+    /// again in the other.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        guard let webView, let loadedDark, loadedDark != dark else { return }
+        self.loadedDark = dark
+        DS.Motion.crossfade(self)
+        webView.loadHTMLString(MermaidRuntime.page(source: source, dark: dark), baseURL: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -469,6 +494,7 @@ final class MermaidView: NSView, WKNavigationDelegate {
         ])
         self.webView = webView
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        loadedDark = dark
         webView.loadHTMLString(MermaidRuntime.page(source: source, dark: dark), baseURL: nil)
     }
 
@@ -483,6 +509,7 @@ final class MermaidView: NSView, WKNavigationDelegate {
         guard let w = (message["w"] as? NSNumber)?.doubleValue, let h = (message["h"] as? NSNumber)?.doubleValue, h > 0 else { return }
         drawnSize = CGSize(width: w, height: h)
         height.constant = ceil(h)
+        Self.drawnHeights[cacheKey] = ceil(h)
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel("Diagram")

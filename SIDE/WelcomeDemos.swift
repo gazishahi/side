@@ -282,8 +282,9 @@ class WelcomeDemo: NSView {
 // MARK: - The five stages, in a miniature Side
 
 /// A miniature Side window: traffic lights, a content area that each stage's sketch fills, and
-/// the stage bar along the bottom with the selected stage's capsule springing between them, as
-/// the real bar's does. `show(_:)` moves to a stage.
+/// along the bottom the track pill and the stage bar, the selected stage's capsule springing
+/// between them as the real bar's does. Branches isn't in the bar, as it isn't in Side's: it's
+/// the track pill's, which lights up for it. `show(_:)` moves to a stage.
 @MainActor
 final class WelcomeStageShowcase: WelcomeDemo {
     enum Stage: Int, CaseIterable {
@@ -296,6 +297,7 @@ final class WelcomeStageShowcase: WelcomeDemo {
     private let content = CALayer()
     private var capsule: CALayer?
     private var icons: [CALayer] = []
+    private var pill: CALayer?
     private var stageGeneration = 0
     private static let contentFrame = CGRect(x: 14, y: 34, width: 432, height: 232)
 
@@ -304,8 +306,18 @@ final class WelcomeStageShowcase: WelcomeDemo {
         self.stage = stage
         guard isPlaying else { return }
         guard previous != stage else { return }
-        if let capsule {
+        if let capsule, stage != .branches {
+            if previous == .branches { reveal(capsule, rise: 0, scale: 0.8) }
             move(capsule, to: capsuleCenter(stage))
+        } else if let capsule {
+            dismiss(capsule)
+        }
+        if let pill {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            pill.backgroundColor = cg(stage == .branches ? DS.Color.selectedCapsule : DS.Color.overlay)
+            CATransaction.commit()
+            DS.Motion.crossfade(self, duration: DS.Motion.presentDuration)
         }
         for (index, icon) in icons.enumerated() {
             CATransaction.begin()
@@ -317,10 +329,19 @@ final class WelcomeStageShowcase: WelcomeDemo {
     }
 
     private func capsuleCenter(_ stage: Stage) -> CGPoint {
-        CGPoint(x: barFrame.minX + 6 + 20 + CGFloat(stage.rawValue) * 44, y: barFrame.midY)
+        CGPoint(x: barFrame.minX + 6 + 20 + CGFloat(min(stage.rawValue, 3)) * 44, y: barFrame.midY)
     }
 
-    private var barFrame: CGRect { CGRect(x: designSize.width / 2 - 116, y: designSize.height - 46, width: 232, height: 34) }
+    /// The stages in the bar: all but Branches.
+    private static let barStages: [Stage] = [.editor, .agent, .changes, .terminal]
+    private static let pillWidth: CGFloat = 104
+    /// The pill and the bar, centred together.
+    private var barFrame: CGRect {
+        let width: CGFloat = 188
+        let left = (designSize.width - Self.pillWidth - 8 - width) / 2 + Self.pillWidth + 8
+        return CGRect(x: left, y: designSize.height - 46, width: width, height: 34)
+    }
+    private var pillFrame: CGRect { CGRect(x: barFrame.minX - 8 - Self.pillWidth, y: barFrame.minY, width: Self.pillWidth, height: 34) }
 
     private static func glyphImage(_ stage: Stage, selected: Bool, view: WelcomeDemo) -> NSImage {
         let glyph = DS.Glyph.image(named: DS.Glyph.name(stage.glyph), selected: selected, pointSize: 15) ?? NSImage()
@@ -347,11 +368,15 @@ final class WelcomeStageShowcase: WelcomeDemo {
         content.masksToBounds = true
         canvas.addSublayer(content)
 
-        let bar = box(barFrame, DS.Color.overlay, radius: barFrame.height / 2)
-        _ = bar
+        let trackPill = box(pillFrame, stage == .branches ? DS.Color.selectedCapsule : DS.Color.overlay, radius: pillFrame.height / 2)
+        image(DS.Glyph.image(named: DS.Glyph.name("branches"), pointSize: 12) ?? NSImage(), CGRect(x: 12, y: 11, width: 12, height: 12), tint: .secondaryLabelColor, in: trackPill)
+        label("fix-upload", at: CGPoint(x: 30, y: 9), size: 10.5, weight: .semibold, in: trackPill)
+        pill = trackPill
+        box(barFrame, DS.Color.overlay, radius: barFrame.height / 2)
         capsule = box(CGRect(x: 0, y: 0, width: 40, height: 26), DS.Color.selectedCapsule, radius: 13)
         capsule?.position = capsuleCenter(stage)
-        icons = Stage.allCases.map { item in
+        if stage == .branches { capsule?.opacity = 0 }
+        icons = Self.barStages.map { item in
             let center = capsuleCenter(item)
             return image(Self.glyphImage(item, selected: item == stage, view: self), CGRect(x: center.x - 8, y: center.y - 8, width: 16, height: 16))
         }

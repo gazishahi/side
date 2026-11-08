@@ -20,6 +20,16 @@ Symbols: `AgentBranchPanel`, `AgentHeaderView`, `AgentPlanItem`.
   every ten seconds while shown (files edited by hand).
 - UI check: `scripts/uitest/check-agent-panel.sh`.
 
+**Reworked (2026-11-07, the owner: "lackluster, no clear actions, poorly animated"):**
+- A head: the branch and its base ("from main"), × to close, and two actions, Review Changes
+  (the branch in Changes) and Terminal (its terminal).
+- Section labels in Side's tracked uppercase with counts; files with their file-type icons, and
+  Open in Editor and Show in Changes as icon buttons on hover; an empty state of its own.
+- It slides in from the trailing edge and out again (`DS.Motion.revealEdgePanel` /
+  `dismissEdgePanel`, shared with the companion) while the column re-centres on the same
+  spring; floating, it also grows from 97 % and stops above the composer. Content changes
+  crossfade.
+
 ## Why
 
 The owner, 2026-11-04: the Agent stage "feels very empty on a wide screen." The conversation is a

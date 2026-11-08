@@ -257,10 +257,25 @@ final class ChromeHost {
     var stageControlHiddenForTesting: Bool { (placement == .floatingBar ? bar : stageControl)?.isHidden ?? true }
 
     /// A loose file's window has no project to show or switch: the chip and the track pill go.
-    func setProjectPiecesHidden(_ hidden: Bool) {
-        projectChip.isHidden = hidden
-        (placement == .floatingBar ? pillPiece : pill)?.isHidden = hidden
-        openFolderPill?.isHidden = !hidden
+    /// `animated`: Open Folder as Project, the pill giving way to the chip and track pill. Glass
+    /// is drawn by the window server, so each piece fades by its own alpha (as Writer mode's do).
+    func setProjectPiecesHidden(_ hidden: Bool, animated: Bool = false) {
+        let projectPieces: [NSView] = [projectChip, (placement == .floatingBar ? pillPiece : pill)].compactMap { $0 }
+        let coming = hidden ? [openFolderPill].compactMap { $0 } : projectPieces
+        let going = hidden ? projectPieces : [openFolderPill].compactMap { $0 }
+        guard animated, topRow.window != nil, !DS.Motion.reduceMotion else {
+            // Alpha left alone for what's shown: Writer mode may be fading it in.
+            for piece in coming { piece.isHidden = false }
+            for piece in going { piece.isHidden = true; piece.alphaValue = 1 }
+            return
+        }
+        for piece in coming where piece.isHidden { piece.alphaValue = 0; piece.isHidden = false }
+        DS.Motion.fade(duration: DS.Motion.presentDuration, {
+            for piece in coming { piece.animator().alphaValue = 1 }
+            for piece in going { piece.animator().alphaValue = 0 }
+        }, completion: {
+            for piece in going { piece.isHidden = true; piece.alphaValue = 1 }
+        })
     }
 
     private weak var barRoot: NSView?
@@ -344,7 +359,7 @@ final class ChromeHost {
     /// server, so a crossfade of the window's layers can't carry it; its own alpha does.
     func setHidden(_ hidden: Bool, animated: Bool = false) {
         isChromeHidden = hidden
-        let pieces: [NSView] = [topRow, topRowBackdrop] + barPieces
+        let pieces: [NSView] = [topRow, topRowBackdrop] + barPieces + [openFolderPill].compactMap { $0 }
         guard animated, topRow.window != nil else {
             for piece in pieces { piece.isHidden = hidden; piece.alphaValue = 1 }
             return

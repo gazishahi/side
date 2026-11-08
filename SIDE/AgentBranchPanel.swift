@@ -25,6 +25,9 @@ final class AgentBranchPanel: NSView {
     }
 
     struct Content: Equatable {
+        /// The branch, and the base it's measured against.
+        var branch = ""
+        var base = ""
         var plan: [AgentPlanItem] = []
         var files: [FileChange] = []
         var terminals: [TracksWorkspaceViewController.BoardSession] = []
@@ -36,11 +39,15 @@ final class AgentBranchPanel: NSView {
     var onShowFileInChanges: ((String) -> Void)?
     var onOpenTerminal: ((UUID) -> Void)?
     var onOpenCheckpoint: ((UUID) -> Void)?
+    /// The header's actions: the whole branch in Changes, its terminal, and closing the panel.
+    var onReviewChanges: (() -> Void)?
+    var onShowTerminal: (() -> Void)?
+    var onClose: (() -> Void)?
 
     private(set) var content = Content()
     private let scroll = NSScrollView()
     private let stack = FlippedStack()
-    private let emptyLabel = NSTextField(wrappingLabelWithString: "Nothing on this branch yet. The agent\u{2019}s plan, the files it changes, its terminals and checkpoints show here.")
+    private let header = PanelHeader()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -55,8 +62,8 @@ final class AgentBranchPanel: NSView {
 
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = DS.Spacing.l
-        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.l, left: DS.Spacing.m, bottom: DS.Spacing.l, right: DS.Spacing.m)
+        stack.spacing = DS.Spacing.section
+        stack.edgeInsets = NSEdgeInsets(top: DS.Spacing.m, left: DS.Spacing.m, bottom: DS.Spacing.l, right: DS.Spacing.m)
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = stack
         scroll.drawsBackground = false
@@ -64,13 +71,16 @@ final class AgentBranchPanel: NSView {
         scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
         addSubview(scroll)
-
-        emptyLabel.font = DS.Text.caption()
-        emptyLabel.textColor = .tertiaryLabelColor
-        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        header.onReview = { [weak self] in self?.onReviewChanges?() }
+        header.onTerminal = { [weak self] in self?.onShowTerminal?() }
+        header.onClose = { [weak self] in self?.onClose?() }
+        addSubview(header)
 
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: topAnchor),
+            header.topAnchor.constraint(equalTo: topAnchor),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -85,9 +95,19 @@ final class AgentBranchPanel: NSView {
     /// Redraws only when something it shows changed.
     func show(_ content: Content) {
         guard content != self.content else { return }
+        let changedShape = content.isEmpty != self.content.isEmpty
         self.content = content
+        header.set(branch: content.branch, base: content.base, hasChanges: !content.files.isEmpty, hasTerminals: !content.terminals.isEmpty)
+        // A change of what it says reads as one change: the old sections fade into the new.
+        DS.Motion.crossfade(scroll, duration: changedShape ? DS.Motion.presentDuration : DS.Motion.fadeDuration)
         rebuild()
     }
+
+    // MARK: Showing and hiding
+
+    func reveal(floating: Bool) { DS.Motion.revealEdgePanel(self, floating: floating) }
+    func dismiss(floating: Bool, completion: @escaping @MainActor () -> Void) { DS.Motion.dismissEdgePanel(self, floating: floating, completion: completion) }
+    func cancelDismiss() { DS.Motion.cancelEdgeDismiss(self) }
 
     /// Floating over the conversation: a shadow sets it off. Docked: none.
     func setFloating(_ floating: Bool) {
@@ -108,16 +128,16 @@ final class AgentBranchPanel: NSView {
             section.widthAnchor.constraint(equalToConstant: inner).isActive = true
         }
         if content.isEmpty {
-            add(emptyLabel)
+            add(PanelEmptyState())
             return
         }
         if !content.plan.isEmpty {
             let done = content.plan.filter { $0.status == .completed }.count
-            add(section("Plan", detail: "\(done) of \(content.plan.count)", rows: content.plan.map(planRow)))
+            add(section("Plan", detail: "\(done) of \(content.plan.count) done", rows: content.plan.map(planRow)))
         }
         if !content.files.isEmpty {
             let added = content.files.reduce(0) { $0 + $1.added }, removed = content.files.reduce(0) { $0 + $1.removed }
-            add(section("Changed Files", detail: counts(added, removed), rows: content.files.map(fileRow)))
+            add(section(content.files.count == 1 ? "1 Changed File" : "\(content.files.count) Changed Files", detail: counts(added, removed), rows: content.files.map(fileRow)))
         }
         if !content.terminals.isEmpty {
             add(section("Terminals", detail: nil, rows: content.terminals.map(terminalRow)))
@@ -130,9 +150,8 @@ final class AgentBranchPanel: NSView {
     // MARK: Sections
 
     private func section(_ title: String, detail: String?, rows: [NSView]) -> NSView {
-        let header = NSTextField(labelWithString: title)
-        header.font = DS.Text.caption(.semibold)
-        header.textColor = .secondaryLabelColor
+        // Side's one uppercase: the section label, tracked (Direction 02 §2.6).
+        let header = NSTextField(labelWithAttributedString: NSAttributedString(string: title.uppercased(), attributes: DS.Text.sectionLabelAttributes))
         let headerRow = NSStackView(views: [header])
         headerRow.orientation = .horizontal
         headerRow.edgeInsets = NSEdgeInsets(top: 0, left: DS.Spacing.s, bottom: 0, right: DS.Spacing.s)
@@ -175,14 +194,17 @@ final class AgentBranchPanel: NSView {
         let name = (file.path as NSString).lastPathComponent
         let folder = (file.path as NSString).deletingLastPathComponent
         let trailing = NSTextField(labelWithAttributedString: {
-            let text = NSMutableAttributedString(string: "+\(file.added)", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.systemGreen])
-            text.append(NSAttributedString(string: " \u{2212}\(file.removed)", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.systemRed]))
+            let text = NSMutableAttributedString(string: "+\(file.added)", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: DS.Color.statusVerified])
+            text.append(NSAttributedString(string: " \u{2212}\(file.removed)", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: DS.Color.statusFailed]))
             return text
         }())
-        let row = PanelRow(symbol: nil, tint: nil, title: name, detail: folder.isEmpty ? nil : folder, trailing: trailing)
-        row.toolTip = file.path
+        let row = PanelRow(image: FileIcon.image(for: URL(fileURLWithPath: file.path), isDirectory: false, size: 14), tint: nil, title: name, detail: folder.isEmpty ? nil : folder, trailing: trailing)
+        row.toolTip = "\(file.path)\nClick to open in Editor"
         row.onClick = { [weak self] in self?.onOpenFile?(file.path) }
-        row.hoverAction = ("Changes", { [weak self] in self?.onShowFileInChanges?(file.path) })
+        row.hoverActions = [
+            .init(symbol: "doc.text", help: "Open in Editor") { [weak self] in self?.onOpenFile?(file.path) },
+            .init(symbol: "plus.forwardslash.minus", help: "Show in Changes") { [weak self] in self?.onShowFileInChanges?(file.path) },
+        ]
         row.setAccessibilityLabel("\(file.path), \(file.added) added, \(file.removed) removed")
         return row
     }
@@ -191,6 +213,7 @@ final class AgentBranchPanel: NSView {
         let status = DS.StatusLabel(state: session.state, text: session.word)
         let row = PanelRow(image: ProgramMarks.image(forProgram: session.program), title: session.title, trailing: status)
         row.onClick = { [weak self] in self?.onOpenTerminal?(session.id) }
+        row.toolTip = "Go to this terminal"
         row.setAccessibilityLabel("\(session.title), \(session.word)")
         return row
     }
@@ -199,6 +222,7 @@ final class AgentBranchPanel: NSView {
         let status = DS.StatusLabel(state: checkpoint.state, text: checkpoint.word)
         let row = PanelRow(symbol: nil, tint: nil, title: checkpoint.text, trailing: status)
         row.onClick = { [weak self] in self?.onOpenCheckpoint?(checkpoint.id) }
+        row.toolTip = "Open this checkpoint"
         row.setAccessibilityLabel("\(checkpoint.text), \(checkpoint.word)")
         return row
     }
@@ -251,15 +275,32 @@ private final class FlippedStack: NSStackView {
 /// Clickable ones highlight on hover; a hover action fades in over the trailing slot.
 private final class PanelRow: NSView {
     var onClick: (() -> Void)? { didSet { updateCursor() } }
-    var hoverAction: (title: String, perform: () -> Void)? {
+    struct HoverAction {
+        let symbol: String
+        let help: String
+        let perform: () -> Void
+    }
+    /// Shown on hover over the trailing slot, as small icon buttons with their names as help.
+    var hoverActions: [HoverAction] = [] {
         didSet {
-            guard let hoverAction else { return }
-            actionButton.attributedTitle = NSAttributedString(string: hoverAction.title, attributes: [.font: DS.Text.caption(.medium), .foregroundColor: DS.Color.accent])
-            actionButton.isHidden = false
+            actions.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            for (index, action) in hoverActions.enumerated() {
+                let button = NSButton(image: NSImage(systemSymbolName: action.symbol, accessibilityDescription: action.help) ?? NSImage(), target: self, action: #selector(performHoverAction(_:)))
+                button.isBordered = false
+                button.symbolConfiguration = .init(pointSize: 11, weight: .medium)
+                button.contentTintColor = .secondaryLabelColor
+                button.toolTip = action.help
+                button.tag = index
+                actions.addArrangedSubview(button)
+            }
+            actions.isHidden = hoverActions.isEmpty
+            if !hoverActions.isEmpty {
+                setAccessibilityCustomActions(hoverActions.map { action in NSAccessibilityCustomAction(name: action.help) { action.perform(); return true } })
+            }
         }
     }
     private let highlight = NSView()
-    private let actionButton = NSButton(title: "", target: nil, action: nil)
+    private let actions = NSStackView()
     private let trailingView: NSView?
     private var trackingArea: NSTrackingArea?
 
@@ -317,13 +358,11 @@ private final class PanelRow: NSView {
         text.translatesAutoresizingMaskIntoConstraints = false
         addSubview(text)
 
-        actionButton.isBordered = false
-        actionButton.target = self
-        actionButton.action = #selector(performHoverAction)
-        actionButton.isHidden = true
-        actionButton.alphaValue = 0
-        actionButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(actionButton)
+        actions.spacing = DS.Spacing.s
+        actions.isHidden = true
+        actions.alphaValue = 0
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(actions)
 
         var constraints = [
             highlight.topAnchor.constraint(equalTo: topAnchor),
@@ -334,8 +373,8 @@ private final class PanelRow: NSView {
             text.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             text.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
             heightAnchor.constraint(greaterThanOrEqualToConstant: 26),
-            actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.s),
-            actionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.s),
+            actions.centerYAnchor.constraint(equalTo: centerYAnchor),
         ]
         if let trailing {
             trailing.translatesAutoresizingMaskIntoConstraints = false
@@ -370,8 +409,8 @@ private final class PanelRow: NSView {
         DS.Motion.fade { [self] in
             highlight.animator().alphaValue = hovered ? 1 : 0
             // The hover action takes the trailing slot, which keeps its width: nothing reflows.
-            if hoverAction != nil {
-                actionButton.animator().alphaValue = hovered ? 1 : 0
+            if !hoverActions.isEmpty {
+                actions.animator().alphaValue = hovered ? 1 : 0
                 trailingView?.animator().alphaValue = hovered ? 0 : 1
             }
         }
@@ -395,5 +434,160 @@ private final class PanelRow: NSView {
 
     override func resetCursorRects() { if onClick != nil { addCursorRect(bounds, cursor: .pointingHand) } }
 
-    @objc private func performHoverAction() { hoverAction?.perform() }
+    @objc private func performHoverAction(_ sender: NSButton) {
+        guard hoverActions.indices.contains(sender.tag) else { return }
+        hoverActions[sender.tag].perform()
+    }
+}
+
+/// The panel's head: the branch and its base, and what to do with it. Review Changes opens the
+/// whole branch in Changes; Terminal goes to its terminal; × closes the panel.
+private final class PanelHeader: NSView {
+    var onReview: (() -> Void)?
+    var onTerminal: (() -> Void)?
+    var onClose: (() -> Void)?
+    private let name = NSTextField(labelWithString: "")
+    private let base = NSTextField(labelWithString: "")
+    private lazy var review = PanelHeaderButton(symbol: "plus.forwardslash.minus", title: "Review Changes") { [weak self] in self?.onReview?() }
+    private lazy var terminal = PanelHeaderButton(symbol: DS.Glyph.name("terminal"), title: "Terminal") { [weak self] in self?.onTerminal?() }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        let glyph = NSImageView(image: DS.Glyph.image(named: DS.Glyph.name("branches"), pointSize: 14) ?? NSImage())
+        glyph.contentTintColor = .secondaryLabelColor
+        name.font = DS.Text.heading()
+        name.lineBreakMode = .byTruncatingMiddle
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        base.font = DS.Text.caption()
+        base.textColor = .tertiaryLabelColor
+        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close the panel") ?? NSImage(), target: self, action: #selector(closeTapped))
+        close.isBordered = false
+        close.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
+        close.contentTintColor = .tertiaryLabelColor
+        close.toolTip = "Close the panel (\(Shortcuts.display("view.agentPanel")))"
+        let buttons = NSStackView(views: [review, terminal])
+        buttons.spacing = DS.Spacing.s
+        let rule = NSView()
+        rule.bindLayerBackground(DS.Color.hairline)
+        for view in [glyph, name, base, close, buttons, rule] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            glyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l + 2),
+            glyph.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            glyph.widthAnchor.constraint(equalToConstant: 14),
+            name.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: DS.Spacing.s),
+            name.topAnchor.constraint(equalTo: topAnchor, constant: DS.Spacing.l + 2),
+            name.trailingAnchor.constraint(lessThanOrEqualTo: close.leadingAnchor, constant: -DS.Spacing.s),
+            close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.l),
+            close.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            base.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            base.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 1),
+            buttons.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l),
+            buttons.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -DS.Spacing.l),
+            buttons.topAnchor.constraint(equalTo: base.bottomAnchor, constant: DS.Spacing.l),
+            rule.topAnchor.constraint(equalTo: buttons.bottomAnchor, constant: DS.Spacing.l),
+            rule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l),
+            rule.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.l),
+            rule.heightAnchor.constraint(equalToConstant: 1),
+            rule.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func set(branch: String, base: String, hasChanges: Bool, hasTerminals: Bool) {
+        name.stringValue = branch.isEmpty ? "This branch" : branch
+        self.base.stringValue = base.isEmpty || base == branch ? "" : "from \(base)"
+        review.isEnabled = hasChanges
+        review.toolTip = hasChanges ? "Open the branch\u{2019}s changes in Changes" : "Nothing changed on this branch yet"
+        terminal.toolTip = hasTerminals ? "Go to this branch\u{2019}s terminal" : "Open a terminal on this branch"
+    }
+
+    @objc private func closeTapped() { onClose?() }
+}
+
+/// A small action in the panel's head: a symbol and a word on a capsule of the hover tone,
+/// pressing in under the pointer.
+private final class PanelHeaderButton: NSView {
+    private let perform: () -> Void
+    private let label: NSTextField
+    private let icon: NSImageView
+    var isEnabled = true { didSet { alphaValue = isEnabled ? 1 : 0.45 } }
+
+    init(symbol: String, title: String, perform: @escaping () -> Void) {
+        self.perform = perform
+        label = NSTextField(labelWithString: title)
+        icon = NSImageView(image: DS.Glyph.image(named: symbol, pointSize: 11) ?? NSImage())
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        bindLayerBackground(DS.Color.hoverCapsule)
+        layer?.cornerRadius = DS.Radius.control
+        layer?.cornerCurve = .continuous
+        icon.symbolConfiguration = .init(pointSize: 11, weight: .medium)
+        icon.contentTintColor = .labelColor
+        label.font = DS.Text.caption(.medium)
+        for view in [icon, label] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 26),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 13),
+            icon.heightAnchor.constraint(equalToConstant: 13),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: DS.Spacing.s),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.l),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func mouseDown(with event: NSEvent) { if isEnabled { DS.Motion.press(self, down: true, amount: 1.04) } }
+    override func mouseUp(with event: NSEvent) {
+        DS.Motion.press(self, down: false)
+        guard isEnabled, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        perform()
+    }
+    override func accessibilityPerformPress() -> Bool { guard isEnabled else { return false }; perform(); return true }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
+}
+
+/// Nothing on the branch yet: what will show here, set as an empty state.
+private final class PanelEmptyState: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        let glyph = NSImageView(image: DS.Glyph.image(named: DS.Glyph.name("agent"), pointSize: 22) ?? NSImage())
+        glyph.contentTintColor = .tertiaryLabelColor
+        let title = NSTextField(labelWithString: "Nothing here yet")
+        title.font = DS.Text.body(.medium)
+        title.textColor = .secondaryLabelColor
+        let detail = NSTextField(wrappingLabelWithString: "As the agent works, its plan, the files it changes, its terminals and checkpoints appear here.")
+        detail.font = DS.Text.caption()
+        detail.textColor = .tertiaryLabelColor
+        detail.alignment = .center
+        let stack = NSStackView(views: [glyph, title, detail])
+        stack.orientation = .vertical
+        stack.spacing = DS.Spacing.s
+        stack.setCustomSpacing(DS.Spacing.m, after: glyph)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 40),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.l),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

@@ -477,11 +477,14 @@ final class ShellViewController: NSViewController {
             guard let self, let context = self.projectContext, let store = self.trackStore else { return nil }
             let key = self.currentTrackKey ?? ""
             let base = store.tracks.first { $0.branchName == key }.map { store.gitSummaryInputs(for: $0).baseBranch } ?? store.defaultBranchName()
-            return .init(cwd: context.workingDirectory(forTrackKey: key).path, base: base,
+            let branch = key.isEmpty ? (store.tracks.first { $0.branchName == key }?.branchName ?? store.defaultBranchName()) : key
+            return .init(cwd: context.workingDirectory(forTrackKey: key).path, branch: branch, base: base,
                          terminals: TracksWorkspaceViewController.boardSessions(context.terminals, forTrackKey: key),
                          checkpoints: context.sessionStore.checkpoints(forTrackKey: key))
         }
         thinkVC.onOpenTerminalSession = { [weak self] id in self?.revealTerminalSession(id) }
+        thinkVC.onReviewBranchChanges = { [weak self] in self?.show(.review) }
+        thinkVC.onShowBranchTerminal = { [weak self] in self?.show(.run) }
         thinkVC.onShowFileInChanges = { [weak self] path in
             guard let self else { return }
             self.show(.review)
@@ -581,10 +584,19 @@ final class ShellViewController: NSViewController {
 
     private(set) var isLooseFileWindow = false
     private func setLooseFileWindow(_ loose: Bool) {
+        let changed = loose != isLooseFileWindow
         isLooseFileWindow = loose
         makeVC.isLooseFile = loose
-        chrome.setProjectPiecesHidden(loose)
-        refreshStageControl()
+        chrome.setProjectPiecesHidden(loose, animated: changed && view.window != nil)
+        // The stages arrive with the project on the bar's own spring.
+        if changed, view.window != nil {
+            DS.Motion.animate(DS.Motion.smooth, crossfading: view) {
+                refreshStageControl()
+                view.layoutSubtreeIfNeeded()
+            }
+        } else {
+            refreshStageControl()
+        }
     }
 
     var looseChromeForTesting: String {
@@ -1305,7 +1317,12 @@ final class ShellViewController: NSViewController {
         isWriting = on
         DS.Motion.crossfade(view, duration: DS.Motion.glanceDuration)
         chrome.setHidden(on, animated: true)
-        if !on { refreshStageControl() }
+        // Showing the chrome again shows every piece; a loose file's window has no chip, track
+        // pill or stages to show, only its Open Folder pill.
+        if !on {
+            chrome.setProjectPiecesHidden(isLooseFileWindow)
+            refreshStageControl()
+        }
         makeVC.setTopObstruction(on ? 0 : ChromeHost.rowHeight)
         makeVC.setBottomObstruction(on ? 0 : chrome.bottomObstruction)
         makeVC.setWriterMode(on)
@@ -1355,6 +1372,22 @@ final class ShellViewController: NSViewController {
     private var companionFloatingShown = false
     private var followObserver: NSObjectProtocol?
     private var followMonitor: Any?
+    private var companionClickMonitor: Any?
+    /// The split view's own button: the top row's trailing end in Editor and Changes, while the
+    /// companion isn't docked there (its header, with its ×, takes that place then). The owner,
+    /// 2026-11-07: "it's not clear how we can have the split view".
+    private lazy var besideToggle: NSButton = {
+        let button = NSButton(image: DS.Glyph.image(named: DS.Glyph.name("terminal"), pointSize: 15) ?? NSImage(), target: self, action: #selector(besideToggleTapped))
+        button.isBordered = false
+        button.bezelStyle = .regularSquare
+        button.imagePosition = .imageOnly
+        button.contentTintColor = .secondaryLabelColor
+        button.setAccessibilityLabel("Show Terminal Beside")
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.isHidden = true
+        return button
+    }()
+    private static let besideToggleWidth: CGFloat = 36
     /// The text Follow last saw of each file it showed: the next change is found against it.
     private var followSnapshots: [String: String] = [:]
     private var followPending: URL?
@@ -1372,7 +1405,7 @@ final class ShellViewController: NSViewController {
         if companion != nil {
             if !companionDocks, companionStage {
                 companionFloatingShown.toggle()
-                layoutCompanion()
+                layoutCompanion(animated: true)
                 if companionFloatingShown { companion?.focusTerminal() }
                 return
             }
@@ -1427,7 +1460,11 @@ final class ShellViewController: NSViewController {
         companionFloatingShown = true
         installFollow()
         if !companionStage { show(.make) }
-        layoutCompanion()
+        // Laid out hidden at its place first, so it comes in from the edge rather than from
+        // wherever Auto Layout first put it.
+        companion.view.isHidden = true
+        view.layoutSubtreeIfNeeded()
+        layoutCompanion(animated: true)
         companion.focusTerminal()
     }
 
@@ -1437,8 +1474,12 @@ final class ShellViewController: NSViewController {
         guard let session = projectContext?.terminals.everySession().first(where: { $0.id == sessionID }) else { return }
         if trackKey == (currentTrackKey ?? "") { return openCompanion(session) }
         if trackKey.isEmpty {
-            switchToBase(landOn: .make)
-            if currentTrackKey == nil { openCompanion(session) }
+            // The switch is async (a save sheet, git off the main thread): the companion opens
+            // when it's there, not before.
+            switchToBase(landOn: .make) { [weak self] switched in
+                guard switched, let self, self.currentTrackKey == nil else { return }
+                self.openCompanion(session)
+            }
             return
         }
         guard let track = trackStore?.tracks.first(where: { $0.branchName == trackKey }) else { return }
@@ -1448,16 +1489,26 @@ final class ShellViewController: NSViewController {
         }
     }
 
+    /// For View's menu titles: the companion beside the stage now; Agent's panel open.
+    var companionShowsForMenu: Bool { companion.map { !$0.view.isHidden } ?? false }
+    var agentPanelShowsForMenu: Bool { current == .think && thinkVC.branchPanelShown }
+
     /// The companion's session goes back to Terminal's tabs, still running.
+    /// It slides out first, and the stage takes its width back on the same spring; only then
+    /// does the session go back.
     func closeCompanion() {
         guard let companion else { return }
         self.companion = nil
-        companion.returnSession()
-        companion.view.removeFromSuperview()
-        companion.removeFromParent()
         removeFollow()
+        removeCompanionMonitor()
         companionFloatingShown = false
-        layoutCompanion()
+        let floating = !companionDocks
+        layoutCompanion(animated: true)
+        DS.Motion.dismissEdgePanel(companion.view, floating: floating) {
+            companion.returnSession()
+            companion.view.removeFromSuperview()
+            companion.removeFromParent()
+        }
     }
 
     /// The activity pill or a link names the companion's session: it comes into view.
@@ -1465,16 +1516,37 @@ final class ShellViewController: NSViewController {
         guard let companion else { return }
         if !companionStage { show(.make) }
         companionFloatingShown = true
-        layoutCompanion()
+        layoutCompanion(animated: true)
         companion.focusTerminal()
+    }
+
+    /// Floating, a click in the stage outside it puts it away (Escape is the terminal's).
+    private func installCompanionMonitor() {
+        guard companionClickMonitor == nil else { return }
+        companionClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self, event.window === self.view.window, let companion = self.companion, self.companionFloatingShown, !self.companionDocks else { return event }
+            let point = self.view.convert(event.locationInWindow, from: nil)
+            if !companion.view.frame.contains(point), self.container.frame.contains(point) {
+                self.companionFloatingShown = false
+                self.layoutCompanion(animated: true)
+            }
+            return event
+        }
+    }
+
+    private func removeCompanionMonitor() {
+        if let companionClickMonitor { NSEvent.removeMonitor(companionClickMonitor) }
+        companionClickMonitor = nil
     }
 
     /// Where the companion goes for this stage and width: docked, the stage ending where it
     /// begins; floating over the stage's edge; or hidden (another stage, or not asked for).
-    private func layoutCompanion() {
+    private func layoutCompanion(animated: Bool = false) {
         guard let companion, companion.isViewLoaded else {
-            if stageTrailing?.constant != 0 { stageTrailing?.constant = 0 }
-            chrome.reserveTrailing(0)
+            setStageTrailing(0, animated: animated)
+            let toggle = placeBesideToggle(docked: false)
+            chrome.reserveTrailing(toggle)
+            removeCompanionMonitor()
             return
         }
         let width = view.bounds.width
@@ -1484,7 +1556,6 @@ final class ShellViewController: NSViewController {
         let paneWidth = docks
             ? max(Self.companionMinimumWidth, min(companionWidth, width - Self.stageMinimumWidth))
             : max(min(Self.companionMinimumWidth, width - 2 * DS.Spacing.xl), min(companionWidth, width * 0.8))
-        companion.view.isHidden = !shown
         if companionWidthConstraint?.constant != paneWidth { companionWidthConstraint?.constant = paneWidth }
         companion.setFloating(!docks)
         // Floating, it sits between the top row and the bar, as the file explorer does.
@@ -1492,8 +1563,55 @@ final class ShellViewController: NSViewController {
         companionBottom?.constant = docks ? 0 : -(chrome.bottomObstruction + DS.Spacing.s)
         companion.setBottomObstruction(docks ? chrome.bottomObstruction : 0)
         let reserve = shown && docks ? paneWidth : 0
-        if stageTrailing?.constant != -reserve { stageTrailing?.constant = -reserve }
-        chrome.reserveTrailing(reserve)
+        setStageTrailing(reserve, animated: animated)
+        let toggle = placeBesideToggle(docked: shown && docks)
+        chrome.reserveTrailing(max(reserve, toggle))
+        if shown {
+            DS.Motion.cancelEdgeDismiss(companion.view)
+            if companion.view.isHidden {
+                if animated { DS.Motion.revealEdgePanel(companion.view, floating: !docks) } else { companion.view.isHidden = false }
+            }
+        } else if !companion.view.isHidden {
+            if animated { DS.Motion.dismissEdgePanel(companion.view, floating: !docks) } else { companion.view.isHidden = true }
+        }
+        shown && !docks ? installCompanionMonitor() : removeCompanionMonitor()
+    }
+
+    /// Shows the split view's button where it applies; returns the width it takes from the row.
+    private func placeBesideToggle(docked: Bool) -> CGFloat {
+        if besideToggle.superview == nil {
+            view.addSubview(besideToggle, positioned: .above, relativeTo: chrome.topRow)
+            NSLayoutConstraint.activate([
+                besideToggle.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -DS.Spacing.xl),
+                besideToggle.centerYAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight / 2),
+                besideToggle.widthAnchor.constraint(equalToConstant: 24),
+                besideToggle.heightAnchor.constraint(equalToConstant: 24),
+            ])
+        }
+        let shows = companionStage && !docked && hasProject && !isLooseFileWindow && !isWriting
+        if besideToggle.isHidden == shows {
+            besideToggle.isHidden = !shows
+            if shows { DS.Motion.appear(besideToggle, distance: 0) }
+        }
+        let open = companion.map { !$0.view.isHidden } ?? false
+        let title = open ? "Hide Terminal Beside" : "Show Terminal Beside"
+        besideToggle.toolTip = "\(title) (\(Shortcuts.display("view.terminalBeside")))"
+        besideToggle.setAccessibilityLabel(title)
+        besideToggle.contentTintColor = open ? .labelColor : .secondaryLabelColor
+        return shows ? Self.besideToggleWidth : 0
+    }
+
+    @objc private func besideToggleTapped() { toggleCompanion() }
+
+    /// The stage's trailing edge: it gives way to, or takes back, a docked pane on the smooth
+    /// spring when that's a person's doing, at once when it's a resize.
+    private func setStageTrailing(_ reserve: CGFloat, animated: Bool) {
+        guard let stageTrailing, stageTrailing.constant != -reserve else { return }
+        guard animated, view.window != nil else { stageTrailing.constant = -reserve; return }
+        DS.Motion.animate(DS.Motion.smooth, crossfading: container) {
+            stageTrailing.animator().constant = -reserve
+            view.layoutSubtreeIfNeeded()
+        }
     }
 
     // MARK: Follow
@@ -2495,13 +2613,15 @@ final class ShellViewController: NSViewController {
 
     /// Working on the base branch itself, in the main checkout, with no track (the base row in
     /// Tracks and the switcher). The same guard as a track switch: Make's tabs reopen there.
-    func switchToBase(landOn: Stage = .make) {
-        guard currentTrackKey != nil else { show(landOn); return }
+    /// `completion`: whether the window ended on base (after a save sheet, and git).
+    func switchToBase(landOn: Stage = .make, completion: ((Bool) -> Void)? = nil) {
+        guard currentTrackKey != nil else { show(landOn); completion?(true); return }
         confirmCloseAllUnsaved { [weak self] proceed in
-            guard let self, proceed, let store = self.trackStore else { return }
+            guard let self, proceed, let store = self.trackStore else { completion?(false); return }
             store.switchToBase(mainCheckoutBusy: self.mainCheckoutBusy()) { [weak self] result in
-                guard let self else { return }
+                guard let self else { completion?(false); return }
                 if case .failure(let error) = result {
+                    completion?(false)
                     if let window = self.view.window {
                         let alert = NSAlert()
                         alert.alertStyle = .informational
@@ -2513,6 +2633,7 @@ final class ShellViewController: NSViewController {
                     return
                 }
                 self.landOnBase(landOn)
+                completion?(true)
             }
         }
     }

@@ -102,8 +102,7 @@ final class RunWorkspaceViewController: NSViewController {
     /// unseen output should still light up the stage badge even while you're looking elsewhere.
     var hasBackgroundActivity: Bool { terminals?.hasUnseenOutput ?? false }
 
-    /// Points this view at a project's terminals. Run — reachable via ⌃4 at any time — can't
-    /// spawn a shell before this, so nothing starts in the user's home directory by accident.
+    /// Points this view at a project's terminals (or, with none, the home folder's).
     func attach(to manager: TerminalSessionManager) {
         guard manager !== terminals else { return }
         detachDisplayedSession()
@@ -334,16 +333,14 @@ final class RunWorkspaceViewController: NSViewController {
     /// Always goes through `showActiveSession()` (not just `.activate()`) because the active
     /// track can have changed since Run was last shown, in which case `container` is still
     /// displaying a different track's terminal view.
-    /// Set true by the shell once a project is open. Defaults to false so that Run — reachable
-    /// via ⌃4 at any time — can't spawn a shell in the user's home directory before then.
+    /// Pointed at some terminals: a project's, or the home folder's.
     var hasProject: Bool { terminals != nil }
 
     func activateActiveSession() {
-        guard hasProject else {
-            clearContainer()
-            showNoProjectState()
-            return
-        }
+        // No project: a terminal in your home folder, as Terminal.app opens one (the owner,
+        // 2026-11-07: "it tells me that I need a project open"). A project opened later takes
+        // this view over; these shells carry on in their keepers, and come back here.
+        if !hasProject { attach(to: Self.homeTerminals) }
         guard let index = activeSessionIndex, sessions.indices.contains(index) else {
             restoreRememberedSessionsOrCreateOne()
             return
@@ -378,20 +375,14 @@ final class RunWorkspaceViewController: NSViewController {
         }
     }
 
+    /// Terminals with no project, shared by every window without one, in the home folder.
+    static let homeTerminals: TerminalSessionManager = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return TerminalSessionManager(projectRoot: home) { _ in home }
+    }()
+
     /// Set by the shell, which performs empty-state actions (§6).
     var onEmptyStateAction: ((EmptyStateAction) -> Void)?
-
-    private func showNoProjectState() {
-        let state = DS.EmptyState()
-        state.symbol = ShellViewController.Stage.run.symbol
-        state.configure("Open a project to run its terminals.", action: "Open Project…", handler: { [weak self] in self?.onEmptyStateAction?(.openProject) })
-        container.addSubview(state)
-        NSLayoutConstraint.activate([
-            state.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            state.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            state.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
-        ])
-    }
 
     private func showPlaceholder(_ text: String) {
         let label = NSTextField(labelWithString: text)

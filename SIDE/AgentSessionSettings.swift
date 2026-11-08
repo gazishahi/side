@@ -7,6 +7,9 @@ import SideAgents
 enum AgentAvailability {
     private static var installed: [String: Bool] = [:]
     private static var refreshing = false
+    /// Everyone who asked while a lookup ran: each hears when it finishes (the welcome's
+    /// Agents page, left and come back to mid-lookup, waited forever).
+    private static var waiting: [@MainActor () -> Void] = []
 
     /// nil until looked up.
     static func isInstalled(_ agent: ACPAgent) -> Bool? { installed[agent.id] }
@@ -21,6 +24,7 @@ enum AgentAvailability {
     }
 
     static func refresh(then completion: @escaping @MainActor () -> Void) {
+        waiting.append(completion)
         guard !refreshing else { return }
         refreshing = true
         let agents = ACPAgent.known
@@ -30,7 +34,9 @@ enum AgentAvailability {
                 MainActor.assumeIsolated {
                     installed = found
                     refreshing = false
-                    completion()
+                    let done = waiting
+                    waiting = []
+                    done.forEach { $0() }
                 }
             }
         }

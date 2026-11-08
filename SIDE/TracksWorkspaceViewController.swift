@@ -193,7 +193,11 @@ final class TracksWorkspaceViewController: NSViewController {
         let signature = currentBoardSignature()
         guard signature != boardSignature else { return }
         boardSignature = signature
-        refresh()
+        // Only the board: the branches' git state didn't change because a terminal did, and
+        // re-reading it for every branch on each Working/Idle flip was the review's finding.
+        // The rows' change crossfades, as a stage's content does.
+        DS.Motion.crossfade(contentStack)
+        renderLedger()
     }
 
     /// One line per session under its branch's row.
@@ -1896,19 +1900,36 @@ private final class BoardSessionRow: NSView {
         trackingArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) {
-        bindLayerBackground(DS.Color.raised)
-        DS.Motion.fade { actions.animator().alphaValue = 1 }
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+
+    private func setHovered(_ hovered: Bool) {
+        if hovered { bindLayerBackground(DS.Color.raised) } else { unbindLayerBackground() }
+        DS.Motion.fade { actions.animator().alphaValue = hovered ? 1 : 0 }
     }
 
-    override func mouseExited(with event: NSEvent) {
-        unbindLayerBackground()
-        DS.Motion.fade { actions.animator().alphaValue = 0 }
+    /// Rebuilt under a still pointer (the board redraws when a session changes), a row gets no
+    /// mouseEntered: it looks for the pointer itself.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        if bounds.contains(point) { setHovered(true) }
     }
 
+    /// The actions take clicks only while they show.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        if actions.alphaValue < 0.5, let hit, hit.isDescendant(of: actions) { return self }
+        return hit
+    }
+
+    /// A click shows the session beside the Editor (the design session's board); Open is its
+    /// own button.
     override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
-        if event.clickCount == 2 { onOpen?() }
+        guard event.clickCount == 1, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onShowBeside?()
     }
 }
 
