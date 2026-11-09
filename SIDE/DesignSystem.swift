@@ -579,6 +579,105 @@ enum DS {
         }
     }
 
+    /// Translucent background (Settings › Appearance): the window shows what's behind it, blurred
+    /// and tinted with the canvas tone. One backdrop per window (the shell's ChromeBackground);
+    /// every stage fill above it goes clear (`under`), so the tint is laid once and never stacks.
+    /// The editor keeps its solid background unless `includesEditor`: code reads against its
+    /// theme, not against the desktop. The Editor stage is the editor's surface either way: one fill
+    /// in the editor's color (`editorStage`) under everything, solid or translucent, and the
+    /// editor's own backgrounds (`editor`) clear over it when translucent — so the editor, the
+    /// gutter, the minimap and the space around them are one tone and the tint is laid once.
+    /// The terminal shows the backdrop through its own background.
+    /// Reduce Transparency and Increase Contrast ask for solid surfaces, so they turn it off.
+    enum Translucency {
+        static let key = "appearance.translucent"
+        static let editorKey = "appearance.translucent-editor"
+
+        nonisolated(unsafe) private static var cached: (on: Bool, editor: Bool)?
+        /// System Settings › Accessibility › Display › Reduce Transparency; a test sets its own.
+        nonisolated(unsafe) static var reduceTransparency: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency }
+
+        private static var stored: (on: Bool, editor: Bool) {
+            if let cached { return cached }
+            let read = (on: HeronDefaults.store.bool(forKey: key), editor: HeronDefaults.store.bool(forKey: editorKey))
+            cached = read
+            return read
+        }
+
+        private static func store(on: Bool, editor: Bool) {
+            HeronDefaults.store.set(on, forKey: key)
+            HeronDefaults.store.set(editor, forKey: editorKey)
+            cached = (on, editor)
+            MainActor.assumeIsolated { Appearance.refreshAll() }
+        }
+
+        /// What Settings has chosen.
+        static var chosen: Bool {
+            get { stored.on }
+            set { store(on: newValue, editor: stored.editor) }
+        }
+        static var editorChosen: Bool {
+            get { stored.editor }
+            set { store(on: stored.on, editor: newValue) }
+        }
+
+        /// Drawn: chosen, and the Mac's accessibility settings allow it.
+        static var isOn: Bool { stored.on && !reduceTransparency() && !Color.increaseContrast() }
+        static var includesEditor: Bool { isOn && stored.editor }
+
+        /// How much of the canvas tone lies over the blur: enough that secondary labels keep their
+        /// contrast over a white window or a busy wallpaper, not so much that the glass is lost.
+        /// Light's material is already pale, so less of the tone is laid over it. (Tuned over a
+        /// window of loud stripes, 2026-11-08: more showed the stripes through secondary labels.)
+        static func tintOpacity(dark: Bool) -> CGFloat { dark ? 0.6 : 0.45 }
+        /// The terminal's background and Make's, over the tinted backdrop: they add to its tint,
+        /// so a little goes a long way (0.8 let almost nothing through; the editor at 0.5,
+        /// barely more). The same for both: they're the two surfaces you read code on.
+        static let terminalOpacity: CGFloat = 0.3
+        static let editorOpacity: CGFloat = 0.3
+
+        /// The window's tint: the canvas tone, translucent.
+        static let tint = NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return resolved(Color.canvas, in: appearance).withAlphaComponent(tintOpacity(dark: dark))
+        }
+
+        /// A stage's own fill: `color` when solid; nothing when translucent, the backdrop being
+        /// the stage.
+        static func under(_ color: NSColor) -> NSColor {
+            NSColor(name: nil) { appearance in isOn ? .clear : resolved(color, in: appearance) }
+        }
+
+        /// The editor's own backgrounds (the text, the gutter, the minimap, the previews): solid,
+        /// or clear over `editorStage` when the editor is included.
+        static func editor(_ color: NSColor) -> NSColor {
+            NSColor(name: nil) { appearance in includesEditor ? .clear : resolved(color, in: appearance) }
+        }
+
+        /// The Editor stage's fill, under the editor and around it: the editor's color, translucent only when
+        /// the editor is included.
+        static func editorStage(_ color: NSColor) -> NSColor {
+            NSColor(name: nil) { appearance in
+                let solid = resolved(color, in: appearance)
+                return includesEditor ? solid.withAlphaComponent(editorOpacity) : solid
+            }
+        }
+
+        private static func resolved(_ color: NSColor, in appearance: NSAppearance) -> NSColor {
+            var out = color
+            appearance.performAsCurrentDrawingAppearance { out = color.usingColorSpace(.sRGB) ?? color }
+            return out
+        }
+
+        /// The window composites what's behind it only while it's translucent: an opaque window
+        /// is cheaper for the window server.
+        @MainActor
+        static func apply(to window: NSWindow) {
+            window.isOpaque = !isOn
+            window.backgroundColor = isOn ? .clear : Color.canvas
+        }
+    }
+
     /// A solid surface: the raised color and a hairline edge, drawn in whatever appearance it's
     /// drawn in. Nothing behind it is read, so nothing is blurred.
     final class SolidSurface: NSView {

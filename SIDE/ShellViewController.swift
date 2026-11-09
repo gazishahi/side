@@ -675,7 +675,7 @@ final class ShellViewController: NSViewController {
 
     private func buildLayout() {
         view.wantsLayer = true
-        ChromeBackground.install(in: view)
+        ChromeBackground.install(in: view, backdrop: true)
 
         stageControl.onChange = { [weak self] index in
             guard let self, self.visibleStages.indices.contains(index) else { return }

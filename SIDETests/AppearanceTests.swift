@@ -123,6 +123,41 @@ final class AppearanceTests: XCTestCase {
         XCTAssertEqual(resolved(DS.Color.canvas, in: .darkAqua).redComponent * 255, 11, accuracy: 0.5, "Side's high-contrast canvas")
     }
 
+    /// Translucent background: stage fills go clear over the backdrop, the editor only when it's
+    /// included, and Reduce Transparency or Increase Contrast give the solid surfaces back.
+    func testTranslucencyClearsStageFillsAndYieldsToAccessibility() {
+        let (on, editor) = (DS.Translucency.chosen, DS.Translucency.editorChosen)
+        let (reduce, contrast) = (DS.Translucency.reduceTransparency, DS.Color.increaseContrast)
+        defer {
+            DS.Translucency.chosen = on; DS.Translucency.editorChosen = editor
+            DS.Translucency.reduceTransparency = reduce; DS.Color.increaseContrast = contrast
+        }
+        DS.Translucency.reduceTransparency = { false }
+        DS.Color.increaseContrast = { false }
+        let stage = DS.Translucency.under(DS.Color.canvas)
+        let editorFill = DS.Translucency.editor(DS.Color.canvas)
+
+        DS.Translucency.chosen = false
+        XCTAssertEqual(resolved(stage, in: .darkAqua), resolved(DS.Color.canvas, in: .darkAqua))
+        XCTAssertEqual(resolved(editorFill, in: .darkAqua).alphaComponent, 1)
+
+        DS.Translucency.chosen = true
+        DS.Translucency.editorChosen = false
+        XCTAssertEqual(resolved(stage, in: .darkAqua).alphaComponent, 0)
+        XCTAssertEqual(resolved(editorFill, in: .aqua).alphaComponent, 1, "the editor stays solid unless included")
+        XCTAssertEqual(resolved(DS.Translucency.tint, in: .darkAqua).alphaComponent, DS.Translucency.tintOpacity(dark: true), accuracy: 0.001)
+        DS.Translucency.editorChosen = true
+        XCTAssertEqual(resolved(editorFill, in: .aqua).alphaComponent, 0, "clear over the Editor stage's fill")
+        XCTAssertEqual(resolved(DS.Translucency.editorStage(DS.Color.canvas), in: .aqua).alphaComponent, DS.Translucency.editorOpacity, accuracy: 0.001)
+
+        DS.Translucency.reduceTransparency = { true }
+        XCTAssertFalse(DS.Translucency.isOn)
+        XCTAssertEqual(resolved(stage, in: .darkAqua).alphaComponent, 1)
+        DS.Translucency.reduceTransparency = { false }
+        DS.Color.increaseContrast = { true }
+        XCTAssertFalse(DS.Translucency.includesEditor)
+    }
+
     func testThePreferenceRoundTripsAndMapsToAnAppAppearance() {
         let original = DS.Appearance.preference
         defer { DS.Appearance.preference = original }

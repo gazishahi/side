@@ -101,7 +101,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         // Restyles itself on a text-size change (`textScaleChanged`): not the follower's.
         TextScaleFollower.exempt(view)
         view.wantsLayer = true
-        view.bindLayerBackground(DS.Color.canvas)
+        view.bindLayerBackground(DS.Translucency.under(DS.Color.canvas))
         NotificationCenter.default.addObserver(self, selector: #selector(textScaleChanged), name: DS.Text.scaleDidChangeNotification, object: nil)
         // A checkpoint created, renamed or verified while the stage is on screen shows at once.
         NotificationCenter.default.addObserver(self, selector: #selector(checkpointsChanged), name: AgentSessionStore.checkpointsDidChangeNotification, object: nil)

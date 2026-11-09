@@ -1441,6 +1441,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         terminalView.terminal.installPalette(colors: theme?.ansi.map { $0.map { Self.terminalColor($0.nsColor) } } ?? Self.ansiPalette(dark: dark))
         terminalView.nativeForegroundColor = Self.resolved(foreground)
         terminalView.nativeBackgroundColor = Self.resolved(background)
+        // Translucent background: the default background lets the window's backdrop through;
+        // text and cells with a color of their own stay opaque.
+        terminalView.backgroundOpacity = DS.Translucency.isOn ? DS.Translucency.terminalOpacity : 1
         terminalView.needsDisplay = true
     }
 

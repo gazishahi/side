@@ -390,8 +390,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
     /// Under the editor and what stands in for it (an image, a sheet, a preview, no file): the
-    /// editor theme's background, or Side's canvas.
-    private static var editorBackground: NSColor { EditorThemes.current(dark: DS.Appearance.isDark)?.background.nsColor ?? DS.Color.canvas }
+    /// editor theme's background, or Side's canvas; clear over the stage's fill (`chromeFill`) when
+    /// Translucent background includes the editor.
+    private static var editorBackground: NSColor { DS.Translucency.editor(editorColor) }
+    private static var editorColor: NSColor { EditorThemes.current(dark: DS.Appearance.isDark)?.background.nsColor ?? DS.Color.canvas }
     /// At the editor text-size setting (Appearance), not the interface scale.
     private static var editorFont: NSFont { DS.Text.editor() }
     private static let editorTextColor = NSColor.labelColor
@@ -1801,7 +1803,11 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         topRowContent?.appearance = appearance
         // With no file open (or a banner over the editor) Side's canvas showed, in the system's
         // appearance, under labels in the theme's.
-        chromeFill?.bindLayerBackground(Self.editorBackground)
+        // The Editor stage's one fill, under the editor and around it: solid unless Translucent background
+        // includes the editor. (Clear while the editor stayed solid, the corners above and below
+        // the minimap showed the glass beside it, 2026-11-08.) A theme of the other appearance
+        // stays solid: its labels need the theme's own tone, not a light desktop under it.
+        chromeFill?.bindLayerBackground(appearance == nil ? DS.Translucency.editorStage(Self.editorColor) : Self.editorColor)
         // Layer colors bound to tokens resolve in the view's appearance, which just changed.
         DS.LayerBindings.reapplyAll()
         minimap.backgroundColor = Self.editorBackground

@@ -289,7 +289,7 @@ final class RunWorkspaceViewController: NSViewController {
         container.wantsLayer = true
         // Full bleed: the terminal is the whole window — edge to edge, under the top row's tone
         // and under the floating bar. Only the text keeps clear of the bar (terminalBottom).
-        container.bindLayerBackground(DS.Color.raised)
+        container.bindLayerBackground(DS.Translucency.under(DS.Color.raised))
         container.clipsToBounds = true
         view.addSubview(container)
 
@@ -312,7 +312,7 @@ final class RunWorkspaceViewController: NSViewController {
         view.addSubview(statusLine)
 
         view.wantsLayer = true
-        view.bindLayerBackground(DS.Color.raised)
+        view.bindLayerBackground(DS.Translucency.under(DS.Color.raised))
         NSLayoutConstraint.activate([
             tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), tabScroll.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
             tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),

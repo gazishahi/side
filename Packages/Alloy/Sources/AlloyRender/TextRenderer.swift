@@ -246,7 +246,9 @@ public final class TextRenderer {
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         let bg = frame.theme.background
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: Double(bg.x), green: Double(bg.y), blue: Double(bg.z), alpha: Double(bg.w))
+        // Premultiplied, as the layer composites it (and as the quads blend): a translucent
+        // background's color is scaled by its alpha.
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: Double(bg.x * bg.w), green: Double(bg.y * bg.w), blue: Double(bg.z * bg.w), alpha: Double(bg.w))
         framesInFlight.wait()
         guard let buffer = queue.makeCommandBuffer(), let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { framesInFlight.signal(); return nil }
         let inFlight = framesInFlight

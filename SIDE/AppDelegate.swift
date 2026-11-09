@@ -150,6 +150,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // or "snapshots <dir> <count> <ms>" for frames of a motion. An app may capture
                     // its own windows without screen-recording permission.
                     if command.hasPrefix("snapshot ") { Self.snapshot(window, to: String(command.dropFirst(9))) }
+                    // With what's behind the window composited under it (Translucent background):
+                    // "snapshot-screen <path>".
+                    if command.hasPrefix("snapshot-screen ") { Self.snapshot(window, to: String(command.dropFirst(16)), withBackground: true) }
                     // "snapshot-last <path>": the newest window (one opened from Finder, say).
                     if command.hasPrefix("snapshot-last "), let last = self.shellViewControllers.last?.view.window { Self.snapshot(last, to: String(command.dropFirst(14))) }
                     // Every window on screen (Settings, popovers, sheets): "snapshot-all <dir>".
@@ -306,6 +309,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // "r g b" (0–255) in the window's appearance.
                     if command.hasPrefix("accent "), let accent = DS.Accent(rawValue: String(command.dropFirst(7))) { DS.Accent.chosen = accent }
                     if command.hasPrefix("interface-theme ") { DS.InterfaceTheme.followsEditorTheme = command.hasSuffix(" on") }
+                    // Translucent background: "translucent on|off", "translucent-editor on|off".
+                    if command.hasPrefix("translucent ") { DS.Translucency.chosen = command.hasSuffix(" on") }
+                    if command.hasPrefix("translucent-editor ") { DS.Translucency.editorChosen = command.hasSuffix(" on") }
+                    // A loud pattern just behind the window, so a capture shows what translucency lets
+                    // through without reading other apps' windows: "behind on|black|off".
+                    if command.hasPrefix("minimap ") { EditorPreferences.minimapShown = command.hasSuffix(" on") }
+                    if command.hasPrefix("behind ") { Self.testBehindWindow(under: window, show: !command.hasSuffix(" off"), black: command.hasSuffix(" black")) }
                     if command == "tokens" {
                         func rgb(_ color: NSColor) -> String {
                             var resolved = color
@@ -370,6 +380,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("scroll ") { shell.scrollForTesting(pages: Int(command.dropFirst(7)) ?? 1) }
                     // Settings: "settings-end" scrolls its page to the bottom; "settings-popup <label> <n>"
                     // picks the nth item of the popup with that accessibility label, as a click would.
+                    // "settings-switch <label>": clicks the switch with that accessibility label, and
+                    // logs "[switch] <label> on|off" afterwards (Editor too snapped back, 2026-11-08).
+                    if command.hasPrefix("settings-switch "), let root = self.preferencesWindow?.contentView {
+                        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+                        let label = String(command.dropFirst(16))
+                        if let control = all(root).compactMap({ $0 as? NSSwitch }).first(where: { $0.accessibilityLabel() == label }) {
+                            control.performClick(nil)
+                            FileHandle.standardError.write(Data("[switch] \(label) \(control.state == .on ? "on" : "off")\n".utf8))
+                        }
+                    }
                     if command == "settings-end" || command.hasPrefix("settings-popup "), let root = self.preferencesWindow?.contentView {
                         func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
                         if command == "settings-end" {
@@ -729,19 +749,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         _ = shellViewControllers.contains(where: { $0.revealTerminal(keeperID: id, inProject: project, trackKey: track) })
     }
 
-    /// UI testing: the window as the window server composites it, to a PNG.
-    static func snapshot(_ window: NSWindow, to path: String) {
-        snapshot(windowNumber: UInt32(window.windowNumber), to: path)
+    nonisolated(unsafe) private static var behindWindow: NSWindow?
+
+    /// UI testing: stripes of color behind `window`, for judging Translucent background.
+    static func testBehindWindow(under window: NSWindow, show: Bool, black: Bool = false) {
+        behindWindow?.orderOut(nil)
+        behindWindow = nil
+        guard show else { return }
+        let behind = NSWindow(contentRect: window.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        behind.isReleasedWhenClosed = false
+        let stripes = NSImage(size: window.frame.size, flipped: false) { rect in
+            let colors: [NSColor] = black ? [.black] : [.white, .systemOrange, .systemBlue, .black, .systemGreen, .white]
+            let width = rect.width / CGFloat(colors.count)
+            for (index, color) in colors.enumerated() {
+                color.setFill()
+                NSRect(x: CGFloat(index) * width, y: 0, width: width, height: rect.height).fill()
+            }
+            if !black {
+                NSColor.systemPink.setFill()
+                NSRect(x: 0, y: rect.height * 0.45, width: rect.width, height: rect.height * 0.1).fill()
+            }
+            return true
+        }
+        behind.contentView = NSImageView(image: stripes)
+        behind.order(.below, relativeTo: window.windowNumber)
+        behindWindow = behind
     }
 
-    nonisolated static func snapshot(windowNumber: UInt32, to path: String) {
+    /// UI testing: the window as the window server composites it, to a PNG.
+    static func snapshot(_ window: NSWindow, to path: String, withBackground: Bool = false) {
+        guard withBackground, let screen = NSScreen.screens.first else { snapshot(windowNumber: UInt32(window.windowNumber), to: path); return }
+        // The window's frame in the window server's coordinates (top-left origin), and every
+        // window from Side's down.
+        let frame = window.frame
+        let bounds = CGRect(x: frame.minX, y: screen.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
+        snapshot(windowNumber: UInt32(window.windowNumber), to: path, bounds: bounds, list: CGWindowListOption.optionOnScreenBelowWindow.rawValue | CGWindowListOption.optionIncludingWindow.rawValue)
+    }
+
+    nonisolated static func snapshot(windowNumber: UInt32, to path: String, bounds: CGRect = .null, list: UInt32 = CGWindowListOption.optionIncludingWindow.rawValue) {
         // Looked up at run time: the SDK marks it unavailable (ScreenCaptureKit instead, which
         // needs screen-recording permission even for an app's own windows). Test-only.
         typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return }
         let create = unsafeBitCast(symbol, to: CreateImage.self)
         let options = CGWindowImageOption.boundsIgnoreFraming.rawValue | CGWindowImageOption.bestResolution.rawValue
-        guard let image = create(.null, CGWindowListOption.optionIncludingWindow.rawValue, windowNumber, options)?.takeRetainedValue() else { return }
+        guard let image = create(bounds, list, windowNumber, options)?.takeRetainedValue() else { return }
         let rep = NSBitmapImageRep(cgImage: image)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }

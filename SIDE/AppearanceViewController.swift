@@ -27,6 +27,8 @@ final class AppearanceViewController: NSViewController {
     private lazy var restartButton = SettingsForm.button("Restart Side", self, #selector(restartForSurfaces))
     private let accentSwatches = AccentSwatches()
     private lazy var interfaceThemeSwitch = SettingsForm.toggle(DS.InterfaceTheme.followsEditorTheme, self, #selector(interfaceThemeChanged))
+    private lazy var translucentSwitch = SettingsForm.toggle(DS.Translucency.chosen, self, #selector(translucencyChanged))
+    private lazy var translucentEditorSwitch = SettingsForm.toggle(DS.Translucency.editorChosen, self, #selector(translucentEditorChanged))
 
     override func loadView() { view = NSView() }
 
@@ -138,7 +140,10 @@ final class AppearanceViewController: NSViewController {
                 SettingsForm.row("Appearance", themePopup),
                 SettingsForm.row("Accent", detail: "Primary buttons, your messages in Agent, links and the caret. Never a status: those keep their own colors.", accentSwatches),
                 SettingsForm.row("Text size", detail: "Side's own interface: stage headers, transcripts, diffs, lists, and this window.", scalePopup),
-            ] + surfacesRows()),
+            ] + surfacesRows() + [
+                SettingsForm.row("Translucent background", detail: "What's behind the window shows through, blurred, under the stages and the terminal. Off while Reduce Transparency or Increase Contrast is on.", translucentSwitch),
+                SettingsForm.row("Editor too", detail: "The editor's background lets it through as well. Code reads best on a solid one.", translucentEditorSwitch),
+            ]),
             SettingsForm.section("Code", [
                 SettingsForm.row("Editor text", editorSizePopup),
                 SettingsForm.row("Terminal text", terminalSizePopup),
@@ -181,6 +186,9 @@ final class AppearanceViewController: NSViewController {
         fillThemePopups()
         NotificationCenter.default.addObserver(self, selector: #selector(fillThemePopups), name: EditorThemes.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(syncInterfaceThemeSwitch), name: DS.Appearance.didChangeNotification, object: nil)
+        translucentSwitch.setAccessibilityLabel("Translucent background")
+        translucentEditorSwitch.setAccessibilityLabel("Editor too")
+        syncInterfaceThemeSwitch()
         applyFonts()
         // The samples set their own size; the rest of the pane follows with everything else.
         TextScaleFollower.exempt(sampleLabel)
@@ -309,6 +317,19 @@ final class AppearanceViewController: NSViewController {
     /// The switch, when the setting changed elsewhere (a test, or another window's pane).
     @objc private func syncInterfaceThemeSwitch() {
         interfaceThemeSwitch.state = DS.InterfaceTheme.followsEditorTheme ? .on : .off
+        translucentSwitch.state = DS.Translucency.chosen ? .on : .off
+        translucentEditorSwitch.state = DS.Translucency.editorChosen ? .on : .off
+        translucentEditorSwitch.isEnabled = DS.Translucency.chosen
+    }
+
+    // One setting per switch: saving one refreshes the pane (syncInterfaceThemeSwitch), which
+    // set the other switch back to its stored value before it was read — Editor too never stuck.
+    @objc private func translucencyChanged() {
+        DS.Translucency.chosen = translucentSwitch.state == .on
+    }
+
+    @objc private func translucentEditorChanged() {
+        DS.Translucency.editorChosen = translucentEditorSwitch.state == .on
     }
 
     @objc private func interfaceThemeChanged() {

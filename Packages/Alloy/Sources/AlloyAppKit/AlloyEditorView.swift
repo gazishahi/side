@@ -17,7 +17,14 @@ public final class AlloyEditorView: NSView {
     public let scrollView = NSScrollView()
     public private(set) var buffer: TextBuffer
     public private(set) var documentLayout: DocumentLayout
-    public var theme: RenderTheme = .light { didSet { setNeedsRender(); minimap.needsDisplay = true } }
+    public var theme: RenderTheme = .light {
+        didSet {
+            // A translucent background composites with what's behind the view; an opaque one doesn't need to.
+            canvas.metalLayer.isOpaque = theme.background.w >= 1
+            setNeedsRender()
+            minimap.needsDisplay = true
+        }
+    }
     public var styles: ((Int) -> [StyleSpan])? { didSet { stylesChanged() } }
     /// Markup each line hides unless a selection touches it (live Markdown's `**`, `#`, a link's
     /// URL); see `DocumentLayout.concealment`. Nil: nothing hidden.
@@ -451,6 +458,7 @@ public final class AlloyEditorView: NSView {
         let fresh = MetalCanvas()
         fresh.metalLayer.device = renderer.device
         fresh.metalLayer.contentsScale = canvas.metalLayer.contentsScale
+        fresh.metalLayer.isOpaque = canvas.metalLayer.isOpaque
         fresh.frame = canvas.frame
         scrollView.addSubview(fresh, positioned: .below, relativeTo: scrollView.contentView)
         canvas.removeFromSuperview()

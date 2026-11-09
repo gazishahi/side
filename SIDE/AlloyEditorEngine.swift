@@ -294,18 +294,22 @@ final class AlloyEditorEngine: NSObject, EditorEngine, AlloyEditorDelegate {
     private func applyAppearance(fontChanged: Bool) {
         if fontChanged { isProse ? applyProse() : view.setFont(appearance.font as CTFont) }
         // The chosen editor theme for this appearance (Settings → Appearance), or Side's own.
+        // Translucent background takes the editor's alpha from DS.Translucency.editor.
         if let theme = EditorThemes.current(dark: isDark) {
-            view.theme = theme.renderTheme
-            view.gutter.backgroundColor = theme.background.nsColor
+            let background = DS.Translucency.editor(theme.background.nsColor)
+            var renderTheme = theme.renderTheme
+            renderTheme.background = components(background)
+            view.theme = renderTheme
+            view.gutter.backgroundColor = background
             view.gutter.numberColor = theme.lineNumbers.nsColor
-            view.minimap.backgroundColor = theme.background.nsColor
+            view.minimap.backgroundColor = background
         } else {
             view.theme = RenderTheme(background: components(appearance.background), text: components(appearance.textColor),
                                      selection: components(.selectedTextBackgroundColor), caret: components(DS.Color.accent),
                                      currentLine: components(DS.Color.scrimFaint))
-            view.gutter.backgroundColor = DS.Color.canvas
+            view.gutter.backgroundColor = DS.Translucency.editor(DS.Color.canvas)
             view.gutter.numberColor = .tertiaryLabelColor
-            view.minimap.backgroundColor = DS.Color.canvas
+            view.minimap.backgroundColor = DS.Translucency.editor(DS.Color.canvas)
         }
         view.gutter.font = DS.Text.code(11, weight: .regular)
         (document as? AlloyEditorDocument)?.highlighter?.theme = EditorThemes.syntax(dark: isDark)
