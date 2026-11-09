@@ -206,6 +206,18 @@ final class ChromeTests: XCTestCase {
 
     /// Project switching (prototype, 2026-11-04): every project gets a symbol no other has, the
     /// order wraps for swipes, a choice of color or symbol sticks, and closing takes it out.
+    /// ⌃⇥ with many projects: full tiles while they fit, then smaller, never under the minimum
+    /// (past it the row slides instead).
+    func testTheCycleStripShrinksItsTilesBeforeSliding() {
+        let content: CGFloat = ProjectCycleStrip.maxWidth - ProjectCycleStrip.inset * 2
+        XCTAssertEqual(ProjectCycleStrip.tileWidth(count: 6, content: content), ProjectCycleStrip.tileWidth)
+        let ten = ProjectCycleStrip.tileWidth(count: 10, content: content)
+        XCTAssertLessThan(ten, ProjectCycleStrip.tileWidth)
+        XCTAssertLessThanOrEqual(ten * 10 + DS.Spacing.xs * 9, content, "ten fit whole")
+        XCTAssertEqual(ProjectCycleStrip.tileWidth(count: 30, content: content), ProjectCycleStrip.minimumTileWidth)
+        XCTAssertEqual(ProjectCycleStrip.tileWidth(count: 6, content: 300), ProjectCycleStrip.minimumTileWidth, "a narrow window: the smallest, sliding")
+    }
+
     func testProjectSpacesKeepTheirOrderSymbolsAndColors() {
         let defaults = throwawayDefaults()
         let spaces = ProjectSpaces(store: defaults)

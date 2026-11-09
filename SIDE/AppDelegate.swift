@@ -254,11 +254,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     }
                     if command == "cycle-dump" {
                         let strip = shell.cycleStripForTesting
-                        FileHandle.standardError.write(Data("[cycle] \(strip.map { "shown=\(!$0.isHidden) entries=\($0.entries.map(\.space.name)) selected=\($0.selected?.space.name ?? "-") caption=\($0.captionForTesting) frame=\($0.frame) drawn=\($0.subviews.first?.frame ?? .zero)" } ?? "closed")\n".utf8))
+                        let described = strip.map { strip -> String in
+                            let drawn = strip.subviews.first?.frame ?? .zero
+                            let visible = strip.visibleTileFramesForTesting.filter { !$0.isEmpty }.count
+                            let selected = strip.selected?.space.name ?? "-"
+                            return "shown=\(!strip.isHidden) entries=\(strip.entries.map(\.space.name)) selected=\(selected) caption=\(strip.captionForTesting) frame=\(strip.frame) drawn=\(drawn) tile=\(strip.tileWidthForTesting) visible=\(visible) pickShows=\(strip.selectionVisibleForTesting)"
+                        }
+                        FileHandle.standardError.write(Data("[cycle] \(described ?? "closed")\n".utf8))
+                    }
+                    // The switcher's ⋯ menu for its nth entry: "switcher-menu-shot <n> <dir>" draws each
+                    // picker in it to <dir>/grid-<i>.png; "switcher-menu-choose <n> <grid> <cell>" picks.
+                    if command.hasPrefix("switcher-menu-"), let overlay = shell.projectSwitcherForTesting {
+                        let parts = command.split(separator: " ").map(String.init)
+                        let grids = (parts.count > 1 ? Int(parts[1]) : nil).flatMap { overlay.menuForTesting($0) }?.items.compactMap { $0.view as? MenuChoiceGrid } ?? []
+                        if parts[0] == "switcher-menu-shot", parts.count == 3 {
+                            for (index, grid) in grids.enumerated() {
+                                guard let rep = grid.bitmapImageRepForCachingDisplay(in: grid.bounds) else { continue }
+                                window.effectiveAppearance.performAsCurrentDrawingAppearance { grid.cacheDisplay(in: grid.bounds, to: rep) }
+                                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(parts[2])/grid-\(index).png"))
+                            }
+                        }
+                        if parts[0] == "switcher-menu-choose", parts.count == 4, let grid = Int(parts[2]), let cell = Int(parts[3]), grids.indices.contains(grid) {
+                            grids[grid].chooseForTesting(cell)
+                        }
                     }
                     if command == "cycle" { shell.cycleForTesting(back: false) }
                     if command == "cycle-back" { shell.cycleForTesting(back: true) }
                     if command == "cycle-release" { shell.cycleReleaseForTesting() }
+                    // The pointer on the ⌃⇥ strip: "cycle-hover <n>", "cycle-click <n>".
+                    if command.hasPrefix("cycle-hover "), let index = Int(command.dropFirst(12)) { shell.cycleStripForTesting?.hoverForTesting(index) }
+                    if command.hasPrefix("cycle-click "), let index = Int(command.dropFirst(12)) { shell.cycleStripForTesting?.clickForTesting(index) }
                     // "key cmd+2", "key ctrl+shift+tab": a chord as the menu bar receives it; "… repeat",
                     // as a held key's repeats arrive.
                     if command.hasPrefix("key ") {

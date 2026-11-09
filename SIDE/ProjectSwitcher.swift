@@ -763,32 +763,23 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
         if entry.openness != .current { item("Open in New Window") { [weak self] in self?.onClose?(); self?.onOpenInNewWindow?(url) } }
         item("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         menu.addItem(.separator())
-        let colors = NSMenu()
-        for (index, color) in ProjectSpaces.palette.enumerated() {
-            let choice = NSMenuItem(title: Self.colorNames[index], action: #selector(MenuAction.run(_:)), keyEquivalent: "")
-            let box = MenuAction { ProjectSpaces.shared.set(colorIndex: index, for: url) }
-            choice.target = box
-            choice.representedObject = box
-            choice.state = index == entry.space.colorIndex % ProjectSpaces.palette.count ? .on : .off
-            choice.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(.init(paletteColors: [color]))
-            colors.addItem(choice)
-        }
-        let colorItem = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
-        colorItem.submenu = colors
-        menu.addItem(colorItem)
-        let symbols = NSMenu()
-        for symbol in ProjectSpaces.symbols {
-            let choice = NSMenuItem(title: "", action: #selector(MenuAction.run(_:)), keyEquivalent: "")
-            let box = MenuAction { ProjectSpaces.shared.set(symbol: symbol, for: url) }
-            choice.target = box
-            choice.representedObject = box
-            choice.image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol)
-            choice.state = symbol == entry.space.symbol ? .on : .off
-            symbols.addItem(choice)
-        }
-        let symbolItem = NSMenuItem(title: "Symbol (without a logo)", action: nil, keyEquivalent: "")
-        symbolItem.submenu = symbols
-        menu.addItem(symbolItem)
+        // Color and symbol are pickers drawn in the menu (MenuChoiceGrid): its items' own images
+        // didn't show here, symbols were a list of checkmarks and colors had no swatch (the
+        // owner, 2026-11-09).
+        let palette = ProjectSpaces.palette
+        menu.addItem(.sectionHeader(title: "Color"))
+        menu.addItem(MenuChoiceGrid.item(
+            cells: palette.indices.map { .color(palette[$0], Self.colorNames[$0]) },
+            chosen: entry.space.colorIndex % palette.count, columns: palette.count, label: "Color") { index in
+                ProjectSpaces.shared.set(colorIndex: index, for: url)
+            })
+        menu.addItem(.sectionHeader(title: "Symbol (without a logo)"))
+        menu.addItem(MenuChoiceGrid.item(
+            cells: ProjectSpaces.symbols.map { .symbol($0) },
+            chosen: ProjectSpaces.symbols.firstIndex(of: entry.space.symbol), columns: 8, label: "Symbol") { index in
+                ProjectSpaces.shared.set(symbol: ProjectSpaces.symbols[index], for: url)
+            })
+        menu.addItem(.separator())
         item("Choose Icon\u{2026}") { [weak self] in self?.chooseIcon(for: url) }
         if entry.space.logoPath != nil {
             item("Use the Project\u{2019}s Own Icon") { ProjectSpaces.shared.set(logo: nil, for: url) }
@@ -889,6 +880,8 @@ final class ProjectSwitcherOverlay: NSView, NSTextFieldDelegate {
     var framesForTesting: String { "overlay \(frame) panel \(panelHost.frame) scroll \(scrollHeight?.constant ?? 0) content \(content.fittingSize.height)" }
     var selectionFrameForTesting: NSRect { selection.frame }
     func hoverForTesting(_ index: Int) { cards.enumerated().forEach { $0.element.hoverForTesting($0.offset == index) } }
+    /// The ⋯ menu of the nth entry, as it would open.
+    func menuForTesting(_ index: Int) -> NSMenu? { shown.indices.contains(index) ? menu(for: shown[index]) : nil }
     var hoverReflowsForTesting: Bool {
         guard let card = cards.first else { return false }
         let before = card.frame
@@ -905,6 +898,132 @@ private final class MenuAction: NSObject {
     private let action: () -> Void
     init(_ action: @escaping () -> Void) { self.action = action }
     @objc func run(_ sender: Any?) { action() }
+}
+
+/// Choices laid out in a menu item, drawn by Side: a row of color swatches, a grid of symbols.
+/// The current one is ringed, the one under the pointer lit; a click chooses and closes the
+/// menu, as an item would. (NSMenuItem's own images didn't show in the switcher's menu.)
+@MainActor
+final class MenuChoiceGrid: NSView {
+    enum Cell {
+        case color(NSColor, String)
+        case symbol(String)
+    }
+
+    private let cells: [Cell]
+    private let chosen: Int?
+    private let columns: Int
+    private let onChoose: (Int) -> Void
+    private var hovered: Int? { didSet { if hovered != oldValue { needsDisplay = true } } }
+
+    private static let cell: CGFloat = 26
+    private static let gap: CGFloat = 4
+    /// A menu item's own inset, so the first swatch lines up with the titles above it.
+    private static let inset: CGFloat = 14
+    private static let swatch: CGFloat = 16
+
+    static func item(cells: [Cell], chosen: Int?, columns: Int, label: String, onChoose: @escaping (Int) -> Void) -> NSMenuItem {
+        let item = NSMenuItem()
+        item.view = MenuChoiceGrid(cells: cells, chosen: chosen, columns: columns, label: label, onChoose: onChoose)
+        return item
+    }
+
+    init(cells: [Cell], chosen: Int?, columns: Int, label: String, onChoose: @escaping (Int) -> Void) {
+        self.cells = cells
+        self.chosen = chosen
+        self.columns = max(1, columns)
+        self.onChoose = onChoose
+        let rows = (cells.count + self.columns - 1) / self.columns
+        super.init(frame: NSRect(x: 0, y: 0,
+                                 width: Self.inset * 2 + CGFloat(self.columns) * Self.cell + CGFloat(self.columns - 1) * Self.gap,
+                                 height: CGFloat(rows) * Self.cell + CGFloat(max(0, rows - 1)) * Self.gap + 6))
+        setAccessibilityElement(true)
+        setAccessibilityRole(.radioGroup)
+        setAccessibilityLabel(label)
+        toolTip = nil
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override var isFlipped: Bool { true }
+
+    private func rect(_ index: Int) -> NSRect {
+        let column = index % columns, row = index / columns
+        return NSRect(x: Self.inset + CGFloat(column) * (Self.cell + Self.gap), y: 3 + CGFloat(row) * (Self.cell + Self.gap), width: Self.cell, height: Self.cell)
+    }
+
+    private func index(at point: NSPoint) -> Int? { cells.indices.first { rect($0).contains(point) } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        for (index, cell) in cells.enumerated() {
+            let box = rect(index)
+            if hovered == index {
+                NSColor.labelColor.withAlphaComponent(0.1).setFill()
+                NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
+            }
+            switch cell {
+            case .color(let color, _):
+                let circle = NSRect(x: box.midX - Self.swatch / 2, y: box.midY - Self.swatch / 2, width: Self.swatch, height: Self.swatch)
+                color.setFill()
+                NSBezierPath(ovalIn: circle).fill()
+                if chosen == index {
+                    NSColor.labelColor.withAlphaComponent(0.55).setStroke()
+                    let ring = NSBezierPath(ovalIn: circle.insetBy(dx: -3, dy: -3))
+                    ring.lineWidth = 1.5
+                    ring.stroke()
+                }
+            case .symbol(let name):
+                if chosen == index {
+                    DS.Color.selectedCapsule.setFill()
+                    NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
+                }
+                guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                    .withSymbolConfiguration(.init(pointSize: 13, weight: .medium)) else { continue }
+                let size = image.size
+                let target = NSRect(x: box.midX - size.width / 2, y: box.midY - size.height / 2, width: size.width, height: size.height)
+                // Tinted here: drawn as it is, a symbol is black in dark menus too.
+                let tinted = NSImage(size: size, flipped: false) { bounds in
+                    image.draw(in: bounds)
+                    NSColor.labelColor.set()
+                    bounds.fill(using: .sourceAtop)
+                    return true
+                }
+                tinted.draw(in: target)
+            }
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) { hovered = index(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { hovered = nil }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let index = index(at: convert(event.locationInWindow, from: nil)) else { return }
+        choose(index)
+    }
+
+    private func choose(_ index: Int) {
+        enclosingMenuItem?.menu?.cancelTracking()
+        onChoose(index)
+    }
+
+    /// Names for the pointer and VoiceOver: a color's, or the symbol's.
+    override func accessibilityChildren() -> [Any]? {
+        cells.indices.map { index in
+            let element = NSAccessibilityElement.element(withRole: .radioButton, frame: NSAccessibility.screenRect(fromView: self, rect: rect(index)),
+                                                         label: { if case .color(_, let name) = cells[index] { return name }; if case .symbol(let name) = cells[index] { return name }; return "" }(),
+                                                         parent: self) as! NSAccessibilityElement
+            element.setAccessibilityValue(chosen == index ? 1 : 0)
+            return element
+        }
+    }
+
+    func chooseForTesting(_ index: Int) { choose(index) }
 }
 
 private final class FlippedView: NSView {
@@ -1070,6 +1189,12 @@ final class ProjectSwitcherCard: NSView {
 /// one picked; ⇥ again moves on, ⌃⇧⇥ back, letting go of ⌃ switches, Escape stays. A quick tap
 /// switches with no panel (the shell waits before showing it). The caption is one centred line
 /// the panel's width, its words crossfading: it never moves as the selection does.
+///
+/// One row, however many are open: the panel widens with them (up to `maxWidth` or the window),
+/// then the tiles get smaller (down to `minimumTileWidth`), and past that the row slides under
+/// faded edges to keep the pick in view. Six projects had run off both sides (the owner,
+/// 2026-11-09). The pointer works too, while ⌃ is held, as in the system's switcher: hovering a
+/// tile picks it, clicking one switches.
 @MainActor
 final class ProjectCycleStrip: NSView {
     private(set) var entries: [ProjectSwitcherEntry]
@@ -1077,32 +1202,60 @@ final class ProjectCycleStrip: NSView {
     private var tiles: [NSView] = []
     private let selection = DS.Fill(DS.Color.selectedCapsule, cornerRadius: DS.Radius.surface)
     private let caption = NSTextField(labelWithString: "")
-    private let row = NSView()
+    /// The row's window: the tiles slide in it when there are more than fit.
+    private let viewport = NSView()
+    private let row = FlippedView()
+    private let fade = CAGradientLayer()
+    /// This panel's tile width, and how much of the row shows.
+    private let tile: CGFloat
+    private let visibleWidth: CGFloat
+    /// A tile clicked: the shell switches to `selected`.
+    var onPick: (() -> Void)?
+    /// Where the pointer was when the panel showed: hover picks only once it moves, or a pointer
+    /// resting where the panel appears would take the selection from ⇥.
+    private var pointerAtShow: NSPoint?
 
     static let tileWidth: CGFloat = 88
-    static let tileHeight: CGFloat = 84
+    static let minimumTileWidth: CGFloat = 64
     static let captionHeight: CGFloat = 30
     static let inset: CGFloat = 12
+    static let maxWidth: CGFloat = 760
+    private static let gap = DS.Spacing.xs
+    private static let fadeWidth: CGFloat = 28
 
-    static let maxWidth: CGFloat = 520
-
-    /// The tiles' width: the row is exactly its tiles.
-    private static func rowWidth(_ count: Int) -> CGFloat {
-        tileWidth * CGFloat(count) + DS.Spacing.xs * CGFloat(max(0, count - 1))
+    private static func rowWidth(_ count: Int, tile: CGFloat = tileWidth) -> CGFloat {
+        tile * CGFloat(count) + gap * CGFloat(max(0, count - 1))
     }
 
-    /// The panel's size for these entries: its tiles, or wider for the longest caption — two
-    /// tiles left the line under them 180 pt, and "main · 2 terminals" cut off (the owner,
-    /// 2026-11-05). Capped; past that it truncates.
-    static func size(for entries: [ProjectSwitcherEntry]) -> NSSize {
+    /// The tiles' width, `count` of them in `content`: full size while they fit, then smaller,
+    /// never under `minimumTileWidth` (a name still reads there); past that the row slides.
+    static func tileWidth(count: Int, content: CGFloat) -> CGFloat {
+        guard count > 0, rowWidth(count) > content else { return tileWidth }
+        return max(minimumTileWidth, floor((content - gap * CGFloat(count - 1)) / CGFloat(count)))
+    }
+
+    private static func tileHeight(_ tile: CGFloat) -> CGFloat { tile - 4 }
+
+    /// The room for tiles and caption: `maxWidth`, or less in a narrower window.
+    private static func contentLimit(_ available: CGFloat) -> CGFloat { min(maxWidth, available) - inset * 2 }
+
+    /// The panel's size for these entries in a window `available` wide: its tiles, or wider for
+    /// the longest caption — two tiles left the line under them 180 pt, and "main · 2 terminals"
+    /// cut off (the owner, 2026-11-05). Capped; past that the tiles shrink, then slide.
+    static func size(for entries: [ProjectSwitcherEntry], within available: CGFloat = .greatestFiniteMagnitude) -> NSSize {
+        let limit = contentLimit(available)
+        let tile = tileWidth(count: entries.count, content: limit)
         let captionWidth = entries.map { ceil(caption(for: $0).size().width) + DS.Spacing.l * 2 }.max() ?? 0
-        let content = min(maxWidth - inset * 2, max(rowWidth(entries.count), captionWidth))
-        return NSSize(width: inset * 2 + content, height: inset + tileHeight + captionHeight + 6)
+        let content = min(limit, max(rowWidth(entries.count, tile: tile), captionWidth))
+        return NSSize(width: inset * 2 + content, height: inset + tileHeight(tile) + captionHeight + 6)
     }
 
-    init(entries: [ProjectSwitcherEntry], start: Int) {
+    init(entries: [ProjectSwitcherEntry], start: Int, within available: CGFloat = .greatestFiniteMagnitude) {
         self.entries = entries
         self.selectedIndex = start
+        let limit = Self.contentLimit(available)
+        tile = Self.tileWidth(count: entries.count, content: limit)
+        visibleWidth = min(limit, Self.rowWidth(entries.count, tile: tile))
         super.init(frame: .zero)
         wantsLayer = true
         if DS.Surfaces.needsShadow {
@@ -1119,59 +1272,59 @@ final class ProjectCycleStrip: NSView {
             surface.topAnchor.constraint(equalTo: topAnchor), surface.bottomAnchor.constraint(equalTo: bottomAnchor),
             surface.leadingAnchor.constraint(equalTo: leadingAnchor), surface.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
-        row.translatesAutoresizingMaskIntoConstraints = false
+        let height = Self.tileHeight(tile)
+        viewport.wantsLayer = true
+        viewport.layer?.masksToBounds = true
+        viewport.translatesAutoresizingMaskIntoConstraints = false
+        row.frame = NSRect(x: 0, y: 0, width: Self.rowWidth(entries.count, tile: tile), height: height)
         row.addSubview(selection)
-        body.addSubview(row)
+        viewport.addSubview(row)
+        body.addSubview(viewport)
         caption.alignment = .center
         caption.lineBreakMode = .byTruncatingTail
         caption.translatesAutoresizingMaskIntoConstraints = false
         body.addSubview(caption)
-        var previous: NSView?
-        for entry in entries {
-            let tile = NSView()
-            tile.translatesAutoresizingMaskIntoConstraints = false
-            let mark = NSImageView(image: ProjectSpaces.mark(for: entry.space, size: 44) ?? NSImage())
+        // Everything in a tile scales with it: an 88 pt tile has a 44 pt mark, 10 pt above it.
+        let scale = tile / Self.tileWidth
+        let markSize = (44 * scale).rounded()
+        for (index, entry) in entries.enumerated() {
+            let view = FlippedView(frame: NSRect(x: (tile + Self.gap) * CGFloat(index), y: 0, width: tile, height: height))
+            let mark = NSImageView(image: ProjectSpaces.mark(for: entry.space, size: markSize) ?? NSImage())
             mark.imageScaling = .scaleProportionallyUpOrDown
-            mark.translatesAutoresizingMaskIntoConstraints = false
+            mark.frame = NSRect(x: (tile - markSize) / 2, y: (10 * scale).rounded(), width: markSize, height: markSize)
             let name = NSTextField(labelWithString: entry.space.name)
             name.font = DS.Text.caption(.medium)
             name.lineBreakMode = .byTruncatingTail
             name.alignment = .center
-            name.translatesAutoresizingMaskIntoConstraints = false
-            tile.addSubview(mark)
-            tile.addSubview(name)
-            row.addSubview(tile)
-            var constraints = [
-                tile.widthAnchor.constraint(equalToConstant: Self.tileWidth), tile.heightAnchor.constraint(equalToConstant: Self.tileHeight),
-                tile.topAnchor.constraint(equalTo: row.topAnchor),
-                tile.leadingAnchor.constraint(equalTo: previous?.trailingAnchor ?? row.leadingAnchor, constant: previous == nil ? 0 : DS.Spacing.xs),
-                mark.widthAnchor.constraint(equalToConstant: 44), mark.heightAnchor.constraint(equalToConstant: 44),
-                mark.centerXAnchor.constraint(equalTo: tile.centerXAnchor), mark.topAnchor.constraint(equalTo: tile.topAnchor, constant: 10),
-                name.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: 6),
-                name.leadingAnchor.constraint(equalTo: tile.leadingAnchor, constant: 6), name.trailingAnchor.constraint(equalTo: tile.trailingAnchor, constant: -6),
-            ]
+            let nameHeight = ceil(name.fittingSize.height)
+            name.frame = NSRect(x: 6, y: mark.frame.maxY + 6, width: tile - 12, height: nameHeight)
+            view.addSubview(mark)
+            view.addSubview(name)
             if let activity = entry.activity {
                 let dot = DS.StatusDot(state: activity.state.status)
-                dot.translatesAutoresizingMaskIntoConstraints = false
-                tile.addSubview(dot)
-                constraints += [dot.centerXAnchor.constraint(equalTo: mark.trailingAnchor, constant: -2), dot.centerYAnchor.constraint(equalTo: mark.topAnchor, constant: 2)]
+                dot.frame.origin = NSPoint(x: mark.frame.maxX - 2 - dot.frame.width / 2, y: mark.frame.minY + 2 - dot.frame.height / 2)
+                view.addSubview(dot)
             }
-            NSLayoutConstraint.activate(constraints)
-            tiles.append(tile)
-            previous = tile
+            view.setAccessibilityElement(true)
+            view.setAccessibilityRole(.button)
+            view.setAccessibilityLabel(entry.space.name)
+            row.addSubview(view)
+            tiles.append(view)
         }
-        // The row is exactly its tiles, centred: the panel is theirs or the caption's width, and
-        // the tiles sit in its middle (pinned to the leading edge they had drawn ~28 pt off).
-        previous?.trailingAnchor.constraint(equalTo: row.trailingAnchor).isActive = true
         NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: body.topAnchor, constant: Self.inset),
-            row.centerXAnchor.constraint(equalTo: body.centerXAnchor),
-            row.widthAnchor.constraint(equalToConstant: Self.rowWidth(entries.count)),
-            row.heightAnchor.constraint(equalToConstant: Self.tileHeight),
-            caption.topAnchor.constraint(equalTo: row.bottomAnchor, constant: 6),
+            viewport.topAnchor.constraint(equalTo: body.topAnchor, constant: Self.inset),
+            viewport.centerXAnchor.constraint(equalTo: body.centerXAnchor),
+            viewport.widthAnchor.constraint(equalToConstant: visibleWidth),
+            viewport.heightAnchor.constraint(equalToConstant: height),
+            caption.topAnchor.constraint(equalTo: viewport.bottomAnchor, constant: 6),
             caption.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: Self.inset),
             caption.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -Self.inset),
         ])
+        if overflows {
+            fade.startPoint = CGPoint(x: 0, y: 0.5)
+            fade.endPoint = CGPoint(x: 1, y: 0.5)
+            viewport.layer?.mask = fade
+        }
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("Projects")
@@ -1179,6 +1332,8 @@ final class ProjectCycleStrip: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private var overflows: Bool { Self.rowWidth(entries.count, tile: tile) > visibleWidth + 0.5 }
 
     func move(_ delta: Int) {
         guard !entries.isEmpty else { return }
@@ -1188,16 +1343,102 @@ final class ProjectCycleStrip: NSView {
 
     var selected: ProjectSwitcherEntry? { entries.indices.contains(selectedIndex) ? entries[selectedIndex] : nil }
 
-    /// The capsule slides to the picked tile; the caption's words crossfade in place.
+    /// How far the row has slid: the pick centred where it can be, the ends never past the edges.
+    private var scrollOffset: CGFloat {
+        guard overflows else { return 0 }
+        let center = (tile + Self.gap) * CGFloat(selectedIndex) + tile / 2
+        return min(max(0, center - visibleWidth / 2), Self.rowWidth(entries.count, tile: tile) - visibleWidth)
+    }
+
+    override func layout() {
+        super.layout()
+        fade.frame = viewport.bounds
+        updateFade()
+    }
+
+    /// An edge fades only where tiles go on past it.
+    private func updateFade() {
+        guard overflows, visibleWidth > 0 else { return }
+        let offset = scrollOffset
+        let edge = Self.fadeWidth / visibleWidth
+        fade.colors = [offset > 0.5 ? NSColor.clear.cgColor : NSColor.black.cgColor, NSColor.black.cgColor, NSColor.black.cgColor,
+                       offset < Self.rowWidth(entries.count, tile: tile) - visibleWidth - 0.5 ? NSColor.clear.cgColor : NSColor.black.cgColor]
+        fade.locations = [0, NSNumber(value: Double(edge)), NSNumber(value: Double(1 - edge)), 1]
+    }
+
+    /// The capsule slides to the picked tile, and the row with it when it slides; the caption's
+    /// words crossfade in place.
     private func refresh(animated: Bool) {
         layoutSubtreeIfNeeded()
+        let rowFrame = NSRect(x: -scrollOffset, y: 0, width: row.frame.width, height: row.frame.height)
         if tiles.indices.contains(selectedIndex) {
-            let target = NSRect(x: (Self.tileWidth + DS.Spacing.xs) * CGFloat(selectedIndex), y: 0, width: Self.tileWidth, height: Self.tileHeight)
-            if animated { DS.Motion.animate(DS.Motion.snappy, { selection.animator().frame = target }) } else { selection.frame = target }
+            let target = tiles[selectedIndex].frame
+            if animated {
+                DS.Motion.animate(DS.Motion.snappy, {
+                    selection.animator().frame = target
+                    row.animator().frame = rowFrame
+                })
+            } else {
+                selection.frame = target
+                row.frame = rowFrame
+            }
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animated)
+        updateFade()
+        CATransaction.commit()
         if animated { DS.Motion.crossfade(caption, duration: DS.Motion.glanceDuration) }
         caption.attributedStringValue = Self.caption(for: selected)
         setAccessibilityValue(selected?.space.name)
+    }
+
+    // MARK: The pointer
+
+    /// The tile under a point in this view, if it's showing.
+    private func tileIndex(at point: NSPoint) -> Int? {
+        guard viewport.bounds.contains(viewport.convert(point, from: self)) else { return nil }
+        let inRow = row.convert(point, from: self)
+        return tiles.firstIndex { $0.frame.contains(inRow) }
+    }
+
+    /// Every click in the panel is the panel's: the glass under the tiles would take it.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, frame.contains(point) else { return nil }
+        return self
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        pointerAtShow = NSEvent.mouseLocation
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard NSEvent.mouseLocation != pointerAtShow else { return }
+        pointerAtShow = nil
+        hover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    private func hover(at point: NSPoint) {
+        guard let index = tileIndex(at: point), index != selectedIndex else { return }
+        selectedIndex = index
+        refresh(animated: true)
+    }
+
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        guard let index = tileIndex(at: convert(event.locationInWindow, from: nil)) else { return }
+        selectedIndex = index
+        onPick?()
     }
 
     /// "● Claude Code finished" or "main · 2 terminals": one string, its dot a glyph in it, so
@@ -1225,4 +1466,22 @@ final class ProjectCycleStrip: NSView {
 
     var captionForTesting: String { caption.stringValue }
     var selectionFrameForTesting: NSRect { selection.frame }
+    var tileWidthForTesting: CGFloat { tile }
+    /// The tiles' frames in this view's coordinates, clipped to what shows (empty when hidden).
+    var visibleTileFramesForTesting: [NSRect] {
+        let visible = convert(viewport.bounds, from: viewport)
+        return tiles.map { convert($0.bounds, from: $0).intersection(visible) }
+    }
+    /// The picked tile shows whole.
+    var selectionVisibleForTesting: Bool {
+        guard tiles.indices.contains(selectedIndex) else { return false }
+        let visible = convert(viewport.bounds, from: viewport)
+        let tileFrame = convert(tiles[selectedIndex].bounds, from: tiles[selectedIndex])
+        return visible.insetBy(dx: -0.5, dy: -0.5).contains(tileFrame)
+    }
+    func hoverForTesting(_ index: Int) {
+        let rect = convert(tiles[index].bounds, from: tiles[index])
+        hover(at: NSPoint(x: rect.midX, y: rect.midY))
+    }
+    func clickForTesting(_ index: Int) { selectedIndex = index; onPick?() }
 }

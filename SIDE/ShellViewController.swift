@@ -1927,8 +1927,10 @@ final class ShellViewController: NSViewController {
         let entries = ProjectSwitcherModel.entries(current: projectURL).filter(\.isOpen)
         guard entries.count > 1 else { NSSound.beep(); return true }
         closeProjectSwitcher()
-        let strip = ProjectCycleStrip(entries: entries, start: back ? entries.count - 1 : 1)
-        strip.frame = chrome.paletteFrame(size: ProjectCycleStrip.size(for: entries), in: view)
+        let strip = ProjectCycleStrip(entries: entries, start: back ? entries.count - 1 : 1, within: view.bounds.width - 24)
+        strip.frame = chrome.paletteFrame(size: ProjectCycleStrip.size(for: entries, within: view.bounds.width - 24), in: view)
+        // A tile clicked while ⌃ is held: that project, as letting go would.
+        strip.onPick = { [weak self] in self?.finishCycle(commit: true) }
         strip.isHidden = true
         view.addSubview(strip, positioned: .above, relativeTo: nil)
         cycleStrip = strip
