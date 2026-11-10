@@ -217,6 +217,20 @@ extension ProjectSpaces {
         space.logoPath.flatMap { ProjectLogo.chosen(URL(fileURLWithPath: $0), size: size) }
             ?? ProjectLogo.image(for: space.url, size: size) ?? image(for: space, pointSize: size * 0.72)
     }
+
+    /// A faint shadow under a project's logo (the chip, the switcher, the ⌃⇥ strip), so a white or
+    /// pale one keeps its edge on a light surface (the owner, 2026-11-09). Symbols are drawn on
+    /// nothing and need none; a view whose mark changes loses it with the logo.
+    static func liftLogo(_ view: NSImageView, for space: Space?, size: CGFloat) {
+        let logo = space.flatMap { space in space.logoPath.flatMap { ProjectLogo.chosen(URL(fileURLWithPath: $0), size: size) } ?? ProjectLogo.image(for: space.url, size: size) }
+        view.wantsLayer = true
+        guard logo != nil else { view.shadow = nil; return }
+        view.shadow = NSShadow()
+        view.layer?.shadowColor = NSColor.black.cgColor
+        view.layer?.shadowOpacity = 0.22
+        view.layer?.shadowRadius = max(1.5, size / 22)
+        view.layer?.shadowOffset = CGSize(width: 0, height: -0.5)
+    }
 }
 
 /// The project, at the bar's leading edge: its mark in a glass disc. Click for the projects; a
@@ -278,6 +292,7 @@ final class ProjectChip: NSView {
         guard let url = currentProject?() else {
             mark.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
             mark.contentTintColor = .tertiaryLabelColor
+            ProjectSpaces.liftLogo(mark, for: nil, size: 20)
             toolTip = nil
             dot.isHidden = true
             return
@@ -288,6 +303,7 @@ final class ProjectChip: NSView {
         shownPath = space.path
         mark.image = ProjectSpaces.mark(for: space, size: 20)
         mark.contentTintColor = nil
+        ProjectSpaces.liftLogo(mark, for: space, size: 20)
         // Another project wants you: its dot rides on this one's mark, since only this one shows.
         let current = url.standardizedFileURL.path
         let elsewhere = ProjectSpaces.shared.spaces.lazy.filter { $0.path != current }
@@ -1064,6 +1080,7 @@ final class ProjectSwitcherCard: NSView {
         let mark = NSImageView(image: ProjectSpaces.mark(for: entry.space, size: markSize) ?? NSImage())
         mark.imageScaling = .scaleProportionallyUpOrDown
         mark.translatesAutoresizingMaskIntoConstraints = false
+        ProjectSpaces.liftLogo(mark, for: entry.space, size: markSize)
         let name = NSTextField(labelWithString: entry.space.name)
         name.font = DS.Text.body(.semibold)
         name.lineBreakMode = .byTruncatingTail
@@ -1292,6 +1309,7 @@ final class ProjectCycleStrip: NSView {
             let mark = NSImageView(image: ProjectSpaces.mark(for: entry.space, size: markSize) ?? NSImage())
             mark.imageScaling = .scaleProportionallyUpOrDown
             mark.frame = NSRect(x: (tile - markSize) / 2, y: (10 * scale).rounded(), width: markSize, height: markSize)
+            ProjectSpaces.liftLogo(mark, for: entry.space, size: markSize)
             let name = NSTextField(labelWithString: entry.space.name)
             name.font = DS.Text.caption(.medium)
             name.lineBreakMode = .byTruncatingTail
