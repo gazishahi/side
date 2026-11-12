@@ -350,6 +350,34 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertNil(surface.selectedTextForTesting, "the click went to the program, not the selection")
     }
 
+    /// ⌘-click hands a path to Side (which opens it in Editor) and a link's URL too.
+    func testCommandClickOpensLinks() {
+        let surface = makeSurface()
+        let window = NSWindow(contentRect: surface.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        var requested: [String] = []
+        surface.onFileLinkRequested = { requested.append($0); return true }
+        surface.display(text: "error in Sources/App/main.swift:12 \u{1B}]8;;https://example.com/x\u{1B}\\docs\u{1B}]8;;\u{1B}\\")
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("docs") })
+        let screen = surface.screenForTesting
+        let cell = surface.cellSizeForTesting
+        func click(_ column: Int, _ flags: NSEvent.ModifierFlags) {
+            let at = screen.convert(NSPoint(x: (CGFloat(column) + 0.5) * cell.width, y: screen.bounds.height - 0.5 * cell.height), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: at, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                if type == .leftMouseDown { screen.mouseDown(with: event) } else { screen.mouseUp(with: event) }
+            }
+        }
+        click(15, [])
+        XCTAssertEqual(requested, [], "a plain click isn't a link click")
+        click(15, .command)
+        click(36, .command)
+        XCTAssertEqual(requested, ["Sources/App/main.swift:12", "https://example.com/x"])
+    }
+
     func testAgentReportsAcrossReads() {
         var watcher = OSCWatcher(code: 6973)
         XCTAssertEqual(watcher.consume(Array("x\u{1B}]6973;agent;cl".utf8)), [])

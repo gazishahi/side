@@ -8,8 +8,8 @@ import SideTerminal
 /// (SideTerminal) parses on a queue of its own, Alloy (AlloyTerminal) draws on a render thread of
 /// its own, and keys go through libghostty-vt's encoder, translated from NSEvent the way
 /// Ghostty's macOS app does. Selection and scrolling back use libghostty-vt's own gestures and
-/// viewport; a program that asks for the mouse gets it (shift still selects). Not yet: links and
-/// IME preedit (the rest of the RFC's step 4).
+/// viewport; a program that asks for the mouse gets it (shift still selects); ⌘-click opens an
+/// OSC 8 link or a URL or path in the text. Not yet: IME preedit (the rest of the RFC's step 4).
 final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation {
     weak var surfaceDelegate: TerminalSurfaceDelegate?
     var keeper: KeeperLink? { didSet { syncKeeperSize() } }
@@ -271,6 +271,10 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
             if !bytes.isEmpty { send(bytes: bytes[...]) }
             return
         }
+        if event.kind == .down, event.modifiers.contains(.command), let link = link(column: event.column, row: event.row) {
+            openLink(link)
+            return
+        }
         let scale = window?.backingScaleFactor ?? 2
         switch event.kind {
         case .down:
@@ -289,6 +293,31 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
             return
         }
         screen.setNeedsFrame()
+    }
+
+    // MARK: Links
+
+    /// What ⌘-click on a cell opens: its OSC 8 link, or a URL or path in the row's text.
+    private func link(column: Int, row: Int) -> String? {
+        terminal.hyperlink(column: column, row: row) ?? ImplicitLinks.link(in: terminal.rowText(row), at: column)
+    }
+
+    /// Side's own first (a path opens in Editor), else its default app, as SwiftTerm's view did
+    /// (TerminalView.openDefaultLink): a URL as it is, a path if it exists, with a `:line[:column]`
+    /// suffix dropped to look.
+    private func openLink(_ link: String) {
+        if onFileLinkRequested?(link) == true { return }
+        if let url = URL(string: link), url.scheme != nil {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        let path = NSString(string: link).expandingTildeInPath
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        } else if let suffix = path.range(of: #":[0-9]+(?::[0-9]+)?$"#, options: .regularExpression),
+                  FileManager.default.fileExists(atPath: String(path[..<suffix.lowerBound])) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: String(path[..<suffix.lowerBound])))
+        }
     }
 
     /// Dragging past an edge: the viewport scrolls a row at a time, and the selection follows.
