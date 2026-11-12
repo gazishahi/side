@@ -15,7 +15,10 @@ struct AtlasEntry {
 /// (white) for ordinary glyphs, which the shader tints, and full color for emoji. Keyed by font,
 /// glyph, screen scale and a quarter-pixel horizontal position, so text sits where CoreText put
 /// it rather than snapped to whole pixels.
-@MainActor
+///
+/// Confined, not shared across threads: whoever makes an atlas uses it from one thread. The
+/// editors' renderers share one on the main actor; a terminal drawing on a render thread of its
+/// own keeps its own there (docs/SIDE_RFC_TERMINAL_ENGINE.md, Phase 1). No lock on the hot path.
 final class GlyphAtlas {
     private(set) var texture: MTLTexture
     private(set) var size: Int
