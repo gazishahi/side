@@ -95,6 +95,18 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(pixels.count(in: cellRect(column: 5, row: 0), blue), 0)
     }
 
+    /// A block cursor covers its cell and shows the character under it in the background color.
+    func testABlockCursorInvertsItsCharacter() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 4, rows: 1, foreground: 0xFFFFFF)
+        grid[1, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0xFFFFFF)
+        grid.cursor = TerminalCursor(column: 1, row: 0, visible: true, shape: .block)
+        let pixels = try render(grid, renderer: renderer)
+        let cell = cellRect(column: 1, row: 0)
+        XCTAssertGreaterThan(pixels.count(in: cell) { $0.r < 60 }, 20, "the W, dark on the block")
+        XCTAssertGreaterThan(pixels.count(in: cell) { $0.r > 200 }, cell.x.count * cell.y.count / 2, "the block itself")
+    }
+
     /// Composing text is drawn at the cursor, over what's there, underlined.
     func testComposingTextAtTheCursor() throws {
         let renderer = try makeRenderer()

@@ -80,6 +80,9 @@ public final class TerminalRenderer {
     private let atlas: GlyphAtlas
     private let cell: CGSize
     private let ascent: CGFloat
+    /// The font's own underline: how far below the baseline, and how thick, in points.
+    private let underlineOffset: CGFloat
+    private let underlineThickness: CGFloat
 
     /// One quad, laid out as AlloyRender's shaders read it (TextRenderer.shaders): a rectangle in
     /// pixels, its atlas region, a color and a kind (0 solid, 1 tinted glyph, 2 color glyph).
@@ -113,6 +116,8 @@ public final class TerminalRenderer {
         atlas = GlyphAtlas(device: device)
         cell = font.cellSize
         ascent = CTFontGetAscent(font.regular)
+        underlineOffset = -CTFontGetUnderlinePosition(font.regular)
+        underlineThickness = CTFontGetUnderlineThickness(font.regular)
     }
 
     /// Encodes `grid` into `target`, presents `drawable` if given, and commits. Rows the grid
@@ -189,8 +194,13 @@ public final class TerminalRenderer {
         var quads: [Quad] = []
         quads.reserveCapacity(grid.columns * grid.rows / 2 + 64)
         for row in backgroundQuads { quads += row }
-        if preedit.isEmpty, let cursor = cursorQuad(grid, scale: scale) { quads.append(cursor) }
         for row in glyphQuads { quads += row }
+        // The cursor over the text: a block covers its cell and redraws the character in the
+        // background's color, as terminals draw it; a bar or underline just sits there.
+        if preedit.isEmpty, let cursor = cursorQuad(grid, scale: scale) {
+            quads.append(cursor)
+            if grid.cursor.shape == .block { quads += cursorGlyph(grid, scale: scale) }
+        }
         if !preedit.isEmpty { quads += preeditQuads(grid, scale: scale) }
         return quads
     }
@@ -243,6 +253,22 @@ public final class TerminalRenderer {
         }
     }
 
+    /// The character under a block cursor, in the background's color.
+    private func cursorGlyph(_ grid: TerminalGrid, scale: CGFloat) -> [Quad] {
+        let c = grid[grid.cursor.column, grid.cursor.row]
+        guard !c.style.contains(.spacer), c.scalar > 32 || c.cluster != nil else { return [] }
+        let (cw, ch, baselineOffset) = metrics(scale)
+        let left = (Float(grid.cursor.column) * cw).rounded(.down)
+        let baseline = Float(grid.cursor.row) * ch + baselineOffset
+        let ink = SIMD4<Float>(theme.background.x, theme.background.y, theme.background.z, 1)
+        return placed(c, scale: scale).filter { $0.entry.region.width > 0 }.map { p in
+            let r = p.entry.region
+            return Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
+                        uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
+                        color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink, kind: p.entry.isColor ? 2 : 1)
+        }
+    }
+
     private func cursorQuad(_ grid: TerminalGrid, scale: CGFloat) -> Quad? {
         let cursor = grid.cursor
         guard cursor.visible, cursor.row >= 0, cursor.row < grid.rows, cursor.column >= 0, cursor.column < grid.columns else { return nil }
@@ -254,7 +280,7 @@ public final class TerminalRenderer {
         case .bar: SIMD4(x, y, thickness, ch)
         case .underline: SIMD4(x, y + ch - thickness, cw.rounded(.up), thickness)
         }
-        return Quad(rect: rect, uv: .zero, color: color(theme.cursor, alpha: cursor.shape == .block ? 0.7 : 1), kind: 0)
+        return Quad(rect: rect, uv: .zero, color: color(theme.cursor), kind: 0)
     }
 
     private func rebuild(row y: Int, of grid: TerminalGrid, scale: CGFloat) {
@@ -264,6 +290,7 @@ public final class TerminalRenderer {
         let baseline = top + baselineOffset
         let line = Float(max(1, scale.rounded()))
         let rowStart = y * grid.columns
+        let underlineY = Float((underlineOffset * scale).rounded()), underlineHeight = Float(max(1, (underlineThickness * scale).rounded()))
         // Backgrounds: one quad per run of cells with the same explicit color.
         var x = 0
         while x < grid.columns {
@@ -289,7 +316,7 @@ public final class TerminalRenderer {
             let left = (Float(x) * cw).rounded(.down)
             let span = c.style.contains(.wide) ? cw * 2 : cw
             if c.style.contains(.underline) {
-                backgrounds.append(Quad(rect: SIMD4(left, baseline + line, span.rounded(.up), line), uv: .zero, color: color(c.foreground), kind: 0))
+                backgrounds.append(Quad(rect: SIMD4(left, baseline + underlineY, span.rounded(.up), underlineHeight), uv: .zero, color: color(c.foreground), kind: 0))
             }
             if c.style.contains(.strikethrough) {
                 let middle = top + (baselineOffset * 0.65).rounded()
