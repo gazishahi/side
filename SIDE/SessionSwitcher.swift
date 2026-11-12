@@ -92,6 +92,7 @@ final class SessionSwitcherOverlay: NSView, NSTextFieldDelegate {
         let hint = NSTextField(labelWithString: "")
         hint.attributedStringValue = ProjectSwitcherOverlay.hints([("\u{21A9}", "Go"), ("esc", "Close")])
         let footer = NSStackView(views: [hint, NSView()])
+        if let offer = hooksOffer() { footer.addArrangedSubview(offer) }
         footer.alignment = .centerY
         footer.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 14)
 
@@ -256,6 +257,56 @@ final class SessionSwitcherOverlay: NSView, NSTextFieldDelegate {
     }
 
     func focus() { window?.makeFirstResponder(field) }
+
+    // MARK: Claude Code's hooks, offered once
+
+    private static let offeredKey = "side.claude-hooks.offered"
+    nonisolated(unsafe) static var offerDefaults: UserDefaults = ClaudeHooks.defaults
+
+    /// Asked once (SIDE_RFC_SESSIONS.md, decision 1), here where sessions are listed: Turn On
+    /// or ×, and it isn't asked again. Settings › Agents has it after that.
+    private func hooksOffer() -> NSView? {
+        guard !Self.offerDefaults.bool(forKey: Self.offeredKey), !ClaudeHooks.isInstalledAnywhere else { return nil }
+        let text = NSTextField(labelWithString: "See Claude Code sessions in any terminal")
+        text.font = DS.Text.caption()
+        text.textColor = .secondaryLabelColor
+        text.toolTip = "Adds a small hook to Claude Code\u{2019}s settings so Side hears when a session is working, waiting on you or done. Settings \u{203A} Agents turns it off."
+        let turnOn = NSButton(title: "Turn On", target: self, action: #selector(turnOnHooks))
+        turnOn.controlSize = .small
+        turnOn.bezelStyle = .push
+        turnOn.setAccessibilityIdentifier("sessions.hooksOffer")
+        let dismiss = DS.CircleButton(symbol: "xmark", diameter: 18, label: "Not Now")
+        dismiss.target = self
+        dismiss.action = #selector(dismissHooksOffer)
+        let offer = NSStackView(views: [text, turnOn, dismiss])
+        offer.spacing = DS.Spacing.s
+        offer.alignment = .centerY
+        hooksOfferView = offer
+        return offer
+    }
+    private weak var hooksOfferView: NSView?
+
+    @objc private func turnOnHooks() {
+        Self.offerDefaults.set(true, forKey: Self.offeredKey)
+        do {
+            try ClaudeHooks.install(at: ClaudeHooks.userSettings)
+            HookInbox.shared.start()
+            hooksOfferView?.isHidden = true
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Claude Code\u{2019}s settings weren\u{2019}t changed"
+            alert.informativeText = error.localizedDescription
+            if let window { alert.beginSheetModal(for: window) }
+        }
+    }
+
+    var hooksOfferShownForTesting: Bool { hooksOfferView.map { !$0.isHidden && $0.alphaValue > 0 } ?? false }
+    func turnOnHooksForTesting() { turnOnHooks() }
+
+    @objc private func dismissHooksOffer() {
+        Self.offerDefaults.set(true, forKey: Self.offeredKey)
+        DS.Motion.fade { self.hooksOfferView?.animator().alphaValue = 0 }
+    }
 
     /// On its way out: the window under it takes clicks again at once.
     var passesClicksThrough = false

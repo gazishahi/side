@@ -65,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let volatile = UserDefaults(suiteName: "side.uitesting.volatile") ?? .standard
             volatile.removePersistentDomain(forName: "side.uitesting.volatile")
             HeronDefaults.store = volatile
+            ClaudeHooks.defaults = volatile
+            SessionSwitcherOverlay.offerDefaults = volatile
             GitLaunchProbe.defaults = volatile
             ProjectRules.defaults = volatile
             MakeWorkspaceViewController.preferences = volatile
@@ -365,6 +367,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         let rows = shell.sessionSwitcherForTesting?.rowsForTesting.joined(separator: "\n") ?? "closed"
                         FileHandle.standardError.write(Data("[switcher]\n\(rows)\nselected \(shell.sessionSwitcherForTesting?.selectedForTesting ?? "-")\n[switcher-end]\n".utf8))
                     }
+                    // Claude Code's hooks (phase 2): where they'd go, whether they're in, events read now.
+                    if command == "hooks-dump" {
+                        FileHandle.standardError.write(Data("[hooks] inbox=\(HookPaths.inbox.path) settings=\(ClaudeHooks.userSettings.path) status=\(ClaudeHooks.status(at: ClaudeHooks.userSettings)) offer=\(shell.sessionSwitcherForTesting?.hooksOfferShownForTesting ?? false)\n".utf8))
+                    }
+                    if command == "hooks-read" { HookInbox.shared.start(); HookInbox.shared.read() }
+                    if command == "session-switcher-hooks-on" { shell.sessionSwitcherForTesting?.turnOnHooksForTesting() }
                     if command == "sessions-dump" {
                         SessionRegistry.shared.refresh()
                         FileHandle.standardError.write(Data("[sessions]\n\(SessionRegistry.shared.stateForTesting)\n[sessions-end]\n".utf8))

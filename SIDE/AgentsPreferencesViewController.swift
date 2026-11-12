@@ -21,7 +21,7 @@ final class AgentsPreferencesViewController: NSViewController {
 
     private func rebuild() {
         keyFields.removeAll()
-        var sections: [NSView] = [SettingsSplitViewController.hero(.agents), defaultSection()]
+        var sections: [NSView] = [SettingsSplitViewController.hero(.agents), defaultSection(), hooksSection()]
         sections += ACPAgent.known.map(section(for:))
         sections.append(SettingsForm.section(footer: "Other agents that speak the Agent Client Protocol (Qwen Code, Goose and more) can be added by the command that starts them in ACP mode. Side has verified Claude Code; the others are experimental, and may not work fully.", [
             SettingsForm.row("Add another agent", SettingsForm.button("Add Agent\u{2026}", self, #selector(addAgent))),
@@ -58,6 +58,73 @@ final class AgentsPreferencesViewController: NSViewController {
     }
 
     private(set) var defaultPopup: NSPopUpButton?
+
+    /// Claude Code's hooks (SIDE_RFC_SESSIONS.md, phase 2): every Claude Code session's state,
+    /// in Side's terminals or any other, from Claude Code itself. Opt-in, and removable.
+    private func hooksSection() -> NSView {
+        let status = ClaudeHooks.status(at: ClaudeHooks.userSettings)
+        let detail: String
+        let action: NSButton
+        switch status {
+        case .installed:
+            detail = "On for every project."
+            action = SettingsForm.button("Remove", self, #selector(removeHooks))
+        case .incomplete:
+            detail = "Some of Side\u{2019}s hooks were taken out of Claude Code\u{2019}s settings."
+            action = SettingsForm.button("Put Back", self, #selector(installHooks))
+        case .notInstalled:
+            detail = "Off."
+            action = SettingsForm.button("Turn On", self, #selector(installHooks))
+        }
+        action.setAccessibilityIdentifier("settings.claudeHooks")
+        var rows = [SettingsForm.row("Session hooks", detail: detail, action)]
+        for project in ClaudeHooks.projects {
+            let remove = SettingsForm.button("Remove", self, #selector(removeProjectHooks(_:)))
+            remove.identifier = NSUserInterfaceItemIdentifier(project.path)
+            rows.append(SettingsForm.row(project.lastPathComponent, detail: "On for this project only.", remove))
+        }
+        if status == .notInstalled {
+            rows.append(SettingsForm.row("For one project", SettingsForm.button("Choose Project\u{2026}", self, #selector(installProjectHooks))))
+        }
+        let footer = "Side adds a small hook to Claude Code\u{2019}s settings (\(Self.shortPath(ClaudeHooks.userSettings))) so it hears from every Claude Code session, in Side or any other terminal: when it\u{2019}s working, what it\u{2019}s waiting for, and when it\u{2019}s done. Nothing else in the file changes, and the file as it was is kept beside it. Side never reads your sign-in or your conversations."
+        return SettingsForm.section("Claude Code sessions", footer: footer, rows)
+    }
+
+    private static func shortPath(_ url: URL) -> String { (url.path as NSString).abbreviatingWithTildeInPath }
+
+    @objc private func installHooks() { changeHooks { try ClaudeHooks.install(at: ClaudeHooks.userSettings) } }
+    @objc private func removeHooks() { changeHooks { try ClaudeHooks.remove(at: ClaudeHooks.userSettings) } }
+
+    @objc private func removeProjectHooks(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        changeHooks { try ClaudeHooks.remove(at: ClaudeHooks.projectSettings(URL(fileURLWithPath: path, isDirectory: true))) }
+    }
+
+    @objc private func installProjectHooks() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Turn On"
+        panel.message = "Hooks go in the project\u{2019}s .claude/settings.local.json, which Claude Code keeps out of the repository."
+        guard let window = view.window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let project = panel.url else { return }
+            self?.changeHooks { try ClaudeHooks.install(at: ClaudeHooks.projectSettings(project), project: project) }
+        }
+    }
+
+    private func changeHooks(_ change: () throws -> Void) {
+        do {
+            try change()
+            HookInbox.shared.start()
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Claude Code\u{2019}s settings weren\u{2019}t changed"
+            alert.informativeText = error.localizedDescription
+            if let window = view.window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+        }
+        rebuild()
+    }
 
     @objc private func defaultAgentChanged(_ sender: NSPopUpButton) {
         let id = sender.selectedItem?.representedObject as? String ?? ""

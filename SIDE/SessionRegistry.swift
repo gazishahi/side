@@ -114,7 +114,8 @@ final class SessionRegistry {
     /// background sessions every ten seconds.
     func start() {
         guard timer == nil else { return }
-        for name in [TerminalSessionManager.didChangeNotification, TerminalViewController.programStatusDidChangeNotification] {
+        HookInbox.shared.start()
+        for name in [TerminalSessionManager.didChangeNotification, TerminalViewController.programStatusDidChangeNotification, HookInbox.didChangeNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.scheduleRefresh() }
             })
@@ -142,6 +143,10 @@ final class SessionRegistry {
         pools.append((nil, RunWorkspaceViewController.homeTerminals))
         var claudeIDsInTerminals: Set<String> = []
         var foregroundPIDs: Set<pid_t> = []
+        // What the hooks say, by session and by the agent's process.
+        let hooked = Array(HookInbox.shared.sessions.sessions.values)
+        let hookedByPID = Dictionary(hooked.filter { $0.pid > 0 }.map { ($0.pid, $0) }, uniquingKeysWith: { $0.updatedAt > $1.updatedAt ? $0 : $1 })
+        let hookedByID = Dictionary(hooked.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for pool in pools {
             let projectCheckouts = pool.project.flatMap { checkouts[$0.standardizedFileURL.path] } ?? []
             // Named as their tabs are: two in one folder are "app" and "app 2".
@@ -151,12 +156,18 @@ final class SessionRegistry {
                 let vc = terminal.viewController
                 guard vc.isAliveOrUnstarted else { continue }
                 let program = vc.runningProgramName
-                let reading = Self.state(records: vc.programStatus, working: vc.isProgramWorking, news: vc.news, program: program)
+                var reading = Self.state(records: vc.programStatus, working: vc.isProgramWorking, news: vc.news, program: program)
                 if let id = vc.recoveredAgentSession, program == "claude" { claudeIDsInTerminals.insert(id) }
                 // Where the program really is (the kernel's word), else the shell's last report.
                 let shell = vc.keeperID.flatMap { SessionKeepers.liveRecord($0)?.childPID }
                 let foreground = shell.flatMap(ForegroundProgram.group(ofShell:))
                 if let foreground { foregroundPIDs.insert(foreground) }
+                // The agent's own word through its hooks, when it didn't report in the terminal.
+                if program != nil, !reading.reported,
+                   let hook = foreground.flatMap({ hookedByPID[$0] }) ?? vc.recoveredAgentSession.flatMap({ hookedByID[$0] }) {
+                    claudeIDsInTerminals.insert(hook.id)
+                    reading = (hook.state, hook.message, true)
+                }
                 let cwd = foreground.flatMap(ForegroundProgram.directory(of:)) ?? vc.currentDirectory ?? vc.workingDirectory
                 next.append(Session(id: "terminal:\(terminal.id.uuidString)", source: .terminal(terminal.id), program: program, title: title,
                                     state: reading.state, message: reading.message, cwd: cwd, project: pool.project,
@@ -165,18 +176,42 @@ final class SessionRegistry {
         }
         // Claude Code's own list, less the sessions already showing in a tab (by conversation, or
         // by the process in a tab's foreground).
+        var listed = claudeIDsInTerminals
         for session in claudeSessions where !claudeIDsInTerminals.contains(session.sessionId) && !foregroundPIDs.contains(session.pid) {
-            guard let state = session.state else { continue }
-            let project = contexts.first { session.cwd.hasPrefix($0.projectRoot.standardizedFileURL.path) }?.projectRoot
+            guard let listedState = session.state else { continue }
+            listed.insert(session.sessionId)
+            let hook = hookedByID[session.sessionId]
+            let cwd = hook?.cwd ?? session.cwd
+            let project = Self.project(containing: cwd, in: contexts)
             let projectCheckouts = project.flatMap { checkouts[$0.standardizedFileURL.path] } ?? []
             next.append(Session(id: "claude:\(session.sessionId)", source: .claude(session.sessionId), program: "claude",
-                                title: session.name ?? "Claude Code", state: state, message: session.waitingFor ?? "", cwd: session.cwd,
-                                project: project, checkout: Self.checkout(for: session.cwd, in: projectCheckouts), reportsItself: true))
+                                title: session.name ?? hook.map(\.request).flatMap { $0.isEmpty ? nil : $0 } ?? "Claude Code",
+                                state: hook?.state ?? listedState, message: hook?.message ?? session.waitingFor ?? "", cwd: cwd,
+                                project: project, checkout: Self.checkout(for: cwd, in: projectCheckouts), reportsItself: true))
+        }
+        // Sessions only the hooks know of (a Claude Code too old for `claude agents`): while
+        // their process lives.
+        for hook in hooked where !listed.contains(hook.id) && !foregroundPIDs.contains(hook.pid) && HookSessions.isAlive(hook.pid) {
+            let project = hook.cwd.flatMap { Self.project(containing: $0, in: contexts) }
+            let projectCheckouts = project.flatMap { checkouts[$0.standardizedFileURL.path] } ?? []
+            next.append(Session(id: "claude:\(hook.id)", source: .claude(hook.id), program: hook.agent,
+                                title: hook.request.isEmpty ? "Claude Code" : hook.request, state: hook.state, message: hook.message,
+                                cwd: hook.cwd, project: project, checkout: hook.cwd.flatMap { Self.checkout(for: $0, in: projectCheckouts) },
+                                reportsItself: true))
         }
         next.sort { ($0.state.rank, $0.title) < ($1.state.rank, $1.title) }
         guard next != sessions else { return }
         sessions = next
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+
+    /// The open project a folder is in, at a component boundary (`/work/app2` isn't in `/work/app`).
+    static func project(containing directory: String, in contexts: [ProjectContext]) -> URL? {
+        let path = (directory as NSString).standardizingPath
+        return contexts.map(\.projectRoot).filter { root in
+            let base = root.standardizedFileURL.path
+            return path == base || path.hasPrefix(base + "/")
+        }.max { $0.path.count < $1.path.count }
     }
 
     /// Off the main thread: every open project's checkouts, and Claude's background sessions.

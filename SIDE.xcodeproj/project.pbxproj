@@ -56,6 +56,7 @@
 		A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000251 /* GitLaunchProbeTests.swift */; };
 		A00000000000000000000615 /* CompanionFollowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000614 /* CompanionFollowTests.swift */; };
 		A00000000000000000000623 /* SessionRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000622 /* SessionRegistryTests.swift */; };
+		A00000000000000000000B05 /* AgentHooksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B04 /* AgentHooksTests.swift */; };
 		A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000257 /* WorkGroupViewTests.swift */; };
 		A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000271 /* DataIntegrityAuditTests.swift */; };
 		A00000000000000000000274 /* LSPOrderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000273 /* LSPOrderingTests.swift */; };
@@ -93,6 +94,8 @@
 		A00000000000000000000619 /* JumpRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000618 /* JumpRail.swift */; };
 		A0000000000000000000061F /* WelcomeDemos.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061E /* WelcomeDemos.swift */; };
 		A00000000000000000000621 /* SessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000620 /* SessionRegistry.swift */; };
+		A00000000000000000000B01 /* AgentHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B00 /* AgentHooks.swift */; };
+		A00000000000000000000B03 /* side-hook in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B02 /* side-hook */; };
 		A00000000000000000000625 /* SessionSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000624 /* SessionSwitcher.swift */; };
 		A0000000000000000000061B /* RichBlocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061A /* RichBlocks.swift */; };
 		A0000000000000000000061D /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061C /* mermaid.min.js */; };
@@ -244,6 +247,8 @@
 		A00000000000000000000618 /* JumpRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpRail.swift; sourceTree = "<group>"; };
 		A0000000000000000000061E /* WelcomeDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeDemos.swift; sourceTree = "<group>"; };
 		A00000000000000000000620 /* SessionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistry.swift; sourceTree = "<group>"; };
+		A00000000000000000000B00 /* AgentHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHooks.swift; sourceTree = "<group>"; };
+		A00000000000000000000B02 /* side-hook */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "side-hook"; sourceTree = "<group>"; };
 		A00000000000000000000624 /* SessionSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSwitcher.swift; sourceTree = "<group>"; };
 		A0000000000000000000061A /* RichBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichBlocks.swift; sourceTree = "<group>"; };
 		A0000000000000000000061C /* mermaid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = mermaid.min.js; sourceTree = "<group>"; };
@@ -259,6 +264,7 @@
 		A00000000000000000000251 /* GitLaunchProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLaunchProbeTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000614 /* CompanionFollowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionFollowTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000622 /* SessionRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistryTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000B04 /* AgentHooksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHooksTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000257 /* WorkGroupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkGroupViewTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000271 /* DataIntegrityAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataIntegrityAuditTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000273 /* LSPOrderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LSPOrderingTests.swift; sourceTree = "<group>"; };
@@ -461,6 +467,8 @@
 				A00000000000000000000618 /* JumpRail.swift */,
 				A0000000000000000000061E /* WelcomeDemos.swift */,
 				A00000000000000000000620 /* SessionRegistry.swift */,
+				A00000000000000000000B00 /* AgentHooks.swift */,
+				A00000000000000000000B02 /* side-hook */,
 				A00000000000000000000624 /* SessionSwitcher.swift */,
 				A0000000000000000000061A /* RichBlocks.swift */,
 				A0000000000000000000061C /* mermaid.min.js */,
@@ -524,6 +532,7 @@
 				A00000000000000000000251 /* GitLaunchProbeTests.swift */,
 				A00000000000000000000614 /* CompanionFollowTests.swift */,
 				A00000000000000000000622 /* SessionRegistryTests.swift */,
+				A00000000000000000000B04 /* AgentHooksTests.swift */,
 				A00000000000000000000257 /* WorkGroupViewTests.swift */,
 				A00000000000000000000271 /* DataIntegrityAuditTests.swift */,
 				A00000000000000000000273 /* LSPOrderingTests.swift */,
@@ -694,6 +703,7 @@
 				A00000000000000000000060 /* Assets.xcassets in Resources */,
 				A00000000000000000000901 /* ThirdPartyNotices.txt in Resources */,
 				A0000000000000000000061D /* mermaid.min.js in Resources */,
+				A00000000000000000000B03 /* side-hook in Resources */,
 				795FB477306D83ED000E2346 /* AppIcon.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -805,6 +815,7 @@
 				A00000000000000000000619 /* JumpRail.swift in Sources */,
 				A0000000000000000000061F /* WelcomeDemos.swift in Sources */,
 				A00000000000000000000621 /* SessionRegistry.swift in Sources */,
+				A00000000000000000000B01 /* AgentHooks.swift in Sources */,
 				A00000000000000000000625 /* SessionSwitcher.swift in Sources */,
 				A0000000000000000000061B /* RichBlocks.swift in Sources */,
 				A00000000000000000000611 /* ProjectSwitcher.swift in Sources */,
@@ -846,6 +857,7 @@
 				A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */,
 				A00000000000000000000615 /* CompanionFollowTests.swift in Sources */,
 				A00000000000000000000623 /* SessionRegistryTests.swift in Sources */,
+				A00000000000000000000B05 /* AgentHooksTests.swift in Sources */,
 				A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */,
 				A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */,
 				A00000000000000000000274 /* LSPOrderingTests.swift in Sources */,

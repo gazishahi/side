@@ -179,6 +179,13 @@ worktree, no track.
 2. **Hooks.** `side-hook` and an opt-in installer for Claude Code (then Codex and others):
    state with reasons, cwd and worktree moves, subagents, requests, sessions in outside
    terminals.
+   *Built for Claude Code, 2026-11-12:* `SIDE/side-hook` writes one file per event to
+   `Application Support/Side/hooks`, read by `HookInbox` (`SIDE/AgentHooks.swift`). Installed for
+   SessionStart/End, UserPromptSubmit, PermissionRequest, Notification, Stop, StopFailure,
+   PostToolUse(Failure), SubagentStart/Stop and CwdChanged; never WorktreeCreate or
+   WorktreeRemove, whose hooks replace Claude Code's own worktree handling. Offered once in the
+   session switcher; Settings › Agents › Claude Code sessions turns it on or off, user-wide or for
+   one project. Edit contents (for phase 3) are not kept yet.
 3. **Attribution.** Edit events into Side's blame; shell-command snapshots; "who changed this"
    also in the Editor's gutter.
 4. **Changes as review.** The queue, grouping by request, review state, comments back, commit and

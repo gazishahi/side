@@ -1,0 +1,27 @@
+#!/bin/sh
+# side-hook: an agent's hook event, kept for Side (SIDE_RFC_SESSIONS.md, phase 2).
+#
+# Claude Code runs it for the events Side installs (Settings › Agents › Claude Code hooks), with
+# the event's JSON on stdin. It writes that JSON, with who sent it, to one file of its own in
+# Side's hooks folder, and Side reads the folder whether it was running then or opens later.
+#
+# It must never change what the agent does: it prints nothing (some events add a hook's output
+# to the conversation), always exits 0, and gives up quietly when it can't write.
+#
+#   side-hook <agent>        the agent's name, "claude" for Claude Code
+#
+# SIDE_HOOKS_DIR overrides the folder, for tests.
+dir="${SIDE_HOOKS_DIR:-$HOME/Library/Application Support/Side/hooks}"
+mkdir -p "$dir" 2>/dev/null || exit 0
+name="$(date +%s)-$$"
+tmp="$dir/.$name.tmp"
+# The JSON's own line breaks are only whitespace between its tokens (a string's are escaped),
+# so the event is kept as one line. Past 4 MB (a Write of a huge file) it's cut, and Side skips
+# what no longer parses.
+{
+    printf '{"side":{"agent":"%s","ppid":%s,"pid":%s,"at":%s},"event":' "${1:-claude}" "$PPID" "$$" "$(date +%s)"
+    head -c 4194304 | tr -d '\n\r'
+    printf '}\n'
+} > "$tmp" 2>/dev/null && mv -f "$tmp" "$dir/$name.json" 2>/dev/null
+rm -f "$tmp" 2>/dev/null
+exit 0
