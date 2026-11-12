@@ -162,7 +162,7 @@ final class VerificationStalenessTests: XCTestCase {
         let vc = TerminalViewController()
         vc.loadViewIfNeeded()
         let session = TerminalSession(label: "project", viewController: vc)
-        func receive(_ text: String) { vc.terminalView.dataReceived(slice: ArraySlice(Array(text.utf8))) }
+        func receive(_ text: String) { vc.terminalView.receive(ArraySlice(Array(text.utf8))) }
         receive("\u{1B}]0;user@host: ~/project\u{07}")
         XCTAssertEqual(session.title, "project", "a title set at the prompt names nothing")
         receive("\u{1B}]133;C\u{07}" + "\u{1B}]0;\u{2733} Claude Code\u{07}")

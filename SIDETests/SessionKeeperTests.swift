@@ -26,7 +26,7 @@ final class SessionKeeperTests: XCTestCase {
     }
 
     private func screen(_ session: TerminalSession) -> String {
-        String(decoding: session.viewController.terminalView.getTerminal().getBufferAsData(), as: UTF8.self)
+        session.viewController.terminalView.bufferText()
     }
 
     private func waitUntil(_ timeout: TimeInterval = 15, _ condition: () -> Bool) -> Bool {
@@ -51,7 +51,7 @@ final class SessionKeeperTests: XCTestCase {
         XCTAssertTrue(waitUntil { SessionKeepers.liveRecord(id) != nil }, "no keeper")
         // Typed once the shell is up: echo the sum, so the screen shows the answer, not the typing.
         XCTAssertTrue(waitUntil { session.viewController.startupSettled })
-        session.viewController.terminalView.send(txt: "echo keeper-$((40+2))\r")
+        session.viewController.terminalView.send(text: "echo keeper-$((40+2))\r")
         XCTAssertTrue(waitUntil { self.screen(session).contains("keeper-42") }, screen(session))
         let shell = try XCTUnwrap(SessionKeepers.liveRecord(id)?.childPID)
         // Run from a copy, never the bundle's own file: a rebuild that rewrites that file kills
@@ -88,7 +88,7 @@ final class SessionKeeperTests: XCTestCase {
         again.viewController.loadViewIfNeeded()
         again.viewController.start()
         XCTAssertTrue(waitUntil { self.screen(again).contains("keeper-42") }, "the screen didn't come back:\n\(screen(again))")
-        again.viewController.terminalView.send(txt: "echo still-$((1+1))\r")
+        again.viewController.terminalView.send(text: "echo still-$((1+1))\r")
         XCTAssertTrue(waitUntil { self.screen(again).contains("still-2") }, screen(again))
         XCTAssertEqual(SessionKeepers.liveRecord(id)?.childPID, shell, "a new shell, not the same one")
 
@@ -143,7 +143,7 @@ final class SessionKeeperTests: XCTestCase {
         session.viewController.loadViewIfNeeded()
         session.viewController.start()
         XCTAssertTrue(waitUntil { session.viewController.startupSettled })
-        session.viewController.terminalView.send(txt: "echo before-$((6*7))\r")
+        session.viewController.terminalView.send(text: "echo before-$((6*7))\r")
         XCTAssertTrue(waitUntil { self.screen(session).contains("before-42") })
         first.teardownAll()
 
@@ -164,7 +164,7 @@ final class SessionKeeperTests: XCTestCase {
         XCTAssertTrue(waitUntil { self.screen(again).contains("Restored after a restart") }, screen(again))
         XCTAssertTrue(screen(again).contains("before-42"), "the old screen didn't come back")
         XCTAssertTrue(waitUntil { again.viewController.startupSettled })
-        again.viewController.terminalView.send(txt: "echo after-$((5*5))\r")
+        again.viewController.terminalView.send(text: "echo after-$((5*5))\r")
         XCTAssertTrue(waitUntil { self.screen(again).contains("after-25") }, screen(again))
         XCTAssertNotEqual(SessionKeepers.liveRecord(id)?.childPID, old.childPID, "a new shell")
         second.removeSession(again)
@@ -183,13 +183,13 @@ final class SessionKeeperTests: XCTestCase {
         XCTAssertTrue(waitUntil { session.viewController.startupSettled })
         // The wrapper is defined in Side's zsh (when the shell is zsh).
         guard (ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh").contains("zsh") else { throw XCTSkip("not zsh") }
-        session.viewController.terminalView.send(txt: "whence -w claude\r")
+        session.viewController.terminalView.send(text: "whence -w claude\r")
         XCTAssertTrue(waitUntil { self.screen(session).contains("claude: function") }, screen(session))
         // A report without the shell's nonce is anyone's output, and ignored.
-        session.viewController.terminalView.send(txt: "printf '\\e]6973;agent;claude;forged;nope\\a'\r")
+        session.viewController.terminalView.send(text: "printf '\\e]6973;agent;claude;forged;nope\\a'\r")
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         XCTAssertNil(manager.agentSession(forKeeper: id))
-        session.viewController.terminalView.send(txt: "printf '\\e]6973;agent;claude;0f1e-real;%s\\a' \"$__SIDE_NONCE\"\r")
+        session.viewController.terminalView.send(text: "printf '\\e]6973;agent;claude;0f1e-real;%s\\a' \"$__SIDE_NONCE\"\r")
         XCTAssertTrue(waitUntil { manager.agentSession(forKeeper: id) == "0f1e-real" })
     }
 
@@ -204,7 +204,7 @@ final class SessionKeeperTests: XCTestCase {
         session.viewController.start()
         XCTAssertTrue(waitUntil { session.viewController.startupSettled })
         XCTAssertNil(session.viewController.runningProgramName, "a shell at its prompt isn't running anything")
-        session.viewController.terminalView.send(txt: "sleep 30\r")
+        session.viewController.terminalView.send(text: "sleep 30\r")
         XCTAssertTrue(waitUntil { session.viewController.runningProgramName == "sleep" }, session.viewController.runningProgramName ?? "nil")
     }
 

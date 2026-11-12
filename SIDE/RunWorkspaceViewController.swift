@@ -212,13 +212,13 @@ final class RunWorkspaceViewController: NSViewController {
     /// program holds the terminal: two commands in one shell would corrupt both.
     func runTask(_ command: String) -> Bool {
         guard let controller = displayedSession?.viewController, controller.runningProgramName == nil else { return false }
-        controller.terminalView.send(txt: command + "\r")
+        controller.terminalView.send(text: command + "\r")
         return true
     }
 
     /// UI testing: the terminal on screen's background, "r g b" in 0–255.
     var terminalBackgroundForTesting: String {
-        guard let color = displayedSession?.viewController.terminalView.nativeBackgroundColor.usingColorSpace(.sRGB) else { return "-" }
+        guard let color = displayedSession?.viewController.terminalView.backgroundColor else { return "-" }
         let rgb = [color.redComponent, color.greenComponent, color.blueComponent].map { String(Int(($0 * 255).rounded())) }.joined(separator: " ")
         return rgb + " reports=\(displayedSession?.viewController.terminalView.reportsColorSchemeForTesting == true)"
     }
@@ -487,7 +487,7 @@ final class RunWorkspaceViewController: NSViewController {
               let command = sessions[index].viewController.lastSubmittedCommand else { return }
         let vc = sessions[index].viewController
         vc.activate()
-        vc.terminalView.send(source: vc.terminalView, data: ArraySlice(Array((command + "\r").utf8)))
+        vc.terminalView.send(bytes: ArraySlice(Array((command + "\r").utf8)))
     }
 
     /// The window is closing. Terminals belong to the project, so they keep running — this
@@ -792,14 +792,7 @@ final class RunWorkspaceViewController: NSViewController {
             item.icon = ProgramMarks.image(forProgram: vc.runningProgramName)
             // Its terminal as it stands, for the card the tab becomes when dragged out.
             let terminalView = session.viewController.terminalView
-            item.preview = { [weak terminalView] in
-                guard let terminalView, terminalView.bounds.width > 0, terminalView.bounds.height > 0,
-                      let rep = terminalView.bitmapImageRepForCachingDisplay(in: terminalView.bounds) else { return nil }
-                terminalView.cacheDisplay(in: terminalView.bounds, to: rep)
-                let image = NSImage(size: terminalView.bounds.size)
-                image.addRepresentation(rep)
-                return image
-            }
+            item.preview = { [weak terminalView] in terminalView?.snapshotImage() }
             item.menu = sessionMenu(for: session.id)
             return item
         }

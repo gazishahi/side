@@ -3,13 +3,135 @@ import SideAgents
 import SideSessionsKit
 import SwiftTerm
 
+/// What Terminal needs from the view that emulates and draws a terminal: SwiftTerm's
+/// (`SideTerminalView`) today, libghostty-vt drawn by Alloy next, behind a setting
+/// (docs/SIDE_RFC_TERMINAL_ENGINE.md). `TerminalViewController` and everything else reach the
+/// terminal only through this, so the engine can change underneath them.
+@MainActor
+protocol TerminalSurface: NSView {
+    var surfaceDelegate: TerminalSurfaceDelegate? { get set }
+
+    // MARK: Session
+
+    /// Set when the shell lives in a session keeper: input and size go to it, output comes from it.
+    var keeper: KeeperLink? { get set }
+    /// Tells the keeper the grid's size, after layout settles on a different one.
+    func syncKeeperSize()
+    var columns: Int { get }
+    var rows: Int { get }
+    var scrollbackLines: Int { get }
+
+    // MARK: Output and input
+
+    /// The program's output, through everything Side watches it for (marks, reports, unseen output).
+    func receive(_ bytes: ArraySlice<UInt8>)
+    /// Bytes straight to the screen, watched by nothing: a keeper's snapshot, Side's own notices.
+    func display(_ bytes: ArraySlice<UInt8>)
+    /// Input for the program, as if typed.
+    func send(text: String)
+    func send(bytes: ArraySlice<UInt8>)
+    /// As a paste: bracketed when the program asked for it.
+    func paste(text: String)
+    /// Text as the input system hands it over (NSTextInputClient): the path typed keys take.
+    func insertText(_ string: Any, replacementRange: NSRange)
+
+    // MARK: A process of its own (command tabs; terminals without a keeper)
+
+    func startProcess(executable: String, arguments: [String], environment: [String], currentDirectory: String?)
+    /// The shell's or command's process id, when it runs in Side's process (not a keeper's).
+    var processID: pid_t { get }
+    /// The PTY's controlling side, for the debugger's TTY handoff.
+    var processTerminalDescriptor: Int32 { get }
+    func terminateProcess()
+
+    // MARK: Appearance
+
+    var font: NSFont { get set }
+    func applyTheme(_ theme: TerminalSurfaceTheme)
+    /// The background as drawn, in sRGB.
+    var backgroundColor: NSColor { get }
+    /// Light/dark notices (DEC mode 2031): whether the background reads dark, and whether the
+    /// running program listens even if it didn't ask this terminal.
+    var isDarkBackground: () -> Bool { get set }
+    var programListensForColorScheme: () -> Bool { get set }
+    /// Side's appearance changed: a program that listens hears which it is now.
+    func colorSchemeChanged()
+
+    // MARK: Watching
+
+    var onBell: (() -> Void)? { get set }
+    var onFileLinkRequested: ((String) -> Bool)? { get set }
+    var onLineSubmitted: ((String) -> Void)? { get set }
+    /// That output arrived (the unseen-output indicator).
+    var onDataReceived: (() -> Void)? { get set }
+    /// The output itself (command marks, agent sentinels).
+    var onRawDataReceived: ((ArraySlice<UInt8>) -> Void)? { get set }
+    /// Input with no keeper attached: true if handled (a session taken by another Side, rejoined).
+    var onInputWithoutKeeper: (() -> Bool)? { get set }
+    /// Side's own OSC 6973 report (`agent;claude;<session>;<nonce>`), its fields.
+    var onAgentReport: (([String]) -> Void)? { get set }
+
+    // MARK: Reading
+
+    /// The visible screen as text, trailing blank rows dropped.
+    func visibleText() -> String
+    /// Everything the terminal holds, scrollback included, as text: for tests.
+    func bufferText() -> String
+    /// The view as an image (a dragged tab's preview).
+    func snapshotImage() -> NSImage?
+    var reportsColorSchemeForTesting: Bool { get }
+}
+
+/// What a terminal surface reports about its program.
+@MainActor
+protocol TerminalSurfaceDelegate: AnyObject {
+    func terminalSurface(_ surface: any TerminalSurface, titleChanged title: String)
+    /// OSC 7, as the program sent it (`file://host/path`).
+    func terminalSurface(_ surface: any TerminalSurface, directoryChanged directory: String?)
+    /// Its own process ended (not a keeper's).
+    func terminalSurface(_ surface: any TerminalSurface, processTerminated exitCode: Int32?)
+}
+
+/// The colors and font a surface draws with, already resolved for the current appearance.
+struct TerminalSurfaceTheme {
+    var foreground: NSColor
+    var background: NSColor
+    /// The sixteen ANSI colors.
+    var palette: [NSColor]
+    /// The default background's opacity: below 1, the window's backdrop shows through.
+    var backgroundOpacity: CGFloat
+}
+
+enum TerminalEnvironment {
+    /// The variables every terminal's program starts with: what SwiftTerm's
+    /// `Terminal.getEnvironmentVariables` set, kept as it was when Side owns it.
+    static func base(termName: String = "xterm-256color") -> [String] {
+        var variables = ["TERM=\(termName)", "COLORTERM=truecolor", "LANG=en_US.UTF-8"]
+        let environment = ProcessInfo.processInfo.environment
+        for name in ["LOGNAME", "USER", "DISPLAY", "LC_TYPE", "USER", "HOME"] {
+            if let value = environment[name] { variables.append("\(name)=\(value)") }
+        }
+        return variables
+    }
+}
+
+extension TerminalSurface {
+    /// Text straight to the screen: Side's own notices.
+    func display(text: String) { display(Array(text.utf8)[...]) }
+}
+
 /// Subclasses LocalProcessTerminalView purely to hook three things it exposes specifically for
 /// subclass override/interception rather than via its processDelegate: link clicks (so
 /// file-path-shaped links can open in Make instead of falling through to NSWorkspace), raw
 /// input bytes (to approximate "last submitted command" for rerun, since there's no real shell
 /// integration to ask), and raw output bytes (to signal "this session has unseen output" for
 /// the background-activity indicator).
-final class SideTerminalView: LocalProcessTerminalView {
+final class SideTerminalView: LocalProcessTerminalView, TerminalSurface {
+    weak var surfaceDelegate: TerminalSurfaceDelegate?
+    var onAgentReport: (([String]) -> Void)?
+    /// SwiftTerm's process callbacks arrive here (its delegate is weak, so it's held).
+    private let processBridge = ProcessBridge()
+
     /// Set when this terminal's shell lives in a session keeper (SIDE_RFC_SESSION_RESTORE.md):
     /// input and size go to it, and output comes from it, instead of SwiftTerm's own process.
     var keeper: KeeperLink? {
@@ -49,6 +171,43 @@ final class SideTerminalView: LocalProcessTerminalView {
 
     var reportsColorSchemeForTesting: Bool { colorScheme.enabled }
 
+    // MARK: TerminalSurface
+
+    var columns: Int { terminal.cols }
+    var rows: Int { terminal.rows }
+    var scrollbackLines: Int { terminal.options.scrollback }
+    func receive(_ bytes: ArraySlice<UInt8>) { dataReceived(slice: bytes) }
+    func display(_ bytes: ArraySlice<UInt8>) { feed(byteArray: bytes) }
+    func send(text: String) { send(txt: text) }
+    func send(bytes: ArraySlice<UInt8>) { send(source: self, data: bytes) }
+    func startProcess(executable: String, arguments: [String], environment: [String], currentDirectory: String?) {
+        startProcess(executable: executable, args: arguments, environment: environment, currentDirectory: currentDirectory)
+    }
+    var processID: pid_t { process.shellPid }
+    var processTerminalDescriptor: Int32 { process.childfd }
+    func terminateProcess() { process.terminate() }
+    var backgroundColor: NSColor { nativeBackgroundColor.usingColorSpace(.sRGB) ?? nativeBackgroundColor }
+
+    func applyTheme(_ theme: TerminalSurfaceTheme) {
+        terminal.foregroundColor = TerminalViewController.terminalColor(theme.foreground)
+        terminal.backgroundColor = TerminalViewController.terminalColor(theme.background)
+        terminal.installPalette(colors: theme.palette.map(TerminalViewController.terminalColor))
+        nativeForegroundColor = theme.foreground
+        nativeBackgroundColor = theme.background
+        backgroundOpacity = theme.backgroundOpacity
+        needsDisplay = true
+    }
+
+    func bufferText() -> String { String(decoding: getTerminal().getBufferAsData(), as: UTF8.self) }
+
+    func snapshotImage() -> NSImage? {
+        guard bounds.width > 0, bounds.height > 0, let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        cacheDisplay(in: bounds, to: rep)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
     override func bell(source: Terminal) {
         super.bell(source: source)
         onBell?()
@@ -80,6 +239,17 @@ final class SideTerminalView: LocalProcessTerminalView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL, .png, .tiff])
+        processBridge.surface = self
+        processDelegate = processBridge
+        // Side genuinely handles OSC 133 (the semantic-prompt marks it asks the shell to emit),
+        // but detection scans the raw PTY stream in handleAgentCommandData — SwiftTerm's parser
+        // has no handler of its own and logged "Unknown OSC code: 133" for every mark.
+        // Registering a no-op tells the parser the code is spoken for.
+        terminal.registerOscHandler(code: 133) { _ in }
+        // Side's own: `agent;<name>;<session id>;<nonce>` from the shell's `claude` wrapper.
+        terminal.registerOscHandler(code: 6973) { [weak self] data in
+            self?.onAgentReport?(String(decoding: data, as: UTF8.self).split(separator: ";", omittingEmptySubsequences: false).map(String.init))
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -329,8 +499,27 @@ final class SideTerminalView: LocalProcessTerminalView {
     }
 }
 
-final class TerminalViewController: NSViewController, @preconcurrency LocalProcessTerminalViewDelegate {
-    let terminalView = SideTerminalView(frame: .zero)
+/// SwiftTerm's process callbacks, passed on as the surface's. A separate object: SwiftTerm's view
+/// already has methods by these names, which can't be overridden from outside its module.
+private final class ProcessBridge: @preconcurrency LocalProcessTerminalViewDelegate {
+    weak var surface: SideTerminalView?
+    @MainActor func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    @MainActor func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
+        guard let surface else { return }
+        surface.surfaceDelegate?.terminalSurface(surface, titleChanged: title)
+    }
+    @MainActor func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        guard let surface else { return }
+        surface.surfaceDelegate?.terminalSurface(surface, directoryChanged: directory)
+    }
+    @MainActor func processTerminated(source: TerminalView, exitCode: Int32?) {
+        guard let surface else { return }
+        surface.surfaceDelegate?.terminalSurface(surface, processTerminated: exitCode)
+    }
+}
+
+final class TerminalViewController: NSViewController, TerminalSurfaceDelegate {
+    let terminalView: any TerminalSurface = SideTerminalView(frame: .zero)
     /// When the program last rang the bell out of sight: it wants you, until the tab is shown.
     private(set) var lastBellAt: Date?
     /// When an agent's turn last ended out of sight, until the tab is shown.
@@ -552,22 +741,15 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         applyTerminalTheme()
         NotificationCenter.default.addObserver(self, selector: #selector(appearanceChanged), name: DS.Appearance.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appearanceChanged), name: EditorThemes.didChangeNotification, object: nil)
-        terminalView.processDelegate = self
-        // Side genuinely handles OSC 133 (the semantic-prompt marks it asks the shell to emit),
-        // but detection scans the raw PTY stream in handleAgentCommandData — SwiftTerm's parser
-        // has no handler of its own and logged "Unknown OSC code: 133" for every mark.
-        // Registering a no-op tells the parser the code is spoken for.
-        terminalView.terminal.registerOscHandler(code: 133) { _ in }
+        terminalView.surfaceDelegate = self
         // Side's own: `agent;<name>;<session id>;<nonce>` from the shell's `claude` wrapper, so a
         // restart can resume the exact conversation. Without the nonce, it's anyone's output.
-        terminalView.terminal.registerOscHandler(code: 6973) { [weak self] data in
-            guard let self else { return }
-            let parts = String(decoding: data, as: UTF8.self).split(separator: ";", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count == 4, parts[0] == "agent", parts[3] == self.markNonce, !parts[2].isEmpty else { return }
+        terminalView.onAgentReport = { [weak self] parts in
+            guard let self, parts.count == 4, parts[0] == "agent", parts[3] == self.markNonce, !parts[2].isEmpty else { return }
             self.onAgentSessionReported?(parts[1], parts[2])
         }
         terminalView.isDarkBackground = { [weak self] in
-            guard let color = self?.terminalView.nativeBackgroundColor.usingColorSpace(.sRGB) else { return true }
+            guard let color = self?.terminalView.backgroundColor else { return true }
             return 0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent < 0.5
         }
         terminalView.programListensForColorScheme = { [weak self] in self?.runningProgramName == "claude" }
@@ -618,12 +800,12 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         if let launch = commandLaunch {
             // `env` resolves the command on PATH, which comes from the login shell — a GUI
             // app's own PATH has no Homebrew, nvm or the like.
-            var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
+            var environment = TerminalEnvironment.base(termName: "xterm-256color")
             if let path = LanguageServerRegistry.environmentForSpawning()["PATH"] { environment.append("PATH=\(path)") }
             environment += launch.environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
             environment += Self.portEnvironment(for: workingDirectory)
             shellIntegration = .unavailable
-            terminalView.startProcess(executable: "/usr/bin/env", args: [launch.command] + launch.arguments, environment: environment, currentDirectory: workingDirectory)
+            terminalView.startProcess(executable: "/usr/bin/env", arguments: [launch.command] + launch.arguments, environment: environment, currentDirectory: workingDirectory)
             return
         }
         if let keeperID, SessionKeepers.isEnabled, let record = SessionKeepers.liveRecord(keeperID), reattach(record) { return }
@@ -632,7 +814,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // sources our rc — which sources the user's own — so the hooks install before the first
         // prompt and *nothing is ever typed into the session*. The old typed-setup path stays
         // for bash, where no equivalent exists without clobbering the user's rc files.
-        var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        var environment = TerminalEnvironment.base(termName: "xterm-256color")
         if shell.contains("zsh"), let wrapper = Self.zshIntegrationDirectory() {
             if let original = ProcessInfo.processInfo.environment["ZDOTDIR"] {
                 environment.append("SIDE_ORIG_ZDOTDIR=\(original)")
@@ -649,7 +831,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         }
         // A recovery that couldn't get a keeper starts plainly; what it left behind goes.
         if let keeperID, recovering != nil { SessionPaths.remove(keeperID) }
-        terminalView.startProcess(executable: shell, args: ["-l"], environment: environment, currentDirectory: workingDirectory)
+        terminalView.startProcess(executable: shell, arguments: ["-l"], environment: environment, currentDirectory: workingDirectory)
         installShellIntegration(shell: shell)
     }
 
@@ -664,7 +846,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // A recovered tab starts from its saved screen, below a line saying so.
         let snapshot = recovering.map { SessionPaths.snapshot($0.id).path }.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
         let spec = LaunchSpec(id: id, executable: executable, arguments: ["-l"], environment: environment,
-                              directory: workingDirectory ?? NSHomeDirectory(), cols: max(terminal.cols, 2), rows: max(terminal.rows, 2), client: facts,
+                              directory: workingDirectory ?? NSHomeDirectory(), cols: max(terminalView.columns, 2), rows: max(terminalView.rows, 2), client: facts,
                               restoreFrom: snapshot, banner: snapshot == nil ? nil : SessionKeepers.restartBanner,
                               notifier: SessionKeepers.notifierURL?.path,
                               place: keeperFacts[SessionKeepers.Fact.project].map { ($0 as NSString).lastPathComponent })
@@ -673,7 +855,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // At its real size when it has one (`ensureStarted` lays it out first); else unsized,
         // and the keeper keeps its own until this one has one (`KeeperLink.attach`).
         let sized = !terminalView.bounds.isEmpty
-        link.attach(cols: sized ? terminal.cols : 0, rows: sized ? terminal.rows : 0, history: terminal.options.scrollback)
+        link.attach(cols: sized ? terminalView.columns : 0, rows: sized ? terminalView.rows : 0, history: terminalView.scrollbackLines)
         return true
     }
 
@@ -694,11 +876,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // At its real size when it has one (`ensureStarted` lays it out first); else unsized,
         // and the keeper keeps its own until this one has one (`KeeperLink.attach`).
         let sized = !terminalView.bounds.isEmpty
-        link.attach(cols: sized ? terminal.cols : 0, rows: sized ? terminal.rows : 0, history: terminal.options.scrollback)
+        link.attach(cols: sized ? terminalView.columns : 0, rows: sized ? terminalView.rows : 0, history: terminalView.scrollbackLines)
         return true
     }
 
-    private var terminal: Terminal { terminalView.terminal }
     /// The first title after a reattach names what was already running before it.
     private var reattachedTitlePending = false
     /// Until then, a reattached tab is catching up on its screen: a spinner that stops in what
@@ -708,8 +889,8 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     private func wire(_ link: KeeperLink) {
         terminalView.keeper = link
-        link.onSnapshot = { [weak self] bytes in self?.terminalView.feed(byteArray: bytes[...]) }
-        link.onOutput = { [weak self] bytes in self?.terminalView.dataReceived(slice: bytes) }
+        link.onSnapshot = { [weak self] bytes in self?.terminalView.display(bytes[...]) }
+        link.onOutput = { [weak self] bytes in self?.terminalView.receive(bytes) }
         link.onTitle = { [weak self] title in
             guard let self, self.reattachedTitlePending else { return }
             self.reattachedTitlePending = false
@@ -744,7 +925,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
                 onRerunOfferChanged?()
                 return
             }
-            whenShellIsReady { [weak self] in self?.terminalView.send(txt: command + "\r") }
+            whenShellIsReady { [weak self] in self?.terminalView.send(text: command + "\r") }
         }
     }
 
@@ -776,7 +957,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// The shell's process: Side's own child, or the keeper's, read once from its record.
     private var shellPID: pid_t? {
         if terminalView.keeper == nil {
-            let pid = terminalView.process.shellPid
+            let pid = terminalView.processID
             return pid > 0 ? pid : nil
         }
         if keeperShellPID == nil, let keeperID { keeperShellPID = SessionKeepers.liveRecord(keeperID).map(\.childPID).flatMap { $0 > 0 ? $0 : nil } }
@@ -787,13 +968,13 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// Run Again: types the offered command into the shell.
     /// Types `command` into the shell once it's ready: Agent's Continue in Terminal.
     func runWhenReady(_ command: String) {
-        whenShellIsReady { [weak self] in self?.terminalView.send(txt: command + "\r") }
+        whenShellIsReady { [weak self] in self?.terminalView.send(text: command + "\r") }
     }
 
     func runOfferedCommand() {
         guard let command = rerunOffer else { return }
         dismissRerunOffer()
-        whenShellIsReady { [weak self] in self?.terminalView.send(txt: command + "\r") }
+        whenShellIsReady { [weak self] in self?.terminalView.send(text: command + "\r") }
     }
 
     func dismissRerunOffer() {
@@ -811,7 +992,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         guard isAlive else { return }
         guard let keeperID, let record = SessionKeepers.liveRecord(keeperID) else { return keeperSessionEnded(exitCode: nil, lost: true) }
         if replaced {
-            terminalView.feed(text: "\r\n\u{1B}[2m[This terminal is open in another Side. Press a key to bring it back here.]\u{1B}[0m\r\n")
+            terminalView.display(text: "\r\n\u{1B}[2m[This terminal is open in another Side. Press a key to bring it back here.]\u{1B}[0m\r\n")
             rejoinsOnInput = true
             return
         }
@@ -827,7 +1008,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
     /// Back to a keeper still running: the screen is reset and drawn again from its snapshot.
     private func rejoin(_ record: SessionRecord) {
         rejoinsOnInput = false
-        terminalView.feed(text: "\u{1B}c")
+        terminalView.display(text: "\u{1B}c")
         if !reattach(record) { keeperSessionEnded(exitCode: nil, lost: true) }
     }
 
@@ -849,9 +1030,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         terminalView.keeper = nil
         guard isAlive else { return }
         if lost {
-            terminalView.feed(text: "\r\n\u{1B}[2m[This terminal's session ended unexpectedly, and what ran in it has stopped. Open a new tab (\u{2318}T) to carry on.]\u{1B}[0m\r\n")
+            terminalView.display(text: "\r\n\u{1B}[2m[This terminal's session ended unexpectedly, and what ran in it has stopped. Open a new tab (\u{2318}T) to carry on.]\u{1B}[0m\r\n")
         }
-        processTerminated(source: terminalView, exitCode: exitCode)
+        processEnded(exitCode)
     }
 
     /// Closing a window or quitting: a shell in a keeper is let go and keeps running (unless
@@ -958,7 +1139,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         didTidyAfterSetup = true
         // Ctrl-L exists to clear the *typed* setup line; the ZDOTDIR path types nothing.
         guard !integrationInstalledViaRc else { return }
-        terminalView.send(source: terminalView, data: ArraySlice([0x0C]))
+        terminalView.send(bytes: ArraySlice([0x0C]))
     }
 
     /// Asks the shell to emit OSC 133 semantic-prompt marks — the same protocol VS Code, iTerm2,
@@ -1003,7 +1184,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // is echoed by the shell — Side never runs anything hidden — and `tidyAfterSetup()`
         // then clears it away so the user's session doesn't open on two paragraphs of our
         // plumbing.
-        terminalView.send(source: terminalView, data: ArraySlice(Array((" " + setup + "\r").utf8)))
+        terminalView.send(bytes: ArraySlice(Array((" " + setup + "\r").utf8)))
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             guard let self, self.shellIntegration == .probing else { return }
             self.shellIntegration = .unavailable
@@ -1068,7 +1249,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         // command ending in a `#` comment used to swallow an appended echo entirely, so the
         // command ran and nothing ever reported it finished.
         let wrapped = usesMarks ? "\(command)\r" : "\(command)\recho \"\(sentinel):$?\"\r"
-        terminalView.send(source: terminalView, data: ArraySlice(Array(wrapped.utf8)))
+        terminalView.send(bytes: ArraySlice(Array(wrapped.utf8)))
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
             guard let self, self.pendingAgentCommandGeneration == generation,
                   self.pendingAgentCommand?.sentinel == sentinel else { return }
@@ -1143,7 +1324,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         guard pendingAgentCommand != nil else { return }
         let queuedCount = cancelQueuedAgentCommands(reason: "Cancelled before it ran: the user stopped the agent while an earlier command was still running. Nothing changed.")
         // 0x03 = ETX, what Ctrl-C sends; the pty turns it into SIGINT for the foreground group.
-        terminalView.send(source: terminalView, data: ArraySlice([0x03]))
+        terminalView.send(bytes: ArraySlice([0x03]))
         var message = "Interrupted by the user (Ctrl-C) before it reported a result. Whether it partially completed is unknown. Check before assuming."
         if queuedCount > 0 {
             message += " \(queuedCount) queued command\(queuedCount == 1 ? "" : "s") were also cancelled and did not run."
@@ -1412,9 +1593,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             SessionKeepers.endSession(keeperID)
             return
         }
-        let pid = terminalView.process.shellPid
+        let pid = terminalView.processID
         guard pid != 0 else {
-            terminalView.process.terminate()
+            terminalView.terminateProcess()
             return
         }
         // Everything here happens off the main thread. The old version ran `/bin/ps` with a
@@ -1449,15 +1630,12 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         let theme = EditorThemes.current(dark: dark)
         let foreground = theme?.terminalText?.nsColor ?? NSColor.labelColor
         let background = theme?.terminalBackground?.nsColor ?? DS.Color.raised
-        terminalView.terminal.foregroundColor = Self.terminalColor(foreground)
-        terminalView.terminal.backgroundColor = Self.terminalColor(background)
-        terminalView.terminal.installPalette(colors: theme?.ansi.map { $0.map { Self.terminalColor($0.nsColor) } } ?? Self.ansiPalette(dark: dark))
-        terminalView.nativeForegroundColor = Self.resolved(foreground)
-        terminalView.nativeBackgroundColor = Self.resolved(background)
-        // Translucent background: the default background lets the window's backdrop through;
-        // text and cells with a color of their own stay opaque.
-        terminalView.backgroundOpacity = DS.Translucency.isOn ? DS.Translucency.terminalOpacity : 1
-        terminalView.needsDisplay = true
+        terminalView.applyTheme(TerminalSurfaceTheme(
+            foreground: Self.resolved(foreground), background: Self.resolved(background),
+            palette: theme?.ansi.map { $0.map(\.nsColor) } ?? Self.ansiPaletteColors(dark: dark),
+            // Translucent background: the default background lets the window's backdrop through;
+            // text and cells with a color of their own stay opaque.
+            backgroundOpacity: DS.Translucency.isOn ? DS.Translucency.terminalOpacity : 1))
     }
 
     private static func resolved(_ color: NSColor) -> NSColor {
@@ -1478,10 +1656,10 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
 
     /// The standard sixteen, tuned per appearance: the dark set is the familiar bright-on-black
     /// palette; the light set darkens every hue so yellow and cyan stay legible on near-white.
-    static func ansiPalette(dark: Bool) -> [Color] {
-        func c(_ r: Double, _ g: Double, _ b: Double) -> Color {
-            Color(red: UInt16(r * 65535), green: UInt16(g * 65535), blue: UInt16(b * 65535))
-        }
+    static func ansiPalette(dark: Bool) -> [Color] { ansiPaletteColors(dark: dark).map(terminalColor) }
+
+    static func ansiPaletteColors(dark: Bool) -> [NSColor] {
+        func c(_ r: Double, _ g: Double, _ b: Double) -> NSColor { NSColor(srgbRed: r, green: g, blue: b, alpha: 1) }
         if dark {
             return [
                 c(0.20, 0.20, 0.22), c(0.92, 0.40, 0.40), c(0.45, 0.80, 0.50), c(0.92, 0.80, 0.40),
@@ -1535,10 +1713,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         return result
     }
 
-    // MARK: - LocalProcessTerminalViewDelegate
+    // MARK: - TerminalSurfaceDelegate
 
-    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
-    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
+    func terminalSurface(_ surface: any TerminalSurface, titleChanged title: String) {
         // A program's title, not the shell's. A tab reattached to its keeper doesn't know a
         // command is running (the shell's mark for it came before), so the kernel is asked too.
         guard commandStatus.runningSince != nil || shellPID.flatMap(ForegroundProgram.group(ofShell:)) != nil else { return }
@@ -1577,7 +1754,7 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         return trimmed.isEmpty ? nil : String(trimmed.prefix(60))
     }
 
-    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+    func terminalSurface(_ surface: any TerminalSurface, directoryChanged directory: String?) {
         let path = directory.map(Self.pathFromOSC7)
         guard path != currentDirectory else { return }
         currentDirectory = path
@@ -1659,7 +1836,9 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         return marks
     }
 
-    func processTerminated(source: TerminalView, exitCode: Int32?) {
+    func terminalSurface(_ surface: any TerminalSurface, processTerminated exitCode: Int32?) { processEnded(exitCode) }
+
+    private func processEnded(_ exitCode: Int32?) {
         isAlive = false
         onProcessExit?(exitCode)
         // A command like `exit` kills the shell, so the sentinel can never print. Without this

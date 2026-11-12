@@ -1756,7 +1756,7 @@ final class ShellViewController: NSViewController {
         let mode = companion.view.isHidden ? "hidden" : (companionDocks ? "docked" : "floating")
         return "mode=\(mode) width=\(Int(companion.view.frame.width)) stage=\(Int(container.subviews.first?.frame.width ?? 0)) \(companion.stateForTesting) file=\(currentFileURL?.lastPathComponent ?? "-") stageName=\(current?.title ?? "-")"
     }
-    func companionTypeForTesting(_ text: String) { companion?.session.viewController.terminalView.send(txt: text) }
+    func companionTypeForTesting(_ text: String) { companion?.session.viewController.terminalView.send(text: text) }
     /// A click in the middle of the Editor, as the monitor sees it.
     func companionEditorClickForTesting() {
         guard let window = view.window else { return }
@@ -2537,7 +2537,7 @@ final class ShellViewController: NSViewController {
             if let index = terminals.sessions(forTrackKey: key).firstIndex(where: { $0 === session }) {
                 terminals.setActiveIndex(index, forTrackKey: key)
             }
-            let fd = session.viewController.terminalView.process.childfd
+            let fd = session.viewController.terminalView.processTerminalDescriptor
             guard fd >= 0, let name = ptsname(fd) else {
                 terminals.removeSession(session)
                 return nil
@@ -2556,7 +2556,7 @@ final class ShellViewController: NSViewController {
             let session = terminals.makeCommandSession(forTrackKey: key, launch: launch, directory: directory, label: "Debug: \(title)")
             session.viewController.start()
             if let index = terminals.sessions(forTrackKey: key).firstIndex(where: { $0 === session }) { terminals.setActiveIndex(index, forTrackKey: key) }
-            let pid = session.viewController.terminalView.process.shellPid
+            let pid = session.viewController.terminalView.processID
             guard pid > 0 else {
                 terminals.removeSession(session)
                 return nil
