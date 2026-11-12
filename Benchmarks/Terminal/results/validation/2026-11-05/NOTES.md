@@ -381,3 +381,37 @@ display clock, real keys, idle, 3 runs, median ms:
   about to arrive.
 - With the extra frame gone, Ghostty with vsync (16.6 ms) is within about 2 ms of C (14.3–15.0).
   What remains of C's lead is small, and it isn't explained yet.
+
+## 14. The last 2 ms (`../2026-11-12-ghostty-stages/`, `MARKS=1 scripts/ghostty-redraw.sh`)
+
+With its extra frame removed (section 13), full libghostty still showed a key about 2 ms after C.
+`patches/ghostty-stage-marks.diff` (applied on top of section 13's patch, in a copy of the pinned
+Ghostty) has Ghostty report its own stages to the harness through a weakly linked
+`termbench_mark`: parse, cell update, draw start, command-buffer commit, and present (the GPU
+done, the IOSurface handed to the layer). C marks the same points. Real keys, idle, display
+clock, 3 runs, median ms from the key (these rows are `D-marked` in the results; the script
+names them `D-patched`):
+
+| | C, render thread | D, extra frame removed | D, also `window-vsync = false` |
+|---|---|---|---|
+| Echo parsed | 0.66 | 0.82 | 0.76 |
+| Cells updated | (in the frame) | 0.99 | 0.94 |
+| Committed to the GPU | 1.15 | 1.30 | 1.20 |
+| GPU done | 2.45 | 3.64 | 3.57 |
+| Handed to the layer | 1.15 (drawable, before the GPU) | 3.71 (contents, after) | 3.64 |
+| On the display | 14.6 | 16.8 | 17.1 |
+
+**The 2.2 ms is three things:**
+- **0.15 ms before the GPU:** Ghostty parses and rebuilds its cells a little later and longer.
+- **About 1.0 ms of GPU time** (commit to completion 2.3 ms against C's 1.3): Ghostty's frame
+  does more work. That's the renderer-feature difference the parity tiers are about, and C's
+  share of it will grow as Tier 1 lands.
+- **About 1.0 ms after the GPU** (done to display 13.2 ms against C's 12.2): Ghostty hands the
+  finished frame to the main thread as layer contents; C's drawable is presented by the GPU
+  without the main thread. Section 12's C-with-IOSurface run cost C 0.8 ms the same way.
+  Ghostty's way has reasons (resize without stretching, per its IOSurfaceLayer).
+
+These are sub-millisecond medians across three runs, with run-to-run spread of about 0.5 ms.
+**So C's latency lead over Ghostty is, at most, about 1 ms that comes from design rather than
+missing work**, and that ms has a trade-off attached. No latency claim against Ghostty beyond
+the extra frame (section 13) stands.

@@ -222,6 +222,7 @@ public final class GridView: NSView {
 
     @objc private nonisolated func tick() {
         guard let source else { return }
+        Stages.mark("frame")
         if source.snapshot(into: grid) { render() }
     }
 
@@ -395,6 +396,7 @@ public final class GridView: NSView {
         encoder.endEncoding()
         if let drawable, !Self.withTransaction { buffer.present(drawable) }
         if let completed { buffer.addCompletedHandler { _ in completed() } }
+        if drawable != nil, Stages.enabled { buffer.addCompletedHandler { _ in Stages.mark("gpuDone") } }
         buffer.commit()
         if drawable != nil { Stages.mark("present") }
         if let drawable, Self.withTransaction { buffer.waitUntilScheduled(); drawable.present() }

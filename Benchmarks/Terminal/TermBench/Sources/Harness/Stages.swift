@@ -11,8 +11,18 @@ import QuartzCore
 ///   present   C committed a frame with a drawable (CAMetalLayer)
 ///   contents  an IOSurface was set as a layer's contents (full libghostty's frame handoff),
 ///             seen by hooking -[CALayer setContents:]
+/// Inside a Ghostty built with scripts/ghostty-redraw.sh's MARKS=1 patch, termbench_mark adds:
+///   g_parse0, g_parse1  its IO thread started and finished parsing output
+///   g_update0, g_update1  its render thread started and finished updating the frame's cells
+///   g_draw    it started drawing
+///   g_commit  it committed the frame's command buffer to the GPU
+///   g_present the GPU finished and it handed the frame to its layer (contents follows, on main)
+/// and C marks parse0, parse1, frame (its render started) and gpuDone (its frame's command buffer
+/// completed) the same way.
 /// The display clock gives the last stage, the frame on the display.
 public enum Stages {
+    static let ghosttyMarks = ["", "g_parse0", "g_parse1", "g_update0", "g_update1", "g_draw", "g_present", "g_commit"]
+
     public static let enabled = ProcessInfo.processInfo.environment["TERMBENCH_STAGES"] == "1"
     private static let lock = NSLock()
     nonisolated(unsafe) private static var t0 = 0.0
@@ -76,4 +86,10 @@ public enum Stages {
         }
         method_setImplementation(method, imp_implementationWithBlock(block))
     }
+}
+
+/// Called by a Ghostty built with stage marks (src/termbench.zig in the patched tree).
+@_cdecl("termbench_mark")
+public func termbenchMark(_ id: UInt32) {
+    if Int(id) < Stages.ghosttyMarks.count { Stages.mark(Stages.ghosttyMarks[Int(id)]) }
 }

@@ -6,6 +6,9 @@
 # it drops the render a keypress queues and the redraw the IO thread queues for any message.
 #   PATCH=both      (default) both renders dropped
 #   PATCH=keypress  only the keypress's render (src/Surface.zig)
+#   MARKS=1         also apply patches/ghostty-stage-marks.diff, which reports when Ghostty parses,
+#                   updates, draws, commits and presents (Stages.swift's g_ stages), and run C
+#                   alongside (NOTES.md section 14)
 # Needs scripts/build-ghostty.sh run first, Zig 0.17, and Screen Recording permission for the
 # app this runs in (Terminal.app works; a terminal inside Side doesn't get Side's).
 set -euo pipefail
@@ -20,6 +23,7 @@ case $patch in
   keypress) git -C $work/ghostty apply --include=src/Surface.zig $here/patches/ghostty-no-redraw-before-echo.diff;;
   *) echo "PATCH is both or keypress" >&2; exit 2;;
 esac
+[[ ${MARKS:-} == 1 ]] && git -C $work/ghostty apply $here/patches/ghostty-stage-marks.diff
 (cd $work/ghostty && zig build -Doptimize=ReleaseFast -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=native)
 rsync -a --exclude .build --exclude GhosttyKit.xcframework $here/TermBench/ $work/TermBench/
 cp -R $work/ghostty/macos/GhosttyKit.xcframework $work/TermBench/
@@ -28,12 +32,16 @@ P=$work/TermBench/.build/release
 
 set +e
 R=$here/results/validation/${VALIDATION_DATE:-$(date +%F)}-ghostty-redraw; mkdir -p $R; out=$R/latency-$patch.jsonl; : > $out
-for run in 1 2 3; do for v in D D-patched D-novsync D-patched-novsync; do
-  b=$T/TermBenchGK; g=""
+variants=(D D-patched D-novsync D-patched-novsync)
+[[ ${MARKS:-} == 1 ]] && { variants=(C C-renderthread D-patched D-patched-novsync); out=$R/latency-$patch-marks.jsonl; : > $out; }
+for run in 1 2 3; do for v in $variants; do
+  b=$T/TermBenchGK; g=""; s=D; e=""
+  [[ $v == C* ]] && { b=$T/TermBenchGV; s=C; }
+  [[ $v == C-renderthread ]] && e=renderthread
   [[ $v == D-patched* ]] && b=$P/TermBenchGK
   [[ $v == *novsync ]] && g="window-vsync = false"
-  TERMBENCH_STAGES=1 TERMBENCH_KEYS=events TERMBENCH_CLOCK=display TERMBENCH_GHOSTTY_CONFIG="$g" \
-    timeout 120 $b --setup D --mode latency --load 0 --cols 200 --rows 60 2>/dev/null | grep '^{' \
+  TERMBENCH_STAGES=1 TERMBENCH_KEYS=events TERMBENCH_CLOCK=display TERMBENCH_EXP=$e TERMBENCH_GHOSTTY_CONFIG="$g" \
+    timeout 120 $b --setup $s --mode latency --load 0 --cols 200 --rows 60 2>/dev/null | grep '^{' \
     | sed "s/}\$/,\"variant\":\"$v\",\"patch\":\"$patch\",\"run\":$run}/" >> $out
   sleep 0.7
 done; done

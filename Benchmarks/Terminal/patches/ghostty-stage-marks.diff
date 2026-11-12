@@ -1,0 +1,81 @@
+diff --git a/src/renderer/Metal.zig b/src/renderer/Metal.zig
+index 581b0ce37..b465c5165 100644
+--- a/src/renderer/Metal.zig
++++ b/src/renderer/Metal.zig
+@@ -235,6 +235,7 @@ pub fn initTarget(self: *const Metal, width: usize, height: usize) !Target {
+ 
+ /// Present the provided target.
+ pub inline fn present(self: *Metal, target: Target, sync: bool) !void {
++    @import("../termbench.zig").mark(6);
+     if (sync) {
+         self.layer.setSurfaceSync(target.surface);
+     } else {
+diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
+index 8b44ba1af..ba409ef06 100644
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -1373,6 +1373,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             state: *renderer.State,
+             cursor_blink_visible: bool,
+         ) Allocator.Error!void {
++            @import("../termbench.zig").mark(3);
++            defer @import("../termbench.zig").mark(4);
+             // CoreText shaping accumulates objects for deferred release over
+             // the course of a frame. Always flush those objects, including
+             // when rebuilding the frame fails due to memory pressure.
+@@ -1717,6 +1719,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             self: *Self,
+             sync: bool,
+         ) !void {
++            @import("../termbench.zig").mark(5);
+             // Everything that touches draw state happens under the draw
+             // mutex. The display link is synced after the mutex is
+             // released. It doesn't need the lock, and this keeps the
+diff --git a/src/renderer/metal/Frame.zig b/src/renderer/metal/Frame.zig
+index 388b4f9ed..d150753e8 100644
+--- a/src/renderer/metal/Frame.zig
++++ b/src/renderer/metal/Frame.zig
+@@ -119,6 +119,7 @@ pub inline fn complete(self: *Self, sync: bool) void {
+         );
+     }
+ 
++    @import("../../termbench.zig").mark(7);
+     self.buffer.msgSend(void, objc.sel("commit"), .{});
+ 
+     // If we need to complete synchronously, we wait until
+diff --git a/src/termbench.zig b/src/termbench.zig
+new file mode 100644
+index 000000000..fde658ed3
+--- /dev/null
++++ b/src/termbench.zig
+@@ -0,0 +1,6 @@
++//! TERMBENCH PATCH: stage marks for the benchmark harness, which defines termbench_mark
++//! (weakly linked, so anything else built from this tree links without it).
++const f = @extern(?*const fn (u32) callconv(.c) void, .{ .name = "termbench_mark", .linkage = .weak });
++pub inline fn mark(id: u32) void {
++    if (f) |g| g(id);
++}
+diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
+index df57e0f4f..f7716186d 100644
+--- a/src/termio/Exec.zig
++++ b/src/termio/Exec.zig
+@@ -1492,7 +1492,9 @@ pub const ReadThread = struct {
+ 
+             // The batch buffer is owned by this stage until we advance
+             // the tail below, so it is safe to read outside the lock.
++            @import("../termbench.zig").mark(1);
+             io.processOutput(batch);
++            @import("../termbench.zig").mark(2);
+ 
+             {
+                 pipeline.mutex.lockUncancelable(global.io());
+@@ -1803,7 +1805,9 @@ pub const ReadThread = struct {
+                     }
+                 }
+ 
++                @import("../termbench.zig").mark(1);
+                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
++                @import("../termbench.zig").mark(2);
+ 
+                 // See threadMainPosix: hand the renderer state mutex
+                 // off if the renderer is waiting, since this loop

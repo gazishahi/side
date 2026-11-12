@@ -1,7 +1,8 @@
 # Terminal on libghostty-vt, drawn by Alloy
 
-Status: decisions pending (proposed 2026-11-04; the decisions are listed at the end). Nothing built yet. Phase 0
-is a validation gate: if it fails, this RFC changes before any of Phase 1 is written.
+Status: accepted (2026-11-12, by the owner; proposed 2026-11-04). Phase 0 is done and its gate
+met; Phase 1 is next, starting with Alloy rendering off the main thread. Three smaller decisions
+are still open, listed at the end.
 
 ## Why
 
@@ -119,6 +120,10 @@ D also fits Side worse:
   one frame per key and shows it at 16.6 ms with vsync, within about 2 ms of C. Most of C's
   latency lead over Ghostty is this one scheduling detail, which makes it a question for Ghostty,
   not a claim against it.
+- **The last 2 ms** (notes section 14): about 0.15 ms of parsing and cell updates, about 1 ms of
+  GPU time (Ghostty's frame does more work, which parity will narrow), and about 1 ms from
+  handing frames to the main thread as layer contents, which Ghostty does for clean resizing.
+  No latency claim against Ghostty stands beyond the extra frame.
 - **The design follows from it:** draw on a render thread, present with vsync. Presenting at once
   for a key's echo is a possible later gain, to be decided on its own evidence.
 - **The prototype is not comparable to Ghostty's renderer.** It's about 450 lines against
@@ -283,15 +288,17 @@ since 0.4.0. It goes into the third-party notices now, not with this work.
 Alloy gets its own render and terminal benchmarks, compared against itself over time, as agreed
 on 2026-11-03.
 
-## Decisions pending
+## Decisions
 
-1. **The Phase 0 gate**, as written, or stricter (for example, latency below A′'s, not equal to
-   it).
-2. **`AlloyTerminal` in Alloy (open source), or in Side.** Recommended: in Alloy. It keeps Alloy
-   one text engine and needs nothing from Ghostty.
-3. **The Arabic regression**: accept it, as Ghostty does, or shape right-to-left runs with
+Settled with the RFC's acceptance (2026-11-12):
+- **The Phase 0 gate** was met as written: on the display clock, C with vsync is ahead of SwiftTerm (notes section 8).
+- **`AlloyTerminal` lives in Alloy (open source)**, as recommended. It keeps Alloy one text
+  engine and needs nothing from Ghostty.
+
+Still open:
+1. **The Arabic regression**: accept it, as Ghostty does, or shape right-to-left runs with
    CoreText later.
-4. **The fallback**: keep SwiftTerm as a setting for one release, or switch outright once parity
+2. **The fallback**: keep SwiftTerm as a setting for one release, or switch outright once parity
    passes.
-5. **Alloy's public description**: say now that it renders cell grids as well as documents, or
+3. **Alloy's public description**: say now that it renders cell grids as well as documents, or
    after the terminal work proves the design.

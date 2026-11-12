@@ -189,7 +189,7 @@ final class SetupC {
             }
         }
         let view = self.view
-        pty.startReading(consume: { Stages.mark("echoRead"); source.feed($0); view.requestFrame() }, done: {
+        pty.startReading(consume: { Stages.mark("echoRead"); Stages.mark("parse0"); source.feed($0); Stages.mark("parse1"); view.requestFrame() }, done: {
             var status: Int32 = 0
             waitpid(pty.pid, &status, 0)
             DispatchQueue.main.async {
