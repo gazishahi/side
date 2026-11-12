@@ -3,12 +3,12 @@ import CoreText
 import Metal
 
 /// Where a rasterized glyph sits in the atlas, and how to place it relative to its pen position.
-struct AtlasEntry {
+package struct AtlasEntry {
     /// Pixels in the atlas texture.
-    let region: CGRect
+    package let region: CGRect
     /// Offset from the (pixel-snapped) pen position to the bitmap's top-left, in pixels.
-    let offset: CGPoint
-    let isColor: Bool
+    package let offset: CGPoint
+    package let isColor: Bool
 }
 
 /// Every glyph drawn, rasterized once by CoreGraphics into one BGRA texture: coverage in alpha
@@ -19,9 +19,9 @@ struct AtlasEntry {
 /// Confined, not shared across threads: whoever makes an atlas uses it from one thread. The
 /// editors' renderers share one on the main actor; a terminal drawing on a render thread of its
 /// own keeps its own there (docs/SIDE_RFC_TERMINAL_ENGINE.md, Phase 1). No lock on the hot path.
-final class GlyphAtlas {
-    private(set) var texture: MTLTexture
-    private(set) var size: Int
+package final class GlyphAtlas {
+    package private(set) var texture: MTLTexture
+    package private(set) var size: Int
     private let device: MTLDevice
     static let subpixelSteps = 4
     /// It starts small (4 MB) and doubles when a document needs more glyphs than fit, up to this
@@ -43,9 +43,9 @@ final class GlyphAtlas {
     private var penY = 1
     private var shelfHeight = 0
     /// Bumped when the atlas fills and starts over; a frame drawn from older entries redraws.
-    private(set) var generation = 0
+    package private(set) var generation = 0
 
-    init(device: MTLDevice, size: Int = 1024) {
+    package init(device: MTLDevice, size: Int = 1024) {
         self.device = device
         self.size = size
         texture = Self.makeTexture(device: device, size: size)
@@ -58,7 +58,7 @@ final class GlyphAtlas {
         return device.makeTexture(descriptor: descriptor)!
     }
 
-    var count: Int { entries.count }
+    package var count: Int { entries.count }
 
     /// Each font's name and size, asked of CoreText once: copying and bridging the name for
     /// every glyph of every frame was a tenth of a scrolling frame (2026-10-01). The fonts are
@@ -74,7 +74,7 @@ final class GlyphAtlas {
         return (name, size)
     }
 
-    func entry(font: CTFont, glyph: CGGlyph, subpixel: Int, scale: CGFloat, isColor: Bool) -> AtlasEntry? {
+    package func entry(font: CTFont, glyph: CGGlyph, subpixel: Int, scale: CGFloat, isColor: Bool) -> AtlasEntry? {
         let (name, pointSize) = fontKey(font)
         let key = Key(font: name, pointSize: pointSize, glyph: glyph, subpixel: subpixel, scale: scale)
         if let cached = entries[key] { return cached }

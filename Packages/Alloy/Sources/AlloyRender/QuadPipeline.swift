@@ -6,18 +6,18 @@ import Synchronization
 /// set serves the editors on the main thread and a terminal drawing on a thread of its own
 /// (docs/SIDE_RFC_TERMINAL_ENGINE.md, Phase 1). Compiled once per device and pixel format, and
 /// kept while any renderer holds it.
-final class QuadPipeline: @unchecked Sendable {
+package final class QuadPipeline: @unchecked Sendable {
     // @unchecked: MTLCommandQueue, MTLRenderPipelineState and MTLSamplerState are thread-safe
     // (Metal's own guarantee), and these are never reassigned.
-    let queue: MTLCommandQueue
-    let pipeline: MTLRenderPipelineState
-    let sampler: MTLSamplerState
+    package let queue: MTLCommandQueue
+    package let pipeline: MTLRenderPipelineState
+    package let sampler: MTLSamplerState
 
     private struct Key: Hashable { let device: UInt64; let pixelFormat: UInt }
     private final class Weak: @unchecked Sendable { weak var value: QuadPipeline? }
     private static let cache = Mutex<[Key: Weak]>([:])
 
-    static func shared(device: MTLDevice, pixelFormat: MTLPixelFormat) throws -> QuadPipeline {
+    package static func shared(device: MTLDevice, pixelFormat: MTLPixelFormat) throws -> QuadPipeline {
         let key = Key(device: device.registryID, pixelFormat: pixelFormat.rawValue)
         return try cache.withLock { cache in
             if let existing = cache[key]?.value { return existing }
