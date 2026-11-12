@@ -327,6 +327,11 @@ public final class TerminalRenderer {
                 backgrounds.append(Quad(rect: SIMD4(left, middle, span.rounded(.up), line), uv: .zero, color: color(c.foreground), kind: 0))
             }
             guard !c.style.contains(.spacer), c.scalar > 32 || c.cluster != nil else { continue }
+            if c.cluster == nil, let drawn = sprite(c.scalar, left: left, top: top, width: span, height: ch,
+                                                    line: underlineHeight, color: color(c.foreground)) {
+                glyphs += drawn
+                continue
+            }
             for p in placed(c, scale: scale) where p.entry.region.width > 0 {
                 let r = p.entry.region
                 glyphs.append(Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),

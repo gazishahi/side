@@ -95,6 +95,45 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(pixels.count(in: cellRect(column: 5, row: 0), blue), 0)
     }
 
+    /// Box drawing, braille and powerline are drawn to the cell: lines reach the cell's edges
+    /// (so rows and columns join), dots sit where braille puts them.
+    func testDrawnCharacters() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 6, rows: 2, foreground: 0xFFFFFF)
+        grid[0, 0] = TerminalCell(scalar: 0x2500, foreground: 0xFFFFFF) // ─
+        grid[1, 0] = TerminalCell(scalar: 0x2502, foreground: 0xFFFFFF) // │
+        grid[1, 1] = TerminalCell(scalar: 0x2502, foreground: 0xFFFFFF) // │ below it
+        grid[2, 0] = TerminalCell(scalar: 0x2801, foreground: 0xFFFFFF) // ⠁ dot 1
+        grid[3, 0] = TerminalCell(scalar: 0x28FF, foreground: 0xFFFFFF) // ⣿ all eight
+        grid[4, 0] = TerminalCell(scalar: 0xE0B0, foreground: 0xFFFFFF) // powerline right triangle
+        grid.cursor.visible = false
+        let pixels = try render(grid, renderer: renderer)
+        let lit: (Pixels.RGBA) -> Bool = { $0.r > 128 }
+        let cell = font.cellSize, w = cell.width * scale, h = (cell.height * scale).rounded()
+        func px(_ column: Double, _ row: Double, _ dx: Double, _ dy: Double) -> (x: Range<Int>, y: Range<Int>) {
+            let x = Int(column * w + dx * w), y = Int(row * h + dy * h)
+            return (x..<(x + 1), y..<(y + 1))
+        }
+        // ─ reaches both edges at mid height; │ both edges at mid width, and joins the one below.
+        XCTAssertEqual(pixels.count(in: px(0, 0, 0.02, 0.5), lit), 1)
+        XCTAssertEqual(pixels.count(in: px(0, 0, 0.97, 0.5), lit), 1)
+        XCTAssertEqual(pixels.count(in: px(1, 0, 0.5, 0.01), lit), 1)
+        XCTAssertEqual(pixels.count(in: px(1, 0, 0.5, 0.99), lit), 1)
+        XCTAssertEqual(pixels.count(in: px(1, 1, 0.5, 0.01), lit), 1, "no gap between rows")
+        // ⠁: only the top-left dot.
+        XCTAssertEqual(pixels.count(in: px(2, 0, 0.25, 0.125), lit), 1)
+        XCTAssertEqual(pixels.count(in: px(2, 0, 0.75, 0.125), lit), 0)
+        XCTAssertEqual(pixels.count(in: px(2, 0, 0.25, 0.875), lit), 0)
+        // ⣿: every dot.
+        for (dx, dy) in [(0.25, 0.125), (0.75, 0.125), (0.25, 0.375), (0.75, 0.375), (0.25, 0.625), (0.75, 0.625), (0.25, 0.875), (0.75, 0.875)] {
+            XCTAssertEqual(pixels.count(in: px(3, 0, dx, dy), lit), 1, "dot at \(dx), \(dy)")
+        }
+        // The triangle: full height at the left edge, a point at the right's middle.
+        XCTAssertEqual(pixels.count(in: px(4, 0, 0.1, 0.3), lit), 1)
+        XCTAssertEqual(pixels.count(in: px(4, 0, 0.9, 0.5), lit), 1)
+        XCTAssertEqual(pixels.count(in: px(4, 0, 0.9, 0.1), lit), 0)
+    }
+
     /// A block cursor covers its cell and shows the character under it in the background color.
     func testABlockCursorInvertsItsCharacter() throws {
         let renderer = try makeRenderer()
@@ -229,8 +268,12 @@ final class TerminalSnapshotTests: XCTestCase {
             ("struck through text", 0xE06C75, nil, [.strikethrough]),
             (" selection-ish background ", 0x101010, 0x61AFEF, []),
             ("emoji 🙂 flag 🇯🇵 e\u{301}", 0xD0D0D0, nil, []),
+            ("╭──┬──╮ ┏━━┓ ┌┄┄┐ ▁▂▃▄▅▆▇█ ░▒▓", 0x98C379, nil, []),
+            ("│  ┼  │ ┃  ┃ ╎  ╎ ▖▗▘▙▚▛▜▝▞▟ ▌▐", 0x98C379, nil, []),
+            ("╰──┴──╯ ┗━━┛ └┈┈┘ ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", 0x98C379, nil, []),
+            ("\u{E0B6} repo \u{E0B4}\u{E0B0} main \u{E0B2} \u{E0B1} \u{E0B3}", 0x3B55C9, nil, []),
         ]
-        let grid = TerminalGrid(columns: 40, rows: lines.count + 2, foreground: 0xD0D0D0)
+        let grid = TerminalGrid(columns: 60, rows: lines.count + 2, foreground: 0xD0D0D0)
         for (y, line) in lines.enumerated() {
             var x = 0
             for character in line.0 where x < grid.columns {
@@ -246,8 +289,10 @@ final class TerminalSnapshotTests: XCTestCase {
                 x += 1
             }
         }
-        grid[0, 8] = TerminalCell(scalar: UInt32(UInt8(ascii: "$")), foreground: 0xD0D0D0)
-        grid.cursor = TerminalCursor(column: 2, row: 8, visible: true, shape: .block)
+        // The powerline row: text on the segment's color between its caps.
+        for x in 1...6 { grid[x, 10].background = 0x3B55C9; grid[x, 10].foreground = 0xFFFFFF }
+        grid[0, 12] = TerminalCell(scalar: UInt32(UInt8(ascii: "$")), foreground: 0xD0D0D0)
+        grid.cursor = TerminalCursor(column: 2, row: 12, visible: true, shape: .block)
         let cell = font.cellSize
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: Int(CGFloat(grid.columns) * cell.width * 2),
                                                                   height: Int(CGFloat(grid.rows) * (cell.height * 2).rounded()), mipmapped: false)
