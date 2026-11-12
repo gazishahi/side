@@ -5186,6 +5186,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         // Every terminal running in a keeper, across projects (SIDE_RFC_SESSION_RESTORE.md).
         let terminals = windowMenu.addItem(withTitle: "Running Terminals", action: #selector(AppDelegate.showRunningTerminals), keyEquivalent: "")
         Shortcuts.bind(terminals, "window.runningTerminals")
+        // Every session, in every project (SIDE_RFC_SESSIONS.md): ⌃⌘S, as ⌃⌘P is projects.
+        Shortcuts.bind(windowMenu.addItem(withTitle: "Switch Session\u{2026}", action: #selector(ShellViewController.showSessionSwitcher(_:)), keyEquivalent: ""), "session.switcher")
         // Project switching in one window (prototype): ⌃1–9, and next and previous.
         let projectsItem = NSMenuItem(title: "Projects", action: nil, keyEquivalent: "")
         let projectsMenu = NSMenu(title: "Projects")

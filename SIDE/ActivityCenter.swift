@@ -61,9 +61,17 @@ final class ActivityCenter {
         let place: String
         let program: String?
         let target: Target
+        /// The program's own word for its state, when it reported one (OSC 7501): "Needs
+        /// permission", "Has a question". Nil: the state's.
+        var word: String? = nil
+        /// The program's own line on what it wants or is doing ("Run swift test?"); untrusted text,
+        /// shown plain. Empty when it said none.
+        var reason: String = ""
+
+        var stateWord: String { word ?? state.word }
 
         static func == (a: Item, b: Item) -> Bool {
-            a.id == b.id && a.state == b.state && a.title == b.title && a.place == b.place
+            a.id == b.id && a.state == b.state && a.title == b.title && a.place == b.place && a.word == b.word && a.reason == b.reason
         }
     }
 
@@ -108,10 +116,29 @@ final class ActivityCenter {
                 guard front?.isShowingTerminalSession(session.id) != true else { continue }
                 // What's running is asked only of a terminal with something to report: it can read
                 // the keeper's record from disk, and this runs every second.
-                guard vc.isProgramWorking || vc.lastBellAt != nil || vc.turnFinishedAt != nil else { continue }
+                guard vc.isProgramWorking || vc.lastBellAt != nil || vc.turnFinishedAt != nil || !vc.programStatus.records.isEmpty else { continue }
                 let program = vc.runningProgramName
                 let name = Self.programName(program)
                 let place = "\(projectName) \u{00B7} \(tabTitle)"
+                // What the program says of itself (OSC 7501) comes first, with its reason.
+                let reading = SessionRegistry.state(records: vc.programStatus, working: vc.isProgramWorking, news: vc.news, program: program)
+                if reading.reported {
+                    let reported: Item.State?
+                    switch reading.state {
+                    case .working: reported = .working
+                    case .needsYou: reported = .needsYou
+                    case .done: reported = .finished
+                    case .failed: reported = .failed
+                    case .idle: reported = nil
+                    }
+                    if let reported {
+                        var item = Item(id: "term-\(session.id)", state: reported, title: name, place: place, program: program, target: .terminal(project: project, session: session.id))
+                        if case .needsYou(.some) = reading.state { item.word = reading.state.word }
+                        item.reason = reading.message
+                        next.append(item)
+                    }
+                    continue
+                }
                 let state: Item.State?
                 switch vc.news {
                 // It rang the bell and nobody has looked since: it wants you.
@@ -257,7 +284,7 @@ final class ActivityPill {
     /// "Claude Code finished": the most pressing item. The rest are counted beside it ("+2").
     static func summary(_ items: [ActivityCenter.Item]) -> String {
         guard let first = items.first else { return "" }
-        return first.state == .working ? "\(first.title) working" : "\(first.title) \(first.state.word.lowercased())"
+        return first.state == .working ? "\(first.title) working" : "\(first.title) \(first.stateWord.lowercased())"
     }
 
     func refresh(animated: Bool) {
@@ -270,7 +297,7 @@ final class ActivityPill {
             let states: [ActivityCenter.Item.State] = [.working, .needsYou, .finished, .failed]
             view.reserveWidth(for: states.map { Self.summary([ActivityCenter.Item(id: "", state: $0, title: first.title, place: "", program: nil, target: .update)]) }
                 .max { GlassPill.measure($0) < GlassPill.measure($1) })
-            view.toolTip = items.map { "\($0.title) \u{2014} \($0.state.word), \($0.place)" }.joined(separator: "\n")
+            view.toolTip = items.map { "\($0.title) \u{2014} \($0.stateWord), \($0.place)" + ($0.reason.isEmpty ? "" : ": \($0.reason)") }.joined(separator: "\n")
         }
         setProjects(ActivityCenter.projects(of: items, except: currentProject?()))
         view.setShown(!items.isEmpty, animated: animated)
@@ -465,11 +492,18 @@ private final class ActivityRow: NSView {
         place.font = DS.Text.caption()
         place.textColor = .secondaryLabelColor
         place.lineBreakMode = .byTruncatingTail
-        let words = NSStackView(views: [title, place])
+        // What it's waiting for, in its own words, under where it is.
+        let reason = NSTextField(labelWithString: item.reason)
+        reason.font = DS.Text.caption()
+        reason.textColor = .labelColor
+        reason.lineBreakMode = .byTruncatingTail
+        reason.isHidden = item.reason.isEmpty
+        reason.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let words = NSStackView(views: [title, place, reason])
         words.orientation = .vertical
         words.alignment = .leading
         words.spacing = 1
-        let state = DS.StatusLabel(state: item.state.status, text: item.state.word)
+        let state = DS.StatusLabel(state: item.state.status, text: item.stateWord)
         let row = NSStackView(views: [icon, words, NSView(), state])
         row.orientation = .horizontal
         row.alignment = .centerY
@@ -486,7 +520,7 @@ private final class ActivityRow: NSView {
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("\(item.title), \(item.state.word), \(item.place)")
+        setAccessibilityLabel("\(item.title), \(item.stateWord), \(item.place)" + (item.reason.isEmpty ? "" : ", \(item.reason)"))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

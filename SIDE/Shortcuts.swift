@@ -171,6 +171,7 @@ enum Shortcuts {
         c("tabs.7", "Switch to Tab 7", .tabs, "7"), c("tabs.8", "Switch to Tab 8", .tabs, "8"),
         c("tabs.last", "Switch to Last Tab", .tabs, "9"),
         c("project.switcher", "Switch Project\u{2026}", .window, "p", [.control, .command]),
+        c("session.switcher", "Switch Session\u{2026}", .window, "s", [.control, .command]),
         c("project.next", "Next Project", .window, "]", [.control, .command]),
         c("project.previous", "Previous Project", .window, "[", [.control, .command]),
         c("project.1", "Switch to Project 1", .window, "1", .control), c("project.2", "Switch to Project 2", .window, "2", .control),

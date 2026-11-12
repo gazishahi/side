@@ -90,6 +90,7 @@
 		A00000000000000000000619 /* JumpRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000618 /* JumpRail.swift */; };
 		A0000000000000000000061F /* WelcomeDemos.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061E /* WelcomeDemos.swift */; };
 		A00000000000000000000621 /* SessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000620 /* SessionRegistry.swift */; };
+		A00000000000000000000625 /* SessionSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000624 /* SessionSwitcher.swift */; };
 		A0000000000000000000061B /* RichBlocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061A /* RichBlocks.swift */; };
 		A0000000000000000000061D /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061C /* mermaid.min.js */; };
 		A00000000000000000000611 /* ProjectSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000610 /* ProjectSwitcher.swift */; };
@@ -239,6 +240,7 @@
 		A00000000000000000000618 /* JumpRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpRail.swift; sourceTree = "<group>"; };
 		A0000000000000000000061E /* WelcomeDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeDemos.swift; sourceTree = "<group>"; };
 		A00000000000000000000620 /* SessionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistry.swift; sourceTree = "<group>"; };
+		A00000000000000000000624 /* SessionSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSwitcher.swift; sourceTree = "<group>"; };
 		A0000000000000000000061A /* RichBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichBlocks.swift; sourceTree = "<group>"; };
 		A0000000000000000000061C /* mermaid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = mermaid.min.js; sourceTree = "<group>"; };
 		A00000000000000000000610 /* ProjectSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSwitcher.swift; sourceTree = "<group>"; };
@@ -452,6 +454,7 @@
 				A00000000000000000000618 /* JumpRail.swift */,
 				A0000000000000000000061E /* WelcomeDemos.swift */,
 				A00000000000000000000620 /* SessionRegistry.swift */,
+				A00000000000000000000624 /* SessionSwitcher.swift */,
 				A0000000000000000000061A /* RichBlocks.swift */,
 				A0000000000000000000061C /* mermaid.min.js */,
 				A00000000000000000000610 /* ProjectSwitcher.swift */,
@@ -792,6 +795,7 @@
 				A00000000000000000000619 /* JumpRail.swift in Sources */,
 				A0000000000000000000061F /* WelcomeDemos.swift in Sources */,
 				A00000000000000000000621 /* SessionRegistry.swift in Sources */,
+				A00000000000000000000625 /* SessionSwitcher.swift in Sources */,
 				A0000000000000000000061B /* RichBlocks.swift in Sources */,
 				A00000000000000000000611 /* ProjectSwitcher.swift in Sources */,
 				A00000000000000000000196 /* SlidingSegmentedControl.swift in Sources */,

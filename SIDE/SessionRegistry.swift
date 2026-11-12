@@ -3,7 +3,8 @@ import SideAgents
 import SideSessionsKit
 
 /// Sessions (SIDE_RFC_SESSIONS.md, phase 1): every program running in Side's terminals, in
-/// every open project and the home folder, and Claude Code's background sessions. Observed,
+/// every open project and the home folder, and every Claude Code session on the Mac, in any
+/// terminal or in the background (`claude agents --json`). Observed,
 /// never owned: Side reads what each says it's doing and where it is, and starts nothing.
 ///
 /// What a session is doing comes, best first, from what the program reports itself (OSC 7501,
@@ -70,8 +71,9 @@ final class SessionRegistry {
         enum Source: Equatable {
             /// A tab in Side's Terminal (the `TerminalSession`'s id).
             case terminal(UUID)
-            /// A Claude Code background session (`claude agents`), by its session id.
-            case background(String)
+            /// A Claude Code session Side isn't showing in a tab (`claude agents`): another
+            /// terminal's, or a background one. By its session id.
+            case claude(String)
         }
 
         let id: String
@@ -103,7 +105,7 @@ final class SessionRegistry {
     private var refreshScheduled = false
     /// Checkouts by project path, read off the main thread.
     private var checkouts: [String: [Checkout]] = [:]
-    private var background: [BackgroundSession] = []
+    private var claudeSessions: [ClaudeSession] = []
     private var looking = false
 
     private init() {}
@@ -139,9 +141,13 @@ final class SessionRegistry {
         var pools: [(project: URL?, terminals: TerminalSessionManager)] = contexts.map { ($0.projectRoot, $0.terminals) }
         pools.append((nil, RunWorkspaceViewController.homeTerminals))
         var claudeIDsInTerminals: Set<String> = []
+        var foregroundPIDs: Set<pid_t> = []
         for pool in pools {
             let projectCheckouts = pool.project.flatMap { checkouts[$0.standardizedFileURL.path] } ?? []
-            for terminal in pool.terminals.everySession() {
+            // Named as their tabs are: two in one folder are "app" and "app 2".
+            let terminals = pool.terminals.everySession()
+            let titles = RunWorkspaceViewController.distinctTitles(terminals.map(\.title))
+            for (terminal, title) in zip(terminals, titles) {
                 let vc = terminal.viewController
                 guard vc.isAliveOrUnstarted else { continue }
                 let program = vc.runningProgramName
@@ -149,19 +155,21 @@ final class SessionRegistry {
                 if let id = vc.recoveredAgentSession, program == "claude" { claudeIDsInTerminals.insert(id) }
                 // Where the program really is (the kernel's word), else the shell's last report.
                 let shell = vc.keeperID.flatMap { SessionKeepers.liveRecord($0)?.childPID }
-                let cwd = shell.flatMap(ForegroundProgram.group(ofShell:)).flatMap(ForegroundProgram.directory(of:))
-                    ?? vc.currentDirectory ?? vc.workingDirectory
-                next.append(Session(id: "terminal:\(terminal.id.uuidString)", source: .terminal(terminal.id), program: program, title: terminal.title,
+                let foreground = shell.flatMap(ForegroundProgram.group(ofShell:))
+                if let foreground { foregroundPIDs.insert(foreground) }
+                let cwd = foreground.flatMap(ForegroundProgram.directory(of:)) ?? vc.currentDirectory ?? vc.workingDirectory
+                next.append(Session(id: "terminal:\(terminal.id.uuidString)", source: .terminal(terminal.id), program: program, title: title,
                                     state: reading.state, message: reading.message, cwd: cwd, project: pool.project,
                                     checkout: cwd.flatMap { Self.checkout(for: $0, in: projectCheckouts) }, reportsItself: reading.reported))
             }
         }
-        // Claude's background sessions not already showing in a tab.
-        for session in background where !claudeIDsInTerminals.contains(session.sessionId) {
+        // Claude Code's own list, less the sessions already showing in a tab (by conversation, or
+        // by the process in a tab's foreground).
+        for session in claudeSessions where !claudeIDsInTerminals.contains(session.sessionId) && !foregroundPIDs.contains(session.pid) {
             guard let state = session.state else { continue }
             let project = contexts.first { session.cwd.hasPrefix($0.projectRoot.standardizedFileURL.path) }?.projectRoot
             let projectCheckouts = project.flatMap { checkouts[$0.standardizedFileURL.path] } ?? []
-            next.append(Session(id: "background:\(session.sessionId)", source: .background(session.sessionId), program: "claude",
+            next.append(Session(id: "claude:\(session.sessionId)", source: .claude(session.sessionId), program: "claude",
                                 title: session.name ?? "Claude Code", state: state, message: session.waitingFor ?? "", cwd: session.cwd,
                                 project: project, checkout: Self.checkout(for: session.cwd, in: projectCheckouts), reportsItself: true))
         }
@@ -183,12 +191,12 @@ final class SessionRegistry {
                 let result = GitPaths.runGitRaw(["worktree", "list", "--porcelain"], cwd: root.path)
                 if result.success { found[root.standardizedFileURL.path] = Self.parseWorktrees(result.output) }
             }
-            let background = asksClaude ? Self.claudeBackgroundSessions() : []
+            let claude = asksClaude ? Self.claudeAgentList() : []
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.looking = false
                     self.checkouts = found
-                    self.background = background
+                    self.claudeSessions = claude
                     self.refresh()
                 }
             }
@@ -247,13 +255,16 @@ final class SessionRegistry {
         return checkouts.filter { path == $0.path || path.hasPrefix($0.path + "/") }.max { $0.path.count < $1.path.count }
     }
 
-    // MARK: Claude's background sessions
+    // MARK: Claude Code's sessions
 
-    struct BackgroundSession: Equatable, Sendable {
+    struct ClaudeSession: Equatable, Sendable {
         let sessionId: String
+        let pid: pid_t
         let name: String?
         let cwd: String
-        /// Nil for a stopped session: not shown.
+        /// "interactive" (in a terminal) or "background".
+        let kind: String?
+        /// Nil for a stopped or finished one: not shown.
         let state: State?
         let waitingFor: String?
     }
@@ -265,10 +276,10 @@ final class SessionRegistry {
             && !UserDefaults.standard.bool(forKey: "SideUITesting")
     }
 
-    /// `claude agents --json` (Claude Code's agent view, a research preview): its background
-    /// sessions. Read only, five seconds at most; nothing when Claude Code isn't installed, is too
-    /// old, or answers anything but a list.
-    nonisolated static func claudeBackgroundSessions() -> [BackgroundSession] {
+    /// `claude agents --json`: every live Claude Code session on the Mac, interactive (in any
+    /// terminal) and background. Read only, five seconds at most; nothing when Claude Code isn't
+    /// installed, is too old, or answers anything but a list.
+    nonisolated static func claudeAgentList() -> [ClaudeSession] {
         guard let claude = LanguageServerRegistry.resolveExecutable(named: "claude") else { return [] }
         let process = Process()
         process.executableURL = claude
@@ -285,24 +296,27 @@ final class SessionRegistry {
         return parseClaudeAgents(output.fileHandleForReading.readDataToEndOfFile())
     }
 
-    /// Its documented fields: `sessionId`, `name`, `cwd`, `state` (working, blocked, done,
-    /// failed, stopped; blocked always means it needs you) and `waitingFor`. Anything unexpected
-    /// is skipped, not guessed at.
-    nonisolated static func parseClaudeAgents(_ data: Data) -> [BackgroundSession] {
+    /// As Claude Code 2.1.322 prints it (checked 2026-11-12): `pid`, `cwd`, `kind`
+    /// (interactive, background), `startedAt`, `sessionId`, `name` and `status` (busy, idle).
+    /// The agent view docs name the field `state` (working, blocked, done, failed, stopped) and
+    /// add `waitingFor`: both spellings are read. Anything unexpected is skipped, not guessed at.
+    nonisolated static func parseClaudeAgents(_ data: Data) -> [ClaudeSession] {
         guard let object = try? JSONSerialization.jsonObject(with: data) else { return [] }
         let list = (object as? [[String: Any]]) ?? ((object as? [String: Any])?["agents"] as? [[String: Any]]) ?? []
         return list.compactMap { entry in
             guard let id = entry["sessionId"] as? String, !id.isEmpty, let cwd = entry["cwd"] as? String else { return nil }
             let state: State?
-            switch entry["state"] as? String {
-            case "working": state = .working(progress: nil)
-            case "blocked": state = .needsYou(nil)
+            switch (entry["state"] as? String) ?? (entry["status"] as? String) {
+            case "working", "busy": state = .working(progress: nil)
+            case "blocked", "waiting": state = .needsYou(nil)
+            case "idle": state = .idle
             case "done": state = .done
-            case "failed": state = .failed
+            case "failed", "error": state = .failed
             default: state = nil
             }
-            return BackgroundSession(sessionId: id, name: (entry["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }, cwd: cwd,
-                                     state: state, waitingFor: entry["waitingFor"] as? String)
+            return ClaudeSession(sessionId: id, pid: (entry["pid"] as? NSNumber)?.int32Value ?? 0,
+                                 name: (entry["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }, cwd: cwd,
+                                 kind: entry["kind"] as? String, state: state, waitingFor: entry["waitingFor"] as? String)
         }
     }
 

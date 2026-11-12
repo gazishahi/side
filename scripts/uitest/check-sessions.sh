@@ -47,6 +47,27 @@ s=$(sessions); echo "$s" | sed 's/^/     /'
 check "a session in an agent's worktree is on its branch" '[[ $s == *"Working | reported | feature |"* ]]' "$s"
 check "needs-you comes first" '[[ $(echo "$s" | head -1) == *"Needs permission"* ]]' "$s"
 
+switcher() { $U post session-switcher-dump; sleep 0.6; awk '/^\[switcher\]$/{block=""; on=1; next} /^\[switcher-end\]$/{on=0} on{block=block $0 "\n"} END{printf "%s", block}' $ROOT/side.log; }
+pill() { $U post activity-dump; sleep 0.6; awk '/^\[activity\]$/{block=""; on=1; next} /^windows /{on=0} on{block=block $0 " "} END{printf "%s", block}' $ROOT/side.log; }
+
+# The pill: the program's own words, with its reason.
+p=$(pill); echo "     $p"
+check "the pill says it needs permission, and why" '[[ $p == *"word=Needs permission reason=Run swift test?"* ]]' "$p"
+$U shot $OUT/pill.png > /dev/null
+
+# The switcher: needs-you first, then working; a search narrows it; Return goes there.
+$U post "session-switcher"; sleep 1
+w=$(switcher); echo "$w" | sed 's/^/     /'
+check "the switcher lists needs-you first" '[[ $(echo "$w" | head -1) == *"Needs permission"* ]]' "$w"
+check "and the working one after it" '[[ $w == *"| Working"* ]]' "$w"
+$U shot $OUT/switcher.png > /dev/null
+$U post "session-switcher-type feature"; sleep 0.6
+w=$(switcher)
+check "a search by branch finds the worktree's session" '[[ $(echo "$w" | grep -c " | ") == 1 && $w == *"| Working"* ]]' "$w"
+$U post "run-select 1" "session-switcher-pick"; sleep 1
+w=$(switcher)
+check "Return closes it" '[[ $w == *closed* ]]' "$w"
+
 $U quit
 echo "$failures failed; captures in $OUT"
 exit $(( failures > 0 ))

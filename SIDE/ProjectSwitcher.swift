@@ -311,7 +311,7 @@ final class ProjectChip: NSView {
         dot.isHidden = elsewhere == nil
         if let elsewhere { dot.state = elsewhere.1.state.status }
         // "webapp: Claude Code finished", for the project that has something to say.
-        let note = elsewhere.map { "\($0.0.name): \($0.1.title) \($0.1.state.word.lowercased())" }
+        let note = elsewhere.map { "\($0.0.name): \($0.1.title) \($0.1.stateWord.lowercased())" }
         toolTip = [space.name, note].compactMap { $0 }.joined(separator: "\n")
         setAccessibilityLabel("Project: \(space.name)" + (note.map { ". \($0)" } ?? ""))
     }
@@ -1088,7 +1088,7 @@ final class ProjectSwitcherCard: NSView {
         // One line under the name: what it's doing when something is, else where it is.
         let second: NSView
         if let activity = entry.activity {
-            second = DS.StatusLabel(state: activity.state.status, text: "\(activity.title) \(activity.state.word.lowercased())")
+            second = DS.StatusLabel(state: activity.state.status, text: "\(activity.title) \(activity.stateWord.lowercased())")
         } else {
             let place = NSTextField(labelWithString: [entry.place, entry.detail].compactMap { $0 }.joined(separator: " \u{00B7} "))
             place.font = DS.Text.caption()
@@ -1474,7 +1474,7 @@ final class ProjectCycleStrip: NSView {
         }
         if let activity = entry.activity {
             text.append(NSAttributedString(string: "\u{25CF} ", attributes: [.font: DS.Text.caption(), .foregroundColor: activity.state.status.color]))
-            text.append(NSAttributedString(string: "\(activity.title) \(activity.state.word.lowercased())", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor]))
+            text.append(NSAttributedString(string: "\(activity.title) \(activity.stateWord.lowercased())", attributes: [.font: DS.Text.caption(.medium), .foregroundColor: NSColor.labelColor]))
         } else {
             let line = [entry.place, entry.detail].compactMap { $0 }.joined(separator: " \u{00B7} ")
             text.append(NSAttributedString(string: line, attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor]))

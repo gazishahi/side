@@ -113,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         ActivityCenter.shared.refresh()
                         let sessions = ProjectContextRegistry.openContexts().flatMap { $0.terminals.everySession() }
                         let lines = sessions.map { "session \($0.title) working=\($0.viewController.isProgramWorking) program=\($0.viewController.runningProgramName ?? "-") unseen=\($0.hasUnseenOutput)" }
-                            + ActivityCenter.shared.items.map { "item \($0.title) \($0.state) \($0.place)" }
+                            + ActivityCenter.shared.items.map { "item \($0.title) \($0.state) \($0.place) word=\($0.stateWord) reason=\($0.reason)" }
                             + ["stage \(shell.currentStageForTesting ?? "-")", "pill \(shell.activityPillForTesting?.view.isShown == true ? (shell.activityPillForTesting?.view.title ?? "") + " " + (shell.activityPillForTesting?.view.countForTesting ?? "") : "-")",
                                "popover \(shell.activityPillForTesting?.popoverForTesting?.isShown == true)",
                                "marks \(shell.activityPillForTesting?.projectsForTesting.joined(separator: ",") ?? "-")",
@@ -357,6 +357,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         front.showStageForTesting(String(command.dropFirst(12)))
                     }
                     // Sessions (SIDE_RFC_SESSIONS.md): the registry as it stands, a line each.
+                    if command == "session-switcher" { shell.toggleSessionSwitcher() }
+                    if command.hasPrefix("session-switcher-type ") { shell.sessionSwitcherForTesting?.typeForTesting(String(command.dropFirst(22))) }
+                    if command == "session-switcher-pick" { shell.sessionSwitcherForTesting?.pickSelectedForTesting() }
+                    if command == "session-switcher-dump" {
+                        let rows = shell.sessionSwitcherForTesting?.rowsForTesting.joined(separator: "\n") ?? "closed"
+                        FileHandle.standardError.write(Data("[switcher]\n\(rows)\nselected \(shell.sessionSwitcherForTesting?.selectedForTesting ?? "-")\n[switcher-end]\n".utf8))
+                    }
                     if command == "sessions-dump" {
                         SessionRegistry.shared.refresh()
                         FileHandle.standardError.write(Data("[sessions]\n\(SessionRegistry.shared.stateForTesting)\n[sessions-end]\n".utf8))
@@ -537,6 +544,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func newProjectFromMenu() {
         if activeShell == nil { presentNewWindow() }
         activeShell?.presentNewProject()
+    }
+
+    /// A terminal in the home folder: shown by a window with no project, or a new one.
+    func revealHomeTerminal(_ id: UUID) {
+        let shell = shellViewControllers.first { !$0.hasProject } ?? (presentNewWindow().contentViewController as? ShellViewController)
+        shell?.view.window?.makeKeyAndOrderFront(nil)
+        shell?.revealTerminalSession(id)
     }
 
     /// Help › Welcome to Side.

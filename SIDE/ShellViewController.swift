@@ -1853,6 +1853,57 @@ final class ShellViewController: NSViewController {
 
     @objc func showProjectSwitcher(_ sender: Any?) { toggleProjectSwitcher() }
 
+    // MARK: The session switcher (SIDE_RFC_SESSIONS.md)
+
+    private var sessionSwitcher: SessionSwitcherOverlay?
+
+    @objc func showSessionSwitcher(_ sender: Any?) { toggleSessionSwitcher() }
+
+    /// Every session, on demand: out of the stage bar, as the project switcher comes.
+    func toggleSessionSwitcher() {
+        if sessionSwitcher != nil { closeSessionSwitcher(); return }
+        if projectSwitcher != nil { closeProjectSwitcher() }
+        makeVC.hideFileExplorer()
+        SessionRegistry.shared.refresh()
+        let overlay = SessionSwitcherOverlay(frame: view.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        overlay.placePanel = { [weak self, weak overlay] size in
+            guard let self, let overlay else { return .zero }
+            return self.view.convert(self.chrome.paletteFrame(size: size, in: self.view), to: overlay)
+        }
+        overlay.onPick = { [weak self] session in self?.goToSession(session) }
+        overlay.onClose = { [weak self] in self?.closeSessionSwitcher() }
+        view.addSubview(overlay, positioned: .above, relativeTo: nil)
+        overlay.layoutSubtreeIfNeeded()
+        sessionSwitcher = overlay
+        overlay.focus()
+        morph(overlay.panelHost, appearing: true, key: "sessionSwitcher-\(ObjectIdentifier(overlay).hashValue)")
+    }
+
+    private func closeSessionSwitcher() {
+        guard let overlay = sessionSwitcher else { return }
+        sessionSwitcher = nil
+        overlay.onClose = nil
+        overlay.passesClicksThrough = true
+        if view.window?.firstResponder is NSText { view.window?.makeFirstResponder(nil) }
+        guard !DS.Motion.reduceMotion else { overlay.removeFromSuperview(); return }
+        morph(overlay.panelHost, appearing: false, key: "sessionSwitcher-\(ObjectIdentifier(overlay).hashValue)") { [weak overlay] in overlay?.removeFromSuperview() }
+    }
+
+    /// A session picked: its tab, in the window with its project (or, for a terminal in the
+    /// home folder, a window without one).
+    func goToSession(_ session: SessionRegistry.Session) {
+        guard case .terminal(let id) = session.source else { return }
+        guard let project = session.project else {
+            AppDelegate.shared?.revealHomeTerminal(id)
+            return
+        }
+        if project.standardizedFileURL.path == projectURL?.standardizedFileURL.path { return revealTerminalSession(id) }
+        AppDelegate.shared?.revealProject(project) { $0.revealTerminalSession(id) }
+    }
+
+    var sessionSwitcherForTesting: SessionSwitcherOverlay? { sessionSwitcher }
+
     func toggleProjectSwitcher() {
         if projectSwitcher != nil { closeProjectSwitcher(); return }
         finishCycle(commit: false)

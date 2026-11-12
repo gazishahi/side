@@ -57,7 +57,19 @@ final class SessionRegistryTests: XCTestCase {
         XCTAssertNil(SessionRegistry.checkout(for: "/Users/me/.cursor/worktrees/app/try2", in: checkouts))
     }
 
-    func testClaudesBackgroundSessionsAreReadAndStoppedOnesSkipped() {
+    func testClaudeCodesOwnListAsItPrintsIt() {
+        // Claude Code 2.1.322's `claude agents --json`, trimmed: every live session, in any terminal.
+        let json = """
+        [{"pid":4409,"cwd":"/Users/me/app","kind":"interactive","startedAt":1793903433822,"sessionId":"c2d4","name":"app-ff","status":"idle"},
+         {"pid":4917,"cwd":"/Users/me/app/.claude/worktrees/x","kind":"interactive","startedAt":1793903453837,"sessionId":"a4ba","name":"app-c8","status":"busy"}]
+        """
+        let sessions = SessionRegistry.parseClaudeAgents(Data(json.utf8))
+        XCTAssertEqual(sessions.map(\.pid), [4409, 4917])
+        XCTAssertEqual(sessions.map(\.state), [.idle, .working(progress: nil)])
+        XCTAssertEqual(sessions.first?.kind, "interactive")
+    }
+
+    func testTheDocumentedSpellingIsReadToo() {
         let json = """
         [{"sessionId":"a1","name":"Fix the pill","cwd":"/Users/me/app","state":"blocked","waitingFor":"Approve Bash(swift test)","pid":10},
          {"sessionId":"b2","name":"","cwd":"/Users/me/app","state":"working"},
@@ -72,5 +84,27 @@ final class SessionRegistryTests: XCTestCase {
         XCTAssertNil(sessions[2].state, "stopped: not shown")
         XCTAssertTrue(SessionRegistry.parseClaudeAgents(Data("not json".utf8)).isEmpty)
         XCTAssertFalse(SessionRegistry.mayAskClaude, "a test never runs the developer's Claude Code")
+    }
+
+    /// The switcher: what needs you, then what's working, then the rest; plain shells at their
+    /// prompt left out; a search matches title, program, branch, project or what it said.
+    func testTheSwitcherGroupsAndFinds() {
+        func session(_ title: String, _ program: String?, _ state: SessionRegistry.State, branch: String? = nil, message: String = "") -> SessionRegistry.Session {
+            SessionRegistry.Session(id: title, source: .terminal(UUID()), program: program, title: title, state: state, message: message, cwd: nil,
+                                    project: URL(fileURLWithPath: "/p/app"), checkout: branch.map { .init(path: "/p/app", branch: $0, isMain: true) }, reportsItself: false)
+        }
+        let sessions = [
+            session("zsh", nil, .idle),
+            session("Dev server", "npm", .idle),
+            session("Fix pill", "claude", .working(progress: nil), branch: "fix-pill"),
+            session("Tests", "codex", .needsYou(.question), message: "Which database?"),
+            session("Lint", "cargo", .failed),
+        ]
+        XCTAssertEqual(SessionSwitcherOverlay.listed(sessions, query: "").map(\.title), ["Tests", "Lint", "Fix pill", "Dev server"],
+                       "needs you and failed first, then working, then the rest; an idle shell isn't listed")
+        XCTAssertEqual(SessionSwitcherOverlay.listed(sessions, query: "fix-p").map(\.title), ["Fix pill"], "by branch")
+        XCTAssertEqual(SessionSwitcherOverlay.listed(sessions, query: "claude code").map(\.title), ["Fix pill"], "by the program's name")
+        XCTAssertEqual(SessionSwitcherOverlay.listed(sessions, query: "database").map(\.title), ["Tests"], "by what it said")
+        XCTAssertEqual(SessionSwitcherOverlay.listed(sessions, query: "app").count, 4, "by project")
     }
 }
