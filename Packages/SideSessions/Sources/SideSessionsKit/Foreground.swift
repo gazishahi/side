@@ -48,6 +48,19 @@ public enum ForegroundProgram {
         return first
     }
 
+    /// A process's working directory, as the kernel has it: where a program that moved itself
+    /// (an agent into its own worktree) really is, which the shell's last report (OSC 7) can't
+    /// say until its next prompt.
+    public static func directory(of pid: pid_t) -> String? {
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.stride)
+        guard pid > 0, proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
+        let path = withUnsafeBytes(of: info.pvi_cdir.vip_path) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        return path.isEmpty ? nil : path
+    }
+
     /// The foreground program's name for the terminal `shell` is attached to.
     public static func name(ofShell shell: pid_t) -> String? {
         group(ofShell: shell).flatMap { name(arguments: arguments(of: $0)) }

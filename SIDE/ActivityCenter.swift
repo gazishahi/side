@@ -250,6 +250,7 @@ final class ActivityPill {
             MainActor.assumeIsolated { self?.refresh(animated: true) }
         }
         ActivityCenter.shared.start()
+        SessionRegistry.shared.start()
         refresh(animated: false)
     }
 

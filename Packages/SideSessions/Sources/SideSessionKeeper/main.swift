@@ -149,6 +149,7 @@ while true {
             while candidate >= 0, let frame = candidateDecoder.next() {
                 switch frame.kind {
                 case .hello:
+                    candidateWantsEvents = frame.decode(Hello.self)?.events == true
                     let welcome = Frame(.welcome, json: Welcome(protocolVersion: SessionProtocol.version, build: build, record: record)).encoded
                     _ = welcome.withUnsafeBytes { write(candidate, $0.baseAddress!, $0.count) }
                 case .attach:
@@ -156,6 +157,7 @@ while true {
                     sendToClient(Frame(.replaced)); flushClient(); dropClient(why: "another client attached")
                     client = candidate
                     clientDecoder = candidateDecoder
+                    clientWantsEvents = candidateWantsEvents
                     candidate = -1
                     handle(frame)
                     while client >= 0, let next = clientDecoder.next() { handle(next) }

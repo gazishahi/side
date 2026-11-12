@@ -715,6 +715,14 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
             self.reattachedTitlePending = false
             self.setProgramTitle(Self.cleanProgramTitle(title))
         }
+        // What the program says it's doing (OSC 7501), kept by the keeper: the session registry
+        // reads it (SIDE_RFC_SESSIONS.md). A reattach starts from the record's copy.
+        programStatus = ProgramStatusRecords(link.record?.programStatus ?? [])
+        link.onProgramStatus = { [weak self] records in
+            guard let self else { return }
+            self.programStatus = ProgramStatusRecords(records)
+            NotificationCenter.default.post(name: Self.programStatusDidChangeNotification, object: self)
+        }
         link.onExit = { [weak self] exit in self?.keeperSessionEnded(exitCode: exit.status) }
         link.onLost = { [weak self] replaced in self?.keeperConnectionLost(replaced: replaced) }
     }
@@ -759,6 +767,11 @@ final class TerminalViewController: NSViewController, @preconcurrency LocalProce
         guard let keeperID, let record = SessionKeepers.liveRecord(keeperID) else { return nil }
         return ForegroundProgram.name(arguments: record.foreground)
     }
+
+    /// The program's status records (OSC 7501), as its keeper keeps them; empty for a terminal
+    /// with no keeper, or a program that doesn't report.
+    private(set) var programStatus = ProgramStatusRecords()
+    static let programStatusDidChangeNotification = Notification.Name("SideTerminalProgramStatusDidChange")
 
     /// The shell's process: Side's own child, or the keeper's, read once from its record.
     private var shellPID: pid_t? {

@@ -1207,6 +1207,7 @@ final class ShellViewController: NSViewController {
 
     /// UI testing: typing into Run's terminal.
     func runTypeForTesting(_ text: String) { runVC.typeForTesting(text) }
+    func runNewTabForTesting() { runVC.newSession() }
     var terminalBackgroundForTesting: String { runVC.terminalBackgroundForTesting }
     func runSelectForTesting(_ index: Int) { runVC.selectTab(number: index) }
     var floatingStateForTesting: String { makeVC.floatingStateForTesting }

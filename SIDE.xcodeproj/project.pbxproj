@@ -55,6 +55,7 @@
 		A00000000000000000000230 /* TypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000229 /* TypographyTests.swift */; };
 		A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000251 /* GitLaunchProbeTests.swift */; };
 		A00000000000000000000615 /* CompanionFollowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000614 /* CompanionFollowTests.swift */; };
+		A00000000000000000000623 /* SessionRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000622 /* SessionRegistryTests.swift */; };
 		A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000257 /* WorkGroupViewTests.swift */; };
 		A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000271 /* DataIntegrityAuditTests.swift */; };
 		A00000000000000000000274 /* LSPOrderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000273 /* LSPOrderingTests.swift */; };
@@ -88,6 +89,7 @@
 		A00000000000000000000617 /* AgentBranchPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000616 /* AgentBranchPanel.swift */; };
 		A00000000000000000000619 /* JumpRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000618 /* JumpRail.swift */; };
 		A0000000000000000000061F /* WelcomeDemos.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061E /* WelcomeDemos.swift */; };
+		A00000000000000000000621 /* SessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000620 /* SessionRegistry.swift */; };
 		A0000000000000000000061B /* RichBlocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061A /* RichBlocks.swift */; };
 		A0000000000000000000061D /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061C /* mermaid.min.js */; };
 		A00000000000000000000611 /* ProjectSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000610 /* ProjectSwitcher.swift */; };
@@ -236,6 +238,7 @@
 		A00000000000000000000616 /* AgentBranchPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentBranchPanel.swift; sourceTree = "<group>"; };
 		A00000000000000000000618 /* JumpRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpRail.swift; sourceTree = "<group>"; };
 		A0000000000000000000061E /* WelcomeDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeDemos.swift; sourceTree = "<group>"; };
+		A00000000000000000000620 /* SessionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistry.swift; sourceTree = "<group>"; };
 		A0000000000000000000061A /* RichBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichBlocks.swift; sourceTree = "<group>"; };
 		A0000000000000000000061C /* mermaid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = mermaid.min.js; sourceTree = "<group>"; };
 		A00000000000000000000610 /* ProjectSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSwitcher.swift; sourceTree = "<group>"; };
@@ -249,6 +252,7 @@
 		A00000000000000000000229 /* TypographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypographyTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000251 /* GitLaunchProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLaunchProbeTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000614 /* CompanionFollowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionFollowTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000622 /* SessionRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistryTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000257 /* WorkGroupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkGroupViewTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000271 /* DataIntegrityAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataIntegrityAuditTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000273 /* LSPOrderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LSPOrderingTests.swift; sourceTree = "<group>"; };
@@ -447,6 +451,7 @@
 				A00000000000000000000616 /* AgentBranchPanel.swift */,
 				A00000000000000000000618 /* JumpRail.swift */,
 				A0000000000000000000061E /* WelcomeDemos.swift */,
+				A00000000000000000000620 /* SessionRegistry.swift */,
 				A0000000000000000000061A /* RichBlocks.swift */,
 				A0000000000000000000061C /* mermaid.min.js */,
 				A00000000000000000000610 /* ProjectSwitcher.swift */,
@@ -508,6 +513,7 @@
 				A00000000000000000000229 /* TypographyTests.swift */,
 				A00000000000000000000251 /* GitLaunchProbeTests.swift */,
 				A00000000000000000000614 /* CompanionFollowTests.swift */,
+				A00000000000000000000622 /* SessionRegistryTests.swift */,
 				A00000000000000000000257 /* WorkGroupViewTests.swift */,
 				A00000000000000000000271 /* DataIntegrityAuditTests.swift */,
 				A00000000000000000000273 /* LSPOrderingTests.swift */,
@@ -785,6 +791,7 @@
 				A00000000000000000000617 /* AgentBranchPanel.swift in Sources */,
 				A00000000000000000000619 /* JumpRail.swift in Sources */,
 				A0000000000000000000061F /* WelcomeDemos.swift in Sources */,
+				A00000000000000000000621 /* SessionRegistry.swift in Sources */,
 				A0000000000000000000061B /* RichBlocks.swift in Sources */,
 				A00000000000000000000611 /* ProjectSwitcher.swift in Sources */,
 				A00000000000000000000196 /* SlidingSegmentedControl.swift in Sources */,
@@ -824,6 +831,7 @@
 				A00000000000000000000230 /* TypographyTests.swift in Sources */,
 				A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */,
 				A00000000000000000000615 /* CompanionFollowTests.swift in Sources */,
+				A00000000000000000000623 /* SessionRegistryTests.swift in Sources */,
 				A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */,
 				A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */,
 				A00000000000000000000274 /* LSPOrderingTests.swift in Sources */,

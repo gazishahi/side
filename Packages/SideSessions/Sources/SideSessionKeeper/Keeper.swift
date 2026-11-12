@@ -98,6 +98,7 @@ func dropClient(why: String? = nil) {
     close(client) // closing removes its kqueue filters
     client = -1
     attached = false
+    clientWantsEvents = false
     clientDecoder = FrameDecoder()
     toClient.removeAll()
     toClientOffset = 0
@@ -252,6 +253,45 @@ let pwdChanged: GhosttyTerminalPwdChangedFn = { _, _ in
     var value = GhosttyString()
     guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_PWD, &value) == GHOSTTY_SUCCESS, let ptr = value.ptr, value.len > 0 else { return }
     post(.pwd(String(decoding: UnsafeBufferPointer(start: ptr, count: value.len), as: UTF8.self)))
+}
+
+// OSC 7501: what the program says it's doing. libghostty-vt has parsed and checked the report;
+// the keeper keeps the records (the terminal doesn't), by the spec's rules.
+let programStatus: GhosttyTerminalProgramStatusFn = { _, _, report in
+    guard let report else { return }
+    func text(_ value: GhosttyString) -> String {
+        guard let ptr = value.ptr, value.len > 0 else { return "" }
+        return String(decoding: UnsafeBufferPointer(start: ptr, count: value.len), as: UTF8.self)
+    }
+    let id = text(report.pointee.id)
+    let state: ProgramStatusRecord.State
+    switch report.pointee.state {
+    case GHOSTTY_PROGRAM_STATUS_STATE_CLEAR: post(.statusClear(id)); return
+    case GHOSTTY_PROGRAM_STATUS_STATE_IDLE: state = .idle
+    case GHOSTTY_PROGRAM_STATUS_STATE_WORKING: state = .working
+    case GHOSTTY_PROGRAM_STATUS_STATE_DONE: state = .done
+    case GHOSTTY_PROGRAM_STATUS_STATE_BLOCKED: state = .blocked
+    case GHOSTTY_PROGRAM_STATUS_STATE_ERROR: state = .error
+    default: return
+    }
+    let kind: ProgramStatusRecord.Kind?
+    switch report.pointee.kind {
+    case GHOSTTY_PROGRAM_STATUS_KIND_PERMISSION: kind = .permission
+    case GHOSTTY_PROGRAM_STATUS_KIND_QUESTION: kind = .question
+    case GHOSTTY_PROGRAM_STATUS_KIND_AUTH: kind = .auth
+    default: kind = nil
+    }
+    let progress = report.pointee.progress
+    post(.status(ProgramStatusRecord(id: id, state: state, kind: kind, progress: progress >= 0 ? Int(progress) : nil,
+                                     app: text(report.pointee.app), title: text(report.pointee.title), message: text(report.pointee.message))))
+}
+
+// OSC 133: a new primary prompt means the program before it is over (the spec drops its working
+// and blocked records then).
+let semanticPrompt: GhosttyTerminalSemanticPromptFn = { _, _, event in
+    guard let event, event.pointee.kind == GHOSTTY_SEMANTIC_PROMPT_PROMPT_START,
+          event.pointee.prompt_kind == GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY else { return }
+    post(.promptStart)
 }
 
 // Replies to the program's queries (cursor position, device attributes); `handleEvents` decides.
@@ -485,6 +525,23 @@ enum Event {
     case title(String)
     case bell
     case reply([UInt8])
+    case status(ProgramStatusRecord)
+    case statusClear(String)
+    case promptStart
+}
+
+/// The program's status records (OSC 7501), kept here: the terminal doesn't.
+var statusRecords = ProgramStatusRecords()
+/// The attached client asked for `programStatus` and `pwd` frames (its Hello).
+var clientWantsEvents = false
+/// The same, for a connection waiting to take over (`main.swift`): it said hello as a candidate.
+var candidateWantsEvents = false
+
+/// After any change: the record on disk, and the client if it listens.
+func statusChanged() {
+    record.programStatus = statusRecords.records
+    recordDirty = true
+    if clientWantsEvents { sendToClient(Frame(.programStatus, json: statusRecords.records)) }
 }
 let eventLock = NSLock()
 var pendingEvents: [Event] = []
@@ -523,12 +580,24 @@ func handleEvents() {
             guard path != record.pwd else { continue }
             record.pwd = path
             recordDirty = true
+            if clientWantsEvents { sendToClient(Frame(.pwd, Array(path.utf8))) }
         case .reply(let bytes):
             // While a client is attached, its own terminal answers the program's queries, as it
             // always has; answering here too would send every reply twice. Detached, the keeper
-            // answers, so a program that asks doesn't wait forever.
-            guard !attached else { continue }
+            // answers, so a program that asks doesn't wait forever. The OSC 7501 support query
+            // is the keeper's alone to answer: it's the keeper that keeps the records.
+            guard !attached || bytes.starts(with: Array("\u{1b}]7501".utf8)) else { continue }
             writeToPTY(bytes)
+        case .status(let report):
+            statusRecords.put(report)
+            statusChanged()
+        case .statusClear(let id):
+            statusRecords.clear(id)
+            statusChanged()
+        case .promptStart:
+            let before = statusRecords
+            statusRecords.programEnded()
+            if statusRecords != before { statusChanged() }
         }
     }
 }
@@ -645,6 +714,7 @@ func primaryCopy() -> GhosttyTerminal? {
 func handle(_ frame: Frame) {
     switch frame.kind {
     case .hello:
+        clientWantsEvents = frame.decode(Hello.self)?.events == true
         // Too new a client is still answered; it decides whether it can talk to this keeper.
         sendToClient(Frame(.welcome, json: Welcome(protocolVersion: SessionProtocol.version, build: build, record: record)))
     case .attach:
@@ -653,6 +723,10 @@ func handle(_ frame: Frame) {
         attached = true
         sendToClient(Frame(.snapshot, snapshot(history: request?.history)))
         if !record.title.isEmpty { sendToClient(Frame(.title, Array(record.title.utf8))) }
+        if clientWantsEvents {
+            if !record.pwd.isEmpty { sendToClient(Frame(.pwd, Array(record.pwd.utf8))) }
+            if !statusRecords.records.isEmpty { sendToClient(Frame(.programStatus, json: statusRecords.records)) }
+        }
         reportExit()
     case .detach:
         dropClient()
@@ -717,6 +791,10 @@ func childExited() {
     takeReads()
     let exitedNormally = (status & 0x7f) == 0
     record.exit = Exit(status: exitedNormally ? (status >> 8) & 0xff : nil, signal: exitedNormally ? nil : status & 0x7f)
+    // The program is over: nothing is still working or waiting.
+    let before = statusRecords
+    statusRecords.programEnded()
+    if statusRecords != before { statusChanged() }
     writeRecord()
     log("child \(childPID) exited (\(record.exit!))")
     exitPending = true
@@ -769,6 +847,8 @@ func registerTerminalCallbacks() {
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, unsafeBitCast(titleChanged, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_BELL, unsafeBitCast(bell, to: UnsafeRawPointer.self))
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, unsafeBitCast(writePTY, to: UnsafeRawPointer.self))
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS, unsafeBitCast(programStatus, to: UnsafeRawPointer.self))
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, unsafeBitCast(semanticPrompt, to: UnsafeRawPointer.self))
 }
 
 // MARK: - Compression

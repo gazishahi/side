@@ -339,6 +339,94 @@ final class KeeperTests: XCTestCase {
         XCTAssertTrue(second.wait { $0.title == "Working on tests" })
     }
 
+    // MARK: Program status (OSC 7501)
+
+    func testProgramStatusRecordsFollowTheSpecsRules() {
+        var records = ProgramStatusRecords()
+        records.put(.init(id: "", state: .working, app: "deploy", message: "one"))
+        records.put(.init(id: "", state: .blocked, kind: .permission, message: "Apply?"))
+        XCTAssertEqual(records.records.count, 1, "a report replaces its record")
+        XCTAssertEqual(records.root?.state, .blocked)
+        XCTAssertEqual(records.root?.app, "", "keys left out are gone")
+        records.put(.init(id: "", state: .working, app: "deploy"))
+        records.put(.init(id: "us-east", state: .working))
+        records.put(.init(id: "us-east/db", state: .done))
+        records.put(.init(id: "eu-west", state: .error))
+        XCTAssertEqual(records.app(of: records.records.first { $0.id == "us-east/db" }!), "deploy", "an app comes from the nearest ancestor that has one")
+        records.clear("us-east")
+        XCTAssertEqual(Set(records.records.map(\.id)), ["", "eu-west"], "clearing a record clears what's beneath it")
+        records.programEnded()
+        XCTAssertEqual(records.records.map(\.id), ["eu-west"], "working and blocked go when the program ends; error stays")
+        records.clear("")
+        XCTAssertTrue(records.records.isEmpty)
+        for index in 0..<(ProgramStatusRecords.limit + 5) {
+            records.put(.init(id: "r\(index)", state: .idle, updatedAt: Date(timeIntervalSince1970: TimeInterval(index))))
+        }
+        XCTAssertEqual(records.records.count, ProgramStatusRecords.limit)
+        XCTAssertNil(records.records.first { $0.id == "r0" }, "past the limit, the oldest goes")
+    }
+
+    func testAProgramsStatusReachesAClientThatAsksAndTheRecord() throws {
+        // "Apply?" in base64 is QXBwbHk/.
+        let id = try launch("read go; printf '\\033]7501;state=working:app=terraform:progress=40\\007'; read again; printf '\\033]7501;state=blocked:kind=permission:msg=QXBwbHk/\\033\\\\'; printf '\\033]7;file://host/private/tmp\\007'; sleep 30")
+        let client = try TestClient(id, events: true)
+        try client.attach()
+        client.send(Frame(.input, Array("\r".utf8)))
+        XCTAssertTrue(client.wait { _ in client.status?.first?.state == .working }, "\(client.status ?? [])")
+        XCTAssertEqual(client.status?.first?.app, "terraform")
+        XCTAssertEqual(client.status?.first?.progress, 40)
+        client.send(Frame(.input, Array("\r".utf8)))
+        XCTAssertTrue(client.wait { _ in client.status?.first?.state == .blocked }, "\(client.status ?? [])")
+        XCTAssertEqual(client.status?.first?.kind, .permission)
+        XCTAssertEqual(client.status?.first?.message, "Apply?")
+        XCTAssertEqual(client.status?.count, 1, "the report replaced the record")
+        XCTAssertTrue(client.wait { _ in client.pwd == "/private/tmp" }, client.pwd ?? "no pwd")
+        // On disk, for a client that wasn't attached.
+        XCTAssertTrue(waitUntil { SessionPaths.records().first { $0.id == id }?.programStatus.first?.state == .blocked })
+        // A client that didn't ask gets none of these frames, and it comes back on its attach.
+        client.close()
+        let plain = try TestClient(id)
+        try plain.attach()
+        usleep(300_000)
+        XCTAssertTrue(plain.eventFrames.isEmpty, "\(plain.eventFrames)")
+        plain.close()
+        let again = try TestClient(id, events: true)
+        try again.attach()
+        XCTAssertTrue(again.wait { _ in again.status?.first?.state == .blocked }, "the status comes with an attach")
+    }
+
+    func testANewPromptOrAnExitEndsWorkingAndBlocked() throws {
+        // OSC 133;A is a new prompt: the program before it is over.
+        let id = try launch("read go; printf '\\033]7501;state=working\\007'; printf '\\033]7501;id=lint:state=error\\007'; read again; printf '\\033]133;A\\007'; read last; eval \"$last\"")
+        let client = try TestClient(id, events: true)
+        try client.attach()
+        client.send(Frame(.input, Array("\r".utf8)))
+        XCTAssertTrue(client.wait { _ in client.status?.count == 2 }, "\(client.status ?? [])")
+        client.send(Frame(.input, Array("\r".utf8)))
+        XCTAssertTrue(client.wait { _ in client.status?.map(\.id) == ["lint"] }, "working goes at a new prompt, error stays: \(client.status ?? [])")
+        // And the program exiting: working goes again, error stays.
+        client.send(Frame(.input, Array("printf '\\033]7501;state=working\\007'; exit\r".utf8)))
+        XCTAssertTrue(client.wait { $0.exit != nil }, "no exit")
+        XCTAssertEqual(client.status?.map(\.state), [.error], "\(client.status ?? [])")
+    }
+
+    func testTheKeeperAnswersTheProgramStatusQueryEvenWhileAttached() throws {
+        // The client's own terminal knows nothing of OSC 7501: the keeper, which keeps the
+        // records, answers the support query.
+        let id = try launch("read go; stty -echo raw; printf '\\033]7501;?\\007'; dd bs=1 count=12 2>/dev/null | od -c | head -1; sleep 30")
+        let client = try TestClient(id, events: true)
+        try client.attach()
+        client.send(Frame(.input, Array("\r".utf8)))
+        XCTAssertTrue(client.waitForText("033   ]   7   5   0   1"), client.text)
+    }
+
+    func testTheKernelSaysWhereAProcessIs() {
+        // Side reads a terminal's program's real directory, not the shell's last report.
+        let here = (FileManager.default.currentDirectoryPath as NSString).resolvingSymlinksInPath
+        XCTAssertEqual(ForegroundProgram.directory(of: getpid()).map { ($0 as NSString).resolvingSymlinksInPath }, here)
+        XCTAssertNil(ForegroundProgram.directory(of: -1))
+    }
+
     func testRepliesToQueriesOnlyWhileDetached() throws {
         // A cursor-position query: detached, the keeper answers it; attached, the client does.
         let id = try launch("stty -echo raw; printf '\\033[6n'; dd bs=1 count=6 2>/dev/null | od -c | head -1; sleep 30")
@@ -385,11 +473,14 @@ final class KeeperTests: XCTestCase {
         private var _exit: Exit?
         private var _title: String?
         private var _replaced = false
+        private var _status: [ProgramStatusRecord]?
+        private var _pwd: String?
+        private var _unexpected: [FrameKind] = []
 
-        init(_ id: String) throws {
+        init(_ id: String, events: Bool? = nil) throws {
             connection = try SessionConnection.connect(to: SessionPaths.socket(id))
             connection.start(queue: DispatchQueue(label: "test.client"), onFrame: { [weak self] frame in self?.received(frame) }, onClose: {})
-            connection.send(Frame(.hello, json: Hello(build: "test")))
+            connection.send(Frame(.hello, json: Hello(build: "test", events: events)))
         }
 
         private func received(_ frame: Frame) {
@@ -401,9 +492,21 @@ final class KeeperTests: XCTestCase {
             case .exited: _exit = frame.decode(Exit.self)
             case .title: _title = String(decoding: frame.payload, as: UTF8.self)
             case .replaced: _replaced = true
+            case .programStatus:
+                let decoder = JSONDecoder()
+                _status = try? decoder.decode([ProgramStatusRecord].self, from: Data(frame.payload))
+                _unexpected.append(frame.kind)
+            case .pwd:
+                _pwd = String(decoding: frame.payload, as: UTF8.self)
+                _unexpected.append(frame.kind)
             default: break
             }
         }
+
+        /// Program status and pwd frames received; for a client that didn't ask, there should be none.
+        var eventFrames: [FrameKind] { lock.lock(); defer { lock.unlock() }; return _unexpected }
+        var status: [ProgramStatusRecord]? { lock.lock(); defer { lock.unlock() }; return _status }
+        var pwd: String? { lock.lock(); defer { lock.unlock() }; return _pwd }
 
         struct State { let text: String; let snapshot: [UInt8]?; let welcome: Welcome?; let exit: Exit?; let title: String?; let replaced: Bool }
         var state: State {

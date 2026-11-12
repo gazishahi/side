@@ -66,6 +66,8 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     public var foreground: [String] = []
     /// The working directory the shell last reported (OSC 7); empty when none.
     public var pwd: String = ""
+    /// What the program says it's doing (OSC 7501), for a client that wasn't attached.
+    public var programStatus: [ProgramStatusRecord] = []
 
     public init(id: String, keeperPID: Int32, childPID: Int32, tty: String = "", executable: String, arguments: [String], directory: String,
                 client: [String: String], title: String = "", createdAt: Date, lastOutputAt: Date, exit: Exit? = nil,
@@ -86,7 +88,7 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, keeperPID, childPID, tty, executable, arguments, directory, client, title, createdAt, lastOutputAt, exit, protocolVersion, foreground, pwd
+        case id, keeperPID, childPID, tty, executable, arguments, directory, client, title, createdAt, lastOutputAt, exit, protocolVersion, foreground, pwd, programStatus
     }
 
     /// Fields added after phase 1 are optional on disk, so an older keeper's record still reads.
@@ -107,6 +109,7 @@ public struct SessionRecord: Codable, Sendable, Equatable {
         protocolVersion = try c.decodeIfPresent(Int.self, forKey: .protocolVersion) ?? 1
         foreground = try c.decodeIfPresent([String].self, forKey: .foreground) ?? []
         pwd = try c.decodeIfPresent(String.self, forKey: .pwd) ?? ""
+        programStatus = try c.decodeIfPresent([ProgramStatusRecord].self, forKey: .programStatus) ?? []
     }
 
     /// Written to a temporary file and renamed into place, so a reader never sees half a record.

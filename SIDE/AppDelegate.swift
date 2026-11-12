@@ -89,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("open ") { shell.revealFile(URL(fileURLWithPath: String(command.dropFirst(5)))) }
                     if command == "close-all" { shell.closeAllMakeTabsForTesting() }
                     if command == "run-close-tab" { shell.closeActiveRunTabForTesting() }
+                    if command == "run-new-tab" { shell.runNewTabForTesting() }
                     if command.hasPrefix("tab-click-title "), let index = Int(command.dropFirst(16)) { shell.clickTabTitleForTesting(index) }
                     // "tab-x 2": a click on the third tab's X, in Editor or Terminal, whichever shows.
                     if command.hasPrefix("tab-x "), let index = Int(command.dropFirst(6)) { shell.clickTabCloseForTesting(index) }
@@ -354,6 +355,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("snapshot-front "), let front = NSApp.orderedWindows.first(where: { $0.contentViewController is ShellViewController }) { Self.snapshot(front, to: String(command.dropFirst(15))) }
                     if command.hasPrefix("front-stage "), let front = NSApp.orderedWindows.first(where: { $0.contentViewController is ShellViewController })?.contentViewController as? ShellViewController {
                         front.showStageForTesting(String(command.dropFirst(12)))
+                    }
+                    // Sessions (SIDE_RFC_SESSIONS.md): the registry as it stands, a line each.
+                    if command == "sessions-dump" {
+                        SessionRegistry.shared.refresh()
+                        FileHandle.standardError.write(Data("[sessions]\n\(SessionRegistry.shared.stateForTesting)\n[sessions-end]\n".utf8))
                     }
                     // The welcome: shown at a page, its state, closed.
                     if command.hasPrefix("welcome-show") { WelcomeWindowController.present(from: Int(command.split(separator: " ").last ?? "") ?? 0) }

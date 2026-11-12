@@ -319,6 +319,10 @@ final class KeeperLink {
     var onOutput: ((ArraySlice<UInt8>) -> Void)?
     var onTitle: ((String) -> Void)?
     var onAttention: (() -> Void)?
+    /// What the program says it's doing (OSC 7501), every record, after any change.
+    var onProgramStatus: (([ProgramStatusRecord]) -> Void)?
+    /// The working directory the shell reported (OSC 7).
+    var onPwd: ((String) -> Void)?
     var onExit: ((Exit) -> Void)?
     /// The connection ended without the keeper saying how the session ended: the keeper went
     /// away, dropped this client, or (`replaced`) another Side attached to the session.
@@ -344,7 +348,8 @@ final class KeeperLink {
         }, onClose: { [weak link] in
             DispatchQueue.main.async { MainActor.assumeIsolated { link?.closed() } }
         })
-        connection.send(Frame(.hello, json: Hello(build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "")))
+        // `events`: this Side reads program status and pwd frames (SIDE_RFC_SESSIONS.md).
+        connection.send(Frame(.hello, json: Hello(build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "", events: true)))
         return link
     }
 
@@ -401,6 +406,8 @@ final class KeeperLink {
         case .output: onOutput?(frame.payload[...])
         case .title: onTitle?(String(decoding: frame.payload, as: UTF8.self))
         case .attention: onAttention?()
+        case .programStatus: onProgramStatus?(frame.decode([ProgramStatusRecord].self) ?? [])
+        case .pwd: onPwd?(String(decoding: frame.payload, as: UTF8.self))
         case .exited:
             ended = true
             onExit?(frame.decode(Exit.self) ?? Exit(status: nil, signal: nil))
