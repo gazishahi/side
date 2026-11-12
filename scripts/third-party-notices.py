@@ -102,6 +102,24 @@ def components():
     entries.append(("Wuffs", "7411f48", "https://github.com/google/wuffs", "MIT (dual MIT or Apache-2.0)", read("wuffs", "LICENSE")))
     entries.append(("uucode", "ea62149", "https://github.com/jacobsandlund/uucode", "MIT, with the Unicode License V3 for its data",
                     "\n\n".join(read("uucode", name) for name in ("LICENSE.md", "LICENSE_Bjoern_Hoehrmann", "LICENSE_unicode"))))
+    # Mermaid, shipped as one script (SIDE/mermaid.min.js) that draws diagrams in Agent's
+    # messages, with every package its bundle was built from. Their licenses are kept in
+    # Licenses/mermaid, one file per package, from `npm install mermaid@<version>`; a new
+    # Mermaid means gathering them again. Packages with the same text are listed together.
+    folder = os.path.join(ROOT, "Licenses/mermaid")
+    def body(name):
+        return open(os.path.join(folder, name), encoding="utf-8").read().split("\n\n", 1)[1].strip()
+    mermaid = re.search(r"mermaid@([\d.]+)", open(os.path.join(ROOT, "SIDE/mermaid.min.js"), encoding="utf-8", errors="replace").read(200000))
+    entries.append(("Mermaid", mermaid.group(1) if mermaid else "11.4.1", "https://github.com/mermaid-js/mermaid", "MIT", body("mermaid.txt")))
+    groups = {}
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".txt") or name == "mermaid.txt":
+            continue
+        first = open(os.path.join(folder, name), encoding="utf-8").readline().strip()
+        package, license_name = re.match(r"(\S+) \((.*)\)", first).groups()
+        groups.setdefault((body(name), license_name), []).append(package)
+    for (text, license_name), packages in sorted(groups.items(), key=lambda item: item[1][0].lower()):
+        entries.append(("In Mermaid: " + ", ".join(packages), "", "", license_name, text))
     return entries
 
 
