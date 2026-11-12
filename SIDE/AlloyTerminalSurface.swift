@@ -9,7 +9,8 @@ import SideTerminal
 /// its own, and keys go through libghostty-vt's encoder, translated from NSEvent the way
 /// Ghostty's macOS app does. Selection and scrolling back use libghostty-vt's own gestures and
 /// viewport; a program that asks for the mouse gets it (shift still selects); ⌘-click opens an
-/// OSC 8 link or a URL or path in the text. Not yet: IME preedit (the rest of the RFC's step 4).
+/// OSC 8 link or a URL or path in the text; an input method's composing text shows at the cursor
+/// and only what it commits is sent.
 final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation {
     weak var surfaceDelegate: TerminalSurfaceDelegate?
     var keeper: KeeperLink? { didSet { syncKeeperSize() } }
@@ -190,10 +191,20 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
             windowNumber: event.windowNumber, context: nil, characters: event.characters(byApplyingModifiers: translationFlags) ?? "",
             charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "", isARepeat: event.isARepeat, keyCode: event.keyCode) ?? event
 
+        let wasComposing = screen.hasMarkedText()
         typedForKey = []
         screen.interpretKeyEvents([translationEvent])
         let typed = typedForKey ?? []
         typedForKey = nil
+        // An input method took the key: nothing goes while it composes (or when the key cancelled
+        // its composition), and what it commits goes as text, as in Ghostty.
+        if screen.hasMarkedText() || (wasComposing && typed.isEmpty) { return true }
+        if wasComposing {
+            selection.clear()
+            send(text: typed.joined())
+            screen.setNeedsFrame()
+            return true
+        }
 
         // Control and command never take part in producing text; the rest are taken as used up.
         let consumed = Self.modifiers(translationFlags.subtracting([.control, .command]))

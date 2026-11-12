@@ -35,6 +35,8 @@ public final class AlloyTerminalView: NSView {
     }
 
     public let font: TerminalFont
+    /// What an input method is composing; empty when nothing is.
+    public private(set) var markedText = ""
     public var cellSize: CGSize { font.cellSize }
     public private(set) var columns: Int
     public private(set) var rows: Int
@@ -182,25 +184,41 @@ public struct TerminalMouseEvent: Sendable {
     public var modifiers: NSEvent.ModifierFlags
 }
 
-/// The least a terminal view needs to be a text input client: text is inserted, nothing is
-/// marked yet (inline IME preedit is Tier 1 work, docs/SIDE_RFC_TERMINAL_ENGINE.md).
+/// A text input client: committed text comes back through `onText`; text an input method is
+/// still composing (marked text: Japanese, Chinese, Korean, a dead key's accent) is drawn at the
+/// cursor until it's committed or cancelled, and the input method's window sits at the cursor.
 extension AlloyTerminalView: @preconcurrency NSTextInputClient {
     public func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        if !markedText.isEmpty { setMarked("") }
         if !text.isEmpty { onText?(text) }
     }
     public override func doCommand(by selector: Selector) {}
-    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
-    public func unmarkText() {}
+    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        setMarked((string as? NSAttributedString)?.string ?? (string as? String) ?? "")
+    }
+    public func unmarkText() { setMarked("") }
     public func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
-    public func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
-    public func hasMarkedText() -> Bool { false }
+    public func markedRange() -> NSRange {
+        markedText.isEmpty ? NSRange(location: NSNotFound, length: 0) : NSRange(location: 0, length: markedText.utf16.count)
+    }
+    public func hasMarkedText() -> Bool { !markedText.isEmpty }
     public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
-    public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+    public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [.underlineStyle] }
+    /// The cursor's cell, on screen: where the input method puts its candidates.
     public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        window?.convertToScreen(convert(bounds, to: nil)) ?? .zero
+        let cursor = engine.cursor
+        let cell = font.cellSize
+        let inView = NSRect(x: CGFloat(cursor.column) * cell.width, y: bounds.height - CGFloat(cursor.row + 1) * cell.height,
+                            width: cell.width, height: cell.height)
+        return window?.convertToScreen(convert(inView, to: nil)) ?? .zero
     }
     public func characterIndex(for point: NSPoint) -> Int { 0 }
+
+    private func setMarked(_ text: String) {
+        markedText = text
+        engine.setPreedit(text)
+    }
 }
 
 /// The render thread's side: the renderer, the grid and the source, touched only on `queue`.
@@ -213,6 +231,9 @@ private final class RenderEngine: @unchecked Sendable {
     private let layer: CAMetalLayer
     private let grid: TerminalGrid
     private var scale: CGFloat = 2
+    private let lastCursor = Mutex<TerminalCursor>(TerminalCursor())
+    /// The cursor as of the last frame (any thread).
+    var cursor: TerminalCursor { lastCursor.withLock { $0 } }
     private let pending = Atomic<Bool>(false)
     private let drawn = Atomic<Int>(0)
     private let sourceBox = Mutex<SourceBox>(SourceBox())
@@ -230,6 +251,17 @@ private final class RenderEngine: @unchecked Sendable {
     func setSource(_ source: TerminalGridSource?) {
         sourceBox.withLock { $0.value = source }
         queue.async { for y in 0..<self.grid.rows { self.grid.dirty[y] = true } }
+        requestFrame()
+    }
+
+    /// A frame is due though the grid hasn't changed (composing text changed). On `queue`.
+    private var forced = false
+
+    func setPreedit(_ text: String) {
+        queue.async {
+            self.renderer.preedit = text
+            self.forced = true
+        }
         requestFrame()
     }
 
@@ -259,7 +291,9 @@ private final class RenderEngine: @unchecked Sendable {
     /// On `queue`: take what changed from the source, and draw if anything did.
     private func frame() {
         let changed = source?.snapshot(into: grid) ?? false
-        guard changed || grid.dirty.contains(true) else { return }
+        if changed { lastCursor.withLock { $0 = grid.cursor } }
+        guard changed || forced || grid.dirty.contains(true) else { return }
+        forced = false
         guard layer.drawableSize.width > 0, let drawable = layer.nextDrawable() else { return }
         renderer.draw(grid, scale: scale, into: drawable.texture, drawable: drawable)
         drawn.wrappingAdd(1, ordering: .relaxed)

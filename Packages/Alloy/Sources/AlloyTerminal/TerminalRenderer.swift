@@ -72,6 +72,9 @@ public final class TerminalRenderer {
     public var theme: TerminalTheme
     /// Frames drawn, for tests and measurements.
     public private(set) var frames = 0
+    /// Text an input method is composing (marked text), drawn at the cursor over the grid,
+    /// underlined, until it's committed or cancelled. Empty: none.
+    public var preedit = ""
 
     private let gpu: QuadPipeline
     private let atlas: GlyphAtlas
@@ -186,8 +189,9 @@ public final class TerminalRenderer {
         var quads: [Quad] = []
         quads.reserveCapacity(grid.columns * grid.rows / 2 + 64)
         for row in backgroundQuads { quads += row }
-        if let cursor = cursorQuad(grid, scale: scale) { quads.append(cursor) }
+        if preedit.isEmpty, let cursor = cursorQuad(grid, scale: scale) { quads.append(cursor) }
         for row in glyphQuads { quads += row }
+        if !preedit.isEmpty { quads += preeditQuads(grid, scale: scale) }
         return quads
     }
 
@@ -197,6 +201,46 @@ public final class TerminalRenderer {
 
     private func metrics(_ scale: CGFloat) -> (width: Float, height: Float, baseline: Float) {
         (Float(cell.width * scale), Float((cell.height * scale).rounded()), Float((ascent * scale).rounded()))
+    }
+
+    /// The composing text at the cursor: the theme's background under it (hiding the cells it
+    /// covers), its glyphs, and an underline, as macOS draws marked text.
+    private func preeditQuads(_ grid: TerminalGrid, scale: CGFloat) -> [Quad] {
+        let (cw, ch, baselineOffset) = metrics(scale)
+        let row = min(max(0, grid.cursor.row), grid.rows - 1)
+        let top = Float(row) * ch, baseline = top + baselineOffset
+        let line = Float(max(1, scale.rounded()))
+        var x = min(max(0, grid.cursor.column), grid.columns - 1)
+        var background: [Quad] = [], glyphs: [Quad] = []
+        let ink = color(theme.cursor)
+        for character in preedit {
+            let scalars = character.unicodeScalars
+            let wide = scalars.first.map { Self.isWide($0.value) } ?? false
+            let width = wide ? 2 : 1
+            let left = (Float(x) * cw).rounded(.down), span = (Float(width) * cw).rounded(.up)
+            background.append(Quad(rect: SIMD4(left, top, span, ch), uv: .zero, color: SIMD4(theme.background.x, theme.background.y, theme.background.z, 1), kind: 0))
+            background.append(Quad(rect: SIMD4(left, baseline + line, span, line), uv: .zero, color: ink, kind: 0))
+            var cell = TerminalCell(scalar: scalars.count == 1 ? scalars.first!.value : 0, cluster: scalars.count > 1 ? String(character) : nil, foreground: theme.cursor)
+            if wide { cell.style.insert(.wide) }
+            for p in placed(cell, scale: scale) where p.entry.region.width > 0 {
+                let r = p.entry.region
+                glyphs.append(Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
+                                   uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
+                                   color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink, kind: p.entry.isColor ? 2 : 1))
+            }
+            x += width
+        }
+        return background + glyphs
+    }
+
+    /// East Asian wide and fullwidth characters, and emoji: two cells, for composing text that the
+    /// terminal hasn't laid out yet.
+    static func isWide(_ scalar: UInt32) -> Bool {
+        switch scalar {
+        case 0x1100...0x115F, 0x2E80...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60, 0xFFE0...0xFFE6,
+             0x1F300...0x1FAFF, 0x20000...0x3FFFD: true
+        default: false
+        }
     }
 
     private func cursorQuad(_ grid: TerminalGrid, scale: CGFloat) -> Quad? {

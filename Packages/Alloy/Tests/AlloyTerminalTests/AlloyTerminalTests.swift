@@ -95,6 +95,21 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(pixels.count(in: cellRect(column: 5, row: 0), blue), 0)
     }
 
+    /// Composing text is drawn at the cursor, over what's there, underlined.
+    func testComposingTextAtTheCursor() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 8, rows: 1, foreground: 0xFFFFFF)
+        for x in 0..<8 { grid[x, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "x")), foreground: 0xFF0000) }
+        grid.cursor = TerminalCursor(column: 2, row: 0)
+        renderer.preedit = "日本"
+        let pixels = try render(grid, renderer: renderer)
+        let red: (Pixels.RGBA) -> Bool = { $0.r > 150 && $0.g < 80 }
+        let white: (Pixels.RGBA) -> Bool = { $0.r > 150 && $0.g > 150 }
+        XCTAssertEqual(pixels.count(in: cellRect(column: 2, row: 0, span: 4), red), 0, "the cells under it are covered")
+        XCTAssertGreaterThan(pixels.count(in: cellRect(column: 2, row: 0, span: 4), white), 40, "two wide characters across four cells")
+        XCTAssertGreaterThan(pixels.count(in: cellRect(column: 0, row: 0), red), 5, "the rest of the row as it was")
+    }
+
     /// The renderer lives on the render thread: made and used there, away from the main actor.
     func testItDrawsOnAThreadOfItsOwn() throws {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice(), "no Metal device")
@@ -158,6 +173,23 @@ final class AlloyTerminalViewTests: XCTestCase {
         let texture = try XCTUnwrap(view.renderOffscreen())
         let lit = Pixels(texture).count(in: (0..<Int(font.cellSize.width * 2 * 4), 0..<Int(font.cellSize.height * 2))) { $0.r > 100 }
         XCTAssertGreaterThan(lit, 40)
+    }
+
+    func testMarkedTextUntilItsCommitted() throws {
+        let view = try AlloyTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 60), font: TerminalFont(name: "Menlo", size: 13),
+                                         theme: TerminalRendererTests.black)
+        var typed: [String] = []
+        view.onText = { typed.append($0) }
+        view.setMarkedText("にほ", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(view.hasMarkedText())
+        XCTAssertEqual(view.markedRange(), NSRange(location: 0, length: 2))
+        XCTAssertEqual(typed, [], "nothing reaches the program while composing")
+        view.insertText("日本", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertFalse(view.hasMarkedText())
+        XCTAssertEqual(typed, ["日本"])
+        view.setMarkedText("´", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.unmarkText()
+        XCTAssertFalse(view.hasMarkedText(), "cancelled")
     }
 
     func testTypedTextComesBackThroughOnText() throws {
