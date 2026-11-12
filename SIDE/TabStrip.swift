@@ -871,7 +871,8 @@ final class TabChipView: NSView, PointerHoverSyncing {
     private func shimmerLayers(reduce: Bool) -> [CALayer] {
         guard workingTextRect.width > 0 else { return [] }
         let text = CATextLayer()
-        text.string = Self.label(title: title, detail: detail, attributes: [.font: DS.Text.body(isActive ? .medium : .regular), .foregroundColor: NSColor.black])
+        text.string = Self.cut(Self.label(title: title, detail: detail, attributes: [.font: DS.Text.body(isActive ? .medium : .regular), .foregroundColor: NSColor.black]),
+                               title: title, detail: detail, width: workingTextRect.width)
         text.truncationMode = .end
         text.contentsScale = backingScale
         text.frame = CGRect(origin: .zero, size: workingTextRect.size)
@@ -966,10 +967,13 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// starts to where the ellipsis does; nil when it's shown whole.
     var truncatedTitleWidth: CGFloat? {
         let font = DS.Text.body(isActive ? .medium : .regular)
-        let full = Self.label(title: title, detail: detail, attributes: [.font: font]).size().width
+        let whole = Self.label(title: title, detail: detail, attributes: [.font: font])
         let shown = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
+        let cut = Self.cut(whole, title: title, detail: detail, width: shown)
+        // Whole: `cut` hands back the same label.
+        guard cut !== whole else { return nil }
         let ellipsis = NSAttributedString(string: "\u{2026}", attributes: [.font: font]).size().width
-        return full > shown ? max(0, shown - ellipsis) : nil
+        return max(0, cut.size().width - ellipsis)
     }
     static func textX(hasIcon: Bool) -> CGFloat { hasIcon ? flare + 10 + iconSize + 6 : flare + textInset }
     var dragPreview: (() -> NSImage?)?
@@ -1029,6 +1033,40 @@ final class TabChipView: NSView, PointerHoverSyncing {
         quiet[.font] = DS.Text.caption()
         label.append(NSAttributedString(string: "  " + detail, attributes: quiet))
         return label
+    }
+
+    /// The label cut to `width` where the selected tab's (medium) title would be cut, whatever
+    /// weight `text` is in: selecting a tab no longer hid a few more of its letters, and leaving it
+    /// brought them back (the owner, 2026-11-12). Whole, it's returned as it is.
+    static func cut(_ text: NSAttributedString, title: String, detail: String, width: CGFloat) -> NSAttributedString {
+        let reference = label(title: title, detail: detail, attributes: [.font: DS.Text.body(.medium)])
+        guard reference.size().width > width + 0.5 else { return text }
+        let string = reference.string as NSString
+        // Cut points between whole characters (an emoji or accent isn't split).
+        var ends: [Int] = []
+        var index = 0
+        while index < string.length {
+            index = NSMaxRange(string.rangeOfComposedCharacterSequence(at: index))
+            ends.append(index)
+        }
+        let ellipsis = NSAttributedString(string: "\u{2026}", attributes: reference.attributes(at: 0, effectiveRange: nil))
+        func fits(_ count: Int) -> Bool {
+            let prefix = NSMutableAttributedString(attributedString: reference.attributedSubstring(from: NSRange(location: 0, length: count)))
+            prefix.append(ellipsis)
+            return prefix.size().width <= width
+        }
+        var low = 0, high = ends.count - 1, best = 0
+        while low <= high {
+            let middle = (low + high) / 2
+            if fits(ends[middle]) { best = ends[middle]; low = middle + 1 } else { high = middle - 1 }
+        }
+        // Trailing spaces before the ellipsis say nothing.
+        var count = min(best, text.length)
+        while count > 0, (text.string as NSString).character(at: count - 1) == 32 { count -= 1 }
+        guard count > 0 else { return NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: 0, effectiveRange: nil)) }
+        let cut = NSMutableAttributedString(attributedString: text.attributedSubstring(from: NSRange(location: 0, length: count)))
+        cut.append(NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: count - 1, effectiveRange: nil)))
+        return cut
     }
 
     /// The active tab is always in view: in an overflowing strip it's scrolled to, after layout
@@ -1151,9 +1189,9 @@ final class TabChipView: NSView, PointerHoverSyncing {
                 .foregroundColor: isDead ? tone.withAlphaComponent(0.35) : tone,
                 .font: DS.Text.body(isActive || drawsLifted ? .medium : .regular),
             ]
-            let text = Self.label(title: title, detail: detail, attributes: attributes)
-            let size = text.size()
             let maxWidth = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
+            let text = Self.cut(Self.label(title: title, detail: detail, attributes: attributes), title: title, detail: detail, width: maxWidth)
+            let size = text.size()
             let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
             text.draw(with: drawRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
             if isWorking, drawRect != workingTextRect {

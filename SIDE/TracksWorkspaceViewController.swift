@@ -136,9 +136,17 @@ final class TracksWorkspaceViewController: NSViewController {
                 }
             }
             boardSignature = ""
+            // Sessions move between branches when their programs do (a worktree), and arrive
+            // from other terminals: the registry says when.
+            if registryObserver == nil {
+                registryObserver = NotificationCenter.default.addObserver(forName: SessionRegistry.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.terminalsChanged() }
+                }
+            }
         }
     }
     private var terminalsObserver: NSObjectProtocol?
+    private var registryObserver: NSObjectProtocol?
     /// A session's Show Beside: (its track's key, its id). The shell docks it beside the Editor.
     var onShowBesideRequested: ((String, UUID) -> Void)?
     /// A session's Open: Terminal, on its tab.
@@ -150,13 +158,51 @@ final class TracksWorkspaceViewController: NSViewController {
         let program: String?
         let state: DS.StatusState
         let word: String
+        /// A Claude Code session in another terminal: listed where it works, not gone to.
+        var isElsewhere = false
+        /// What the program said it's doing or waiting for (OSC 7501); empty when it said none.
+        var message = ""
     }
 
     /// What runs on a branch, worth a line on the board: a program working, waiting on you, done,
     /// or just running. A shell at its prompt isn't news.
+    ///
+    /// From the session registry (SIDE_RFC_SESSIONS.md): each session sits under the branch it
+    /// really works on, the checkout its program is in, not the branch whose tab it was opened
+    /// from; an agent that moved into its own worktree is on that worktree's branch. Claude Code
+    /// sessions in other terminals are listed too. A session in no known checkout stays with its
+    /// tab's branch.
     func boardSessions(forTrackKey key: String) -> [BoardSession] {
-        guard let terminals else { return [] }
-        return Self.boardSessions(terminals, forTrackKey: key)
+        guard let terminals, let store = trackStore else { return [] }
+        let root = store.projectRoot.standardizedFileURL.path
+        let trackKeys = Set(store.tracks.map(\.branchName))
+        let base = store.defaultBranchName()
+        var tabKey: [UUID: String] = [:]
+        for tabBranch in [""] + store.tracks.map(\.branchName) {
+            for session in terminals.allSessions(forTrackKey: tabBranch) { tabKey[session.id] = tabBranch }
+        }
+        return SessionRegistry.shared.sessions.compactMap { session -> BoardSession? in
+            guard session.project?.standardizedFileURL.path == root,
+                  session.program != nil || session.state != .idle || session.reportsItself else { return nil }
+            let id: UUID
+            let elsewhere: Bool
+            switch session.source {
+            case .terminal(let terminal): id = terminal; elsewhere = false
+            case .claude(let sessionId):
+                guard let uuid = UUID(uuidString: sessionId) else { return nil }
+                id = uuid; elsewhere = true
+            }
+            let placed: String?
+            if let checkout = session.checkout {
+                if let branch = checkout.branch, trackKeys.contains(branch), branch != base { placed = branch }
+                else { placed = checkout.isMain ? "" : nil }
+            } else {
+                placed = nil
+            }
+            guard (placed ?? tabKey[id] ?? "") == key else { return nil }
+            return BoardSession(id: id, title: session.title, program: session.program, state: session.state.status, word: session.state.word,
+                                isElsewhere: elsewhere, message: session.message)
+        }
     }
 
     /// The same, for the Agent panel's Terminals.
@@ -186,7 +232,7 @@ final class TracksWorkspaceViewController: NSViewController {
     private var boardSignature = ""
     private func currentBoardSignature() -> String {
         let keys = [""] + (trackStore?.tracks.map(\.branchName) ?? [])
-        return keys.map { key in key + ":" + boardSessions(forTrackKey: key).map { "\($0.id)|\($0.title)|\($0.word)" }.joined(separator: ",") }.joined(separator: ";")
+        return keys.map { key in key + ":" + boardSessions(forTrackKey: key).map { "\($0.id)|\($0.title)|\($0.word)|\($0.message)" }.joined(separator: ",") }.joined(separator: ";")
     }
 
     private func terminalsChanged() {
@@ -204,11 +250,32 @@ final class TracksWorkspaceViewController: NSViewController {
     private func addSessionRows(forTrackKey key: String, to stack: NSStackView, indent: CGFloat) {
         for session in boardSessions(forTrackKey: key) {
             let row = BoardSessionRow(session: session, indent: indent)
+            guard !session.isElsewhere else {
+                stack.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+                continue
+            }
             row.onShowBeside = { [weak self] in self?.onShowBesideRequested?(key, session.id) }
             row.onOpen = { [weak self] in self?.onOpenSessionRequested?(session.id) }
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
+    }
+
+    /// Each session row's pieces and their frames, for a layout check.
+    var boardFramesForTesting: String {
+        func walk(_ view: NSView, _ depth: Int) -> [String] {
+            var lines: [String] = []
+            if view is BoardSessionRow || depth > 0 {
+                let text = (view as? NSTextField)?.stringValue ?? ""
+                lines.append(String(repeating: "  ", count: depth) + "\(type(of: view)) \(Int(view.frame.minX)),\(Int(view.frame.minY)) \(Int(view.frame.width))x\(Int(view.frame.height)) hidden=\(view.isHidden) \(text)")
+                for child in view.subviews { lines += walk(child, depth + 1) }
+            } else {
+                for child in view.subviews { lines += walk(child, 0) }
+            }
+            return lines
+        }
+        return walk(view, 0).joined(separator: "\n")
     }
 
     var boardForTesting: String {
@@ -409,7 +476,11 @@ final class TracksWorkspaceViewController: NSViewController {
 
     private var selectedTrack: Track? { selectedTrackID.flatMap { id in trackStore?.tracks.first { $0.id == id } } }
 
+    /// The selection is Side's own until the person picks a track: it follows the current one.
+    private var selectionIsChosen = false
+
     private func select(_ track: Track) {
+        selectionIsChosen = true
         selectedTrackID = track.id
         for (id, row) in rowViews { row.isSelected = id == track.id }
         rowViews[track.id]?.scrollToVisible(rowViews[track.id]?.bounds ?? .zero)
@@ -419,8 +490,11 @@ final class TracksWorkspaceViewController: NSViewController {
     /// The pane, from the selected track (or the current one, or the first, when none is).
     private func updateDetail() {
         guard showsDetail, let store = trackStore else { return }
-        if selectedTrack == nil || !shownTrackOrder.contains(selectedTrackID!) {
-            let current = store.tracks.first { $0.status == .active && shownTrackOrder.contains($0.id) }
+        let current = store.tracks.first { $0.status == .active && shownTrackOrder.contains($0.id) }
+        // Drawn before the current track had settled (a new branch still being made, git still
+        // being read), the first track was picked and kept: the current one, once it's there,
+        // takes over until the person picks one (a race the full suite caught, 2026-11-12).
+        if selectedTrack == nil || !shownTrackOrder.contains(selectedTrackID!) || (!selectionIsChosen && current != nil && current?.id != selectedTrackID) {
             selectedTrackID = current?.id ?? shownTrackOrder.first
             for (id, row) in rowViews { row.isSelected = id == selectedTrackID }
         }
@@ -1849,6 +1923,16 @@ private final class BoardSessionRow: NSView {
         title.lineBreakMode = .byTruncatingTail
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let status = DS.StatusLabel(state: session.state, text: session.word)
+        // Another terminal's session, and what a program said, follow its state quietly, and
+        // give way first when the row is short (a long message cut its name to "sessi").
+        let quietWords = [session.isElsewhere ? "in another terminal" : nil, session.message.isEmpty ? nil : session.message].compactMap { $0 }
+        let quiet = NSTextField(labelWithString: quietWords.joined(separator: " \u{00B7} "))
+        quiet.font = DS.Text.caption()
+        quiet.textColor = .secondaryLabelColor
+        quiet.lineBreakMode = .byTruncatingTail
+        quiet.isHidden = quietWords.isEmpty
+        quiet.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(200), for: .horizontal)
+        quiet.translatesAutoresizingMaskIntoConstraints = false
         let text = NSStackView(views: [icon, title, status])
         text.orientation = .horizontal
         text.alignment = .centerY
@@ -1865,15 +1949,28 @@ private final class BoardSessionRow: NSView {
         actions.orientation = .horizontal
         actions.spacing = DS.Spacing.l
         actions.alphaValue = 0
+        // Another terminal's session can't be shown beside or opened from here.
+        actions.isHidden = session.isElsewhere
+        // Over the line's end on hover, on the row's hover fill, so what's under it doesn't show.
+        actions.wantsLayer = true
+        actions.bindLayerBackground(DS.Color.raised)
+        actions.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 0)
         actions.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(text)
+        addSubview(quiet)
         addSubview(actions)
         NSLayoutConstraint.activate([
             icon.widthAnchor.constraint(equalToConstant: 14), icon.heightAnchor.constraint(equalToConstant: 14),
             text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent + DS.Spacing.l),
             text.centerYAnchor.constraint(equalTo: centerYAnchor),
-            text.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -12),
+            // The line runs to the row's end: the actions come over it on hover, on the row's own
+            // fill, and take no room otherwise (they had reserved 132 pt in a 343 pt list, and
+            // the name was cut to "s…").
+            text.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            quiet.leadingAnchor.constraint(equalTo: text.trailingAnchor, constant: DS.Spacing.m),
+            quiet.firstBaselineAnchor.constraint(equalTo: title.firstBaselineAnchor),
+            quiet.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
             actions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             actions.centerYAnchor.constraint(equalTo: centerYAnchor),
             heightAnchor.constraint(equalToConstant: 30),

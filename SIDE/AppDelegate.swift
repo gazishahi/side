@@ -207,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("pr-fake ") { shell.pullRequestsForTesting(String(command.dropFirst(8))) }
                     if command.hasPrefix("select-track ") { shell.selectTrackForTesting(String(command.dropFirst(13))) }
                     if command == "detail-dump" { FileHandle.standardError.write(Data("[detail] \(shell.trackDetailForTesting)\n".utf8)) }
+                    if command == "board-frames" { FileHandle.standardError.write(Data("[board-frames]\n\((shell.children.compactMap { $0 as? TracksWorkspaceViewController }.first?.boardFramesForTesting ?? "not on Branches"))\n[board-frames-end]\n".utf8)) }
                     if command == "board-dump" { FileHandle.standardError.write(Data("[board] \(shell.boardForTesting)\n".utf8)) }
                     if command.hasPrefix("board-beside ") { shell.boardShowBesideForTesting(String(command.dropFirst(13))) }
                     if command == "agent-chats" { shell.agentChatsForTesting() }

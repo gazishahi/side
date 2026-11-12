@@ -364,4 +364,19 @@ final class IncreaseContrastTests: XCTestCase {
             XCTAssertGreaterThan(resolved(DS.Color.hairline, high).alphaComponent, resolved(DS.Color.hairline, normal).alphaComponent * 3)
         }
     }
+
+    /// A long tab title shows the same letters selected or not: cut where the selected (medium)
+    /// title would be, whatever its weight (the owner, 2026-11-12).
+    @MainActor
+    func testATabTitleKeepsItsLettersWhenSelected() {
+        let title = "Refactoring the session registry so every terminal reports its state"
+        let width: CGFloat = 200
+        let regular = TabChipView.cut(TabChipView.label(title: title, detail: "", attributes: [.font: DS.Text.body(.regular)]), title: title, detail: "", width: width)
+        let medium = TabChipView.cut(TabChipView.label(title: title, detail: "", attributes: [.font: DS.Text.body(.medium)]), title: title, detail: "", width: width)
+        XCTAssertEqual(regular.string, medium.string)
+        XCTAssertTrue(regular.string.hasSuffix("\u{2026}"))
+        XCTAssertLessThanOrEqual(medium.size().width, width)
+        let short = TabChipView.label(title: "zsh", detail: "", attributes: [.font: DS.Text.body(.regular)])
+        XCTAssertTrue(TabChipView.cut(short, title: "zsh", detail: "", width: width) === short, "a title that fits is left whole")
+    }
 }

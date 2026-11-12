@@ -68,6 +68,13 @@ $U post "run-select 1" "session-switcher-pick"; sleep 1
 w=$(switcher)
 check "Return closes it" '[[ $w == *closed* ]]' "$w"
 
+# Branches: each session under the branch it really works on.
+$U post "stage tracks"; sleep 2
+b=$($U post board-dump; sleep 0.6; grep -a '^\[board\]' $ROOT/side.log | tail -1); echo "     $b"
+check "the board puts the worktree's session under its branch" '[[ $b == *"feature: "*" Working"* && ${b%% | *} != *Working* ]]' "$b"
+check "and the main folder's under the base" '[[ $b == *"(base): sessions Needs permission"* ]]' "$b"
+$U shot $OUT/board.png > /dev/null
+
 $U quit
 echo "$failures failed; captures in $OUT"
 exit $(( failures > 0 ))
