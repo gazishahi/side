@@ -225,7 +225,7 @@ final class TerminalSnapshotTests: XCTestCase {
             ("$ git status", 0xD0D0D0, nil, []),
             ("On branch main — bold", 0xE5C07B, nil, [.bold]),
             ("italic, underline, strike", 0x61AFEF, nil, [.italic]),
-            ("underlined text here", 0x98C379, nil, [.underline]),
+            ("underlined text here", 0x98C379, nil, []),
             ("struck through text", 0xE06C75, nil, [.strikethrough]),
             (" selection-ish background ", 0x101010, 0x61AFEF, []),
             ("emoji 🙂 flag 🇯🇵 e\u{301}", 0xD0D0D0, nil, []),
@@ -239,7 +239,9 @@ final class TerminalSnapshotTests: XCTestCase {
                 var style = line.3
                 if wide { style.insert(.wide) }
                 grid[x, y] = TerminalCell(scalar: scalars.count == 1 ? scalars.first!.value : 0, cluster: scalars.count > 1 ? String(character) : nil,
-                                          foreground: line.1, background: line.2, style: style)
+                                          foreground: line.1, background: line.2, style: style,
+                                          underline: y == 3 ? [.single, .double, .curly, .dotted][min(3, x / 5)] : .none,
+                                          underlineColor: y == 3 && x >= 10 ? 0xE06C75 : nil)
                 if wide, x + 1 < grid.columns { grid[x + 1, y] = TerminalCell(foreground: line.1, background: line.2, style: .spacer); x += 1 }
                 x += 1
             }

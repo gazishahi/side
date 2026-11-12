@@ -315,8 +315,12 @@ public final class TerminalRenderer {
             let c = grid.cells[rowStart + x]
             let left = (Float(x) * cw).rounded(.down)
             let span = c.style.contains(.wide) ? cw * 2 : cw
-            if c.style.contains(.underline) {
-                backgrounds.append(Quad(rect: SIMD4(left, baseline + underlineY, span.rounded(.up), underlineHeight), uv: .zero, color: color(c.foreground), kind: 0))
+            if c.underline != .none {
+                underline(c.underline, color: color(c.underlineColor ?? c.foreground), left: left, width: span.rounded(.up),
+                          y: baseline + underlineY, thickness: underlineHeight, cellBottom: top + ch, into: &backgrounds)
+            }
+            if c.style.contains(.overline) {
+                backgrounds.append(Quad(rect: SIMD4(left, top, span.rounded(.up), underlineHeight), uv: .zero, color: color(c.foreground), kind: 0))
             }
             if c.style.contains(.strikethrough) {
                 let middle = top + (baselineOffset * 0.65).rounded()
@@ -332,6 +336,42 @@ public final class TerminalRenderer {
         }
         backgroundQuads[y] = backgrounds
         glyphQuads[y] = glyphs
+    }
+
+    /// An underline of one kind across `width` pixels, as solid quads: two lines for double,
+    /// squares for dotted, dashes for dashed, and for curly a wave a pixel column at a time.
+    private func underline(_ kind: TerminalCell.Underline, color: SIMD4<Float>, left: Float, width: Float, y: Float, thickness t: Float,
+                           cellBottom: Float, into quads: inout [Quad]) {
+        func bar(_ x: Float, _ y: Float, _ w: Float, _ h: Float) {
+            quads.append(Quad(rect: SIMD4(x, y, w, h), uv: .zero, color: color, kind: 0))
+        }
+        switch kind {
+        case .none:
+            return
+        case .single:
+            bar(left, y, width, t)
+        case .double:
+            // The second line below the first, kept inside the cell.
+            let second = min(y + t * 2, cellBottom - t)
+            bar(left, max(y - t, second - t * 2), width, t)
+            bar(left, second, width, t)
+        case .dotted:
+            var x = left
+            while x < left + width { bar(x, y, min(t, left + width - x), t); x += t * 2 }
+        case .dashed:
+            let dash = max(t * 3, (width / 3).rounded()), gap = max(t * 2, (width / 6).rounded())
+            var x = left
+            while x < left + width { bar(x, y, min(dash, left + width - x), t); x += dash + gap }
+        case .curly:
+            // One full wave per cell width, its height twice the thickness, in pixel columns.
+            let amplitude = max(1, t), step: Float = 1
+            var x = left
+            while x < left + width {
+                let phase = (x - left) / max(1, width) * 2 * .pi
+                bar(x, (y + amplitude * (1 - cos(phase))).rounded(), step, t)
+                x += step
+            }
+        }
     }
 
     /// One cell's glyphs, cached by text and style: straight from the face when it has the

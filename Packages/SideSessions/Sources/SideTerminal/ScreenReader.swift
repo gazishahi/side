@@ -32,6 +32,8 @@ public struct ScreenCell: Equatable, Sendable {
     public var background: UInt32?
     public var style: Style = []
     public var underline: Underline = .none
+    /// 0xRRGGBB (SGR 58), or nil for the text's color.
+    public var underlineColor: UInt32?
 
     public init() {}
 }
@@ -61,6 +63,8 @@ public final class ScreenReader {
     public private(set) var foreground: UInt32 = 0xFFFFFF
     public private(set) var background: UInt32 = 0x000000
     public private(set) var cursor = ScreenCursor()
+    /// The 256 colors in use, for colors cells give by index (an underline's).
+    private var palette = [UInt32](repeating: 0, count: 256)
     public private(set) var columns = 0
     public private(set) var rows = 0
 
@@ -104,6 +108,10 @@ public final class ScreenReader {
         var color = GhosttyColorRgb()
         if ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_FOREGROUND, &color) == GHOSTTY_SUCCESS { foreground = Self.pack(color) }
         if ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_BACKGROUND, &color) == GHOSTTY_SUCCESS { background = Self.pack(color) }
+        var colors = [GhosttyColorRgb](repeating: GhosttyColorRgb(), count: 256)
+        if colors.withUnsafeMutableBufferPointer({ ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_PALETTE, $0.baseAddress) }) == GHOSTTY_SUCCESS {
+            palette = colors.map(Self.pack)
+        }
 
         var c = GhosttyRenderStateCursor()
         c.size = MemoryLayout<GhosttyRenderStateCursor>.size
@@ -185,6 +193,11 @@ public final class ScreenReader {
         var selected = false
         if ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected) == GHOSTTY_SUCCESS, selected {
             cell.style.insert(.selected)
+        }
+        switch style.underline_color.tag {
+        case GHOSTTY_STYLE_COLOR_RGB: cell.underlineColor = Self.pack(style.underline_color.value.rgb)
+        case GHOSTTY_STYLE_COLOR_PALETTE: cell.underlineColor = palette[Int(style.underline_color.value.palette)]
+        default: break
         }
         cell.underline = switch Int(style.underline) {
         case Int(GHOSTTY_SGR_UNDERLINE_SINGLE.rawValue): .single

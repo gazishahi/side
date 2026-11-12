@@ -6,7 +6,8 @@ public struct TerminalCell: Equatable, Sendable {
         public init(rawValue: UInt16) { self.rawValue = rawValue }
         public static let bold = Style(rawValue: 1 << 0)
         public static let italic = Style(rawValue: 1 << 1)
-        public static let underline = Style(rawValue: 1 << 2)
+        /// A line over the cell (SGR 53).
+        public static let overline = Style(rawValue: 1 << 2)
         public static let strikethrough = Style(rawValue: 1 << 3)
         /// The left half of a wide character (CJK, most emoji): its glyph spans two cells.
         public static let wide = Style(rawValue: 1 << 4)
@@ -27,12 +28,21 @@ public struct TerminalCell: Equatable, Sendable {
     public var background: UInt32?
     public var style: Style
 
-    public init(scalar: UInt32 = 0, cluster: String? = nil, foreground: UInt32, background: UInt32? = nil, style: Style = []) {
+    /// SGR 4's kinds: what diagnostics and spell checkers draw with (curly, in their own color).
+    public enum Underline: Sendable, Equatable { case none, single, double, curly, dotted, dashed }
+    public var underline: Underline
+    /// 0xRRGGBB (SGR 58), or nil for the text's color.
+    public var underlineColor: UInt32?
+
+    public init(scalar: UInt32 = 0, cluster: String? = nil, foreground: UInt32, background: UInt32? = nil, style: Style = [],
+                underline: Underline = .none, underlineColor: UInt32? = nil) {
         self.scalar = scalar
         self.cluster = cluster
         self.foreground = foreground
         self.background = background
         self.style = style
+        self.underline = underline
+        self.underlineColor = underlineColor
     }
 }
 

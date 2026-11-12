@@ -583,11 +583,20 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
                 if c.style.contains(.strikethrough) { style.insert(.strikethrough) }
                 if c.style.contains(.wide) { style.insert(.wide) }
                 if c.style.contains(.spacer) { style.insert(.spacer) }
-                if c.underline != .none { style.insert(.underline) }
+                if c.style.contains(.overline) { style.insert(.overline) }
                 if c.style.contains(.selected) { style.insert(.selected) }
                 let hidden = c.style.contains(.invisible)
+                let underline: TerminalCell.Underline = switch c.underline {
+                case .none: .none
+                case .single: .single
+                case .double: .double
+                case .curly: .curly
+                case .dotted: .dotted
+                case .dashed: .dashed
+                }
                 grid[x, y] = TerminalCell(scalar: hidden ? 0 : c.scalar, cluster: hidden ? nil : c.cluster,
-                                          foreground: c.foreground, background: c.background, style: style)
+                                          foreground: c.foreground, background: c.background, style: style,
+                                          underline: underline, underlineColor: c.underlineColor)
             }
             grid.dirty[y] = true
         }

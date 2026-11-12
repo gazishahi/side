@@ -142,3 +142,22 @@ final class Collected<T: Sendable>: @unchecked Sendable {
     func add(_ value: T) { lock.lock(); items.append(value); lock.unlock() }
     var values: [T] { lock.lock(); defer { lock.unlock() }; return items }
 }
+
+final class UnderlineTests: XCTestCase {
+    /// SGR 4:n's kinds and SGR 58's color, by RGB or palette index; SGR 53, overline.
+    func testUnderlineKindsColorsAndOverline() throws {
+        let terminal = try Terminal(columns: 20, rows: 1)
+        terminal.setPalette([0, 0xAA0000])
+        let reader = ScreenReader(terminal: terminal)
+        terminal.feed(Array("\u{1b}[4:3;58:2::255:0:0mc\u{1b}[0m\u{1b}[4:2;58:5:1md\u{1b}[0m\u{1b}[53mo".utf8))
+        XCTAssertTrue(reader.update())
+        var row: [ScreenCell] = []
+        reader.forEachChangedRow { _, cells in row = Array(cells) }
+        XCTAssertEqual(row[0].underline, .curly)
+        XCTAssertEqual(row[0].underlineColor, 0xFF0000)
+        XCTAssertEqual(row[1].underline, .double)
+        XCTAssertEqual(row[1].underlineColor, 0xAA0000, "palette color 1")
+        XCTAssertTrue(row[2].style.contains(.overline))
+        XCTAssertNil(row[2].underlineColor)
+    }
+}
