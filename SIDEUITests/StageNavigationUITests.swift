@@ -92,11 +92,12 @@ final class StageNavigationUITests: XCTestCase {
         app.menuBars.firstMatch.menuBarItems["Side"].click()
         app.menuBars.firstMatch.menuItems["Settings…"].click()
 
-        let preferences = app.windows["Preferences"]
-        XCTAssertTrue(preferences.waitForExistence(timeout: 5))
+        // The window takes its pane's name; the panes are the sidebar's rows (Settings in
+        // columns, 0.5.0).
+        let sidebar = app.tables["sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 5))
         for pane in ["General", "Agents", "Usage", "Appearance", "History"] {
-            // `NSTabViewController` in toolbar style exposes its panes as toolbar buttons.
-            XCTAssertTrue(preferences.toolbars.buttons[pane].exists, "\(pane) pane is missing from Preferences")
+            XCTAssertTrue(sidebar.descendants(matching: .any)[pane].exists, "\(pane) pane is missing from Settings")
         }
     }
 }

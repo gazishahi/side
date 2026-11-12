@@ -17,22 +17,31 @@ final class TerminalSession {
     var restoredTitle: String?
     let viewController: TerminalViewController
     var hasUnseenOutput = false
+    /// The track it was opened for: the checkout a new tab starts in, and whose agent may run
+    /// commands in it. Not where it is now; a program can move itself (`SessionRegistry` asks
+    /// the kernel for that).
+    var trackKey: String
 
-    init(label: String, viewController: TerminalViewController) {
+    init(label: String, viewController: TerminalViewController, trackKey: String = "") {
         self.label = label
         self.viewController = viewController
+        self.trackKey = trackKey
     }
 }
 
-/// Every terminal in a project, keyed by track — owned by `ProjectContext`, not by a window
-/// (RFC R2, the Heron/Think split applied to terminals).
+/// Every terminal in a project — owned by `ProjectContext`, not by a window (RFC R2, the
+/// Heron/Think split applied to terminals).
 ///
 /// PTYs used to live inside `RunWorkspaceViewController`, so a terminal's lifetime was a window's
 /// lifetime: closing the window killed a running dev server even while another window had the
 /// project open, and an agent on a track no window was showing had nowhere to run a command at
 /// all ("No window is open for this project"). Now Run is a view that attaches to these
-/// sessions; they live until the project is released or the user closes them. Keys follow the
-/// rest of the app: a track's branch name, `""` for "no active track".
+/// sessions; they live until the project is released or the user closes them.
+///
+/// One list of tabs for the whole project, not one per track (SIDE_RFC_SESSIONS.md: terminals
+/// keyed by project): switching branches no longer swaps the tabs, and an agent that moved
+/// itself into a worktree stays where you left it. Each tab still knows the track it was opened
+/// for (`TerminalSession.trackKey`: a branch name, `""` for none).
 @MainActor
 final class TerminalSessionManager {
     /// Posted with the manager as `object`. `userInfo[originKey]` is the `ObjectIdentifier` of
@@ -43,13 +52,10 @@ final class TerminalSessionManager {
 
     let projectRoot: URL
     private let directoryProvider: (String) -> URL
-    /// A track's own list (`holder == nil`, what every window shows), or the terminals torn out
-    /// into one window (`holder` is that window's id) — out of the track's list, so no other
-    /// window shows them, until that window closes and `release` hands them back.
-    private struct Pool: Hashable {
-        let trackKey: String
-        let holder: UUID?
-    }
+    /// The project's tabs (`holder == nil`, what every window shows), or the terminals torn out
+    /// into one window (`holder` is that window's id) — out of the tabs, so no other window
+    /// shows them, until that window closes and `release` hands them back.
+    private typealias Pool = UUID?
     private var sessionsByPool: [Pool: [TerminalSession]] = [:]
     private var activeIndexByPool: [Pool: Int] = [:]
     /// The session an agent's commands go to, per track. Pinned the first time the agent needs
@@ -67,60 +73,71 @@ final class TerminalSessionManager {
 
     func workingDirectory(forTrackKey key: String) -> URL { directoryProvider(key) }
 
-    func sessions(forTrackKey key: String, holder: UUID? = nil) -> [TerminalSession] { sessionsByPool[Pool(trackKey: key, holder: holder)] ?? [] }
+    /// The project's tabs, or those held by window `holder`.
+    func sessions(holder: UUID? = nil) -> [TerminalSession] { sessionsByPool[holder] ?? [] }
 
-    /// Every terminal on a track, wherever it's showing.
+    /// The tabs opened for one track, in order.
+    func sessions(forTrackKey key: String, holder: UUID? = nil) -> [TerminalSession] { sessions(holder: holder).filter { $0.trackKey == key } }
+
     /// Every tab's session in the project, every track and window.
-    func everySession() -> [TerminalSession] { sessionsByPool.values.flatMap { $0 } }
+    func everySession() -> [TerminalSession] { sessionsByPool.sorted { $0.key == nil && $1.key != nil }.flatMap(\.value) }
 
-    /// Every terminal on a track, its tab row's and any held beside a stage or in a window of its own.
-    func allSessions(forTrackKey key: String) -> [TerminalSession] {
-        sessionsByPool.filter { $0.key.trackKey == key }.sorted { $0.key.holder == nil && $1.key.holder != nil }.flatMap(\.value)
-    }
+    /// Every terminal opened for a track, the tabs' and any held beside a stage or in a window of its own.
+    func allSessions(forTrackKey key: String) -> [TerminalSession] { everySession().filter { $0.trackKey == key } }
 
-    /// Replaces a track's session list — the Run view's open, close, restart and reorder all
-    /// land here. Records the new shape so a relaunch can reopen it.
-    func setSessions(_ sessions: [TerminalSession], forTrackKey key: String, holder: UUID? = nil, origin: AnyObject? = nil) {
-        let pool = Pool(trackKey: key, holder: holder)
-        sessionsByPool[pool] = sessions.isEmpty && holder != nil ? nil : sessions
-        if let active = activeIndexByPool[pool], !sessions.indices.contains(active) {
-            activeIndexByPool[pool] = sessions.isEmpty ? nil : sessions.count - 1
+    /// Replaces the tabs — the Run view's open, close, restart and reorder all land here.
+    /// Records the new shape so a relaunch can reopen it.
+    func setSessions(_ sessions: [TerminalSession], holder: UUID? = nil, origin: AnyObject? = nil) {
+        sessionsByPool[holder] = sessions.isEmpty && holder != nil ? nil : sessions
+        if let active = activeIndexByPool[holder], !sessions.indices.contains(active) {
+            activeIndexByPool[holder] = sessions.isEmpty ? nil : sessions.count - 1
         }
-        remember(forTrackKey: key)
+        remember()
         post(origin: origin)
     }
 
-    func activeIndex(forTrackKey key: String, holder: UUID? = nil) -> Int? { activeIndexByPool[Pool(trackKey: key, holder: holder)] }
-    func setActiveIndex(_ index: Int?, forTrackKey key: String, holder: UUID? = nil) { activeIndexByPool[Pool(trackKey: key, holder: holder)] = index }
+    /// Replaces one track's tabs among the rest: kept ones stay where they are, new ones go at
+    /// the end.
+    func setSessions(_ sessions: [TerminalSession], forTrackKey key: String, holder: UUID? = nil, origin: AnyObject? = nil) {
+        let current = self.sessions(holder: holder)
+        var list = current.filter { session in session.trackKey != key || sessions.contains { $0 === session } }
+        list += sessions.filter { session in !list.contains { $0 === session } }
+        for session in sessions { session.trackKey = key }
+        setSessions(list, holder: holder, origin: origin)
+    }
+
+    func activeIndex(holder: UUID? = nil) -> Int? { activeIndexByPool[holder] }
+    func setActiveIndex(_ index: Int?, holder: UUID? = nil) { activeIndexByPool[holder] = index }
+
+    /// Selects `session` in the tabs, if it's one of them.
+    func select(_ session: TerminalSession) {
+        if let index = sessions().firstIndex(where: { $0 === session }) { activeIndexByPool[nil] = index }
+    }
 
     var hasUnseenOutput: Bool { sessionsByPool.values.contains { $0.contains { $0.hasUnseenOutput } } }
 
-    /// A terminal torn out into its own window: it leaves the track's list (and any other
-    /// window's) for the window `holder`, still running — nothing restarts.
-    func hold(_ session: TerminalSession, forTrackKey key: String, holder: UUID, origin: AnyObject? = nil) {
-        for pool in sessionsByPool.keys where pool.trackKey == key {
+    /// A terminal torn out into its own window: it leaves the tabs (and any other window's) for
+    /// the window `holder`, still running — nothing restarts.
+    func hold(_ session: TerminalSession, holder: UUID, origin: AnyObject? = nil) {
+        for pool in sessionsByPool.keys {
             guard let index = sessionsByPool[pool]?.firstIndex(where: { $0 === session }) else { continue }
             let countBefore = sessionsByPool[pool]!.count
             sessionsByPool[pool]!.remove(at: index)
             activeIndexByPool[pool] = TabSelection.indexAfterClosing(index, active: activeIndexByPool[pool], countBefore: countBefore)
         }
-        let target = Pool(trackKey: key, holder: holder)
+        let target: Pool = holder
         sessionsByPool[target, default: []].append(session)
         activeIndexByPool[target] = sessionsByPool[target]!.count - 1
         post(origin: origin)
     }
 
-    /// The torn-out window closed: its terminals go back to the end of their tracks' lists,
-    /// still running, rather than dying with a window that was only ever a view onto them.
+    /// The torn-out window closed: its terminals go back to the end of the tabs, still running,
+    /// rather than dying with a window that was only ever a view onto them.
     func release(holder: UUID) {
-        let held = sessionsByPool.keys.filter { $0.holder == holder }
-        guard !held.isEmpty else { return }
-        for pool in held {
-            let main = Pool(trackKey: pool.trackKey, holder: nil)
-            sessionsByPool[main, default: []].append(contentsOf: sessionsByPool.removeValue(forKey: pool) ?? [])
-            activeIndexByPool.removeValue(forKey: pool)
-            if activeIndexByPool[main] == nil { activeIndexByPool[main] = 0 }
-        }
+        guard let held = sessionsByPool.removeValue(forKey: holder) else { return }
+        activeIndexByPool.removeValue(forKey: holder)
+        sessionsByPool[nil, default: []].append(contentsOf: held)
+        if activeIndexByPool[nil] == nil { activeIndexByPool[nil] = 0 }
         post(origin: nil)
     }
 
@@ -137,7 +154,7 @@ final class TerminalSessionManager {
             vc.recoveredAgentSession = agentSession(forKeeper: id)
             vc.onAgentSessionReported = { [weak self] agent, session in self?.rememberAgentSession(agent: agent, session: session, forKeeper: id) }
         }
-        let session = TerminalSession(label: (path as NSString).lastPathComponent, viewController: vc)
+        let session = TerminalSession(label: (path as NSString).lastPathComponent, viewController: vc, trackKey: key)
         vc.onExitStatusChanged = { [weak self] _, _ in self?.post(origin: nil) }
         // Run's status line: live cwd and the last command's exit and duration.
         vc.onDirectoryChanged = { [weak self] _ in self?.post(origin: nil) }
@@ -158,17 +175,14 @@ final class TerminalSessionManager {
     }
 
     /// A tab that runs one program instead of a shell — an outside agent's `terminal/create`.
-    /// Appended to the track's list, not selected: it's visible and interruptible without taking
-    /// the tab the user was looking at.
+    /// Appended to the tabs, not selected: it's visible and interruptible without taking the tab
+    /// the user was looking at.
     func makeCommandSession(forTrackKey key: String, launch: TerminalViewController.CommandLaunch, directory: String, label: String? = nil) -> TerminalSession {
         let session = makeSession(forTrackKey: key, inDirectory: directory)
         session.viewController.commandLaunch = launch
         session.label = label ?? ([ (launch.command as NSString).lastPathComponent ] + launch.arguments.prefix(2)).joined(separator: " ")
         session.viewController.loadViewIfNeeded()
-        var list = sessions(forTrackKey: key)
-        list.append(session)
-        if activeIndex(forTrackKey: key) == nil { setActiveIndex(list.count - 1, forTrackKey: key) }
-        setSessions(list, forTrackKey: key)
+        append(session)
         return session
     }
 
@@ -181,8 +195,8 @@ final class TerminalSessionManager {
             let countBefore = sessionsByPool[pool]!.count
             sessionsByPool[pool]!.remove(at: index)
             activeIndexByPool[pool] = TabSelection.indexAfterClosing(index, active: activeIndexByPool[pool], countBefore: countBefore)
-            remember(forTrackKey: pool.trackKey)
         }
+        remember()
         post(origin: nil)
     }
 
@@ -204,14 +218,13 @@ final class TerminalSessionManager {
         post(origin: nil)
     }
 
-    /// A deleted track's terminals have nowhere to belong — terminate them rather than leak.
-    func discardSessions(forTrackKey key: String) {
-        for session in allSessions(forTrackKey: key) { session.viewController.prepareForClose() }
-        for pool in sessionsByPool.keys where pool.trackKey == key {
-            sessionsByPool.removeValue(forKey: pool)
-            activeIndexByPool.removeValue(forKey: pool)
-        }
+    /// A track was deleted. Its terminals stay open, the project's now: what runs in them is
+    /// the person's to end, and one whose folder went shows that in its status row. Only the
+    /// track's agent loses its pinned terminal.
+    func forgetTrack(_ key: String) {
+        for session in allSessions(forTrackKey: key) { session.trackKey = "" }
         agentSessionIDByTrackKey.removeValue(forKey: key)
+        remember()
         post(origin: nil)
     }
 
@@ -243,7 +256,7 @@ final class TerminalSessionManager {
     /// Which tab the agent's commands run in, if it has one pinned — non-creating.
     func agentSessionIndex(forTrackKey key: String) -> Int? {
         guard let id = agentSessionIDByTrackKey[key] else { return nil }
-        return sessions(forTrackKey: key).firstIndex { $0.id == id }
+        return sessions().firstIndex { $0.id == id }
     }
 
     /// True when the terminal the agent's commands would go to has been `cd`-ed outside the
@@ -252,7 +265,7 @@ final class TerminalSessionManager {
     func agentSessionIsOutsideWorktree(trackKey key: String) -> Bool {
         let list = sessions(forTrackKey: key).filter { !$0.viewController.isCommandSession }
         let pinned = agentSessionIDByTrackKey[key].flatMap { id in allSessions(forTrackKey: key).first { $0.id == id } }
-        let active = activeIndex(forTrackKey: key).flatMap { list.indices.contains($0) ? list[$0] : nil }
+        let active = activeSession(forTrackKey: key)
         guard let session = pinned ?? active ?? list.first, let cwd = session.viewController.currentDirectory else { return false }
         return !Self.isInside(cwd, root: directoryProvider(key).path)
     }
@@ -265,26 +278,38 @@ final class TerminalSessionManager {
         return resolved.count >= base.count && Array(resolved.prefix(base.count)) == base
     }
 
+    /// The selected tab, when it was opened for track `key`.
+    private func activeSession(forTrackKey key: String) -> TerminalSession? {
+        let list = sessions()
+        guard let index = activeIndex(), list.indices.contains(index), list[index].trackKey == key else { return nil }
+        return list[index]
+    }
+
+    /// Adds a tab at the end, selected if none is.
+    private func append(_ session: TerminalSession) {
+        var list = sessions()
+        list.append(session)
+        if activeIndex() == nil { setActiveIndex(list.count - 1) }
+        setSessions(list)
+    }
+
     func agentSession(forTrackKey key: String) -> TerminalSession {
-        var list = sessions(forTrackKey: key)
         // A command tab (an outside agent's `terminal/create`) runs one program; nothing is ever
         // typed into it.
-        let shells = list.filter { !$0.viewController.isCommandSession }
+        let shells = sessions(forTrackKey: key).filter { !$0.viewController.isCommandSession }
         // Pinned wherever it is — a torn-out agent terminal is still the one running its command.
         if let id = agentSessionIDByTrackKey[key], let pinned = allSessions(forTrackKey: key).first(where: { $0.id == id }), pinned.viewController.isAliveOrUnstarted {
             return pinned
         }
         let chosen: TerminalSession
-        if let active = activeIndex(forTrackKey: key), list.indices.contains(active), !list[active].viewController.isCommandSession, list[active].viewController.isAliveOrUnstarted {
-            chosen = list[active]
+        if let active = activeSession(forTrackKey: key), !active.viewController.isCommandSession, active.viewController.isAliveOrUnstarted {
+            chosen = active
         } else if let first = shells.first(where: { $0.viewController.isAliveOrUnstarted }) {
             chosen = first
         } else {
             chosen = makeSession(forTrackKey: key)
             chosen.viewController.loadViewIfNeeded()
-            list.append(chosen)
-            if activeIndex(forTrackKey: key) == nil { setActiveIndex(list.count - 1, forTrackKey: key) }
-            setSessions(list, forTrackKey: key)
+            append(chosen)
         }
         agentSessionIDByTrackKey[key] = chosen.id
         return chosen
@@ -292,9 +317,10 @@ final class TerminalSessionManager {
 
     // MARK: - Remembered shape
 
-    /// Only directories are stored — no scrollback, no history: a terminal's contents are not
-    /// ours to persist. Keyed by project *and* track; the old per-window key was the track alone,
-    /// so every project's "no track" bucket shared one entry.
+    /// Only directories, names and keepers are stored — no scrollback, no history: a terminal's
+    /// contents are not ours to persist. Keyed by project.
+    private static let rememberedTabsKey = "side.run-tabs-by-project"
+    /// The per-track records the tabs were kept in before, read until a project's are rewritten.
     private static let rememberedSessionsKey = "side.run-sessions-by-track"
     /// Tabs' own names, in the same order as the directories; "" for an automatic name.
     private static let rememberedNamesKey = "side.run-session-names-by-track"
@@ -318,10 +344,10 @@ final class TerminalSessionManager {
         HeronDefaults.store.set(map, forKey: Self.agentSessionsKey)
     }
 
-    /// The tab on `trackKey` running Claude Code session `id` right now, if any
+    /// The tab running Claude Code session `id` right now, if any
     /// (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md: Agent asks before both are live).
-    func sessionRunningClaude(_ id: String, trackKey: String) -> TerminalSession? {
-        allSessions(forTrackKey: trackKey).first { $0.viewController.recoveredAgentSession == id && $0.viewController.runningProgramName == "claude" }
+    func sessionRunningClaude(_ id: String) -> TerminalSession? {
+        everySession().first { $0.viewController.recoveredAgentSession == id && $0.viewController.runningProgramName == "claude" }
     }
 
     func forgetAgentSession(forKeeper id: String) {
@@ -330,51 +356,73 @@ final class TerminalSessionManager {
         HeronDefaults.store.set(map, forKey: Self.agentSessionsKey)
     }
 
-    /// Each remembered tab's keeper session, nil where it had none.
-    func rememberedKeeperIDs(forTrackKey key: String) -> [String?] {
-        let map = HeronDefaults.store.dictionary(forKey: Self.rememberedKeepersKey) as? [String: [String]] ?? [:]
-        return (map[rememberedKey(key)] ?? []).map { $0.isEmpty ? nil : $0 }
+    /// A tab as it's remembered between launches.
+    struct RememberedTab: Equatable {
+        var directory: String
+        var name: String?
+        var keeperID: String?
+        var trackKey: String
     }
 
-    private func rememberedKey(_ trackKey: String) -> String { "\(projectRoot.path)#\(trackKey)" }
+    /// The project's tabs in order, as Side last left them.
+    ///
+    /// Once kept per track (`side.run-sessions-by-track` and its two companions); read from
+    /// there, every track's in turn, until the project's tabs are first written the new way.
+    func rememberedTabs() -> [RememberedTab] {
+        let map = HeronDefaults.store.dictionary(forKey: Self.rememberedTabsKey) as? [String: [[String: String]]] ?? [:]
+        if let tabs = map[projectRoot.path] {
+            return tabs.compactMap { tab in
+                guard let directory = tab["directory"] else { return nil }
+                return RememberedTab(directory: directory, name: tab["name"].flatMap { $0.isEmpty ? nil : $0 },
+                                     keeperID: tab["keeper"].flatMap { $0.isEmpty ? nil : $0 }, trackKey: tab["track"] ?? "")
+            }
+        }
+        return rememberedTabsByTrack()
+    }
 
-    /// Each remembered tab's own name, nil where it had none.
-    func rememberedNames(forTrackKey key: String) -> [String?] {
-        let map = HeronDefaults.store.dictionary(forKey: Self.rememberedNamesKey) as? [String: [String]] ?? [:]
-        return (map[rememberedKey(key)] ?? []).map { $0.isEmpty ? nil : $0 }
+    /// The old per-track records for this project: the no-track tabs first, then each track's.
+    private func rememberedTabsByTrack() -> [RememberedTab] {
+        let directories = HeronDefaults.store.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
+        let names = HeronDefaults.store.dictionary(forKey: Self.rememberedNamesKey) as? [String: [String]] ?? [:]
+        let keepers = HeronDefaults.store.dictionary(forKey: Self.rememberedKeepersKey) as? [String: [String]] ?? [:]
+        let prefix = projectRoot.path + "#"
+        let tracks = directories.keys.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }.sorted()
+        return tracks.flatMap { track -> [RememberedTab] in
+            let key = prefix + track
+            let named = names[key] ?? [], ids = keepers[key] ?? []
+            return (directories[key] ?? []).enumerated().map { index, directory in
+                RememberedTab(directory: directory, name: named.indices.contains(index) && !named[index].isEmpty ? named[index] : nil,
+                              keeperID: ids.indices.contains(index) && !ids[index].isEmpty ? ids[index] : nil, trackKey: track)
+            }
+        }
     }
 
     /// The person named a tab, or gave it back its automatic name.
     func rename(_ session: TerminalSession, to name: String?) {
         session.customName = name
-        for pool in sessionsByPool.keys where sessionsByPool[pool]?.contains(where: { $0 === session }) == true {
-            remember(forTrackKey: pool.trackKey)
-        }
+        remember()
         post(origin: nil)
     }
 
-    func rememberedDirectories(forTrackKey key: String) -> [String] {
-        let map = HeronDefaults.store.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
-        return map[rememberedKey(key)] ?? map[key] ?? []
+    /// Set once a Run view has brought the remembered tabs back (or found none). Until then
+    /// nothing is written: a tab an agent opened first would otherwise replace them all.
+    private(set) var hasRestored = false
+    func markRestored() {
+        hasRestored = true
+        remember()
     }
 
-    private func remember(forTrackKey key: String) {
-        guard !AppDelegate.isUITesting else { return }
-        var map = HeronDefaults.store.dictionary(forKey: Self.rememberedSessionsKey) as? [String: [String]] ?? [:]
+    private func remember() {
+        guard hasRestored, !AppDelegate.isUITesting else { return }
         // Command tabs are an agent's one-off programs, not terminals to reopen.
-        let kept = allSessions(forTrackKey: key).filter { !$0.viewController.isCommandSession && $0.viewController.workingDirectory != nil }
-        let directories = kept.compactMap { $0.viewController.workingDirectory }
-        map.removeValue(forKey: key)
-        if directories.isEmpty { map.removeValue(forKey: rememberedKey(key)) } else { map[rememberedKey(key)] = directories }
-        HeronDefaults.store.set(map, forKey: Self.rememberedSessionsKey)
-        var names = HeronDefaults.store.dictionary(forKey: Self.rememberedNamesKey) as? [String: [String]] ?? [:]
-        let named = kept.map { $0.customName ?? "" }
-        if named.allSatisfy(\.isEmpty) { names.removeValue(forKey: rememberedKey(key)) } else { names[rememberedKey(key)] = named }
-        HeronDefaults.store.set(names, forKey: Self.rememberedNamesKey)
-        var keepers = HeronDefaults.store.dictionary(forKey: Self.rememberedKeepersKey) as? [String: [String]] ?? [:]
-        let ids = kept.map { $0.viewController.keeperID ?? "" }
-        if ids.allSatisfy(\.isEmpty) { keepers.removeValue(forKey: rememberedKey(key)) } else { keepers[rememberedKey(key)] = ids }
-        HeronDefaults.store.set(keepers, forKey: Self.rememberedKeepersKey)
+        let kept = everySession().filter { !$0.viewController.isCommandSession && $0.viewController.workingDirectory != nil }
+        let tabs = kept.map { session -> [String: String] in
+            ["directory": session.viewController.workingDirectory ?? "", "name": session.customName ?? "",
+             "keeper": session.viewController.keeperID ?? "", "track": session.trackKey]
+        }
+        var map = HeronDefaults.store.dictionary(forKey: Self.rememberedTabsKey) as? [String: [[String: String]]] ?? [:]
+        map[projectRoot.path] = tabs
+        HeronDefaults.store.set(map, forKey: Self.rememberedTabsKey)
     }
 
     private func post(origin: AnyObject?) {

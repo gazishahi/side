@@ -268,7 +268,7 @@ final class TabStrip: NSObject {
         NSLayoutConstraint.activate([
             soloLeading!,
             label.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -DS.Spacing.l),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -DS.Spacing.l - bar.accessoryReserve),
         ])
         return label
     }()
@@ -299,9 +299,10 @@ final class TabStrip: NSObject {
         bar.addSubview(close)
         NSLayoutConstraint.activate([
             close.leadingAnchor.constraint(equalTo: soloLabel.trailingAnchor, constant: DS.Spacing.s),
-            close.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -DS.Spacing.l),
+            close.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -DS.Spacing.l - bar.accessoryReserve),
             close.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
         ])
+        bar.soloEnd = close
         return close
     }()
     /// Where the pointer shows the X: the icon, the name and the X.
@@ -357,6 +358,7 @@ final class TabStrip: NSObject {
         let views: [NSView] = [soloLabel, soloIcon]
         _ = soloHover
         if !shown { soloClose.isHidden = true }
+        bar.soloShown = shown
         guard shown != soloShown else { return }
         soloShown = shown
         guard bar.window != nil, !DS.Motion.reduceMotion else { views.forEach { $0.alphaValue = shown ? 1 : 0 }; return }

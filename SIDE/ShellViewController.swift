@@ -469,7 +469,7 @@ final class ShellViewController: NSViewController {
         }
         thinkVC.terminalTabRunningAgentSession = { [weak self] id in
             guard let self, let terminals = self.projectContext?.terminals else { return nil }
-            return terminals.sessionRunningClaude(id, trackKey: self.currentTrackKey ?? "")?.title
+            return terminals.sessionRunningClaude(id)?.title
         }
         // Agent's branch panel (SIDE_RFC_AGENT_PANEL.md): the track's folder and base, its
         // terminals and checkpoints.
@@ -527,7 +527,7 @@ final class ShellViewController: NSViewController {
         tracksVC.onTrackDeleted = { [weak self] track in
             guard let self else { return }
             self.makeVC.forgetLastFile(forTrackKey: track.branchName)
-            self.projectContext?.terminals.discardSessions(forTrackKey: track.branchName)
+            self.projectContext?.terminals.forgetTrack(track.branchName)
             self.projectContext?.sessionStore.removeSession(forTrackKey: track.branchName)
             if let projectPath = self.projectContext?.projectRoot.path {
                 UsageStore.shared.removeUsage(projectPath: projectPath, trackKey: track.branchName)
@@ -560,7 +560,7 @@ final class ShellViewController: NSViewController {
             ProjectSpaces.shared.space(for: url)
             ProjectSpaces.shared.touch(url)
         }
-        if let soleSession { runVC.adoptTornOutSession(soleSession, trackKey: focusingTrackKey ?? "") }
+        if let soleSession { runVC.adoptTornOutSession(soleSession) }
         let landOn: Stage = soleSession != nil ? .run : .make
         guard let focusingTrackKey, let store = trackStore,
               let track = store.tracks.first(where: { $0.branchName == focusingTrackKey }),
@@ -1163,7 +1163,7 @@ final class ShellViewController: NSViewController {
         runVC.openInAgentForTesting()
     }
     var agentForTesting: String {
-        let tabs = (projectContext?.terminals.allSessions(forTrackKey: currentTrackKey ?? "") ?? []).map {
+        let tabs = (projectContext?.terminals.everySession() ?? []).map {
             "tab \($0.title)|\($0.viewController.runningProgramName ?? "-")|\($0.viewController.recoveredAgentSession ?? "-")"
         }
         return ([thinkVC.agentStateForTesting, "stage \(currentStageForTesting ?? "-")"] + tabs).joined(separator: "\n")
@@ -1795,23 +1795,13 @@ final class ShellViewController: NSViewController {
         return true
     }
 
-    /// The activity pill: the Terminal, on that session's tab, on whichever track holds it.
+    /// The activity pill: the Terminal, on that session's tab. Every track's tabs are there.
     func revealTerminalSession(_ id: UUID) {
         view.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
         if companion?.session.id == id { return revealCompanion() }
         show(.run)
-        if runVC.showSession(id: id) { return }
-        // On another track: switch to it, as picking the track would.
-        guard let context = projectContext,
-              let key = context.terminals.everySession().first(where: { $0.id == id }).flatMap({ session in
-                  trackStore?.tracks.first { context.terminals.sessions(forTrackKey: $0.branchName).contains { $0 === session } }?.branchName
-              }),
-              let track = trackStore?.tracks.first(where: { $0.branchName == key }) else { return }
-        switchToTrack(track, landOn: .run) { [weak self] outcome in
-            guard outcome != nil else { return }
-            self?.runVC.showSession(id: id)
-        }
+        runVC.showSession(id: id)
     }
 
     // MARK: - Project switching (prototype, 2026-11-04)
@@ -2533,10 +2523,7 @@ final class ShellViewController: NSViewController {
             let session = terminals.makeCommandSession(forTrackKey: self.currentTrackKey ?? "", launch: launch, directory: directory, label: "Debug: \(title)")
             session.viewController.start()
             // The tab Run shows: the program may be waiting for input there.
-            let key = self.currentTrackKey ?? ""
-            if let index = terminals.sessions(forTrackKey: key).firstIndex(where: { $0 === session }) {
-                terminals.setActiveIndex(index, forTrackKey: key)
-            }
+            terminals.select(session)
             let fd = session.viewController.terminalView.processTerminalDescriptor
             guard fd >= 0, let name = ptsname(fd) else {
                 terminals.removeSession(session)
@@ -2555,7 +2542,7 @@ final class ShellViewController: NSViewController {
             let key = self.currentTrackKey ?? ""
             let session = terminals.makeCommandSession(forTrackKey: key, launch: launch, directory: directory, label: "Debug: \(title)")
             session.viewController.start()
-            if let index = terminals.sessions(forTrackKey: key).firstIndex(where: { $0 === session }) { terminals.setActiveIndex(index, forTrackKey: key) }
+            terminals.select(session)
             let pid = session.viewController.terminalView.processID
             guard pid > 0 else {
                 terminals.removeSession(session)

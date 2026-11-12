@@ -126,7 +126,7 @@ final class TerminalCompanionViewController: NSViewController {
             MainActor.assumeIsolated { self?.terminalsChanged() }
         }
         // Out of Terminal's tabs first: its view lets go of the terminal before this one takes it.
-        terminals.hold(session, forTrackKey: trackKey, holder: holder, origin: self)
+        terminals.hold(session, holder: holder, origin: self)
         mount()
         refresh()
     }
@@ -161,9 +161,7 @@ final class TerminalCompanionViewController: NSViewController {
         if vc.parent === self { vc.view.removeFromSuperview(); vc.removeFromParent() }
         vc.onFileLinkRequested = nil
         terminals.release(holder: holder)
-        if let index = terminals.sessions(forTrackKey: trackKey).firstIndex(where: { $0 === session }) {
-            terminals.setActiveIndex(index, forTrackKey: trackKey)
-        }
+        terminals.select(session)
     }
 
     private var terminalBottomConstant: CGFloat { -(bottomObstruction > 0 ? bottomObstruction + DS.Spacing.s : Self.inset) }
@@ -210,7 +208,7 @@ final class TerminalCompanionViewController: NSViewController {
     @objc private func returnTapped() { onReturn?() }
 
     private func terminalsChanged() {
-        guard terminals.sessions(forTrackKey: trackKey, holder: holder).contains(where: { $0 === session }) else {
+        guard terminals.sessions(holder: holder).contains(where: { $0 === session }) else {
             onEnded?()
             return
         }

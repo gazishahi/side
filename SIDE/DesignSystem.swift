@@ -1304,6 +1304,25 @@ final class TabStripView: NSView {
     private weak var trackScroll: NSScrollView?
     private weak var trackStack: NSStackView?
 
+    /// Sits just after the tabs' track and moves with it (Terminal's new-tab button). The
+    /// owner leaves room for it at the strip's end, so with many tabs it rests there.
+    var trailingAccessory: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            guard let trailingAccessory else { return }
+            trailingAccessory.translatesAutoresizingMaskIntoConstraints = true
+            addSubview(trailingAccessory)
+            needsLayout = true
+        }
+    }
+    static let accessoryGap: CGFloat = 4
+    /// How much of the strip's end the accessory takes, for what's laid out up to that end.
+    var accessoryReserve: CGFloat { trailingAccessory.map { $0.fittingSize.width + Self.accessoryGap } ?? 0 }
+    /// With one tab there's no track (the name stands alone): the accessory follows this view,
+    /// the name's end, instead.
+    weak var soloEnd: NSView?
+    var soloShown = false { didSet { if soloShown != oldValue { needsLayout = true } } }
+
     @objc private func tabsResized() { needsLayout = true }
 
     /// The track shown or not with the strip (one tab needs no strip), fading when animated.
@@ -1407,6 +1426,11 @@ final class TabStripView: NSView {
             context.duration = 0
             context.allowsImplicitAnimation = false
             glass.frame = NSRect(x: scroll.frame.minX, y: (bounds.height - Self.trackHeight) / 2, width: glassWidth, height: Self.trackHeight)
+            if let accessory = trailingAccessory {
+                let size = accessory.fittingSize
+                let end = soloShown ? soloEnd.map { $0.frame.maxX } ?? glass.frame.maxX : glass.frame.maxX
+                accessory.frame = NSRect(x: end + Self.accessoryGap, y: ((bounds.height - size.height) / 2).rounded(), width: size.width, height: size.height)
+            }
         }
         // The tabs are cut off at the track's round ends, not the scroll view's square ones: a
         // selected tab half scrolled out used to poke its pill past the curve. The mask takes its
