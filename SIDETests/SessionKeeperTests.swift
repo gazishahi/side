@@ -38,6 +38,46 @@ final class SessionKeeperTests: XCTestCase {
         return condition()
     }
 
+    /// The new engine (TerminalEngine.alloy) in a kept shell: typed into, read back, and
+    /// reattached from the keeper's snapshot into a fresh surface.
+    func testTheAlloyEngineRunsAKeptShellAndReattaches() throws {
+        TerminalEngine.overrideForTesting = .alloy
+        defer { TerminalEngine.overrideForTesting = nil }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keepers-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let first = TerminalSessionManager(projectRoot: root) { _ in root }
+        let session = first.makeSession(forTrackKey: "t")
+        first.setSessions([session], forTrackKey: "t")
+        XCTAssertTrue(session.viewController.terminalView is AlloyTerminalSurface)
+        let id = try XCTUnwrap(session.viewController.keeperID)
+        session.viewController.loadViewIfNeeded()
+        session.viewController.view.frame = NSRect(x: 0, y: 0, width: 800, height: 500)
+        session.viewController.view.layoutSubtreeIfNeeded()
+        session.viewController.start()
+        XCTAssertTrue(waitUntil { SessionKeepers.liveRecord(id) != nil }, "no keeper")
+        XCTAssertTrue(waitUntil { session.viewController.startupSettled })
+        session.viewController.terminalView.send(text: "echo alloy-$((40+2))\r")
+        XCTAssertTrue(waitUntil { self.screen(session).contains("alloy-42") }, screen(session))
+        XCTAssertTrue(waitUntil { session.viewController.terminalView.visibleText().contains("alloy-42") })
+
+        // Released and reopened: a new surface, filled from the keeper.
+        first.teardownAll()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let second = TerminalSessionManager(projectRoot: root) { _ in root }
+        let again = second.makeSession(forTrackKey: "t", keeperID: id)
+        second.setSessions([again], forTrackKey: "t")
+        again.viewController.loadViewIfNeeded()
+        again.viewController.view.frame = NSRect(x: 0, y: 0, width: 800, height: 500)
+        again.viewController.view.layoutSubtreeIfNeeded()
+        again.viewController.start()
+        XCTAssertTrue(waitUntil { self.screen(again).contains("alloy-42") }, "the screen comes back: \(screen(again))")
+        again.viewController.terminalView.send(text: "echo still-$((1+1))\r")
+        XCTAssertTrue(waitUntil { self.screen(again).contains("still-2") }, screen(again))
+        second.removeSession(again)
+        XCTAssertTrue(waitUntil { SessionKeepers.liveRecord(id) == nil })
+    }
+
     func testAShellOutlivesItsProjectAndReattaches() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("keepers-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

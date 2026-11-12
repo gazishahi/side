@@ -24,7 +24,7 @@ let package = Package(
                           swiftSettings: [.swiftLanguageMode(.v5)]),
         // The terminal emulator Side's Terminal draws (docs/SIDE_RFC_TERMINAL_ENGINE.md): libghostty-vt
         // wrapped, shared with the keeper later. Knows nothing about drawing.
-        .target(name: "SideTerminal", dependencies: ["SideSessionsKit", "GhosttyVt"], path: "Sources/SideTerminal"),
+        .target(name: "SideTerminal", dependencies: ["SideSessionsKit", "GhosttyVt", "CKeeperSpawn"], path: "Sources/SideTerminal"),
         // Built by scripts/build-ghostty-vt.sh from the pinned Ghostty commit; git-ignored.
         .binaryTarget(name: "GhosttyVt", path: "GhosttyVt.xcframework"),
         .testTarget(name: "SideTerminalTests", dependencies: ["SideTerminal", "SideSessionsKit"], path: "Tests/SideTerminalTests"),

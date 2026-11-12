@@ -123,6 +123,82 @@ public final class Terminal: @unchecked Sendable {
         }
     }
 
+    /// The first sixteen colors, 0xRRGGBB (the rest of the 256 stay xterm's).
+    public func setPalette(_ colors: [UInt32]) {
+        lock.read {
+            var palette = [GhosttyColorRgb](repeating: GhosttyColorRgb(), count: 256)
+            palette.withUnsafeMutableBufferPointer { _ = ghostty_terminal_get(handle, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, $0.baseAddress) }
+            for (i, color) in colors.prefix(256).enumerated() { palette[i] = Self.rgb(color) }
+            palette.withUnsafeMutableBufferPointer { _ = ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, $0.baseAddress) }
+            changedSinceRead = true
+        }
+    }
+
+    /// Whether a mode is set: a DEC private mode (`?2004`, bracketed paste) unless `ansi`.
+    public func isModeSet(_ mode: UInt16, ansi: Bool = false) -> Bool {
+        lock.read {
+            var config = GhosttyTerminalModeConfig()
+            config.mode = ghostty_mode_new(mode, ansi)
+            return ghostty_terminal_get(handle, GHOSTTY_TERMINAL_DATA_MODE, &config) == GHOSTTY_SUCCESS && config.value
+        }
+    }
+
+    /// The text on screen, or with `scrollback` everything the terminal holds, as plain text.
+    public func text(scrollback: Bool = false) -> String {
+        lock.read {
+            var options = GhosttyFormatterTerminalOptions()
+            options.size = MemoryLayout<GhosttyFormatterTerminalOptions>.size
+            options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
+            options.unwrap = true
+            options.trim = true
+            var selection = GhosttySelection()
+            if !scrollback, let screen = screenRows() {
+                selection = screen
+                return withUnsafePointer(to: &selection) { pointer in
+                    options.selection = pointer
+                    return format(options)
+                }
+            }
+            return format(options)
+        }
+    }
+
+    /// The rows on screen, as a selection, when there's scrollback above them. Under `lock`.
+    private func screenRows() -> GhosttySelection? {
+        var total = 0, rows: UInt16 = 0, cols: UInt16 = 0
+        ghostty_terminal_get(handle, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total)
+        ghostty_terminal_get(handle, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+        ghostty_terminal_get(handle, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+        let first = total - Int(rows)
+        guard first > 0 else { return nil }
+        var start = GhosttyGridRef(), end = GhosttyGridRef()
+        start.size = MemoryLayout<GhosttyGridRef>.size
+        end.size = MemoryLayout<GhosttyGridRef>.size
+        var from = GhosttyPoint(), to = GhosttyPoint()
+        from.tag = GHOSTTY_POINT_TAG_SCREEN
+        from.value.coordinate = GhosttyPointCoordinate(x: 0, y: UInt32(first))
+        to.tag = GHOSTTY_POINT_TAG_SCREEN
+        to.value.coordinate = GhosttyPointCoordinate(x: cols > 0 ? cols - 1 : 0, y: UInt32(total - 1))
+        guard ghostty_terminal_grid_ref(handle, from, &start) == GHOSTTY_SUCCESS, ghostty_terminal_grid_ref(handle, to, &end) == GHOSTTY_SUCCESS else { return nil }
+        var selection = GhosttySelection()
+        selection.size = MemoryLayout<GhosttySelection>.size
+        selection.start = start
+        selection.end = end
+        return selection
+    }
+
+    /// Under `lock`.
+    private func format(_ options: GhosttyFormatterTerminalOptions) -> String {
+        var formatter: GhosttyFormatter?
+        guard ghostty_formatter_terminal_new(nil, &formatter, handle, options) == GHOSTTY_SUCCESS, let formatter else { return "" }
+        defer { ghostty_formatter_free(formatter) }
+        var pointer: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        guard ghostty_formatter_format_alloc(formatter, nil, &pointer, &length) == GHOSTTY_SUCCESS, let pointer else { return "" }
+        defer { ghostty_free(nil, pointer, length) }
+        return String(decoding: UnsafeBufferPointer(start: pointer, count: length), as: UTF8.self)
+    }
+
     public var title: String { lock.read { string(GHOSTTY_TERMINAL_DATA_TITLE) } }
 
     public var workingDirectory: String { lock.read { string(GHOSTTY_TERMINAL_DATA_PWD) } }

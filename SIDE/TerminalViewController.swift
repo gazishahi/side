@@ -3,6 +3,32 @@ import SideAgents
 import SideSessionsKit
 import SwiftTerm
 
+/// Which engine a new terminal gets (docs/SIDE_RFC_TERMINAL_ENGINE.md): SwiftTerm by default, or
+/// libghostty-vt drawn by Alloy with `defaults write com.shahi.side terminal.engine alloy`
+/// (`com.shahi.side.dev` for a development build): the owner's builds first, while selection,
+/// links and scrolling back are still to come. Read when a terminal opens; open terminals keep
+/// theirs.
+enum TerminalEngine: String {
+    case swiftTerm = "swiftterm"
+    case alloy
+
+    static let defaultsKey = "terminal.engine"
+
+    /// Tests choose an engine without touching the real defaults.
+    nonisolated(unsafe) static var overrideForTesting: TerminalEngine?
+
+    static var current: TerminalEngine {
+        overrideForTesting ?? UserDefaults.standard.string(forKey: defaultsKey).flatMap(TerminalEngine.init(rawValue:)) ?? .swiftTerm
+    }
+
+    @MainActor static func makeSurface() -> any TerminalSurface {
+        switch current {
+        case .alloy: AlloyTerminalSurface(frame: .zero)
+        case .swiftTerm: SideTerminalView(frame: .zero)
+        }
+    }
+}
+
 /// What Terminal needs from the view that emulates and draws a terminal: SwiftTerm's
 /// (`SideTerminalView`) today, libghostty-vt drawn by Alloy next, behind a setting
 /// (docs/SIDE_RFC_TERMINAL_ENGINE.md). `TerminalViewController` and everything else reach the
@@ -218,8 +244,7 @@ final class SideTerminalView: LocalProcessTerminalView, TerminalSurface {
     /// arrived, for the unseen-output indicator) — `runAgentCommand`'s sentinel scan needs the
     /// actual bytes.
     var onRawDataReceived: ((ArraySlice<UInt8>) -> Void)?
-    private var currentLineBuffer = ""
-    private var inputEscape = EscapeSkipper()
+    private var lines = SubmittedLineTracker()
     private var accessibilityUpdateWorkItem: DispatchWorkItem?
 
     /// Whether VoiceOver is on, kept by observing it: asking NSWorkspace on every read of output
@@ -324,21 +349,7 @@ final class SideTerminalView: LocalProcessTerminalView, TerminalSurface {
     /// program's queries, which go to the program the same way (Claude Code asks at startup,
     /// and its "command" read `[?65;4;1;2;6;21;22;17;28cP>|SwiftTerm`).
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        for byte in data {
-            if inputEscape.consume(byte) { continue }
-            switch byte {
-            case 13, 10:
-                let line = currentLineBuffer.trimmingCharacters(in: .whitespaces)
-                if !line.isEmpty { onLineSubmitted?(line) }
-                currentLineBuffer = ""
-            case 127, 8:
-                if !currentLineBuffer.isEmpty { currentLineBuffer.removeLast() }
-            case 32..<127:
-                currentLineBuffer.append(Character(UnicodeScalar(byte)))
-            default:
-                break
-            }
-        }
+        for line in lines.consume(data) { onLineSubmitted?(line) }
         if let keeper { keeper.input(data) } else if onInputWithoutKeeper?() != true { super.send(source: source, data: data) }
     }
 
@@ -519,7 +530,7 @@ private final class ProcessBridge: @preconcurrency LocalProcessTerminalViewDeleg
 }
 
 final class TerminalViewController: NSViewController, TerminalSurfaceDelegate {
-    let terminalView: any TerminalSurface = SideTerminalView(frame: .zero)
+    let terminalView: any TerminalSurface = TerminalEngine.makeSurface()
     /// When the program last rang the bell out of sight: it wants you, until the tab is shown.
     private(set) var lastBellAt: Date?
     /// When an agent's turn last ended out of sight, until the tab is shown.
@@ -1955,6 +1966,37 @@ final class OverlayScrollThumb: NSView {
 
 
 /// Follows the escape sequences in a byte stream, so what's between them can be read as text.
+/// Best-effort line capture from input bytes, not a real line editor: control sequences like
+/// arrow-key history recall aren't parsed, so a command recalled via shell history and re-run
+/// won't be captured. Plain typed or pasted input, then Return, is. Escape sequences are skipped
+/// whole: arrow keys, and the terminal's own replies to a program's queries, which go to the
+/// program the same way.
+struct SubmittedLineTracker {
+    private var current = ""
+    private var escape = EscapeSkipper()
+
+    /// The lines these bytes submitted.
+    mutating func consume(_ bytes: ArraySlice<UInt8>) -> [String] {
+        var submitted: [String] = []
+        for byte in bytes {
+            if escape.consume(byte) { continue }
+            switch byte {
+            case 13, 10:
+                let line = current.trimmingCharacters(in: .whitespaces)
+                if !line.isEmpty { submitted.append(line) }
+                current = ""
+            case 127, 8:
+                if !current.isEmpty { current.removeLast() }
+            case 32..<127:
+                current.append(Character(UnicodeScalar(byte)))
+            default:
+                break
+            }
+        }
+        return submitted
+    }
+}
+
 struct EscapeSkipper {
     private enum State { case text, escape, csi, string, stringEscape, single }
     private var state = State.text

@@ -196,3 +196,97 @@ final class ColorSchemeReportsTests: XCTestCase {
         XCTAssertEqual(SideTerminalView.colorSchemeReport(dark: false), "\u{1B}[?997;2n")
     }
 }
+
+/// The new engine behind TerminalSurface (docs/SIDE_RFC_TERMINAL_ENGINE.md): libghostty-vt drawn
+/// by Alloy, exercised the way Terminal uses SwiftTerm's view.
+@MainActor
+final class AlloyTerminalSurfaceTests: XCTestCase {
+    private func waitUntil(_ timeout: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        return condition()
+    }
+
+    private func makeSurface() -> AlloyTerminalSurface {
+        let surface = AlloyTerminalSurface(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        surface.applyTheme(TerminalSurfaceTheme(foreground: .white, background: .black,
+                                                palette: TerminalViewController.ansiPaletteColors(dark: true), backgroundOpacity: 1))
+        return surface
+    }
+
+    final class Delegate: TerminalSurfaceDelegate {
+        var titles: [String] = [], directories: [String?] = [], exits: [Int32?] = []
+        func terminalSurface(_ surface: any TerminalSurface, titleChanged title: String) { titles.append(title) }
+        func terminalSurface(_ surface: any TerminalSurface, directoryChanged directory: String?) { directories.append(directory) }
+        func terminalSurface(_ surface: any TerminalSurface, processTerminated exitCode: Int32?) { exits.append(exitCode) }
+    }
+
+    func testAProgramsOutputTitleDirectoryAndExit() {
+        let surface = makeSurface()
+        let delegate = Delegate()
+        surface.surfaceDelegate = delegate
+        var raw = 0
+        surface.onRawDataReceived = { raw += $0.count }
+        surface.startProcess(executable: "/bin/sh", arguments: ["-c", "printf '\\033]2;my title\\007\\033]7;file://host/tmp/x\\007'; echo hello from sh; exit 4"],
+                             environment: TerminalEnvironment.base(), currentDirectory: "/tmp")
+        XCTAssertGreaterThan(surface.processID, 0)
+        XCTAssertTrue(waitUntil { !delegate.exits.isEmpty })
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("hello from sh") }, surface.visibleText())
+        XCTAssertEqual(delegate.titles, ["my title"])
+        XCTAssertEqual(delegate.directories, ["file://host/tmp/x"])
+        XCTAssertEqual(delegate.exits.first.flatMap { $0.map { ($0 >> 8) & 0xFF } }, 4, "the raw wait status, as SwiftTerm reported it")
+        XCTAssertGreaterThan(raw, 0, "Side's watchers see the output")
+    }
+
+    func testTypedKeysReachTheProgramEncoded() {
+        let surface = makeSurface()
+        let window = NSWindow(contentRect: surface.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        var submitted: [String] = []
+        surface.onLineSubmitted = { submitted.append($0) }
+        // od shows exactly the bytes the program got.
+        surface.startProcess(executable: "/bin/sh", arguments: ["-c", "stty raw -echo; echo ready; head -c 8 | od -An -tx1"], environment: TerminalEnvironment.base(), currentDirectory: nil)
+        // Typed once the terminal is raw, or the tty would echo the keys instead of passing them.
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("ready") })
+        func key(_ characters: String, _ keyCode: UInt16, _ flags: NSEvent.ModifierFlags = [], ignoring: String? = nil) {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber,
+                                         context: nil, characters: characters, charactersIgnoringModifiers: ignoring ?? characters, isARepeat: false, keyCode: keyCode)!
+            window.makeFirstResponder(surface)
+            window.firstResponder?.keyDown(with: event)
+        }
+        key("a", 0x00)                              // 61
+        key("\u{3}", 0x08, .control, ignoring: "c") // 03, control-C
+        key("\u{F700}", 0x7E)                       // 1b 5b 41, up arrow
+        key("\r", 0x24)                             // 0d
+        surface.send(text: "Z\r")                   // 5a 0d
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("0d") }, surface.visibleText())
+        XCTAssertEqual(surface.visibleText().split(whereSeparator: \.isWhitespace).joined(separator: " "), "ready 61 03 1b 5b 41 0d 5a 0d")
+        XCTAssertEqual(submitted, ["a", "Z"], "lines as typed, escape sequences skipped")
+    }
+
+    func testThemeSnapshotAndPaste() {
+        let surface = makeSurface()
+        XCTAssertEqual(surface.backgroundColor.redComponent, 0, accuracy: 0.01)
+        surface.display(text: "\u{1B}[?2004hpasted below:\r\n")
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("pasted below:") })
+        XCTAssertNotNil(surface.snapshotImage(), "a dragged tab's preview")
+        XCTAssertGreaterThan(surface.columns, 40)
+        XCTAssertGreaterThan(surface.rows, 10)
+        XCTAssertTrue(surface.bufferText().contains("pasted below:"))
+    }
+
+    func testAgentReportsAcrossReads() {
+        var watcher = OSCWatcher(code: 6973)
+        XCTAssertEqual(watcher.consume(Array("x\u{1B}]6973;agent;cl".utf8)), [])
+        XCTAssertEqual(watcher.consume(Array("aude;abc;n0nce\u{07}y\u{1B}]6973;b\u{1B}\\".utf8)), ["agent;claude;abc;n0nce", "b"])
+        XCTAssertEqual(watcher.consume(Array("\u{1B}]697;no\u{07}".utf8)), [], "another code")
+    }
+
+    func testSubmittedLines() {
+        var tracker = SubmittedLineTracker()
+        XCTAssertEqual(tracker.consume(Array("ls -la\r".utf8)[...]), ["ls -la"])
+        XCTAssertEqual(tracker.consume(Array("gti\u{7F}\u{7F}it st\u{1B}[Aatus\r".utf8)[...]), ["git status"])
+    }
+}

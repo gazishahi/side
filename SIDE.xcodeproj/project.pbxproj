@@ -86,6 +86,9 @@
 		A0000000000000000000060D /* ActivityCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000060C /* ActivityCenter.swift */; };
 		A0000000000000000000060F /* ProjectSpaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000060E /* ProjectSpaces.swift */; };
 		A00000000000000000000613 /* TerminalCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000612 /* TerminalCompanion.swift */; };
+		A00000000000000000000A14 /* AlloyTerminalSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000A15 /* AlloyTerminalSurface.swift */; };
+		A00000000000000000000A10 /* AlloyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000A11 /* AlloyTerminal */; };
+		A00000000000000000000A12 /* SideTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000A13 /* SideTerminal */; };
 		A00000000000000000000617 /* AgentBranchPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000616 /* AgentBranchPanel.swift */; };
 		A00000000000000000000619 /* JumpRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000618 /* JumpRail.swift */; };
 		A0000000000000000000061F /* WelcomeDemos.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061E /* WelcomeDemos.swift */; };
@@ -236,6 +239,7 @@
 		A0000000000000000000060C /* ActivityCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityCenter.swift; sourceTree = "<group>"; };
 		A0000000000000000000060E /* ProjectSpaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSpaces.swift; sourceTree = "<group>"; };
 		A00000000000000000000612 /* TerminalCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCompanion.swift; sourceTree = "<group>"; };
+		A00000000000000000000A15 /* AlloyTerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlloyTerminalSurface.swift; sourceTree = "<group>"; };
 		A00000000000000000000616 /* AgentBranchPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentBranchPanel.swift; sourceTree = "<group>"; };
 		A00000000000000000000618 /* JumpRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpRail.swift; sourceTree = "<group>"; };
 		A0000000000000000000061E /* WelcomeDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeDemos.swift; sourceTree = "<group>"; };
@@ -357,6 +361,8 @@
 				A00000000000000000000022 /* SwiftTerm in Frameworks */,
 				A00000000000000000000416 /* SideAgents in Frameworks */,
 				A00000000000000000000602 /* SideSessionsKit in Frameworks */,
+				A00000000000000000000A10 /* AlloyTerminal in Frameworks */,
+				A00000000000000000000A12 /* SideTerminal in Frameworks */,
 				A00000000000000000000571 /* SwiftMath in Frameworks */,
 				A00000000000000000000451 /* Sparkle in Frameworks */,
 				A00000000000000000000463 /* AlloyCore in Frameworks */,
@@ -450,6 +456,7 @@
 				A0000000000000000000060C /* ActivityCenter.swift */,
 				A0000000000000000000060E /* ProjectSpaces.swift */,
 				A00000000000000000000612 /* TerminalCompanion.swift */,
+				A00000000000000000000A15 /* AlloyTerminalSurface.swift */,
 				A00000000000000000000616 /* AgentBranchPanel.swift */,
 				A00000000000000000000618 /* JumpRail.swift */,
 				A0000000000000000000061E /* WelcomeDemos.swift */,
@@ -585,6 +592,8 @@
 				A00000000000000000000021 /* SwiftTerm */,
 				A00000000000000000000415 /* SideAgents */,
 				A00000000000000000000601 /* SideSessionsKit */,
+				A00000000000000000000A11 /* AlloyTerminal */,
+				A00000000000000000000A13 /* SideTerminal */,
 				A00000000000000000000570 /* SwiftMath */,
 				A00000000000000000000450 /* Sparkle */,
 				A00000000000000000000459 /* AlloyCore */,
@@ -791,6 +800,7 @@
 				A0000000000000000000060D /* ActivityCenter.swift in Sources */,
 				A0000000000000000000060F /* ProjectSpaces.swift in Sources */,
 				A00000000000000000000613 /* TerminalCompanion.swift in Sources */,
+				A00000000000000000000A14 /* AlloyTerminalSurface.swift in Sources */,
 				A00000000000000000000617 /* AgentBranchPanel.swift in Sources */,
 				A00000000000000000000619 /* JumpRail.swift in Sources */,
 				A0000000000000000000061F /* WelcomeDemos.swift in Sources */,
@@ -1136,6 +1146,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A00000000000000000000458 /* XCLocalSwiftPackageReference "Packages/Alloy" */;
 			productName = AlloySyntax;
+		};
+		A00000000000000000000A11 /* AlloyTerminal */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000458 /* XCLocalSwiftPackageReference "Packages/Alloy" */;
+			productName = AlloyTerminal;
+		};
+		A00000000000000000000A13 /* SideTerminal */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000600 /* XCLocalSwiftPackageReference "Packages/SideSessions" */;
+			productName = SideTerminal;
 		};
 		A00000000000000000000601 /* SideSessionsKit */ = {
 			isa = XCSwiftPackageProductDependency;
