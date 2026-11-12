@@ -1,6 +1,6 @@
 # Research: how developers run coding agents (November 2026)
 
-Status: research, for discussion (2026-11-08). No decision taken. Three web-research passes:
+Status: reference (2026-11-08): research behind `SIDE_RFC_SESSIONS.md`; it decides nothing. Three web-research passes:
 IDEs with agents; tools that run several agents; terminals and the CLI agents. Claims marked
 *[2nd]* rest on secondary sources; check before quoting them.
 
