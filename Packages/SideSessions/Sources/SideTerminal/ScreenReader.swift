@@ -18,6 +18,8 @@ public struct ScreenCell: Equatable, Sendable {
         public static let wide = Style(rawValue: 1 << 6)
         /// The right half of a wide character: nothing of its own.
         public static let spacer = Style(rawValue: 1 << 7)
+        /// Inside the selection.
+        public static let selected = Style(rawValue: 1 << 8)
     }
 
     public enum Underline: Sendable, Equatable { case none, single, double, curly, dotted, dashed }
@@ -180,6 +182,10 @@ public final class ScreenReader {
         if style.overline { cell.style.insert(.overline) }
         if style.blink { cell.style.insert(.blink) }
         if style.invisible { cell.style.insert(.invisible) }
+        var selected = false
+        if ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected) == GHOSTTY_SUCCESS, selected {
+            cell.style.insert(.selected)
+        }
         cell.underline = switch Int(style.underline) {
         case Int(GHOSTTY_SGR_UNDERLINE_SINGLE.rawValue): .single
         case Int(GHOSTTY_SGR_UNDERLINE_DOUBLE.rawValue): .double

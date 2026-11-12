@@ -7,9 +7,9 @@ import SideTerminal
 /// The terminal engine of docs/SIDE_RFC_TERMINAL_ENGINE.md behind `TerminalSurface`: libghostty-vt
 /// (SideTerminal) parses on a queue of its own, Alloy (AlloyTerminal) draws on a render thread of
 /// its own, and keys go through libghostty-vt's encoder, translated from NSEvent the way
-/// Ghostty's macOS app does. Not yet: selection and copy, links, scrolling back, IME preedit,
-/// mouse reporting (the RFC's step 4).
-final class AlloyTerminalSurface: NSView, TerminalSurface {
+/// Ghostty's macOS app does. Selection and scrolling back use libghostty-vt's own gestures and
+/// viewport. Not yet: links, IME preedit, mouse reporting (the rest of the RFC's step 4).
+final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation {
     weak var surfaceDelegate: TerminalSurfaceDelegate?
     var keeper: KeeperLink? { didSet { syncKeeperSize() } }
 
@@ -29,6 +29,23 @@ final class AlloyTerminalSurface: NSView, TerminalSurface {
 
     private let terminal: Terminal
     private let keys: KeyEncoder
+    private let selection: TerminalSelection
+    private lazy var thumb: OverlayScrollThumb = {
+        let thumb = OverlayScrollThumb()
+        thumb.onDrag = { [weak self] position in
+            guard let self else { return }
+            let bar = self.terminal.scrollbar
+            self.terminal.scroll(toRow: Int((position * Double(max(0, bar.total - bar.length))).rounded()))
+            self.scrolled()
+        }
+        addSubview(thumb, positioned: .above, relativeTo: nil)
+        return thumb
+    }()
+    /// Trackpad rows not yet scrolled (a fraction of a row at a time).
+    private var pendingScroll = 0.0
+    private var autoscrollTimer: Timer?
+    private var lastDrag: TerminalMouseEvent?
+    private var thumbUpdateScheduled = false
     private let source: ScreenSource
     private var screen: AlloyTerminalView
     /// Output is parsed here, off the main thread, in arrival order.
@@ -54,6 +71,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface {
         // Force-unwrapped: creating a terminal fails only when libghostty-vt can't allocate.
         terminal = try! Terminal(columns: max(2, Int(frame.width / cell.width)), rows: max(2, Int(frame.height / cell.height)), events: events)
         keys = KeyEncoder(terminal: terminal)
+        selection = TerminalSelection(terminal: terminal)
         source = ScreenSource(reader: ScreenReader(terminal: terminal))
         screen = Self.makeScreen(frame: NSRect(origin: .zero, size: frame.size), font: font)
         super.init(frame: frame)
@@ -80,7 +98,9 @@ final class AlloyTerminalSurface: NSView, TerminalSurface {
             if self.typedForKey != nil { self.typedForKey?.append(text) } else { self.send(text: text) }
         }
         view.onGridResize = { [weak self] columns, rows in self?.gridResized(columns: columns, rows: rows) }
-        addSubview(view)
+        view.mouseHandler = { [weak self] event in self?.handleMouse(event) }
+        view.scrollHandler = { [weak self] rows in self?.handleScroll(rows) }
+        addSubview(view, positioned: .below, relativeTo: nil)
         if let theme { applyTheme(theme) }
         gridResized(columns: view.columns, rows: view.rows)
     }
@@ -119,6 +139,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface {
         }
         display(bytes)
         scheduleAccessibilityValueUpdate()
+        scheduleThumbUpdate()
     }
 
     func display(_ bytes: ArraySlice<UInt8>) {
@@ -179,7 +200,13 @@ final class AlloyTerminalSurface: NSView, TerminalSurface {
         let key = KeyInput(action: event.isARepeat ? .repeat : .press, keycode: event.keyCode, modifiers: modifiers, consumed: consumed,
                            text: text, unshifted: unshifted)
         let bytes = keys.encode(key)
-        if !bytes.isEmpty { send(bytes: bytes[...]) }
+        if !bytes.isEmpty {
+            // Typing goes back to the bottom and lets go of the selection, as in Ghostty.
+            if terminal.scrollbar.isScrolledBack { terminal.scrollToBottom(); scrolled() }
+            selection.clear()
+            send(bytes: bytes[...])
+            screen.setNeedsFrame()
+        }
         return true
     }
 
@@ -204,6 +231,136 @@ final class AlloyTerminalSurface: NSView, TerminalSurface {
         if flags.contains(.command) { modifiers.insert(.command); if raw & 0x10 != 0 { modifiers.insert(.rightCommand) } }
         if flags.contains(.capsLock) { modifiers.insert(.capsLock) }
         return modifiers
+    }
+
+    // MARK: Selection and scrolling back
+
+    private func geometry() -> TerminalSelection.Geometry {
+        let g = screen.pixelGeometry
+        return TerminalSelection.Geometry(columns: g.columns, cellWidth: g.cellWidth, screenHeight: g.height)
+    }
+
+    private func handleMouse(_ event: TerminalMouseEvent) {
+        let scale = window?.backingScaleFactor ?? 2
+        switch event.kind {
+        case .down:
+            selection.press(column: event.column, row: event.row, x: event.x, y: event.y,
+                            repeatInterval: NSEvent.doubleClickInterval, repeatDistance: Double(4 * scale))
+        case .dragged:
+            lastDrag = event
+            let autoscroll = selection.drag(column: event.column, row: event.row, x: event.x, y: event.y,
+                                            rectangle: event.modifiers.contains(.option), geometry: geometry())
+            if autoscroll == .none { stopAutoscroll() } else { startAutoscroll(up: autoscroll == .up) }
+        case .up:
+            stopAutoscroll()
+            lastDrag = nil
+            selection.release(column: event.column, row: event.row)
+        case .rightDown:
+            return
+        }
+        screen.setNeedsFrame()
+    }
+
+    /// Dragging past an edge: the viewport scrolls a row at a time, and the selection follows.
+    private func startAutoscroll(up: Bool) {
+        guard autoscrollTimer == nil else { return }
+        autoscrollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let drag = self.lastDrag else { return }
+                self.terminal.scroll(byRows: up ? -1 : 1)
+                self.selection.autoscrollTick(column: drag.column, row: up ? 0 : self.rows - 1,
+                                              rectangle: drag.modifiers.contains(.option), geometry: self.geometry())
+                self.scrolled()
+            }
+        }
+    }
+
+    private func stopAutoscroll() {
+        autoscrollTimer?.invalidate()
+        autoscrollTimer = nil
+    }
+
+    /// The wheel or a trackpad: back through the scrollback; in a full-screen program, which has
+    /// none, arrow keys instead (as Ghostty's mouse-alternate-scroll does), so less and vim scroll.
+    private func handleScroll(_ rows: Double) {
+        pendingScroll += rows
+        let whole = Int(pendingScroll.rounded(.towardZero))
+        guard whole != 0 else { return }
+        pendingScroll -= Double(whole)
+        if terminal.isAlternateScreen {
+            let arrow = KeyInput(keycode: whole > 0 ? 0x7E : 0x7D)
+            for _ in 0..<min(abs(whole), 20) {
+                let bytes = keys.encode(arrow)
+                if !bytes.isEmpty { send(bytes: bytes[...]) }
+            }
+            return
+        }
+        terminal.scroll(byRows: -whole)
+        scrolled()
+        thumb.flash()
+    }
+
+    /// The viewport moved: draw it, and move the thumb.
+    private func scrolled() {
+        screen.setNeedsFrame()
+        updateThumb()
+    }
+
+    /// Output can grow the scrollback: the thumb follows once a turn of the run loop.
+    private func scheduleThumbUpdate() {
+        guard !thumbUpdateScheduled else { return }
+        thumbUpdateScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.thumbUpdateScheduled = false
+            self?.updateThumb()
+        }
+    }
+
+    private func updateThumb() {
+        let bar = terminal.scrollbar
+        let scrollable = max(0, bar.total - bar.length)
+        thumb.update(enabled: scrollable > 0, proportion: CGFloat(bar.length) / CGFloat(max(1, bar.total)),
+                     position: scrollable > 0 ? Double(bar.offset) / Double(scrollable) : 1)
+    }
+
+    override func layout() {
+        super.layout()
+        thumb.frame = NSRect(x: bounds.maxX - OverlayScrollThumb.trackWidth, y: bounds.minY, width: OverlayScrollThumb.trackWidth, height: bounds.height)
+        updateThumb()
+    }
+
+    /// Tests read the selection and scroll without the pasteboard or a real wheel.
+    var selectedTextForTesting: String? { selection.text }
+    var scrollbarForTesting: Terminal.Scrollbar { terminal.scrollbar }
+    /// The view that draws and takes the mouse, and one cell's size in points.
+    var screenForTesting: NSView { screen }
+    var cellSizeForTesting: CGSize { screen.cellSize }
+    func scrollForTesting(rows: Double) { handleScroll(rows) }
+
+    // MARK: Edit menu (the screen is first responder; its actions come up the chain to here)
+
+    @objc func copy(_ sender: Any?) {
+        guard let text = selection.text, !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc func paste(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        paste(text: text)
+    }
+
+    @objc override func selectAll(_ sender: Any?) {
+        selection.selectAll()
+        screen.setNeedsFrame()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(copy(_:)): selection.hasSelection
+        case #selector(paste(_:)): NSPasteboard.general.string(forType: .string) != nil
+        default: true
+        }
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -239,8 +396,10 @@ final class AlloyTerminalSurface: NSView, TerminalSurface {
         terminal.setDefaultColors(foreground: foreground, background: background)
         terminal.setPalette(theme.palette.map(Self.rgb))
         let bg = theme.background.usingColorSpace(.sRGB) ?? theme.background
+        let accent = (NSColor.selectedTextBackgroundColor.usingColorSpace(.sRGB) ?? .systemBlue)
         screen.theme = TerminalTheme(background: SIMD4(Float(bg.redComponent), Float(bg.greenComponent), Float(bg.blueComponent), Float(theme.backgroundOpacity)),
-                                     cursor: foreground)
+                                     cursor: foreground,
+                                     selection: SIMD4(Float(accent.redComponent), Float(accent.greenComponent), Float(accent.blueComponent), 0.55))
         screen.setNeedsFrame()
     }
 
@@ -346,6 +505,7 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
                 if c.style.contains(.wide) { style.insert(.wide) }
                 if c.style.contains(.spacer) { style.insert(.spacer) }
                 if c.underline != .none { style.insert(.underline) }
+                if c.style.contains(.selected) { style.insert(.selected) }
                 let hidden = c.style.contains(.invisible)
                 grid[x, y] = TerminalCell(scalar: hidden ? 0 : c.scalar, cluster: hidden ? nil : c.cluster,
                                           foreground: c.foreground, background: c.background, style: style)

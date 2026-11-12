@@ -12,6 +12,8 @@ public struct TerminalCell: Equatable, Sendable {
         public static let wide = Style(rawValue: 1 << 4)
         /// The right half of a wide character, or a placeholder: nothing drawn of its own.
         public static let spacer = Style(rawValue: 1 << 5)
+        /// Inside the selection: drawn with the theme's selection color over its background.
+        public static let selected = Style(rawValue: 1 << 6)
     }
 
     /// The cell's text when it's a single scalar; 0 for an empty cell.

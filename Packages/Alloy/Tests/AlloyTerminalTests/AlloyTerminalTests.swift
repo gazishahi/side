@@ -83,6 +83,18 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(try render(grid, renderer: renderer).count(in: cell, lit), 0)
     }
 
+    func testSelectedCellsAreHighlighted() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 6, rows: 1, foreground: 0xFFFFFF)
+        for x in 1...3 { grid[x, 0] = TerminalCell(foreground: 0xFFFFFF, style: .selected) }
+        grid.cursor.visible = false
+        let pixels = try render(grid, renderer: renderer)
+        let blue: (Pixels.RGBA) -> Bool = { $0.b > 60 && $0.b > $0.r + 30 }
+        let selected = cellRect(column: 1, row: 0, span: 3)
+        XCTAssertEqual(pixels.count(in: selected, blue), selected.x.count * selected.y.count, "the selection color over the run")
+        XCTAssertEqual(pixels.count(in: cellRect(column: 5, row: 0), blue), 0)
+    }
+
     /// The renderer lives on the render thread: made and used there, away from the main actor.
     func testItDrawsOnAThreadOfItsOwn() throws {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice(), "no Metal device")

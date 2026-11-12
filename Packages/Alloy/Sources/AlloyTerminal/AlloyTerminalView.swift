@@ -19,6 +19,11 @@ public final class AlloyTerminalView: NSView {
     public var onText: ((String) -> Void)?
     /// The grid's size changed with the view's (columns, rows): resize the emulator to match.
     public var onGridResize: ((Int, Int) -> Void)?
+    /// The mouse, over the grid: selection, or the program's own mouse reporting.
+    public var mouseHandler: ((TerminalMouseEvent) -> Void)?
+    /// The scroll wheel or trackpad, in rows (fractional on a trackpad); positive is up, toward
+    /// older output.
+    public var scrollHandler: ((Double) -> Void)?
 
     public var source: TerminalGridSource? {
         get { engine.source }
@@ -112,8 +117,59 @@ public final class AlloyTerminalView: NSView {
         interpretKeyEvents([event])
     }
 
+    // MARK: - Mouse
+
+    public override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        mouseHandler?(mouseEvent(event, .down))
+    }
+    public override func mouseDragged(with event: NSEvent) { mouseHandler?(mouseEvent(event, .dragged)) }
+    public override func mouseUp(with event: NSEvent) { mouseHandler?(mouseEvent(event, .up)) }
+    public override func rightMouseDown(with event: NSEvent) {
+        mouseHandler?(mouseEvent(event, .rightDown))
+        super.rightMouseDown(with: event)
+    }
+
+    public override func scrollWheel(with event: NSEvent) {
+        guard let scrollHandler else { return super.scrollWheel(with: event) }
+        let rows = event.hasPreciseScrollingDeltas ? Double(event.scrollingDeltaY / cellSize.height) : Double(event.scrollingDeltaY)
+        if rows != 0 { scrollHandler(rows) }
+    }
+
+    /// Where an event fell: its cell (clamped to the grid) and its position in the drawable's
+    /// pixels from the top-left, unclamped (a drag past an edge is below 0 or past the height).
+    private func mouseEvent(_ event: NSEvent, _ kind: TerminalMouseEvent.Kind) -> TerminalMouseEvent {
+        let point = convert(event.locationInWindow, from: nil)
+        let fromTop = CGPoint(x: point.x, y: bounds.height - point.y)
+        let cell = font.cellSize
+        let column = min(max(0, Int(fromTop.x / cell.width)), columns - 1)
+        let row = min(max(0, Int(fromTop.y / cell.height)), rows - 1)
+        let scale = window?.backingScaleFactor ?? 2
+        return TerminalMouseEvent(kind: kind, column: column, row: row, x: Double(fromTop.x * scale), y: Double(fromTop.y * scale),
+                                  clickCount: event.clickCount, modifiers: event.modifierFlags)
+    }
+
+    /// The grid's geometry in the drawable's pixels.
+    public var pixelGeometry: (columns: Int, cellWidth: Int, height: Int) {
+        let scale = window?.backingScaleFactor ?? 2
+        return (columns, Int((font.cellSize.width * scale).rounded()), Int((bounds.height * scale).rounded()))
+    }
+
     /// Draws the current grid into a texture and waits for the GPU: for tests and snapshots.
     public func renderOffscreen() -> MTLTexture? { engine.renderOffscreen() }
+}
+
+/// A mouse event over the grid.
+public struct TerminalMouseEvent: Sendable {
+    public enum Kind: Sendable { case down, dragged, up, rightDown }
+    public var kind: Kind
+    public var column: Int
+    public var row: Int
+    /// In the drawable's pixels, from the top-left.
+    public var x: Double
+    public var y: Double
+    public var clickCount: Int
+    public var modifiers: NSEvent.ModifierFlags
 }
 
 /// The least a terminal view needs to be a text input client: text is inserted, nothing is

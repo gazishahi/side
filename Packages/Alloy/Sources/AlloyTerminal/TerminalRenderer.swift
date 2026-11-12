@@ -52,10 +52,13 @@ public struct TerminalTheme: Sendable, Equatable {
     public var background: SIMD4<Float>
     /// 0xRRGGBB.
     public var cursor: UInt32
+    /// RGBA, 0…1, not premultiplied: laid over selected cells.
+    public var selection: SIMD4<Float>
 
-    public init(background: SIMD4<Float>, cursor: UInt32) {
+    public init(background: SIMD4<Float>, cursor: UInt32, selection: SIMD4<Float> = SIMD4(0.35, 0.55, 1, 0.4)) {
         self.background = background
         self.cursor = cursor
+        self.selection = selection
     }
 }
 
@@ -225,6 +228,16 @@ public final class TerminalRenderer {
             while end < grid.columns, grid.cells[rowStart + end].background == bg { end += 1 }
             let left = (Float(x) * cw).rounded(.down), right = (Float(end) * cw).rounded(.down)
             backgrounds.append(Quad(rect: SIMD4(left, top, right - left, ch), uv: .zero, color: color(bg), kind: 0))
+            x = end
+        }
+        // The selection: one quad per run of selected cells, over their backgrounds.
+        x = 0
+        while x < grid.columns {
+            guard grid.cells[rowStart + x].style.contains(.selected) else { x += 1; continue }
+            var end = x + 1
+            while end < grid.columns, grid.cells[rowStart + end].style.contains(.selected) { end += 1 }
+            let left = (Float(x) * cw).rounded(.down), right = (Float(end) * cw).rounded(.down)
+            backgrounds.append(Quad(rect: SIMD4(left, top, right - left, ch), uv: .zero, color: theme.selection, kind: 0))
             x = end
         }
         for x in 0..<grid.columns {

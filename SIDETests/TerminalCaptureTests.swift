@@ -232,6 +232,8 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertGreaterThan(surface.processID, 0)
         XCTAssertTrue(waitUntil { !delegate.exits.isEmpty })
         XCTAssertTrue(waitUntil { surface.visibleText().contains("hello from sh") }, surface.visibleText())
+        // Events reach the main thread a turn after parsing: waited for, not assumed.
+        XCTAssertTrue(waitUntil { !delegate.titles.isEmpty && !delegate.directories.isEmpty })
         XCTAssertEqual(delegate.titles, ["my title"])
         XCTAssertEqual(delegate.directories, ["file://host/tmp/x"])
         XCTAssertEqual(delegate.exits.first.flatMap { $0.map { ($0 >> 8) & 0xFF } }, 4, "the raw wait status, as SwiftTerm reported it")
@@ -275,6 +277,48 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertGreaterThan(surface.columns, 40)
         XCTAssertGreaterThan(surface.rows, 10)
         XCTAssertTrue(surface.bufferText().contains("pasted below:"))
+    }
+
+    func testSelectingWithTheMouseAndScrollingBack() {
+        let surface = makeSurface()
+        let window = NSWindow(contentRect: surface.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        surface.display(text: (1...80).map { "row \($0) of the scrollback" }.joined(separator: "\r\n"))
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("row 80 of") })
+        let screen = surface.screenForTesting
+        let cell = surface.cellSizeForTesting
+        // Window coordinates of a cell's middle (top row is 0).
+        func point(_ column: Int, _ row: Int, at fraction: CGFloat = 0.5) -> NSPoint {
+            screen.convert(NSPoint(x: (CGFloat(column) + fraction) * cell.width, y: screen.bounds.height - (CGFloat(row) + 0.5) * cell.height), to: nil)
+        }
+        func mouse(_ type: NSEvent.EventType, _ at: NSPoint, clicks: Int = 1) {
+            let event = NSEvent.mouseEvent(with: type, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: clicks, pressure: 1)!
+            switch type {
+            case .leftMouseDown: screen.mouseDown(with: event)
+            case .leftMouseDragged: screen.mouseDragged(with: event)
+            default: screen.mouseUp(with: event)
+            }
+        }
+        // The last row on screen: drag across "row 80".
+        let last = surface.rows - 1
+        mouse(.leftMouseDown, point(0, last))
+        // Past the last cell's middle, which is what takes it in.
+        mouse(.leftMouseDragged, point(5, last, at: 0.9))
+        mouse(.leftMouseUp, point(5, last, at: 0.9))
+        XCTAssertEqual(surface.selectedTextForTesting, "row 80")
+
+        // A double click on "scrollback".
+        mouse(.leftMouseDown, point(20, last), clicks: 1); mouse(.leftMouseUp, point(20, last), clicks: 1)
+        mouse(.leftMouseDown, point(20, last), clicks: 2); mouse(.leftMouseUp, point(20, last), clicks: 2)
+        XCTAssertEqual(surface.selectedTextForTesting, "scrollback")
+
+        XCTAssertFalse(surface.scrollbarForTesting.isScrolledBack)
+        surface.scrollForTesting(rows: 10)
+        XCTAssertTrue(surface.scrollbarForTesting.isScrolledBack, "the wheel goes back through the scrollback")
+        XCTAssertEqual(surface.scrollbarForTesting.offset, 80 - surface.rows - 10)
     }
 
     func testAgentReportsAcrossReads() {
