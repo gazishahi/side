@@ -22,8 +22,8 @@ public final class AlloyTerminalView: NSView {
     /// The mouse, over the grid: selection, or the program's own mouse reporting.
     public var mouseHandler: ((TerminalMouseEvent) -> Void)?
     /// The scroll wheel or trackpad, in rows (fractional on a trackpad); positive is up, toward
-    /// older output.
-    public var scrollHandler: ((Double) -> Void)?
+    /// older output. With where the pointer is (`TerminalMouseEvent`'s x and y).
+    public var scrollHandler: ((_ rows: Double, _ x: Double, _ y: Double) -> Void)?
 
     public var source: TerminalGridSource? {
         get { engine.source }
@@ -125,15 +125,24 @@ public final class AlloyTerminalView: NSView {
     }
     public override func mouseDragged(with event: NSEvent) { mouseHandler?(mouseEvent(event, .dragged)) }
     public override func mouseUp(with event: NSEvent) { mouseHandler?(mouseEvent(event, .up)) }
-    public override func rightMouseDown(with event: NSEvent) {
-        mouseHandler?(mouseEvent(event, .rightDown))
-        super.rightMouseDown(with: event)
+    public override func rightMouseDown(with event: NSEvent) { mouseHandler?(mouseEvent(event, .rightDown)) }
+    public override func rightMouseUp(with event: NSEvent) { mouseHandler?(mouseEvent(event, .rightUp)) }
+    public override func otherMouseDown(with event: NSEvent) { mouseHandler?(mouseEvent(event, .middleDown)) }
+    public override func otherMouseUp(with event: NSEvent) { mouseHandler?(mouseEvent(event, .middleUp)) }
+    public override func mouseMoved(with event: NSEvent) { mouseHandler?(mouseEvent(event, .moved)) }
+
+    /// Plain motion is reported too, for programs that track it (any-event mouse tracking).
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
     }
 
     public override func scrollWheel(with event: NSEvent) {
         guard let scrollHandler else { return super.scrollWheel(with: event) }
         let rows = event.hasPreciseScrollingDeltas ? Double(event.scrollingDeltaY / cellSize.height) : Double(event.scrollingDeltaY)
-        if rows != 0 { scrollHandler(rows) }
+        let at = mouseEvent(event, .moved)
+        if rows != 0 { scrollHandler(rows, at.x, at.y) }
     }
 
     /// Where an event fell: its cell (clamped to the grid) and its position in the drawable's
@@ -150,9 +159,10 @@ public final class AlloyTerminalView: NSView {
     }
 
     /// The grid's geometry in the drawable's pixels.
-    public var pixelGeometry: (columns: Int, cellWidth: Int, height: Int) {
+    public var pixelGeometry: (columns: Int, cellWidth: Int, cellHeight: Int, width: Int, height: Int) {
         let scale = window?.backingScaleFactor ?? 2
-        return (columns, Int((font.cellSize.width * scale).rounded()), Int((bounds.height * scale).rounded()))
+        return (columns, Int((font.cellSize.width * scale).rounded()), Int((font.cellSize.height * scale).rounded()),
+                Int((bounds.width * scale).rounded()), Int((bounds.height * scale).rounded()))
     }
 
     /// Draws the current grid into a texture and waits for the GPU: for tests and snapshots.
@@ -161,7 +171,7 @@ public final class AlloyTerminalView: NSView {
 
 /// A mouse event over the grid.
 public struct TerminalMouseEvent: Sendable {
-    public enum Kind: Sendable { case down, dragged, up, rightDown }
+    public enum Kind: Sendable { case down, dragged, up, rightDown, rightUp, middleDown, middleUp, moved }
     public var kind: Kind
     public var column: Int
     public var row: Int

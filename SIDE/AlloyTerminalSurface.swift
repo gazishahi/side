@@ -8,7 +8,8 @@ import SideTerminal
 /// (SideTerminal) parses on a queue of its own, Alloy (AlloyTerminal) draws on a render thread of
 /// its own, and keys go through libghostty-vt's encoder, translated from NSEvent the way
 /// Ghostty's macOS app does. Selection and scrolling back use libghostty-vt's own gestures and
-/// viewport. Not yet: links, IME preedit, mouse reporting (the rest of the RFC's step 4).
+/// viewport; a program that asks for the mouse gets it (shift still selects). Not yet: links and
+/// IME preedit (the rest of the RFC's step 4).
 final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation {
     weak var surfaceDelegate: TerminalSurfaceDelegate?
     var keeper: KeeperLink? { didSet { syncKeeperSize() } }
@@ -30,6 +31,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
     private let terminal: Terminal
     private let keys: KeyEncoder
     private let selection: TerminalSelection
+    private let mouse: MouseEncoder
     private lazy var thumb: OverlayScrollThumb = {
         let thumb = OverlayScrollThumb()
         thumb.onDrag = { [weak self] position in
@@ -72,6 +74,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
         terminal = try! Terminal(columns: max(2, Int(frame.width / cell.width)), rows: max(2, Int(frame.height / cell.height)), events: events)
         keys = KeyEncoder(terminal: terminal)
         selection = TerminalSelection(terminal: terminal)
+        mouse = MouseEncoder(terminal: terminal)
         source = ScreenSource(reader: ScreenReader(terminal: terminal))
         screen = Self.makeScreen(frame: NSRect(origin: .zero, size: frame.size), font: font)
         super.init(frame: frame)
@@ -99,7 +102,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
         }
         view.onGridResize = { [weak self] columns, rows in self?.gridResized(columns: columns, rows: rows) }
         view.mouseHandler = { [weak self] event in self?.handleMouse(event) }
-        view.scrollHandler = { [weak self] rows in self?.handleScroll(rows) }
+        view.scrollHandler = { [weak self] rows, x, y in self?.handleScroll(rows, x: x, y: y) }
         addSubview(view, positioned: .below, relativeTo: nil)
         if let theme { applyTheme(theme) }
         gridResized(columns: view.columns, rows: view.rows)
@@ -240,7 +243,34 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
         return TerminalSelection.Geometry(columns: g.columns, cellWidth: g.cellWidth, screenHeight: g.height)
     }
 
+    private func mouseGeometry() -> MouseEncoder.Geometry {
+        let g = screen.pixelGeometry
+        return MouseEncoder.Geometry(width: g.width, height: g.height, cellWidth: g.cellWidth, cellHeight: g.cellHeight)
+    }
+
+    /// A program that asked for the mouse (htop, tmux, vim with mouse=a) gets it, unless shift is
+    /// held, which selects text as in other terminals.
+    private func reportsMouse(_ modifiers: NSEvent.ModifierFlags) -> Bool {
+        !modifiers.contains(.shift) && mouse.isTracking
+    }
+
     private func handleMouse(_ event: TerminalMouseEvent) {
+        if reportsMouse(event.modifiers) {
+            let (action, button): (MouseInput.Action, MouseInput.Button) = switch event.kind {
+            case .down: (.press, .left)
+            case .dragged: (.motion, .left)
+            case .up: (.release, .left)
+            case .rightDown: (.press, .right)
+            case .rightUp: (.release, .right)
+            case .middleDown: (.press, .middle)
+            case .middleUp: (.release, .middle)
+            case .moved: (.motion, .none)
+            }
+            let bytes = mouse.encode(MouseInput(action: action, button: button, modifiers: Self.modifiers(event.modifiers), x: event.x, y: event.y),
+                                     geometry: mouseGeometry())
+            if !bytes.isEmpty { send(bytes: bytes[...]) }
+            return
+        }
         let scale = window?.backingScaleFactor ?? 2
         switch event.kind {
         case .down:
@@ -255,7 +285,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
             stopAutoscroll()
             lastDrag = nil
             selection.release(column: event.column, row: event.row)
-        case .rightDown:
+        case .rightDown, .rightUp, .middleDown, .middleUp, .moved:
             return
         }
         screen.setNeedsFrame()
@@ -282,11 +312,20 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
 
     /// The wheel or a trackpad: back through the scrollback; in a full-screen program, which has
     /// none, arrow keys instead (as Ghostty's mouse-alternate-scroll does), so less and vim scroll.
-    private func handleScroll(_ rows: Double) {
+    private func handleScroll(_ rows: Double, x: Double, y: Double) {
         pendingScroll += rows
         let whole = Int(pendingScroll.rounded(.towardZero))
         guard whole != 0 else { return }
         pendingScroll -= Double(whole)
+        if reportsMouse(NSEvent.modifierFlags) {
+            // The program's own scrolling: a wheel button press a row.
+            let input = MouseInput(action: .press, button: whole > 0 ? .wheelUp : .wheelDown, x: x, y: y)
+            for _ in 0..<min(abs(whole), 20) {
+                let bytes = mouse.encode(input, geometry: mouseGeometry())
+                if !bytes.isEmpty { send(bytes: bytes[...]) }
+            }
+            return
+        }
         if terminal.isAlternateScreen {
             let arrow = KeyInput(keycode: whole > 0 ? 0x7E : 0x7D)
             for _ in 0..<min(abs(whole), 20) {
@@ -335,7 +374,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
     /// The view that draws and takes the mouse, and one cell's size in points.
     var screenForTesting: NSView { screen }
     var cellSizeForTesting: CGSize { screen.cellSize }
-    func scrollForTesting(rows: Double) { handleScroll(rows) }
+    func scrollForTesting(rows: Double) { handleScroll(rows, x: 10, y: 10) }
 
     // MARK: Edit menu (the screen is first responder; its actions come up the chain to here)
 

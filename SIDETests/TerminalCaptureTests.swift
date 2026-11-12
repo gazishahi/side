@@ -321,6 +321,35 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertEqual(surface.scrollbarForTesting.offset, 80 - surface.rows - 10)
     }
 
+    /// A program that asks for the mouse gets clicks, encoded as it asked; shift still selects.
+    func testAProgramGetsTheMouseItAskedFor() {
+        let surface = makeSurface()
+        let window = NSWindow(contentRect: surface.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        // Normal tracking in SGR, then whatever arrives, as hex.
+        surface.startProcess(executable: "/bin/sh", arguments: ["-c", "stty raw -echo; printf '\\033[?1000h\\033[?1006hready\\r\\n'; head -c 18 | od -An -tx1"],
+                             environment: TerminalEnvironment.base(), currentDirectory: nil)
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("ready") })
+        let screen = surface.screenForTesting
+        let cell = surface.cellSizeForTesting
+        // Column 2, row 3 (0-based): reported as 3;4.
+        let at = screen.convert(NSPoint(x: 2.5 * cell.width, y: screen.bounds.height - 3.5 * cell.height), to: nil)
+        func mouse(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        screen.mouseDown(with: mouse(.leftMouseDown))
+        screen.mouseUp(with: mouse(.leftMouseUp))
+        surface.scrollForTesting(rows: 1)
+        // ESC [ < 0 ; 3 ; 4 M, ESC [ < 0 ; 3 ; 4 m, then the wheel's ESC [ < 64 … (cut at 18 bytes).
+        // od wraps at 16 bytes: compared with the whitespace collapsed.
+        func hex() -> String { surface.visibleText().split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        XCTAssertTrue(waitUntil { hex().contains("1b 5b 3c 30 3b 33 3b 34 4d 1b 5b 3c 30 3b 33 3b 34 6d") }, hex())
+        XCTAssertNil(surface.selectedTextForTesting, "the click went to the program, not the selection")
+    }
+
     func testAgentReportsAcrossReads() {
         var watcher = OSCWatcher(code: 6973)
         XCTAssertEqual(watcher.consume(Array("x\u{1B}]6973;agent;cl".utf8)), [])
