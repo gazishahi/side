@@ -10,6 +10,7 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "SideSessionsKit", targets: ["SideSessionsKit"]),
+        .library(name: "SideTerminal", targets: ["SideTerminal"]),
         .executable(name: "SideSessionKeeper", targets: ["SideSessionKeeper"]),
     ],
     targets: [
@@ -21,8 +22,12 @@ let package = Package(
                           path: "Sources/SideSessionKeeper",
                           // One thread, one kqueue loop: there is no concurrency to check.
                           swiftSettings: [.swiftLanguageMode(.v5)]),
+        // The terminal emulator Side's Terminal draws (docs/SIDE_RFC_TERMINAL_ENGINE.md): libghostty-vt
+        // wrapped, shared with the keeper later. Knows nothing about drawing.
+        .target(name: "SideTerminal", dependencies: ["SideSessionsKit", "GhosttyVt"], path: "Sources/SideTerminal"),
         // Built by scripts/build-ghostty-vt.sh from the pinned Ghostty commit; git-ignored.
         .binaryTarget(name: "GhosttyVt", path: "GhosttyVt.xcframework"),
+        .testTarget(name: "SideTerminalTests", dependencies: ["SideTerminal", "SideSessionsKit"], path: "Tests/SideTerminalTests"),
         .testTarget(name: "SideSessionsTests", dependencies: ["SideSessionsKit", "SideSessionKeeper", "GhosttyVt"], path: "Tests/SideSessionsTests"),
     ],
     swiftLanguageModes: [.v6]
