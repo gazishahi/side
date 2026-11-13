@@ -392,6 +392,15 @@ final class AlloyTerminalViewTests: XCTestCase {
         XCTAssertFalse(view.isBlinking, "a steady cursor")
     }
 
+    /// Colors are sRGB, matched to the display by the window server.
+    func testTheLayerIsTaggedSRGB() throws {
+        let view = try AlloyTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 60), font: TerminalFont(name: "Menlo", size: 13),
+                                         theme: TerminalRendererTests.black)
+        let layer = try XCTUnwrap(view.layer as? CAMetalLayer)
+        XCTAssertEqual(layer.colorspace?.name, CGColorSpace.sRGB)
+        XCTAssertEqual(layer.pixelFormat, .bgra8Unorm, "blending in encoded values, as AppKit's")
+    }
+
     func testTheGridFollowsTheViewsSize() throws {
         let font = TerminalFont(name: "Menlo", size: 13)
         let cell = font.cellSize

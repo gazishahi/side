@@ -61,6 +61,12 @@ public final class AlloyTerminalView: NSView {
         super.init(frame: frame)
         metal.device = device
         metal.pixelFormat = .bgra8Unorm
+        // Colors are sRGB (themes, the palette, what programs send), as Ghostty takes them
+        // (window-colorspace = srgb): tagged so, the window server matches them to the display.
+        // Untagged, a wide-gamut display shows them as its own primaries, more saturated than the
+        // same colors anywhere else in the app. Blending stays in sRGB's encoded values (a
+        // non-sRGB pixel format), as AppKit's and Ghostty's native blending do.
+        metal.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         metal.framebufferOnly = true
         metal.maximumDrawableCount = 2
         metal.isOpaque = theme.background.w >= 1
