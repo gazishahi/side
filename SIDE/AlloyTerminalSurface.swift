@@ -502,6 +502,8 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
     var screenForTesting: NSView { screen }
     var cellSizeForTesting: CGSize { screen.cellSize }
     func scrollForTesting(rows: Double) { handleScroll(rows, x: 10, y: 10) }
+    /// The rows in view, scrolled back or not.
+    var viewportTextForTesting: String { (0..<screen.rows).map { terminal.rowText($0).text.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n") }
 
     // MARK: Edit menu (the screen is first responder; its actions come up the chain to here)
 
@@ -694,7 +696,8 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
         case .block: .block
         case .hollowBlock: .hollowBlock
         }
-        grid.cursor = TerminalCursor(column: cursor.column, row: cursor.row, visible: cursor.visible, shape: shape, blinking: cursor.blinking)
+        grid.cursor = TerminalCursor(column: cursor.column, row: cursor.row, visible: cursor.visible, shape: shape, blinking: cursor.blinking,
+                                     color: reader.cursorColor)
         return true
     }
 }

@@ -459,6 +459,23 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertEqual(statuses.first, "- of 2")
     }
 
+    /// Scrolled back, the viewport stays on what you're reading while output keeps coming.
+    func testAScrolledBackViewportStaysPutWhileOutputStreams() {
+        let surface = makeSurface()
+        surface.display(text: (1...200).map { "line \($0)" }.joined(separator: "\r\n"))
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("line 200") })
+        surface.scrollForTesting(rows: 50)
+        XCTAssertTrue(waitUntil { surface.scrollbarForTesting.isScrolledBack })
+        let reading = surface.viewportTextForTesting
+        XCTAssertFalse(reading.contains("line 200"))
+        for batch in 0..<20 {
+            surface.display(text: "\r\n" + (1...25).map { "more \(batch)-\($0)" }.joined(separator: "\r\n"))
+        }
+        XCTAssertTrue(waitUntil { surface.scrollbarForTesting.total > 600 }, "the output arrived")
+        XCTAssertEqual(surface.viewportTextForTesting, reading, "still on what was being read")
+        XCTAssertTrue(surface.scrollbarForTesting.isScrolledBack)
+    }
+
     func testAgentReportsAcrossReads() {
         var watcher = OSCWatcher(code: 6973)
         XCTAssertEqual(watcher.consume(Array("x\u{1B}]6973;agent;cl".utf8)), [])

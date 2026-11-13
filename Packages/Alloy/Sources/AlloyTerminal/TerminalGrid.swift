@@ -56,13 +56,16 @@ public struct TerminalCursor: Equatable, Sendable {
     public var shape: Shape
     /// The program wants it blinking (DECSCUSR's odd styles, DEC mode 12).
     public var blinking: Bool
+    /// 0xRRGGBB, a color a program set (OSC 12); nil for the theme's.
+    public var color: UInt32?
 
-    public init(column: Int = 0, row: Int = 0, visible: Bool = true, shape: Shape = .block, blinking: Bool = false) {
+    public init(column: Int = 0, row: Int = 0, visible: Bool = true, shape: Shape = .block, blinking: Bool = false, color: UInt32? = nil) {
         self.column = column
         self.row = row
         self.visible = visible
         self.shape = shape
         self.blinking = blinking
+        self.color = color
     }
 }
 

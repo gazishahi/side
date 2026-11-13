@@ -63,6 +63,8 @@ public final class ScreenReader {
     public private(set) var foreground: UInt32 = 0xFFFFFF
     public private(set) var background: UInt32 = 0x000000
     public private(set) var cursor = ScreenCursor()
+    /// The cursor's color: the default given, or a program's (OSC 12); nil when neither set one.
+    public private(set) var cursorColor: UInt32?
     /// The 256 colors in use, for colors cells give by index (an underline's).
     private var palette = [UInt32](repeating: 0, count: 256)
     public private(set) var columns = 0
@@ -108,6 +110,10 @@ public final class ScreenReader {
         var color = GhosttyColorRgb()
         if ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_FOREGROUND, &color) == GHOSTTY_SUCCESS { foreground = Self.pack(color) }
         if ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_BACKGROUND, &color) == GHOSTTY_SUCCESS { background = Self.pack(color) }
+        var hasCursorColor = false
+        ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR_HAS_VALUE, &hasCursorColor)
+        cursorColor = hasCursorColor && ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR, &color) == GHOSTTY_SUCCESS
+            ? Self.pack(color) : nil
         var colors = [GhosttyColorRgb](repeating: GhosttyColorRgb(), count: 256)
         if colors.withUnsafeMutableBufferPointer({ ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLOR_PALETTE, $0.baseAddress) }) == GHOSTTY_SUCCESS {
             palette = colors.map(Self.pack)

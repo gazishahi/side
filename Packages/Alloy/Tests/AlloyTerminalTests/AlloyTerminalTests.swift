@@ -139,6 +139,18 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(try render(grid, renderer: renderer), before, "gone again")
     }
 
+    /// A program's cursor color over the theme's.
+    func testTheCursorInAProgramsColor() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 4, rows: 1, foreground: 0xFFFFFF)
+        grid.cursor = TerminalCursor(column: 1, row: 0, visible: true, shape: .block, color: 0xFF8000)
+        let cell = cellRect(column: 1, row: 0)
+        let orange: (Pixels.RGBA) -> Bool = { $0.r > 240 && $0.g > 110 && $0.g < 150 && $0.b < 20 }
+        XCTAssertEqual(try render(grid, renderer: renderer).count(in: cell, orange), cell.x.count * cell.y.count)
+        grid.cursor.color = nil
+        XCTAssertEqual(try render(grid, renderer: renderer).count(in: cell, orange), 0, "the theme's white")
+    }
+
     /// Unfocused, every shape is an outline of its cell; a blinking cursor blinked off isn't drawn,
     /// unless unfocused, where it doesn't blink.
     func testHollowWhenUnfocusedAndBlinkedOff() throws {

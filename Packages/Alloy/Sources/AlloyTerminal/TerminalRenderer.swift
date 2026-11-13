@@ -345,7 +345,7 @@ public final class TerminalRenderer {
         // A wide character's cell is two wide, and so is the block over it.
         let w = (grid[cursor.column, cursor.row].style.contains(.wide) ? cw * 2 : cw).rounded(.up)
         let thickness = Float(max(1, (scale * 1.5).rounded()))
-        let ink = color(theme.cursor)
+        let ink = color(cursor.color ?? theme.cursor)
         let rects: [SIMD4<Float>] = switch shape {
         case .block: [SIMD4(x, y, w, ch)]
         case .bar: [SIMD4(x, y, thickness, ch)]

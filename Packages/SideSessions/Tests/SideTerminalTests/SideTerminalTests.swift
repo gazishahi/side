@@ -42,6 +42,23 @@ final class SideTerminalTests: XCTestCase {
         XCTAssertFalse(steadyReader.cursor.blinking)
     }
 
+    /// A program's cursor color (OSC 12), and back to none (OSC 112).
+    func testAProgramSetsTheCursorColor() throws {
+        let terminal = try Terminal(columns: 20, rows: 4)
+        let reader = ScreenReader(terminal: terminal)
+        _ = reader.update()
+        XCTAssertNil(reader.cursorColor, "no default given")
+        terminal.feed(Array("\u{1B}]12;#ff8000\u{07}".utf8))
+        _ = reader.update()
+        XCTAssertEqual(reader.cursorColor, 0xFF8000)
+        terminal.feed(Array("\u{1B}]112\u{07}".utf8))
+        _ = reader.update()
+        XCTAssertNil(reader.cursorColor, "reset")
+        terminal.setDefaultColors(foreground: 0xFFFFFF, background: 0, cursor: 0x00FF00)
+        _ = reader.update()
+        XCTAssertEqual(reader.cursorColor, 0x00FF00, "a default given")
+    }
+
     func testTextAndTheCursor() throws {
         let terminal = try Terminal(columns: 20, rows: 4)
         let reader = ScreenReader(terminal: terminal)
