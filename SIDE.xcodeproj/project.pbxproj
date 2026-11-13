@@ -54,7 +54,6 @@
 		A00000000000000000000228 /* AccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000227 /* AccessibilityTests.swift */; };
 		A00000000000000000000230 /* TypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000229 /* TypographyTests.swift */; };
 		A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000251 /* GitLaunchProbeTests.swift */; };
-		A00000000000000000000615 /* CompanionFollowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000614 /* CompanionFollowTests.swift */; };
 		A00000000000000000000623 /* SessionRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000622 /* SessionRegistryTests.swift */; };
 		A00000000000000000000B05 /* AgentHooksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B04 /* AgentHooksTests.swift */; };
 		A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000257 /* WorkGroupViewTests.swift */; };
@@ -86,7 +85,6 @@
 		A0000000000000000000060B /* ProgramMarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000060A /* ProgramMarks.swift */; };
 		A0000000000000000000060D /* ActivityCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000060C /* ActivityCenter.swift */; };
 		A0000000000000000000060F /* ProjectSpaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000060E /* ProjectSpaces.swift */; };
-		A00000000000000000000613 /* TerminalCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000612 /* TerminalCompanion.swift */; };
 		A00000000000000000000A14 /* AlloyTerminalSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000A15 /* AlloyTerminalSurface.swift */; };
 		A00000000000000000000A10 /* AlloyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000A11 /* AlloyTerminal */; };
 		A00000000000000000000A12 /* SideTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000A13 /* SideTerminal */; };
@@ -241,7 +239,6 @@
 		A0000000000000000000060A /* ProgramMarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramMarks.swift; sourceTree = "<group>"; };
 		A0000000000000000000060C /* ActivityCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityCenter.swift; sourceTree = "<group>"; };
 		A0000000000000000000060E /* ProjectSpaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSpaces.swift; sourceTree = "<group>"; };
-		A00000000000000000000612 /* TerminalCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCompanion.swift; sourceTree = "<group>"; };
 		A00000000000000000000A15 /* AlloyTerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlloyTerminalSurface.swift; sourceTree = "<group>"; };
 		A00000000000000000000616 /* AgentBranchPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentBranchPanel.swift; sourceTree = "<group>"; };
 		A00000000000000000000618 /* JumpRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpRail.swift; sourceTree = "<group>"; };
@@ -262,7 +259,6 @@
 		A00000000000000000000227 /* AccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000229 /* TypographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypographyTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000251 /* GitLaunchProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLaunchProbeTests.swift; sourceTree = "<group>"; };
-		A00000000000000000000614 /* CompanionFollowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionFollowTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000622 /* SessionRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistryTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000B04 /* AgentHooksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHooksTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000257 /* WorkGroupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkGroupViewTests.swift; sourceTree = "<group>"; };
@@ -461,7 +457,6 @@
 				A0000000000000000000060A /* ProgramMarks.swift */,
 				A0000000000000000000060C /* ActivityCenter.swift */,
 				A0000000000000000000060E /* ProjectSpaces.swift */,
-				A00000000000000000000612 /* TerminalCompanion.swift */,
 				A00000000000000000000A15 /* AlloyTerminalSurface.swift */,
 				A00000000000000000000616 /* AgentBranchPanel.swift */,
 				A00000000000000000000618 /* JumpRail.swift */,
@@ -530,7 +525,6 @@
 				A00000000000000000000227 /* AccessibilityTests.swift */,
 				A00000000000000000000229 /* TypographyTests.swift */,
 				A00000000000000000000251 /* GitLaunchProbeTests.swift */,
-				A00000000000000000000614 /* CompanionFollowTests.swift */,
 				A00000000000000000000622 /* SessionRegistryTests.swift */,
 				A00000000000000000000B04 /* AgentHooksTests.swift */,
 				A00000000000000000000257 /* WorkGroupViewTests.swift */,
@@ -809,7 +803,6 @@
 				A0000000000000000000060B /* ProgramMarks.swift in Sources */,
 				A0000000000000000000060D /* ActivityCenter.swift in Sources */,
 				A0000000000000000000060F /* ProjectSpaces.swift in Sources */,
-				A00000000000000000000613 /* TerminalCompanion.swift in Sources */,
 				A00000000000000000000A14 /* AlloyTerminalSurface.swift in Sources */,
 				A00000000000000000000617 /* AgentBranchPanel.swift in Sources */,
 				A00000000000000000000619 /* JumpRail.swift in Sources */,
@@ -855,7 +848,6 @@
 				A00000000000000000000228 /* AccessibilityTests.swift in Sources */,
 				A00000000000000000000230 /* TypographyTests.swift in Sources */,
 				A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */,
-				A00000000000000000000615 /* CompanionFollowTests.swift in Sources */,
 				A00000000000000000000623 /* SessionRegistryTests.swift in Sources */,
 				A00000000000000000000B05 /* AgentHooksTests.swift in Sources */,
 				A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */,

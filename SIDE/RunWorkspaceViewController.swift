@@ -78,8 +78,6 @@ final class RunWorkspaceViewController: NSViewController {
     private var newTabButton: NSView?
     /// A tab dragged out of the window: the shell opens a window that adopts the session.
     var onTearOutRequested: ((TerminalSession, NSPoint) -> Void)?
-    /// The tab's Show Beside Editor: the shell makes it the window's companion.
-    var onShowBesideRequested: ((TerminalSession) -> Void)?
     /// The tab's Open in Agent: its Claude Code chat, by session id
     /// (SIDE_RFC_SHARED_CLAUDE_SESSIONS.md).
     var onOpenInAgentRequested: ((String) -> Void)?
@@ -92,20 +90,6 @@ final class RunWorkspaceViewController: NSViewController {
         guard let index = activeSessionIndex, sessions.indices.contains(index) else { return }
         sessions[index].viewController.runWhenReady(command)
         sessions[index].viewController.activate()
-    }
-
-    /// The session the companion takes when none is named (View › Show Terminal Beside): the
-    /// tab Terminal shows, its remembered tabs restored first as a visit to Terminal would.
-    func sessionForCompanion() -> TerminalSession? {
-        guard hasProject else { return nil }
-        loadViewIfNeeded()
-        if terminals?.hasRestored == false {
-            restoreRememberedSessionsOrCreateOne()
-        } else if activeSessionIndex.map({ !sessions.indices.contains($0) }) ?? true {
-            createSession()
-        }
-        guard let index = activeSessionIndex, sessions.indices.contains(index) else { return nil }
-        return sessions[index]
     }
 
     /// Across every track, not just the current one — a track running in the background with
@@ -857,7 +841,6 @@ final class RunWorkspaceViewController: NSViewController {
         item("Close", #selector(closeSessionFromMenu(_:)))
         item("Close Others", #selector(closeOtherSessionsFromMenu(_:)))
         menu.addItem(NSMenuItem.separator())
-        item("Show Beside Editor", #selector(showBesideFromMenu(_:)))
         item("Open in Agent", #selector(openInAgentFromMenu(_:)))
         item("Move to New Window", #selector(moveSessionToNewWindowFromMenu(_:)))
         menu.addItem(NSMenuItem.separator())
@@ -941,10 +924,6 @@ final class RunWorkspaceViewController: NSViewController {
         onActivityChanged?()
         rebuildTabBar()
         showActiveSession()
-    }
-
-    @objc private func showBesideFromMenu(_ sender: NSMenuItem) {
-        if let index = sessionIndex(from: sender) { onShowBesideRequested?(sessions[index]) }
     }
 
     @objc private func moveSessionToNewWindowFromMenu(_ sender: NSMenuItem) {

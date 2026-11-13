@@ -211,7 +211,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "detail-dump" { FileHandle.standardError.write(Data("[detail] \(shell.trackDetailForTesting)\n".utf8)) }
                     if command == "board-frames" { FileHandle.standardError.write(Data("[board-frames]\n\((shell.children.compactMap { $0 as? TracksWorkspaceViewController }.first?.boardFramesForTesting ?? "not on Branches"))\n[board-frames-end]\n".utf8)) }
                     if command == "board-dump" { FileHandle.standardError.write(Data("[board] \(shell.boardForTesting)\n".utf8)) }
-                    if command.hasPrefix("board-beside ") { shell.boardShowBesideForTesting(String(command.dropFirst(13))) }
                     if command == "agent-chats" { shell.agentChatsForTesting() }
                     if command == "agent-panel-toggle" { shell.toggleAgentPanel() }
                     if command == "jump-dump" { FileHandle.standardError.write(Data("[jump]\n\(shell.jumpRailForTesting)\n[jump-end]\n".utf8)) }
@@ -225,10 +224,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "agent-continue-terminal" { shell.agentContinueInTerminalForTesting() }
                     if command == "terminal-open-in-agent" { shell.terminalOpenInAgentForTesting() }
                     if command == "agent-dump" { FileHandle.standardError.write(Data("[agent]\n\(shell.agentForTesting)\n".utf8)) }
-                    if command == "companion-toggle" { shell.toggleCompanion() }
-                    if command == "companion-dump" { FileHandle.standardError.write(Data("[companion] \(shell.companionForTesting)\n".utf8)) }
-                    if command.hasPrefix("companion-type ") { shell.companionTypeForTesting(String(command.dropFirst(15)) + "\r") }
-                    if command == "companion-editor-click" { shell.companionEditorClickForTesting() }
                     if command == "pdf-dump" { FileHandle.standardError.write(Data("[pdf] \(shell.pdfStateForTesting)\n".utf8)) }
                     if command.hasPrefix("find ") { shell.findForTesting(String(command.dropFirst(5))) }
                     if command.hasPrefix("think-track ") { shell.thinkTrackForTesting(agentId: String(command.dropFirst(12))) }
@@ -997,11 +992,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// same project double-count its tracks, an acceptable imprecision for a cosmetic badge.
     /// Every window's shell — the track pill's "Other projects" section reads across them.
     /// View › Toggle File Explorer, for the window in front, wherever its focus is.
-    /// View › Show Terminal Beside, for the window in front.
-    @objc func toggleTerminalBeside(_ sender: Any?) {
-        (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleCompanion()
-    }
-
     /// View › Show Agent Panel, for the window in front.
     @objc func toggleAgentPanel(_ sender: Any?) {
         (NSApp.mainWindow?.contentViewController as? ShellViewController)?.toggleAgentPanel()
@@ -1011,8 +1001,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let shell = NSApp.mainWindow?.contentViewController as? ShellViewController
         switch item.action {
-        case #selector(toggleTerminalBeside(_:)):
-            item.title = shell?.companionShowsForMenu == true ? "Hide Terminal Beside" : "Show Terminal Beside"
         case #selector(toggleAgentPanel(_:)):
             item.title = shell?.agentPanelShowsForMenu == true ? "Hide Agent Panel" : "Show Agent Panel"
         default: break

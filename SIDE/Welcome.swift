@@ -566,7 +566,7 @@ final class WelcomeStagesPage: WelcomePage {
             (.editor, "Editor", "Your code, with language servers and your keymap.", "stage.make"),
             (.agent, "Agent", "Answers with plans, diagrams and tables.", "stage.think"),
             (.changes, "Changes", "The branch's changes, ready to commit.", "stage.review"),
-            (.terminal, "Terminal", "Keeps running when Side quits. \(Shortcuts.display("view.terminalBeside")) puts it beside your code.", "stage.run"),
+            (.terminal, "Terminal", "Keeps running when Side quits, and every tab says what\u{2019}s running in it.", "stage.run"),
             (.branches, "Branches", "Every branch, with its agents and pull request.", "stage.tracks"),
         ]
         rows = items.map { item in

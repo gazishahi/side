@@ -1,8 +1,7 @@
 #!/bin/zsh
 # The board (SIDE_RFC_GIT_TRACKS.md, phase 2): Branches lists what runs on each branch under
 # its row (a Claude Code working, on the base and on a branch in its own worktree; switching
-# with Terminal in front starts the branch's terminal there), and a
-# session's Show Beside moves the window to its branch and docks it beside the Editor.
+# with Terminal in front starts the branch's terminal there).
 #
 #   scripts/uitest/uitest.sh build && scripts/uitest/check-board.sh
 set -uo pipefail
@@ -13,7 +12,6 @@ rm -rf $OUT; mkdir -p $OUT
 failures=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1 (${3:-})"; failures=$((failures + 1)); fi; }
 board() { $U post board-dump; sleep 0.7; grep '^\[board\]' $ROOT/side.log | tail -1; }
-companion() { $U post companion-dump; sleep 0.7; grep '^\[companion\]' $ROOT/side.log | tail -1; }
 
 P=$ROOT/fixtures/board
 W=$ROOT/fixtures/board-wt
@@ -42,11 +40,6 @@ $U post "stage tracks"; sleep 2
 line=$(board); echo "     $line"
 check "each branch lists what runs on it" '[[ $line == *"(base): "*"Working"* && $line == *"feature-board: "*"Working"* ]]' "$line"
 $U shot $OUT/board.png > /dev/null
-
-$U post "board-beside "; sleep 3
-line=$(companion); echo "     $line"
-check "Show Beside on the base's session: the window goes to the base, the session beside the Editor" '[[ $line == *"mode=docked"* && $line == *"stageName=Editor"* ]]' "$line"
-$U shot $OUT/beside.png > /dev/null
 
 $U quit
 echo "$failures failed; captures in $OUT"

@@ -5012,10 +5012,6 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let explorer = viewMenu.addItem(withTitle: "Toggle File Explorer", action: #selector(AppDelegate.toggleFileExplorer(_:)), keyEquivalent: "")
         explorer.target = AppDelegate.shared
         Shortcuts.bind(explorer, "view.fileExplorer")
-        // The window's companion (2026-11-07): the app's too, so it works from the terminal itself.
-        let beside = viewMenu.addItem(withTitle: "Show Terminal Beside", action: #selector(AppDelegate.toggleTerminalBeside(_:)), keyEquivalent: "")
-        beside.target = AppDelegate.shared
-        Shortcuts.bind(beside, "view.terminalBeside")
         // Agent's branch panel (SIDE_RFC_AGENT_PANEL.md): from anywhere, it goes to Agent.
         let agentPanel = viewMenu.addItem(withTitle: "Show Agent Panel", action: #selector(AppDelegate.toggleAgentPanel(_:)), keyEquivalent: "")
         agentPanel.target = AppDelegate.shared

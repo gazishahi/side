@@ -147,8 +147,6 @@ final class TracksWorkspaceViewController: NSViewController {
     }
     private var terminalsObserver: NSObjectProtocol?
     private var registryObserver: NSObjectProtocol?
-    /// A session's Show Beside: (its track's key, its id). The shell docks it beside the Editor.
-    var onShowBesideRequested: ((String, UUID) -> Void)?
     /// A session's Open: Terminal, on its tab.
     var onOpenSessionRequested: ((UUID) -> Void)?
 
@@ -255,7 +253,6 @@ final class TracksWorkspaceViewController: NSViewController {
                 row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
                 continue
             }
-            row.onShowBeside = { [weak self] in self?.onShowBesideRequested?(key, session.id) }
             row.onOpen = { [weak self] in self?.onOpenSessionRequested?(session.id) }
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -285,9 +282,6 @@ final class TracksWorkspaceViewController: NSViewController {
             guard !sessions.isEmpty else { return nil }
             return "\(key.isEmpty ? "(base)" : key): " + sessions.map { "\($0.title) \($0.word)" }.joined(separator: ", ")
         }.joined(separator: " | ")
-    }
-    func showBesideForTesting(trackKey: String) {
-        if let first = boardSessions(forTrackKey: trackKey).first { onShowBesideRequested?(trackKey, first.id) }
     }
 
     override func viewWillAppear() {
@@ -1900,9 +1894,8 @@ enum TrackRowVerb: Equatable {
 /// The base branch's row at the head of the ledger: its name, whether you're on it, and how many
 /// tracks land in it. Laid out as a track's row is, with one verb: work on it.
 /// A session on the board, under its branch: what's running (its program's mark and the tab's
-/// name) and its state, with Show Beside and Open on hover.
+/// name) and its state, with Open on hover.
 private final class BoardSessionRow: NSView {
-    var onShowBeside: (() -> Void)?
     var onOpen: (() -> Void)?
     private let actions = NSStackView()
     private var trackingArea: NSTrackingArea?
@@ -1940,16 +1933,14 @@ private final class BoardSessionRow: NSView {
         text.setCustomSpacing(DS.Spacing.m, after: title)
         text.translatesAutoresizingMaskIntoConstraints = false
 
-        let beside = NSButton(title: "", target: self, action: #selector(besideTapped))
-        TrackRowView.styleTextAction(beside, title: "Show Beside", emphasized: true)
         let open = NSButton(title: "", target: self, action: #selector(openTapped))
-        TrackRowView.styleTextAction(open, title: "Open", emphasized: false)
-        for (button, label) in [(beside, "Show beside the Editor"), (open, "Open in Terminal")] { button.toolTip = label }
-        actions.setViews([open, beside], in: .leading)
+        TrackRowView.styleTextAction(open, title: "Open", emphasized: true)
+        open.toolTip = "Open in Terminal"
+        actions.setViews([open], in: .leading)
         actions.orientation = .horizontal
         actions.spacing = DS.Spacing.l
         actions.alphaValue = 0
-        // Another terminal's session can't be shown beside or opened from here.
+        // Another terminal's session can't be opened from here.
         actions.isHidden = session.isElsewhere
         // Over the line's end on hover, on the row's hover fill, so what's under it doesn't show.
         actions.wantsLayer = true
@@ -1979,14 +1970,12 @@ private final class BoardSessionRow: NSView {
         setAccessibilityRole(.group)
         setAccessibilityLabel("\(session.title), \(session.word)")
         setAccessibilityCustomActions([
-            NSAccessibilityCustomAction(name: "Show Beside") { [weak self] in self?.onShowBeside?(); return true },
             NSAccessibilityCustomAction(name: "Open") { [weak self] in self?.onOpen?(); return true },
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    @objc private func besideTapped() { onShowBeside?() }
     @objc private func openTapped() { onOpen?() }
 
     override func updateTrackingAreas() {
@@ -2021,12 +2010,11 @@ private final class BoardSessionRow: NSView {
         return hit
     }
 
-    /// A click shows the session beside the Editor (the design session's board); Open is its
-    /// own button.
+    /// A click opens the session's Terminal tab, as Open does.
     override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
         guard event.clickCount == 1, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
-        onShowBeside?()
+        onOpen?()
     }
 }
 

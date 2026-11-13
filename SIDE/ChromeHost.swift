@@ -94,13 +94,6 @@ final class ChromeHost {
     private var leadingInset: NSLayoutConstraint?
     private var rowTrailing: NSLayoutConstraint?
 
-    /// The companion docked at the trailing edge owns that part of the top row: the stage's
-    /// tabs end where it begins.
-    func reserveTrailing(_ width: CGFloat) {
-        let constant = -(DS.Spacing.m + width)
-        if rowTrailing?.constant != constant { rowTrailing?.constant = constant }
-    }
-
     init(placement: ChromePlacement, pill: TrackPill, stageControl: SlidingSegmentedControl, searchButton: GlassCircleButton) {
         self.placement = placement
         self.pill = pill

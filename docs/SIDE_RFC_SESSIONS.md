@@ -193,6 +193,7 @@ worktree, no track.
 5. **The AI layer.** Summaries and drift, on demand.
 6. **Agent as a session view; retire the rest.** Agent opens any session; the reply overlay and
    session switcher; the panel and split view removed; tracks out of the UI.
+   *Split view removed 2026-11-12, ahead of the reply overlay (owner's call).*
 
 Each phase ships on its own and is useful alone.
 
