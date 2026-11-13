@@ -392,6 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command == "queue-actions" { FileHandle.standardError.write(Data("[queue-actions] \(shell.reviewQueueActionsForTesting)\n".utf8)) }
                     if command.hasPrefix("queue-commit ") { shell.reviewCommitForTesting(String(command.dropFirst(13))) }
                     if command == "queue-discard" { shell.reviewDiscardForTesting() }
+                    if command.hasPrefix("queue-ask ") { shell.reviewAskForTesting(String(command.dropFirst(10))) }
                     // Who wrote a line of the Editor's file (phase 3): "attribution <line>".
                     if command.hasPrefix("attribution "), let line = Int(command.dropFirst(12)) {
                         let authors = shell.attributionForTesting(line: line).joined(separator: " | ")

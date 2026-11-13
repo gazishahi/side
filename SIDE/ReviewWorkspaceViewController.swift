@@ -1,5 +1,6 @@
 import AppKit
 import SideAgents
+import SideSessionsKit
 
 /// The Review stage: "checkpoints, diffs, rationale, test evidence, and promotion decisions"
 /// per the constitution's stage table — the surface where a track's accumulated work (its
@@ -95,6 +96,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let approveAllButton = NSButton(title: "Approve All", target: nil, action: nil)
     private let commitButton = NSButton(title: "Commit Approved\u{2026}", target: nil, action: nil)
     private let discardButton = NSButton(title: "Discard\u{2026}", target: nil, action: nil)
+    private let askButton = NSButton(title: "Ask for Changes\u{2026}", target: nil, action: nil)
     private var railWidth: NSLayoutConstraint?
     private var diffLeading: NSLayoutConstraint?
     private var cardTop: NSLayoutConstraint?
@@ -378,7 +380,8 @@ final class ReviewWorkspaceViewController: NSViewController {
         approveAllButton.action = #selector(approveAllTapped)
         approveAllButton.isHidden = true
         approveAllButton.setAccessibilityIdentifier("review.approveAll")
-        for (button, action, id) in [(commitButton, #selector(commitApprovedTapped), "review.commitApproved"), (discardButton, #selector(discardTapped), "review.discard")] {
+        for (button, action, id) in [(commitButton, #selector(commitApprovedTapped), "review.commitApproved"), (discardButton, #selector(discardTapped), "review.discard"),
+                                     (askButton, #selector(askForChangesTapped), "review.askForChanges")] {
             button.bezelStyle = .accessoryBarAction
             button.controlSize = .small
             button.font = DS.Text.caption(.medium)
@@ -387,7 +390,11 @@ final class ReviewWorkspaceViewController: NSViewController {
             button.isHidden = true
             button.setAccessibilityIdentifier(id)
         }
-        for view in [diffTitle, diffTotals, spacer, discardButton, approveAllButton, commitButton, foldAllButton, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
+        // The step that finishes a review is the one in the accent: Commit.
+        commitButton.bezelStyle = .push
+        commitButton.bezelColor = DS.Color.accent
+        commitButton.keyEquivalent = ""
+        for view in [diffTitle, diffTotals, spacer, discardButton, askButton, approveAllButton, commitButton, foldAllButton, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
         diffViewer.onFoldChange = { [weak self] _, _ in self?.refreshFoldAllButton() }
 
         rail.onSelect = { [weak self] index in self?.diffViewer.scrollToFile(index) }
@@ -613,9 +620,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// Approve All, or, with everything approved, Unapprove All.
     private func refreshApproveAll() {
         guard queueActive, let index = queueSelection, queue.groups.indices.contains(index) else {
-            for button in [approveAllButton, commitButton, discardButton] { button.isHidden = true }
+            for button in [approveAllButton, commitButton, discardButton, askButton] { button.isHidden = true }
             return
         }
+        askButton.isHidden = queue.groups[index].author.kind != .session
         let hunks = queue.groups[index].hunks
         let approved = hunks.filter { approvedKeys.contains($0.key) }.count
         approveAllButton.title = approved == hunks.count ? "Unapprove All" : "Approve All"
@@ -682,6 +690,92 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
     }
 
+    /// What you want changed goes back to the session: pasted into its terminal tab in Side, as
+    /// a message to it, or copied for its terminal elsewhere (SIDE_RFC_SESSIONS.md: comments go
+    /// back to that session).
+    @objc private func askForChangesTapped() {
+        guard let group = chosenGroup, group.author.kind == .session, let window = view.window else { return }
+        let tab = Self.terminalTab(of: group.author)
+        let alert = NSAlert()
+        alert.messageText = "What should \(group.author.name) change?"
+        alert.informativeText = tab != nil
+            ? "It\u{2019}s sent to its terminal tab, about its changes to \(Self.fileList(group.paths))."
+            : "Its session is in a terminal outside Side: this is copied for you to paste there."
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 360, height: 96))
+        let text = NSTextView(frame: scroll.bounds)
+        text.font = DS.Text.body()
+        text.isRichText = false
+        text.allowsUndo = true
+        scroll.documentView = text
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: tab != nil ? "Send" : "Copy")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = text
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.askForChanges(group, comment: text.string)
+        }
+    }
+
+    private func askForChanges(_ group: ReviewQueue.Group, comment: String) {
+        let request = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !request.isEmpty else { return }
+        let message = Self.changeRequest(request, paths: group.paths)
+        if let tab = Self.terminalTab(of: group.author) {
+            // As a paste, then Return: one message, however many lines.
+            tab.viewController.terminalView.paste(text: message)
+            tab.viewController.terminalView.send(text: "\r")
+            setStatus("Sent to \(group.author.name)\u{2019}s terminal.")
+            lastAskForChanges = "terminal: " + message
+        } else {
+            // A UI test never takes the person's clipboard.
+            if !AppDelegate.isUITesting {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message, forType: .string)
+            }
+            setStatus("Copied. Paste it into \(group.author.name)\u{2019}s terminal.")
+            lastAskForChanges = "copied: " + message
+        }
+    }
+    private(set) var lastAskForChanges: String?
+
+    /// "About your changes to Login.swift and README.md: …"
+    static func changeRequest(_ comment: String, paths: [String]) -> String {
+        "About your changes to \(fileList(paths)): \(comment)"
+    }
+
+    static func fileList(_ paths: [String]) -> String {
+        let names = paths.map { ($0 as NSString).lastPathComponent }
+        switch names.count {
+        case 0: return "these files"
+        case 1: return names[0]
+        case 2: return "\(names[0]) and \(names[1])"
+        default: return "\(names[0]), \(names[1]) and \(names.count - 2) more"
+        }
+    }
+
+    /// The Side terminal tab a session runs in: by its conversation, else by its process.
+    static func terminalTab(of author: Author) -> TerminalSession? {
+        guard let id = author.sessionID else { return nil }
+        let pid = HookInbox.shared.sessions.sessions[id]?.pid ?? 0
+        for context in ProjectContextRegistry.openContexts() {
+            for session in context.terminals.everySession() where session.viewController.isAliveOrUnstarted {
+                if session.viewController.recoveredAgentSession == id { return session }
+                guard pid > 0, let shell = session.viewController.keeperID.flatMap({ SessionKeepers.liveRecord($0)?.childPID }),
+                      ForegroundProgram.group(ofShell: shell) == pid else { continue }
+                return session
+            }
+        }
+        return nil
+    }
+
+    func askForChangesForTesting(_ comment: String) {
+        guard let group = chosenGroup else { return }
+        askForChanges(group, comment: comment)
+    }
+
     /// Off the main thread; then the queue again, or what stopped it.
     private func runQueueAction(_ action: @escaping @Sendable () -> Result<Void, ReviewGit.Failure>) {
         setStatus("Working\u{2026}")
@@ -735,13 +829,14 @@ final class ReviewWorkspaceViewController: NSViewController {
     func toggleHunkForTesting(file: Int, hunk: Int) { diffViewer.toggleHunkForTesting(file: file, hunk: hunk) }
     func approveAllForTesting() { approveAllTapped() }
     var queueActionsForTesting: String {
-        [commitButton, approveAllButton, discardButton].filter { !$0.isHidden }.map(\.title).joined(separator: ", ") + (lastQueueFailure.map { " | failed: \($0)" } ?? "")
+        [commitButton, approveAllButton, discardButton, askButton].filter { !$0.isHidden }.map(\.title).joined(separator: ", ") + (lastQueueFailure.map { " | failed: \($0)" } ?? "")
+            + (lastAskForChanges.map { " | asked \($0)" } ?? "")
     }
 
     /// The whole branch, as Changes showed it before the queue.
     private func refreshBranch() {
         diffViewer.hunkApproval = nil
-        for button in [approveAllButton, commitButton, discardButton] { button.isHidden = true }
+        for button in [approveAllButton, commitButton, discardButton, askButton] { button.isHidden = true }
         if currentTrack != nil {
             loadDiff()
         } else if let root = queueRoot, let trackStore {

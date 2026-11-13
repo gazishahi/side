@@ -58,6 +58,11 @@ actions() { $U post queue-actions; sleep 0.6; grep '^\[queue-actions\]' $ROOT/si
 $U post "queue-select 0"; sleep 1
 c=$(actions)
 check "everything approved: Commit, then Unapprove All and Discard" '[[ $c == *"Commit…, Unapprove All, Discard…"* ]]' "$c"
+# Slice 4: asking for changes. Its session isn't in a Side tab, so it's copied (never to the
+# clipboard under test), with what it's about.
+$U post "queue-ask Use three retries, not two"; sleep 1
+c=$(actions)
+check "Ask for Changes, about its files" '[[ $c == *"Ask for Changes…"*"asked copied: About your changes to Login.swift: Use three retries, not two"* ]]' "$c"
 $U post "queue-commit Fix the flaky login test"; sleep 3
 check "committed, with the request as its message" '[[ $(git -C $P log -1 --format=%s) == "Fix the flaky login test" ]]' "$(git -C $P log -1 --format=%s)"
 check "only what was approved" '[[ $(git -C $P status --porcelain) == " M README.md" ]]' "$(git -C $P status --porcelain)"
