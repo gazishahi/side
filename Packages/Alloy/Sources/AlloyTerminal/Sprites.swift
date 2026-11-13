@@ -2,7 +2,8 @@ import Foundation
 
 /// Characters drawn to the cell rather than taken from the font, as Ghostty's sprite font draws
 /// them: box drawing (light and heavy lines, dashes, rounded corners, half lines), block elements
-/// and shades, braille, and powerline's triangles, chevrons and half circles. A font's glyphs for
+/// and shades, braille, powerline's triangles, chevrons and half circles, and most of the
+/// legacy computing symbols (LegacyComputing.swift). A font's glyphs for
 /// these leave hairline gaps between rows and sit off the cell grid; drawn, they join exactly.
 /// Double lines and diagonals still come from the font.
 extension TerminalRenderer {
@@ -55,6 +56,9 @@ extension TerminalRenderer {
             roundedCorner(scalar, left: left, top: top, width: width, height: height, line: line, rect: rect)
         case 0x2580...0x259F:
             block(scalar, left: left, top: top, right: right, bottom: bottom, rect: rect)
+        case 0x1FB00...0x1FB9B:
+            guard let pieces = LegacyComputing.shapes[scalar] else { return nil }
+            legacy(pieces, left: left, top: top, width: width, height: height) { rect($0, $1, $2, $3, alpha: $4) }
         case 0x2800...0x28FF:
             // Braille: eight dots, two columns of four; bit n is dot n+1.
             let bits = scalar - 0x2800

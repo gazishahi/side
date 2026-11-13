@@ -278,6 +278,35 @@ final class TerminalRendererTests: XCTestCase {
 
     /// Box drawing, braille and powerline are drawn to the cell: lines reach the cell's edges
     /// (so rows and columns join), dots sit where braille puts them.
+    /// Legacy computing symbols drawn to the cell: a sextant, a diagonal wedge, an eighth block
+    /// and a half shade, each filling exactly its part of the cell.
+    func testLegacyComputingSymbols() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 5, rows: 1, foreground: 0xFFFFFF)
+        grid[0, 0] = TerminalCell(scalar: 0x1FB00, foreground: 0xFFFFFF) // 🬀 sextant 1: the top-left sixth
+        grid[1, 0] = TerminalCell(scalar: 0x1FB3D, foreground: 0xFFFFFF) // 🬽 lower left, below lower-middle-left → lower-right
+        grid[2, 0] = TerminalCell(scalar: 0x1FB70, foreground: 0xFFFFFF) // 🭰 vertical one eighth, column 2
+        grid[3, 0] = TerminalCell(scalar: 0x1FB8C, foreground: 0xFFFFFF) // 🮌 left half medium shade
+        grid.cursor.visible = false
+        let pixels = try render(grid, renderer: renderer)
+        let cell = font.cellSize, w = cell.width * scale, h = (cell.height * scale).rounded()
+        // The pixel at a point of a cell, in the cell's fractions.
+        func at(_ column: Int, _ fx: Double, _ fy: Double) -> (x: Range<Int>, y: Range<Int>) {
+            let x = Int(Double(column) * w + fx * w), y = Int(fy * h)
+            return (x..<(x + 1), y..<(y + 1))
+        }
+        func lit(_ r: (x: Range<Int>, y: Range<Int>)) -> Bool { pixels.count(in: r) { $0.r > 200 } == 1 }
+        func dark(_ r: (x: Range<Int>, y: Range<Int>)) -> Bool { pixels.count(in: r) { $0.r < 30 } == 1 }
+        XCTAssertTrue(lit(at(0, 0.25, 0.15)) && dark(at(0, 0.75, 0.15)) && dark(at(0, 0.25, 0.5)), "the top-left sixth only")
+        // Its diagonal runs from (0, 2/3) to (1, 1): below it is filled.
+        XCTAssertTrue(lit(at(1, 0.15, 0.92)) && lit(at(1, 0.6, 0.97)), "below the wedge's diagonal")
+        XCTAssertTrue(dark(at(1, 0.85, 0.75)) && dark(at(1, 0.5, 0.3)), "nothing above its diagonal")
+        XCTAssertTrue(lit(at(2, 0.1875, 0.5)) && dark(at(2, 0.05, 0.5)) && dark(at(2, 0.4, 0.5)), "the second eighth")
+        let shade = pixels.count(in: at(3, 0.25, 0.5)) { $0.r > 100 && $0.r < 160 }
+        XCTAssertEqual(shade, 1, "a medium shade on the left half")
+        XCTAssertTrue(dark(at(3, 0.75, 0.5)), "nothing on the right")
+    }
+
     func testDrawnCharacters() throws {
         let renderer = try makeRenderer()
         let grid = TerminalGrid(columns: 6, rows: 2, foreground: 0xFFFFFF)
@@ -552,6 +581,7 @@ final class TerminalSnapshotTests: XCTestCase {
             ("│  ┼  │ ┃  ┃ ╎  ╎ ▖▗▘▙▚▛▜▝▞▟ ▌▐", 0x98C379, nil, []),
             ("╰──┴──╯ ┗━━┛ └┈┈┘ ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", 0x98C379, nil, []),
             ("\u{E0B6} repo \u{E0B4}\u{E0B0} main \u{E0B2} \u{E0B1} \u{E0B3}", 0x3B55C9, nil, []),
+            ("\u{1FB00}\u{1FB01}\u{1FB02}\u{1FB0B}\u{1FB1E} \u{1FB3C}\u{1FB3D}\u{1FB47}\u{1FB48} \u{1FB68}\u{1FB69}\u{1FB6C}\u{1FB9A} \u{1FB70}\u{1FB73}\u{1FB76}\u{1FB82}\u{1FB87} \u{1FB8C}\u{1FB91}", 0xC678DD, nil, []),
         ]
         let grid = TerminalGrid(columns: 60, rows: lines.count + 2, foreground: 0xD0D0D0)
         for (y, line) in lines.enumerated() {
@@ -571,8 +601,8 @@ final class TerminalSnapshotTests: XCTestCase {
         }
         // The powerline row: text on the segment's color between its caps.
         for x in 1...6 { grid[x, 10].background = 0x3B55C9; grid[x, 10].foreground = 0xFFFFFF }
-        grid[0, 12] = TerminalCell(scalar: UInt32(UInt8(ascii: "$")), foreground: 0xD0D0D0)
-        grid.cursor = TerminalCursor(column: 2, row: 12, visible: true, shape: .block)
+        grid[0, lines.count] = TerminalCell(scalar: UInt32(UInt8(ascii: "$")), foreground: 0xD0D0D0)
+        grid.cursor = TerminalCursor(column: 2, row: lines.count, visible: true, shape: .block)
         let cell = font.cellSize
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: Int(CGFloat(grid.columns) * cell.width * 2),
                                                                   height: Int(CGFloat(grid.rows) * (cell.height * 2).rounded()), mipmapped: false)
