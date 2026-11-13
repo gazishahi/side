@@ -1649,7 +1649,8 @@ final class TerminalViewController: NSViewController, TerminalSurfaceDelegate {
             backgroundOpacity: DS.Translucency.isOn ? DS.Translucency.terminalOpacity : 1))
     }
 
-    private static func resolved(_ color: NSColor) -> NSColor {
+    /// A color as the current appearance resolves it, in sRGB: what either engine is handed.
+    static func resolved(_ color: NSColor) -> NSColor {
         var out = color
         NSApp.effectiveAppearance.performAsCurrentDrawingAppearance {
             out = color.usingColorSpace(.sRGB) ?? color

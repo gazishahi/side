@@ -54,8 +54,9 @@ public final class AlloyTerminalView: NSView {
         self.font = font
         self.theme = theme
         let cell = font.cellSize
-        columns = max(1, Int(frame.width / cell.width))
-        rows = max(1, Int(frame.height / cell.height))
+        // A view not laid out yet has no size: the placeholder grid until it does, not 1×1.
+        columns = frame.width > 0 ? max(1, Int(frame.width / cell.width)) : Self.placeholderSize.columns
+        rows = frame.height > 0 ? max(1, Int(frame.height / cell.height)) : Self.placeholderSize.rows
         let renderer = try TerminalRenderer(device: device, font: font, theme: theme)
         engine = RenderEngine(renderer: renderer, layer: metal, grid: TerminalGrid(columns: columns, rows: rows, foreground: 0xFFFFFF))
         super.init(frame: frame)
@@ -148,7 +149,15 @@ public final class AlloyTerminalView: NSView {
         updateDrawableSize()
     }
 
+    /// The grid of a view that hasn't been laid out (a zero frame): a terminal's usual 80×24,
+    /// so a program started before the view is shown isn't squeezed into one column.
+    public static let placeholderSize = (columns: 80, rows: 24)
+
+    /// Whether the view has a size of its own yet; until then the grid is the placeholder.
+    public var hasSize: Bool { bounds.width > 0 && bounds.height > 0 }
+
     private func updateDrawableSize() {
+        guard hasSize else { return }
         let scale = window?.backingScaleFactor ?? 2
         metal.contentsScale = scale
         metal.drawableSize = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())

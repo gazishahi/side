@@ -177,6 +177,21 @@ final class VerificationStalenessTests: XCTestCase {
     }
 }
 
+/// Every keeper test again, on the new engine (docs/SIDE_RFC_TERMINAL_ENGINE.md, tests to port):
+/// typing into a kept shell, reading its screen back, reattaching, and a restart's restored
+/// screen, as the new engine draws them.
+final class SessionKeeperAlloyTests: SessionKeeperTests {
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        TerminalEngine.overrideForTesting = .alloy
+    }
+
+    override func tearDown() {
+        TerminalEngine.overrideForTesting = nil
+        super.tearDown()
+    }
+}
+
 /// Light/dark notices (DEC mode 2031): Claude Code picks its theme from the terminal and kept
 /// the one it started with when Side changed (the owner, 2026-11-04: light inside a dark window).
 final class ColorSchemeReportsTests: XCTestCase {
@@ -474,6 +489,59 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertTrue(waitUntil { surface.scrollbarForTesting.total > 600 }, "the output arrived")
         XCTAssertEqual(surface.viewportTextForTesting, reading, "still on what was being read")
         XCTAssertTrue(surface.scrollbarForTesting.isScrolledBack)
+    }
+
+    /// Ported from VerificationStalenessTests: a running program names the tab (OSC 0/2 between
+    /// the shell's command marks) until it finishes, on the new engine, whose title events come
+    /// from its parse thread.
+    @MainActor
+    func testARunningProgramNamesTheTabUntilItFinishes() {
+        TerminalEngine.overrideForTesting = .alloy
+        defer { TerminalEngine.overrideForTesting = nil }
+        let vc = TerminalViewController()
+        vc.loadViewIfNeeded()
+        XCTAssertTrue(vc.terminalView is AlloyTerminalSurface)
+        let session = TerminalSession(label: "project", viewController: vc)
+        func receive(_ text: String) { vc.terminalView.receive(ArraySlice(Array(text.utf8))) }
+        receive("\u{1B}]0;user@host: ~/project\u{07}")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(session.title, "project", "a title set at the prompt names nothing")
+        receive("\u{1B}]133;C\u{07}" + "\u{1B}]0;\u{2733} Claude Code\u{07}")
+        XCTAssertTrue(waitUntil { session.title == "Claude Code" }, session.title)
+        receive("\u{1B}]2;\u{2802} Fix the login bug\u{07}")
+        XCTAssertTrue(waitUntil { session.title == "Fix the login bug" }, session.title)
+        session.customName = "Mine"
+        XCTAssertEqual(session.title, "Mine", "your own name wins")
+        session.customName = nil
+        receive("\u{1B}]133;D;0\u{07}")
+        XCTAssertTrue(waitUntil { session.title == "project" }, "back to the folder once it ends: \(session.title)")
+    }
+
+    /// A surface not laid out yet (a tab not shown) has the usual 80×24 grid, not one column, and
+    /// tells a keeper no size until it has a real one: told 1×1, a kept shell was squeezed into
+    /// one column (2026-11-13).
+    func testASurfaceNotLaidOutKeepsAPlaceholderGrid() {
+        let surface = AlloyTerminalSurface(frame: .zero)
+        XCTAssertEqual(surface.columns, 80)
+        XCTAssertEqual(surface.rows, 24)
+        surface.display(text: String(repeating: "x", count: 30))
+        XCTAssertTrue(waitUntil { surface.visibleText().contains(String(repeating: "x", count: 30)) }, "on one line, not wrapped at two columns")
+    }
+
+    /// Ported from AccessibilityTests: one text area named Terminal that says it takes input,
+    /// whose value is the screen without its blank rows below the output.
+    func testExposedAsAReadableTextArea() {
+        let surface = makeSurface()
+        XCTAssertTrue(surface.isAccessibilityElement())
+        XCTAssertEqual(surface.accessibilityRole(), .textArea)
+        XCTAssertEqual(surface.accessibilityLabel(), "Terminal")
+        XCTAssertNotNil(surface.accessibilityHelp(), "a text area that accepts input should say so")
+        surface.display(text: "hello from the shell\r\n")
+        XCTAssertTrue(waitUntil { (surface.accessibilityValue() as? String ?? "").contains("hello from the shell") })
+        let value = surface.accessibilityValue() as? String ?? ""
+        XCTAssertEqual(surface.accessibilityNumberOfCharacters(), value.count)
+        XCTAssertFalse(value.hasSuffix("\n"), value.debugDescription)
+        XCTAssertEqual(value.components(separatedBy: "\n").count, 1, value.debugDescription)
     }
 
     func testAgentReportsAcrossReads() {

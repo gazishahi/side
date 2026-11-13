@@ -174,14 +174,16 @@ final class AppearanceTests: XCTestCase {
         let original = DS.Appearance.preference
         defer { DS.Appearance.preference = original }
         DS.Appearance.preference = .dark
-        let darkBackground = TerminalViewController.terminalColor(DS.Color.raised)
+        // In sRGB, as either terminal engine is handed them (not SwiftTerm's own color type).
+        let darkBackground = TerminalViewController.resolved(DS.Color.raised)
         DS.Appearance.preference = .light
-        let lightBackground = TerminalViewController.terminalColor(DS.Color.raised)
-        XCTAssertLessThan(darkBackground.red, 12_000)
-        XCTAssertGreaterThan(lightBackground.red, 60_000)
+        let lightBackground = TerminalViewController.resolved(DS.Color.raised)
+        XCTAssertLessThan(darkBackground.redComponent, 0.19)
+        XCTAssertGreaterThan(lightBackground.redComponent, 0.91)
         // Sixteen ANSI colours either way, and the light set is darker where it matters: yellow.
-        XCTAssertEqual(TerminalViewController.ansiPalette(dark: true).count, 16)
-        XCTAssertEqual(TerminalViewController.ansiPalette(dark: false).count, 16)
-        XCTAssertLessThan(TerminalViewController.ansiPalette(dark: false)[3].green, TerminalViewController.ansiPalette(dark: true)[3].green)
+        let dark = TerminalViewController.ansiPaletteColors(dark: true), light = TerminalViewController.ansiPaletteColors(dark: false)
+        XCTAssertEqual(dark.count, 16)
+        XCTAssertEqual(light.count, 16)
+        XCTAssertLessThan(light[3].greenComponent, dark[3].greenComponent)
     }
 }

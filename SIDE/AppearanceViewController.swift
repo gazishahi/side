@@ -474,9 +474,7 @@ final class AppearancePreview: NSView {
         editorPane.bindLayerBackground(theme?.background.nsColor ?? DS.Color.canvas)
 
         let ansi = theme?.ansi?.map(\.nsColor)
-        let fallback = TerminalViewController.ansiPalette(dark: dark).map {
-            NSColor(srgbRed: CGFloat($0.red) / 65535, green: CGFloat($0.green) / 65535, blue: CGFloat($0.blue) / 65535, alpha: 1)
-        }
+        let fallback = TerminalViewController.ansiPaletteColors(dark: dark)
         let palette = ansi ?? fallback
         let foreground = theme?.terminalText?.nsColor ?? NSColor.labelColor
         func run(_ piece: String, _ ansiIndex: Int? = nil) -> NSAttributedString {

@@ -5,7 +5,8 @@ import SideSessionsKit
 /// Session restore, phase 1 (SIDE_RFC_SESSION_RESTORE.md): a shell in a keeper outlives its
 /// project being released, and reopening the project gives back the same shell and screen.
 @MainActor
-final class SessionKeeperTests: XCTestCase {
+/// Not final: SessionKeeperAlloyTests runs every one of these again on the new terminal engine.
+class SessionKeeperTests: XCTestCase {
     nonisolated(unsafe) private var runDirectory: URL!
 
     override func setUpWithError() throws {

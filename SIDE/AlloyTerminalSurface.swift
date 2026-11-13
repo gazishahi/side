@@ -72,7 +72,11 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
         events.bell = { DispatchQueue.main.async { relay.surface?.onBell?() } }
         let cell = TerminalFont(font as CTFont).cellSize
         // Force-unwrapped: creating a terminal fails only when libghostty-vt can't allocate.
-        terminal = try! Terminal(columns: max(2, Int(frame.width / cell.width)), rows: max(2, Int(frame.height / cell.height)), events: events)
+        // Before layout, the view's placeholder grid (80×24), so early output isn't wrapped at
+        // two columns; the first layout resizes it to the real grid.
+        let placeholder = AlloyTerminalView.placeholderSize
+        terminal = try! Terminal(columns: frame.width > 0 ? max(2, Int(frame.width / cell.width)) : placeholder.columns,
+                                 rows: frame.height > 0 ? max(2, Int(frame.height / cell.height)) : placeholder.rows, events: events)
         keys = KeyEncoder(terminal: terminal)
         selection = TerminalSelection(terminal: terminal)
         mouse = MouseEncoder(terminal: terminal)
@@ -127,7 +131,13 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
 
     // MARK: Session
 
-    func syncKeeperSize() { keeper?.resize(cols: columns, rows: rows) }
+    /// Only once laid out: before that the grid is a placeholder, and a keeper attached unsized
+    /// keeps its own size until this terminal has a real one (KeeperLink.attach). Told 1×1 by a
+    /// view with no frame, a kept shell was squeezed into one column (2026-11-13).
+    func syncKeeperSize() {
+        guard screen.hasSize else { return }
+        keeper?.resize(cols: columns, rows: rows)
+    }
     var columns: Int { screen.columns }
     var rows: Int { screen.rows }
     var scrollbackLines: Int { 10_000 }
