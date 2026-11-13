@@ -153,6 +153,11 @@ public final class TerminalRenderer {
 
     private var backgroundQuads: [[Quad]] = []
     private var glyphQuads: [[Quad]] = []
+    /// Blinking cells' glyphs, kept apart: drawn or left out by the blink's phase each frame,
+    /// without rebuilding their rows.
+    private var blinkingGlyphQuads: [[Quad]] = []
+    /// Whether anything on screen blinks: the view's blink timer runs for it.
+    public var hasBlinkingText: Bool { blinkingGlyphQuads.contains { !$0.isEmpty } }
     private var builtScale: CGFloat = 0
     private var builtRows = 0
     private var atlasGeneration = 0
@@ -236,6 +241,7 @@ public final class TerminalRenderer {
             atlasGeneration = atlas.generation
             backgroundQuads = Array(repeating: [], count: grid.rows)
             glyphQuads = Array(repeating: [], count: grid.rows)
+            blinkingGlyphQuads = Array(repeating: [], count: grid.rows)
             for y in 0..<grid.rows { grid.dirty[y] = true }
         }
         for y in rowsToRebuild where y >= 0 && y < grid.rows { grid.dirty[y] = true }
@@ -256,6 +262,8 @@ public final class TerminalRenderer {
         for row in backgroundQuads { quads += row }
         if paddingColor == .extend { quads += paddingQuads(grid, scale: scale, size: size) }
         for row in glyphQuads { quads += row }
+        // Blinking text shows in the blink's on phase, and always while unfocused (no blink then).
+        if blinkOn || !focused { for row in blinkingGlyphQuads { quads += row } }
         quads += linkQuads(grid, scale: scale)
         // The cursor over the text: a block covers its cell and redraws the character in the
         // background's color, as terminals draw it; a bar or underline just sits there.
@@ -418,7 +426,11 @@ public final class TerminalRenderer {
     }
 
     private func rebuild(row y: Int, of grid: TerminalGrid, scale: CGFloat) {
-        var backgrounds: [Quad] = [], glyphs: [Quad] = []
+        var backgrounds: [Quad] = [], glyphs: [Quad] = [], blinking: [Quad] = []
+        /// A cell's glyph quads, apart for a blinking cell.
+        func emit(_ quads: [Quad], for cell: TerminalCell) {
+            if cell.style.contains(.blink) { blinking += quads } else { glyphs += quads }
+        }
         let (cw, ch, baselineOffset) = metrics(scale)
         let top = Float(y) * ch
         let baseline = top + baselineOffset
@@ -506,9 +518,9 @@ public final class TerminalRenderer {
                         let cell = grid.cells[rowStart + x + g.cell]
                         let r = g.entry.region
                         let cellLeft = (Float(x + g.cell) * cw).rounded(.down)
-                        glyphs.append(Quad(rect: SIMD4(cellLeft + Float(g.dx * scale + g.entry.offset.x), baseline + Float(g.entry.offset.y), Float(r.width), Float(r.height)),
-                                           uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
-                                           color: g.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x + g.cell, cell), kind: g.entry.isColor ? 2 : 1))
+                        emit([Quad(rect: SIMD4(cellLeft + Float(g.dx * scale + g.entry.offset.x), baseline + Float(g.entry.offset.y), Float(r.width), Float(r.height)),
+                                   uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
+                                   color: g.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x + g.cell, cell), kind: g.entry.isColor ? 2 : 1)], for: cell)
                     }
                     x = end
                     continue
@@ -519,18 +531,19 @@ public final class TerminalRenderer {
             guard !c.style.contains(.spacer), c.scalar > 32 || c.cluster != nil else { continue }
             if c.cluster == nil, let drawn = sprite(c.scalar, left: left, top: top, width: span, height: ch,
                                                     line: underlineHeight, color: ink(x, c)) {
-                glyphs += drawn
+                emit(drawn, for: c)
                 continue
             }
             for p in placed(c, scale: scale) where p.entry.region.width > 0 {
                 let r = p.entry.region
-                glyphs.append(Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
-                                   uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
-                                   color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x, c), kind: p.entry.isColor ? 2 : 1))
+                emit([Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
+                           uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
+                           color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x, c), kind: p.entry.isColor ? 2 : 1)], for: c)
             }
         }
         backgroundQuads[y] = backgrounds
         glyphQuads[y] = glyphs
+        blinkingGlyphQuads[y] = blinking
     }
 
     /// An underline of one kind across `width` pixels, as solid quads: two lines for double,

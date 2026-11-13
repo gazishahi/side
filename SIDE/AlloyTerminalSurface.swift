@@ -674,6 +674,7 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
                 if c.style.contains(.spacer) { style.insert(.spacer) }
                 if c.style.contains(.overline) { style.insert(.overline) }
                 if c.style.contains(.selected) { style.insert(.selected) }
+                if c.style.contains(.blink) { style.insert(.blink) }
                 let hidden = c.style.contains(.invisible)
                 let underline: TerminalCell.Underline = switch c.underline {
                 case .none: .none

@@ -217,6 +217,26 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertGreaterThan(italic.lean, 3, "italic leans right toward the top: \(italic.lean)")
     }
 
+    /// Blinking text (SGR 5) shows in the blink's on phase, not in the off; unfocused, it stays.
+    func testBlinkingText() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 4, rows: 1, foreground: 0xFFFFFF)
+        grid[0, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0xFFFFFF, style: .blink)
+        grid[2, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0xFFFFFF)
+        grid.cursor.visible = false
+        let lit: (Pixels.RGBA) -> Bool = { $0.r > 128 }
+        let blinking = cellRect(column: 0, row: 0), steady = cellRect(column: 2, row: 0)
+        var pixels = try render(grid, renderer: renderer)
+        XCTAssertTrue(renderer.hasBlinkingText)
+        XCTAssertGreaterThan(pixels.count(in: blinking, lit), 20, "on")
+        renderer.blinkOn = false
+        pixels = try render(grid, renderer: renderer)
+        XCTAssertEqual(pixels.count(in: blinking, lit), 0, "off")
+        XCTAssertGreaterThan(pixels.count(in: steady, lit), 20, "steady text stays")
+        renderer.focused = false
+        XCTAssertGreaterThan(try render(grid, renderer: renderer).count(in: blinking, lit), 20, "unfocused, it doesn't blink")
+    }
+
     /// A program's cursor color over the theme's.
     func testTheCursorInAProgramsColor() throws {
         let renderer = try makeRenderer()
@@ -506,6 +526,34 @@ final class AlloyTerminalViewTests: XCTestCase {
         let layer = try XCTUnwrap(view.layer as? CAMetalLayer)
         XCTAssertEqual(layer.colorspace?.name, CGColorSpace.sRGB)
         XCTAssertEqual(layer.pixelFormat, .bgra8Unorm, "blending in encoded values, as AppKit's")
+    }
+
+    /// Blinking text keeps the blink timer going though the cursor doesn't blink.
+    func testBlinkingTextRunsTheTimer() throws {
+        let view = try AlloyTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 60), font: TerminalFont(name: "Menlo", size: 13),
+                                         theme: TerminalRendererTests.black)
+        final class Blinking: TerminalGridSource, @unchecked Sendable {
+            var blink = true
+            func snapshot(into grid: TerminalGrid) -> Bool {
+                grid[0, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0xFFFFFF, style: blink ? .blink : [])
+                grid.dirty[0] = true
+                grid.cursor = TerminalCursor(visible: true, blinking: false)
+                return true
+            }
+        }
+        let source = Blinking()
+        view.source = source
+        view.setFocused(true)
+        view.setNeedsFrame()
+        let off = Date().addingTimeInterval(2)
+        while view.blinkOn, Date() < off { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertTrue(view.isBlinking)
+        XCTAssertFalse(view.blinkOn, "the text's phase turned")
+        source.blink = false
+        view.setNeedsFrame()
+        let stop = Date().addingTimeInterval(1)
+        while view.isBlinking, Date() < stop { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertFalse(view.isBlinking, "nothing blinks: no timer")
     }
 
     func testTheGridFollowsTheViewsSize() throws {

@@ -379,7 +379,8 @@ private final class RenderEngine: @unchecked Sendable {
 
     /// On `queue`: start the timer if the cursor should blink, stop it if not.
     private func updateBlinkTimer(restart: Bool = false) {
-        let wanted = renderer.focused && grid.cursor.visible && grid.cursor.blinking
+        // A blinking cursor, or blinking text (SGR 5), keeps it going; only while focused.
+        let wanted = renderer.focused && ((grid.cursor.visible && grid.cursor.blinking) || renderer.hasBlinkingText)
         if !wanted {
             blinkTimer?.cancel()
             blinkTimer = nil
@@ -473,6 +474,8 @@ private final class RenderEngine: @unchecked Sendable {
         guard layer.drawableSize.width > 0, let drawable = layer.nextDrawable() else { return }
         renderer.draw(grid, scale: scale, into: drawable.texture, drawable: drawable)
         drawn.wrappingAdd(1, ordering: .relaxed)
+        // Whether text blinks is known only once its rows are built.
+        updateBlinkTimer()
     }
 
     func renderOffscreen() -> MTLTexture? {
