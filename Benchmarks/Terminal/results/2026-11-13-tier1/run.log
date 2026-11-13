@@ -1,0 +1,89 @@
+Building for production...
+[Planning deferred tasks]
+[3 / 6] SwiftTerm
+Build complete! (0.71 sec)
+Building for production...
+[Planning deferred tasks]
+[2 / 4]
+[3 / 6] TermBenchGV-product
+/Users/gazishahi/Documents/side/SIDE/Benchmarks/Terminal/TermBench/Sources/TermBenchGV/main.swift:36:17: [1;33mwarning: [1;39mvariable 'me' was never mutated; consider changing to 'let' constant[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated\VariableNeverMutated]8;;\]
+ [0;36m34 |[0;0m         // SwiftTerm and Ghostty both do. TERMBENCH_NOHOLD=1 ignores holds (the 11-03 prototype).
+ [0;36m35 |[0;0m         if ProcessInfo.processInfo.environment["TERMBENCH_NOHOLD"] != "1" {
+ [0;36m36 |[0;0m             var me: UnsafeMutableRawPointer? = Unmanaged.passUnretained(self).toOpaque()
+    [0;36m|[0;0m                 `- [1;33mwarning: [1;39mvariable 'me' was never mutated; consider changing to 'let' constant[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated\VariableNeverMutated]8;;\]
+ [0;36m37 |[0;0m             ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, me)
+ [0;36m38 |[0;0m             let hold: GhosttyTerminalRenderHoldFn = { terminal, userdata, held in
+
+[#VariableNeverMutated]: <https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated>
+[4 / 7] TermBenchGV-product
+[6 / 7] TermBenchGV-product
+[7 / 7] TermBenchGV-product
+Build complete! (2.20 sec)
+Building for production...
+[2 / 4]
+[3 / 6] TermBenchGK-product
+/Users/gazishahi/Documents/side/SIDE/Benchmarks/Terminal/TermBench/Sources/TermBenchGK/main.swift:42:1: [1;33mwarning: [1;39m'@preconcurrency' on conformance to 'NSTextInputClient' has no effect[0;0m
+ [0;36m40 |[0;0m }
+ [0;36m41 |[0;0m 
+ [0;36m42 |[0;0m extension SurfaceHost: @preconcurrency NSTextInputClient {
+    [0;36m|[0;0m `- [1;33mwarning: [1;39m'@preconcurrency' on conformance to 'NSTextInputClient' has no effect[0;0m
+ [0;36m43 |[0;0m     func insertText(_ string: Any, replacementRange: NSRange) {
+ [0;36m44 |[0;0m         typed = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+[4 / 7] TermBenchGK-product
+[6 / 7] TermBenchGK-product
+[7 / 7] TermBenchGK-product
+Build complete! (3.60 sec)
+Building for production...
+[Using on-disk description]
+Build complete! (0.32 sec)
+
+== throughput 80x24 (median: MB/s | main-thread CPU s | process CPU s | footprint MB)
+workload                                     A                                 B                                 C                                 D
+ascii             41.0   0.827   1.186    150                                 -     142.6   0.019   0.216    180     186.8   0.005   0.386    145
+colors            25.4   1.240   1.619    144                                 -     106.5   0.018   0.301    196     148.7   0.005   0.422    144
+unicode           11.2   1.365   1.565    149                                 -      91.4   0.027   0.185    184     134.6   0.003   0.238    141
+cursor            12.1   1.307   1.513    142                                 -      68.3   0.011   0.236    180     100.7   0.004   0.277    144
+tui               23.3   0.659   0.855    152                                 -     126.7   0.032   0.132    181     153.5   0.003   0.187    143
+scroll            36.6   0.418   0.622    149                                 -     135.8   0.012   0.108    173     141.4   0.004   0.228    136
+
+== throughput 200x60 (median: MB/s | main-thread CPU s | process CPU s | footprint MB)
+workload                                     A                                 B                                 C                                 D
+ascii             34.3   0.967   1.359    280                                 -     118.2   0.044   0.299    192     183.2   0.006   0.430    205
+colors            13.2   2.395   2.872    241                                 -     127.7   0.045   0.261    205     171.8   0.005   0.469    202
+unicode            6.4   2.449   2.719    244                                 -      86.8   0.043   0.204    195     135.5   0.003   0.268    206
+cursor            11.4   1.374   1.610    230                                 -      46.7   0.029   0.360    185      55.3   0.006   0.456    194
+tui               22.9   0.634   0.842    280                                 -     146.4   0.030   0.116    176     155.2   0.003   0.189    195
+scroll            25.1   0.608   0.817    278                                 -     111.9   0.019   0.141    175     146.2   0.003   0.258    203
+
+== frame cost (ms, median/p95; GPU - where there is none)
+A tui.bin   80x24   fullCPU    1.65/2.25 fullGPU            - rowCPU    0.10/0.46 rowGPU            -
+C tui.bin   80x24   fullCPU    0.10/0.13 fullGPU    0.06/0.10 rowCPU    0.02/0.12 rowGPU    0.06/0.10
+E tui.bin   80x24   fullCPU    0.27/0.34 fullGPU    0.03/0.11 rowCPU    0.04/0.08 rowGPU    0.03/0.11
+A ascii.bin 80x24   fullCPU    0.80/0.85 fullGPU            - rowCPU    0.09/0.17 rowGPU            -
+C ascii.bin 80x24   fullCPU    0.11/0.19 fullGPU    0.03/0.10 rowCPU    0.02/0.03 rowGPU    0.03/0.10
+E ascii.bin 80x24   fullCPU    0.50/0.66 fullGPU    0.03/0.10 rowCPU    0.06/0.08 rowGPU    0.03/0.10
+A tui.bin   200x60  fullCPU    4.74/5.46 fullGPU            - rowCPU    0.18/0.34 rowGPU            -
+C tui.bin   200x60  fullCPU    0.15/0.17 fullGPU    0.10/0.37 rowCPU    0.03/0.06 rowGPU    0.10/0.37
+E tui.bin   200x60  fullCPU    0.48/0.51 fullGPU    0.10/0.38 rowCPU    0.07/0.10 rowGPU    0.10/0.38
+A ascii.bin 200x60  fullCPU    3.47/3.84 fullGPU            - rowCPU    0.20/0.34 rowGPU            -
+C ascii.bin 200x60  fullCPU    0.45/0.55 fullGPU    0.10/0.41 rowCPU    0.04/0.05 rowGPU    0.10/0.40
+E ascii.bin 200x60  fullCPU    1.71/2.04 fullGPU    0.10/0.41 rowCPU    0.08/0.10 rowGPU    0.10/0.23
+A tui.bin   440x96  fullCPU  11.56/11.79 fullGPU            - rowCPU    0.19/0.31 rowGPU            -
+C tui.bin   440x96  fullCPU    0.26/0.27 fullGPU    0.29/0.65 rowCPU    0.04/0.08 rowGPU    0.29/0.65
+E tui.bin   440x96  fullCPU    0.80/0.85 fullGPU    0.29/0.30 rowCPU    0.11/0.15 rowGPU    0.29/0.30
+A ascii.bin 440x96  fullCPU  10.76/11.30 fullGPU            - rowCPU    0.21/0.36 rowGPU            -
+C ascii.bin 440x96  fullCPU    1.40/1.55 fullGPU    0.31/0.33 rowCPU    0.07/0.09 rowGPU    0.31/0.32
+E ascii.bin 440x96  fullCPU    4.35/5.03 fullGPU    0.40/0.53 rowCPU    0.14/0.16 rowGPU    0.40/0.48
+
+== six sessions (median)
+A mainCPU 2.492s processCPU 3.073s footprint 78MB runs=3
+C mainCPU 0.283s processCPU 0.755s footprint 176MB runs=3
+D mainCPU 0.349s processCPU 1.389s footprint 324MB runs=3
+E mainCPU 0.001s processCPU 0.371s footprint 76MB runs=3
+
+== keypress latency (ms; median across runs of each run's median / p95)
+Traceback (most recent call last):
+  File "/Users/gazishahi/Documents/side/SIDE/Benchmarks/Terminal/scripts/../scripts/summarize.py", line 54, in <module>
+    g[(r['load'], r['setup'])].append(r)
+KeyError: 'load'
+SUITE-EXIT 1

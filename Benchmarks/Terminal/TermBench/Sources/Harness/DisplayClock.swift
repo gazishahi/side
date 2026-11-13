@@ -27,8 +27,16 @@ final class DisplayClock: NSObject, SCStreamOutput, @unchecked Sendable {
         var ok = false
         Task.detached {
             defer { ready.signal() }
-            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true),
-                  let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else { return }
+            let content: SCShareableContent
+            do { content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) } catch {
+                // The reason, not just that it failed: usually Screen Recording permission.
+                FileHandle.standardError.write("display clock: \(error)\n".data(using: .utf8)!)
+                return
+            }
+            guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
+                FileHandle.standardError.write("display clock: no main display among \(content.displays.map(\.displayID))\n".data(using: .utf8)!)
+                return
+            }
             let config = SCStreamConfiguration()
             config.sourceRect = rect
             config.width = Int(rect.width * scale); config.height = Int(rect.height * scale)

@@ -1,0 +1,9 @@
+grid 200x60, scrollback 10000 lines, 16 KB chunks, median of 5 runs
+
+workload                         size   SwiftTerm   libghostty-vt   ratio
+ascii (source code)             33 MB     44.2 MB/s      407.9 MB/s    9.2x
+truecolor + 256-color SGR       32 MB     31.1 MB/s      280.7 MB/s    9.0x
+unicode (CJK, emoji, RTL)       16 MB     11.4 MB/s      197.3 MB/s   17.2x
+cursor motion                   16 MB     11.7 MB/s       68.0 MB/s    5.8x
+TUI redraw (Claude-like)        16 MB     29.0 MB/s      623.4 MB/s   21.5x
+scroll region                   16 MB     33.1 MB/s      272.6 MB/s    8.2x
