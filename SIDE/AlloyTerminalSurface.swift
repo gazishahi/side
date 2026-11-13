@@ -142,6 +142,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
             onAgentReport?(report.split(separator: ";", omittingEmptySubsequences: false).map(String.init))
         }
         display(bytes)
+        clearHoveredLink()
         scheduleAccessibilityValueUpdate()
         scheduleThumbUpdate()
     }
@@ -266,6 +267,8 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
     }
 
     private func handleMouse(_ event: TerminalMouseEvent) {
+        if event.kind == .moved || event.kind == .flagsChanged || event.kind == .exited { updateHoveredLink(event) }
+        if event.kind == .flagsChanged || event.kind == .exited { return }
         if reportsMouse(event.modifiers) {
             let (action, button): (MouseInput.Action, MouseInput.Button) = switch event.kind {
             case .down: (.press, .left)
@@ -276,6 +279,8 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
             case .middleDown: (.press, .middle)
             case .middleUp: (.release, .middle)
             case .moved: (.motion, .none)
+            // Not mouse input for the program: handled above, never here.
+            case .flagsChanged, .exited: (.motion, .none)
             }
             let bytes = mouse.encode(MouseInput(action: action, button: button, modifiers: Self.modifiers(event.modifiers), x: event.x, y: event.y),
                                      geometry: mouseGeometry())
@@ -300,7 +305,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
             stopAutoscroll()
             lastDrag = nil
             selection.release(column: event.column, row: event.row)
-        case .rightDown, .rightUp, .middleDown, .middleUp, .moved:
+        case .rightDown, .rightUp, .middleDown, .middleUp, .moved, .flagsChanged, .exited:
             return
         }
         screen.setNeedsFrame()
@@ -308,10 +313,38 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
 
     // MARK: Links
 
-    /// What ⌘-click on a cell opens: its OSC 8 link, or a URL or path in the row's text.
+    /// What ⌘-click on a cell opens: its OSC 8 link, or a URL or path in the text, either one
+    /// followed across the rows it wraps onto.
     private func link(column: Int, row: Int) -> String? {
-        terminal.hyperlink(column: column, row: row) ?? ImplicitLinks.link(in: terminal.rowText(row), at: column)
+        terminal.link(column: column, row: row)?.url
     }
+
+    /// The link under the pointer while ⌘ is held: underlined, with a pointing hand, as Ghostty
+    /// shows what ⌘-click opens.
+    private var hoveredLink: TerminalLink?
+
+    private func updateHoveredLink(_ event: TerminalMouseEvent) {
+        let link = event.kind != .exited && event.modifiers.contains(.command) ? terminal.link(column: event.column, row: event.row) : nil
+        guard link != hoveredLink else { return }
+        hoveredLink = link
+        screen.highlightedLink = link?.spans.map { TerminalSpan(row: $0.row, columns: $0.columns) } ?? []
+        screen.pointer = link == nil ? .iBeam : .pointingHand
+    }
+
+    /// The text moved under the pointer (scrolled, or new output): the underline would be on the
+    /// wrong cells. The next move or ⌘ finds the link again.
+    private func clearHoveredLink() {
+        guard hoveredLink != nil else { return }
+        hoveredLink = nil
+        screen.highlightedLink = []
+        screen.pointer = .iBeam
+    }
+
+    var hoveredLinkForTesting: String? { hoveredLink?.url }
+    /// The underlined cells, as (row, first column, last column).
+    var underlinedForTesting: [[Int]] { screen.highlightedLink.map { [$0.row, $0.columns.lowerBound, $0.columns.upperBound] } }
+    var pointerForTesting: NSCursor { screen.pointer }
+    var columnsForTesting: Int { screen.columns }
 
     /// Side's own first (a path opens in Editor), else its default app, as SwiftTerm's view did
     /// (TerminalView.openDefaultLink): a URL as it is, a path if it exists, with a `:line[:column]`
@@ -353,6 +386,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
     /// The wheel or a trackpad: back through the scrollback; in a full-screen program, which has
     /// none, arrow keys instead (as Ghostty's mouse-alternate-scroll does), so less and vim scroll.
     private func handleScroll(_ rows: Double, x: Double, y: Double) {
+        clearHoveredLink()
         pendingScroll += rows
         let whole = Int(pendingScroll.rounded(.towardZero))
         guard whole != 0 else { return }

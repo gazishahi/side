@@ -180,12 +180,37 @@ public final class AlloyTerminalView: NSView {
     public override func otherMouseDown(with event: NSEvent) { mouseHandler?(mouseEvent(event, .middleDown)) }
     public override func otherMouseUp(with event: NSEvent) { mouseHandler?(mouseEvent(event, .middleUp)) }
     public override func mouseMoved(with event: NSEvent) { mouseHandler?(mouseEvent(event, .moved)) }
+    public override func mouseExited(with event: NSEvent) { mouseHandler?(mouseEvent(event, .exited)) }
+
+    public override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        guard let window, bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) else { return }
+        mouseHandler?(mouseEvent(event, .flagsChanged))
+    }
+
+    // MARK: - The pointer, and the link under it
+
+    /// The pointer over the terminal: an I-beam, or a pointing hand over a link.
+    public var pointer: NSCursor = .iBeam {
+        didSet {
+            guard pointer != oldValue else { return }
+            window?.invalidateCursorRects(for: self)
+            if let window, bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) { pointer.set() }
+        }
+    }
+
+    public override func resetCursorRects() { addCursorRect(bounds, cursor: pointer) }
+
+    /// The link to underline (the cells under the pointer while ⌘ is held); empty for none.
+    public var highlightedLink: [TerminalSpan] = [] {
+        didSet { if highlightedLink != oldValue { engine.setHighlightedLink(highlightedLink) } }
+    }
 
     /// Plain motion is reported too, for programs that track it (any-event mouse tracking).
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
     }
 
     public override func scrollWheel(with event: NSEvent) {
@@ -198,14 +223,17 @@ public final class AlloyTerminalView: NSView {
     /// Where an event fell: its cell (clamped to the grid) and its position in the drawable's
     /// pixels from the top-left, unclamped (a drag past an edge is below 0 or past the height).
     private func mouseEvent(_ event: NSEvent, _ kind: TerminalMouseEvent.Kind) -> TerminalMouseEvent {
-        let point = convert(event.locationInWindow, from: nil)
+        // A modifier key's event has no position or click count of its own (asking for its
+        // clickCount raises): the pointer's position now, and no clicks.
+        let isKey = event.type == .flagsChanged
+        let point = convert(isKey ? (window?.mouseLocationOutsideOfEventStream ?? .zero) : event.locationInWindow, from: nil)
         let fromTop = CGPoint(x: point.x, y: bounds.height - point.y)
         let cell = font.cellSize
         let column = min(max(0, Int(fromTop.x / cell.width)), columns - 1)
         let row = min(max(0, Int(fromTop.y / cell.height)), rows - 1)
         let scale = window?.backingScaleFactor ?? 2
         return TerminalMouseEvent(kind: kind, column: column, row: row, x: Double(fromTop.x * scale), y: Double(fromTop.y * scale),
-                                  clickCount: event.clickCount, modifiers: event.modifierFlags)
+                                  clickCount: isKey || kind == .exited ? 0 : event.clickCount, modifiers: event.modifierFlags)
     }
 
     /// The grid's geometry in the drawable's pixels.
@@ -221,7 +249,9 @@ public final class AlloyTerminalView: NSView {
 
 /// A mouse event over the grid.
 public struct TerminalMouseEvent: Sendable {
-    public enum Kind: Sendable { case down, dragged, up, rightDown, rightUp, middleDown, middleUp, moved }
+    /// `flagsChanged`: a modifier went down or up with the pointer over the view (⌘ shows links);
+    /// `exited`: the pointer left it.
+    public enum Kind: Sendable { case down, dragged, up, rightDown, rightUp, middleDown, middleUp, moved, flagsChanged, exited }
     public var kind: Kind
     public var column: Int
     public var row: Int
@@ -360,6 +390,14 @@ private final class RenderEngine: @unchecked Sendable {
     func setPreedit(_ text: String) {
         queue.async {
             self.renderer.preedit = text
+            self.forced = true
+        }
+        requestFrame()
+    }
+
+    func setHighlightedLink(_ spans: [TerminalSpan]) {
+        queue.async {
+            self.renderer.highlightedLink = spans
             self.forced = true
         }
         requestFrame()

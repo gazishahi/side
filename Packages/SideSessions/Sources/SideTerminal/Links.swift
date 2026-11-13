@@ -1,7 +1,81 @@
 import Foundation
 import GhosttyVt
 
+/// A link under the pointer: what it opens, and the viewport cells it covers, row by row, so it
+/// can be underlined where it is, across the rows it wraps onto.
+public struct TerminalLink: Equatable, Sendable {
+    public struct Span: Equatable, Sendable {
+        public var row: Int
+        public var columns: ClosedRange<Int>
+        public init(row: Int, columns: ClosedRange<Int>) { self.row = row; self.columns = columns }
+    }
+    public var url: String
+    public var spans: [Span]
+    public init(url: String, spans: [Span]) { self.url = url; self.spans = spans }
+}
+
 extension Terminal {
+    /// The link at a viewport cell: its OSC 8 hyperlink, or a URL or path in the text (Ghostty's
+    /// pattern), either one followed across soft-wrapped rows.
+    public func link(column: Int, row: Int) -> TerminalLink? {
+        if let url = hyperlink(column: column, row: row) {
+            // The run of cells with the same link, through the rows it wraps onto.
+            var cells: [(row: Int, column: Int)] = [(row, column)]
+            var at = (row: row, column: column)
+            while let before = step(at, by: -1), hyperlink(column: before.column, row: before.row) == url { cells.insert(before, at: 0); at = before }
+            at = (row, column)
+            while let after = step(at, by: 1), hyperlink(column: after.column, row: after.row) == url { cells.append(after); at = after }
+            return TerminalLink(url: url, spans: Self.spans(cells))
+        }
+        // The logical line: the rows before that wrap into this one, and those this wraps onto.
+        var first = row, last = row
+        while first > 0, isWrapped(row: first - 1) { first -= 1 }
+        while last < rows - 1, isWrapped(row: last) { last += 1 }
+        var text = ""
+        var positions: [(row: Int, column: Int)] = []
+        for y in first...last {
+            let line = rowText(y)
+            text += line.text
+            positions += line.columns.map { (y, $0) }
+        }
+        guard let (url, covered) = ImplicitLinks.match(in: text, positions: positions, covering: { $0.row == row && $0.column == column })
+        else { return nil }
+        return TerminalLink(url: url, spans: Self.spans(covered))
+    }
+
+    /// Whether a viewport row soft-wraps onto the next.
+    public func isWrapped(row: Int) -> Bool {
+        lock.read {
+            guard var ref = viewportRef(column: 0, row: row) else { return false }
+            var line: GhosttyRow = 0
+            guard ghostty_grid_ref_row(&ref, &line) == GHOSTTY_SUCCESS else { return false }
+            var wrapped = false
+            ghostty_row_get(line, GHOSTTY_ROW_DATA_WRAP, &wrapped)
+            return wrapped
+        }
+    }
+
+    /// The next cell in reading order, across a soft wrap but not a hard line break.
+    private func step(_ at: (row: Int, column: Int), by delta: Int) -> (row: Int, column: Int)? {
+        let column = at.column + delta
+        if column >= 0, column < columns { return (at.row, column) }
+        if delta < 0, at.row > 0, isWrapped(row: at.row - 1) { return (at.row - 1, columns - 1) }
+        if delta > 0, at.row < rows - 1, isWrapped(row: at.row) { return (at.row + 1, 0) }
+        return nil
+    }
+
+    private static func spans(_ cells: [(row: Int, column: Int)]) -> [TerminalLink.Span] {
+        var spans: [TerminalLink.Span] = []
+        for cell in cells {
+            if let last = spans.last, last.row == cell.row, cell.column >= last.columns.lowerBound {
+                spans[spans.count - 1].columns = last.columns.lowerBound...max(last.columns.upperBound, cell.column)
+            } else {
+                spans.append(TerminalLink.Span(row: cell.row, columns: cell.column...cell.column))
+            }
+        }
+        return spans
+    }
+
     /// The OSC 8 hyperlink of a cell in the viewport, if it has one.
     public func hyperlink(column: Int, row: Int) -> String? {
         lock.read {
@@ -58,16 +132,23 @@ extension Terminal {
 public enum ImplicitLinks {
     /// The link in `row` that covers `column`, if any.
     public static func link(in row: (text: String, columns: [Int]), at column: Int) -> String? {
-        guard let regex else { return nil }
-        let text = row.text as NSString
-        for match in regex.matches(in: row.text, range: NSRange(location: 0, length: text.length)) where match.range.length > 0 {
+        match(in: row.text, positions: row.columns, covering: { $0 == column })?.url
+    }
+
+    /// The link in `text` that covers a position, with the positions it covers (trailing spaces
+    /// left off). `positions` gives each UTF-16 unit of `text` its position, a column or a cell.
+    static func match<P>(in text: String, positions: [P], covering: (P) -> Bool) -> (url: String, positions: [P])? {
+        guard let regex, !positions.isEmpty else { return nil }
+        let string = text as NSString
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: string.length)) where match.range.length > 0 {
             // Ghostty skips a match right after `$` (a variable, not a path).
-            if match.range.location > 0, text.character(at: match.range.location - 1) == UInt16(UInt8(ascii: "$")) { continue }
-            let first = row.columns[match.range.location]
-            let last = row.columns[min(row.columns.count - 1, match.range.location + match.range.length - 1)]
-            if column >= first, column <= last {
-                return text.substring(with: match.range).trimmingCharacters(in: .whitespaces)
-            }
+            if match.range.location > 0, string.character(at: match.range.location - 1) == UInt16(UInt8(ascii: "$")) { continue }
+            let url = string.substring(with: match.range).trimmingCharacters(in: .whitespaces)
+            let leading = string.substring(with: match.range).prefix { $0 == " " }.utf16.count
+            let start = match.range.location + leading, end = min(positions.count, start + url.utf16.count)
+            guard start < end else { continue }
+            let covered = Array(positions[start..<end])
+            if covered.contains(where: covering) { return (url, covered) }
         }
         return nil
     }

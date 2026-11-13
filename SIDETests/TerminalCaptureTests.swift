@@ -378,6 +378,53 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertEqual(requested, ["Sources/App/main.swift:12", "https://example.com/x"])
     }
 
+    /// With ⌘ held, the link under the pointer is underlined, all of it, across the rows it wraps
+    /// onto, and ⌘-click opens all of it; without ⌘, or once the pointer leaves, nothing is.
+    func testHoveringALinkWithCommandUnderlinesIt() {
+        let surface = makeSurface()
+        let window = NSWindow(contentRect: surface.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        let screen = surface.screenForTesting
+        let columns = surface.columnsForTesting
+        // A URL from column 4 that runs past the row's end onto the next.
+        let url = "https://example.com/" + String(repeating: "a", count: columns)
+        surface.display(text: "see " + url + " ok")
+        XCTAssertTrue(waitUntil { surface.visibleText().contains(" ok") })
+        let cell = surface.cellSizeForTesting
+        func send(_ type: NSEvent.EventType, column: Int, row: Int, _ flags: NSEvent.ModifierFlags) {
+            let at = screen.convert(NSPoint(x: (CGFloat(column) + 0.5) * cell.width, y: screen.bounds.height - (CGFloat(row) + 0.5) * cell.height), to: nil)
+            let event = NSEvent.mouseEvent(with: type, location: at, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: type == .mouseMoved ? 0 : 1, pressure: 1)!
+            switch type {
+            case .mouseMoved: screen.mouseMoved(with: event)
+            case .leftMouseDown: screen.mouseDown(with: event)
+            case .leftMouseUp: screen.mouseUp(with: event)
+            default: break
+            }
+        }
+        send(.mouseMoved, column: 6, row: 0, [])
+        XCTAssertNil(surface.hoveredLinkForTesting, "no ⌘, no link")
+        XCTAssertEqual(surface.underlinedForTesting, [])
+
+        send(.mouseMoved, column: 3, row: 1, .command)
+        XCTAssertEqual(surface.hoveredLinkForTesting, url, "found from the row it wrapped onto")
+        XCTAssertEqual(surface.underlinedForTesting, [[0, 4, columns - 1], [1, 0, url.count - (columns - 4) - 1]])
+        XCTAssertEqual(surface.pointerForTesting, .pointingHand)
+
+        var requested: [String] = []
+        surface.onFileLinkRequested = { requested.append($0); return true }
+        send(.leftMouseDown, column: 6, row: 0, .command)
+        send(.leftMouseUp, column: 6, row: 0, .command)
+        XCTAssertEqual(requested, [url], "⌘-click opens all of it")
+
+        send(.mouseMoved, column: 1, row: 0, .command)
+        XCTAssertNil(surface.hoveredLinkForTesting, "\"see\" isn't a link")
+        XCTAssertEqual(surface.underlinedForTesting, [])
+        XCTAssertEqual(surface.pointerForTesting, .iBeam)
+    }
+
     func testAgentReportsAcrossReads() {
         var watcher = OSCWatcher(code: 6973)
         XCTAssertEqual(watcher.consume(Array("x\u{1B}]6973;agent;cl".utf8)), [])

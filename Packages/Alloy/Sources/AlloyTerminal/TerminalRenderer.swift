@@ -83,6 +83,8 @@ public final class TerminalRenderer {
     public var focused = true
     /// The blink's phase: false hides a blinking cursor. The view's timer flips it.
     public var blinkOn = true
+    /// The link under the pointer, underlined in its text's colors (⌘ held, as Ghostty shows it).
+    public var highlightedLink: [TerminalSpan] = []
 
     private let gpu: QuadPipeline
     private let atlas: GlyphAtlas
@@ -204,6 +206,7 @@ public final class TerminalRenderer {
         quads.reserveCapacity(grid.columns * grid.rows / 2 + 64)
         for row in backgroundQuads { quads += row }
         for row in glyphQuads { quads += row }
+        quads += linkQuads(grid, scale: scale)
         // The cursor over the text: a block covers its cell and redraws the character in the
         // background's color, as terminals draw it; a bar or underline just sits there.
         if preedit.isEmpty, let shape = cursorShape(grid.cursor) {
@@ -276,6 +279,22 @@ public final class TerminalRenderer {
                         uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
                         color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink, kind: p.entry.isColor ? 2 : 1)
         }
+    }
+
+    /// An underline under each cell of the hovered link, in that cell's color.
+    private func linkQuads(_ grid: TerminalGrid, scale: CGFloat) -> [Quad] {
+        guard !highlightedLink.isEmpty else { return [] }
+        let (cw, ch, baselineOffset) = metrics(scale)
+        let y = Float((underlineOffset * scale).rounded()), height = Float(max(1, (underlineThickness * scale).rounded()))
+        var quads: [Quad] = []
+        for span in highlightedLink where span.row >= 0 && span.row < grid.rows {
+            let baseline = Float(span.row) * ch + baselineOffset
+            for x in span.columns where x >= 0 && x < grid.columns {
+                let left = (Float(x) * cw).rounded(.down), right = (Float(x + 1) * cw).rounded(.down)
+                quads.append(Quad(rect: SIMD4(left, baseline + y, right - left, height), uv: .zero, color: color(grid[x, span.row].foreground), kind: 0))
+            }
+        }
+        return quads
     }
 
     /// The shape drawn this frame, or nil for none: hidden by the program, off the grid, or

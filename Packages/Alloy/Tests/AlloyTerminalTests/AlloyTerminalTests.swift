@@ -83,6 +83,38 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(try render(grid, renderer: renderer).count(in: cell, lit), 0)
     }
 
+    /// The hovered link is underlined, cell by cell in each cell's color, across the rows it covers.
+    func testTheHoveredLinkIsUnderlined() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 6, rows: 2, foreground: 0xFFFFFF)
+        for x in 0..<6 { grid[x, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "a")), foreground: 0x00FF00) }
+        for x in 0..<6 { grid[x, 1] = TerminalCell(scalar: UInt32(UInt8(ascii: "a")), foreground: 0x00FF00) }
+        grid.cursor.visible = false
+        let cell = font.cellSize
+        let baseline = (cell.height * scale).rounded()
+        // Below the text's baseline, where the underline sits ("a" has no descender).
+        let ascent = Int((CTFontGetAscent(font.regular) * scale).rounded())
+        func bottom(_ column: Int, _ row: Int) -> (x: Range<Int>, y: Range<Int>) {
+            let x0 = Int(CGFloat(column) * cell.width * scale) + 2, x1 = Int(CGFloat(column + 1) * cell.width * scale) - 2
+            let rowTop = Int(CGFloat(row) * baseline)
+            return (x0..<x1, (rowTop + ascent + 1)..<(rowTop + Int(baseline) - 1))
+        }
+        let green: (Pixels.RGBA) -> Bool = { $0.g > 150 && $0.r < 100 }
+        let before = try render(grid, renderer: renderer)
+        XCTAssertEqual(before.count(in: bottom(4, 0), green), 0, "no underline yet")
+
+        renderer.highlightedLink = [TerminalSpan(row: 0, columns: 3...5), TerminalSpan(row: 1, columns: 0...1)]
+        let after = try render(grid, renderer: renderer)
+        for (column, row) in [(3, 0), (5, 0), (0, 1), (1, 1)] {
+            XCTAssertGreaterThan(after.count(in: bottom(column, row), green), 5, "underlined: \(column), \(row)")
+        }
+        for (column, row) in [(2, 0), (2, 1)] {
+            XCTAssertEqual(after.count(in: bottom(column, row), green), 0, "not part of it: \(column), \(row)")
+        }
+        renderer.highlightedLink = []
+        XCTAssertEqual(try render(grid, renderer: renderer), before, "gone again")
+    }
+
     /// Unfocused, every shape is an outline of its cell; a blinking cursor blinked off isn't drawn,
     /// unless unfocused, where it doesn't blink.
     func testHollowWhenUnfocusedAndBlinkedOff() throws {

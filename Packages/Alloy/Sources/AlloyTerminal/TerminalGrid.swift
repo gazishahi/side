@@ -66,6 +66,13 @@ public struct TerminalCursor: Equatable, Sendable {
     }
 }
 
+/// Cells on one row of the grid, `columns` inclusive: a link to underline, say.
+public struct TerminalSpan: Equatable, Sendable {
+    public var row: Int
+    public var columns: ClosedRange<Int>
+    public init(row: Int, columns: ClosedRange<Int>) { self.row = row; self.columns = columns }
+}
+
 /// The screen an emulator hands the renderer: cells row by row, which rows changed since the
 /// renderer last drew them, and the cursor. Touched only on the render thread: the emulator's
 /// `TerminalGridSource` copies into it there, the renderer reads it and clears `dirty`.
