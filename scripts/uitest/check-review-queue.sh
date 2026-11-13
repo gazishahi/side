@@ -38,6 +38,20 @@ q=$(queue); echo "$q" | sed 's/^/     /'
 check "the session first, by what it was asked, with its file" '[[ $(echo "$q" | sed -n 1p) == "Fix the flaky login test | "*"| Login.swift" ]]' "$q"
 check "then what no write Side saw explains" '[[ $(echo "$q" | sed -n 2p) == "Not attributed | "*"| README.md" ]]' "$q"
 $U shot $OUT/queue.png > /dev/null
+# Slice 2: approving. A hunk's Approve, the toolbar's Approve All, the queue's count.
+approvals() { $U post queue-approvals; sleep 0.6; grep '^\[approvals\]' $ROOT/side.log | tail -1; }
+a=$(approvals)
+check "each hunk has Approve" '[[ $a == *"0:0=open"*"| Approve All" ]]' "$a"
+$U post "queue-approve 0 0"; sleep 1
+a=$(approvals)
+check "approved, and Approve All becomes Unapprove All" '[[ $a == *"0:0=approved"*"| Unapprove All" ]]' "$a"
+q=$(queue)
+check "the queue says so" '[[ $(echo "$q" | sed -n 1p) == "Fix the flaky login test | Finished · Approved | "* ]]' "$q"
+$U shot $OUT/approved.png > /dev/null
+$U relaunch $P; sleep 2
+$U post "stage review"; sleep 3
+a=$(approvals)
+check "kept across a relaunch" '[[ $a == *"0:0=approved"* ]]' "$a"
 $U post "queue-select 1"; sleep 1.5
 $U shot $OUT/unattributed.png > /dev/null
 $U post "queue-select branch"; sleep 2

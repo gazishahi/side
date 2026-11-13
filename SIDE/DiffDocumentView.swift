@@ -27,6 +27,13 @@ final class DiffDocumentView: NSView {
         }
     }
 
+    /// Review's approvals (the queue, SIDE_RFC_SESSIONS.md phase 4): whether a hunk (by file
+    /// and its place in the file) is approved; nil for no control (the whole branch's diff).
+    var hunkApproval: ((Int, Int) -> Bool?)? { didSet { refreshHunkControls() } }
+    /// A hunk's Approve was clicked: (file, hunk, now approved).
+    var onToggleHunkApproval: ((Int, Int, Bool) -> Void)?
+    private var hunkControls: [String: HunkApproveButton] = [:]
+
     /// "Instruct…" on a file's header: its path, the new-side lines it touches, the anchor.
     var onInstruct: ((String, ClosedRange<Int>, NSView) -> Void)?
     /// The file at the top of the view changed (scrolling): Review's file list follows it.
@@ -75,6 +82,8 @@ final class DiffDocumentView: NSView {
         var lengths: [Int] = []
         /// Each file's header row.
         var headerRow: [Int: Int] = [:]
+        /// Each hunk's `@@` row, by file and the hunk's place in it.
+        var hunkRows: [(row: Int, file: Int, hunk: Int)] = []
         let side: DiffBody.Side?
     }
 
@@ -267,7 +276,16 @@ final class DiffDocumentView: NSView {
         var column = Column(editor: editor, rows: rows, fileText: fileText, side: side)
         column.localIndex = localIndex
         column.lengths = lengths
-        for (row, kind) in rows.enumerated() { if case .fileTop(let file) = kind { column.headerRow[file] = row } }
+        var hunkIndex: [Int: Int] = [:]
+        for (row, kind) in rows.enumerated() {
+            switch kind {
+            case .fileTop(let file): column.headerRow[file] = row
+            case .hunk(let file, _):
+                column.hunkRows.append((row, file, hunkIndex[file, default: 0]))
+                hunkIndex[file, default: 0] += 1
+            default: break
+            }
+        }
         configure(&column)
         return column
     }
@@ -544,7 +562,49 @@ final class DiffDocumentView: NSView {
             topFile = current
             onTopFileChange?(current)
         }
+        refreshHunkControls()
     }
+
+    /// Approve on each `@@` row in view, at its right end; none without `hunkApproval`.
+    func refreshHunkControls() {
+        guard let approval = hunkApproval, let first = columns.first else {
+            for control in hunkControls.values { control.removeFromSuperview() }
+            hunkControls.removeAll()
+            return
+        }
+        let editor = first.editor
+        let layoutModel = editor.documentLayout
+        let clipTop = editor.scrollView.contentView.bounds.minY
+        let visible = editor.viewport
+        var wanted: Set<String> = []
+        for entry in first.hunkRows {
+            guard let approved = approval(entry.file, entry.hunk) else { continue }
+            let rowTop = layoutModel.caretRect(at: editor.buffer.text.offset(ofLine: entry.row)).minY
+            guard rowTop + layoutModel.lineHeight >= visible.minY - layoutModel.lineHeight, rowTop <= visible.maxY + layoutModel.lineHeight else { continue }
+            let key = "\(entry.file):\(entry.hunk)"
+            wanted.insert(key)
+            let control = hunkControls[key] ?? {
+                let button = HunkApproveButton()
+                headerLayer.addSubview(button)
+                hunkControls[key] = button
+                return button
+            }()
+            control.approved = approved
+            control.onToggle = { [weak self] in self?.onToggleHunkApproval?(entry.file, entry.hunk, !approved) }
+            let size = control.fittingSize
+            control.frame = NSRect(x: bounds.width - size.width - DS.Spacing.l, y: rowTop - clipTop + (layoutModel.lineHeight - size.height) / 2,
+                                   width: size.width, height: size.height)
+            // Under a file's header pinned at the top, it doesn't show through.
+            control.isHidden = rowTop - clipTop < layoutModel.lineHeight * 2 && headers.values.contains { $0.isPinned }
+        }
+        for (key, control) in hunkControls where !wanted.contains(key) {
+            control.removeFromSuperview()
+            hunkControls[key] = nil
+        }
+    }
+
+    var hunkControlsForTesting: [String] { hunkControls.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.approved ? "approved" : "open")" } }
+    func toggleHunkForTesting(file: Int, hunk: Int) { hunkControls["\(file):\(hunk)"]?.onToggle?() }
 
     /// Headers out of view, kept to reuse (a handful: as many as were on screen at once).
     private var headerPool: [DiffFileHeader] = []
@@ -814,4 +874,46 @@ final class DiffFileHeader: NSView {
         guard onInstruct != nil else { return nil }
         return [NSAccessibilityCustomAction(name: "Instruct…") { [weak self] in self?.instructTapped(); return true }]
     }
+}
+
+
+/// A hunk's Approve: plain until approved, then a check in the verified color on the selected
+/// capsule, as a selected tab reads.
+final class HunkApproveButton: NSButton {
+    var approved = false { didSet { if approved != oldValue { apply() } } }
+    var onToggle: (() -> Void)?
+    static let height: CGFloat = 18
+
+    init() {
+        super.init(frame: .zero)
+        isBordered = false
+        wantsLayer = true
+        layer?.cornerRadius = DS.Radius.capsule(height: Self.height)
+        target = self
+        action = #selector(tapped)
+        imagePosition = .imageLeading
+        setAccessibilityIdentifier("diff.hunkApprove")
+        apply()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: NSSize {
+        let size = super.intrinsicContentSize
+        return NSSize(width: size.width + 16, height: Self.height)
+    }
+
+    private func apply() {
+        let color = approved ? DS.Color.statusVerified : NSColor.secondaryLabelColor
+        image = NSImage(systemSymbolName: approved ? "checkmark.circle.fill" : "checkmark.circle", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
+        contentTintColor = color
+        attributedTitle = NSAttributedString(string: approved ? "Approved" : "Approve",
+                                             attributes: [.font: DS.Text.caption(.medium), .foregroundColor: color])
+        if approved { bindLayerBackground(DS.Color.selectedCapsule) } else { bindLayerBackground(DS.Color.hoverCapsule) }
+        setAccessibilityLabel(approved ? "Approved; click to unapprove" : "Approve this change")
+        invalidateIntrinsicContentSize()
+    }
+
+    @objc private func tapped() { onToggle?() }
 }

@@ -1,5 +1,6 @@
 import XCTest
 @testable import Side
+import SideAgents
 
 /// Sessions, phase 4 (SIDE_RFC_SESSIONS.md): Changes as a review queue.
 final class ReviewQueueTests: XCTestCase {
@@ -63,5 +64,30 @@ final class ReviewQueueTests: XCTestCase {
         XCTAssertEqual(parsed.files[0].hunks.count, 1, "only the session's hunk of Login.swift")
         XCTAssertEqual(parsed.files[0].addedCount, 1)
         XCTAssertEqual(parsed.files[1].addedCount, 1)
+    }
+
+    /// An approval is for a hunk's lines: it holds when other changes move the hunk, and goes
+    /// when the hunk itself changes.
+    func testAnApprovalFollowsTheHunkNotItsLineNumbers() {
+        let moved = diff.replacingOccurrences(of: "@@ -10,2 +11,3 @@", with: "@@ -20,2 +21,3 @@")
+        XCTAssertEqual(ReviewQueue.hunks(in: diff)[1].key, ReviewQueue.hunks(in: moved)[1].key)
+        let changed = diff.replacingOccurrences(of: "+// typed by hand", with: "+// typed again")
+        XCTAssertNotEqual(ReviewQueue.hunks(in: diff)[1].key, ReviewQueue.hunks(in: changed)[1].key)
+        XCTAssertNotEqual(ReviewQueue.hunks(in: diff)[0].key, ReviewQueue.hunks(in: diff)[1].key)
+    }
+
+    func testApprovalsAreKeptInTheCheckoutsGitDirAndLetGoOfWhenTheHunkIsGone() throws {
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent("approvals-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repo) }
+        XCTAssertTrue(GitPaths.runGitRaw(["init", "-q"], cwd: repo.path).success)
+        let keys = ReviewQueue.hunks(in: diff).map(\.key)
+        ReviewApprovals.shared.set([keys[0], keys[2]], approved: true, in: repo)
+        XCTAssertEqual(ReviewApprovals.shared.approved(in: repo), [keys[0], keys[2]])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent(".git/side/review.json").path))
+        ReviewApprovals.shared.set([keys[0]], approved: false, in: repo)
+        XCTAssertEqual(ReviewApprovals.shared.approved(in: repo), [keys[2]])
+        ReviewApprovals.shared.keep(only: [keys[0], keys[1]], in: repo)
+        XCTAssertEqual(ReviewApprovals.shared.approved(in: repo), [], "the approved hunk is gone, so is its approval")
     }
 }

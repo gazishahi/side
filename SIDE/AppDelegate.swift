@@ -384,6 +384,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // "queue-select branch").
                     if command == "queue-dump" { FileHandle.standardError.write(Data("[queue]\n\(shell.reviewQueueForTesting.joined(separator: "\n"))\n[queue-end]\n".utf8)) }
                     if command.hasPrefix("queue-select ") { shell.selectReviewQueueForTesting(Int(command.dropFirst(13))) }
+                    if command == "queue-approvals" { FileHandle.standardError.write(Data("[approvals] \(shell.reviewApprovalsForTesting)\n".utf8)) }
+                    if command.hasPrefix("queue-approve "), case let parts = command.dropFirst(14).split(separator: " ").compactMap({ Int($0) }), parts.count == 2 {
+                        shell.toggleReviewHunkForTesting(file: parts[0], hunk: parts[1])
+                    }
+                    if command == "queue-approve-all" { shell.approveAllForTesting() }
                     // Who wrote a line of the Editor's file (phase 3): "attribution <line>".
                     if command.hasPrefix("attribution "), let line = Int(command.dropFirst(12)) {
                         let authors = shell.attributionForTesting(line: line).joined(separator: " | ")

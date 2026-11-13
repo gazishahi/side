@@ -16,6 +16,13 @@ struct ReviewQueue: Equatable {
         let addedLines: [Int]
         let added: Int
         let removed: Int
+
+        /// What an approval is kept under: the file and the hunk's lines, not its numbers, so it
+        /// holds while other hunks move it and goes when it changes.
+        var key: String {
+            let body = text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst().joined(separator: "\n")
+            return path + "\u{0}" + String(Attribution.hash(body), radix: 16)
+        }
     }
 
     struct Group: Equatable {
@@ -120,5 +127,48 @@ struct ReviewQueue: Equatable {
         let order: [Author.Kind: Int] = [.session: 0, .you: 1, .shared: 2, .unknown: 3]
         let sorted = groups.enumerated().sorted { (order[$0.element.author.kind]!, $0.offset) < (order[$1.element.author.kind]!, $1.offset) }.map(\.element)
         return ReviewQueue(groups: sorted)
+    }
+}
+
+/// Which hunks have been approved, per checkout, kept in its git dir beside the attribution
+/// (`side/review.json`): never in the project's files. An approval is for a hunk's exact lines.
+final class ReviewApprovals: @unchecked Sendable {
+    static let shared = ReviewApprovals()
+    private let lock = NSLock()
+    private var cache: [String: Set<String>] = [:]
+
+    private func store(_ checkout: Attribution.Checkout) -> URL { checkout.gitDirectory.appendingPathComponent("side/review.json") }
+
+    func approved(in root: URL) -> Set<String> {
+        guard let checkout = Attribution.checkout(of: root.appendingPathComponent("x")) else { return [] }
+        lock.lock(); defer { lock.unlock() }
+        return load(checkout)
+    }
+
+    func set(_ keys: [String], approved: Bool, in root: URL) {
+        guard let checkout = Attribution.checkout(of: root.appendingPathComponent("x")) else { return }
+        lock.lock(); defer { lock.unlock() }
+        var set = load(checkout)
+        if approved { set.formUnion(keys) } else { set.subtract(keys) }
+        cache[checkout.gitDirectory.path] = set
+        let url = store(checkout)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(set.sorted()) { try? data.write(to: url, options: .atomic) }
+    }
+
+    /// Approvals whose hunks are gone (committed, discarded, rewritten) let go of.
+    func keep(only live: Set<String>, in root: URL) {
+        guard let checkout = Attribution.checkout(of: root.appendingPathComponent("x")) else { return }
+        lock.lock()
+        let stale = load(checkout).subtracting(live)
+        lock.unlock()
+        if !stale.isEmpty { set(Array(stale), approved: false, in: root) }
+    }
+
+    private func load(_ checkout: Attribution.Checkout) -> Set<String> {
+        if let cached = cache[checkout.gitDirectory.path] { return cached }
+        let keys = (try? Data(contentsOf: store(checkout))).flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+        cache[checkout.gitDirectory.path] = Set(keys)
+        return Set(keys)
     }
 }

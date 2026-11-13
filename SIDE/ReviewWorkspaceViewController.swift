@@ -88,6 +88,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// being replaced a moment later.
     private var queueLoading = false
     private var pendingBranchDiff: (text: String, everything: Bool)?
+    /// The chosen group's hunks as the diff shows them: by file, in order.
+    private var shownHunks: [[ReviewQueue.Hunk]] = []
+    private var approvedKeys: Set<String> = []
+    private let approveAllButton = NSButton(title: "Approve All", target: nil, action: nil)
     private var railWidth: NSLayoutConstraint?
     private var diffLeading: NSLayoutConstraint?
     private var cardTop: NSLayoutConstraint?
@@ -364,7 +368,14 @@ final class ReviewWorkspaceViewController: NSViewController {
         diffToolbar.alignment = .centerY
         diffToolbar.spacing = DS.Spacing.l
         diffToolbar.translatesAutoresizingMaskIntoConstraints = false
-        for view in [diffTitle, diffTotals, spacer, foldAllButton, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
+        approveAllButton.bezelStyle = .accessoryBarAction
+        approveAllButton.controlSize = .small
+        approveAllButton.font = DS.Text.caption(.medium)
+        approveAllButton.target = self
+        approveAllButton.action = #selector(approveAllTapped)
+        approveAllButton.isHidden = true
+        approveAllButton.setAccessibilityIdentifier("review.approveAll")
+        for view in [diffTitle, diffTotals, spacer, approveAllButton, foldAllButton, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
         diffViewer.onFoldChange = { [weak self] _, _ in self?.refreshFoldAllButton() }
 
         rail.onSelect = { [weak self] index in self?.diffViewer.scrollToFile(index) }
@@ -452,6 +463,8 @@ final class ReviewWorkspaceViewController: NSViewController {
                 guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
                 return Attribution.shared.owners(of: file, text: text)
             }
+            // Approvals of hunks that are gone (committed, discarded, rewritten) go too.
+            ReviewApprovals.shared.keep(only: Set(queue.groups.flatMap(\.hunks).map(\.key)), in: root)
             DispatchQueue.main.async {
                 guard let self, self.queueGeneration == generation else { return }
                 self.queueLoading = false
@@ -477,6 +490,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     private func applyQueue(_ next: ReviewQueue) {
         let wasActive = queueActive
+        if let root = queueRoot { approvedKeys = ReviewApprovals.shared.approved(in: root) }
         let chosenAuthor = queueSelection.flatMap { queue.groups.indices.contains($0) ? queue.groups[$0].author : nil }
         queue = next
         // The same author stays chosen as the queue changes; else the first.
@@ -514,8 +528,13 @@ final class ReviewWorkspaceViewController: NSViewController {
         } else if group.author.kind == .session {
             parts.append(group.author.name)
         }
-        parts.append("+\(group.added) \u{2212}\(group.removed)")
-        parts.append("\(group.paths.count) file\(group.paths.count == 1 ? "" : "s")")
+        let approved = group.hunks.filter { approvedKeys.contains($0.key) }.count
+        if approved == group.hunks.count {
+            parts.append("Approved")
+        } else {
+            parts.append("+\(group.added) \u{2212}\(group.removed)")
+            parts.append(approved > 0 ? "\(approved) of \(group.hunks.count) approved" : "\(group.paths.count) file\(group.paths.count == 1 ? "" : "s")")
+        }
         return parts.joined(separator: " \u{00B7} ")
     }
 
@@ -532,7 +551,17 @@ final class ReviewWorkspaceViewController: NSViewController {
         // Laid out first: the list taking the files' place can change the diff's width, and
         // a diff drawn before that had its numbers rows below its lines.
         view.layoutSubtreeIfNeeded()
+        shownHunks = group.paths.map { path in group.hunks.filter { $0.path == path } }
         diffViewer.render(diffText: group.diffText, emptyMessage: "No changes.")
+        diffViewer.hunkApproval = { [weak self] file, hunk in
+            guard let self, self.shownHunks.indices.contains(file), self.shownHunks[file].indices.contains(hunk) else { return nil }
+            return self.approvedKeys.contains(self.shownHunks[file][hunk].key)
+        }
+        diffViewer.onToggleHunkApproval = { [weak self] file, hunk, approved in
+            guard let self, self.shownHunks.indices.contains(file), self.shownHunks[file].indices.contains(hunk) else { return }
+            self.setApproved([self.shownHunks[file][hunk]], approved)
+        }
+        refreshApproveAll()
         diffTitle.stringValue = group.title
         let totals = NSMutableAttributedString(string: "\(group.paths.count) file\(group.paths.count == 1 ? "" : "s")  ", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor])
         totals.append(NSAttributedString(string: "+\(group.added)", attributes: [.font: DS.Text.code(11, weight: .medium), .foregroundColor: DiffBody.addedText]))
@@ -541,8 +570,44 @@ final class ReviewWorkspaceViewController: NSViewController {
         refreshFoldAllButton()
     }
 
+    private func setApproved(_ hunks: [ReviewQueue.Hunk], _ approved: Bool) {
+        guard let root = queueRoot else { return }
+        let keys = hunks.map(\.key)
+        ReviewApprovals.shared.set(keys, approved: approved, in: root)
+        if approved { approvedKeys.formUnion(keys) } else { approvedKeys.subtract(keys) }
+        diffViewer.refreshHunkControls()
+        refreshApproveAll()
+        queueRail.items = queue.groups.map { group in
+            ReviewQueueRail.Item(title: group.title, detail: queueDetail(group), icon: queueIcon(group.author), paths: group.paths)
+        }
+    }
+
+    /// Approve All, or, with everything approved, Unapprove All.
+    private func refreshApproveAll() {
+        guard queueActive, let index = queueSelection, queue.groups.indices.contains(index) else {
+            approveAllButton.isHidden = true
+            return
+        }
+        let hunks = queue.groups[index].hunks
+        let all = hunks.allSatisfy { approvedKeys.contains($0.key) }
+        approveAllButton.title = all ? "Unapprove All" : "Approve All"
+        approveAllButton.isHidden = false
+    }
+
+    @objc private func approveAllTapped() {
+        guard let index = queueSelection, queue.groups.indices.contains(index) else { return }
+        let hunks = queue.groups[index].hunks
+        setApproved(hunks, !hunks.allSatisfy { approvedKeys.contains($0.key) })
+    }
+
+    var approvalsForTesting: String { diffViewer.hunkControlsForTesting.joined(separator: " ") + " | " + approveAllButton.title }
+    func toggleHunkForTesting(file: Int, hunk: Int) { diffViewer.toggleHunkForTesting(file: file, hunk: hunk) }
+    func approveAllForTesting() { approveAllTapped() }
+
     /// The whole branch, as Changes showed it before the queue.
     private func refreshBranch() {
+        diffViewer.hunkApproval = nil
+        approveAllButton.isHidden = true
         if currentTrack != nil {
             loadDiff()
         } else if let root = queueRoot, let trackStore {
