@@ -16,6 +16,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var preferencesWindow: NSWindow?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Under XCTest, the shells tests start read none of the person's startup files: Side's
+        // zsh wrapper takes them from ZDOTDIR, here a folder of empty ones (with none at all,
+        // zsh runs its new-user setup). A test shell ended mid `pyenv rehash` (the owner's
+        // .zshrc) left pyenv's lock behind, and every zsh after waited a minute (2026-11-12).
+        if HookPaths.isUnderTest, !UserDefaults.standard.bool(forKey: "SideUITesting") {
+            let empty = FileManager.default.temporaryDirectory.appendingPathComponent("SideTestZDOTDIR", isDirectory: true)
+            try? FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+            for name in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
+                FileManager.default.createFile(atPath: empty.appendingPathComponent(name).path, contents: Data())
+            }
+            setenv("ZDOTDIR", empty.path, 1)
+        }
         // Every pipe write goes through `PipeWriting`, which turns a vanished reader into an
         // error for that descriptor; this is the backstop for any write that doesn't. A child
         // exiting must never end Side (2026-09-30 audit, H1).

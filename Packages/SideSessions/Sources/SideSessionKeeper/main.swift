@@ -85,8 +85,17 @@ if spec.restoreFrom != nil {
     // color-scheme reports, the kitty keyboard flags; the cursor shown.
     let reset = "\u{1b}[?1000l\u{1b}[?1001l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1004l\u{1b}[?1005l\u{1b}[?1006l\u{1b}[?1015l\u{1b}[?1016l"
         + "\u{1b}[?2004l\u{1b}[?1l\u{1b}>\u{1b}[?2031l\u{1b}[=0;1u\u{1b}[?25h"
-    // Out of a full-screen program's alternate screen, below what was there, dimmed.
-    let line = Array(("\u{1b}[?1049l" + reset + "\u{1b}[0m" + (spec.banner.map { "\r\n\u{1b}[2m\($0)\u{1b}[0m\r\n" } ?? "")).utf8)
+    // Out of a full-screen program's alternate screen, if it was in one, then below what was
+    // there, dimmed. Only then: leaving (1049l) also restores the cursor last saved (DECSC),
+    // which for a plain shell is wherever an old prompt saved it, and the banner and new prompt
+    // were written over the old screen (found by the terminal-engine session, 2026-11-12).
+    func isOn(_ code: UInt16) -> Bool {
+        var config = GhosttyTerminalModeConfig()
+        config.mode = ghostty_mode_new(code, false)
+        return ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &config) == GHOSTTY_SUCCESS && config.value
+    }
+    let leave = isOn(1049) ? "\u{1b}[?1049l" : isOn(1047) ? "\u{1b}[?1047l" : isOn(47) ? "\u{1b}[?47l" : ""
+    let line = Array((leave + reset + "\u{1b}[0m" + (spec.banner.map { "\r\n\u{1b}[2m\($0)\u{1b}[0m\r\n" } ?? "")).utf8)
     line.withUnsafeBufferPointer { ghostty_terminal_vt_write(terminal, $0.baseAddress, $0.count) }
 }
 
