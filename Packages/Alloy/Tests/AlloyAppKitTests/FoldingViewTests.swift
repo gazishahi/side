@@ -410,6 +410,36 @@ final class FoldingViewTests: XCTestCase {
         }
     }
 
+    /// Rows measured as they're drawn can move lines with the document's total height unchanged
+    /// (one line taller, another as much shorter): the numbers follow them on the next frame.
+    /// Changes' diff of a new file drew its numbers five rows low until redrawn (2026-11-12).
+    func testGutterNumbersFollowRowsThatMoveWithTheTotalUnchanged() throws {
+        try open()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        editor.removeFromSuperview()
+        editor.frame = NSRect(x: 40, y: 0, width: 600, height: 400)
+        editor.gutter.frame = NSRect(x: 0, y: 0, width: 40, height: 400)
+        host.addSubview(editor.gutter)
+        host.addSubview(editor)
+        window.contentView = host
+        editor.setBuffer(TextBuffer((1...10).map { "line \($0)" }.joined(separator: "\n")))
+        let big = CTFontCreateWithName("Helvetica-Bold" as CFString, 30, nil)
+        var tallLine = 1
+        editor.fontSpans = { line in line == tallLine ? [FontSpan(range: 0..<6, font: big)] : [] }
+        window.displayIfNeeded()
+        editor.render()
+        XCTAssertEqual(editor.gutter.misplacedLinesForTesting, [])
+        let height = editor.documentLayout.contentHeight
+
+        // The tall row moves down one line, measured only as the next frame draws it.
+        tallLine = 2
+        editor.render()
+        XCTAssertEqual(editor.documentLayout.contentHeight, height, "the total didn't change")
+        XCTAssertNotEqual(editor.documentLayout.y(ofLine: 2), editor.documentLayout.y(ofLine: 1) + editor.documentLayout.lineHeight * 2,
+                          "line 2 moved up")
+        XCTAssertEqual(editor.gutter.misplacedLinesForTesting, [], "every number where its line is")
+    }
+
     /// A minimap turned off (Make hides it and gives it no width) draws nothing when asked: its
     /// tiles keep the width they had, and a negative column count made a backwards range (0.2.0's
     /// crash, 2026-10-27).

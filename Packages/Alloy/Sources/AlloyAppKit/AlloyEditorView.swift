@@ -505,16 +505,20 @@ public final class AlloyEditorView: NSView {
         documentLayout.setWrapWidth(wrapsLines && width > 0 ? width : nil)
     }
 
-    /// The content height the gutter last placed its numbers for.
-    private var gutterContentHeight: CGFloat = -1
+    /// The rows the gutter last placed its numbers for.
+    private var gutterRowGeneration = -1
+
+    /// Lines measured taller or shorter (a wrap, a heading, a diff's header) move the numbers
+    /// after them, even when the document view's frame stays the window's height (a short file)
+    /// or the total height doesn't change.
+    private func syncGutterToRows() {
+        guard documentLayout.rowGeneration != gutterRowGeneration else { return }
+        gutterRowGeneration = documentLayout.rowGeneration
+        gutter.layoutTiles()
+    }
 
     func updateDocumentHeight() {
-        // Lines measured taller (a wrap, a heading) move the numbers after them, even when the
-        // document view's frame stays the window's height (a short file).
-        if documentLayout.contentHeight != gutterContentHeight {
-            gutterContentHeight = documentLayout.contentHeight
-            gutter.layoutTiles()
-        }
+        syncGutterToRows()
         let insets = scrollView.contentView.contentInsets
         let height = max(documentLayout.contentHeight, scrollView.contentView.bounds.height - insets.top - insets.bottom)
         let width = scrollView.contentView.bounds.width
