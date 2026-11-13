@@ -146,6 +146,61 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertGreaterThan(pixels.count(in: cell) { $0.r > 200 }, cell.x.count * cell.y.count / 2, "the block itself")
     }
 
+    // MARK: Ligatures
+
+    private func draw(_ text: String, font: TerminalFont) throws -> Pixels {
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice(), "no Metal device")
+        let renderer = try TerminalRenderer(device: device, font: font, theme: Self.black)
+        let grid = TerminalGrid(columns: text.unicodeScalars.count + 2, rows: 1, foreground: 0xFFFFFF)
+        for (x, scalar) in text.unicodeScalars.enumerated() { grid[x + 1, 0] = TerminalCell(scalar: scalar.value, foreground: 0xFFFFFF) }
+        grid.cursor.visible = false
+        let cell = font.cellSize
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: Int((CGFloat(grid.columns) * cell.width * scale).rounded(.up)),
+                                                                  height: Int((cell.height * scale).rounded(.up)), mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        try XCTUnwrap(renderer.draw(grid, scale: scale, into: texture)).waitUntilCompleted()
+        return Pixels(texture)
+    }
+
+    /// A font without ligatures (Side's default, Menlo here) looks exactly as it did a glyph a cell.
+    func testShapingChangesNothingForAFontWithoutLigatures() throws {
+        var unshaped = font
+        unshaped.ligatures = false
+        for text in ["fn main() -> i32 { a != b }", "*bold* and plain", "x => y  <= z"] {
+            XCTAssertEqual(try draw(text, font: font), try draw(text, font: unshaped), text)
+        }
+    }
+
+    /// "fi" in Helvetica is one glyph for two cells: the run was shaped, not drawn a cell at a time.
+    func testARunIsShapedWithItsLigatures() throws {
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice(), "no Metal device")
+        let renderer = try TerminalRenderer(device: device, font: TerminalFont(name: "Helvetica", size: 13), theme: Self.black)
+        let run = try XCTUnwrap(renderer.shaped("fi", face: [], scale: scale))
+        XCTAssertEqual(run.count, 1, "one ligature glyph")
+        XCTAssertEqual(run.first?.cell, 0, "starting at the first cell")
+    }
+
+    /// A character the font doesn't have comes from a fallback font with its own advance; the run
+    /// isn't shaped, so nothing after it drifts out of its cell.
+    func testARunWithAFallbackCharacterIsDrawnACellAtATime() throws {
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice(), "no Metal device")
+        let renderer = try TerminalRenderer(device: device, font: font, theme: Self.black)
+        XCTAssertNil(renderer.shaped("a\u{16A0}b", face: [], scale: scale), "ᚠ isn't in Menlo")
+        XCTAssertNotNil(renderer.shaped("ab", face: [], scale: scale))
+    }
+
+    /// With a ligature font (Fira Code, where it's installed), `!=` draws as its ligature.
+    func testFiraCodesLigaturesAreDrawn() throws {
+        let fira = CTFontCreateWithName("FiraCodeNFM-Reg" as CFString, 13, nil)
+        try XCTSkipUnless((CTFontCopyPostScriptName(fira) as String).hasPrefix("FiraCodeNFM"), "Fira Code isn't installed")
+        var plain = TerminalFont(fira)
+        plain.ligatures = false
+        XCTAssertNotEqual(try draw("a != b", font: TerminalFont(fira)), try draw("a != b", font: plain))
+        XCTAssertEqual(try draw("a b c", font: TerminalFont(fira)), try draw("a b c", font: plain), "no ligature, no change")
+    }
+
     /// Composing text is drawn at the cursor, over what's there, underlined.
     func testComposingTextAtTheCursor() throws {
         let renderer = try makeRenderer()
@@ -258,10 +313,12 @@ final class TerminalSnapshotTests: XCTestCase {
     func testSnapshot() throws {
         guard let path = ProcessInfo.processInfo.environment["ALLOY_TERMINAL_SNAPSHOT"] else { throw XCTSkip("set ALLOY_TERMINAL_SNAPSHOT") }
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
-        let font = TerminalFont(name: "Menlo", size: 13)
+        // ALLOY_TERMINAL_SNAPSHOT_FONT: another font, a ligature font's for instance.
+        let font = TerminalFont(name: ProcessInfo.processInfo.environment["ALLOY_TERMINAL_SNAPSHOT_FONT"] ?? "Menlo", size: 13)
         let renderer = try TerminalRenderer(device: device, font: font, theme: TerminalTheme(background: SIMD4(0.12, 0.12, 0.13, 1), cursor: 0xD0D0D0))
         let lines: [(String, UInt32, UInt32?, TerminalCell.Style)] = [
             ("$ git status", 0xD0D0D0, nil, []),
+            ("a != b => c <= d -> e === f ... www", 0xC678DD, nil, []),
             ("On branch main — bold", 0xE5C07B, nil, [.bold]),
             ("italic, underline, strike", 0x61AFEF, nil, [.italic]),
             ("underlined text here", 0x98C379, nil, []),
@@ -311,7 +368,7 @@ final class TerminalSnapshotTests: XCTestCase {
 }
 
 /// A texture's pixels, read back as BGRA.
-struct Pixels {
+struct Pixels: Equatable {
     struct RGBA { let r: UInt8, g: UInt8, b: UInt8, a: UInt8 }
     let width: Int, height: Int
     private let bytes: [UInt8]

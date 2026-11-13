@@ -12,6 +12,9 @@ public struct TerminalFont: @unchecked Sendable {
     public let bold: CTFont
     public let italic: CTFont
     public let boldItalic: CTFont
+    /// Whether runs of text are shaped together, for a font's ligatures and contextual
+    /// alternates (Fira Code's `=>`, JetBrains Mono's `!=`). Off: a glyph a cell, as before.
+    public var ligatures = true
 
     public init(name: String, size: CGFloat) {
         self.init(CTFontCreateWithName(name as CFString, size, nil))
@@ -173,7 +176,7 @@ public final class TerminalRenderer {
     func assemble(_ grid: TerminalGrid, scale: CGFloat) -> [Quad] {
         // A new scale or size invalidates every row; a restarted atlas, every cached glyph too.
         if scale != builtScale || grid.rows != builtRows || atlas.generation != atlasGeneration {
-            if scale != builtScale || atlas.generation != atlasGeneration { glyphCache.removeAll() }
+            if scale != builtScale || atlas.generation != atlasGeneration { glyphCache.removeAll(); runCache.removeAll() }
             builtScale = scale
             builtRows = grid.rows
             atlasGeneration = atlas.generation
@@ -189,6 +192,7 @@ public final class TerminalRenderer {
         if atlas.generation != atlasGeneration {
             atlasGeneration = atlas.generation
             glyphCache.removeAll()
+            runCache.removeAll()
             for y in 0..<grid.rows { rebuild(row: y, of: grid, scale: scale) }
         }
         var quads: [Quad] = []
@@ -326,6 +330,41 @@ public final class TerminalRenderer {
                 let middle = top + (baselineOffset * 0.65).rounded()
                 backgrounds.append(Quad(rect: SIMD4(left, middle, span.rounded(.up), line), uv: .zero, color: color(c.foreground), kind: 0))
             }
+        }
+        // Glyphs: runs of plain text shaped together (ligatures, contextual alternates), and the
+        // rest a cell at a time.
+        x = 0
+        var unshapedUntil = 0
+        while x < grid.columns {
+            let c = grid.cells[rowStart + x]
+            let left = (Float(x) * cw).rounded(.down)
+            if font.ligatures, x >= unshapedUntil, Self.shapeable(c), c.scalar > 32 {
+                // The run: plain text in one face, spaces included, trailing spaces left off.
+                let face = c.style.intersection([.bold, .italic])
+                var end = x + 1
+                while end < grid.columns, Self.shapeable(grid.cells[rowStart + end]),
+                      grid.cells[rowStart + end].style.intersection([.bold, .italic]) == face { end += 1 }
+                while end > x + 1, grid.cells[rowStart + end - 1].scalar <= 32 { end -= 1 }
+                if end - x > 1 {
+                    let text = String(String.UnicodeScalarView(grid.cells[(rowStart + x)..<(rowStart + end)].compactMap { UnicodeScalar(max(32, $0.scalar)) }))
+                    guard let run = shaped(text, face: face, scale: scale) else {
+                        unshapedUntil = end
+                        continue
+                    }
+                    for g in run where g.entry.region.width > 0 {
+                        let cell = grid.cells[rowStart + x + g.cell]
+                        let r = g.entry.region
+                        let cellLeft = (Float(x + g.cell) * cw).rounded(.down)
+                        glyphs.append(Quad(rect: SIMD4(cellLeft + Float(g.dx * scale + g.entry.offset.x), baseline + Float(g.entry.offset.y), Float(r.width), Float(r.height)),
+                                           uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
+                                           color: g.entry.isColor ? SIMD4(1, 1, 1, 1) : color(cell.foreground), kind: g.entry.isColor ? 2 : 1))
+                    }
+                    x = end
+                    continue
+                }
+            }
+            defer { x += 1 }
+            let span = c.style.contains(.wide) ? cw * 2 : cw
             guard !c.style.contains(.spacer), c.scalar > 32 || c.cluster != nil else { continue }
             if c.cluster == nil, let drawn = sprite(c.scalar, left: left, top: top, width: span, height: ch,
                                                     line: underlineHeight, color: color(c.foreground)) {
@@ -377,6 +416,61 @@ public final class TerminalRenderer {
                 x += step
             }
         }
+    }
+
+    /// A cell that can join a shaped run: one Basic Multilingual Plane scalar (so a UTF-16 unit
+    /// is a cell), narrow, and not a character drawn to the cell. An empty cell counts as a space.
+    static func shapeable(_ c: TerminalCell) -> Bool {
+        guard c.cluster == nil, !c.style.contains(.wide), !c.style.contains(.spacer), c.scalar < 0x10000 else { return false }
+        switch c.scalar {
+        case 0x2500...0x259F, 0x2800...0x28FF, 0xE0B0...0xE0B6: return false
+        // Right-to-left scripts: CoreText would reorder them, and a cell's glyph has to stay in
+        // its cell. They keep a glyph a cell, as Ghostty does with bidi off.
+        case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF: return false
+        default: return true
+        }
+    }
+
+    private struct RunKey: Hashable { let text: String; let face: TerminalCell.Style }
+    struct RunGlyph { let glyph: CGGlyph; let entry: AtlasEntry; let cell: Int; let dx: CGFloat }
+    /// nil: a run the shaper can't place cell for cell (a fallback font's different advance would
+    /// push every glyph after it), drawn a cell at a time instead.
+    private var runCache: [RunKey: [RunGlyph]?] = [:]
+
+    /// A run of text shaped by CoreText, with its ligatures and contextual alternates: each glyph
+    /// with the cell it starts at (its string index; a UTF-16 unit is a cell here) and its
+    /// offset from that cell in points, near zero but for a glyph a font shifts. Cached by text
+    /// and face, as Ghostty's shaper caches its runs.
+    func shaped(_ text: String, face: TerminalCell.Style, scale: CGFloat) -> [RunGlyph]? {
+        let key = RunKey(text: text, face: face)
+        if let known = runCache[key] { return known }
+        if runCache.count > 4096 { runCache.removeAll() }
+        let base = font.face(face)
+        let attributed = CFAttributedStringCreate(nil, text as CFString, [kCTFontAttributeName: base, kCTLigatureAttributeName: 1] as CFDictionary)!
+        let line = CTLineCreateWithAttributedString(attributed)
+        var result: [RunGlyph] = []
+        for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {
+            let attributes = CTRunGetAttributes(run) as NSDictionary
+            let runFont = attributes[kCTFontAttributeName] as! CTFont
+            let isColor = CTFontGetSymbolicTraits(runFont).contains(.traitColorGlyphs)
+            let count = CTRunGetGlyphCount(run)
+            var glyphs = [CGGlyph](repeating: 0, count: count), positions = [CGPoint](repeating: .zero, count: count)
+            guard CFEqual(runFont, base), !CTRunGetStatus(run).contains(.rightToLeft) else {
+                runCache[key] = .some(nil)
+                return nil
+            }
+            var indices = [CFIndex](repeating: 0, count: count)
+            CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
+            CTRunGetPositions(run, CFRange(location: 0, length: count), &positions)
+            CTRunGetStringIndices(run, CFRange(location: 0, length: count), &indices)
+            for i in 0..<count {
+                let cell = indices[i]
+                guard let entry = atlas.entry(font: runFont, glyph: glyphs[i], subpixel: 0, scale: scale, isColor: isColor) else { continue }
+                result.append(RunGlyph(glyph: glyphs[i], entry: entry, cell: cell, dx: positions[i].x - CGFloat(cell) * self.cell.width))
+            }
+        }
+        runCache[key] = result
+        return result
     }
 
     /// One cell's glyphs, cached by text and style: straight from the face when it has the
