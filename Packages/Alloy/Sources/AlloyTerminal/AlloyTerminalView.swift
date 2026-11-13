@@ -201,6 +201,11 @@ public final class AlloyTerminalView: NSView {
 
     public override func resetCursorRects() { addCursorRect(bounds, cursor: pointer) }
 
+    /// A search's matches in view, and the selected one, highlighted in the theme's search colors.
+    public func setSearchHighlights(matches: [TerminalSpan], selected: [TerminalSpan]) {
+        engine.setSearchHighlights(matches: matches, selected: selected)
+    }
+
     /// The link to underline (the cells under the pointer while ⌘ is held); empty for none.
     public var highlightedLink: [TerminalSpan] = [] {
         didSet { if highlightedLink != oldValue { engine.setHighlightedLink(highlightedLink) } }
@@ -390,6 +395,16 @@ private final class RenderEngine: @unchecked Sendable {
     func setPreedit(_ text: String) {
         queue.async {
             self.renderer.preedit = text
+            self.forced = true
+        }
+        requestFrame()
+    }
+
+    func setSearchHighlights(matches: [TerminalSpan], selected: [TerminalSpan]) {
+        queue.async {
+            guard matches != self.renderer.searchMatches || selected != self.renderer.selectedMatch else { return }
+            self.renderer.searchMatches = matches
+            self.renderer.selectedMatch = selected
             self.forced = true
         }
         requestFrame()

@@ -57,11 +57,21 @@ public struct TerminalTheme: Sendable, Equatable {
     public var cursor: UInt32
     /// RGBA, 0…1, not premultiplied: laid over selected cells.
     public var selection: SIMD4<Float>
+    /// 0xRRGGBB: a search match's background and text, and the selected match's background, as
+    /// Ghostty draws them (its search-background, search-foreground and
+    /// search-selected-background defaults).
+    public var searchMatch: UInt32
+    public var searchText: UInt32
+    public var searchSelected: UInt32
 
-    public init(background: SIMD4<Float>, cursor: UInt32, selection: SIMD4<Float> = SIMD4(0.35, 0.55, 1, 0.4)) {
+    public init(background: SIMD4<Float>, cursor: UInt32, selection: SIMD4<Float> = SIMD4(0.35, 0.55, 1, 0.4),
+                searchMatch: UInt32 = 0xFFE082, searchText: UInt32 = 0x000000, searchSelected: UInt32 = 0xF2A57E) {
         self.background = background
         self.cursor = cursor
         self.selection = selection
+        self.searchMatch = searchMatch
+        self.searchText = searchText
+        self.searchSelected = searchSelected
     }
 }
 
@@ -85,6 +95,25 @@ public final class TerminalRenderer {
     public var blinkOn = true
     /// The link under the pointer, underlined in its text's colors (⌘ held, as Ghostty shows it).
     public var highlightedLink: [TerminalSpan] = []
+    /// A search's matches in the viewport, and the selected one: drawn in the theme's search
+    /// colors, the selected match in its own.
+    public var searchMatches: [TerminalSpan] = [] { didSet { rowsToRebuild.formUnion((oldValue + searchMatches).map(\.row)) } }
+    public var selectedMatch: [TerminalSpan] = [] { didSet { rowsToRebuild.formUnion((oldValue + selectedMatch).map(\.row)) } }
+    /// Rows whose highlights changed though their cells didn't.
+    private var rowsToRebuild = Set<Int>()
+
+    /// For each column of a row: 0, or 1 in a match, 2 in the selected match.
+    private func searchKinds(row y: Int, columns: Int) -> [UInt8]? {
+        guard !searchMatches.isEmpty || !selectedMatch.isEmpty else { return nil }
+        var kinds: [UInt8]?
+        for (spans, kind) in [(searchMatches, UInt8(1)), (selectedMatch, UInt8(2))] {
+            for span in spans where span.row == y {
+                if kinds == nil { kinds = Array(repeating: 0, count: columns) }
+                for x in span.columns where x >= 0 && x < columns { kinds![x] = max(kinds![x], kind) }
+            }
+        }
+        return kinds
+    }
 
     private let gpu: QuadPipeline
     private let atlas: GlyphAtlas
@@ -191,6 +220,8 @@ public final class TerminalRenderer {
             glyphQuads = Array(repeating: [], count: grid.rows)
             for y in 0..<grid.rows { grid.dirty[y] = true }
         }
+        for y in rowsToRebuild where y >= 0 && y < grid.rows { grid.dirty[y] = true }
+        rowsToRebuild.removeAll()
         for y in 0..<grid.rows where grid.dirty[y] {
             rebuild(row: y, of: grid, scale: scale)
             grid.dirty[y] = false
@@ -355,6 +386,27 @@ public final class TerminalRenderer {
             backgrounds.append(Quad(rect: SIMD4(left, top, right - left, ch), uv: .zero, color: theme.selection, kind: 0))
             x = end
         }
+        // Search matches: a run of cells in one kind of match, over everything else beneath the
+        // text, and the text in the theme's search color.
+        let search = searchKinds(row: y, columns: grid.columns)
+        if let search {
+            x = 0
+            while x < grid.columns {
+                let kind = search[x]
+                guard kind != 0 else { x += 1; continue }
+                var end = x + 1
+                while end < grid.columns, search[end] == kind { end += 1 }
+                let left = (Float(x) * cw).rounded(.down), right = (Float(end) * cw).rounded(.down)
+                backgrounds.append(Quad(rect: SIMD4(left, top, right - left, ch), uv: .zero,
+                                        color: color(kind == 2 ? theme.searchSelected : theme.searchMatch), kind: 0))
+                x = end
+            }
+        }
+        /// A cell's text color: its own, or the search's over a match.
+        func ink(_ column: Int, _ cell: TerminalCell) -> SIMD4<Float> {
+            if let search, search[column] != 0 { return color(theme.searchText) }
+            return color(cell.foreground)
+        }
         for x in 0..<grid.columns {
             let c = grid.cells[rowStart + x]
             let left = (Float(x) * cw).rounded(.down)
@@ -397,7 +449,7 @@ public final class TerminalRenderer {
                         let cellLeft = (Float(x + g.cell) * cw).rounded(.down)
                         glyphs.append(Quad(rect: SIMD4(cellLeft + Float(g.dx * scale + g.entry.offset.x), baseline + Float(g.entry.offset.y), Float(r.width), Float(r.height)),
                                            uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
-                                           color: g.entry.isColor ? SIMD4(1, 1, 1, 1) : color(cell.foreground), kind: g.entry.isColor ? 2 : 1))
+                                           color: g.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x + g.cell, cell), kind: g.entry.isColor ? 2 : 1))
                     }
                     x = end
                     continue
@@ -407,7 +459,7 @@ public final class TerminalRenderer {
             let span = c.style.contains(.wide) ? cw * 2 : cw
             guard !c.style.contains(.spacer), c.scalar > 32 || c.cluster != nil else { continue }
             if c.cluster == nil, let drawn = sprite(c.scalar, left: left, top: top, width: span, height: ch,
-                                                    line: underlineHeight, color: color(c.foreground)) {
+                                                    line: underlineHeight, color: ink(x, c)) {
                 glyphs += drawn
                 continue
             }
@@ -415,7 +467,7 @@ public final class TerminalRenderer {
                 let r = p.entry.region
                 glyphs.append(Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
                                    uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
-                                   color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : color(c.foreground), kind: p.entry.isColor ? 2 : 1))
+                                   color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x, c), kind: p.entry.isColor ? 2 : 1))
             }
         }
         backgroundQuads[y] = backgrounds

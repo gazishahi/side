@@ -153,6 +153,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
             terminal.feed(copy)
             screen.setNeedsFrame()
         }
+        if finding { refreshFind() }
     }
 
     func send(text: String) { send(bytes: ArraySlice(Array(text.utf8))) }
@@ -311,6 +312,56 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
         screen.setNeedsFrame()
     }
 
+    // MARK: Find
+
+    /// Find in the terminal, scrollback included: libghostty's search, its matches drawn in the
+    /// theme's search colors. Created on first use; every call runs on the parse queue, in step
+    /// with output, and what to draw comes back to the main thread.
+    private lazy var search = TerminalSearch(terminal: terminal)
+    private var finding = false
+    /// The selected match's place (1 is the newest) and how many there are, after each change.
+    var onFindStatus: ((_ selected: Int?, _ total: Int) -> Void)?
+    private(set) var findStatus: (selected: Int?, total: Int) = (nil, 0)
+    /// What's highlighted, as (row, first column, last column): the matches, and the selected one.
+    private(set) var searchHighlightsForTesting: (matches: [[Int]], selected: [[Int]]) = ([], [])
+
+    /// Looks for `text`; empty ends the search and clears the highlights.
+    func find(_ text: String) {
+        finding = !text.isEmpty
+        let search = search
+        updateFind { search.needle = text }
+    }
+
+    /// The next match up, toward older output, scrolled into view.
+    func findNext() { guard finding else { return }; let search = search; updateFind { search.next() } }
+    /// The next match down, toward newer output.
+    func findPrevious() { guard finding else { return }; let search = search; updateFind { search.previous() } }
+
+    /// Catches up with new output or a moved viewport.
+    private func refreshFind() { let search = search; updateFind { search.refresh() } }
+
+    private func updateFind(_ change: @escaping @Sendable () -> Void) {
+        let search = search
+        parseQueue.async { [weak self] in
+            change()
+            let (matches, selected) = search.viewportMatches()
+            let status = (selected: search.selectedNumber, total: search.total)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let spans = { (cells: [TerminalLink.Span]) in cells.map { TerminalSpan(row: $0.row, columns: $0.columns) } }
+                self.screen.setSearchHighlights(matches: matches.flatMap(spans), selected: spans(selected))
+                self.searchHighlightsForTesting = (matches.flatMap(spans).map { [$0.row, $0.columns.lowerBound, $0.columns.upperBound] },
+                                                   spans(selected).map { [$0.row, $0.columns.lowerBound, $0.columns.upperBound] })
+                // Selecting a match can scroll the viewport.
+                self.updateThumb()
+                if status.selected != self.findStatus.selected || status.total != self.findStatus.total {
+                    self.findStatus = status
+                    self.onFindStatus?(status.selected, status.total)
+                }
+            }
+        }
+    }
+
     // MARK: Links
 
     /// What ⌘-click on a cell opens: its OSC 8 link, or a URL or path in the text, either one
@@ -345,6 +396,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
     var underlinedForTesting: [[Int]] { screen.highlightedLink.map { [$0.row, $0.columns.lowerBound, $0.columns.upperBound] } }
     var pointerForTesting: NSCursor { screen.pointer }
     var columnsForTesting: Int { screen.columns }
+    var screenRowsForTesting: Int { screen.rows }
 
     /// Side's own first (a path opens in Editor), else its default app, as SwiftTerm's view did
     /// (TerminalView.openDefaultLink): a URL as it is, a path if it exists, with a `:line[:column]`
@@ -417,6 +469,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
     private func scrolled() {
         screen.setNeedsFrame()
         updateThumb()
+        if finding { refreshFind() }
     }
 
     /// Output can grow the scrollback: the thumb follows once a turn of the run loop.

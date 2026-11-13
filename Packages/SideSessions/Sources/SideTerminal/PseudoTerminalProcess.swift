@@ -55,8 +55,11 @@ public final class PseudoTerminalProcess: @unchecked Sendable {
         exitWatch.setEventHandler { [weak self] in
             guard let self else { return }
             self.drain() // what it wrote last
+            // Blocking, not WNOHANG: the exit event can arrive a moment before the child is
+            // waitable, and WNOHANG then returns nothing, its status lost (an exit 4 read as 0).
+            // It has exited, so this returns at once.
             var status: Int32 = 0
-            waitpid(started, &status, WNOHANG)
+            while waitpid(started, &status, 0) == -1, errno == EINTR {}
             self.exitWatch?.cancel()
             self.reader?.cancel()
             self.master = -1

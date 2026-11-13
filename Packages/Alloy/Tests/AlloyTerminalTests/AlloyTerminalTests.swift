@@ -83,6 +83,30 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(try render(grid, renderer: renderer).count(in: cell, lit), 0)
     }
 
+    /// Search matches in the theme's search colors, the selected one in its own, the text over
+    /// them in the search's text color; cleared, the row looks as before.
+    func testSearchMatchesAreHighlighted() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 8, rows: 1, foreground: 0xFFFFFF)
+        for x in 0..<8 { grid[x, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0xFFFFFF) }
+        grid.cursor.visible = false
+        let before = try render(grid, renderer: renderer)
+        renderer.searchMatches = [TerminalSpan(row: 0, columns: 1...2), TerminalSpan(row: 0, columns: 5...6)]
+        renderer.selectedMatch = [TerminalSpan(row: 0, columns: 5...6)]
+        let after = try render(grid, renderer: renderer)
+        let yellow: (Pixels.RGBA) -> Bool = { $0.r > 240 && $0.g > 210 && $0.g < 235 && $0.b > 110 && $0.b < 140 } // 0xFFE082
+        let orange: (Pixels.RGBA) -> Bool = { $0.r > 230 && $0.g > 150 && $0.g < 180 && $0.b > 110 && $0.b < 140 } // 0xF2A57E
+        let black: (Pixels.RGBA) -> Bool = { $0.r < 40 && $0.g < 40 && $0.b < 40 }
+        let match = cellRect(column: 1, row: 0), selected = cellRect(column: 5, row: 0), plain = cellRect(column: 3, row: 0)
+        XCTAssertGreaterThan(after.count(in: match, yellow), match.x.count * match.y.count / 3, "a match")
+        XCTAssertGreaterThan(after.count(in: match, black), 20, "its W in the search's text color")
+        XCTAssertGreaterThan(after.count(in: selected, orange), selected.x.count * selected.y.count / 3, "the selected match")
+        XCTAssertEqual(after.count(in: plain, yellow) + after.count(in: plain, orange), 0, "not a match")
+        renderer.searchMatches = []
+        renderer.selectedMatch = []
+        XCTAssertEqual(try render(grid, renderer: renderer), before, "cleared")
+    }
+
     /// The hovered link is underlined, cell by cell in each cell's color, across the rows it covers.
     func testTheHoveredLinkIsUnderlined() throws {
         let renderer = try makeRenderer()

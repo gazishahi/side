@@ -425,6 +425,40 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertEqual(surface.pointerForTesting, .iBeam)
     }
 
+    /// Find: matches highlighted where they are, next and previous step through them (scrolling
+    /// back into the scrollback), new output is searched as it arrives, and an empty search ends it.
+    func testFindHighlightsAndStepsThroughMatches() {
+        let surface = makeSurface()
+        let rows = surface.screenRowsForTesting
+        // One match far back in the scrollback, one on the last line.
+        surface.display(text: "first needle\r\n" + String(repeating: "hay\r\n", count: rows + 5) + "last NEEDLE here")
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("last NEEDLE") })
+        var statuses: [String] = []
+        surface.onFindStatus = { statuses.append("\($0.map(String.init) ?? "-") of \($1)") }
+
+        surface.find("needle")
+        XCTAssertTrue(waitUntil { surface.findStatus.total == 2 })
+        XCTAssertEqual(surface.searchHighlightsForTesting.matches, [[rows - 1, 5, 10]], "the one in view")
+        XCTAssertEqual(surface.searchHighlightsForTesting.selected, [])
+
+        surface.findNext()
+        XCTAssertTrue(waitUntil { surface.findStatus.selected == 1 })
+        XCTAssertEqual(surface.searchHighlightsForTesting.selected, [[rows - 1, 5, 10]], "the newest first")
+        surface.findNext()
+        XCTAssertTrue(waitUntil { surface.findStatus.selected == 2 })
+        XCTAssertEqual(surface.searchHighlightsForTesting.selected.first?[1...2], [6, 11], "\"first needle\", scrolled into view")
+        XCTAssertTrue(surface.scrollbarForTesting.isScrolledBack)
+        surface.findPrevious()
+        XCTAssertTrue(waitUntil { surface.findStatus.selected == 1 })
+
+        surface.display(text: "\r\none more needle")
+        XCTAssertTrue(waitUntil { surface.findStatus.total == 3 }, "new output is searched")
+
+        surface.find("")
+        XCTAssertTrue(waitUntil { surface.searchHighlightsForTesting.matches.isEmpty && surface.findStatus.total == 0 })
+        XCTAssertEqual(statuses.first, "- of 2")
+    }
+
     func testAgentReportsAcrossReads() {
         var watcher = OSCWatcher(code: 6973)
         XCTAssertEqual(watcher.consume(Array("x\u{1B}]6973;agent;cl".utf8)), [])
