@@ -23,9 +23,27 @@ public struct TerminalFont: @unchecked Sendable {
     public init(_ font: CTFont) {
         let size = CTFontGetSize(font)
         regular = font
-        bold = CTFontCreateCopyWithSymbolicTraits(font, size, nil, .traitBold, .traitBold) ?? font
-        italic = CTFontCreateCopyWithSymbolicTraits(font, size, nil, .traitItalic, .traitItalic) ?? font
-        boldItalic = CTFontCreateCopyWithSymbolicTraits(font, size, nil, [.traitBold, .traitItalic], [.traitBold, .traitItalic]) ?? bold
+        func styled(_ traits: CTFontSymbolicTraits) -> CTFont? {
+            guard let made = CTFontCreateCopyWithSymbolicTraits(font, size, nil, traits, traits),
+                  CTFontGetSymbolicTraits(made).contains(traits) else { return nil }
+            return made
+        }
+        let realBold = styled(.traitBold), realItalic = styled(.traitItalic)
+        bold = realBold ?? font
+        italic = realItalic ?? font
+        boldItalic = styled([.traitBold, .traitItalic]) ?? realItalic ?? realBold ?? font
+    }
+
+    /// What a style's face has to draw synthetically (Ghostty's font-synthetic-style): what the
+    /// face itself lacks of the style. A family with no bold is its regular stroked heavier; with
+    /// no italic, slanted.
+    func synthetic(_ style: TerminalCell.Style) -> SyntheticStyle {
+        let face = self.face(style)
+        let traits = CTFontGetSymbolicTraits(face)
+        var synthetic: SyntheticStyle = []
+        if style.contains(.bold), !traits.contains(.traitBold) { synthetic.insert(.bold) }
+        if style.contains(.italic), !traits.contains(.traitItalic) { synthetic.insert(.italic) }
+        return synthetic
     }
 
     /// One cell, in points: the advance of "M" by the line's height (ascent, descent, leading).
@@ -164,7 +182,7 @@ public final class TerminalRenderer {
     @discardableResult
     public func draw(_ grid: TerminalGrid, scale: CGFloat, into target: MTLTexture, drawable: CAMetalDrawable? = nil,
                      completion: (@Sendable (MTLCommandBuffer) -> Void)? = nil) -> MTLCommandBuffer? {
-        let quads = assemble(grid, scale: scale)
+        let quads = assemble(grid, scale: scale, size: (Float(target.width), Float(target.height)))
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .clear
@@ -209,7 +227,7 @@ public final class TerminalRenderer {
 
     // MARK: - Building quads
 
-    func assemble(_ grid: TerminalGrid, scale: CGFloat) -> [Quad] {
+    func assemble(_ grid: TerminalGrid, scale: CGFloat, size: (width: Float, height: Float) = (0, 0)) -> [Quad] {
         // A new scale or size invalidates every row; a restarted atlas, every cached glyph too.
         if scale != builtScale || grid.rows != builtRows || atlas.generation != atlasGeneration {
             if scale != builtScale || atlas.generation != atlasGeneration { glyphCache.removeAll(); runCache.removeAll() }
@@ -236,6 +254,7 @@ public final class TerminalRenderer {
         var quads: [Quad] = []
         quads.reserveCapacity(grid.columns * grid.rows / 2 + 64)
         for row in backgroundQuads { quads += row }
+        if paddingColor == .extend { quads += paddingQuads(grid, scale: scale, size: size) }
         for row in glyphQuads { quads += row }
         quads += linkQuads(grid, scale: scale)
         // The cursor over the text: a block covers its cell and redraws the character in the
@@ -310,6 +329,46 @@ public final class TerminalRenderer {
                         uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
                         color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink, kind: p.entry.isColor ? 2 : 1)
         }
+    }
+
+    /// What fills the strip right of and below the grid, where whole cells don't fit (Ghostty's
+    /// window-padding-color): the theme's background, or the edge cells' backgrounds carried to
+    /// the edge, so a program's status bar or full-screen color reaches it.
+    public enum PaddingColor: Sendable { case background, extend }
+    public var paddingColor = PaddingColor.background
+
+    /// The edge cells' backgrounds, extended into the padding: each row's last cell to the right
+    /// edge, the last row's cells to the bottom, and the corner from the last cell.
+    private func paddingQuads(_ grid: TerminalGrid, scale: CGFloat, size: (width: Float, height: Float)) -> [Quad] {
+        let (cw, ch, _) = metrics(scale)
+        let gridRight = (Float(grid.columns) * cw).rounded(.down), gridBottom = Float(grid.rows) * ch
+        var quads: [Quad] = []
+        func background(_ x: Int, _ y: Int) -> UInt32? {
+            let cell = grid[x, y]
+            // The right half of a wide character has its left half's color.
+            if cell.style.contains(.spacer), x > 0 { return grid[x - 1, y].background }
+            return cell.background
+        }
+        if size.width > gridRight {
+            for y in 0..<grid.rows {
+                guard let bg = background(grid.columns - 1, y) else { continue }
+                quads.append(Quad(rect: SIMD4(gridRight, Float(y) * ch, size.width - gridRight, y == grid.rows - 1 ? max(ch, size.height - Float(y) * ch) : ch),
+                                  uv: .zero, color: color(bg), kind: 0))
+            }
+        }
+        if size.height > gridBottom {
+            let y = grid.rows - 1
+            var x = 0
+            while x < grid.columns {
+                guard let bg = background(x, y) else { x += 1; continue }
+                var end = x + 1
+                while end < grid.columns, background(end, y) == bg { end += 1 }
+                let left = (Float(x) * cw).rounded(.down), right = (Float(end) * cw).rounded(.down)
+                quads.append(Quad(rect: SIMD4(left, gridBottom, right - left, size.height - gridBottom), uv: .zero, color: color(bg), kind: 0))
+                x = end
+            }
+        }
+        return quads
     }
 
     /// An underline under each cell of the hovered link, in that cell's color.
@@ -557,7 +616,8 @@ public final class TerminalRenderer {
             CTRunGetStringIndices(run, CFRange(location: 0, length: count), &indices)
             for i in 0..<count {
                 let cell = indices[i]
-                guard let entry = atlas.entry(font: runFont, glyph: glyphs[i], subpixel: 0, scale: scale, isColor: isColor) else { continue }
+                guard let entry = atlas.entry(font: runFont, glyph: glyphs[i], subpixel: 0, scale: scale, isColor: isColor,
+                                              synthetic: font.synthetic(face)) else { continue }
                 result.append(RunGlyph(glyph: glyphs[i], entry: entry, cell: cell, dx: positions[i].x - CGFloat(cell) * self.cell.width))
             }
         }
@@ -576,7 +636,9 @@ public final class TerminalRenderer {
         if c.cluster == nil, c.scalar < 0x10000 {
             var character = UniChar(c.scalar), glyph: CGGlyph = 0
             if CTFontGetGlyphsForCharacters(face, &character, &glyph, 1), glyph != 0 {
-                if let entry = atlas.entry(font: face, glyph: glyph, subpixel: 0, scale: scale, isColor: false) { result = [Placed(entry: entry, dx: 0)] }
+                if let entry = atlas.entry(font: face, glyph: glyph, subpixel: 0, scale: scale, isColor: false, synthetic: font.synthetic(style)) {
+                    result = [Placed(entry: entry, dx: 0)]
+                }
                 glyphCache[key] = result
                 return result
             }
@@ -593,7 +655,9 @@ public final class TerminalRenderer {
             CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
             CTRunGetPositions(run, CFRange(location: 0, length: count), &positions)
             for i in 0..<count {
-                if let entry = atlas.entry(font: runFont, glyph: glyphs[i], subpixel: 0, scale: scale, isColor: isColor) {
+                // The face's own glyphs take its synthetic styles; a fallback font's are its own.
+                let synthetic = CFEqual(runFont, face) ? font.synthetic(style) : []
+                if let entry = atlas.entry(font: runFont, glyph: glyphs[i], subpixel: 0, scale: scale, isColor: isColor, synthetic: synthetic) {
                     result.append(Placed(entry: entry, dx: positions[i].x))
                 }
             }

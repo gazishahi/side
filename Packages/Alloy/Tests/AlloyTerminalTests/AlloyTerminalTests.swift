@@ -139,6 +139,84 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(try render(grid, renderer: renderer), before, "gone again")
     }
 
+    /// The strip past the last whole cell: the theme's background by default; extended, the edge
+    /// cells' own backgrounds carried to the edge, right and bottom.
+    func testPaddingColor() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 4, rows: 2, foreground: 0xFFFFFF)
+        for x in 0..<4 { grid[x, 1] = TerminalCell(foreground: 0xFFFFFF, background: 0x0000FF) } // a status bar
+        grid[3, 0] = TerminalCell(foreground: 0xFFFFFF, background: 0x00FF00)
+        grid.cursor.visible = false
+        let cell = font.cellSize
+        let gridWidth = Int((CGFloat(4) * cell.width * scale).rounded(.down)), gridHeight = Int(2 * (cell.height * scale).rounded())
+        // 30 pixels more each way than the grid needs.
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: gridWidth + 30, height: gridHeight + 30, mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        func draw() throws -> Pixels {
+            let texture = try XCTUnwrap(renderer.device.makeTexture(descriptor: descriptor))
+            try XCTUnwrap(renderer.draw(grid, scale: scale, into: texture)).waitUntilCompleted()
+            return Pixels(texture)
+        }
+        let rowHeight = Int((cell.height * scale).rounded())
+        let rightOfRow0 = ((gridWidth + 5)..<(gridWidth + 25), 4..<(rowHeight - 4))
+        let rightOfRow1 = ((gridWidth + 5)..<(gridWidth + 25), (rowHeight + 4)..<(gridHeight - 4))
+        let below = (4..<(gridWidth - 4), (gridHeight + 5)..<(gridHeight + 25))
+        let corner = ((gridWidth + 5)..<(gridWidth + 25), (gridHeight + 5)..<(gridHeight + 25))
+        let green: (Pixels.RGBA) -> Bool = { $0.g > 240 && $0.r < 20 && $0.b < 20 }
+        let blue: (Pixels.RGBA) -> Bool = { $0.b > 240 && $0.r < 20 && $0.g < 20 }
+        let black: (Pixels.RGBA) -> Bool = { $0.r < 10 && $0.g < 10 && $0.b < 10 }
+        func all(_ p: Pixels, _ r: (Range<Int>, Range<Int>), _ test: (Pixels.RGBA) -> Bool) -> Bool { p.count(in: (r.0, r.1), test) == r.0.count * r.1.count }
+
+        var pixels = try draw()
+        XCTAssertTrue(all(pixels, rightOfRow0, black) && all(pixels, below, black) && all(pixels, corner, black), "the theme's background")
+        renderer.paddingColor = .extend
+        pixels = try draw()
+        XCTAssertTrue(all(pixels, rightOfRow0, green), "row 0's last cell, carried right")
+        XCTAssertTrue(all(pixels, rightOfRow1, blue), "the status bar to the right edge")
+        XCTAssertTrue(all(pixels, below, blue), "and to the bottom")
+        XCTAssertTrue(all(pixels, corner, blue), "and into the corner")
+    }
+
+    /// A family with no bold or italic (Monaco) draws them synthetically: bold heavier, italic
+    /// slanted, leaning right at the top. One that has them (Menlo) uses its own faces.
+    func testSyntheticBoldAndItalic() throws {
+        let monaco = TerminalFont(name: "Monaco", size: 13)
+        try XCTSkipUnless((CTFontCopyPostScriptName(monaco.regular) as String) == "Monaco", "Monaco isn't installed")
+        XCTAssertEqual(monaco.synthetic([.bold]), [.bold])
+        XCTAssertEqual(monaco.synthetic([.italic]), [.italic])
+        XCTAssertEqual(monaco.synthetic([.bold, .italic]), [.bold, .italic])
+        XCTAssertEqual(font.synthetic([.bold, .italic]), [], "Menlo has its own")
+
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let renderer = try TerminalRenderer(device: device, font: monaco, theme: Self.black)
+        func draw(_ style: TerminalCell.Style) throws -> (lit: Int, lean: Double) {
+            let grid = TerminalGrid(columns: 3, rows: 1, foreground: 0xFFFFFF)
+            grid[1, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "|")), foreground: 0xFFFFFF, style: style)
+            grid.cursor.visible = false
+            let cell = monaco.cellSize
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: Int((3 * cell.width * scale).rounded(.up)),
+                                                                      height: Int((cell.height * scale).rounded(.up)), mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .shared
+            let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+            try XCTUnwrap(renderer.draw(grid, scale: scale, into: texture)).waitUntilCompleted()
+            let pixels = Pixels(texture)
+            // The ink's middle, x, in the top and bottom thirds of the cell: how far it leans.
+            func middle(_ rows: Range<Int>) -> Double {
+                var sum = 0.0, count = 0.0
+                for y in rows { for x in 0..<pixels.width where pixels.count(in: (x..<(x + 1), y..<(y + 1)), { $0.r > 128 }) == 1 { sum += Double(x); count += 1 } }
+                return count > 0 ? sum / count : 0
+            }
+            let h = pixels.height
+            return (pixels.count(in: (0..<pixels.width, 0..<h), { $0.r > 128 }), middle(0..<(h / 3)) - middle((2 * h / 3)..<h))
+        }
+        let regular = try draw([]), bold = try draw(.bold), italic = try draw(.italic)
+        XCTAssertGreaterThan(Double(bold.lit), Double(regular.lit) * 1.15, "bold is heavier")
+        XCTAssertLessThan(abs(regular.lean), 1.5, "an upright bar: \(regular.lean)")
+        XCTAssertGreaterThan(italic.lean, 3, "italic leans right toward the top: \(italic.lean)")
+    }
+
     /// A program's cursor color over the theme's.
     func testTheCursorInAProgramsColor() throws {
         let renderer = try makeRenderer()

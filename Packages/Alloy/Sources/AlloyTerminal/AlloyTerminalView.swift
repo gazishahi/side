@@ -207,6 +207,12 @@ public final class AlloyTerminalView: NSView {
 
     public override func resetCursorRects() { addCursorRect(bounds, cursor: pointer) }
 
+    /// What fills the strip right of and below the grid: the theme's background (Ghostty's
+    /// default), or the edge cells' backgrounds carried to the view's edge.
+    public var paddingColor: TerminalRenderer.PaddingColor = .background {
+        didSet { if paddingColor != oldValue { engine.setPaddingColor(paddingColor) } }
+    }
+
     /// A search's matches in view, and the selected one, highlighted in the theme's search colors.
     public func setSearchHighlights(matches: [TerminalSpan], selected: [TerminalSpan]) {
         engine.setSearchHighlights(matches: matches, selected: selected)
@@ -411,6 +417,14 @@ private final class RenderEngine: @unchecked Sendable {
             guard matches != self.renderer.searchMatches || selected != self.renderer.selectedMatch else { return }
             self.renderer.searchMatches = matches
             self.renderer.selectedMatch = selected
+            self.forced = true
+        }
+        requestFrame()
+    }
+
+    func setPaddingColor(_ color: TerminalRenderer.PaddingColor) {
+        queue.async {
+            self.renderer.paddingColor = color
             self.forced = true
         }
         requestFrame()
