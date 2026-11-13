@@ -141,6 +141,12 @@ final class TokenComplianceTests: XCTestCase {
         XCTAssertEqual(dot.accessibilityLabel(), "Needs you")
         dot.state = .working
         XCTAssertEqual(dot.accessibilityLabel(), "Working")
-        XCTAssertEqual(dot.layer?.borderWidth, 1.5, "working is a ring, not a fill")
+        // Working is an open arc that turns, not a fill and not a breathing ring.
+        let arc = dot.layer?.sublayers?.compactMap { $0 as? CAShapeLayer }.first
+        XCTAssertNotNil(arc, "working is an arc")
+        XCTAssertLessThan(arc?.strokeEnd ?? 1, 1, "an open arc, not a whole ring")
+        XCTAssertNil(dot.layer?.animation(forKey: "breathe"))
+        dot.state = .verified
+        XCTAssertNil(dot.layer?.sublayers?.first { $0 is CAShapeLayer }, "a finished dot is filled, with no arc left over")
     }
 }

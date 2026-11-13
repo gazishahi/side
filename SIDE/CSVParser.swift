@@ -923,7 +923,10 @@ final class SheetView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         footerBottom = bottom
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: topAnchor), scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor), scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            // The grid ends above its footer, not under the stage's floating bar: scrolled
+            // under it, its scrollers sat clear of the bar, in the middle of the cells, and cells
+            // showed through beneath (the owner, 2026-11-12).
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor), scrollView.bottomAnchor.constraint(equalTo: footerCard.topAnchor, constant: -DS.Spacing.s),
             footer.topAnchor.constraint(equalTo: footerCard.topAnchor), footer.bottomAnchor.constraint(equalTo: footerCard.bottomAnchor),
             footer.leadingAnchor.constraint(equalTo: footerCard.leadingAnchor), footer.trailingAnchor.constraint(equalTo: footerCard.trailingAnchor),
             footerCard.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.l), bottom,
@@ -938,12 +941,12 @@ final class SheetView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.reloadData()  // a workbook's colours are fitted to the background
     }
 
-    /// Where the footer sits above whatever covers the bottom of the stage; the last row scrolls
-    /// clear of both.
+    /// Where the footer sits above whatever covers the bottom of the stage; the grid ends above
+    /// the footer.
     func setBottomInset(_ inset: CGFloat) {
         footerBottom?.constant = -(inset + DS.Spacing.m)
         scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets.bottom = inset + DS.Spacing.m + 32 + DS.Spacing.s
+        scrollView.contentInsets.bottom = 0
     }
 
     func show(_ sheets: [Sheet]) {

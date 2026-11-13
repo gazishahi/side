@@ -227,7 +227,7 @@ class WelcomeDemo: NSView {
         }
     }
 
-    /// Breathes, as the working ring does, until the loop ends.
+    /// Fades in and out, until the loop ends: the editor's caret.
     func breathe(_ layer: CALayer) {
         guard !instant else { return }
         let animation = CABasicAnimation(keyPath: "opacity")
@@ -238,6 +238,27 @@ class WelcomeDemo: NSView {
         animation.repeatCount = .infinity
         animation.timingFunction = DS.Motion.fadeCurve
         layer.add(animation, forKey: "breathe")
+    }
+
+    /// Working, as Side's own status dot shows it: the dot becomes a short arc turning steadily.
+    func spin(_ dot: CALayer, color: NSColor) {
+        dot.backgroundColor = nil
+        let arc = CAShapeLayer()
+        arc.frame = dot.bounds
+        arc.path = CGPath(ellipseIn: dot.bounds.insetBy(dx: 0.75, dy: 0.75), transform: nil)
+        arc.fillColor = nil
+        arc.lineWidth = 1.5
+        arc.lineCap = .round
+        arc.strokeEnd = 0.72
+        arc.strokeColor = cg(color)
+        dot.addSublayer(arc)
+        guard !instant else { return }
+        let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+        turn.fromValue = 0
+        turn.toValue = -2 * CGFloat.pi
+        turn.duration = 1.0
+        turn.repeatCount = .infinity
+        arc.add(turn, forKey: "turn")
     }
 
     /// Springs to a new position (its centre).
@@ -570,9 +591,9 @@ final class WelcomeStageShowcase: WelcomeDemo {
             let text = hidden(label(line.0, at: CGPoint(x: 12, y: 12 + CGFloat(index) * 17), size: 10, color: line.1, monospaced: true, in: pane))
             step(0.25 + Double(index) * 0.32) { [weak self] in self?.reveal(text, rise: 3) }
         }
-        breathe(dot)
+        spin(dot, color: DS.Color.statusWorking)
         step(0.25 + Double(output.count) * 0.32) { [weak self] in
-            dot.removeAllAnimations()
+            dot.sublayers?.forEach { $0.removeFromSuperlayer() }
             dot.backgroundColor = self?.cg(DS.Color.statusVerified)
             self?.reveal(dot, rise: 0, scale: 0.4)
         }
@@ -608,7 +629,8 @@ final class WelcomeStageShowcase: WelcomeDemo {
             }
             step(0.15 + Double(index) * 0.13) { [weak self] in
                 self?.reveal(card, rise: 10)
-                if row.2 == .working || row.2 == .needsYou { self?.breathe(dot) }
+                // As the app shows them: working turns, waiting on you is a still dot.
+                if row.2 == .working { self?.spin(dot, color: color) }
             }
         }
     }
@@ -682,7 +704,7 @@ final class WelcomeKeepsRunningDemo: WelcomeDemo {
             lines.append(line)
         }
         let dot = box(CGRect(x: 136, y: 8, width: 7, height: 7), DS.Color.statusWorking, radius: 3.5, in: terminal)
-        breathe(dot)
+        spin(dot, color: DS.Color.statusWorking)
         let caption = hidden(label("Side quit · still running", at: CGPoint(x: 0, y: 132), size: 9, color: .secondaryLabelColor))
         caption.position.x = designSize.width / 2
         for index in 0..<2 { at(0.2 + Double(index) * 0.35) { [weak self] in self?.grow(lines[index]) } }

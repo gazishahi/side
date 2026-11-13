@@ -621,7 +621,7 @@ final class TopRowBackdrop: NSView {
     private let blur = NSVisualEffectView()
     private let tintView = NSView()
     private var frosted = false
-    var tint: NSColor = DS.Color.canvas { didSet { tintView.bindLayerBackground(tint.withAlphaComponent(0.72)) } }
+    var tint: NSColor = DS.Color.canvas { didSet { applyLook() } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -640,8 +640,19 @@ final class TopRowBackdrop: NSView {
         }
         tint = DS.Color.canvas
         alphaValue = 0
+        NotificationCenter.default.addObserver(self, selector: #selector(applyLook), name: DS.Appearance.didChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Solid window: the stage's tone, frosted over what's beneath. Translucent window: no blur
+    /// of its own (a blur in a see-through window, fading in, drew a flat dark grey band over a
+    /// light window: the owner, 2026-11-12), only the canvas tone over the window's glass, enough
+    /// that what scrolled under it doesn't show.
+    @objc private func applyLook() {
+        let translucent = DS.Translucency.isOn
+        blur.isHidden = translucent
+        tintView.bindLayerBackground(translucent ? DS.Translucency.coverTint : tint.withAlphaComponent(0.72))
+    }
 
     /// Clear at rest; frosted glass once something has scrolled underneath.
     func setFrosted(_ on: Bool, animated: Bool) {

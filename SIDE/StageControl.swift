@@ -212,7 +212,9 @@ class GlassPill: NSView {
         }
         label.font = Self.titleFont
         label.textColor = .labelColor
-        label.alignment = .center
+        // From the mark, not centred: a title shorter than the width kept for a longer one sat in
+        // the middle of it, far from its spinner (the owner, 2026-11-12).
+        label.alignment = .natural
         label.lineBreakMode = .byTruncatingTail
         // Below the window's own size (windowSizeStayPut, 500): a long title truncates rather
         // than widening the window. At 750 the activity pill, naming what was running, pushed a
@@ -244,6 +246,8 @@ class GlassPill: NSView {
         markSlotHeight = markSlot.heightAnchor.constraint(equalToConstant: ProgressRing.diameter)
         NSLayoutConstraint.activate([markSlotWidth!, markSlotHeight!])
         for view in [markSlot, label, countBadge] as [NSView] { row.addArrangedSubview(view) }
+        // The mark belongs to its title: closer to it than the pill's other pieces are.
+        row.setCustomSpacing(DS.Spacing.xs + 2, after: markSlot)
         addSubview(row)
         let inset = glass ? DS.Spacing.l : DS.Spacing.s
         NSLayoutConstraint.activate([

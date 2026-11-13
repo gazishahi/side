@@ -625,16 +625,24 @@ enum DS {
         static var isOn: Bool { stored.on && !reduceTransparency() && !Color.increaseContrast() }
         static var includesEditor: Bool { isOn && stored.editor }
 
-        /// How much of the canvas tone lies over the blur: enough that secondary labels keep their
-        /// contrast over a white window or a busy wallpaper, not so much that the glass is lost.
-        /// Light's material is already pale, so less of the tone is laid over it. (Tuned over a
-        /// window of loud stripes, 2026-11-08: more showed the stripes through secondary labels.)
-        static func tintOpacity(dark: Bool) -> CGFloat { dark ? 0.6 : 0.45 }
-        /// The terminal's background and Make's, over the tinted backdrop: they add to its tint,
-        /// so a little goes a long way (0.8 let almost nothing through; the editor at 0.5,
-        /// barely more). The same for both: they're the two surfaces you read code on.
-        static let terminalOpacity: CGFloat = 0.3
-        static let editorOpacity: CGFloat = 0.3
+        /// The system's own glass for a window's body: it brings the saturation and the light
+        /// that make it read as glass. A flat canvas tone laid thickly over a plain blur (how this
+        /// began) read as a muddy sheet, not glass (the owner, 2026-11-12).
+        static let material: NSVisualEffectView.Material = .sidebar
+        /// How much of the canvas tone lies over the material: a breath, to keep secondary labels
+        /// legible over a loud wallpaper without flattening the glass.
+        static func tintOpacity(dark: Bool) -> CGFloat { dark ? 0.3 : 0.25 }
+        /// The terminal's and the editor's own backgrounds over the glass: none. Their text sits
+        /// on the window's glass, one surface with the bars and tabs around it; a background of
+        /// their own, even faint, drew a second sheet inside the window (the owner, 2026-11-12).
+        static let terminalOpacity: CGFloat = 0
+        static let editorOpacity: CGFloat = 0
+        /// Over something that scrolled under the top row: the canvas tone, nearly opaque, on the
+        /// same glass, so the row stays the window's glass and the text under it doesn't show.
+        static let coverTint = NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return resolved(Color.canvas, in: appearance).withAlphaComponent(dark ? 0.92 : 0.9)
+        }
 
         /// The window's tint: the canvas tone, translucent.
         static let tint = NSColor(name: nil) { appearance in
@@ -1304,24 +1312,9 @@ final class TabStripView: NSView {
     private weak var trackScroll: NSScrollView?
     private weak var trackStack: NSStackView?
 
-    /// Sits just after the tabs' track and moves with it (Terminal's new-tab button). The
-    /// owner leaves room for it at the strip's end, so with many tabs it rests there.
-    var trailingAccessory: NSView? {
-        didSet {
-            oldValue?.removeFromSuperview()
-            guard let trailingAccessory else { return }
-            trailingAccessory.translatesAutoresizingMaskIntoConstraints = true
-            addSubview(trailingAccessory)
-            needsLayout = true
-        }
-    }
-    static let accessoryGap: CGFloat = 4
-    /// How much of the strip's end the accessory takes, for what's laid out up to that end.
-    var accessoryReserve: CGFloat { trailingAccessory.map { $0.fittingSize.width + Self.accessoryGap } ?? 0 }
-    /// With one tab there's no track (the name stands alone): the accessory follows this view,
-    /// the name's end, instead.
-    weak var soloEnd: NSView?
-    var soloShown = false { didSet { if soloShown != oldValue { needsLayout = true } } }
+    /// What sits at the strip's trailing end (Terminal's new-tab button): the tabs' solo name
+    /// stops short of it.
+    var trailingReserve: CGFloat = 0
 
     @objc private func tabsResized() { needsLayout = true }
 
@@ -1426,11 +1419,6 @@ final class TabStripView: NSView {
             context.duration = 0
             context.allowsImplicitAnimation = false
             glass.frame = NSRect(x: scroll.frame.minX, y: (bounds.height - Self.trackHeight) / 2, width: glassWidth, height: Self.trackHeight)
-            if let accessory = trailingAccessory {
-                let size = accessory.fittingSize
-                let end = soloShown ? soloEnd.map { $0.frame.maxX } ?? glass.frame.maxX : glass.frame.maxX
-                accessory.frame = NSRect(x: end + Self.accessoryGap, y: ((bounds.height - size.height) / 2).rounded(), width: size.width, height: size.height)
-            }
         }
         // The tabs are cut off at the track's round ends, not the scroll view's square ones: a
         // selected tab half scrolled out used to poke its pill past the curve. The mask takes its
@@ -1719,8 +1707,9 @@ extension DS {
         }
     }
 
-    /// A 6 pt status dot. Filled for every state but Working, which is a hollow ring that
-    /// breathes — the only animated indicator in the app. Exposed to accessibility as an image
+    /// A 6 pt status dot. Filled for every state but Working, which is a short arc turning
+    /// steadily, as a Mac's own spinners do (the owner, 2026-11-12: the breathing ring it replaced
+    /// pulsed for attention it didn't need) — the only animated indicator in the app. Exposed to accessibility as an image
     /// whose label is the state's name, so the colour is never the only carrier.
     /// A list's selected row (Quick Open, the palette, Settings' sidebar, mention lists): the
     /// soft selected capsule tabs and the stage control use, inset from the list's edges.
@@ -1789,9 +1778,20 @@ extension DS {
 
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+        /// Working's arc, turning.
+        private var spinner: CAShapeLayer?
+
+        override func layout() {
+            super.layout()
+            spinner?.frame = bounds
+            spinner?.path = CGPath(ellipseIn: bounds.insetBy(dx: 0.75, dy: 0.75), transform: nil)
+        }
+
         private func apply() {
             setAccessibilityLabel(state.name)
-            layer?.removeAnimation(forKey: "breathe")
+            spinner?.removeFromSuperlayer()
+            spinner = nil
+            layer?.opacity = 1
             if state == .idle {
                 // Quiet is a still ring: a filled grey dot read as a dimmed state of the others.
                 unbindLayerBackground()
@@ -1800,17 +1800,30 @@ extension DS {
                 bindLayerBorder(state.color)
             } else if state == .working {
                 unbindLayerBackground()
-                layer?.borderWidth = 1.5
-                bindLayerBorder(state.color)
+                unbindLayerBorder()
+                layer?.borderWidth = 0
+                // Three quarters of the ring, its ends rounded, turning once a second; still under
+                // Reduce Motion.
+                let arc = CAShapeLayer()
+                arc.frame = bounds
+                arc.path = CGPath(ellipseIn: bounds.insetBy(dx: 0.75, dy: 0.75), transform: nil)
+                arc.fillColor = nil
+                arc.lineWidth = 1.5
+                arc.lineCap = .round
+                arc.strokeEnd = 0.72
+                var color = state.color.cgColor
+                effectiveAppearance.performAsCurrentDrawingAppearance { color = self.state.color.cgColor }
+                arc.strokeColor = color
+                layer?.addSublayer(arc)
+                spinner = arc
                 guard !Motion.reduceMotion else { return }
-                let breathe = CABasicAnimation(keyPath: "opacity")
-                breathe.fromValue = 1
-                breathe.toValue = 0.35
-                breathe.duration = 1.0
-                breathe.autoreverses = true
-                breathe.repeatCount = .infinity
-                breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                layer?.add(breathe, forKey: "breathe")
+                let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+                turn.fromValue = 0
+                turn.toValue = -2 * CGFloat.pi
+                turn.duration = 1.0
+                turn.repeatCount = .infinity
+                turn.isRemovedOnCompletion = false
+                arc.add(turn, forKey: "turn")
             } else {
                 unbindLayerBorder()
                 layer?.borderWidth = 0
