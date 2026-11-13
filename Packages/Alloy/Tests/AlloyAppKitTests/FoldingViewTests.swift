@@ -440,6 +440,38 @@ final class FoldingViewTests: XCTestCase {
         XCTAssertEqual(editor.gutter.misplacedLinesForTesting, [], "every number where its line is")
     }
 
+    /// The gutter and its editor grow together, and the gutter lays out first: its numbers end up
+    /// beside their lines once the editor has laid out too. In Changes' review queue the column
+    /// appearing did this, and the numbers stayed the height difference (117 pt) below their
+    /// lines (2026-11-13).
+    func testGutterNumbersStayBesideTheirLinesWhenTheGutterLaysOutFirst() throws {
+        try open()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 300))
+        editor.removeFromSuperview()
+        editor.frame = NSRect(x: 40, y: 0, width: 600, height: 300)
+        editor.gutter.frame = NSRect(x: 0, y: 0, width: 40, height: 300)
+        host.addSubview(editor.gutter)
+        host.addSubview(editor)
+        window.contentView = host
+        editor.setBuffer(TextBuffer((1...6).map { "line \($0)" }.joined(separator: "\n")))
+        window.displayIfNeeded()
+        // Where the first tile belongs: the text's top in the gutter, less the viewport's scroll.
+        func expected() -> CGFloat {
+            let scroll = editor.scrollView
+            return scroll.convert(scroll.contentView.frame.origin, to: editor.gutter).y - editor.drawingRect.minY
+        }
+        XCTAssertEqual(editor.gutter.tileTopsForTesting[0] ?? .nan, expected(), accuracy: 0.5, "settled")
+
+        // Taller: the gutter first, the editor's scroll view still the old height when it does.
+        editor.gutter.frame.size.height = 420
+        editor.gutter.layoutSubtreeIfNeeded()
+        editor.gutter.layoutTiles()
+        editor.frame.size.height = 420
+        editor.layoutSubtreeIfNeeded()
+        editor.layout()
+        XCTAssertEqual(editor.gutter.tileTopsForTesting[0] ?? .nan, expected(), accuracy: 0.5, "the first tile where the text starts")
+    }
+
     /// A minimap turned off (Make hides it and gives it no width) draws nothing when asked: its
     /// tiles keep the width they had, and a negative column count made a backwards range (0.2.0's
     /// crash, 2026-10-27).

@@ -412,6 +412,11 @@ public final class AlloyEditorView: NSView {
         super.layout()
         updateWrapWidth()
         updateDocumentHeight()
+        // The gutter places its tiles by where this view's text sits in it, which is only right
+        // once this view has laid out: a gutter laid out first, while both grew (Changes' review
+        // column appearing), read the old height's difference as an offset and drew its numbers
+        // that far below their lines (2026-11-13).
+        gutter.layoutTiles()
         setNeedsRender()
     }
 

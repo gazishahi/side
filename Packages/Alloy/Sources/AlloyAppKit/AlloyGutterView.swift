@@ -247,6 +247,9 @@ public final class AlloyGutterView: NSView {
         return tiles.values.flatMap { $0.drawn }.filter { layout.y(ofLine: $0.line) != $0.y }.map(\.line).sorted()
     }
 
+    /// Where each shown tile sits, top down, by its index (tests).
+    var tileTopsForTesting: [Int: CGFloat] { tiles.mapValues { $0.frame.minY } }
+
     /// Follows a scroll: tiles move; only the ones coming into view are drawn.
     public func scrolled() { layoutTiles() }
 
