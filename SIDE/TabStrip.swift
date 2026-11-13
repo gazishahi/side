@@ -153,6 +153,49 @@ final class TabStrip: NSObject {
         return last.frame.maxX + stack.edgeInsets.right
     }
 
+    // MARK: Equal widths
+
+    /// Every tab is one width (the owner, 2026-11-13): titles that change as you work (an agent
+    /// retitling its terminal every few seconds) never move the tabs about. They share the strip,
+    /// as wide as `maxTabWidth` when there's room, narrowing to `minTabWidth`, past which it scrolls.
+    static let maxTabWidth: CGFloat = 200
+    static let minTabWidth: CGFloat = 120
+
+    /// The width each of `count` tabs takes in the strip as it is now.
+    func evenTabWidth(count: Int) -> CGFloat {
+        guard count > 0, let scroll = stack.enclosingScrollView, scroll.frame.width > 0 else { return Self.maxTabWidth }
+        let room = scroll.frame.width - stack.edgeInsets.left - stack.edgeInsets.right - stack.spacing * CGFloat(count - 1)
+        return min(Self.maxTabWidth, max(Self.minTabWidth, (room / CGFloat(count)).rounded(.down)))
+    }
+
+    /// Each tab to the shared width; true when that changed anything.
+    @discardableResult
+    private func applyEvenWidths() -> Bool {
+        if !watchingResize, let scroll = stack.enclosingScrollView {
+            watchingResize = true
+            scroll.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(stripResized), name: NSView.frameDidChangeNotification, object: scroll)
+        }
+        let width = evenTabWidth(count: chips.count)
+        var changed = false
+        for chip in chips where chip.evenWidth != width {
+            chip.evenWidth = width
+            changed = true
+        }
+        return changed
+    }
+
+    private var watchingResize = false
+
+    /// The window resized: the tabs take their new share at once, as everything else does.
+    @objc private func stripResized() {
+        guard !chips.isEmpty, !isRelayingOut, applyEvenWidths() else { return }
+        bar.layoutSubtreeIfNeeded()
+        bar.setTrackWidth(tabsWidth(), spring: nil)
+        keepTabsInView()
+        placeSelection()
+    }
+
     /// The scroll view's content takes a new, larger width at once, never on a spring.
     private func growContentToFit() {
         let fitting = stack.fittingSize.width
@@ -232,6 +275,7 @@ final class TabStrip: NSObject {
         }
         chips = next
         ids = newIDs
+        applyEvenWidths()
         bar.accessibleTabs = chips
         applyShortcutHints()
         if appearing {
@@ -627,7 +671,7 @@ final class TabStrip: NSObject {
         chip.isActive = false
         guard bar.window != nil, !DS.Motion.reduceMotion else {
             chip.removeFromSuperview()
-            relayout(DS.Motion.snappy, completion: completion)
+            relayout(DS.Motion.snappy, { applyEvenWidths() }, completion: completion)
             return
         }
         // Out of the row, over its old place: the row closes up on the spring while the chip
@@ -644,7 +688,7 @@ final class TabStrip: NSObject {
         })
         // Quick: narrowing, it shows its icon alone for a moment, which shouldn't linger.
         DS.Motion.fade(duration: DS.Motion.fadeDuration * 0.4, { chip.animator().alphaValue = 0 })
-        relayout(DS.Motion.snappy, completion: { [weak self] in
+        relayout(DS.Motion.snappy, { applyEvenWidths() }, completion: { [weak self] in
             chip.removeFromSuperview()
             self?.closing.removeAll { $0 === chip }
             completion?()
@@ -980,6 +1024,9 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// Holds the slot closed while the tab is torn out of the strip.
     fileprivate var slotWidth: NSLayoutConstraint?
 
+    /// The width every tab in the strip shares; nil sizes the chip to its title.
+    var evenWidth: CGFloat? { didSet { if evenWidth != oldValue { invalidateIntrinsicContentSize() } } }
+
     private static let textInset: CGFloat = 12
     private static let trailingReserve: CGFloat = 26
     private static let maxTextWidth: CGFloat = 200
@@ -1011,6 +1058,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// Measured at the heavier weight whatever the state, so selecting a tab never changes its
     /// width: the whole strip used to shuffle by a few points on every click.
     override var intrinsicContentSize: NSSize {
+        if let evenWidth { return NSSize(width: evenWidth, height: Self.height) }
         let font = DS.Text.body(.medium)
         let textWidth = min(Self.label(title: title, detail: detail, attributes: [.font: font]).size().width, Self.maxTextWidth)
         return NSSize(width: max(Self.minWidth, textWidth + (textX - Self.flare) + Self.trailingReserve + Self.flare * 2), height: Self.height)

@@ -1212,6 +1212,30 @@ final class TabStripTests: XCTestCase {
         XCTAssertNil(renamed?.1, "empty: back to the automatic name")
     }
 
+    /// 2026-11-13, the owner: tabs are one width, whatever their titles, sharing the strip
+    /// between a minimum and a maximum; a window resize gives them their new share.
+    func testTabsAreOneWidthAndShareTheStrip() {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1000, height: 30))
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.spacing = 2
+        scroll.documentView = stack
+        let bar = TabStripView(frame: scroll.frame)
+        bar.addSubview(scroll)
+        let strip = TabStrip(bar: bar, stack: stack, accessibilityLabel: "Tabs")
+        let titles = ["a", "a much longer title than fits in any tab, by far", "zsh"]
+        strip.reload(titles.map { TabStrip.Item(id: UUID(), title: $0) }, active: 0)
+        XCTAssertEqual(Set(strip.chips.map(\.intrinsicContentSize.width)), [TabStrip.maxTabWidth], "room for all: each at the maximum")
+        strip.reload((1...8).map { TabStrip.Item(id: UUID(), title: "tab \($0)") }, active: 0)
+        let shared = strip.chips[0].intrinsicContentSize.width
+        XCTAssertLessThan(shared, TabStrip.maxTabWidth)
+        XCTAssertGreaterThanOrEqual(shared, TabStrip.minTabWidth)
+        XCTAssertEqual(Set(strip.chips.map(\.intrinsicContentSize.width)), [shared], "all the same")
+        XCTAssertLessThanOrEqual(shared * 8 + 2 * 7, 1000)
+        scroll.setFrameSize(NSSize(width: 400, height: 30))
+        XCTAssertEqual(strip.chips[0].intrinsicContentSize.width, TabStrip.minTabWidth, "narrow: the minimum, and the strip scrolls")
+    }
+
     /// 2026-10-31, the owner: on launch the strip didn't show which file was selected. Tabs are
     /// restored before the strip has its size; the tint follows the chip once it's laid out.
     func testTheTintFindsTheSelectedTabOnceTheStripIsLaidOut() throws {
