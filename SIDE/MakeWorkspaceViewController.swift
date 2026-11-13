@@ -3352,10 +3352,36 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private func showDiffMenu(line: Int, mark: GitDiffMark, event: NSEvent) {
         guard let hunk = hunk(containingLine: line, mark: mark) else { return }
         let menu = NSMenu()
+        // Who wrote it (phase 3): the change's authors, and what an agent was asked.
+        for item in attributionItems(for: hunk) { menu.addItem(item) }
         let item = menu.addItem(withTitle: "Revert Change", action: #selector(revertHunkAction(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = hunk
         NSMenu.popUpContextMenu(menu, with: event, for: gutter)
+    }
+
+    /// "Claude Code · Fix the login bug", "You", one line each, then a separator; nothing
+    /// for a change no write Side saw made.
+    private func attributionItems(for hunk: GitHunk) -> [NSMenuItem] {
+        guard let index = activeTabIndex, openTabs.indices.contains(index), hunk.newCount > 0 else { return [] }
+        let tab = openTabs[index]
+        let authors = Attribution.shared.authors(of: tab.url, text: tab.document.string, lines: hunk.newStart...(hunk.newStart + hunk.newCount - 1))
+        guard !authors.isEmpty else { return [] }
+        var items = [NSMenuItem.sectionHeader(title: "Changed by")]
+        for author in authors {
+            let item = NSMenuItem(title: author.request.map { "\(author.name) \u{00B7} \($0)" } ?? author.name, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            if author.kind == .session { item.image = ProgramMarks.image(forProgram: author.agent) }
+            items.append(item)
+        }
+        items.append(.separator())
+        return items
+    }
+
+    func attributionForTesting(line: Int) -> [String] {
+        guard let index = activeTabIndex, openTabs.indices.contains(index) else { return [] }
+        let tab = openTabs[index]
+        return Attribution.shared.authors(of: tab.url, text: tab.document.string, lines: line...line).map { author in author.request.map { "\(author.name) · \($0)" } ?? author.name }
     }
 
     @objc private func revertHunkAction(_ sender: NSMenuItem) {
@@ -4318,6 +4344,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 for range in ranges.reversed() { rope.replace(range.range.location..<NSMaxRange(range.range), with: range.text) }
                 guard let out = TextFileCodec.encode(rope.string, as: decoded.format), (try? out.write(to: url, options: .atomic)) != nil else { continue }
                 UserSaveLog.shared.record(url)
+                Attribution.shared.recordSave(url, text: rope.string)
                 applied = true
             }
         }
@@ -5414,6 +5441,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             // The user's own save — a checkpoint being written right now mustn't claim it
             // as the agent's (`UserSaveLog`, audit F4).
             UserSaveLog.shared.record(url)
+            // Lines you wrote are yours in the file's record (phase 3).
+            Attribution.shared.recordSave(url, text: content)
             lspManager?.saved(url: url)
             openTabs[index].savedStamp = ContentStamp(content)
             openTabs[index].knownDiskStamp = diskStamp(of: url)
@@ -5608,6 +5637,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         let content = openTabs[index].document.string
         guard let data = TextFileCodec.encode(content, as: openTabs[index].format), (try? data.write(to: url, options: .atomic)) != nil else { return }
         UserSaveLog.shared.record(url)
+        Attribution.shared.recordSave(url, text: content)
         openTabs[index].savedStamp = ContentStamp(content)
         openTabs[index].knownDiskStamp = diskStamp(of: url)
         openTabs[index].dirty = false

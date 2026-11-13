@@ -188,6 +188,13 @@ worktree, no track.
    one project. Edit contents (for phase 3) are not kept yet.
 3. **Attribution.** Edit events into Side's blame; shell-command snapshots; "who changed this"
    also in the Editor's gutter.
+   *Built 2026-11-12:* `SIDE/Attribution.swift` keeps each checkout's record in its git dir
+   (`side/attribution.json`): per file, its lines as hashes and each line's author, laid over
+   by a line diff on every write. Claude Code's Edit, MultiEdit and Write (from PostToolUse)
+   are its session's where the lines are what it wrote, else Unknown; a shell command's changes
+   come from Claude Code's own `bashEditDiff` (no snapshots needed), its session's when no other
+   session was working in the checkout, else shared; saves in Side's editor, and unsaved typing,
+   are You. The Editor's change bar menu says who changed a hunk and what they were asked.
 4. **Changes as review.** The queue, grouping by request, review state, comments back, commit and
    PR from approved hunks.
 5. **The AI layer.** Summaries and drift, on demand.

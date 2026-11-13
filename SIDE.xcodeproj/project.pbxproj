@@ -93,6 +93,8 @@
 		A0000000000000000000061F /* WelcomeDemos.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061E /* WelcomeDemos.swift */; };
 		A00000000000000000000621 /* SessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000620 /* SessionRegistry.swift */; };
 		A00000000000000000000B01 /* AgentHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B00 /* AgentHooks.swift */; };
+		A00000000000000000000B07 /* Attribution.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B06 /* Attribution.swift */; };
+		A00000000000000000000B09 /* AttributionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B08 /* AttributionTests.swift */; };
 		A00000000000000000000B03 /* side-hook in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B02 /* side-hook */; };
 		A00000000000000000000625 /* SessionSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000624 /* SessionSwitcher.swift */; };
 		A0000000000000000000061B /* RichBlocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061A /* RichBlocks.swift */; };
@@ -245,6 +247,8 @@
 		A0000000000000000000061E /* WelcomeDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeDemos.swift; sourceTree = "<group>"; };
 		A00000000000000000000620 /* SessionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistry.swift; sourceTree = "<group>"; };
 		A00000000000000000000B00 /* AgentHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHooks.swift; sourceTree = "<group>"; };
+		A00000000000000000000B06 /* Attribution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Attribution.swift; sourceTree = "<group>"; };
+		A00000000000000000000B08 /* AttributionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttributionTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000B02 /* side-hook */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "side-hook"; sourceTree = "<group>"; };
 		A00000000000000000000624 /* SessionSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSwitcher.swift; sourceTree = "<group>"; };
 		A0000000000000000000061A /* RichBlocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichBlocks.swift; sourceTree = "<group>"; };
@@ -463,6 +467,7 @@
 				A0000000000000000000061E /* WelcomeDemos.swift */,
 				A00000000000000000000620 /* SessionRegistry.swift */,
 				A00000000000000000000B00 /* AgentHooks.swift */,
+				A00000000000000000000B06 /* Attribution.swift */,
 				A00000000000000000000B02 /* side-hook */,
 				A00000000000000000000624 /* SessionSwitcher.swift */,
 				A0000000000000000000061A /* RichBlocks.swift */,
@@ -527,6 +532,7 @@
 				A00000000000000000000251 /* GitLaunchProbeTests.swift */,
 				A00000000000000000000622 /* SessionRegistryTests.swift */,
 				A00000000000000000000B04 /* AgentHooksTests.swift */,
+				A00000000000000000000B08 /* AttributionTests.swift */,
 				A00000000000000000000257 /* WorkGroupViewTests.swift */,
 				A00000000000000000000271 /* DataIntegrityAuditTests.swift */,
 				A00000000000000000000273 /* LSPOrderingTests.swift */,
@@ -809,6 +815,7 @@
 				A0000000000000000000061F /* WelcomeDemos.swift in Sources */,
 				A00000000000000000000621 /* SessionRegistry.swift in Sources */,
 				A00000000000000000000B01 /* AgentHooks.swift in Sources */,
+				A00000000000000000000B07 /* Attribution.swift in Sources */,
 				A00000000000000000000625 /* SessionSwitcher.swift in Sources */,
 				A0000000000000000000061B /* RichBlocks.swift in Sources */,
 				A00000000000000000000611 /* ProjectSwitcher.swift in Sources */,
@@ -850,6 +857,7 @@
 				A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */,
 				A00000000000000000000623 /* SessionRegistryTests.swift in Sources */,
 				A00000000000000000000B05 /* AgentHooksTests.swift in Sources */,
+				A00000000000000000000B09 /* AttributionTests.swift in Sources */,
 				A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */,
 				A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */,
 				A00000000000000000000274 /* LSPOrderingTests.swift in Sources */,

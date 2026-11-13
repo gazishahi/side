@@ -1155,6 +1155,8 @@ final class ShellViewController: NSViewController {
         ThinkWorkspaceViewController.bothLiveAnswerForTesting = true
         runVC.openInAgentForTesting()
     }
+    func attributionForTesting(line: Int) -> [String] { makeVC.attributionForTesting(line: line) }
+
     var agentForTesting: String {
         let tabs = (projectContext?.terminals.everySession() ?? []).map {
             "tab \($0.title)|\($0.viewController.runningProgramName ?? "-")|\($0.viewController.recoveredAgentSession ?? "-")"

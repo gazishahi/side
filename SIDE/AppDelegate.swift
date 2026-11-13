@@ -368,6 +368,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         FileHandle.standardError.write(Data("[hooks] inbox=\(HookPaths.inbox.path) settings=\(ClaudeHooks.userSettings.path) status=\(ClaudeHooks.status(at: ClaudeHooks.userSettings)) offer=\(shell.sessionSwitcherForTesting?.hooksOfferShownForTesting ?? false)\n".utf8))
                     }
                     if command == "hooks-read" { HookInbox.shared.start(); HookInbox.shared.read() }
+                    // Who wrote a line of the Editor's file (phase 3): "attribution <line>".
+                    if command.hasPrefix("attribution "), let line = Int(command.dropFirst(12)) {
+                        let authors = shell.attributionForTesting(line: line).joined(separator: " | ")
+                        FileHandle.standardError.write(Data("[attribution] \(line): \(authors.isEmpty ? "-" : authors)\n".utf8))
+                    }
                     if command == "session-switcher-hooks-on" { shell.sessionSwitcherForTesting?.turnOnHooksForTesting() }
                     if command == "sessions-dump" {
                         SessionRegistry.shared.refresh()

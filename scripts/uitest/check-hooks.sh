@@ -57,6 +57,18 @@ $U post session-switcher; sleep 1
 $U shot $OUT/session.png > /dev/null
 $U post session-switcher; sleep 0.3
 
+# Phase 3: it edits a file; the Editor knows who wrote the line, and what it was asked.
+printf 'hi\nRetry the login twice\n' > $P/README.md
+print -rn "{\"hook_event_name\":\"PostToolUse\",\"session_id\":\"uit-1\",\"cwd\":\"$P\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$P/README.md\",\"old_string\":\"hi\",\"new_string\":\"hi\\nRetry the login twice\"}}" | SIDE_HOOKS_DIR=$INBOX perl -e 'open(my $h, "|-", $ARGV[0], "claude"); print $h <STDIN>; close $h' $HOOK
+sleep 1; $U post hooks-read; sleep 1
+$U post "open $P/README.md"; sleep 2
+$U post "attribution 2"; sleep 0.8
+a=$(grep '^\[attribution\] 2:' $ROOT/side.log | tail -1)
+check "the edited line is the session's, with its request" '[[ $a == *"Claude Code · Fix the flaky login test"* ]]' "$a"
+$U post "attribution 1"; sleep 0.8
+a=$(grep '^\[attribution\] 1:' $ROOT/side.log | tail -1)
+check "a line as it was in HEAD is no one's" '[[ $a == *"1: -"* ]]' "$a"
+
 # It goes on, and finishes.
 print -n '{"hook_event_name":"PostToolUse","session_id":"uit-1","tool_name":"Bash"}' | SIDE_HOOKS_DIR=$INBOX perl -e 'open(my $h, "|-", $ARGV[0], "claude"); print $h <STDIN>; close $h' $HOOK
 print -n '{"hook_event_name":"Stop","session_id":"uit-1"}' | SIDE_HOOKS_DIR=$INBOX perl -e 'open(my $h, "|-", $ARGV[0], "claude"); print $h <STDIN>; close $h' $HOOK

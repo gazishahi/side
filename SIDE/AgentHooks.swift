@@ -91,11 +91,56 @@ struct HookEvent: Equatable {
         // The tool's input, flattened one level: a Bash command, an edited file's path.
         if let input = event["tool_input"] as? [String: Any] {
             for (key, value) in input { if let text = value as? String { fields["tool_input." + key] = text } }
+            // MultiEdit's edits: what each wrote, together.
+            if let edits = input["edits"] as? [[String: Any]] {
+                fields["tool_input.new_string"] = edits.compactMap { $0["new_string"] as? String }.joined(separator: "\n")
+            }
+        }
+        // The files a shell command changed, as Claude Code reports them (`bashEditDiff`).
+        if let diff = (event["tool_response"] as? [String: Any])?["bashEditDiff"] as? [String: Any] {
+            let paths = Self.paths(in: diff["changedFiles"]) + Self.paths(in: diff["files"])
+            if !paths.isEmpty { fields["bash.changed"] = Array(NSOrderedSet(array: paths)).compactMap { $0 as? String }.joined(separator: "\n") }
         }
         return HookEvent(agent: side["agent"] as? String ?? "claude",
                          parentPID: (side["ppid"] as? NSNumber)?.int32Value ?? 0,
                          at: Date(timeIntervalSince1970: (side["at"] as? NSNumber)?.doubleValue ?? 0),
                          name: name, sessionID: session, cwd: event["cwd"] as? String, fields: fields)
+    }
+}
+
+extension HookEvent {
+    /// File paths in a value however it's shaped: a path, a list of them, or entries naming one
+    /// (`path`, `file`, `filePath`). Anything else is skipped.
+    static func paths(in value: Any?) -> [String] {
+        switch value {
+        case let path as String: return [path]
+        case let list as [Any]: return list.flatMap { paths(in: $0) }
+        case let entry as [String: Any]:
+            return ["path", "file", "filePath", "file_path"].compactMap { entry[$0] as? String }.prefix(1).map { $0 }
+        default: return []
+        }
+    }
+
+    /// An edit's file and the text it wrote, for attribution.
+    var edit: (file: URL, written: [String]?)? {
+        guard name == "PostToolUse", let tool = fields["tool_name"], let path = fields["tool_input.file_path"] else { return nil }
+        let file = Self.absolute(path, cwd: cwd)
+        switch tool {
+        case "Edit", "MultiEdit": return fields["tool_input.new_string"].map { (file, Attribution.lines($0)) }
+        case "Write": return (file, nil)
+        default: return nil
+        }
+    }
+
+    /// The files a shell command changed.
+    var shellChanges: [URL] {
+        guard name == "PostToolUse", fields["tool_name"] == "Bash", let changed = fields["bash.changed"] else { return [] }
+        return changed.split(separator: "\n").map { Self.absolute(String($0), cwd: cwd) }
+    }
+
+    static func absolute(_ path: String, cwd: String?) -> URL {
+        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
+        return URL(fileURLWithPath: cwd ?? "/").appendingPathComponent(path).standardizedFileURL
     }
 }
 
@@ -284,12 +329,32 @@ final class HookInbox {
                 // that ran the hook) would make the session look ended.
                 let pid = Self.agentPID(fromHookParent: event.parentPID)
                 sessions.apply(event, agentPID: HookSessions.isAlive(pid) ? pid : 0)
+                attribute(event)
             }
             try? manager.removeItem(at: url)
         }
         sessions.prune()
         guard sessions != before else { return }
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+
+    /// An agent's edit, or a shell command's changes, into the files' records (phase 3).
+    private func attribute(_ event: HookEvent) {
+        let session = sessions.sessions[event.sessionID]
+        let author = Author(kind: .session, sessionID: event.sessionID, agent: event.agent, request: session?.request.isEmpty == false ? session?.request : nil)
+        if let edit = event.edit {
+            Attribution.shared.record(edit.file, author: author, written: edit.written)
+        }
+        let changed = event.shellChanges
+        guard !changed.isEmpty else { return }
+        // A command's changes are its session's only when no other session was at work in the
+        // same checkout then; otherwise they're shared.
+        let checkout = event.cwd.flatMap { Attribution.checkout(of: URL(fileURLWithPath: $0).appendingPathComponent("x")) }
+        let othersWorking = sessions.sessions.values.contains { other in
+            guard other.id != event.sessionID, case .working = other.state, let cwd = other.cwd else { return false }
+            return Attribution.checkout(of: URL(fileURLWithPath: cwd).appendingPathComponent("x")) == checkout
+        }
+        for file in changed { Attribution.shared.record(file, author: othersWorking ? Author(kind: .shared) : author, written: nil) }
     }
 
     /// For tests: the events as if the hook had written them.
