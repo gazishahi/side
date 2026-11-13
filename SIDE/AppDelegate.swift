@@ -62,8 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Tracks a UI test creates put their worktrees somewhere temporary, not in the
             // person's Application Support.
             GitPaths.worktreesSupportDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("SideUITests", isDirectory: true)
-            let volatile = UserDefaults(suiteName: "side.uitesting.volatile") ?? .standard
-            volatile.removePersistentDomain(forName: "side.uitesting.volatile")
+            let volatileSuite = "side.uitesting.volatile" + Self.uiTestingChannelSuffix
+            let volatile = UserDefaults(suiteName: volatileSuite) ?? .standard
+            volatile.removePersistentDomain(forName: volatileSuite)
             HeronDefaults.store = volatile
             ClaudeHooks.defaults = volatile
             SessionSwitcherOverlay.offerDefaults = volatile
@@ -84,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             // Measurement scripts drive Make directly (opening through the UI with synthetic
             // events proved unreliable): "open <path>" and "close-all", UI testing only.
-            DistributedNotificationCenter.default().addObserver(forName: Notification.Name("side.uitesting.command"), object: nil, queue: .main) { note in
+            DistributedNotificationCenter.default().addObserver(forName: Notification.Name("side.uitesting.command" + Self.uiTestingChannelSuffix), object: nil, queue: .main) { note in
                 guard let command = note.object as? String else { return }
                 MainActor.assumeIsolated {
                     guard let shell = window.contentViewController as? ShellViewController else { return }
@@ -515,6 +516,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var activeShell: ShellViewController? {
         (NSApp.keyWindow?.contentViewController as? ShellViewController)
             ?? (windows.first?.contentViewController as? ShellViewController)
+    }
+
+    /// Each UI-test build listens on a channel of its own (uitest.sh sets `SIDE_UIT_CHANNEL` from
+    /// its folder), so two sessions' builds never take each other's commands or settings.
+    static var uiTestingChannelSuffix: String {
+        ProcessInfo.processInfo.environment["SIDE_UIT_CHANNEL"].map { $0.isEmpty ? "" : "." + $0 } ?? ""
     }
 
     /// UI tests launch with `-SideUITesting YES`. Everything that would persist the developer's

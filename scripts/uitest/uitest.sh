@@ -12,7 +12,10 @@
 #
 # The build is its own app, com.shahi.side.uitest: its settings are its own, and macOS doesn't
 # confuse it with the installed Side (same identifier, different signature: privacy grants
-# flip between them, and Side asked for ~/Documents again and again).
+# flip between them, and Side asked for ~/Documents again and again). A folder other than the
+# default is a build of its own too, com.shahi.side.uitest.<name> for /tmp/side-uit-<name>,
+# with its own command channel: two sessions testing at once took each other's commands and
+# settings (2026-11-12). A new identifier asks for privacy grants once.
 #
 # Everything lives in $SIDE_UIT (default /tmp/side-uit), for two reasons:
 # - out of ~/Documents: a build or test run from there waits on macOS's Documents prompt;
@@ -24,6 +27,9 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 APP=$ROOT/dd/Build/Products/Release/Side.app
 BIN=$ROOT/bin
 mkdir -p $ROOT $BIN
+NAME=${${ROOT:t}#side-uit}; NAME=${NAME#-}; NAME=${NAME//[^A-Za-z0-9]/}
+BUNDLE=com.shahi.side.uitest${NAME:+.$NAME}
+export SIDE_UIT_CHANNEL=$NAME
 
 tools() {
   [[ $BIN/post -nt $REPO/scripts/uitest/post.swift ]] || swiftc -O -o $BIN/post $REPO/scripts/uitest/post.swift
@@ -37,7 +43,7 @@ case ${1:-} in
     rsync -a --delete --exclude build --exclude '.build' --exclude DerivedData $REPO/ $ROOT/repo/
     cd $ROOT/repo
     xcodebuild -project SIDE.xcodeproj -scheme SIDE -configuration Release -destination 'platform=macOS' \
-      -skipPackagePluginValidation -derivedDataPath $ROOT/dd PRODUCT_BUNDLE_IDENTIFIER=com.shahi.side.uitest build 2>&1 | grep -E " error: |BUILD (SUCCEEDED|FAILED)"
+      -skipPackagePluginValidation -derivedDataPath $ROOT/dd PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE build 2>&1 | grep -E " error: |BUILD (SUCCEEDED|FAILED)"
     ;;
   launch)
     tools
