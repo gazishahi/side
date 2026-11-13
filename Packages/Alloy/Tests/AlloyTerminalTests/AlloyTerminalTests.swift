@@ -237,6 +237,29 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertGreaterThan(try render(grid, renderer: renderer).count(in: blinking, lit), 20, "unfocused, it doesn't blink")
     }
 
+    /// Minimum contrast: off by default; on, text too close to its background becomes black or
+    /// white, whichever stands out more, and text that already stands out is left alone.
+    func testMinimumContrast() throws {
+        XCTAssertEqual(TerminalRenderer.contrast(0xFFFFFF, 0x000000), 21, accuracy: 0.01)
+        XCTAssertEqual(TerminalRenderer.contrast(0x777777, 0x777777), 1, accuracy: 0.01)
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 6, rows: 1, foreground: 0xFFFFFF)
+        grid[0, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0x101010)                     // near-black on black
+        grid[2, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0xE0E0E0, background: 0xFFFFFF) // near-white on white
+        grid[4, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0xFF0000)                     // red on black: fine
+        grid.cursor.visible = false
+        let white: (Pixels.RGBA) -> Bool = { $0.r > 200 && $0.g > 200 && $0.b > 200 }
+        let black: (Pixels.RGBA) -> Bool = { $0.r < 30 && $0.g < 30 && $0.b < 30 }
+        let red: (Pixels.RGBA) -> Bool = { $0.r > 200 && $0.g < 60 }
+        var pixels = try render(grid, renderer: renderer)
+        XCTAssertEqual(pixels.count(in: cellRect(column: 0, row: 0), white), 0, "off: as the program asked")
+        renderer.minimumContrast = 3
+        pixels = try render(grid, renderer: renderer)
+        XCTAssertGreaterThan(pixels.count(in: cellRect(column: 0, row: 0), white), 20, "white on black")
+        XCTAssertGreaterThan(pixels.count(in: cellRect(column: 2, row: 0), black), 20, "black on white")
+        XCTAssertGreaterThan(pixels.count(in: cellRect(column: 4, row: 0), red), 20, "red stands out already")
+    }
+
     /// A program's cursor color over the theme's.
     func testTheCursorInAProgramsColor() throws {
         let renderer = try makeRenderer()

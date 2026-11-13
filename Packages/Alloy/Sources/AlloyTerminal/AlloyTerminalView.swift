@@ -213,6 +213,12 @@ public final class AlloyTerminalView: NSView {
         didSet { if paddingColor != oldValue { engine.setPaddingColor(paddingColor) } }
     }
 
+    /// Ghostty's minimum-contrast: text below this contrast ratio with its background is drawn
+    /// black or white. 1 (the default) is off.
+    public var minimumContrast: Float = 1 {
+        didSet { if minimumContrast != oldValue { engine.setMinimumContrast(minimumContrast) } }
+    }
+
     /// A search's matches in view, and the selected one, highlighted in the theme's search colors.
     public func setSearchHighlights(matches: [TerminalSpan], selected: [TerminalSpan]) {
         engine.setSearchHighlights(matches: matches, selected: selected)
@@ -418,6 +424,14 @@ private final class RenderEngine: @unchecked Sendable {
             guard matches != self.renderer.searchMatches || selected != self.renderer.selectedMatch else { return }
             self.renderer.searchMatches = matches
             self.renderer.selectedMatch = selected
+            self.forced = true
+        }
+        requestFrame()
+    }
+
+    func setMinimumContrast(_ value: Float) {
+        queue.async {
+            self.renderer.minimumContrast = value
             self.forced = true
         }
         requestFrame()

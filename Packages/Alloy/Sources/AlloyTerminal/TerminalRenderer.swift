@@ -245,6 +245,10 @@ public final class TerminalRenderer {
             for y in 0..<grid.rows { grid.dirty[y] = true }
         }
         for y in rowsToRebuild where y >= 0 && y < grid.rows { grid.dirty[y] = true }
+        if rebuildAllRows {
+            rebuildAllRows = false
+            for y in 0..<grid.rows { grid.dirty[y] = true }
+        }
         rowsToRebuild.removeAll()
         for y in 0..<grid.rows where grid.dirty[y] {
             rebuild(row: y, of: grid, scale: scale)
@@ -344,6 +348,35 @@ public final class TerminalRenderer {
     /// the edge, so a program's status bar or full-screen color reaches it.
     public enum PaddingColor: Sendable { case background, extend }
     public var paddingColor = PaddingColor.background
+
+    /// Ghostty's minimum-contrast: text whose contrast ratio with its cell's background (WCAG's,
+    /// 1 to 21) is below this is drawn black or white, whichever stands out more. 1, the
+    /// default as in Ghostty, changes nothing. Rows are cached, so a new value rebuilds them all.
+    public var minimumContrast: Float = 1 { didSet { if minimumContrast != oldValue { rebuildAllRows = true } } }
+    private var rebuildAllRows = false
+
+    /// `foreground` as drawn over `background` (nil: the theme's), with the minimum contrast.
+    func contrasted(_ foreground: UInt32, over background: UInt32?) -> UInt32 {
+        guard minimumContrast > 1 else { return foreground }
+        let bg = background ?? (UInt32((theme.background.x * 255).rounded()) << 16 | UInt32((theme.background.y * 255).rounded()) << 8
+            | UInt32((theme.background.z * 255).rounded()))
+        guard Self.contrast(foreground, bg) < minimumContrast else { return foreground }
+        return Self.contrast(0xFFFFFF, bg) > Self.contrast(0x000000, bg) ? 0xFFFFFF : 0x000000
+    }
+
+    /// WCAG's contrast ratio of two sRGB colors: (lighter + 0.05) / (darker + 0.05) of their
+    /// relative luminances.
+    static func contrast(_ a: UInt32, _ b: UInt32) -> Float {
+        func luminance(_ rgb: UInt32) -> Float {
+            func linear(_ c: UInt32) -> Float {
+                let v = Float(c & 0xFF) / 255
+                return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(rgb >> 16) + 0.7152 * linear(rgb >> 8) + 0.0722 * linear(rgb)
+        }
+        let (x, y) = (luminance(a), luminance(b))
+        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+    }
 
     /// The edge cells' backgrounds, extended into the padding: each row's last cell to the right
     /// edge, the last row's cells to the bottom, and the corner from the last cell.
@@ -476,7 +509,7 @@ public final class TerminalRenderer {
         /// A cell's text color: its own, or the search's over a match.
         func ink(_ column: Int, _ cell: TerminalCell) -> SIMD4<Float> {
             if let search, search[column] != 0 { return color(theme.searchText) }
-            return color(cell.foreground)
+            return color(contrasted(cell.foreground, over: cell.background))
         }
         for x in 0..<grid.columns {
             let c = grid.cells[rowStart + x]
