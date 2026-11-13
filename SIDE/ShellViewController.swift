@@ -1156,6 +1156,8 @@ final class ShellViewController: NSViewController {
         runVC.openInAgentForTesting()
     }
     func attributionForTesting(line: Int) -> [String] { makeVC.attributionForTesting(line: line) }
+    var reviewQueueForTesting: [String] { reviewVC.queueForTesting }
+    func selectReviewQueueForTesting(_ index: Int?) { reviewVC.selectQueueForTesting(index) }
 
     var agentForTesting: String {
         let tabs = (projectContext?.terminals.everySession() ?? []).map {

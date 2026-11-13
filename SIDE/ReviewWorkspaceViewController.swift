@@ -76,6 +76,18 @@ final class ReviewWorkspaceViewController: NSViewController {
     private let foldAllButton = NSButton(title: "Collapse All", target: nil, action: nil)
     private let diffToolbar = NSStackView()
     private let rail = ReviewFileRail()
+    /// The review queue (phase 4): who has uncommitted changes, in the list's place while there
+    /// are any; its last entry, the whole branch, is the list as before.
+    private let queueRail = ReviewQueueRail()
+    private var queue = ReviewQueue()
+    /// The queue's chosen group; nil shows the whole branch.
+    private var queueSelection: Int? = 0
+    private var queueGeneration = 0
+    private var queueActive: Bool { !queue.groups.isEmpty && queueSelection != nil }
+    /// The queue is being read: the branch's diff waits for it rather than drawing first and
+    /// being replaced a moment later.
+    private var queueLoading = false
+    private var pendingBranchDiff: (text: String, everything: Bool)?
     private var railWidth: NSLayoutConstraint?
     private var diffLeading: NSLayoutConstraint?
     private var cardTop: NSLayoutConstraint?
@@ -113,6 +125,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         view.addSubview(summaryCard)
         view.addSubview(diffToolbar)
         view.addSubview(rail)
+        view.addSubview(queueRail)
         view.addSubview(diffViewer)
         view.addSubview(emptyState)
         let top = summaryCard.topAnchor.constraint(equalTo: view.topAnchor, constant: ChromeHost.rowHeight + DS.Spacing.m)
@@ -133,6 +146,10 @@ final class ReviewWorkspaceViewController: NSViewController {
             rail.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: Self.margin - DS.Spacing.l),
             width,
             rail.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            queueRail.topAnchor.constraint(equalTo: rail.topAnchor),
+            queueRail.leadingAnchor.constraint(equalTo: rail.leadingAnchor),
+            queueRail.trailingAnchor.constraint(equalTo: rail.trailingAnchor),
+            queueRail.bottomAnchor.constraint(equalTo: rail.bottomAnchor),
 
             diffToolbar.topAnchor.constraint(equalTo: rail.topAnchor),
             diffToolbar.heightAnchor.constraint(equalToConstant: ReviewFileRail.headerHeight),
@@ -148,6 +165,15 @@ final class ReviewWorkspaceViewController: NSViewController {
             emptyState.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
         ])
+        queueRail.isHidden = true
+        queueRail.onSelect = { [weak self] index in self?.selectQueueGroup(index) }
+        queueRail.onSelectPath = { [weak self] path in
+            guard let self, let file = self.diffViewer.diff.files.firstIndex(where: { $0.path == path }) else { return }
+            self.diffViewer.scrollToFile(file)
+        }
+        for name in [Attribution.didChangeNotification, HookInbox.didChangeNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(queueSourcesChanged), name: name, object: nil)
+        }
         // Not just `showEmptyState(true)` — `reloadForTrackSwitch` can (and typically does, on
         // a restored window) run before this view ever loads, since it's only added as a child
         // and given a chance to load when the Review segment is first actually clicked.
@@ -363,8 +389,10 @@ final class ReviewWorkspaceViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         // The empty state hides the list; layout mustn't bring it back.
-        let showRail = view.bounds.width >= Self.railMinimumStageWidth && !rail.items.isEmpty && emptyState.isHidden
-        rail.isHidden = !showRail
+        let showQueue = view.bounds.width >= Self.railMinimumStageWidth && !queue.groups.isEmpty && emptyState.isHidden
+        let showRail = view.bounds.width >= Self.railMinimumStageWidth && (!rail.items.isEmpty || showQueue) && emptyState.isHidden
+        rail.isHidden = !showRail || showQueue
+        queueRail.isHidden = !showQueue
         let width = showRail ? ReviewFileRail.width : 0
         if railWidth?.constant != width {
             railWidth?.constant = width
@@ -400,6 +428,130 @@ final class ReviewWorkspaceViewController: NSViewController {
         releaseWork = nil
         if releasedAtFile != nil, currentTrack != nil { loadDiff() }
     }
+
+    // MARK: - The review queue (SIDE_RFC_SESSIONS.md, phase 4)
+
+    /// The checkout Changes is on: its uncommitted changes are the queue's.
+    private var queueRoot: URL? { currentWorkingDirectory ?? canonicalRoot }
+
+    @objc private func queueSourcesChanged() {
+        guard isViewLoaded, view.window != nil else { return }
+        refreshQueue()
+    }
+
+    /// Reads the checkout's uncommitted changes and who wrote each hunk, off the main thread.
+    private func refreshQueue() {
+        guard let root = queueRoot, trackStore != nil else { queueLoading = false; return applyQueue(ReviewQueue()) }
+        queueGeneration += 1
+        let generation = queueGeneration
+        queueLoading = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let diff = Self.uncommittedDiff(cwd: root.path)
+            let queue = ReviewQueue.build(diff: diff) { path in
+                let file = root.appendingPathComponent(path)
+                guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+                return Attribution.shared.owners(of: file, text: text)
+            }
+            DispatchQueue.main.async {
+                guard let self, self.queueGeneration == generation else { return }
+                self.queueLoading = false
+                self.applyQueue(queue)
+                // Nothing to queue: the branch's diff, if it came meanwhile.
+                if !self.queueActive, let pending = self.pendingBranchDiff { self.showDiff(pending.text, everything: pending.everything) }
+                self.pendingBranchDiff = nil
+            }
+        }
+    }
+
+    /// What isn't committed in `cwd`, untracked files included, as one `git diff`.
+    nonisolated static func uncommittedDiff(cwd: String) -> String {
+        guard GitPaths.runGit(["rev-parse", "--verify", "--quiet", "HEAD"], cwd: cwd).success else { return "" }
+        var diff = GitPaths.runGitRaw(["diff", "--no-color", "--no-ext-diff", "HEAD"], cwd: cwd).output
+        let untracked = GitPaths.runGitRaw(["ls-files", "--others", "--exclude-standard"], cwd: cwd).output.split(separator: "\n").prefix(50)
+        for file in untracked {
+            diff += GitPaths.runGitRaw(["diff", "--no-color", "--no-index", "--", "/dev/null", String(file)], cwd: cwd).output
+        }
+        while diff.hasSuffix("\n") { diff.removeLast() }
+        return diff
+    }
+
+    private func applyQueue(_ next: ReviewQueue) {
+        let wasActive = queueActive
+        let chosenAuthor = queueSelection.flatMap { queue.groups.indices.contains($0) ? queue.groups[$0].author : nil }
+        queue = next
+        // The same author stays chosen as the queue changes; else the first.
+        if queueSelection != nil {
+            queueSelection = chosenAuthor.flatMap { author in next.groups.firstIndex { $0.author == author } } ?? (next.groups.isEmpty ? nil : 0)
+            if next.groups.isEmpty { queueSelection = 0 }
+        }
+        queueRail.items = next.groups.map { group in
+            ReviewQueueRail.Item(title: group.title, detail: queueDetail(group), icon: queueIcon(group.author), paths: group.paths)
+        }
+        queueRail.selected = queueActive ? queueSelection : nil
+        view.needsLayout = true
+        if queueActive {
+            showQueueGroup()
+        } else if wasActive {
+            // Nothing left to review: the branch as before.
+            refreshBranch()
+        }
+    }
+
+    private func queueIcon(_ author: Author) -> NSImage? {
+        switch author.kind {
+        case .session: return ProgramMarks.image(forProgram: author.agent)
+        case .you: return NSImage(systemSymbolName: "person.fill", accessibilityDescription: nil)
+        case .shared: return NSImage(systemSymbolName: "person.2.fill", accessibilityDescription: nil)
+        case .unknown: return NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: nil)
+        }
+    }
+
+    /// "Finished · +12 −3 · 2 files": the session's state when the hooks know it, its size.
+    private func queueDetail(_ group: ReviewQueue.Group) -> String {
+        var parts: [String] = []
+        if group.author.kind == .session, let id = group.author.sessionID, let session = HookInbox.shared.sessions.sessions[id] {
+            parts.append(session.state.word)
+        } else if group.author.kind == .session {
+            parts.append(group.author.name)
+        }
+        parts.append("+\(group.added) \u{2212}\(group.removed)")
+        parts.append("\(group.paths.count) file\(group.paths.count == 1 ? "" : "s")")
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    private func selectQueueGroup(_ index: Int?) {
+        queueSelection = index
+        view.needsLayout = true
+        if queueActive { showQueueGroup() } else { refreshBranch() }
+    }
+
+    /// The chosen group's hunks, as a diff of their own.
+    private func showQueueGroup() {
+        guard let index = queueSelection, queue.groups.indices.contains(index) else { return }
+        let group = queue.groups[index]
+        // Laid out first: the list taking the files' place can change the diff's width, and
+        // a diff drawn before that had its numbers rows below its lines.
+        view.layoutSubtreeIfNeeded()
+        diffViewer.render(diffText: group.diffText, emptyMessage: "No changes.")
+        diffTitle.stringValue = group.title
+        let totals = NSMutableAttributedString(string: "\(group.paths.count) file\(group.paths.count == 1 ? "" : "s")  ", attributes: [.font: DS.Text.caption(), .foregroundColor: NSColor.secondaryLabelColor])
+        totals.append(NSAttributedString(string: "+\(group.added)", attributes: [.font: DS.Text.code(11, weight: .medium), .foregroundColor: DiffBody.addedText]))
+        totals.append(NSAttributedString(string: " \u{2212}\(group.removed)", attributes: [.font: DS.Text.code(11, weight: .medium), .foregroundColor: DiffBody.removedText]))
+        diffTotals.attributedStringValue = totals
+        refreshFoldAllButton()
+    }
+
+    /// The whole branch, as Changes showed it before the queue.
+    private func refreshBranch() {
+        if currentTrack != nil {
+            loadDiff()
+        } else if let root = queueRoot, let trackStore {
+            refreshBase(root: root, hasTracks: trackStore.tracks.contains { $0.status != .archived })
+        }
+    }
+
+    var queueForTesting: [String] { queueRail.items.map { "\($0.title) | \($0.detail) | \($0.paths.joined(separator: ","))" } }
+    func selectQueueForTesting(_ index: Int?) { queueRail.selected = index; selectQueueGroup(index) }
 
     // MARK: - Wiring
 
@@ -525,6 +677,7 @@ final class ReviewWorkspaceViewController: NSViewController {
 
     private func refresh() {
         guard isViewLoaded else { return }
+        refreshQueue()
         // Review never consulted repoState, so a plain folder got "Switch to a track to review
         // its work" — advice the user cannot follow, since tracks require a repo.
         if trackStore == nil {
@@ -733,7 +886,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             )
             rangeMeta.toolTip = nil
         }
-        diffTitle.stringValue = timeline.isEverything || timeline.nodes.count < 2 ? "Changes vs \(currentBaseRef)" : CheckpointTimelineView.describe(timeline)
+        if !queueActive { diffTitle.stringValue = timeline.isEverything || timeline.nodes.count < 2 ? "Changes vs \(currentBaseRef)" : CheckpointTimelineView.describe(timeline) }
     }
 
     /// The diff for the range: base to tip by default, or between two checkpoints.
@@ -768,6 +921,9 @@ final class ReviewWorkspaceViewController: NSViewController {
     }
 
     private func showDiff(_ text: String, everything: Bool) {
+        // The queue is showing one group's changes: the branch's diff waits for "Whole branch".
+        guard !queueActive else { return }
+        if queueLoading, queueSelection != nil { pendingBranchDiff = (text, everything); return }
         guard let trackKey = viewedKey else { return }
         let store = viewedStore
         diffViewer.render(diffText: text, emptyMessage: baseBranchShown != nil ? "No changes." : everything ? "No changes against \(currentBaseRef)." : "No changes in this range.") { diff in
@@ -1010,7 +1166,7 @@ final class ReviewWorkspaceViewController: NSViewController {
         headerDetail.stringValue = "Base \u{00B7} \(work.summary)"
         for row in [accountRow, accountText, verificationLine, overlapLine, summaryHairline, timelineRow, rangeRow, noCheckpoints] as [NSView] { row.isHidden = true }
         setStatus(work.upstream == nil ? "Uncommitted work on \(work.branch). It has no upstream, so this is against its last commit." : "What \(work.branch) has that \(work.upstream!) doesn\u{2019}t: commits not yet pushed, and uncommitted work.")
-        diffTitle.stringValue = work.upstream.map { "Changes vs \($0)" } ?? "Uncommitted changes"
+        if !queueActive { diffTitle.stringValue = work.upstream.map { "Changes vs \($0)" } ?? "Uncommitted changes" }
     }
 
     var baseModeForTesting: String { baseBranchShown.map { "\($0) \(headerDetail.stringValue) files=\(rail.items.count)" } ?? (emptyState.isHidden ? "track" : "empty") }
@@ -1394,6 +1550,7 @@ extension ReviewWorkspaceViewController: StageChromeProviding {
         let inset = height > 0 ? height + DS.Spacing.l : 0
         diffViewer.bottomInset = inset
         rail.bottomInset = inset
+        queueRail.bottomInset = inset
     }
 
     func setTopObstruction(_ height: CGFloat) {

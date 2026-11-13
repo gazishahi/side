@@ -203,6 +203,22 @@ final class Attribution: @unchecked Sendable {
         }
     }
 
+    /// Each line's author in `file` as it reads now (`text`), nil where no write touched it.
+    /// Lines typed in the buffer since the last write are yours.
+    func owners(of file: URL, text: String) -> [Author?] {
+        queue.sync {
+            let lines = Self.lines(text)
+            guard let checkout = Self.checkout(of: file), let path = Self.relativePath(file, in: checkout) else { return Array(repeating: nil, count: lines.count) }
+            var record = load(checkout)
+            guard let stored = record.files[path] else { return Array(repeating: nil, count: lines.count) }
+            let you = record.index(of: .you)
+            let authors = record.authors
+            return stored.updated(to: lines) { _ in you }.owners.map { owner in
+                owner.flatMap { $0 == you ? Author.you : authors.indices.contains($0) ? authors[$0] : nil }
+            }
+        }
+    }
+
     // MARK: Store
 
     private func load(_ checkout: Checkout) -> CheckoutAttribution {
