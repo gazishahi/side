@@ -83,6 +83,41 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(try render(grid, renderer: renderer).count(in: cell, lit), 0)
     }
 
+    /// Unfocused, every shape is an outline of its cell; a blinking cursor blinked off isn't drawn,
+    /// unless unfocused, where it doesn't blink.
+    func testHollowWhenUnfocusedAndBlinkedOff() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 4, rows: 1, foreground: 0xFFFFFF)
+        grid[1, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0x00FF00)
+        grid.cursor = TerminalCursor(column: 1, row: 0, visible: true, shape: .bar, blinking: true)
+        let cellPixels = cellRect(column: 1, row: 0)
+        let cursorLit: (Pixels.RGBA) -> Bool = { $0.r > 200 && $0.b > 200 }
+        let edges: (Pixels) -> (left: Bool, right: Bool, top: Bool, bottom: Bool) = { p in
+            let cell = self.font.cellSize
+            let x0 = Int(CGFloat(1) * cell.width * self.scale), x1 = Int(CGFloat(2) * cell.width * self.scale) - 1
+            let y1 = Int((cell.height * self.scale).rounded()) - 1, mid = y1 / 2, midX = (x0 + x1) / 2
+            return (p.count(in: (x0..<x0 + 1, mid..<mid + 1), cursorLit) == 1, p.count(in: (x1..<x1 + 1, mid..<mid + 1), cursorLit) == 1,
+                    p.count(in: (midX..<midX + 1, 0..<1), cursorLit) == 1, p.count(in: (midX..<midX + 1, y1..<y1 + 1), cursorLit) == 1)
+        }
+
+        renderer.focused = false
+        renderer.blinkOn = false
+        var pixels = try render(grid, renderer: renderer)
+        let e = edges(pixels)
+        XCTAssertTrue(e.left && e.right && e.top && e.bottom, "an outline all round: \(e)")
+        XCTAssertGreaterThan(pixels.count(in: cellPixels) { $0.g > 150 && $0.r < 100 }, 20, "the W shows through, its own color")
+        XCTAssertLessThan(pixels.count(in: cellPixels, cursorLit), cellPixels.x.count * cellPixels.y.count / 3, "hollow")
+
+        renderer.focused = true
+        pixels = try render(grid, renderer: renderer)
+        XCTAssertEqual(pixels.count(in: cellPixels, cursorLit) + pixels.count(in: (0..<pixels.width, 0..<pixels.height), cursorLit), 0, "blinked off")
+        renderer.blinkOn = true
+        XCTAssertGreaterThan(try render(grid, renderer: renderer).count(in: (0..<pixels.width, 0..<pixels.height), cursorLit), 0, "blinked on: the bar")
+        grid.cursor.blinking = false
+        renderer.blinkOn = false
+        XCTAssertGreaterThan(try render(grid, renderer: renderer).count(in: (0..<pixels.width, 0..<pixels.height), cursorLit), 0, "a steady cursor ignores the phase")
+    }
+
     func testSelectedCellsAreHighlighted() throws {
         let renderer = try makeRenderer()
         let grid = TerminalGrid(columns: 6, rows: 1, foreground: 0xFFFFFF)
@@ -246,14 +281,47 @@ final class TerminalRendererTests: XCTestCase {
 final class AlloyTerminalViewTests: XCTestCase {
     final class Screen: TerminalGridSource, @unchecked Sendable {
         var text = ""
+        var cursor = TerminalCursor(visible: false)
         func snapshot(into grid: TerminalGrid) -> Bool {
             for (i, scalar) in text.unicodeScalars.enumerated() where i < grid.columns {
                 grid[i, 0] = TerminalCell(scalar: scalar.value, foreground: 0xFFFFFF)
             }
             grid.dirty[0] = true
-            grid.cursor.visible = false
+            grid.cursor = cursor
             return true
         }
+    }
+
+    /// A focused, blinking cursor blinks on a timer; typing shows it again; unfocused or steady,
+    /// no timer runs.
+    func testTheCursorBlinksWhileFocused() throws {
+        let view = try AlloyTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 60), font: TerminalFont(name: "Menlo", size: 13),
+                                         theme: TerminalRendererTests.black)
+        let screen = Screen()
+        screen.cursor = TerminalCursor(column: 0, row: 0, visible: true, shape: .block, blinking: true)
+        view.source = screen
+        _ = view.renderOffscreen()
+        XCTAssertFalse(view.isBlinking, "not focused")
+
+        view.setFocused(true)
+        view.setNeedsFrame()
+        let off = Date().addingTimeInterval(2)
+        while view.blinkOn, Date() < off { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertTrue(view.isBlinking)
+        XCTAssertFalse(view.blinkOn, "blinked off within the interval")
+
+        view.resetBlink()
+        XCTAssertTrue(view.blinkOn, "typing shows it")
+
+        view.setFocused(false)
+        XCTAssertFalse(view.isBlinking)
+        XCTAssertTrue(view.blinkOn)
+
+        screen.cursor.blinking = false
+        view.setFocused(true)
+        view.setNeedsFrame()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertFalse(view.isBlinking, "a steady cursor")
     }
 
     func testTheGridFollowsTheViewsSize() throws {

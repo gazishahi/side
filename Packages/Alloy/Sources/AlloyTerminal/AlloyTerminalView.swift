@@ -42,6 +42,9 @@ public final class AlloyTerminalView: NSView {
     public private(set) var rows: Int
     /// Frames drawn so far (read on the main thread, for tests).
     public var frames: Int { engine.frames }
+    /// The blink's phase, and whether its timer runs (tests).
+    var blinkOn: Bool { engine.blinkOn }
+    var isBlinking: Bool { engine.isBlinking }
 
     private let metal = CAMetalLayer()
     private let engine: RenderEngine
@@ -68,6 +71,7 @@ public final class AlloyTerminalView: NSView {
         wantsLayer = true
         layer = metal
         updateDrawableSize()
+        engine.setFocused(false)
     }
 
     @available(*, unavailable)
@@ -84,6 +88,48 @@ public final class AlloyTerminalView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateDrawableSize()
+        let center = NotificationCenter.default
+        for observer in windowObservers { center.removeObserver(observer) }
+        windowObservers = []
+        if let window {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                windowObservers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateFocus() }
+                })
+            }
+        }
+        updateFocus()
+    }
+
+    // MARK: - Focus and the cursor's blink
+
+    private var windowObservers: [NSObjectProtocol] = []
+
+    /// Whether the terminal has the keyboard: its window is key and it's the first responder.
+    public private(set) var isFocused = false
+
+    private func updateFocus() {
+        let focused = window.map { $0.isKeyWindow && $0.firstResponder === self } ?? false
+        setFocused(focused)
+    }
+
+    func setFocused(_ focused: Bool) {
+        guard focused != isFocused else { return }
+        isFocused = focused
+        engine.setFocused(focused)
+    }
+
+    /// Shows the cursor and restarts its blink.
+    func resetBlink() { engine.resetBlink() }
+
+    public override func becomeFirstResponder() -> Bool {
+        defer { DispatchQueue.main.async { [weak self] in self?.updateFocus() } }
+        return true
+    }
+
+    public override func resignFirstResponder() -> Bool {
+        defer { DispatchQueue.main.async { [weak self] in self?.updateFocus() } }
+        return true
     }
 
     public override func viewDidChangeBackingProperties() {
@@ -115,6 +161,8 @@ public final class AlloyTerminalView: NSView {
     public override var acceptsFirstResponder: Bool { true }
 
     public override func keyDown(with event: NSEvent) {
+        // Typing shows the cursor and restarts its blink, as Ghostty does.
+        resetBlink()
         if keyHandler?(event) == true { return }
         interpretKeyEvents([event])
     }
@@ -257,6 +305,58 @@ private final class RenderEngine: @unchecked Sendable {
     /// A frame is due though the grid hasn't changed (composing text changed). On `queue`.
     private var forced = false
 
+    /// How long a blinking cursor stays on, then off: Ghostty's 600 ms.
+    static let blinkInterval: DispatchTimeInterval = .milliseconds(600)
+    /// Running only while a focused, visible cursor blinks, so a still terminal wakes nothing.
+    /// On `queue`.
+    private var blinkTimer: DispatchSourceTimer?
+
+    func setFocused(_ focused: Bool) {
+        queue.async {
+            self.renderer.focused = focused
+            self.renderer.blinkOn = true
+            self.forced = true
+            self.updateBlinkTimer(restart: true)
+        }
+        requestFrame()
+    }
+
+    func resetBlink() {
+        queue.async {
+            guard self.blinkTimer != nil else { return }
+            if !self.renderer.blinkOn { self.renderer.blinkOn = true; self.forced = true }
+            self.updateBlinkTimer(restart: true)
+        }
+        requestFrame()
+    }
+
+    /// On `queue`: start the timer if the cursor should blink, stop it if not.
+    private func updateBlinkTimer(restart: Bool = false) {
+        let wanted = renderer.focused && grid.cursor.visible && grid.cursor.blinking
+        if !wanted {
+            blinkTimer?.cancel()
+            blinkTimer = nil
+            if !renderer.blinkOn { renderer.blinkOn = true; forced = true }
+            return
+        }
+        guard blinkTimer == nil || restart else { return }
+        blinkTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.blinkInterval, repeating: Self.blinkInterval, leeway: .milliseconds(20))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.renderer.blinkOn.toggle()
+            self.forced = true
+            self.frame()
+        }
+        blinkTimer = timer
+        timer.resume()
+    }
+
+    /// Whether the cursor is in its blink's on phase (tests). Any thread.
+    var blinkOn: Bool { queue.sync { renderer.blinkOn } }
+    var isBlinking: Bool { queue.sync { blinkTimer != nil } }
+
     func setPreedit(_ text: String) {
         queue.async {
             self.renderer.preedit = text
@@ -291,7 +391,10 @@ private final class RenderEngine: @unchecked Sendable {
     /// On `queue`: take what changed from the source, and draw if anything did.
     private func frame() {
         let changed = source?.snapshot(into: grid) ?? false
-        if changed { lastCursor.withLock { $0 = grid.cursor } }
+        if changed {
+            lastCursor.withLock { $0 = grid.cursor }
+            updateBlinkTimer()
+        }
         guard changed || forced || grid.dirty.contains(true) else { return }
         forced = false
         guard layer.drawableSize.width > 0, let drawable = layer.nextDrawable() else { return }

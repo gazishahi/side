@@ -52,7 +52,9 @@ public final class Terminal: @unchecked Sendable {
     var holdCapture: GhosttyRenderState?
     var holdCaptured = false
 
-    public init(columns: Int, rows: Int, scrollbackLines: Int = 10_000, events: Events = Events()) throws {
+    /// `cursorBlinks`: whether the cursor blinks until a program says otherwise (DECSCUSR, DEC
+    /// mode 12), as Ghostty's `cursor-style-blink` does. Blinking, as there and in SwiftTerm.
+    public init(columns: Int, rows: Int, scrollbackLines: Int = 10_000, cursorBlinks: Bool = true, events: Events = Events()) throws {
         var made: GhosttyTerminal?
         guard ghostty_terminal_new(nil, &made, UInt16(clamping: max(1, columns)), UInt16(clamping: max(1, rows))) == GHOSTTY_SUCCESS,
               let made else { throw TerminalError.couldNotCreate }
@@ -69,6 +71,13 @@ public final class Terminal: @unchecked Sendable {
         clustering.mode = ghostty_mode_new(2027, false)
         clustering.value = true
         ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_MODE, &clustering)
+        var blink = GhosttyTerminalModeConfig()
+        blink.mode = ghostty_mode_new(12, false)
+        blink.value = cursorBlinks
+        ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT, &blink)
+        ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_MODE, &blink)
+        var blinks = cursorBlinks
+        ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blinks)
         ghostty_render_state_new(nil, &holdCapture)
         registerCallbacks()
     }

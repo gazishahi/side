@@ -604,9 +604,10 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
         let shape: TerminalCursor.Shape = switch cursor.shape {
         case .bar: .bar
         case .underline: .underline
-        case .block, .hollowBlock: .block
+        case .block: .block
+        case .hollowBlock: .hollowBlock
         }
-        grid.cursor = TerminalCursor(column: cursor.column, row: cursor.row, visible: cursor.visible, shape: shape)
+        grid.cursor = TerminalCursor(column: cursor.column, row: cursor.row, visible: cursor.visible, shape: shape, blinking: cursor.blinking)
         return true
     }
 }

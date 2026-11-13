@@ -78,6 +78,11 @@ public final class TerminalRenderer {
     /// Text an input method is composing (marked text), drawn at the cursor over the grid,
     /// underlined, until it's committed or cancelled. Empty: none.
     public var preedit = ""
+    /// Whether the terminal has the keyboard. Unfocused, the cursor is a hollow block, as
+    /// Ghostty and Terminal draw it, and doesn't blink.
+    public var focused = true
+    /// The blink's phase: false hides a blinking cursor. The view's timer flips it.
+    public var blinkOn = true
 
     private let gpu: QuadPipeline
     private let atlas: GlyphAtlas
@@ -201,9 +206,9 @@ public final class TerminalRenderer {
         for row in glyphQuads { quads += row }
         // The cursor over the text: a block covers its cell and redraws the character in the
         // background's color, as terminals draw it; a bar or underline just sits there.
-        if preedit.isEmpty, let cursor = cursorQuad(grid, scale: scale) {
-            quads.append(cursor)
-            if grid.cursor.shape == .block { quads += cursorGlyph(grid, scale: scale) }
+        if preedit.isEmpty, let shape = cursorShape(grid.cursor) {
+            quads += cursorQuads(grid, shape: shape, scale: scale)
+            if shape == .block { quads += cursorGlyph(grid, scale: scale) }
         }
         if !preedit.isEmpty { quads += preeditQuads(grid, scale: scale) }
         return quads
@@ -273,18 +278,34 @@ public final class TerminalRenderer {
         }
     }
 
-    private func cursorQuad(_ grid: TerminalGrid, scale: CGFloat) -> Quad? {
+    /// The shape drawn this frame, or nil for none: hidden by the program, off the grid, or
+    /// blinked off. Unfocused, a hollow block that doesn't blink.
+    func cursorShape(_ cursor: TerminalCursor) -> TerminalCursor.Shape? {
+        guard cursor.visible else { return nil }
+        if !focused { return .hollowBlock }
+        if cursor.blinking, !blinkOn { return nil }
+        return cursor.shape
+    }
+
+    private func cursorQuads(_ grid: TerminalGrid, shape: TerminalCursor.Shape, scale: CGFloat) -> [Quad] {
         let cursor = grid.cursor
-        guard cursor.visible, cursor.row >= 0, cursor.row < grid.rows, cursor.column >= 0, cursor.column < grid.columns else { return nil }
+        guard cursor.row >= 0, cursor.row < grid.rows, cursor.column >= 0, cursor.column < grid.columns else { return [] }
         let (cw, ch, _) = metrics(scale)
         let x = (Float(cursor.column) * cw).rounded(.down), y = Float(cursor.row) * ch
+        // A wide character's cell is two wide, and so is the block over it.
+        let w = (grid[cursor.column, cursor.row].style.contains(.wide) ? cw * 2 : cw).rounded(.up)
         let thickness = Float(max(1, (scale * 1.5).rounded()))
-        let rect: SIMD4<Float> = switch cursor.shape {
-        case .block: SIMD4(x, y, cw.rounded(.up), ch)
-        case .bar: SIMD4(x, y, thickness, ch)
-        case .underline: SIMD4(x, y + ch - thickness, cw.rounded(.up), thickness)
+        let ink = color(theme.cursor)
+        let rects: [SIMD4<Float>] = switch shape {
+        case .block: [SIMD4(x, y, w, ch)]
+        case .bar: [SIMD4(x, y, thickness, ch)]
+        case .underline: [SIMD4(x, y + ch - thickness, w, thickness)]
+        case .hollowBlock:
+            // An outline as thick as an underline, inside the cell.
+            { let t = Float(max(1, (underlineThickness * scale).rounded()))
+              return [SIMD4(x, y, w, t), SIMD4(x, y + ch - t, w, t), SIMD4(x, y + t, t, ch - 2 * t), SIMD4(x + w - t, y + t, t, ch - 2 * t)] }()
         }
-        return Quad(rect: rect, uv: .zero, color: color(theme.cursor), kind: 0)
+        return rects.map { Quad(rect: $0, uv: .zero, color: ink, kind: 0) }
     }
 
     private func rebuild(row y: Int, of grid: TerminalGrid, scale: CGFloat) {

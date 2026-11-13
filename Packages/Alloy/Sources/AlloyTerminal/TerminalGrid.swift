@@ -47,17 +47,22 @@ public struct TerminalCell: Equatable, Sendable {
 }
 
 public struct TerminalCursor: Equatable, Sendable {
-    public enum Shape: Sendable { case block, bar, underline }
+    /// `hollowBlock`: an outline of the cell, what every shape becomes while the terminal isn't
+    /// focused (and what a program can ask for).
+    public enum Shape: Sendable { case block, bar, underline, hollowBlock }
     public var column: Int
     public var row: Int
     public var visible: Bool
     public var shape: Shape
+    /// The program wants it blinking (DECSCUSR's odd styles, DEC mode 12).
+    public var blinking: Bool
 
-    public init(column: Int = 0, row: Int = 0, visible: Bool = true, shape: Shape = .block) {
+    public init(column: Int = 0, row: Int = 0, visible: Bool = true, shape: Shape = .block, blinking: Bool = false) {
         self.column = column
         self.row = row
         self.visible = visible
         self.shape = shape
+        self.blinking = blinking
     }
 }
 

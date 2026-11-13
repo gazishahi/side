@@ -15,6 +15,33 @@ final class SideTerminalTests: XCTestCase {
             .trimmingCharacters(in: .whitespaces)
     }
 
+    /// The cursor's style and blink as programs set them: DECSCUSR (`CSI n SP q`; odd blinks)
+    /// and DEC mode 12.
+    func testCursorStyleAndBlink() throws {
+        let terminal = try Terminal(columns: 20, rows: 4)
+        let reader = ScreenReader(terminal: terminal)
+        _ = reader.update()
+        XCTAssertEqual(reader.cursor.shape, .block)
+        XCTAssertTrue(reader.cursor.blinking, "blinking until a program says otherwise")
+        for (sequence, shape, blinking) in [("\u{1B}[2 q", ScreenCursor.Shape.block, false), ("\u{1B}[5 q", .bar, true),
+                                            ("\u{1B}[6 q", .bar, false), ("\u{1B}[3 q", .underline, true),
+                                            ("\u{1B}[?12l", .underline, false), ("\u{1B}[?12h", .underline, true)] {
+            terminal.feed(Array(sequence.utf8))
+            _ = reader.update()
+            XCTAssertEqual(reader.cursor.shape, shape, sequence.debugDescription)
+            XCTAssertEqual(reader.cursor.blinking, blinking, sequence.debugDescription)
+        }
+        terminal.feed(Array("\u{1B}[0 q".utf8))
+        _ = reader.update()
+        XCTAssertEqual(reader.cursor.shape, .block, "the default again")
+        XCTAssertTrue(reader.cursor.blinking, "the default again")
+
+        let steady = try Terminal(columns: 20, rows: 4, cursorBlinks: false)
+        let steadyReader = ScreenReader(terminal: steady)
+        _ = steadyReader.update()
+        XCTAssertFalse(steadyReader.cursor.blinking)
+    }
+
     func testTextAndTheCursor() throws {
         let terminal = try Terminal(columns: 20, rows: 4)
         let reader = ScreenReader(terminal: terminal)
