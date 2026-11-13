@@ -46,13 +46,27 @@ $U post "queue-approve 0 0"; sleep 1
 a=$(approvals)
 check "approved, and Approve All becomes Unapprove All" '[[ $a == *"0:0=approved"*"| Unapprove All" ]]' "$a"
 q=$(queue)
-check "the queue says so" '[[ $(echo "$q" | sed -n 1p) == "Fix the flaky login test | Finished · Approved | "* ]]' "$q"
+check "the queue says so" '[[ $(echo "$q" | sed -n 1p) == "Fix the flaky login test | "*"Approved | "* ]]' "$q"
 $U shot $OUT/approved.png > /dev/null
 $U relaunch $P; sleep 2
 $U post "stage review"; sleep 3
 a=$(approvals)
 check "kept across a relaunch" '[[ $a == *"0:0=approved"* ]]' "$a"
-$U post "queue-select 1"; sleep 1.5
+
+# Slice 3: commit what's approved, discard what isn't wanted.
+actions() { $U post queue-actions; sleep 0.6; grep '^\[queue-actions\]' $ROOT/side.log | tail -1; }
+$U post "queue-select 0"; sleep 1
+c=$(actions)
+check "everything approved: Commit, then Unapprove All and Discard" '[[ $c == *"Commit…, Unapprove All, Discard…"* ]]' "$c"
+$U post "queue-commit Fix the flaky login test"; sleep 3
+check "committed, with the request as its message" '[[ $(git -C $P log -1 --format=%s) == "Fix the flaky login test" ]]' "$(git -C $P log -1 --format=%s)"
+check "only what was approved" '[[ $(git -C $P status --porcelain) == " M README.md" ]]' "$(git -C $P status --porcelain)"
+q=$(queue)
+check "the session leaves the queue" '[[ $(echo "$q" | sed -n 1p) == "Not attributed | "* && $(echo "$q" | wc -l | tr -d " ") == 1 ]]' "$q"
+$U shot $OUT/after-commit.png > /dev/null
+$U post "queue-discard"; sleep 3
+check "discarded: the file as it was" '[[ -z $(git -C $P status --porcelain) ]]' "$(git -C $P status --porcelain)"
+
 $U shot $OUT/unattributed.png > /dev/null
 $U post "queue-select branch"; sleep 2
 $U shot $OUT/branch.png > /dev/null

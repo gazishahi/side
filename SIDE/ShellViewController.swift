@@ -1161,6 +1161,9 @@ final class ShellViewController: NSViewController {
     var reviewApprovalsForTesting: String { reviewVC.approvalsForTesting }
     func toggleReviewHunkForTesting(file: Int, hunk: Int) { reviewVC.toggleHunkForTesting(file: file, hunk: hunk) }
     func approveAllForTesting() { reviewVC.approveAllForTesting() }
+    var reviewQueueActionsForTesting: String { reviewVC.queueActionsForTesting }
+    func reviewCommitForTesting(_ message: String) { reviewVC.commitApprovedForTesting(message: message) }
+    func reviewDiscardForTesting() { reviewVC.discardForTesting() }
 
     var agentForTesting: String {
         let tabs = (projectContext?.terminals.everySession() ?? []).map {

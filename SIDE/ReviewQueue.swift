@@ -1,4 +1,5 @@
 import Foundation
+import SideAgents
 
 /// Changes as a review queue (SIDE_RFC_SESSIONS.md, phase 4): a checkout's uncommitted changes,
 /// hunk by hunk, grouped by who wrote them: each agent session, then you, then what no write
@@ -170,5 +171,84 @@ final class ReviewApprovals: @unchecked Sendable {
         let keys = (try? Data(contentsOf: store(checkout))).flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
         cache[checkout.gitDirectory.path] = Set(keys)
         return Set(keys)
+    }
+}
+
+/// What the queue does to a checkout: commit its approved hunks, discard a session's.
+enum ReviewGit {
+    enum Failure: Error, Equatable {
+        /// Something else is staged: a commit now would take it too.
+        case otherChangesStaged([String])
+        /// Lines in these hunks are someone else's, written after: discarding would take theirs.
+        case othersBuildOnIt([String])
+        case git(String)
+
+        var message: String {
+            switch self {
+            case .otherChangesStaged(let paths):
+                return "Other changes are staged (\(paths.prefix(3).joined(separator: ", "))\(paths.count > 3 ? ", \u{2026}" : "")). Commit or unstage them first, so this commit holds only what you approved."
+            case .othersBuildOnIt(let names):
+                return "\(names.joined(separator: " and ")) changed lines inside these changes since. Discarding them would take those too."
+            case .git(let output): return output.isEmpty ? "git couldn\u{2019}t do it." : output
+            }
+        }
+    }
+
+    /// The hunks as a patch git can apply: each file's header once, then its hunks.
+    static func patch(_ hunks: [ReviewQueue.Hunk]) -> String {
+        ReviewQueue.Group(author: .unknown, hunks: hunks).diffText + "\n"
+    }
+
+    /// Stages exactly `hunks` and commits them with `message` (the repository's hooks and
+    /// signing apply, as with any commit). Refused when anything else is staged; what it staged
+    /// is taken back out if the commit fails.
+    static func commit(_ hunks: [ReviewQueue.Hunk], message: String, cwd: String) -> Result<String, Failure> {
+        let staged = GitPaths.runGit(["diff", "--cached", "--name-only"], cwd: cwd)
+        guard staged.success else { return .failure(.git(staged.output)) }
+        let already = staged.output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        guard already.isEmpty else { return .failure(.otherChangesStaged(already)) }
+        let paths = Array(Set(hunks.map(\.path))).sorted()
+        switch apply(hunks, ["--cached"], cwd: cwd) {
+        case .failure(let failure): return .failure(failure)
+        case .success: break
+        }
+        let committed = GitPaths.runGit(["commit", "-q", "-m", message], cwd: cwd)
+        guard committed.success else {
+            _ = GitPaths.runGit(["reset", "-q", "--"] + paths, cwd: cwd)
+            return .failure(.git(committed.output))
+        }
+        return .success(GitPaths.runGit(["rev-parse", "--short", "HEAD"], cwd: cwd).output)
+    }
+
+    /// Takes `hunks` out of the working tree, as if never written. `owners` says who wrote each
+    /// file's lines now: refused when any added line in them is someone else's than `author`.
+    static func discard(_ hunks: [ReviewQueue.Hunk], author: Author, owners: (String) -> [Author?], cwd: String) -> Result<Void, Failure> {
+        var others: [String] = []
+        for hunk in hunks {
+            let lineOwners = owners(hunk.path)
+            for line in hunk.addedLines where lineOwners.indices.contains(line - 1) {
+                guard let owner = lineOwners[line - 1], owner != author else { continue }
+                if !others.contains(owner.name) { others.append(owner.name) }
+            }
+        }
+        guard others.isEmpty else { return .failure(.othersBuildOnIt(others)) }
+        return apply(hunks, ["-R"], cwd: cwd)
+    }
+
+    private static func apply(_ hunks: [ReviewQueue.Hunk], _ options: [String], cwd: String) -> Result<Void, Failure> {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("side-review-\(UUID().uuidString).patch")
+        defer { try? FileManager.default.removeItem(at: file) }
+        do { try patch(hunks).write(to: file, atomically: true, encoding: .utf8) } catch { return .failure(.git(error.localizedDescription)) }
+        let applied = GitPaths.runGit(["apply", "--whitespace=nowarn"] + options + [file.path], cwd: cwd)
+        return applied.success ? .success(()) : .failure(.git(applied.output))
+    }
+
+    /// The commit message drafted from what was asked: its first line, as the subject.
+    static func draftMessage(for group: ReviewQueue.Group) -> String {
+        guard group.author.kind == .session, let request = group.author.request else { return "" }
+        let line = request.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return "" }
+        let subject = line.count > 72 ? String(line.prefix(71)) + "\u{2026}" : line
+        return subject.prefix(1).uppercased() + subject.dropFirst()
     }
 }

@@ -87,11 +87,14 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// The queue is being read: the branch's diff waits for it rather than drawing first and
     /// being replaced a moment later.
     private var queueLoading = false
+    private var queueRetries = 0
     private var pendingBranchDiff: (text: String, everything: Bool)?
     /// The chosen group's hunks as the diff shows them: by file, in order.
     private var shownHunks: [[ReviewQueue.Hunk]] = []
     private var approvedKeys: Set<String> = []
     private let approveAllButton = NSButton(title: "Approve All", target: nil, action: nil)
+    private let commitButton = NSButton(title: "Commit Approved\u{2026}", target: nil, action: nil)
+    private let discardButton = NSButton(title: "Discard\u{2026}", target: nil, action: nil)
     private var railWidth: NSLayoutConstraint?
     private var diffLeading: NSLayoutConstraint?
     private var cardTop: NSLayoutConstraint?
@@ -375,7 +378,16 @@ final class ReviewWorkspaceViewController: NSViewController {
         approveAllButton.action = #selector(approveAllTapped)
         approveAllButton.isHidden = true
         approveAllButton.setAccessibilityIdentifier("review.approveAll")
-        for view in [diffTitle, diffTotals, spacer, approveAllButton, foldAllButton, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
+        for (button, action, id) in [(commitButton, #selector(commitApprovedTapped), "review.commitApproved"), (discardButton, #selector(discardTapped), "review.discard")] {
+            button.bezelStyle = .accessoryBarAction
+            button.controlSize = .small
+            button.font = DS.Text.caption(.medium)
+            button.target = self
+            button.action = action
+            button.isHidden = true
+            button.setAccessibilityIdentifier(id)
+        }
+        for view in [diffTitle, diffTotals, spacer, discardButton, approveAllButton, commitButton, foldAllButton, diffLayoutControl] as [NSView] { diffToolbar.addArrangedSubview(view) }
         diffViewer.onFoldChange = { [weak self] _, _ in self?.refreshFoldAllButton() }
 
         rail.onSelect = { [weak self] index in self?.diffViewer.scrollToFile(index) }
@@ -457,7 +469,15 @@ final class ReviewWorkspaceViewController: NSViewController {
         let generation = queueGeneration
         queueLoading = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let diff = Self.uncommittedDiff(cwd: root.path)
+            // git busy (a commit just made, the index locked): the queue as it was, and again soon.
+            guard let diff = Self.uncommittedDiff(cwd: root.path) else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self, self.queueGeneration == generation, self.queueRetries < 10 else { return }
+                    self.queueRetries += 1
+                    self.refreshQueue()
+                }
+                return
+            }
             let queue = ReviewQueue.build(diff: diff) { path in
                 let file = root.appendingPathComponent(path)
                 guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
@@ -468,6 +488,7 @@ final class ReviewWorkspaceViewController: NSViewController {
             DispatchQueue.main.async {
                 guard let self, self.queueGeneration == generation else { return }
                 self.queueLoading = false
+                self.queueRetries = 0
                 self.applyQueue(queue)
                 // Nothing to queue: the branch's diff, if it came meanwhile.
                 if !self.queueActive, let pending = self.pendingBranchDiff { self.showDiff(pending.text, everything: pending.everything) }
@@ -476,10 +497,17 @@ final class ReviewWorkspaceViewController: NSViewController {
         }
     }
 
-    /// What isn't committed in `cwd`, untracked files included, as one `git diff`.
-    nonisolated static func uncommittedDiff(cwd: String) -> String {
-        guard GitPaths.runGit(["rev-parse", "--verify", "--quiet", "HEAD"], cwd: cwd).success else { return "" }
-        var diff = GitPaths.runGitRaw(["diff", "--no-color", "--no-ext-diff", "HEAD"], cwd: cwd).output
+    /// What isn't committed in `cwd`, untracked files included, as one `git diff`; nil when git
+    /// couldn't say (the index locked mid-commit), which isn't "nothing".
+    nonisolated static func uncommittedDiff(cwd: String) -> String? {
+        // No HEAD: a repository with no commits has nothing to compare with; one whose HEAD
+        // couldn't be read just now (mid-commit) isn't that.
+        guard GitPaths.runGit(["rev-parse", "--verify", "--quiet", "HEAD"], cwd: cwd).success else {
+            return GitPaths.runGit(["rev-list", "-n", "1", "--all"], cwd: cwd).output.isEmpty ? "" : nil
+        }
+        let tracked = GitPaths.runGitRaw(["diff", "--no-color", "--no-ext-diff", "HEAD"], cwd: cwd)
+        guard tracked.success else { return nil }
+        var diff = tracked.output
         let untracked = GitPaths.runGitRaw(["ls-files", "--others", "--exclude-standard"], cwd: cwd).output.split(separator: "\n").prefix(50)
         for file in untracked {
             diff += GitPaths.runGitRaw(["diff", "--no-color", "--no-index", "--", "/dev/null", String(file)], cwd: cwd).output
@@ -585,13 +613,116 @@ final class ReviewWorkspaceViewController: NSViewController {
     /// Approve All, or, with everything approved, Unapprove All.
     private func refreshApproveAll() {
         guard queueActive, let index = queueSelection, queue.groups.indices.contains(index) else {
-            approveAllButton.isHidden = true
+            for button in [approveAllButton, commitButton, discardButton] { button.isHidden = true }
             return
         }
         let hunks = queue.groups[index].hunks
-        let all = hunks.allSatisfy { approvedKeys.contains($0.key) }
-        approveAllButton.title = all ? "Unapprove All" : "Approve All"
+        let approved = hunks.filter { approvedKeys.contains($0.key) }.count
+        approveAllButton.title = approved == hunks.count ? "Unapprove All" : "Approve All"
         approveAllButton.isHidden = false
+        // Commit what's approved; Discard what isn't wanted (what isn't approved, or all of it).
+        commitButton.isHidden = approved == 0
+        commitButton.title = approved == hunks.count ? "Commit\u{2026}" : "Commit \(approved) Approved\u{2026}"
+        discardButton.isHidden = false
+    }
+
+    private var chosenGroup: ReviewQueue.Group? {
+        queueSelection.flatMap { queue.groups.indices.contains($0) ? queue.groups[$0] : nil }
+    }
+
+    /// The approved hunks, committed with a message drafted from the request.
+    @objc private func commitApprovedTapped() {
+        guard let group = chosenGroup, let root = queueRoot, let window = view.window else { return }
+        let hunks = group.hunks.filter { approvedKeys.contains($0.key) }
+        guard !hunks.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = hunks.count == group.hunks.count ? "Commit these changes?" : "Commit the \(hunks.count) approved changes?"
+        alert.informativeText = "To \(baseBranchShown ?? currentTrack?.branchName ?? "this branch"). Only what you approved is committed; the rest stays as it is."
+        let field = NSTextField(string: ReviewGit.draftMessage(for: group))
+        field.placeholderString = "Commit message"
+        field.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Commit")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            let message = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isEmpty else { self?.reportQueueFailure("A commit needs a message."); return }
+            self?.runQueueAction { ReviewGit.commit(hunks, message: message, cwd: root.path).map { _ in () } }
+        }
+    }
+
+    /// The session's changes taken out of the files, once you say so; refused where someone
+    /// else's later lines are inside them.
+    @objc private func discardTapped() {
+        guard let group = chosenGroup, let root = queueRoot, let window = view.window else { return }
+        let unapproved = group.hunks.filter { !approvedKeys.contains($0.key) }
+        let hunks = unapproved.isEmpty ? group.hunks : unapproved
+        let files = Set(hunks.map(\.path)).count
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        let whose = group.author.kind == .session ? "\(group.author.name)\u{2019}s" : group.author.kind == .you ? "your" : "these"
+        alert.messageText = unapproved.isEmpty || unapproved.count == group.hunks.count
+            ? "Discard \(whose) changes to \(files) file\(files == 1 ? "" : "s")?"
+            : "Discard the \(hunks.count) changes you haven\u{2019}t approved?"
+        alert.informativeText = "They\u{2019}re taken out of the files, as if never written. This can\u{2019}t be undone from Side."
+        alert.addButton(withTitle: "Discard")
+        alert.buttons.first?.hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.runQueueAction {
+                ReviewGit.discard(hunks, author: group.author, owners: { path in
+                    let file = root.appendingPathComponent(path)
+                    guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+                    return Attribution.shared.owners(of: file, text: text)
+                }, cwd: root.path)
+            }
+        }
+    }
+
+    /// Off the main thread; then the queue again, or what stopped it.
+    private func runQueueAction(_ action: @escaping @Sendable () -> Result<Void, ReviewGit.Failure>) {
+        setStatus("Working\u{2026}")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = action()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.setStatus("")
+                if case .failure(let failure) = result { self.reportQueueFailure(failure.message) } else { self.lastQueueFailure = nil }
+                self.refreshQueue()
+                // And once git has finished with what it just did (its index, its hooks).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.refreshQueue() }
+            }
+        }
+    }
+
+    private func reportQueueFailure(_ message: String) {
+        lastQueueFailure = message
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "That wasn\u{2019}t done"
+        alert.informativeText = message
+        alert.beginSheetModal(for: window)
+    }
+    private(set) var lastQueueFailure: String?
+
+    /// Testing: the actions without their sheets.
+    func commitApprovedForTesting(message: String) {
+        guard let group = chosenGroup, let root = queueRoot else { return }
+        let hunks = group.hunks.filter { approvedKeys.contains($0.key) }
+        guard !hunks.isEmpty else { lastQueueFailure = "nothing approved"; return }
+        runQueueAction { ReviewGit.commit(hunks, message: message, cwd: root.path).map { _ in () } }
+    }
+    func discardForTesting() {
+        guard let group = chosenGroup, let root = queueRoot else { return }
+        runQueueAction {
+            ReviewGit.discard(group.hunks, author: group.author, owners: { path in
+                let file = root.appendingPathComponent(path)
+                return (try? String(contentsOf: file, encoding: .utf8)).map { Attribution.shared.owners(of: file, text: $0) } ?? []
+            }, cwd: root.path)
+        }
     }
 
     @objc private func approveAllTapped() {
@@ -603,11 +734,14 @@ final class ReviewWorkspaceViewController: NSViewController {
     var approvalsForTesting: String { diffViewer.hunkControlsForTesting.joined(separator: " ") + " | " + approveAllButton.title }
     func toggleHunkForTesting(file: Int, hunk: Int) { diffViewer.toggleHunkForTesting(file: file, hunk: hunk) }
     func approveAllForTesting() { approveAllTapped() }
+    var queueActionsForTesting: String {
+        [commitButton, approveAllButton, discardButton].filter { !$0.isHidden }.map(\.title).joined(separator: ", ") + (lastQueueFailure.map { " | failed: \($0)" } ?? "")
+    }
 
     /// The whole branch, as Changes showed it before the queue.
     private func refreshBranch() {
         diffViewer.hunkApproval = nil
-        approveAllButton.isHidden = true
+        for button in [approveAllButton, commitButton, discardButton] { button.isHidden = true }
         if currentTrack != nil {
             loadDiff()
         } else if let root = queueRoot, let trackStore {

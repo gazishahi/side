@@ -389,6 +389,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         shell.toggleReviewHunkForTesting(file: parts[0], hunk: parts[1])
                     }
                     if command == "queue-approve-all" { shell.approveAllForTesting() }
+                    if command == "queue-actions" { FileHandle.standardError.write(Data("[queue-actions] \(shell.reviewQueueActionsForTesting)\n".utf8)) }
+                    if command.hasPrefix("queue-commit ") { shell.reviewCommitForTesting(String(command.dropFirst(13))) }
+                    if command == "queue-discard" { shell.reviewDiscardForTesting() }
                     // Who wrote a line of the Editor's file (phase 3): "attribution <line>".
                     if command.hasPrefix("attribution "), let line = Int(command.dropFirst(12)) {
                         let authors = shell.attributionForTesting(line: line).joined(separator: " | ")

@@ -90,4 +90,69 @@ final class ReviewQueueTests: XCTestCase {
         ReviewApprovals.shared.keep(only: [keys[0], keys[1]], in: repo)
         XCTAssertEqual(ReviewApprovals.shared.approved(in: repo), [], "the approved hunk is gone, so is its approval")
     }
+
+    // MARK: Slice 3: commit what was approved, discard what wasn't wanted
+
+    private func makeRepo() throws -> URL {
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent("review-git-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        try "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        for arguments in [["init", "-q", "-b", "main"], ["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]] {
+            XCTAssertTrue(GitPaths.runGitRaw(arguments, cwd: repo.path).success)
+        }
+        _ = GitPaths.runGitRaw(["config", "user.email", "t@t"], cwd: repo.path)
+        _ = GitPaths.runGitRaw(["config", "user.name", "t"], cwd: repo.path)
+        return repo
+    }
+
+    func testCommitApprovedTakesOnlyTheApprovedHunks() throws {
+        let repo = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "new\n".write(to: repo.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let hunks = ReviewQueue.hunks(in: ReviewWorkspaceViewController.uncommittedDiff(cwd: repo.path) ?? "")
+        XCTAssertEqual(hunks.map(\.path), ["a.txt", "a.txt", "b.txt"])
+        // The first line's change and the new file, not the last line's.
+        let result = ReviewGit.commit([hunks[0], hunks[2]], message: "Fix the counting", cwd: repo.path)
+        guard case .success = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(GitPaths.runGit(["log", "-1", "--format=%s"], cwd: repo.path).output, "Fix the counting")
+        XCTAssertEqual(GitPaths.runGit(["show", "HEAD:a.txt"], cwd: repo.path).output.split(separator: "\n").first, "ONE")
+        XCTAssertEqual(GitPaths.runGit(["show", "HEAD:a.txt"], cwd: repo.path).output.split(separator: "\n").last, "ten", "the unapproved hunk isn't in it")
+        XCTAssertEqual(GitPaths.runGit(["show", "HEAD:b.txt"], cwd: repo.path).output, "new")
+        // Left as it was: the unapproved change, still in the working tree, nothing staged.
+        XCTAssertEqual(GitPaths.runGit(["status", "--porcelain"], cwd: repo.path).output, "M a.txt")
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent("a.txt"), encoding: .utf8).split(separator: "\n").last, "TEN")
+    }
+
+    func testCommitIsRefusedWhenSomethingElseIsStaged() throws {
+        let repo = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "staged\n".write(to: repo.appendingPathComponent("c.txt"), atomically: true, encoding: .utf8)
+        _ = GitPaths.runGitRaw(["add", "c.txt"], cwd: repo.path)
+        let hunk = ReviewQueue.hunks(in: GitPaths.runGitRaw(["diff", "--no-color"], cwd: repo.path).output)[0]
+        XCTAssertEqual(ReviewGit.commit([hunk], message: "x", cwd: repo.path), .failure(.otherChangesStaged(["c.txt"])))
+        XCTAssertEqual(GitPaths.runGit(["rev-list", "--count", "HEAD"], cwd: repo.path).output, "1", "nothing committed")
+    }
+
+    func testDiscardTakesASessionsChangesOutUnlessOthersBuiltOnThem() throws {
+        let repo = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let claude = Author(kind: .session, sessionID: "s1", agent: "claude", request: "x")
+        try "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let hunk = ReviewQueue.hunks(in: GitPaths.runGitRaw(["diff", "--no-color"], cwd: repo.path).output)[0]
+        // Someone else's line inside it: refused, and nothing changes.
+        guard case .failure(let failure) = ReviewGit.discard([hunk], author: claude, owners: { _ in [.you] }, cwd: repo.path) else { return XCTFail("discarded someone else's line") }
+        XCTAssertEqual(failure, .othersBuildOnIt(["You"]))
+        XCTAssertTrue(try String(contentsOf: repo.appendingPathComponent("a.txt"), encoding: .utf8).hasPrefix("ONE"))
+        // All the session's own: gone, as if never written.
+        guard case .success = ReviewGit.discard([hunk], author: claude, owners: { _ in [claude] }, cwd: repo.path) else { return XCTFail() }
+        XCTAssertEqual(GitPaths.runGit(["status", "--porcelain"], cwd: repo.path).output, "")
+    }
+
+    func testTheCommitMessageIsDraftedFromTheRequest() {
+        let group = ReviewQueue.Group(author: Author(kind: .session, sessionID: "s", agent: "claude", request: "fix the flaky login test"), hunks: [])
+        XCTAssertEqual(ReviewGit.draftMessage(for: group), "Fix the flaky login test")
+        XCTAssertEqual(ReviewGit.draftMessage(for: ReviewQueue.Group(author: .you, hunks: [])), "", "your own edits: yours to describe")
+    }
 }
