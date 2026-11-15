@@ -5,12 +5,15 @@
 *Update 2026-11-04: Heron is retired (`SIDE_RFC_HERON_RETIREMENT.md`): `Packages/Heron` is gone,
 nothing of it ships, and `gazishahi/heron` is archived. Alloy is the one package published. The
 Heron rows and sections below are the plan as it stood.*
+*Update 2026-11-15: Side is open source. `gazishahi/side` is public and Side is licensed under
+Apache-2.0 (`LICENSE`, `NOTICE`), reversing D4. Signed DMGs still go to `gazishahi/side-releases`.
+The draft license agreement became `docs/legal/SIDE_LICENSE_AGREEMENT.md`'s Apache-based terms.*
 
 ## What ships
 
 | Thing | Form | License | Where |
 |---|---|---|---|
-| Side | Developer ID–signed, notarized `Side-<version>.dmg` | private (D4) | `gazishahi/side-releases` on GitHub (D2) |
+| Side | Developer ID–signed, notarized `Side-<version>.dmg` | Apache-2.0 (D4, 2026-11-15) | source: `gazishahi/side`; DMGs: `gazishahi/side-releases` (D2) |
 | Heron | Swift package (`Packages/Heron` today) | Apache-2.0 (D3) | its own public repository (D5) |
 | Alloy | Swift package (github.com/gazishahi/alloy, 0.1.1) | Apache-2.0 (D3) | its own public repository (D5) |
 
@@ -32,7 +35,7 @@ Heron and Alloy version on their own (SemVer from 0.1.0); Side pins the versions
 4. Codex, Gemini CLI and Pi verified live, or labelled experimental.
 5. Dark mode, VoiceOver and text-size pass on the redesigned Preferences and Library.
 6. A clean-account first-run walkthrough. **Not done at launch (owner, 2026-10-22):** the macOS VM wouldn't install, and the owner launched 0.1.0 anyway, fixing first-run issues as they're found. Still worth doing for a later release.
-7. License, privacy note, crash-reporting decision, landing page. **2026-10-21:** license drafted (`docs/legal/SIDE_LICENSE_AGREEMENT.md`; free, New York law; for a lawyer's read), third-party notices ship in the app (About Side), privacy policy updated on the site, **no crash reporting in 0.1** (owner), landing page in progress.
+7. License, privacy note, crash-reporting decision, landing page. **2026-10-21:** license drafted (`docs/legal/SIDE_LICENSE_AGREEMENT.md`; free, New York law; for a lawyer's read; **2026-11-15:** replaced by Apache-2.0 when Side was open-sourced), third-party notices ship in the app (About Side), privacy policy updated on the site, **no crash reporting in 0.1** (owner), landing page in progress.
 
 ## Side: signing and packaging
 
@@ -79,7 +82,8 @@ on a repository with nothing else in it). `gazishahi/side-releases` exists with 
 Answered by the owner 2026-09-24: **D1** Sparkle, **D2** GitHub Releases, **D3** Apache-2.0,
 **D4** Side stays private; only Heron and Alloy are open source. So releases go to a public
 repository of their own (`gazishahi/side-releases`: DMGs and appcasts, no source), since assets on
-a private repository can't be downloaded.
+a private repository can't be downloaded. **D4 reversed 2026-11-15:** Side is open source under
+Apache-2.0 in the public `gazishahi/side`; DMGs and appcasts stay in `gazishahi/side-releases`.
 
 
 - **D1: Updates.** *Recommend:* Sparkle 2 with an EdDSA-signed appcast. Sparkle is the standard

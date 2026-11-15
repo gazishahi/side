@@ -1,8 +1,10 @@
 # Side
 
-Side is a native macOS development environment built around tracks. A track is one line of work: an intent, its own git branch and working folder, the agent conversations working on it, and the checkpoints and evidence that lead back to `main`. Agents (Claude Code, Codex and others, on your own account) do the work; people review and promote it.
+Side is a native macOS development environment for working with coding agents. It sees every agent session in your project, however it was started and wherever it went, tells you which one needs you, and lets you review and edit what each changed in a real editor. Sessions survive restarts and updates.
 
-Status: pre-release, version 0.1.0. Not yet published.
+Agents (Claude Code, Codex and others) run on your own account. Side never needs to start them itself: it finds them in its terminals, through opt-in hooks, and from the agents' own session lists.
+
+Status: 0.6.0, pre-1.0. Formats and behavior may still change. Signed builds are at [gazishahi/side-releases](https://github.com/gazishahi/side-releases).
 
 ## The app at a glance
 
@@ -10,32 +12,38 @@ Side has five stages. One stage owns the window at a time.
 
 | Stage | What it is for |
 |---|---|
-| Editor | The editor (Alloy): code, navigation, diagnostics, edits, the debugger |
-| Agent | Agent conversations on a track, with an agent of your choice over ACP |
-| Changes | Checkpoints, diffs, test evidence, and promoting a track into its base |
-| Terminal | Terminals that outlive Side, tasks, tests and logs |
-| Branches | Every line of work: resume, park, stack, archive, clean up |
+| Editor | Alloy, Side's GPU editor: code, navigation, diagnostics, the debugger, and who wrote each changed line |
+| Agent | A graphical view of any agent session, with its history |
+| Changes | The review queue: what each session changed, by request; approve, commit, discard, or ask for changes |
+| Terminal | The project's terminal tabs, kept alive by a helper so they outlive Side |
+| Branches | Every branch and worktree, its pull request, and the sessions working on it |
 
-Library (prompts, skills, instruction files) is a separate window, and Settings holds agents, languages and appearance.
-
-Agents speak the Agent Client Protocol. Claude Code is verified; Codex, Gemini CLI, Pi and OpenCode are built in and marked experimental. Any other ACP agent can be added by its command. New tracks start on the default agent (Settings, Agents). Side offers every agent its own tools over MCP: the project's other tracks, the editor's diagnostics, the debugger's state and the track's ports.
-
-Side's own agent, Heron, was retired on 2026-11-04 (`docs/SIDE_RFC_HERON_RETIREMENT.md`); its conversations stay readable on the tracks that have them.
+⌃⌘S opens the session switcher: every terminal program and agent across your projects, the ones that need you first. The activity pill says what a session is waiting for. Library (prompts, skills, instruction files) is a separate window, and Settings holds agents, languages and appearance.
 
 ## Requirements
 
 - macOS 15 or later
 - Xcode 26 (Swift 6)
 - Git, from Xcode or the Command Line Tools
+- Zig 0.17 (`brew install zig`), to build libghostty-vt for the terminal
 - For language features and debugging: the language servers and debuggers for your languages. Settings, Languages offers to install the common ones.
 
 ## Building
 
-1. Open `SIDE.xcodeproj` in Xcode.
-2. Choose the `SIDE` scheme and run.
+1. Build libghostty-vt once (it clones Ghostty at a pinned commit; output is git-ignored):
+   ```sh
+   scripts/build-ghostty-vt.sh
+   ```
+2. Open `SIDE.xcodeproj` in Xcode, choose the `SIDE` scheme and run.
 3. The first build asks to trust SwiftTerm's build plugin (`SwiftTermBuildInfoPlugin`). Choose Trust and Enable.
 
 A Release build run from Xcode is signed ad hoc, so the hardened runtime is off in the project. `scripts/release.sh` turns it on for a signed release.
+
+The new terminal engine (libghostty-vt with Alloy's renderer) is behind a setting while it's finished; SwiftTerm is the default:
+
+```sh
+defaults write com.shahi.side terminal.engine alloy
+```
 
 ## Testing
 
@@ -43,7 +51,7 @@ A Release build run from Xcode is signed ad hoc, so the hardened runtime is off 
 scripts/test.sh
 ```
 
-Runs SideAgents', Alloy's and SideSessions' own tests (`swift test`), then the app's. Commit only when it exits 0. There is no hosted CI for the app before launch; this is the gate.
+Runs SideAgents', Alloy's and SideSessions' own tests (`swift test`), then the app's. A change is ready when it exits 0. There is no hosted CI for the app yet; this is the gate.
 
 ```sh
 scripts/budgets.sh            # every performance budget, in an optimized build (about 15 minutes)
@@ -56,15 +64,18 @@ Budgets measure frame times, CPU and memory against the limits in `SIDETests/Bud
 
 | Path | What it holds |
 |---|---|
-| `SIDE/` | The app: stages, shell, tracks, language and debugger integration |
+| `SIDE/` | The app: stages, shell, sessions, language and debugger integration |
 | `SIDETests/`, `SIDEUITests/` | The app's tests and UI tests |
+| `Packages/Alloy/` | Alloy, the editor and terminal renderer: Metal text rendering, tree-sitter syntax, input |
 | `Packages/SideAgents/` | What agents run on: the ACP client, sessions, checkpoints, usage, Side's MCP tools |
-| `Packages/SideSessions/` | Terminals that outlive Side: the session keeper and its protocol |
-| `Packages/Alloy/` | Alloy, the editor: Metal text rendering, tree-sitter syntax, input |
+| `Packages/SideSessions/` | Terminals that outlive Side: the session keeper, its protocol, and SideTerminal (libghostty-vt) |
+| `Packages/SwiftMath/` | SwiftMath, vendored: LaTeX math in the Markdown preview |
+| `Helpers/` | The session keeper's and notifier's app bundles |
+| `Benchmarks/` | Terminal and session benchmarks |
 | `docs/` | The constitution, design direction, RFCs, audits and distribution plan |
-| `scripts/` | Testing, budgets, releases |
+| `scripts/` | Building, testing, budgets, releases |
 
-Alloy is open source (Apache-2.0) in its own repository, [gazishahi/alloy](https://github.com/gazishahi/alloy). Its source of truth is here, under `Packages/`; the public repository is published from it. Heron's repository, [gazishahi/heron](https://github.com/gazishahi/heron), is archived.
+Alloy is also published on its own at [gazishahi/alloy](https://github.com/gazishahi/alloy). Its source of truth is here, under `Packages/`; the public repository is published from it. The terminal benchmarks are reproducible from [gazishahi/side-terminal-bench](https://github.com/gazishahi/side-terminal-bench).
 
 ## Releasing
 
@@ -75,7 +86,7 @@ scripts/release.sh            # Developer ID signed, notarized DMG
 scripts/release.sh --dry-run  # build and sign only
 ```
 
-The one-time setup (certificate, notary credentials, Sparkle key) is at the top of the script. DMGs and the update feed are published to [gazishahi/side-releases](https://github.com/gazishahi/side-releases), which holds no source.
+The one-time setup (certificate, notary credentials, Sparkle key) is at the top of the script. DMGs and the update feed are published to [gazishahi/side-releases](https://github.com/gazishahi/side-releases).
 
 Alloy:
 
@@ -84,15 +95,18 @@ scripts/publish-package.sh Alloy 0.7.5 "0.7.5: what changed"
 scripts/publish-package.sh --release-only Alloy 0.7.5
 ```
 
-Copies the package into a fresh clone of its public repository, pushes, waits for CI on that commit, then tags it and creates a GitHub Release with notes from the commits since the previous tag. Every version is both a tag and a Release.
+Copies the package into a fresh clone of its public repository, pushes, waits for CI on that commit, then tags it and creates a GitHub Release with notes from the commits since the previous tag.
 
 ## Documents worth reading first
 
-- `docs/SIDE_PRODUCT_CONSTITUTION.md`: what Side is, its rules, and how tracks work
-- `docs/SIDE_DESIGN.md` and `docs/SIDE_DESIGN_DIRECTION_02.md`: how it looks and behaves
-- `docs/SIDE_DISTRIBUTION.md`: launch gates, signing, updates and licensing
-- `docs/SIDE_AUDIT_REPORT_2026-09-30.md`: the latest audit and what was fixed
+- `docs/SIDE_RFC_SESSIONS.md`: the sessions model Side is built around
+- `docs/SIDE_PRODUCT_CONSTITUTION.md`: what Side is and its rules
+- `docs/SIDE_DESIGN.md` and `docs/SIDE_DESIGN_DIRECTION_03.md`: how it looks and behaves
+- `docs/SIDE_RFC_TERMINAL_ENGINE.md`: the new terminal engine
+- `docs/SIDE_DISTRIBUTION.md`: signing, updates and releases
 
 ## License
 
-The Side app is proprietary and not open source. Alloy is licensed under Apache-2.0; see its `LICENSE` file. Heron, archived, was too.
+Side is licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE).
+
+Third-party components keep their own licenses; they're listed in `docs/legal/THIRD_PARTY_NOTICES.md` and shipped in the app (About Side). The Apache license doesn't grant rights to the Side name or icon.
