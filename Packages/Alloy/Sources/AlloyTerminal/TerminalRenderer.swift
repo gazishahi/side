@@ -303,7 +303,10 @@ public final class TerminalRenderer {
         quads += linkQuads(grid, scale: scale)
         // The cursor over the text: a block covers its cell and redraws the character in the
         // background's color, as terminals draw it; a bar or underline just sits there.
-        if preedit.isEmpty, let shape = cursorShape(grid.cursor) {
+        // A cursor outside the grid isn't drawn: the emulator can be bigger than the grid for a
+        // frame (the view's placeholder grid before layout, or a resize the emulator hasn't had).
+        let cursorInGrid = (0..<grid.columns).contains(grid.cursor.column) && (0..<grid.rows).contains(grid.cursor.row)
+        if preedit.isEmpty, cursorInGrid, let shape = cursorShape(grid.cursor) {
             quads += cursorQuads(grid, shape: shape, scale: scale)
             if shape == .block { quads += cursorGlyph(grid, scale: scale) }
         }

@@ -415,6 +415,20 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertGreaterThan(pixels.count(in: cell) { $0.r > 200 }, cell.x.count * cell.y.count / 2, "the block itself")
     }
 
+    /// The emulator can be bigger than the grid for a frame (the view's placeholder grid before
+    /// layout): a cursor past the grid's edge isn't drawn, and the frame doesn't trap.
+    func testACursorOutsideTheGridIsSkipped() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 4, rows: 2, foreground: 0xFFFFFF)
+        for (column, row) in [(150, 0), (1, 40), (-1, 0)] {
+            for shape in [TerminalCursor.Shape.block, .bar, .underline, .hollowBlock] {
+                grid.cursor = TerminalCursor(column: column, row: row, visible: true, shape: shape)
+                let pixels = try render(grid, renderer: renderer)
+                XCTAssertEqual(pixels.count(in: cellRect(column: 3, row: 1)) { $0.r > 200 }, 0)
+            }
+        }
+    }
+
     // MARK: Ligatures
 
     private func draw(_ text: String, font: TerminalFont) throws -> Pixels {
