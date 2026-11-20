@@ -113,6 +113,34 @@ final class KeeperTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(second.snapshotPlainText()).contains("while you were away"))
     }
 
+    /// The master is non-blocking for the reader: a paste bigger than the PTY's input queue, into a
+    /// program that isn't reading yet, waits for room rather than being cut short.
+    func testABigPasteIntoAProgramNotYetReadingArrivesWhole() throws {
+        let id = try launch("stty raw -echo; printf 'ready\\n'; sleep 1; head -c 300000 | wc -c | tr -d ' '; printf 'counted\\n'; sleep 30")
+        let client = try TestClient(id)
+        try client.attach()
+        XCTAssertTrue(client.waitForText("ready"))
+        let paste = [UInt8](repeating: UInt8(ascii: "x"), count: 300_000)
+        for start in stride(from: 0, to: paste.count, by: 16_384) {
+            client.send(Frame(.input, Array(paste[start..<min(start + 16_384, paste.count)])))
+        }
+        XCTAssertTrue(client.wait(timeout: 15) { $0.text.contains("counted") }, String(client.text.suffix(200)))
+        XCTAssertTrue(client.text.contains("300000"), String(client.text.suffix(200)))
+    }
+
+    /// A flood to an attached client (read with the reader's bridging) arrives whole and in order.
+    func testAFloodReachesAnAttachedClientWhole() throws {
+        let id = try launch("printf 'ready\\n'; sleep 0.5; i=0; while [ $i -lt 40 ]; do head -c 125000 /dev/zero | tr '\\0' 'x'; printf '[%d]' $i; i=$((i+1)); done; printf 'END\\n'; sleep 30")
+        let client = try TestClient(id)
+        try client.attach()
+        XCTAssertTrue(client.waitForText("ready"))
+        XCTAssertTrue(client.wait(timeout: 30) { $0.text.contains("END") })
+        let text = client.text
+        XCTAssertEqual(text.reduce(0) { $1 == "x" ? $0 + 1 : $0 }, 5_000_000)
+        let markers = text.matches(of: /\[(\d+)\]/).map { Int($0.1)! }
+        XCTAssertEqual(markers, Array(0..<40))
+    }
+
     func testEchoAfterReturnInAProgramThatDoesntReadComesThrough() throws {
         // The completed line waits unread in the program's input; its echo must still arrive.
         let id = try launch("exec sleep 30")

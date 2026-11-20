@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import GhosttyVt
 import SideSessionsKit
+import Synchronization
 
 // The keeper's state and handlers, as true globals: libghostty-vt's callbacks are C function
 // pointers, which can't capture context, and top-level variables in main.swift count as captured.
@@ -98,6 +99,7 @@ func dropClient(why: String? = nil) {
     close(client) // closing removes its kqueue filters
     client = -1
     attached = false
+    readerBridges.store(false, ordering: .relaxed)
     clientWantsEvents = false
     clientDecoder = FrameDecoder()
     toClient.removeAll()
@@ -113,7 +115,15 @@ func writeToPTY(_ bytes: [UInt8]) {
             var offset = 0
             while offset < raw.count {
                 let n = write(master, raw.baseAddress! + offset, raw.count - offset)
-                if n > 0 { offset += n } else if n < 0, errno == EINTR { continue } else { return }
+                if n > 0 { offset += n; continue }
+                if n < 0, errno == EINTR { continue }
+                // The master is non-blocking (for the reader): a full input queue (a big paste
+                // into a program that isn't reading) waits for room, as a blocking write did.
+                if n < 0, errno == EAGAIN {
+                    var room = pollfd(fd: master, events: Int16(POLLOUT), revents: 0)
+                    if poll(&room, 1, -1) >= 0 || errno == EINTR { continue }
+                }
+                return
             }
         }
     }
@@ -121,8 +131,8 @@ func writeToPTY(_ bytes: [UInt8]) {
 
 // MARK: - The reader thread
 
-/// The PTY is read with blocking reads on a thread of its own, as a terminal reading its own PTY
-/// does: waiting on the kqueue between reads, the keeper spent most of a flood idle, and reached
+/// The PTY is read on a thread of its own, as a terminal reading its own PTY does (non-blocking
+/// reads gathered into batches, bridged under a flood; see `Bridge`): waiting on the kqueue between reads, the keeper spent most of a flood idle, and reached
 /// three quarters of a bare PTY's throughput (2026-11-03). The main loop takes what was read, in
 /// order, and does the rest (forwarding, the parse queue), so a snapshot stays in step with what
 /// a client was sent.
@@ -176,35 +186,103 @@ var readChunks: [Chunk] = []
 var readEnded = false
 let readIdent: UInt = 11
 
+/// Set while a client is attached: only then does the reader bridge a flood's refill gaps (below).
+/// Detached, nobody is watching the output stream by, so it isn't worth the extra CPU.
+let readerBridges = Atomic<Bool>(false)
+
+/// How the reader bridges a flood's refill gaps, as Ghostty's own reader does (src/termio/Exec.zig,
+/// gatherMainPosix): macOS hands a PTY's output over about a kilobyte at a time, and a reader that
+/// sleeps whenever the queue is momentarily dry wakes once per kilobyte, in lockstep with the
+/// writer. Once a batch holds a full kilobyte (a writer filling the queue as fast as it can), a dry
+/// queue is retried at once a few times, then waited on for a millisecond, within a few
+/// milliseconds per batch. Anything smaller (an echo, a prompt) is handed over at once.
+/// Benchmarks/Terminal/Reader/: a blocking reader topped out near 125 MB/s, this one near 160.
+enum Bridge {
+    static let threshold = 1024
+    static let spins = 16
+    static let pollMilliseconds: Int32 = 1
+    static let budgetNanoseconds: UInt64 = 3_000_000
+}
+
+/// Whether what was read before is still waiting to be taken or parsed: then waiting a moment for
+/// more costs nothing. Once everything is parsed, holding a batch only delays it; a program that
+/// ends its output with a query (a cursor position report) would wait out every bridge.
+func parserBusy() -> Bool {
+    readLock.lock()
+    let waiting = !readChunks.isEmpty
+    readLock.unlock()
+    if waiting { return true }
+    parseCondition.lock()
+    defer { parseCondition.unlock() }
+    return !parseQueue.isEmpty || parsing
+}
+
 func startReader() {
     let thread = Thread {
         let size = ChunkPool.size
+        var nonblocking = false
         while true {
+            // Bridging needs non-blocking reads; without it (detached) the reader blocks in read(),
+            // which wakes less often than a poll for readiness: the old loop cost 0.37 s of the
+            // keeper's CPU for a 50 MB flood, a poll-and-drain one 0.63 s.
+            let bridging = readerBridges.load(ordering: .relaxed)
+            if bridging != nonblocking {
+                let flags = fcntl(master, F_GETFL)
+                _ = fcntl(master, F_SETFL, bridging ? flags | O_NONBLOCK : flags & ~O_NONBLOCK)
+                nonblocking = bridging
+            }
+            if bridging {
+                var ready = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+                if poll(&ready, 1, -1) < 0, errno == EINTR { continue }
+            }
             let buffer = ChunkPool.take()
             // A PTY hands output over a few kilobytes at a time. Reads are gathered while more is
-            // already readable (a zero-timeout poll), and handed over once it isn't: under a flood,
-            // a handoff per read (a copy, a lock and a wakeup) held the keeper to 58% of a plain
+            // readable, and handed over once it isn't (bridged, under a flood): under a flood, a
+            // handoff per read (a copy, a lock and a wakeup) held the keeper to 58% of a plain
             // reader's speed, while a single keystroke's echo still goes the moment it's read.
             // Not FIONREAD: on a PTY master it also counts input the program hasn't read, so after
             // Return in a program that doesn't read, the echo was held back indefinitely.
             var filled = 0
-            var n = 0
-            repeat {
-                n = read(master, buffer + filled, size - filled)
-                if n < 0, errno == EINTR { n = 1; continue }
-                if n > 0 { filled += n }
-                var readable = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
-                guard n > 0, filled < size, poll(&readable, 1, 0) == 1, readable.revents & Int16(POLLIN) != 0 else { break }
-            } while true
+            var ended = false
+            var spins = 0
+            var bridgeStart: UInt64 = 0
+            gather: while filled < size {
+                let n = read(master, buffer + filled, size - filled)
+                if n > 0 {
+                    filled += n
+                    spins = 0
+                    if nonblocking { continue }
+                    // Blocking: gather only while more is already readable.
+                    var readable = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+                    guard poll(&readable, 1, 0) == 1, readable.revents & Int16(POLLIN) != 0 else { break gather }
+                    continue
+                }
+                // EOF (macOS, once the child is gone), or EIO once everything holding the PTY is.
+                if n == 0 { ended = true; break }
+                switch errno {
+                case EINTR:
+                    continue
+                case EAGAIN:
+                    guard filled >= Bridge.threshold else { break gather }
+                    if spins < Bridge.spins { spins += 1; continue }
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    if bridgeStart == 0 { bridgeStart = now } else if now - bridgeStart >= Bridge.budgetNanoseconds { break gather }
+                    guard parserBusy() else { break gather }
+                    var more = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+                    guard poll(&more, 1, Bridge.pollMilliseconds) == 1, more.revents & Int16(POLLIN) != 0 else { break gather }
+                default:
+                    ended = true
+                    break gather
+                }
+            }
             readLock.lock()
             let wasEmpty = readChunks.isEmpty
             if filled > 0 { readChunks.append(Chunk(base: buffer, count: filled)) } else { ChunkPool.give(buffer) }
-            if n <= 0 { readEnded = true }
+            if ended { readEnded = true }
             readLock.unlock()
             // One wakeup per batch: while the loop is busy, batches pile up and go together.
-            if wasEmpty || n <= 0 { trigger(readIdent) }
-            // EOF or EIO once the child and everything holding the PTY are gone.
-            if n <= 0 { return }
+            if wasEmpty || ended { trigger(readIdent) }
+            if ended { return }
         }
     }
     thread.qualityOfService = .userInteractive
@@ -721,6 +799,7 @@ func handle(_ frame: Frame) {
         let request = frame.decode(Attach.self)
         if let request { resize(Size(cols: request.cols, rows: request.rows)) }
         attached = true
+        readerBridges.store(true, ordering: .relaxed)
         sendToClient(Frame(.snapshot, snapshot(history: request?.history)))
         if !record.title.isEmpty { sendToClient(Frame(.title, Array(record.title.utf8))) }
         if clientWantsEvents {
