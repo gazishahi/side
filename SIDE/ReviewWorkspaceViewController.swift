@@ -536,6 +536,10 @@ final class ReviewWorkspaceViewController: NSViewController {
         queueRail.items = next.groups.map { group in
             ReviewQueueRail.Item(title: group.title, detail: queueDetail(group), icon: queueIcon(group.author), paths: group.paths)
         }
+        if let id = pendingSessionChoice {
+            pendingSessionChoice = nil
+            if let index = next.groups.firstIndex(where: { $0.author.sessionID == id }) { queueSelection = index }
+        }
         queueRail.selected = queueActive ? queueSelection : nil
         view.needsLayout = true
         if queueActive {
@@ -757,6 +761,25 @@ final class ReviewWorkspaceViewController: NSViewController {
     }
 
     /// The Side terminal tab a session runs in: by its conversation, else by its process.
+    /// The agent session (its hooks' id) running in a terminal tab: `terminalTab(of:)` the other
+    /// way round.
+    static func hookSessionID(of session: TerminalSession) -> String? {
+        let vc = session.viewController
+        let all = HookInbox.shared.sessions.sessions
+        if let id = vc.recoveredAgentSession, all[id] != nil { return id }
+        guard let shell = vc.keeperID.flatMap({ SessionKeepers.liveRecord($0)?.childPID }) else { return nil }
+        let group = ForegroundProgram.group(ofShell: shell)
+        return all.values.filter { $0.pid > 0 && group == $0.pid && !$0.ended }.max { $0.updatedAt < $1.updatedAt }?.id
+    }
+
+    /// The queue entry for agent session `id` chosen, now or once the queue has loaded (the
+    /// activity list's Review). No entry: the queue as it is.
+    func chooseSession(_ id: String) {
+        pendingSessionChoice = id
+        refreshQueue()
+    }
+    private var pendingSessionChoice: String?
+
     static func terminalTab(of author: Author) -> TerminalSession? {
         guard let id = author.sessionID else { return nil }
         let pid = HookInbox.shared.sessions.sessions[id]?.pid ?? 0
@@ -831,6 +854,7 @@ final class ReviewWorkspaceViewController: NSViewController {
     var queueActionsForTesting: String {
         [commitButton, approveAllButton, discardButton, askButton].filter { !$0.isHidden }.map(\.title).joined(separator: ", ") + (lastQueueFailure.map { " | failed: \($0)" } ?? "")
             + (lastAskForChanges.map { " | asked \($0)" } ?? "")
+            + " | chosen " + (queueActive ? chosenGroup?.title ?? "-" : "branch")
     }
 
     /// The whole branch, as Changes showed it before the queue.

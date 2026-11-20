@@ -219,6 +219,18 @@ final class Attribution: @unchecked Sendable {
         }
     }
 
+    /// Whether session `id` wrote any line Side still has on record in the checkout `folder` is
+    /// in: what it changed, if anything, is in Changes' queue.
+    func hasLines(bySession id: String, in folder: URL) -> Bool {
+        queue.sync {
+            guard let checkout = Self.checkout(of: folder.appendingPathComponent(".side-probe")) else { return false }
+            let record = load(checkout)
+            let mine = Set(record.authors.indices.filter { record.authors[$0].sessionID == id })
+            guard !mine.isEmpty else { return false }
+            return record.files.values.contains { file in file.owners.contains { $0.map(mine.contains) ?? false } }
+        }
+    }
+
     // MARK: Store
 
     private func load(_ checkout: Checkout) -> CheckoutAttribution {

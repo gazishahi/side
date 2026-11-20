@@ -124,6 +124,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if command.hasPrefix("activity-go "), let index = Int(command.dropFirst(12)), ActivityCenter.shared.items.indices.contains(index) {
                         ActivityCenter.shared.go(to: ActivityCenter.shared.items[index])
                     }
+                    // The list's row actions: "activity-hover 1" (what it offers), "activity-review 1",
+                    // "activity-dismiss 1", as the popover's buttons do.
+                    if command.hasPrefix("activity-hover "), let index = Int(command.dropFirst(15)),
+                       let list = shell.activityPillForTesting?.popoverForTesting?.contentViewController as? ActivityListViewController,
+                       list.rows.indices.contains(index) {
+                        list.rows.forEach { $0.hoverForTesting(false) }
+                        list.rows[index].hoverForTesting(true)
+                        FileHandle.standardError.write(Data("[activity-hover] \(list.rows[index].actionsForTesting.joined(separator: ","))\n".utf8))
+                    }
+                    if command.hasPrefix("activity-review "), let index = Int(command.dropFirst(16)), ActivityCenter.shared.items.indices.contains(index) {
+                        ActivityCenter.shared.review(ActivityCenter.shared.items[index])
+                    }
+                    if command.hasPrefix("activity-dismiss "), let index = Int(command.dropFirst(17)), ActivityCenter.shared.items.indices.contains(index) {
+                        ActivityCenter.shared.dismiss(ActivityCenter.shared.items[index])
+                    }
                     if command == "activity-dump" {
                         ActivityCenter.shared.refresh()
                         let sessions = ProjectContextRegistry.openContexts().flatMap { $0.terminals.everySession() }

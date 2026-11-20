@@ -76,6 +76,9 @@ final class ActivityCenter {
     }
 
     private(set) var items: [Item] = []
+    /// Items put away from the list, by id, in the state they were in: the same item in a new
+    /// state (working again, then finished again) comes back.
+    private var dismissed: [String: Item.State] = [:]
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
 
@@ -168,6 +171,9 @@ final class ActivityCenter {
                                  program: nil, target: .agent(project: project, trackKey: track.branchName)))
             }
         }
+        // Put away, until it's something else.
+        dismissed = dismissed.filter { id, state in next.contains { $0.id == id && $0.state == state } }
+        next.removeAll { dismissed[$0.id] == $0.state }
         // An update downloading isn't listed: its own pill, beside this one, says so already.
         next.sort { ($0.state.rank, $0.title) < ($1.state.rank, $1.title) }
         guard next != items else { return }
@@ -218,6 +224,35 @@ final class ActivityCenter {
         case .update:
             break
         }
+        refresh()
+    }
+
+    // MARK: Actions on an item (the activity list's, on hover)
+
+    /// Something that has ended can be put away; something working or waiting on you can't.
+    func canDismiss(_ item: Item) -> Bool { item.state == .finished || item.state == .failed }
+
+    func dismiss(_ item: Item) {
+        dismissed[item.id] = item.state
+        refresh()
+    }
+
+    /// The agent session behind a finished terminal item, when it changed something that's in
+    /// Changes' queue: Review goes there.
+    func reviewSession(of item: Item) -> (project: URL, session: String)? {
+        guard item.state == .finished || item.state == .failed, case .terminal(let project, let id) = item.target,
+              let session = ProjectContextRegistry.openContexts().lazy.compactMap({ $0.terminals.everySession().first { $0.id == id } }).first,
+              let hookID = ReviewWorkspaceViewController.hookSessionID(of: session) else { return nil }
+        let folder = HookInbox.shared.sessions.sessions[hookID]?.cwd.map { URL(fileURLWithPath: $0) } ?? project
+        guard Attribution.shared.hasLines(bySession: hookID, in: folder) else { return nil }
+        return (project, hookID)
+    }
+
+    /// Changes, with the session's entry chosen; the item is dealt with.
+    func review(_ item: Item) {
+        guard let target = reviewSession(of: item), let delegate = AppDelegate.shared else { return }
+        dismissed[item.id] = item.state
+        delegate.revealProject(target.project) { $0.revealReview(ofSession: target.session) }
         refresh()
     }
 
@@ -317,6 +352,10 @@ final class ActivityPill {
         content.onPick = { [weak self] item in
             self?.popover?.close()
             ActivityCenter.shared.go(to: item)
+        }
+        content.onReview = { [weak self] item in
+            self?.popover?.close()
+            ActivityCenter.shared.review(item)
         }
         let popover = NSPopover()
         popover.behavior = .transient
@@ -441,7 +480,9 @@ final class ActivityPill {
 @MainActor
 final class ActivityListViewController: NSViewController {
     var onPick: ((ActivityCenter.Item) -> Void)?
+    var onReview: ((ActivityCenter.Item) -> Void)?
     private let stack = NSStackView()
+    private(set) var rows: [ActivityRow] = []
 
     override func loadView() {
         stack.orientation = .vertical
@@ -463,27 +504,65 @@ final class ActivityListViewController: NSViewController {
     func reload() {
         guard isViewLoaded else { return }
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let items = ActivityCenter.shared.items
-        // One column for the states, as wide as the widest, so every dot lines up.
-        let stateWidth = items.map { DS.StatusLabel(state: $0.state.status, text: $0.stateWord).fittingSize.width }.max() ?? 0
-        for item in items {
-            let row = ActivityRow(item: item, stateWidth: stateWidth)
+        let center = ActivityCenter.shared
+        let items = center.items
+        let actions = items.map { (review: center.reviewSession(of: $0) != nil, dismiss: center.canDismiss($0)) }
+        // One column for the states, as wide as the widest (or the actions shown in its place on
+        // hover), so every dot lines up.
+        let stateWidth = (items.map { DS.StatusLabel(state: $0.state.status, text: $0.stateWord).fittingSize.width }
+            + zip(items, actions).map { ActivityRow.actionsWidth(review: $1.review, dismiss: $1.dismiss) }).max() ?? 0
+        rows = []
+        for (item, action) in zip(items, actions) {
+            let row = ActivityRow(item: item, stateWidth: stateWidth, canReview: action.review, canDismiss: action.dismiss)
             row.onPick = { [weak self] in self?.onPick?(item) }
+            row.onReview = { [weak self] in self?.onReview?(item) }
+            row.onDismiss = { center.dismiss(item) }
+            rows.append(row)
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -DS.Spacing.s * 2).isActive = true
         }
     }
 }
 
-/// One item: mark, title over place, state on the trailing edge; the selected capsule on hover.
+/// One item: mark, title over place, state on the trailing edge; the selected capsule on hover,
+/// and the row's actions (Review, Dismiss) in the state's place while the pointer is on it.
 @MainActor
-private final class ActivityRow: NSView {
+final class ActivityRow: NSView {
     var onPick: (() -> Void)?
+    var onReview: (() -> Void)?
+    var onDismiss: (() -> Void)?
     private let item: ActivityCenter.Item
-    private var hovered = false { didSet { needsDisplay = true } }
+    private let state: DS.StatusLabel
+    private let actions = NSStackView()
+    private var hovered = false {
+        didSet {
+            needsDisplay = true
+            let showsActions = hovered && !actions.arrangedSubviews.isEmpty
+            actions.isHidden = !showsActions
+            state.isHidden = showsActions
+        }
+    }
 
-    init(item: ActivityCenter.Item, stateWidth: CGFloat) {
+    private static func reviewButton() -> NSButton {
+        let button = NSButton(title: "Review", target: nil, action: nil)
+        button.bezelStyle = .push
+        button.controlSize = .small
+        button.font = DS.Text.caption()
+        return button
+    }
+    private static let dismissDiameter: CGFloat = 18
+
+    /// The room the actions take, for the list's state column.
+    static func actionsWidth(review: Bool, dismiss: Bool) -> CGFloat {
+        var parts: [CGFloat] = []
+        if review { parts.append(reviewButton().fittingSize.width) }
+        if dismiss { parts.append(dismissDiameter) }
+        return parts.reduce(0, +) + CGFloat(max(parts.count - 1, 0)) * DS.Spacing.s
+    }
+
+    init(item: ActivityCenter.Item, stateWidth: CGFloat, canReview: Bool = false, canDismiss: Bool = false) {
         self.item = item
+        state = DS.StatusLabel(state: item.state.status, text: item.stateWord)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         // Where it is, with what's running there on its corner (the owner, 2026-11-07).
@@ -511,10 +590,29 @@ private final class ActivityRow: NSView {
         words.alignment = .leading
         words.spacing = 1
         // The state never gives way to a long title: it's what the row is for.
-        let state = DS.StatusLabel(state: item.state.status, text: item.stateWord)
         state.setContentCompressionResistancePriority(.required, for: .horizontal)
         state.label.setContentCompressionResistancePriority(.required, for: .horizontal)
         state.widthAnchor.constraint(equalToConstant: ceil(stateWidth)).isActive = true
+        // On hover, where the state was: Review, then the ×.
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = DS.Spacing.s
+        actions.isHidden = true
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        if canReview {
+            let review = Self.reviewButton()
+            review.target = self
+            review.action = #selector(reviewTapped)
+            review.toolTip = "Review what it changed"
+            actions.addArrangedSubview(review)
+        }
+        if canDismiss {
+            let dismiss = DS.CircleButton(symbol: "xmark", diameter: Self.dismissDiameter, label: "Dismiss")
+            dismiss.target = self
+            dismiss.action = #selector(dismissTapped)
+            dismiss.toolTip = "Dismiss"
+            actions.addArrangedSubview(dismiss)
+        }
         let row = NSStackView(views: [icon, words, NSView(), state])
         row.orientation = .horizontal
         row.alignment = .centerY
@@ -522,7 +620,10 @@ private final class ActivityRow: NSView {
         row.translatesAutoresizingMaskIntoConstraints = false
         words.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(row)
+        addSubview(actions)
         NSLayoutConstraint.activate([
+            actions.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            actions.centerYAnchor.constraint(equalTo: centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 25), icon.heightAnchor.constraint(equalToConstant: 25),
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Spacing.m),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Spacing.m),
@@ -532,6 +633,19 @@ private final class ActivityRow: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel("\(item.title), \(item.stateWord), \(item.place)" + (item.reason.isEmpty ? "" : ", \(item.reason)"))
+        var custom: [NSAccessibilityCustomAction] = []
+        if canReview { custom.append(NSAccessibilityCustomAction(name: "Review") { [weak self] in self?.onReview?(); return true }) }
+        if canDismiss { custom.append(NSAccessibilityCustomAction(name: "Dismiss") { [weak self] in self?.onDismiss?(); return true }) }
+        setAccessibilityCustomActions(custom)
+    }
+
+    @objc private func reviewTapped() { onReview?() }
+    @objc private func dismissTapped() { onDismiss?() }
+
+    /// UI testing: the pointer over the row, and what it then offers.
+    func hoverForTesting(_ on: Bool) { hovered = on }
+    var actionsForTesting: [String] {
+        actions.isHidden ? [] : actions.arrangedSubviews.map { $0 is DS.CircleButton ? "Dismiss" : "Review" }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

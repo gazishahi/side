@@ -1409,6 +1409,14 @@ final class ShellViewController: NSViewController {
     }
 
     /// The activity pill: the Terminal, on that session's tab. Every track's tabs are there.
+    /// Changes, with agent session `id`'s entry in the queue chosen.
+    func revealReview(ofSession id: String) {
+        view.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+        show(.review)
+        reviewVC.chooseSession(id)
+    }
+
     func revealTerminalSession(_ id: UUID) {
         view.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
