@@ -17,12 +17,15 @@ public struct TerminalCell: Equatable, Sendable {
         public static let selected = Style(rawValue: 1 << 6)
         /// SGR 5: the text blinks, with the cursor's phase, while the terminal is focused.
         public static let blink = Style(rawValue: 1 << 7)
+        /// More than one scalar: the whole grapheme is the grid's (`TerminalGrid.cluster`).
+        public static let cluster = Style(rawValue: 1 << 8)
     }
 
-    /// The cell's text when it's a single scalar; 0 for an empty cell.
+    /// The cell's text when it's a single scalar (a cluster's first); 0 for an empty cell. A
+    /// grapheme of more than one scalar (ZWJ emoji, flags, combining marks) is flagged
+    /// `.cluster` and kept by the grid, so a cell is plain data: a screen of them is copied
+    /// every frame, and a string in each made that twice as slow.
     public var scalar: UInt32
-    /// The whole grapheme when it's more than one scalar (ZWJ emoji, flags, combining marks).
-    public var cluster: String?
     /// 0xRRGGBB.
     public var foreground: UInt32
     /// 0xRRGGBB, or nil for the terminal's default background (not drawn, so the view's own
@@ -36,10 +39,9 @@ public struct TerminalCell: Equatable, Sendable {
     /// 0xRRGGBB (SGR 58), or nil for the text's color.
     public var underlineColor: UInt32?
 
-    public init(scalar: UInt32 = 0, cluster: String? = nil, foreground: UInt32, background: UInt32? = nil, style: Style = [],
+    public init(scalar: UInt32 = 0, foreground: UInt32, background: UInt32? = nil, style: Style = [],
                 underline: Underline = .none, underlineColor: UInt32? = nil) {
         self.scalar = scalar
-        self.cluster = cluster
         self.foreground = foreground
         self.background = background
         self.style = style
@@ -87,6 +89,9 @@ public final class TerminalGrid {
     /// Row-major, `columns × rows`.
     public var cells: [TerminalCell]
     public var dirty: [Bool]
+    /// Each row's clusters, by column: the graphemes of cells flagged `.cluster`. Empty for
+    /// most rows; set with the row's cells.
+    public var rowClusters: [[Int: String]]
     public var cursor = TerminalCursor()
     let blank: TerminalCell
 
@@ -96,6 +101,20 @@ public final class TerminalGrid {
         blank = TerminalCell(foreground: foreground)
         cells = Array(repeating: blank, count: self.columns * self.rows)
         dirty = Array(repeating: true, count: self.rows)
+        rowClusters = Array(repeating: [:], count: self.rows)
+    }
+
+    /// A cell's whole grapheme: its cluster if it has one, else its scalar.
+    public func text(column: Int, row: Int) -> String? {
+        let cell = self[column, row]
+        if cell.style.contains(.cluster) { return rowClusters[row][column] }
+        return cell.scalar > 0 ? UnicodeScalar(cell.scalar).map { String(Character($0)) } : nil
+    }
+
+    /// A cell whose text is a cluster: flagged, and its grapheme kept with the row's.
+    public func setCluster(_ grapheme: String, column: Int, row: Int, foreground: UInt32, style: TerminalCell.Style = []) {
+        self[column, row] = TerminalCell(scalar: grapheme.unicodeScalars.first?.value ?? 0, foreground: foreground, style: style.union(.cluster))
+        rowClusters[row][column] = grapheme
     }
 
     public subscript(column: Int, row: Int) -> TerminalCell {
@@ -109,6 +128,7 @@ public final class TerminalGrid {
         self.rows = max(1, rows)
         cells = Array(repeating: blank, count: self.columns * self.rows)
         dirty = Array(repeating: true, count: self.rows)
+        rowClusters = Array(repeating: [:], count: self.rows)
         cursor = TerminalCursor()
     }
 }

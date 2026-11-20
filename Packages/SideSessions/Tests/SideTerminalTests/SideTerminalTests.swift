@@ -98,11 +98,14 @@ final class SideTerminalTests: XCTestCase {
         let reader = ScreenReader(terminal: terminal)
         terminal.feed(Array("漢🇯🇵".utf8))
         XCTAssertTrue(reader.update())
-        let row = try XCTUnwrap(read(reader)[0])
+        var row: [ScreenCell] = [], clusters: [Int: String] = [:]
+        reader.forEachChangedRow { y, cells in if y == 0 { row = Array(cells); clusters = reader.rowClusters } }
         XCTAssertEqual(row[0].scalar, 0x6F22)
         XCTAssertTrue(row[0].style.contains(.wide))
         XCTAssertTrue(row[1].style.contains(.spacer))
-        XCTAssertEqual(row[2].cluster, "🇯🇵", "a flag is one cluster (mode 2027)")
+        XCTAssertTrue(row[2].style.contains(.cluster))
+        XCTAssertEqual(clusters, [2: "🇯🇵"], "a flag is one cluster (mode 2027), kept beside the cells")
+        XCTAssertFalse(row[0].style.contains(.cluster))
     }
 
     func testRepliesAndEvents() throws {

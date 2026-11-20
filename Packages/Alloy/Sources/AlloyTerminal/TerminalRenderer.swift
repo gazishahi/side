@@ -336,9 +336,9 @@ public final class TerminalRenderer {
             let left = (Float(x) * cw).rounded(.down), span = (Float(width) * cw).rounded(.up)
             background.append(Quad(rect: SIMD4(left, top, span, ch), uv: .zero, color: SIMD4(theme.background.x, theme.background.y, theme.background.z, 1), kind: 0))
             background.append(Quad(rect: SIMD4(left, baseline + line, span, line), uv: .zero, color: ink, kind: 0))
-            var cell = TerminalCell(scalar: scalars.count == 1 ? scalars.first!.value : 0, cluster: scalars.count > 1 ? String(character) : nil, foreground: theme.cursor)
+            var cell = TerminalCell(scalar: scalars.first?.value ?? 0, foreground: theme.cursor)
             if wide { cell.style.insert(.wide) }
-            for p in placed(cell, scale: scale) where p.entry.region.width > 0 {
+            for p in placed(cell, cluster: scalars.count > 1 ? String(character) : nil, scale: scale) where p.entry.region.width > 0 {
                 let r = p.entry.region
                 glyphs.append(Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
                                    uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
@@ -362,12 +362,13 @@ public final class TerminalRenderer {
     /// The character under a block cursor, in the background's color.
     private func cursorGlyph(_ grid: TerminalGrid, scale: CGFloat) -> [Quad] {
         let c = grid[grid.cursor.column, grid.cursor.row]
-        guard !c.style.contains(.spacer), c.scalar > 32 || c.cluster != nil else { return [] }
+        let cluster = c.style.contains(.cluster) ? grid.rowClusters[grid.cursor.row][grid.cursor.column] : nil
+        guard !c.style.contains(.spacer), c.scalar > 32 || cluster != nil else { return [] }
         let (cw, ch, baselineOffset) = metrics(scale)
         let left = (Float(grid.cursor.column) * cw).rounded(.down)
         let baseline = Float(grid.cursor.row) * ch + baselineOffset
         let ink = SIMD4<Float>(theme.background.x, theme.background.y, theme.background.z, 1)
-        return placed(c, scale: scale).filter { $0.entry.region.width > 0 }.map { p in
+        return placed(c, cluster: cluster, scale: scale).filter { $0.entry.region.width > 0 }.map { p in
             let r = p.entry.region
             return Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
                         uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
@@ -593,13 +594,14 @@ public final class TerminalRenderer {
             }
             defer { x += 1 }
             let span = c.style.contains(.wide) ? cw * 2 : cw
-            guard !c.style.contains(.spacer), c.scalar > 32 || c.cluster != nil else { continue }
-            if c.cluster == nil, let drawn = sprite(c.scalar, left: left, top: top, width: span, height: ch,
+            let cluster = c.style.contains(.cluster) ? grid.rowClusters[y][x] : nil
+            guard !c.style.contains(.spacer), c.scalar > 32 || cluster != nil else { continue }
+            if cluster == nil, let drawn = sprite(c.scalar, left: left, top: top, width: span, height: ch,
                                                     line: underlineHeight, color: ink(x, c)) {
                 emit(drawn, for: c)
                 continue
             }
-            for p in placed(c, scale: scale) where p.entry.region.width > 0 {
+            for p in placed(c, cluster: cluster, scale: scale) where p.entry.region.width > 0 {
                 let r = p.entry.region
                 emit([Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
                            uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
@@ -650,7 +652,7 @@ public final class TerminalRenderer {
     /// A cell that can join a shaped run: one Basic Multilingual Plane scalar (so a UTF-16 unit
     /// is a cell), narrow, and not a character drawn to the cell. An empty cell counts as a space.
     static func shapeable(_ c: TerminalCell) -> Bool {
-        guard c.cluster == nil, !c.style.contains(.wide), !c.style.contains(.spacer), c.scalar < 0x10000 else { return false }
+        guard !c.style.contains(.cluster), !c.style.contains(.wide), !c.style.contains(.spacer), c.scalar < 0x10000 else { return false }
         switch c.scalar {
         case 0x2500...0x259F, 0x2800...0x28FF, 0xE0B0...0xE0B6: return false
         // Right-to-left scripts: CoreText would reorder them, and a cell's glyph has to stay in
@@ -705,13 +707,13 @@ public final class TerminalRenderer {
 
     /// One cell's glyphs, cached by text and style: straight from the face when it has the
     /// character, else through CoreText, which falls back to another font and shapes clusters.
-    private func placed(_ c: TerminalCell, scale: CGFloat) -> [Placed] {
+    private func placed(_ c: TerminalCell, cluster: String?, scale: CGFloat) -> [Placed] {
         let style = c.style.intersection([.bold, .italic])
-        let key = GlyphKey(scalar: c.scalar, cluster: c.cluster, style: style)
+        let key = GlyphKey(scalar: c.scalar, cluster: cluster, style: style)
         if let known = glyphCache[key] { return known }
         let face = font.face(style)
         var result: [Placed] = []
-        if c.cluster == nil, c.scalar < 0x10000 {
+        if cluster == nil, c.scalar < 0x10000 {
             var character = UniChar(c.scalar), glyph: CGGlyph = 0
             if CTFontGetGlyphsForCharacters(face, &character, &glyph, 1), glyph != 0 {
                 if let entry = atlas.entry(font: face, glyph: glyph, subpixel: 0, scale: scale, isColor: false, synthetic: font.synthetic(style)) {
@@ -721,7 +723,7 @@ public final class TerminalRenderer {
                 return result
             }
         }
-        let text = c.cluster ?? UnicodeScalar(c.scalar).map { String(Character($0)) } ?? " "
+        let text = cluster ?? UnicodeScalar(c.scalar).map { String(Character($0)) } ?? " "
         let attributed = CFAttributedStringCreate(nil, text as CFString, [kCTFontAttributeName: face] as CFDictionary)!
         let line = CTLineCreateWithAttributedString(attributed)
         for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {

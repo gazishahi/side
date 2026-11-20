@@ -2,7 +2,9 @@ import Foundation
 import GhosttyVt
 
 /// One cell of the screen as the renderer should draw it: colors resolved to RGB (palette,
-/// inverse and faint applied), the text, and the style.
+/// inverse and faint applied), the text, and the style. Plain data, no string: a screen of these
+/// is copied every frame, and a string in each cell made that twice as slow. A grapheme of more
+/// than one scalar is flagged `.cluster` and kept in `ScreenReader.rowClusters`.
 public struct ScreenCell: Equatable, Sendable {
     public struct Style: OptionSet, Sendable, Hashable {
         public let rawValue: UInt16
@@ -20,13 +22,14 @@ public struct ScreenCell: Equatable, Sendable {
         public static let spacer = Style(rawValue: 1 << 7)
         /// Inside the selection.
         public static let selected = Style(rawValue: 1 << 8)
+        /// More than one scalar: the whole grapheme is in the reader's `rowClusters`.
+        public static let cluster = Style(rawValue: 1 << 9)
     }
 
     public enum Underline: Sendable, Equatable { case none, single, double, curly, dotted, dashed }
 
+    /// The cell's scalar; for a cluster, its first.
     public var scalar: UInt32 = 0
-    /// The grapheme when it's more than one scalar.
-    public var cluster: String?
     public var foreground: UInt32 = 0
     /// nil: the default background.
     public var background: UInt32?
@@ -58,6 +61,9 @@ public final class ScreenReader {
     private var rowIterator: GhosttyRenderStateRowIterator?
     private var rowCells: GhosttyRenderStateRowCells?
     private var row: [ScreenCell] = []
+    /// While `forEachChangedRow` hands over a row: its clusters (graphemes of more than one
+    /// scalar, ZWJ emoji, flags, combining marks), by column. Empty for most rows.
+    public private(set) var rowClusters: [Int: String] = [:]
 
     /// After `update`: the default colors and the cursor.
     public private(set) var foreground: UInt32 = 0xFFFFFF
@@ -143,6 +149,7 @@ public final class ScreenReader {
         var graphemes = [UInt32](repeating: 0, count: 16)
         while ghostty_render_state_row_iterator_next_dirty(rowIterator, &y) {
             row.removeAll(keepingCapacity: true)
+            if !rowClusters.isEmpty { rowClusters.removeAll(keepingCapacity: true) }
             ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &rowCells)
             // The row's part of the selection, once, not a question per cell.
             var selection = GhosttyRenderStateRowSelection()
@@ -151,7 +158,7 @@ public final class ScreenReader {
                 ? Int(min(selection.start_x, selection.end_x))...Int(max(selection.start_x, selection.end_x)) : nil
             var x = 0
             while ghostty_render_state_row_cells_next(rowCells) {
-                row.append(cell(&graphemes, selected: selected?.contains(x) ?? false))
+                row.append(cell(&graphemes, selected: selected?.contains(x) ?? false, column: x))
                 x += 1
             }
             row.withUnsafeBufferPointer { body(Int(y), $0) }
@@ -165,7 +172,7 @@ public final class ScreenReader {
     /// from the raw cell, and colors and style only for a cell that has styling or a background
     /// color of its own. Most of a screen is plain text, and asking every cell everything was
     /// most of a frame's CPU (Benchmarks/Terminal/results/2026-11-13-tier1).
-    private func cell(_ graphemes: inout [UInt32], selected: Bool) -> ScreenCell {
+    private func cell(_ graphemes: inout [UInt32], selected: Bool, column: Int) -> ScreenCell {
         var cell = ScreenCell()
         var raw: GhosttyCell = 0
         ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw)
@@ -188,7 +195,7 @@ public final class ScreenReader {
         if tag == GHOSTTY_CELL_CONTENT_CODEPOINT {
             cell.scalar = codepoint
         } else if tag == GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME {
-            readGraphemes(into: &cell, &graphemes)
+            readGraphemes(into: &cell, &graphemes, column: column)
         }
         // Default colors and no style: nothing more to ask.
         let hasBackground = tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE || tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB
@@ -201,7 +208,7 @@ public final class ScreenReader {
 
     private static let cellKeys: [GhosttyCellData] = [GHOSTTY_CELL_DATA_WIDE, GHOSTTY_CELL_DATA_CONTENT_TAG, GHOSTTY_CELL_DATA_HAS_STYLING, GHOSTTY_CELL_DATA_CODEPOINT]
 
-    private func readGraphemes(into cell: inout ScreenCell, _ graphemes: inout [UInt32]) {
+    private func readGraphemes(into cell: inout ScreenCell, _ graphemes: inout [UInt32], column: Int) {
         var length: UInt32 = 0
         ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &length)
         if length > 0 {
@@ -211,7 +218,8 @@ public final class ScreenReader {
             if length > 1 {
                 var scalars = String.UnicodeScalarView()
                 for i in 0..<Int(length) { if let u = UnicodeScalar(graphemes[i]) { scalars.append(u) } }
-                cell.cluster = String(scalars)
+                cell.style.insert(.cluster)
+                rowClusters[column] = String(scalars)
             }
         }
     }

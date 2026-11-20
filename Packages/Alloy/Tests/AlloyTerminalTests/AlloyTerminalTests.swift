@@ -53,6 +53,22 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(grid.dirty, [false, false], "drawn rows are clean")
     }
 
+    /// A grapheme of several scalars (a flag, a combining accent) is kept by the grid, not the
+    /// cell, and drawn whole; the cell itself stays plain data.
+    func testAClusterIsDrawnWhole() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 6, rows: 1, foreground: 0xFFFFFF)
+        grid.setCluster("e\u{301}", column: 1, row: 0, foreground: 0xFFFFFF)
+        grid[3, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "e")), foreground: 0xFFFFFF)
+        grid.cursor.visible = false
+        XCTAssertEqual(grid.text(column: 1, row: 0), "e\u{301}")
+        XCTAssertTrue(grid[1, 0].style.contains(.cluster))
+        let pixels = try render(grid, renderer: renderer)
+        let lit: (Pixels.RGBA) -> Bool = { $0.r > 128 }
+        let accented = cellRect(column: 1, row: 0), plain = cellRect(column: 3, row: 0)
+        XCTAssertGreaterThan(pixels.count(in: accented, lit), pixels.count(in: plain, lit), "the e and its accent")
+    }
+
     func testAWideCharacterSpansTwoCells() throws {
         let renderer = try makeRenderer()
         let grid = TerminalGrid(columns: 6, rows: 1, foreground: 0xFFFFFF)
@@ -685,7 +701,8 @@ final class TerminalSnapshotTests: XCTestCase {
                 let wide = character.unicodeScalars.first.map { $0.properties.isEmojiPresentation || (0x1100...0x9FFF).contains($0.value) } ?? false
                 var style = line.3
                 if wide { style.insert(.wide) }
-                grid[x, y] = TerminalCell(scalar: scalars.count == 1 ? scalars.first!.value : 0, cluster: scalars.count > 1 ? String(character) : nil,
+                if scalars.count > 1 { style.insert(.cluster); grid.rowClusters[y][x] = String(character) }
+                grid[x, y] = TerminalCell(scalar: scalars.first?.value ?? 0,
                                           foreground: line.1, background: line.2, style: style,
                                           underline: y == 3 ? [.single, .double, .curly, .dotted][min(3, x / 5)] : .none,
                                           underlineColor: y == 3 && x >= 10 ? 0xE06C75 : nil)

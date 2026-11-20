@@ -31,6 +31,7 @@ final class ScreenSource: TerminalGridSource, @unchecked Sendable {
                 if c.style.contains(.selected) { style.insert(.selected) }
                 if c.style.contains(.blink) { style.insert(.blink) }
                 let hidden = c.style.contains(.invisible)
+                if c.style.contains(.cluster), !hidden { style.insert(.cluster) }
                 let underline: TerminalCell.Underline = switch c.underline {
                 case .none: .none
                 case .single: .single
@@ -39,11 +40,14 @@ final class ScreenSource: TerminalGridSource, @unchecked Sendable {
                 case .dotted: .dotted
                 case .dashed: .dashed
                 }
-                all[y * columns + x] = TerminalCell(scalar: hidden ? 0 : c.scalar, cluster: hidden ? nil : c.cluster,
+                all[y * columns + x] = TerminalCell(scalar: hidden ? 0 : c.scalar,
                                                     foreground: c.foreground, background: c.background, style: style,
                                                     underline: underline, underlineColor: c.underlineColor)
             }
             }
+            // The row's clusters, as the reader holds them while it hands the row over.
+            let clusters = reader.rowClusters
+            if !clusters.isEmpty || !grid.rowClusters[y].isEmpty { grid.rowClusters[y] = clusters }
             grid.dirty[y] = true
         }
         let cursor = reader.cursor
