@@ -25,6 +25,14 @@ pid_t keeper_spawn(const char *path, char *const argv[], char *const envp[], con
     sigset_t none;
     sigemptyset(&none);
     sigprocmask(SIG_SETMASK, &none, NULL);
+    // Input is UTF-8 (IUTF8), as Terminal and Ghostty set it: in canonical mode (a `read`
+    // prompt, `cat` waiting) a backspace then erases a whole é or 日, not one byte of it,
+    // which left broken bytes behind (side-c0, 2026-11-20).
+    struct termios mode;
+    if (tcgetattr(STDIN_FILENO, &mode) == 0) {
+        mode.c_iflag |= IUTF8;
+        tcsetattr(STDIN_FILENO, TCSANOW, &mode);
+    }
     if (directory && directory[0] && chdir(directory) != 0) chdir("/");
     execve(path, argv, envp);
     _exit(127);

@@ -35,6 +35,26 @@ final class PseudoTerminalProcessTests: XCTestCase {
         XCTAssertTrue(text.contains("got:hello"), text)
     }
 
+    /// IUTF8: a backspace in canonical input erases a whole multi-byte character (side-c0,
+    /// 2026-11-20: Side's PTYs had -iutf8 where Ghostty's have iutf8).
+    func testABackspaceErasesAWholeCharacter() throws {
+        let process = PseudoTerminalProcess()
+        let output = Collected<UInt8>()
+        let exited = expectation(description: "exited")
+        process.onOutput = { bytes in for b in bytes { output.add(b) } }
+        process.onExit = { _ in exited.fulfill() }
+        XCTAssertTrue(process.start(executable: "/bin/sh", arguments: ["-c", "stty -a | grep -o ' iutf8' ; read line; printf 'got:%s:\\n' \"$line\""],
+                                    environment: [], directory: nil, columns: 80, rows: 24))
+        // Typed once the program is waiting: the line discipline edits input as it arrives.
+        let deadline = Date().addingTimeInterval(5)
+        while !String(decoding: output.values, as: UTF8.self).contains("iutf8"), Date() < deadline { usleep(10_000) }
+        process.write(ArraySlice(Array("a日".utf8) + [0x7F] + Array("b\r".utf8)))
+        wait(for: [exited], timeout: 10)
+        let text = String(decoding: output.values, as: UTF8.self)
+        XCTAssertTrue(text.contains(" iutf8"), text)
+        XCTAssertTrue(text.contains("got:ab:"), "the whole 日 erased, no bytes of it left: \(text)")
+    }
+
     func testTerminate() throws {
         let process = PseudoTerminalProcess()
         let exited = expectation(description: "exited")
