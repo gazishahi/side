@@ -431,9 +431,10 @@ final class TerminalRendererTests: XCTestCase {
 
     // MARK: Ligatures
 
-    private func draw(_ text: String, font: TerminalFont) throws -> Pixels {
+    private func draw(_ text: String, font: TerminalFont, prepare: (TerminalRenderer) -> Void = { _ in }) throws -> Pixels {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice(), "no Metal device")
         let renderer = try TerminalRenderer(device: device, font: font, theme: Self.black)
+        prepare(renderer)
         let grid = TerminalGrid(columns: text.unicodeScalars.count + 2, rows: 1, foreground: 0xFFFFFF)
         for (x, scalar) in text.unicodeScalars.enumerated() { grid[x + 1, 0] = TerminalCell(scalar: scalar.value, foreground: 0xFFFFFF) }
         grid.cursor.visible = false
@@ -505,6 +506,15 @@ final class TerminalRendererTests: XCTestCase {
         plain.ligatures = false
         XCTAssertNotEqual(try draw("a != b", font: TerminalFont(fira)), try draw("a != b", font: plain))
         XCTAssertEqual(try draw("a b c", font: TerminalFont(fira)), try draw("a b c", font: plain), "no ligature, no change")
+        // Runs are shaped a word at a time: a word that falls back to another font doesn't cost
+        // the rest of the row its ligatures.
+        XCTAssertNotEqual(try draw("a != b \u{16A0}", font: TerminalFont(fira)), try draw("a != b \u{16A0}", font: plain))
+        // A row of new words is shaped once and cut into words; the same as each word shaped alone.
+        let row = "if x != y => z <= 0xFF ||| www -> fn"
+        let byWord = try draw(row, font: TerminalFont(fira)) { renderer in
+            for word in row.split(separator: " ") { _ = renderer.shaped(String(word), face: [], scale: self.scale) }
+        }
+        XCTAssertEqual(try draw(row, font: TerminalFont(fira)), byWord)
     }
 
     /// Composing text is drawn at the cursor, over what's there, underlined.

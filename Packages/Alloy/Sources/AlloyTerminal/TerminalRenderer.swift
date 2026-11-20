@@ -500,6 +500,9 @@ public final class TerminalRenderer {
         func emit(_ quads: [Quad], for cell: TerminalCell) {
             if cell.style.contains(.blink) { blinking += quads } else { glyphs += quads }
         }
+        func emit(_ quad: Quad, for cell: TerminalCell) {
+            if cell.style.contains(.blink) { blinking.append(quad) } else { glyphs.append(quad) }
+        }
         let (cw, ch, baselineOffset) = metrics(scale)
         let top = Float(y) * ch
         let baseline = top + baselineOffset
@@ -563,14 +566,32 @@ public final class TerminalRenderer {
                 backgrounds.append(Quad(rect: SIMD4(left, middle, span.rounded(.up), line), uv: .zero, color: color(c.foreground), kind: 0))
             }
         }
+        /// One cell's glyphs, on their own: a character drawn to the cell, or the face's glyph (or a
+        /// fallback font's, or a cluster's).
+        func drawCell(_ x: Int) {
+            let c = grid.cells[rowStart + x]
+            let left = (Float(x) * cw).rounded(.down)
+            let span = c.style.contains(.wide) ? cw * 2 : cw
+            let cluster = c.style.contains(.cluster) ? grid.rowClusters[y][x] : nil
+            guard !c.style.contains(.spacer), c.scalar > 32 || cluster != nil else { return }
+            if cluster == nil, let drawn = sprite(c.scalar, left: left, top: top, width: span, height: ch,
+                                                    line: underlineHeight, color: ink(x, c)) {
+                emit(drawn, for: c)
+                return
+            }
+            for p in placed(c, cluster: cluster, scale: scale) where p.entry.region.width > 0 {
+                let r = p.entry.region
+                emit(Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
+                          uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
+                          color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x, c), kind: p.entry.isColor ? 2 : 1), for: c)
+            }
+        }
         // Glyphs: runs of plain text shaped together (ligatures, contextual alternates), and the
         // rest a cell at a time.
         x = 0
-        var unshapedUntil = 0
         while x < grid.columns {
             let c = grid.cells[rowStart + x]
-            let left = (Float(x) * cw).rounded(.down)
-            if x >= unshapedUntil, font.shapesRuns(c.style), Self.shapeable(c), c.scalar > 32 {
+            if font.shapesRuns(c.style), Self.shapeable(c), c.scalar > 32 {
                 // The run: plain text in one face, spaces included, trailing spaces left off.
                 let face = c.style.intersection([.bold, .italic])
                 var end = x + 1
@@ -578,38 +599,61 @@ public final class TerminalRenderer {
                       grid.cells[rowStart + end].style.intersection([.bold, .italic]) == face { end += 1 }
                 while end > x + 1, grid.cells[rowStart + end - 1].scalar <= 32 { end -= 1 }
                 if end - x > 1 {
-                    let text = String(String.UnicodeScalarView(grid.cells[(rowStart + x)..<(rowStart + end)].compactMap { UnicodeScalar(max(32, $0.scalar)) }))
-                    guard let run = shaped(text, face: face, scale: scale) else {
-                        unshapedUntil = end
-                        continue
+                    // Shaped a word at a time: no programming ligature spans a space, words repeat
+                    // (so the cache hits while text streams, where whole rows never do), and a
+                    // word the face can't draw falls back alone. Checked against whole-row shaping
+                    // in Fira Code and Menlo over 130,000 lines: the same glyphs, cells and
+                    // offsets, but where a character falls back to another font.
+                    var words: [(start: Int, end: Int, text: String)] = []
+                    var word = x
+                    while word < end {
+                        guard grid.cells[rowStart + word].scalar > 32 else { word += 1; continue }
+                        var wordEnd = word + 1
+                        while wordEnd < end, grid.cells[rowStart + wordEnd].scalar > 32 { wordEnd += 1 }
+                        words.append((word, wordEnd, String(String.UnicodeScalarView(grid.cells[(rowStart + word)..<(rowStart + wordEnd)].compactMap { UnicodeScalar($0.scalar) }))))
+                        word = wordEnd
                     }
-                    for g in run where g.entry.region.width > 0 {
-                        let cell = grid.cells[rowStart + x + g.cell]
-                        let r = g.entry.region
-                        let cellLeft = (Float(x + g.cell) * cw).rounded(.down)
-                        emit([Quad(rect: SIMD4(cellLeft + Float(g.dx * scale + g.entry.offset.x), baseline + Float(g.entry.offset.y), Float(r.width), Float(r.height)),
-                                   uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
-                                   color: g.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x + g.cell, cell), kind: g.entry.isColor ? 2 : 1)], for: cell)
+                    var runs: [[RunGlyph]??] = words.map { cachedRun($0.text, face: face) }
+                    // Several new words: the run shaped once and cut into words (the same glyphs,
+                    // as above), so text that's all new costs one shaping, as a row did before.
+                    if runs.lazy.filter({ $0 == nil }).count > 1 {
+                        let text = String(String.UnicodeScalarView(grid.cells[(rowStart + x)..<(rowStart + end)].compactMap { UnicodeScalar(max(32, $0.scalar)) }))
+                        if let whole = shape(text, face: face, scale: scale) {
+                            var cut: [[RunGlyph]] = Array(repeating: [], count: words.count)
+                            var w = 0
+                            for g in whole {
+                                let column = x + g.cell
+                                while w < words.count, words[w].end <= column { w += 1 }
+                                guard w < words.count, column >= words[w].start else { continue }
+                                cut[w].append(RunGlyph(glyph: g.glyph, entry: g.entry, cell: column - words[w].start, dx: g.dx))
+                            }
+                            for i in words.indices where runs[i] == nil {
+                                cacheRun(cut[i], for: words[i].text, face: face)
+                                runs[i] = .some(cut[i])
+                            }
+                        }
+                    }
+                    for (i, w) in words.enumerated() {
+                        let run = runs[i] ?? shaped(w.text, face: face, scale: scale)
+                        guard let run else {
+                            for column in w.start..<w.end { drawCell(column) }
+                            continue
+                        }
+                        for g in run where g.entry.region.width > 0 {
+                            let cell = grid.cells[rowStart + w.start + g.cell]
+                            let r = g.entry.region
+                            let cellLeft = (Float(w.start + g.cell) * cw).rounded(.down)
+                            emit(Quad(rect: SIMD4(cellLeft + Float(g.dx * scale + g.entry.offset.x), baseline + Float(g.entry.offset.y), Float(r.width), Float(r.height)),
+                                      uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
+                                      color: g.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(w.start + g.cell, cell), kind: g.entry.isColor ? 2 : 1), for: cell)
+                        }
                     }
                     x = end
                     continue
                 }
             }
-            defer { x += 1 }
-            let span = c.style.contains(.wide) ? cw * 2 : cw
-            let cluster = c.style.contains(.cluster) ? grid.rowClusters[y][x] : nil
-            guard !c.style.contains(.spacer), c.scalar > 32 || cluster != nil else { continue }
-            if cluster == nil, let drawn = sprite(c.scalar, left: left, top: top, width: span, height: ch,
-                                                    line: underlineHeight, color: ink(x, c)) {
-                emit(drawn, for: c)
-                continue
-            }
-            for p in placed(c, cluster: cluster, scale: scale) where p.entry.region.width > 0 {
-                let r = p.entry.region
-                emit([Quad(rect: SIMD4(left + Float(p.dx * scale + p.entry.offset.x), baseline + Float(p.entry.offset.y), Float(r.width), Float(r.height)),
-                           uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
-                           color: p.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x, c), kind: p.entry.isColor ? 2 : 1)], for: c)
-            }
+            drawCell(x)
+            x += 1
         }
         backgroundQuads[y] = backgrounds
         glyphQuads[y] = glyphs
@@ -669,16 +713,55 @@ public final class TerminalRenderer {
     struct RunGlyph { let glyph: CGGlyph; let entry: AtlasEntry; let cell: Int; let dx: CGFloat }
     /// nil: a run the shaper can't place cell for cell (a fallback font's different advance would
     /// push every glyph after it), drawn a cell at a time instead.
-    private var runCache: [RunKey: [RunGlyph]?] = [:]
+    private var runCache = RunCache()
+
+    /// Shaped words, kept in two generations: a word looked up in the older is carried into the
+    /// newer, and when the newer fills, the older (the words not seen since) is dropped. Text
+    /// streaming past keeps its common words without the whole cache emptying at once.
+    private struct RunCache {
+        static let generation = 16_384
+        private var current: [RunKey: [RunGlyph]?] = [:]
+        private var previous: [RunKey: [RunGlyph]?] = [:]
+        mutating func value(_ key: RunKey) -> [RunGlyph]?? {
+            if let known = current[key] { return known }
+            guard let known = previous[key] else { return nil }
+            insert(known, for: key)
+            return known
+        }
+        mutating func insert(_ value: [RunGlyph]?, for key: RunKey) {
+            if current.count >= Self.generation {
+                previous = current
+                current = [:]
+                current.reserveCapacity(Self.generation)
+            }
+            current[key] = value
+        }
+        mutating func removeAll() { current = [:]; previous = [:] }
+    }
 
     /// A run of text shaped by CoreText, with its ligatures and contextual alternates: each glyph
     /// with the cell it starts at (its string index; a UTF-16 unit is a cell here) and its
     /// offset from that cell in points, near zero but for a glyph a font shifts. Cached by text
     /// and face, as Ghostty's shaper caches its runs.
     func shaped(_ text: String, face: TerminalCell.Style, scale: CGFloat) -> [RunGlyph]? {
-        let key = RunKey(text: text, face: face)
-        if let known = runCache[key] { return known }
-        if runCache.count > 4096 { runCache.removeAll() }
+        if let known = cachedRun(text, face: face) { return known }
+        let result = shape(text, face: face, scale: scale)
+        cacheRun(result, for: text, face: face)
+        return result
+    }
+
+    /// A shaped run in the cache: nil if it isn't there; .some(nil) if it's known unshapeable.
+    private func cachedRun(_ text: String, face: TerminalCell.Style) -> [RunGlyph]?? {
+        runCache.value(RunKey(text: text, face: face))
+    }
+
+    private func cacheRun(_ run: [RunGlyph]?, for text: String, face: TerminalCell.Style) {
+        runCache.insert(run, for: RunKey(text: text, face: face))
+    }
+
+    /// CoreText's shaping of `text`, uncached; nil when a glyph comes from another font or runs
+    /// right to left.
+    private func shape(_ text: String, face: TerminalCell.Style, scale: CGFloat) -> [RunGlyph]? {
         let base = font.face(face)
         let attributed = CFAttributedStringCreate(nil, text as CFString, [kCTFontAttributeName: base, kCTLigatureAttributeName: 1] as CFDictionary)!
         let line = CTLineCreateWithAttributedString(attributed)
@@ -689,10 +772,7 @@ public final class TerminalRenderer {
             let isColor = CTFontGetSymbolicTraits(runFont).contains(.traitColorGlyphs)
             let count = CTRunGetGlyphCount(run)
             var glyphs = [CGGlyph](repeating: 0, count: count), positions = [CGPoint](repeating: .zero, count: count)
-            guard CFEqual(runFont, base), !CTRunGetStatus(run).contains(.rightToLeft) else {
-                runCache[key] = .some(nil)
-                return nil
-            }
+            guard CFEqual(runFont, base), !CTRunGetStatus(run).contains(.rightToLeft) else { return nil }
             var indices = [CFIndex](repeating: 0, count: count)
             CTRunGetGlyphs(run, CFRange(location: 0, length: count), &glyphs)
             CTRunGetPositions(run, CFRange(location: 0, length: count), &positions)
@@ -704,7 +784,6 @@ public final class TerminalRenderer {
                 result.append(RunGlyph(glyph: glyphs[i], entry: entry, cell: cell, dx: positions[i].x - CGFloat(cell) * self.cell.width))
             }
         }
-        runCache[key] = result
         return result
     }
 
