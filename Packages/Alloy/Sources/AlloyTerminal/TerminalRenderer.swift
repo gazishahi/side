@@ -16,6 +16,37 @@ public struct TerminalFont: @unchecked Sendable {
     /// alternates (Fira Code's `=>`, JetBrains Mono's `!=`). Off: a glyph a cell, as before.
     public var ligatures = true
 
+    /// Whether each face (regular, bold, italic, bold italic) can draw a run of plain text other
+    /// than glyph by glyph: ligatures or contextual alternates. A face that can't (Side's
+    /// default, MesloLGS NF) draws the same either way, so its text skips CoreText's shaping,
+    /// most of a frame's CPU (results/2026-11-13-tier1).
+    let substitutes: [Bool]
+
+    /// Whether `style`'s face has ligatures or contextual alternates to apply.
+    func shapesRuns(_ style: TerminalCell.Style) -> Bool {
+        ligatures && substitutes[(style.contains(.bold) ? 1 : 0) + (style.contains(.italic) ? 2 : 0)]
+    }
+
+    /// A face's substitutions that change plain text, as the shaper applies them by default:
+    /// OpenType's (GSUB) standard and contextual ligatures and contextual alternates, or Apple's
+    /// (morx) ligatures as CoreText lists them (Menlo, Monaco).
+    static func substitutesInText(_ font: CTFont) -> Bool {
+        let wanted: Set<String> = ["liga", "clig", "rlig", "calt"]
+        if let table = CTFontCopyTable(font, CTFontTableTag(kCTFontTableGSUB), []) as Data?, table.count >= 10 {
+            func u16(_ offset: Int) -> Int { offset + 1 < table.count ? Int(table[offset]) << 8 | Int(table[offset + 1]) : 0 }
+            let list = u16(6)   // the FeatureList's offset, after the version and the ScriptList's
+            if list > 0 {
+                for i in 0..<u16(list) {
+                    let record = list + 2 + i * 6
+                    guard record + 4 <= table.count else { break }
+                    if let tag = String(bytes: table[record..<record + 4], encoding: .ascii), wanted.contains(tag) { return true }
+                }
+            }
+        }
+        let features = (CTFontCopyFeatures(font) as? [[String: Any]]) ?? []
+        return features.contains { ($0[kCTFontFeatureTypeIdentifierKey as String] as? Int) == 1 } // kLigaturesType
+    }
+
     public init(name: String, size: CGFloat) {
         self.init(CTFontCreateWithName(name as CFString, size, nil))
     }
@@ -32,6 +63,7 @@ public struct TerminalFont: @unchecked Sendable {
         bold = realBold ?? font
         italic = realItalic ?? font
         boldItalic = styled([.traitBold, .traitItalic]) ?? realItalic ?? realBold ?? font
+        substitutes = [regular, bold, italic, boldItalic].map(Self.substitutesInText)
     }
 
     /// What a style's face has to draw synthetically (Ghostty's font-synthetic-style): what the
@@ -534,7 +566,7 @@ public final class TerminalRenderer {
         while x < grid.columns {
             let c = grid.cells[rowStart + x]
             let left = (Float(x) * cw).rounded(.down)
-            if font.ligatures, x >= unshapedUntil, Self.shapeable(c), c.scalar > 32 {
+            if x >= unshapedUntil, font.shapesRuns(c.style), Self.shapeable(c), c.scalar > 32 {
                 // The run: plain text in one face, spaces included, trailing spaces left off.
                 let face = c.style.intersection([.bold, .italic])
                 var end = x + 1

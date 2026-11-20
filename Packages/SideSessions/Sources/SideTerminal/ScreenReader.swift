@@ -144,8 +144,15 @@ public final class ScreenReader {
         while ghostty_render_state_row_iterator_next_dirty(rowIterator, &y) {
             row.removeAll(keepingCapacity: true)
             ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &rowCells)
+            // The row's part of the selection, once, not a question per cell.
+            var selection = GhosttyRenderStateRowSelection()
+            selection.size = MemoryLayout<GhosttyRenderStateRowSelection>.size
+            let selected: ClosedRange<Int>? = ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS
+                ? Int(min(selection.start_x, selection.end_x))...Int(max(selection.start_x, selection.end_x)) : nil
+            var x = 0
             while ghostty_render_state_row_cells_next(rowCells) {
-                row.append(cell(&graphemes))
+                row.append(cell(&graphemes, selected: selected?.contains(x) ?? false))
+                x += 1
             }
             row.withUnsafeBufferPointer { body(Int(y), $0) }
             var clean = false
@@ -154,15 +161,47 @@ public final class ScreenReader {
         ghostty_render_state_clean(state)
     }
 
-    private func cell(_ graphemes: inout [UInt32]) -> ScreenCell {
+    /// One cell, with as few questions to libghostty as it needs: a plain character's codepoint
+    /// from the raw cell, and colors and style only for a cell that has styling or a background
+    /// color of its own. Most of a screen is plain text, and asking every cell everything was
+    /// most of a frame's CPU (Benchmarks/Terminal/results/2026-11-13-tier1).
+    private func cell(_ graphemes: inout [UInt32], selected: Bool) -> ScreenCell {
         var cell = ScreenCell()
         var raw: GhosttyCell = 0
         ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw)
-        var wide = GHOSTTY_CELL_WIDE_NARROW
-        ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide)
+        // Width, content, styling and codepoint in one call.
+        var wide = GHOSTTY_CELL_WIDE_NARROW, tag = GHOSTTY_CELL_CONTENT_CODEPOINT, styled = false, codepoint: UInt32 = 0
+        withUnsafeMutablePointer(to: &wide) { w in withUnsafeMutablePointer(to: &tag) { t in
+            withUnsafeMutablePointer(to: &styled) { st in withUnsafeMutablePointer(to: &codepoint) { c in
+                var values: (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) = (UnsafeMutableRawPointer(w), UnsafeMutableRawPointer(t), UnsafeMutableRawPointer(st), UnsafeMutableRawPointer(c))
+                withUnsafeMutablePointer(to: &values) { list in
+                    list.withMemoryRebound(to: UnsafeMutableRawPointer?.self, capacity: 4) {
+                        _ = ghostty_cell_get_multi(raw, 4, Self.cellKeys, $0, nil)
+                    }
+                }
+            } }
+        } }
         if wide == GHOSTTY_CELL_WIDE_WIDE { cell.style.insert(.wide) }
         if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD { cell.style.insert(.spacer) }
+        if selected { cell.style.insert(.selected) }
 
+        if tag == GHOSTTY_CELL_CONTENT_CODEPOINT {
+            cell.scalar = codepoint
+        } else if tag == GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME {
+            readGraphemes(into: &cell, &graphemes)
+        }
+        // Default colors and no style: nothing more to ask.
+        let hasBackground = tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE || tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB
+        guard styled || hasBackground else {
+            cell.foreground = foreground
+            return cell
+        }
+        return styledCell(cell)
+    }
+
+    private static let cellKeys: [GhosttyCellData] = [GHOSTTY_CELL_DATA_WIDE, GHOSTTY_CELL_DATA_CONTENT_TAG, GHOSTTY_CELL_DATA_HAS_STYLING, GHOSTTY_CELL_DATA_CODEPOINT]
+
+    private func readGraphemes(into cell: inout ScreenCell, _ graphemes: inout [UInt32]) {
         var length: UInt32 = 0
         ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &length)
         if length > 0 {
@@ -175,7 +214,12 @@ public final class ScreenReader {
                 cell.cluster = String(scalars)
             }
         }
+    }
 
+    /// A cell's colors and style, from the render state: its own or the palette's, inverse and
+    /// faint applied.
+    private func styledCell(_ start: ScreenCell) -> ScreenCell {
+        var cell = start
         var style = GhosttyStyle()
         style.size = MemoryLayout<GhosttyStyle>.size
         ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style)
@@ -196,10 +240,6 @@ public final class ScreenReader {
         if style.overline { cell.style.insert(.overline) }
         if style.blink { cell.style.insert(.blink) }
         if style.invisible { cell.style.insert(.invisible) }
-        var selected = false
-        if ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected) == GHOSTTY_SUCCESS, selected {
-            cell.style.insert(.selected)
-        }
         switch style.underline_color.tag {
         case GHOSTTY_STYLE_COLOR_RGB: cell.underlineColor = Self.pack(style.underline_color.value.rgb)
         case GHOSTTY_STYLE_COLOR_PALETTE: cell.underlineColor = palette[Int(style.underline_color.value.palette)]

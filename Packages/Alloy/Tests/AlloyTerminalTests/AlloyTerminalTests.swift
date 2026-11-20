@@ -426,6 +426,29 @@ final class TerminalRendererTests: XCTestCase {
         }
     }
 
+    /// Only faces with ligatures or contextual alternates have their runs shaped: Side's default
+    /// (MesloLGS NF, with neither) draws a glyph a cell and skips CoreText's shaping.
+    func testOnlyFontsThatSubstituteAreShaped() throws {
+        XCTAssertTrue(TerminalFont(name: "Menlo", size: 13).shapesRuns([]), "Menlo's Apple ligatures")
+        XCTAssertTrue(TerminalFont(name: "Helvetica", size: 13).shapesRuns([]), "fi")
+        let andale = TerminalFont(name: "Andale Mono", size: 13)
+        if (CTFontCopyPostScriptName(andale.regular) as String) == "AndaleMono" {
+            XCTAssertFalse(andale.shapesRuns([]), "no substitutions at all")
+            XCTAssertFalse(andale.shapesRuns([.bold, .italic]))
+        }
+        let meslo = TerminalFont(name: "MesloLGS-NF-Regular", size: 13)
+        if (CTFontCopyPostScriptName(meslo.regular) as String) == "MesloLGS-NF-Regular" {
+            XCTAssertFalse(meslo.shapesRuns([]), "only a right-to-left form, which plain text never takes")
+        }
+        let fira = TerminalFont(name: "FiraCodeNFM-Reg", size: 13)
+        if (CTFontCopyPostScriptName(fira.regular) as String) == "FiraCodeNFM-Reg" {
+            XCTAssertTrue(fira.shapesRuns([]), "calt")
+        }
+        var off = TerminalFont(name: "Menlo", size: 13)
+        off.ligatures = false
+        XCTAssertFalse(off.shapesRuns([]), "turned off")
+    }
+
     /// "fi" in Helvetica is one glyph for two cells: the run was shaped, not drawn a cell at a time.
     func testARunIsShapedWithItsLigatures() throws {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice(), "no Metal device")

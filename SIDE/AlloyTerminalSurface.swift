@@ -672,9 +672,14 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
 
     func snapshot(into grid: TerminalGrid) -> Bool {
         guard reader.update() else { return false }
+        let columns = grid.columns
         reader.forEachChangedRow { y, cells in
             guard y < grid.rows else { return }
-            for x in 0..<min(cells.count, grid.columns) {
+            // A row through one buffer: the grid's subscript checks access and bounds per cell,
+            // which was a good part of a frame (Benchmarks/Terminal/results/2026-11-13-tier1).
+            let count = min(cells.count, columns)
+            grid.cells.withUnsafeMutableBufferPointer { all in
+            for x in 0..<count {
                 let c = cells[x]
                 var style: TerminalCell.Style = []
                 if c.style.contains(.bold) { style.insert(.bold) }
@@ -694,9 +699,10 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
                 case .dotted: .dotted
                 case .dashed: .dashed
                 }
-                grid[x, y] = TerminalCell(scalar: hidden ? 0 : c.scalar, cluster: hidden ? nil : c.cluster,
-                                          foreground: c.foreground, background: c.background, style: style,
-                                          underline: underline, underlineColor: c.underlineColor)
+                all[y * columns + x] = TerminalCell(scalar: hidden ? 0 : c.scalar, cluster: hidden ? nil : c.cluster,
+                                                    foreground: c.foreground, background: c.background, style: style,
+                                                    underline: underline, underlineColor: c.underlineColor)
+            }
             }
             grid.dirty[y] = true
         }
