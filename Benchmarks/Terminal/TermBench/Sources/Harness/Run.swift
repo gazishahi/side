@@ -41,6 +41,8 @@ public struct Options {
         while let a = args.next() {
             switch a {
             case "--setup": o.setup = args.next() ?? o.setup
+            // A font by PostScript name (Menlo by default; Side's own default is MesloLGS-NF-Regular).
+            case "--font": o.fontName = args.next() ?? o.fontName
             case "--workload": o.workload = args.next() ?? ""
             case "--width": o.width = CGFloat(Double(args.next() ?? "") ?? 1600)
             case "--height": o.height = CGFloat(Double(args.next() ?? "") ?? 1000)

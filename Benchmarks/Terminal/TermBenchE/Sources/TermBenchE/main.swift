@@ -12,9 +12,14 @@ final class ScreenSource: TerminalGridSource, @unchecked Sendable {
 
     func snapshot(into grid: TerminalGrid) -> Bool {
         guard reader.update() else { return false }
+        let columns = grid.columns
         reader.forEachChangedRow { y, cells in
             guard y < grid.rows else { return }
-            for x in 0..<min(cells.count, grid.columns) {
+            // A row through one buffer: the grid's subscript checks access and bounds per cell,
+            // which was a good part of a frame (Benchmarks/Terminal/results/2026-11-13-tier1).
+            let count = min(cells.count, columns)
+            grid.cells.withUnsafeMutableBufferPointer { all in
+            for x in 0..<count {
                 let c = cells[x]
                 var style: TerminalCell.Style = []
                 if c.style.contains(.bold) { style.insert(.bold) }
@@ -34,9 +39,10 @@ final class ScreenSource: TerminalGridSource, @unchecked Sendable {
                 case .dotted: .dotted
                 case .dashed: .dashed
                 }
-                grid[x, y] = TerminalCell(scalar: hidden ? 0 : c.scalar, cluster: hidden ? nil : c.cluster,
-                                          foreground: c.foreground, background: c.background, style: style,
-                                          underline: underline, underlineColor: c.underlineColor)
+                all[y * columns + x] = TerminalCell(scalar: hidden ? 0 : c.scalar, cluster: hidden ? nil : c.cluster,
+                                                    foreground: c.foreground, background: c.background, style: style,
+                                                    underline: underline, underlineColor: c.underlineColor)
+            }
             }
             grid.dirty[y] = true
         }
@@ -189,10 +195,21 @@ final class SessionsE {
     d.usage = [.renderTarget]
     d.storageMode = .private
     let target = device.makeTexture(descriptor: d)!
-    FrameCost.run(options: options, feed: { bytes in terminal.feed(bytes) }, frame: { _ in
+    // TERMBENCH_SPLIT=1: also the frame's two halves, the snapshot and the drawing (stderr).
+    let split = ProcessInfo.processInfo.environment["TERMBENCH_SPLIT"] == "1"
+    var snaps: [Double] = [], draws: [Double] = []
+    FrameCost.run(options: options, feed: { bytes in terminal.feed(bytes) }, frame: { oneRow in
         let start = Metrics.now()
         _ = source.snapshot(into: grid)
+        let mid = Metrics.now()
         let buffer = renderer.draw(grid, scale: 2, into: target)
+        if !oneRow {
+            snaps.append((mid - start) * 1000); draws.append((Metrics.now() - mid) * 1000)
+            if split, snaps.count % 20 == 0 {
+                let a = snaps.sorted(), b = draws.sorted()
+                FileHandle.standardError.write("SPLIT n=\(a.count) snapshot median \(a[a.count / 2]) ms, draw median \(b[b.count / 2]) ms\n".data(using: .utf8)!)
+            }
+        }
         let cpu = (Metrics.now() - start) * 1000
         buffer?.waitUntilCompleted()
         let gpu = buffer.map { ($0.gpuEndTime - $0.gpuStartTime) * 1000 } ?? -1
