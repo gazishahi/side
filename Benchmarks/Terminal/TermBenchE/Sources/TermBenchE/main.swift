@@ -64,7 +64,9 @@ final class ScreenSource: TerminalGridSource, @unchecked Sendable {
 }
 
 func makeTerminal(_ options: Options) -> Terminal {
-    let terminal = try! Terminal(columns: options.cols, rows: options.rows)
+    // TERMBENCH_SCROLLBACK=<lines>: another scrollback than Side's 10,000 lines.
+    let lines = Int(ProcessInfo.processInfo.environment["TERMBENCH_SCROLLBACK"] ?? "") ?? 10_000
+    let terminal = try! Terminal(columns: options.cols, rows: options.rows, scrollbackLines: lines)
     terminal.setDefaultColors(foreground: Theme.foreground, background: Theme.background)
     return terminal
 }
