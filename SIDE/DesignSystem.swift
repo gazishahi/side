@@ -1653,7 +1653,7 @@ extension DS {
     /// The one vocabulary for "what state is this in", shared by every surface.
     enum StatusState: Equatable {
         /// `unread`: something new to look at (a terminal printed while you were elsewhere) — a
-        /// quiet filled dot, never the breathing ring, which means an agent is working.
+        /// quiet filled dot, never the turning arc, which means an agent is working.
         case needsYou, working, verified, failed, idle, unread
 
         var name: String {

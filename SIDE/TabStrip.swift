@@ -24,7 +24,7 @@ final class TabStrip: NSObject {
         /// Run's: what happened out of sight that the tab's dot says in color (a turn that
         /// finished, a bell that wants you); nil leaves new output a plain dot.
         var news: DS.StatusState?
-        /// Run's: an agent in the terminal is working (DS's breathing Working ring).
+        /// Run's: an agent in the terminal is working (its title shimmers).
         var isWorking = false
         var menu: NSMenu?
         /// What the tab shows, drawn into the card it becomes when dragged out.

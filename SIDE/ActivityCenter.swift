@@ -463,8 +463,11 @@ final class ActivityListViewController: NSViewController {
     func reload() {
         guard isViewLoaded else { return }
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for item in ActivityCenter.shared.items {
-            let row = ActivityRow(item: item)
+        let items = ActivityCenter.shared.items
+        // One column for the states, as wide as the widest, so every dot lines up.
+        let stateWidth = items.map { DS.StatusLabel(state: $0.state.status, text: $0.stateWord).fittingSize.width }.max() ?? 0
+        for item in items {
+            let row = ActivityRow(item: item, stateWidth: stateWidth)
             row.onPick = { [weak self] in self?.onPick?(item) }
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -DS.Spacing.s * 2).isActive = true
@@ -479,7 +482,7 @@ private final class ActivityRow: NSView {
     private let item: ActivityCenter.Item
     private var hovered = false { didSet { needsDisplay = true } }
 
-    init(item: ActivityCenter.Item) {
+    init(item: ActivityCenter.Item, stateWidth: CGFloat) {
         self.item = item
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -488,10 +491,14 @@ private final class ActivityRow: NSView {
         icon.imageScaling = .scaleProportionallyDown
         let title = NSTextField(labelWithString: item.title)
         title.font = DS.Text.body(.medium)
+        title.lineBreakMode = .byTruncatingTail
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.toolTip = item.title
         let place = NSTextField(labelWithString: item.place)
         place.font = DS.Text.caption()
         place.textColor = .secondaryLabelColor
         place.lineBreakMode = .byTruncatingTail
+        place.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // What it's waiting for, in its own words, under where it is.
         let reason = NSTextField(labelWithString: item.reason)
         reason.font = DS.Text.caption()
@@ -503,7 +510,11 @@ private final class ActivityRow: NSView {
         words.orientation = .vertical
         words.alignment = .leading
         words.spacing = 1
+        // The state never gives way to a long title: it's what the row is for.
         let state = DS.StatusLabel(state: item.state.status, text: item.stateWord)
+        state.setContentCompressionResistancePriority(.required, for: .horizontal)
+        state.label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        state.widthAnchor.constraint(equalToConstant: ceil(stateWidth)).isActive = true
         let row = NSStackView(views: [icon, words, NSView(), state])
         row.orientation = .horizontal
         row.alignment = .centerY
