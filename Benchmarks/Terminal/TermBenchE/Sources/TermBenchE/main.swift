@@ -150,7 +150,9 @@ final class SetupE {
                 Latency.run(window: view.window!, cell: { _ in row }, send: { _ = write(pty.master, "X", 1) })
             }
         }
-        pty.startReading(consume: { Stages.mark("echoRead"); Stages.mark("parse0"); terminal.feed($0); Stages.mark("parse1"); view.setNeedsFrame() }, done: {
+        // TERMBENCH_NODRAW=1: parse only, no frames (the reader and parser's own ceiling).
+        let draws = ProcessInfo.processInfo.environment["TERMBENCH_NODRAW"] != "1"
+        pty.startReading(consume: { Stages.mark("echoRead"); Stages.mark("parse0"); terminal.feed($0); Stages.mark("parse1"); if draws { view.setNeedsFrame() } }, done: {
             var status: Int32 = 0
             waitpid(pty.pid, &status, 0)
             DispatchQueue.main.async {
