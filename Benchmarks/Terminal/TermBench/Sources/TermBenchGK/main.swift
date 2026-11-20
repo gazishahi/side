@@ -83,6 +83,12 @@ func startD(options: Options, view: SurfaceHost) {
         supports_selection_clipboard: false,
         wakeup_cb: { _ in Stages.mark("wakeup"); DispatchQueue.main.async { MainActor.assumeIsolated { if let app { ghostty_app_tick(app) } } } },
         action_cb: { _, _, action in
+            if action.tag == GHOSTTY_ACTION_SCROLLBAR {
+                let bar = action.action.scrollbar
+                if ProcessInfo.processInfo.environment["TERMBENCH_SCROLLBAR_LOG"] != nil { FileHandle.standardError.write("scrollbar \(Metrics.now()) \(bar.total) \(bar.offset) \(bar.len)\n".data(using: .utf8)!) }
+                DispatchQueue.main.async { MainActor.assumeIsolated { lastScrollbar = (bar.total, bar.offset, bar.len) } }
+                return true
+            }
             if action.tag == GHOSTTY_ACTION_SHOW_CHILD_EXITED {
                 DispatchQueue.main.async { MainActor.assumeIsolated { checkExited() } }
                 return true
@@ -144,9 +150,16 @@ func startD(options: Options, view: SurfaceHost) {
     ghostty_app_set_focus(app, true)
     let size = ghostty_surface_size(surfaces[0])
     Run.shared.grid = "\(size.columns)x\(size.rows)"
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+    // The viewport's state (--view), set once the first 400 KB is shown, before the clock.
+    let action: String? = switch options.view { case "selected": "select_all"; case "scrolled": "scroll_page_up"; default: nil }
+    if let action {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if !ghostty_surface_binding_action(surfaces[0], action, UInt(action.utf8.count)) { print("view: \(action) failed") }
+        }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + (action == nil ? 1.0 : 1.3)) {
         Run.shared.begin()
-        if options.mode == "latency" { ghostty_surface_text(surfaces[0], "\n", 1) } else { for s in surfaces { ghostty_surface_text(s, "\n", 1) } }
+        if !options.view.isEmpty { Options.go() } else if options.mode == "latency" { ghostty_surface_text(surfaces[0], "\n", 1) } else { for s in surfaces { ghostty_surface_text(s, "\n", 1) } }
     }
     if options.mode == "latency" {
         let cell = CGSize(width: CGFloat(size.cell_width_px) / scale, height: CGFloat(size.cell_height_px) / scale)
@@ -161,11 +174,16 @@ func startD(options: Options, view: SurfaceHost) {
 }
 
 @MainActor var surfaces: [ghostty_surface_t] = []
+/// The shown surface's scrollbar as Ghostty last reported it: total, offset, length, in rows.
+@MainActor var lastScrollbar: (UInt64, UInt64, UInt64)?
 
 @MainActor
 func checkExited() {
     guard !exited, !surfaces.isEmpty, surfaces.allSatisfy({ ghostty_surface_process_exited($0) }) else { return }
     exited = true
+    if !options.view.isEmpty, let (total, offset, length) = lastScrollbar {
+        print("VIEW scrollbar total \(total) offset \(offset) length \(length) scrolledBack \(offset + length < total)")
+    }
     Run.shared.finish()
 }
 

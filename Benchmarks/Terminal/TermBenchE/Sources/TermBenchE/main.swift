@@ -112,8 +112,22 @@ final class SetupE {
         Run.shared.shot = { [view] path in MainActor.assumeIsolated { writeShot(view, to: path) } }
         let pty = PTYProcess(command: options.command, cols: options.cols, rows: options.rows)
         let terminal = self.terminal, view = self.view
+        // The viewport's state (--view), set once the first 400 KB is shown, before the clock.
+        if !options.view.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                switch options.view {
+                case "selected": let s = TerminalSelection(terminal: terminal); s.selectAll(); keep.append(s)
+                case "scrolled": terminal.scroll(byRows: -options.rows)
+                default: print("view: \(options.view) unknown")
+                }
+                view.setNeedsFrame()
+            }
+        }
         defer {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { Run.shared.begin(); _ = write(pty.master, "\n", 1) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + (options.view.isEmpty ? 0.3 : 1.3)) {
+                Run.shared.begin()
+                if options.view.isEmpty { _ = write(pty.master, "\n", 1) } else { Options.go() }
+            }
         }
         if options.mode == "latency" {
             for _ in 0..<options.load {
@@ -143,6 +157,10 @@ final class SetupE {
                 MainActor.assumeIsolated {
                     _ = view.renderOffscreen()
                     Run.shared.frames = view.frames
+                    if !Run.shared.options.view.isEmpty {
+                        let bar = terminal.scrollbar
+                        print("VIEW scrollbar total \(bar.total) offset \(bar.offset) length \(bar.length) scrolledBack \(bar.isScrolledBack)")
+                    }
                     Run.shared.finish()
                 }
             }

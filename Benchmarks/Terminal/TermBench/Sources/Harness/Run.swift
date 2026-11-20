@@ -34,6 +34,27 @@ public struct Options {
         return r.split(separator: " ").map(String.init) + ["--"]
     }()
     public var rows = 60
+    /// The viewport's state while the workload streams (RFC rule 4), set before the clock starts:
+    /// "" as it comes; "selected": everything selected (select all); "scrolled": scrolled back a
+    /// page, so output arrives below the viewport. Both first show the workload's first 400 KB.
+    public var view = ""
+
+    /// The FIFO a --view run's command waits on; `go()` releases it.
+    public static let goPath: String = {
+        let path = NSTemporaryDirectory() + "termbench-go-\(getpid())"
+        unlink(path)
+        mkfifo(path, 0o600)
+        return path
+    }()
+
+    /// Starts a --view run's workload (the command is blocked opening the FIFO).
+    public static func go() {
+        let fd = open(goPath, O_WRONLY)
+        guard fd >= 0 else { print("go: \(String(cString: strerror(errno)))"); return }
+        _ = write(fd, "\n", 1)
+        close(fd)
+        unlink(goPath)
+    }
 
     public static func parse() -> Options {
         var o = Options()
@@ -52,6 +73,7 @@ public struct Options {
             case "--load-workload": o.loadWorkload = args.next() ?? ""
             case "--cols": o.cols = Int(args.next() ?? "") ?? o.cols
             case "--rows": o.rows = Int(args.next() ?? "") ?? o.rows
+            case "--view": o.view = args.next() ?? ""
             default: break
             }
         }
@@ -79,6 +101,11 @@ public struct Options {
             // TERMBENCH_PRE: a command run first, inside the terminal (e.g. stty -a > file).
             let pre = ProcessInfo.processInfo.environment["TERMBENCH_PRE"].map { "\($0); " } ?? ""
             return Self.relay + ["/bin/sh", "-c", "read _; \(pre)\(stamp); /bin/cat '\(workload)'; \(stamp)"]
+        }
+        if !view.isEmpty {
+            // Started through a FIFO, not by a typed line: typing into a terminal scrolls it to
+            // the bottom (Ghostty does, whatever scroll-to-bottom says), undoing "scrolled".
+            return Self.relay + ["/bin/sh", "-c", "/usr/bin/head -c 400000 '\(workload)'; read _ < '\(Self.goPath)'; exec /bin/cat '\(workload)'"]
         }
         return Self.relay + ["/bin/sh", "-c", "read _; exec /bin/cat '\(workload)'"]
     }
@@ -176,7 +203,7 @@ public final class Run {
         {"setup":"\(options.setup)","workload":"\((options.workload as NSString).lastPathComponent)","bytes":\(size),"grid":"\(grid)",\
         "seconds":\(String(format: "%.3f", wall)),"MBps":\(String(format: "%.1f", Double(size) / wall / 1_048_576)),\
         "mainCPU":\(String(format: "%.3f", m.main)),"processCPU":\(String(format: "%.3f", m.cpu)),\
-        "footprintMB":\(String(format: "%.0f", m.footprint)),"frames":\(frames),"mode":"\(options.mode)","sessions":\(options.sessions),"note":"\(note)"\(MainProbe.fields())}
+        "footprintMB":\(String(format: "%.0f", m.footprint)),"frames":\(frames),"mode":"\(options.mode)","sessions":\(options.sessions),"font":"\(options.fontName)","view":"\(options.view)","note":"\(note)"\(MainProbe.fields())}
         """
         print(json)
         fflush(stdout)
