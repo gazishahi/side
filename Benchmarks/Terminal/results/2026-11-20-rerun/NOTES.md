@@ -1,5 +1,8 @@
 # Rerun after the shaping cache and the keeper's reader (2026-11-20, evening)
 
+> E's numbers here use the harness's blocking reader. Superseded for E by
+> `../2026-11-20-reader/NOTES.md`, where E reads through Side's own (Ghostty-style) reader.
+
 The RFC's rule 4 suite (`../2026-11-20-features/`) again, after two changes, plus a breakdown of
 where Side's throughput goes. Same machine (M3 Pro, 120 Hz), Fira Code (FiraCodeNFM-Reg, 13 pt),
 200×60 unless stated, release builds, all parts in one interleaved pass
