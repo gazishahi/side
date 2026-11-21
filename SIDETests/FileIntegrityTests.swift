@@ -1236,6 +1236,17 @@ final class TabStripTests: XCTestCase {
         XCTAssertEqual(strip.chips[0].intrinsicContentSize.width, TabStrip.minTabWidth, "narrow: the minimum, and the strip scrolls")
     }
 
+    /// 2026-11-21, the owner: dragged back over the strip, a torn-out tab's long title ran past
+    /// the tab's shape. The title that travels with it is cut to the tab's own room.
+    func testADraggedTabsTitleFitsTheTab() {
+        let chip = TabChipView(frame: NSRect(x: 0, y: 0, width: TabStrip.minTabWidth, height: TabChipView.height))
+        chip.evenWidth = TabStrip.minTabWidth
+        chip.title = "a much longer title than fits in any tab, by far, and then some more"
+        XCTAssertLessThan(chip.titleImage().size.width, TabStrip.minTabWidth - 20)
+        chip.title = "zsh"
+        XCTAssertLessThan(chip.titleImage().size.width, 40, "a short title stays its own width")
+    }
+
     /// 2026-10-31, the owner: on launch the strip didn't show which file was selected. Tabs are
     /// restored before the strip has its size; the tint follows the chip once it's laid out.
     func testTheTintFindsTheSelectedTabOnceTheStripIsLaidOut() throws {

@@ -1565,8 +1565,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// The title alone, as the chip draws it lifted: the layer that travels into the card.
     func titleImage() -> NSImage {
         let attributes: [NSAttributedString.Key: Any] = [.font: DS.Text.body(.medium), .foregroundColor: NSColor.labelColor]
-        let text = Self.label(title: title, detail: "", attributes: attributes)
-        let size = NSSize(width: ceil(min(text.size().width, Self.maxTextWidth)) + 1, height: ceil(text.size().height))
+        // Cut as the tab cuts it (draw): a tab of the strip's even width has less room than
+        // maxTextWidth, and the whole title laid over the dragged tab ran past its shape (2026-11-21).
+        let room = bounds.width > 0 ? min(Self.maxTextWidth, max(1, bounds.width - textX - Self.trailingReserve - Self.flare)) : Self.maxTextWidth
+        let text = Self.cut(Self.label(title: title, detail: "", attributes: attributes), title: title, detail: "", width: room)
+        let size = NSSize(width: ceil(min(text.size().width, room)) + 1, height: ceil(text.size().height))
         return Self.drawnNow(size: size, appearance: effectiveAppearance) {
             text.draw(with: NSRect(origin: .zero, size: size), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
         }
