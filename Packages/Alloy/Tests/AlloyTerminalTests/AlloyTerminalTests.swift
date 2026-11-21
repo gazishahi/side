@@ -517,6 +517,47 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(try draw(row, font: TerminalFont(fira)), byWord)
     }
 
+    // MARK: Right-to-left text
+
+    /// Hebrew reads right to left: the word's first letter is drawn rightmost.
+    func testRightToLeftTextIsDrawnInReadingOrder() throws {
+        let renderer = try makeRenderer()
+        let glyphs = renderer.rightToLeftGlyphsForTesting("שלום")
+        XCTAssertEqual(glyphs.count, 4)
+        let byIndex = Dictionary(uniqueKeysWithValues: glyphs.map { ($0.index, $0.x) })
+        XCTAssertGreaterThan(byIndex[0]!, byIndex[1]!, "ש right of ל")
+        XCTAssertGreaterThan(byIndex[1]!, byIndex[3]!, "and the last letter leftmost")
+    }
+
+    /// Arabic letters take their joined forms in a word, not the isolated ones a glyph a cell
+    /// would draw (the regression of docs/SIDE_RFC_TERMINAL_ENGINE.md).
+    func testArabicLettersJoin() throws {
+        let renderer = try makeRenderer()
+        let word = "سلام"
+        let glyphs = renderer.rightToLeftGlyphsForTesting(word)
+        XCTAssertFalse(glyphs.isEmpty)
+        // The isolated form of each letter, in the font the run was drawn with.
+        let font = try XCTUnwrap(glyphs.first?.font)
+        var differing = 0
+        for g in glyphs {
+            let units = Array(word.utf16)
+            guard units.indices.contains(g.index) else { continue }
+            var unit = units[g.index], isolated: CGGlyph = 0
+            CTFontGetGlyphsForCharacters(font, &unit, &isolated, 1)
+            if isolated != g.glyph { differing += 1 }
+        }
+        XCTAssertGreaterThan(differing, 0, "some letters in a joined form")
+        // Drawn, it differs from a glyph a cell.
+        let grid = TerminalGrid(columns: 6, rows: 1, foreground: 0xFFFFFF)
+        for (x, scalar) in word.unicodeScalars.enumerated() { grid[x + 1, 0] = TerminalCell(scalar: scalar.value, foreground: 0xFFFFFF) }
+        grid.cursor.visible = false
+        let joined = try render(grid, renderer: renderer)
+        let cellByCell = try makeRenderer()
+        cellByCell.drawsRightToLeftRuns = false
+        let apart = try render(grid, renderer: cellByCell)
+        XCTAssertNotEqual(joined, apart)
+    }
+
     /// Composing text is drawn at the cursor, over what's there, underlined.
     func testComposingTextAtTheCursor() throws {
         let renderer = try makeRenderer()

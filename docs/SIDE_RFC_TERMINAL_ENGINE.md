@@ -222,8 +222,11 @@ already keeps, which SwiftTerm couldn't show without slowing down.
 **Later, not for the switch:** Tier 2 below, kitty graphics (`kitty_graphics.h`) among it.
 Ligatures are Tier 1.
 
-**Known regression:** Arabic draws one letter per cell, unjoined, as Ghostty does. SwiftTerm
-shapes it.
+**Right-to-left text** (resolved 2026-11-20): runs of Arabic, Hebrew and the other
+right-to-left scripts are drawn in reading order with their letters joined, laid out by
+CoreText and right-aligned in their cells (squeezed if wider), as SwiftTerm and Terminal.app
+show them. Only the drawing: cells, the cursor and selection keep the program's order. (It
+first drew a letter a cell, unjoined, as Ghostty does with bidi off.)
 
 **Tests to port:**
 - `AccessibilityTests` (the terminal's text area);
@@ -296,8 +299,7 @@ Settled with the RFC's acceptance (2026-11-12):
   engine and needs nothing from Ghostty.
 
 Still open:
-1. **The Arabic regression**: accept it, as Ghostty does, or shape right-to-left runs with
-   CoreText later.
+1. ~~**The Arabic regression**~~: resolved, right-to-left runs shaped with CoreText (above).
 2. **The fallback**: keep SwiftTerm as a setting for one release, or switch outright once parity
    passes.
 3. **Alloy's public description**: say now that it renders cell grids as well as documents, or

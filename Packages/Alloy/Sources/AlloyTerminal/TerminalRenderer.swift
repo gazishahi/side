@@ -267,7 +267,7 @@ public final class TerminalRenderer {
     func assemble(_ grid: TerminalGrid, scale: CGFloat, size: (width: Float, height: Float) = (0, 0)) -> [Quad] {
         // A new scale or size invalidates every row; a restarted atlas, every cached glyph too.
         if scale != builtScale || grid.rows != builtRows || atlas.generation != atlasGeneration {
-            if scale != builtScale || atlas.generation != atlasGeneration { glyphCache.removeAll(); runCache.removeAll() }
+            if scale != builtScale || atlas.generation != atlasGeneration { glyphCache.removeAll(); runCache.removeAll(); rightToLeftCache.removeAll() }
             builtScale = scale
             builtRows = grid.rows
             atlasGeneration = atlas.generation
@@ -291,6 +291,7 @@ public final class TerminalRenderer {
             atlasGeneration = atlas.generation
             glyphCache.removeAll()
             runCache.removeAll()
+            rightToLeftCache.removeAll()
             for y in 0..<grid.rows { rebuild(row: y, of: grid, scale: scale) }
         }
         var quads: [Quad] = []
@@ -591,6 +592,14 @@ public final class TerminalRenderer {
         x = 0
         while x < grid.columns {
             let c = grid.cells[rowStart + x]
+            // Right-to-left text (Arabic, Hebrew): its run laid out as it reads, letters joined.
+            if drawsRightToLeftRuns, Self.isRightToLeft(c.scalar), !c.style.contains(.spacer) {
+                let end = rightToLeftRunEnd(grid, row: y, from: x)
+                drawRightToLeft(grid, row: y, cells: x..<end, scale: scale, left: (Float(x) * cw).rounded(.down), baseline: baseline,
+                                cellWidth: cw, emit: { quad, cell in emit(quad, for: cell) }, ink: ink, drawCell: drawCell)
+                x = end
+                continue
+            }
             if font.shapesRuns(c.style), Self.shapeable(c), c.scalar > 32 {
                 // The run: plain text in one face, spaces included, trailing spaces left off.
                 let face = c.style.intersection([.bold, .italic])
@@ -706,6 +715,113 @@ public final class TerminalRenderer {
         // its cell. They keep a glyph a cell, as Ghostty does with bidi off.
         case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF: return false
         default: return true
+        }
+    }
+
+    // MARK: Right-to-left text
+
+    /// A strong right-to-left letter: Hebrew, Arabic, Syriac, Thaana, N'Ko and their presentation
+    /// forms, and the right-to-left planes beyond the BMP.
+    static func isRightToLeft(_ scalar: UInt32) -> Bool {
+        switch scalar {
+        case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF, 0x10800...0x10FFF, 0x1E800...0x1EFFF: true
+        default: false
+        }
+    }
+
+    /// Where a right-to-left run that starts at `start` ends: its letters, and the spaces, digits
+    /// and punctuation between them (not after the last letter, which belong to what follows).
+    private func rightToLeftRunEnd(_ grid: TerminalGrid, row: Int, from start: Int) -> Int {
+        let rowStart = row * grid.columns
+        var end = start + 1, lastLetter = start
+        while end < grid.columns {
+            let c = grid.cells[rowStart + end]
+            if c.style.contains(.wide) || c.style.contains(.spacer) { break }
+            if Self.isRightToLeft(c.scalar) { lastLetter = end; end += 1; continue }
+            // Neutral between letters: a space, a digit, punctuation.
+            guard c.scalar <= 0x7E || (0x2000...0x206F).contains(c.scalar) || (0x0660...0x0669).contains(c.scalar), !c.style.contains(.cluster) else { break }
+            end += 1
+        }
+        return lastLetter + 1
+    }
+
+    /// A right-to-left run laid out by CoreText: its glyphs in the order they read, each with its
+    /// x in points from the run's left edge and the UTF-16 index it came from; the run's width.
+    private struct RightToLeftLayout {
+        struct Glyph { let entry: AtlasEntry; let x: CGFloat; let index: Int; let glyph: CGGlyph; let font: CTFont }
+        let glyphs: [Glyph]
+        let width: CGFloat
+    }
+    private var rightToLeftCache: [RunKey: RightToLeftLayout] = [:]
+    /// Testing: off draws right-to-left text a glyph a cell, as before.
+    var drawsRightToLeftRuns = true
+
+    /// Testing: a right-to-left run's glyphs, in drawing order, with the UTF-16 index each came
+    /// from, its x in points and its glyph in its font.
+    func rightToLeftGlyphsForTesting(_ text: String) -> [(index: Int, x: CGFloat, glyph: CGGlyph, font: CTFont)] {
+        rightToLeftLayout(text, face: [], scale: 2).glyphs.map { ($0.index, $0.x, $0.glyph, $0.font) }
+    }
+
+    private func rightToLeftLayout(_ text: String, face: TerminalCell.Style, scale: CGFloat) -> RightToLeftLayout {
+        let key = RunKey(text: text, face: face)
+        if let known = rightToLeftCache[key] { return known }
+        if rightToLeftCache.count > 2048 { rightToLeftCache.removeAll() }
+        let base = font.face(face)
+        let attributed = CFAttributedStringCreate(nil, text as CFString, [kCTFontAttributeName: base] as CFDictionary)!
+        let line = CTLineCreateWithAttributedString(attributed)
+        var glyphs: [RightToLeftLayout.Glyph] = []
+        for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {
+            let attributes = CTRunGetAttributes(run) as NSDictionary
+            let runFont = attributes[kCTFontAttributeName] as! CTFont
+            let isColor = CTFontGetSymbolicTraits(runFont).contains(.traitColorGlyphs)
+            let count = CTRunGetGlyphCount(run)
+            var ids = [CGGlyph](repeating: 0, count: count), positions = [CGPoint](repeating: .zero, count: count)
+            var indices = [CFIndex](repeating: 0, count: count)
+            CTRunGetGlyphs(run, CFRange(location: 0, length: count), &ids)
+            CTRunGetPositions(run, CFRange(location: 0, length: count), &positions)
+            CTRunGetStringIndices(run, CFRange(location: 0, length: count), &indices)
+            let synthetic = CFEqual(runFont, base) ? font.synthetic(face) : []
+            for i in 0..<count {
+                guard let entry = atlas.entry(font: runFont, glyph: ids[i], subpixel: 0, scale: scale, isColor: isColor, synthetic: synthetic) else { continue }
+                glyphs.append(.init(entry: entry, x: positions[i].x, index: indices[i], glyph: ids[i], font: runFont))
+            }
+        }
+        let layout = RightToLeftLayout(glyphs: glyphs, width: CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
+        rightToLeftCache[key] = layout
+        return layout
+    }
+
+    /// Draws cells `cells` of `row` as one right-to-left run: reordered for reading and joined,
+    /// as SwiftTerm and Terminal.app show it, right-aligned in the run's cells and squeezed to
+    /// fit them if it's wider. Only what's drawn: the cells, the cursor and selection keep the
+    /// program's order. A run CoreText can't lay out falls back to a glyph a cell.
+    private func drawRightToLeft(_ grid: TerminalGrid, row: Int, cells: Range<Int>, scale: CGFloat, left: Float, baseline: Float,
+                                 cellWidth cw: Float, emit: (Quad, TerminalCell) -> Void, ink: (Int, TerminalCell) -> SIMD4<Float>,
+                                 drawCell: (Int) -> Void) {
+        let rowStart = row * grid.columns
+        // The run's text, and which cell each UTF-16 unit came from.
+        var text = "", cellOfUnit: [Int] = []
+        for x in cells {
+            let c = grid.cells[rowStart + x]
+            let piece = c.style.contains(.cluster) ? (grid.rowClusters[row][x] ?? "") : (c.scalar > 0 ? UnicodeScalar(c.scalar).map { String($0) } ?? " " : " ")
+            text += piece
+            cellOfUnit += Array(repeating: x, count: piece.utf16.count)
+        }
+        let face = grid.cells[rowStart + cells.lowerBound].style.intersection([.bold, .italic])
+        let layout = rightToLeftLayout(text, face: face, scale: scale)
+        guard !layout.glyphs.isEmpty, layout.width > 0 else { for x in cells { drawCell(x) }; return }
+        let span = (Float(cells.count) * cw).rounded(.down)
+        let width = Float(layout.width * scale)
+        let squeeze = min(1, span / width)
+        let start = left + max(0, span - width)
+        for g in layout.glyphs where g.entry.region.width > 0 {
+            let x = cellOfUnit.indices.contains(g.index) ? cellOfUnit[g.index] : cells.lowerBound
+            let cell = grid.cells[rowStart + x]
+            let r = g.entry.region
+            let glyphX = start + (Float(g.x * scale) + Float(g.entry.offset.x)) * squeeze
+            emit(Quad(rect: SIMD4(glyphX, baseline + Float(g.entry.offset.y), Float(r.width) * squeeze, Float(r.height)),
+                      uv: SIMD4(Float(r.minX), Float(r.minY), Float(r.width), Float(r.height)),
+                      color: g.entry.isColor ? SIMD4(1, 1, 1, 1) : ink(x, cell), kind: g.entry.isColor ? 2 : 1), cell)
         }
     }
 
