@@ -8,6 +8,8 @@
 #   scripts/publish-package.sh --release-only Alloy 0.7.4          the Release for a tag that
 #                                                                   already exists (backfill)
 #   DRY_RUN=1 scripts/publish-package.sh --release-only Alloy 0.7.4  print those notes only
+#   DRY_RUN=1 scripts/publish-package.sh Alloy 0.7.4 "..."          what would be published;
+#                                                                   nothing pushed
 #
 # The commit message's first argument is its subject; set NOTES_BODY for a body (its "- " lines
 # become sub-bullets in the release notes). Notes are the commits since the previous tag.
@@ -36,6 +38,9 @@ if (( ! RELEASE_ONLY )); then
   git -C "$ROOT" archive "HEAD:Packages/$PACKAGE" | tar -x
   git add -A
   git diff --cached --quiet && { echo "nothing changed since the last publish" >&2; exit 1; }
+  # A dry run stops here: it once went on to commit, push and tag (Alloy 0.9.0, 2026-11-21),
+  # since it only applied to --release-only.
+  [[ -n "${DRY_RUN:-}" ]] && { echo "==> Would publish $PACKAGE $VERSION: $SUBJECT"; git diff --cached --stat | tail -1; exit 0; }
   # An array: `${NOTES_BODY:+-m "$NOTES_BODY"}` is one word in zsh ("-m <body>"), which made the
   # body start with a space and the notes skip its first bullet (Heron 0.1.2).
   message=(-m "$SUBJECT"); [[ -n "${NOTES_BODY:-}" ]] && message+=(-m "$NOTES_BODY")
