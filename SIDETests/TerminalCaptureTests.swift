@@ -1,3 +1,4 @@
+import AlloyTerminal
 import XCTest
 @testable import Side
 @testable import SideAgents
@@ -417,6 +418,28 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         cg.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
         cg.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
         screen.scrollWheel(with: NSEvent(cgEvent: cg)!)
+    }
+
+    /// Focus reports (DEC mode 1004): a program that asked is told when the terminal gains or loses
+    /// the keyboard; one that didn't is told nothing. (Before the mode is on, a gain is sent first
+    /// here; had it leaked, the program would read it before the lost-then-gained it asked for.)
+    func testFocusReportsOnlyOnceAsked() throws {
+        let surface = makeSurface()
+        let window = NSWindow(contentRect: surface.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        let view = try XCTUnwrap(surface.screenForTesting as? AlloyTerminalView)
+        surface.startProcess(executable: "/bin/sh",
+                             arguments: ["-c", "stty raw -echo; printf 'ready\\r\\n'; read -r _ </dev/null; sleep 1; printf '\\033[?1004hon\\r\\n'; head -c 6 | od -An -c"],
+                             environment: TerminalEnvironment.base(), currentDirectory: nil)
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("ready") })
+        view.setFocusedForTesting(true)
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("on") })
+        view.setFocusedForTesting(false)
+        view.setFocusedForTesting(true)
+        func text() -> String { surface.visibleText().split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        XCTAssertTrue(waitUntil { text().contains("033 [ O 033 [ I") }, text())
     }
 
     /// ⌘-click hands a path to Side (which opens it in Editor) and a link's URL too.

@@ -171,6 +171,12 @@ final class SideTerminalTests: XCTestCase {
         XCTAssertEqual(text(read(reader)[1]), "TWO x", "the reader has the terminal's rows")
     }
 
+    /// Focus reports (mode 1004): CSI I when the terminal gains the keyboard, CSI O when it loses it.
+    func testFocusReports() {
+        XCTAssertEqual(FocusReport.encode(gained: true), Array("\u{1b}[I".utf8))
+        XCTAssertEqual(FocusReport.encode(gained: false), Array("\u{1b}[O".utf8))
+    }
+
     func testResize() throws {
         let terminal = try Terminal(columns: 10, rows: 2)
         let reader = ScreenReader(terminal: terminal)

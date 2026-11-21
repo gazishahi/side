@@ -24,6 +24,9 @@ public final class AlloyTerminalView: NSView {
     /// The scroll wheel or trackpad, in rows (fractional on a trackpad); positive is up, toward
     /// older output. With where the pointer is (`TerminalMouseEvent`'s x and y).
     public var scrollHandler: ((_ rows: Double, _ x: Double, _ y: Double) -> Void)?
+    /// The terminal gained (true) or lost the keyboard: its window became or stopped being key,
+    /// or it became or stopped being the first responder. For focus reports (DEC mode 1004).
+    public var focusHandler: ((Bool) -> Void)?
 
     public var source: TerminalGridSource? {
         get { engine.source }
@@ -124,7 +127,11 @@ public final class AlloyTerminalView: NSView {
         guard focused != isFocused else { return }
         isFocused = focused
         engine.setFocused(focused)
+        focusHandler?(focused)
     }
+
+    /// Testing: focus as if the window became key and the view first responder, or the opposite.
+    public func setFocusedForTesting(_ focused: Bool) { setFocused(focused) }
 
     /// Shows the cursor and restarts its blink.
     func resetBlink() { engine.resetBlink() }

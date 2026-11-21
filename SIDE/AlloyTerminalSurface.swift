@@ -109,6 +109,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
         view.onGridResize = { [weak self] columns, rows in self?.gridResized(columns: columns, rows: rows) }
         view.mouseHandler = { [weak self] event in self?.handleMouse(event) }
         view.scrollHandler = { [weak self] rows, x, y in self?.handleScroll(rows, x: x, y: y) }
+        view.focusHandler = { [weak self] focused in self?.focusChanged(focused) }
         addSubview(view, positioned: .below, relativeTo: nil)
         if let theme { applyTheme(theme) }
         gridResized(columns: view.columns, rows: view.rows)
@@ -176,6 +177,16 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
         } else if onInputWithoutKeeper?() != true {
             process?.write(bytes)
         }
+    }
+
+    /// Focus reports (DEC mode 1004), for a program that asked: vim, tmux, Claude Code. Straight
+    /// to the program, not as typing: no line is submitted, and a lost session isn't brought back
+    /// by a window becoming key.
+    private func focusChanged(_ focused: Bool) {
+        guard terminal.isModeSet(1004) else { return }
+        let bytes = FocusReport.encode(gained: focused)
+        guard !bytes.isEmpty else { return }
+        if let keeper { keeper.input(bytes[...]) } else { process?.write(bytes[...]) }
     }
 
     func paste(text: String) {
