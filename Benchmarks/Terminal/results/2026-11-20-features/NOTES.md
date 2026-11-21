@@ -1,5 +1,8 @@
 # Feature workloads: the RFC's rule 4 (2026-11-20)
 
+> Superseded by `../2026-11-20-rerun/NOTES.md`: rerun after the shaping cache (a5c9ceb) and
+> the keeper's reader (7be08ba), with a breakdown of where the throughput gap comes from.
+
 The workloads `docs/SIDE_RFC_TERMINAL_ENGINE.md` (rule 4) asks for before any renderer claim
 against Ghostty: ligature-heavy code, box drawing, styled underlines, selection while streaming
 and a scrolled-back viewport. Images (kitty graphics) are Tier 2 and not here.

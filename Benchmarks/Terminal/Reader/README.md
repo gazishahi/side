@@ -18,7 +18,15 @@ non-blocking reads, 16 spin retries then a 1 ms poll once a read fills the kerne
 | Ghostty's reader, no parsing | 150.2 | 172.0 | 0.42 s |
 | blocking reader, no parsing | 121.3 | 122.4 | 0.27 s |
 
-Ghostty's reader at its best matches Ghostty itself (setup D, 158 MB/s); the blocking reader
-stays at ~120–129 even without parsing: it wakes per ~1 KiB, in lockstep with the writer, as
-Ghostty's source says. The spin costs CPU (0.82 s against 0.48 s). To be re-run on a quiet
-machine before quoting.
+Rerun the same evening once the machine was quiet (load under 3.5 at the start; tight spreads):
+
+| | median MB/s | best | CPU |
+|---|---|---|---|
+| Ghostty's reader, parsing | 183.8 | 185.9 | 0.68 s |
+| blocking reader, parsing | 143.7 | 145.7 | 0.44 s |
+| Ghostty's reader, no parsing | 188.2 | 190.9 | 0.34 s |
+| blocking reader, no parsing | 126.2 | 130.2 | 0.24 s |
+
+Ghostty's reader is 28% ahead with parsing, about Ghostty's own lead over Side's engine (setup D
+against E with drawing off, `../results/2026-11-20-rerun/`). The blocking reader wakes per
+~1 KiB, in lockstep with the writer, as Ghostty's source says; the spin costs CPU.

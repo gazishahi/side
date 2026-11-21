@@ -1,0 +1,46 @@
+Building for production...
+[Planning deferred tasks]
+[1 / 11]
+[3 / 6] SwiftTerm
+Build complete! (1.66 sec)
+Building for production...
+[Planning deferred tasks]
+[2 / 5]
+[3 / 6] TermBenchGV-product
+/Users/gazishahi/Documents/side/SIDE/Benchmarks/Terminal/TermBench/Sources/TermBenchGV/main.swift:36:17: [1;33mwarning: [1;39mvariable 'me' was never mutated; consider changing to 'let' constant[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated\VariableNeverMutated]8;;\]
+ [0;36m34 |[0;0m         // SwiftTerm and Ghostty both do. TERMBENCH_NOHOLD=1 ignores holds (the 11-03 prototype).
+ [0;36m35 |[0;0m         if ProcessInfo.processInfo.environment["TERMBENCH_NOHOLD"] != "1" {
+ [0;36m36 |[0;0m             var me: UnsafeMutableRawPointer? = Unmanaged.passUnretained(self).toOpaque()
+    [0;36m|[0;0m                 `- [1;33mwarning: [1;39mvariable 'me' was never mutated; consider changing to 'let' constant[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated\VariableNeverMutated]8;;\]
+ [0;36m37 |[0;0m             ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, me)
+ [0;36m38 |[0;0m             let hold: GhosttyTerminalRenderHoldFn = { terminal, userdata, held in
+
+[#VariableNeverMutated]: <https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated>
+[4 / 7] TermBenchGV-product
+[6 / 7] TermBenchGV-product
+[7 / 7] TermBenchGV-product
+Build complete! (2.37 sec)
+Building for production...
+[Planning deferred tasks]
+[3 / 6] TermBenchGK-product
+/Users/gazishahi/Documents/side/SIDE/Benchmarks/Terminal/TermBench/Sources/TermBenchGK/main.swift:42:1: [1;33mwarning: [1;39m'@preconcurrency' on conformance to 'NSTextInputClient' has no effect[0;0m
+ [0;36m40 |[0;0m }
+ [0;36m41 |[0;0m 
+ [0;36m42 |[0;0m extension SurfaceHost: @preconcurrency NSTextInputClient {
+    [0;36m|[0;0m `- [1;33mwarning: [1;39m'@preconcurrency' on conformance to 'NSTextInputClient' has no effect[0;0m
+ [0;36m43 |[0;0m     func insertText(_ string: Any, replacementRange: NSRange) {
+ [0;36m44 |[0;0m         typed = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+[4 / 7] TermBenchGK-product
+[6 / 7] TermBenchGK-product
+[7 / 7] TermBenchGK-product
+Build complete! (3.49 sec)
+Building for production...
+[1 / 1]
+[3 / 8] SideTerminal
+[4 / 9] CKeeperSpawn
+[5 / 9] CKeeperSpawn
+[7 / 10] SideTerminal
+[11 / 12] TermBenchE-product
+[12 / 12] TermBenchE-product
+Build complete! (3.43 sec)
+DONE
