@@ -53,6 +53,31 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(grid.dirty, [false, false], "drawn rows are clean")
     }
 
+    /// A translucent theme (Side's translucent background) as Ghostty's background-opacity at its
+    /// defaults: only the default background lets the window's glass through; a cell's own
+    /// background, its text and an image stay opaque (background-opacity-cells = false).
+    func testATranslucentBackgroundAppliesToTheDefaultBackgroundOnly() throws {
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let renderer = try TerminalRenderer(device: device, font: font, theme: TerminalTheme(background: SIMD4(0.2, 0.2, 0.2, 0.5), cursor: 0xFFFFFF))
+        let grid = TerminalGrid(columns: 6, rows: 1, foreground: 0xFFFFFF)
+        grid.cursor.visible = false
+        grid[1, 0] = TerminalCell(foreground: 0xFFFFFF, background: 0x005F87)
+        grid[3, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "M")), foreground: 0xFFFFFF)
+        let key = TerminalImage.Key(id: 1, generation: 1)
+        grid.newImagePixels = [solid(key, [255, 0, 0, 255])]
+        grid.images = [place(key, .belowText, x: 5, y: 0, width: 1, height: 1)]
+        let pixels = try render(grid, renderer: renderer)
+
+        func all(_ column: Int, _ test: (Pixels.RGBA) -> Bool) -> Bool {
+            let r = cellRect(column: column, row: 0)
+            return pixels.count(in: r, test) == r.x.count * r.y.count
+        }
+        XCTAssertTrue(all(0) { (126...129).contains($0.a) && (24...27).contains($0.r) }, "the default background: half alpha, premultiplied")
+        XCTAssertTrue(all(1) { $0.a == 255 && $0.b == 0x87 }, "a cell's own background is opaque")
+        XCTAssertGreaterThan(pixels.count(in: cellRect(column: 3, row: 0)) { $0.a == 255 && $0.r > 250 }, 10, "text is opaque")
+        XCTAssertTrue(all(5) { $0.a == 255 && $0.r > 250 }, "so is an image")
+    }
+
     // MARK: Images (kitty graphics)
 
     /// One color's pixels, width × height, RGBA.
