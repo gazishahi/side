@@ -74,7 +74,12 @@ final class RunWorkspaceViewController: NSViewController {
     /// `cwd · last exit N · duration · running <task> in tab N` (§4.3), trailing the task row.
     private let statusLine = NSTextField(labelWithString: "")
     private static let taskRowHeight: CGFloat = 26
-    private static let newTabDiameter: CGFloat = TabStripView.trackHeight
+    /// Smaller than the tabs' track, so it sits as far from the window's top edge as from its
+    /// right one (the owner, 2026-11-20: the + was 4pt from the top and 12pt from the right).
+    private static let newTabDiameter: CGFloat = ChromeHost.rowHeight - 2 * newTabInset
+    private static let newTabInset: CGFloat = DS.Spacing.m
+    /// Where the tabs end, as they did with a + the track's height: the + changing size moves no tab.
+    private static let tabsTrailingInset: CGFloat = DS.Spacing.xs + TabStripView.trackHeight + DS.Spacing.s
     private var newTabButton: NSView?
     /// A tab dragged out of the window: the shell opens a window that adopts the session.
     var onTearOutRequested: ((TerminalSession, NSPoint) -> Void)?
@@ -280,16 +285,16 @@ final class RunWorkspaceViewController: NSViewController {
         // New tab, as every terminal and IDE has (the owner, 2026-11-12: "even Rex has one"), in
         // one place at the strip's top right, as Rex has it, whatever the tabs do.
         let shortcut = Shortcuts.display("run.newTerminal")
-        // On the same glass as the tabs' track, as tall as it.
+        // On the same glass as the tabs' track; centred in the top row, the window's edges equally far.
         let newTab = GlassCircleButton(symbol: "plus", accessibilityLabel: "New Terminal Tab", diameter: Self.newTabDiameter)
         newTab.setGlass(true)
-        newTab.button.image = newTab.button.image?.withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        newTab.button.image = newTab.button.image?.withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
         newTab.button.toolTip = shortcut.isEmpty ? "New Terminal Tab" : "New Terminal Tab  \(shortcut)"
         newTab.button.target = self
         newTab.button.action = #selector(newSession)
         newTab.button.setAccessibilityIdentifier("run.newTab")
         tabBar.addSubview(newTab)
-        tabBar.trailingReserve = Self.newTabDiameter + DS.Spacing.s
+        tabBar.trailingReserve = Self.tabsTrailingInset - DS.Spacing.xs
         newTabButton = newTab
         registryObserver = NotificationCenter.default.addObserver(forName: SessionRegistry.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.rebuildTabBar() }
@@ -329,9 +334,9 @@ final class RunWorkspaceViewController: NSViewController {
         view.bindLayerBackground(DS.Translucency.under(DS.Color.raised))
         NSLayoutConstraint.activate([
             tabScroll.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor),
-            tabScroll.trailingAnchor.constraint(equalTo: newTabButton!.leadingAnchor, constant: -DS.Spacing.s), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabScroll.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -Self.tabsTrailingInset), tabScroll.topAnchor.constraint(equalTo: tabBar.topAnchor), tabScroll.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
             tabBarStack.leadingAnchor.constraint(equalTo: tabScroll.contentView.leadingAnchor), tabBarStack.topAnchor.constraint(equalTo: tabScroll.contentView.topAnchor), tabBarStack.heightAnchor.constraint(equalTo: tabScroll.heightAnchor),
-            newTabButton!.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -DS.Spacing.xs), newTabButton!.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
+            newTabButton!.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: Self.newTabInset - DS.Spacing.m), newTabButton!.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
             divider.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor), divider.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor), divider.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor), divider.heightAnchor.constraint(equalToConstant: 1),
             // Attached to the tab row above it: the active tab and the terminal are one surface.
             container.topAnchor.constraint(equalTo: view.topAnchor), container.leadingAnchor.constraint(equalTo: view.leadingAnchor), container.trailingAnchor.constraint(equalTo: view.trailingAnchor), container.bottomAnchor.constraint(equalTo: view.bottomAnchor),
