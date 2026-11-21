@@ -264,8 +264,13 @@ public final class AlloyTerminalView: NSView {
         let column = min(max(0, Int(fromTop.x / cell.width)), columns - 1)
         let row = min(max(0, Int(fromTop.y / cell.height)), rows - 1)
         let scale = window?.backingScaleFactor ?? 2
+        // Only a button's event has a click count: asking a scroll, move or key event for one raises
+        // (and AppKit swallows it, dropping the event: no wheel scrolled anything, 2026-11-20).
+        let buttons: Set<NSEvent.EventType> = [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp,
+                                               .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         return TerminalMouseEvent(kind: kind, column: column, row: row, x: Double(fromTop.x * scale), y: Double(fromTop.y * scale),
-                                  clickCount: isKey || kind == .exited ? 0 : event.clickCount, modifiers: event.modifierFlags)
+                                  clickCount: !isKey && kind != .exited && buttons.contains(event.type) ? event.clickCount : 0,
+                                  modifiers: event.modifierFlags)
     }
 
     /// The grid's geometry in the drawable's pixels.

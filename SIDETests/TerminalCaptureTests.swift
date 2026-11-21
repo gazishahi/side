@@ -365,6 +365,60 @@ final class AlloyTerminalSurfaceTests: XCTestCase {
         XCTAssertNil(surface.selectedTextForTesting, "the click went to the program, not the selection")
     }
 
+    /// A full-screen program that asked for the mouse (Claude Code's fullscreen renderer: the
+    /// alternate screen, 1000 and 1006) gets the wheel as wheel buttons, from a real scroll event,
+    /// a mouse wheel's and a trackpad's; it scrolls its own transcript with them.
+    func testAFullScreenProgramGetsTheWheel() throws {
+        let surface = makeSurface()
+        let window = NSWindow(contentRect: surface.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        surface.startProcess(executable: "/bin/sh",
+                             arguments: ["-c", "stty raw -echo; printf '\\033[?1049h\\033[?1000h\\033[?1006hready\\r\\n'; head -c 36 | od -An -c"],
+                             environment: TerminalEnvironment.base(), currentDirectory: nil)
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("ready") })
+        // Two of a wheel's notches up, then a trackpad's swipe down (precise deltas, a few rows'
+        // worth): at least three wheel reports, about 13 bytes each.
+        realScroll(surface, in: window, lines: 2, pixels: false)
+        realScroll(surface, in: window, lines: -1, pixels: true)
+        func text() -> String { surface.visibleText().split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        // od -c shows ESC as 033: "033 [ < 6 4 ;" is a wheel up, "6 5" a wheel down.
+        XCTAssertTrue(waitUntil { text().contains("033 [ < 6 4 ;") }, "no wheel up reached the program: \(text())")
+        XCTAssertTrue(waitUntil { text().contains("033 [ < 6 5 ;") || text().contains("< 6 5 ;") }, "no wheel down: \(text())")
+    }
+
+    /// A shell's scrollback, scrolled by a real scroll event (not the test hook): the event goes
+    /// through the view's own handling, as one from a mouse or trackpad does.
+    func testARealScrollEventScrollsTheScrollback() {
+        let surface = makeSurface()
+        let window = NSWindow(contentRect: surface.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface
+        defer { window.close() }
+        surface.display(text: (1...200).map { "line \($0)" }.joined(separator: "\r\n"))
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("line 200") })
+        realScroll(surface, in: window, lines: 5, pixels: false)
+        XCTAssertTrue(waitUntil { surface.scrollbarForTesting.isScrolledBack }, "a wheel's notches scroll back")
+        let offset = surface.scrollbarForTesting.offset
+        realScroll(surface, in: window, lines: 3, pixels: true)
+        XCTAssertTrue(waitUntil { surface.scrollbarForTesting.offset < offset }, "a trackpad's swipe too")
+    }
+
+    /// A scroll event as macOS delivers one: a wheel's (in lines) or a trackpad's (in pixels,
+    /// with precise deltas), over the middle of the terminal.
+    private func realScroll(_ surface: AlloyTerminalSurface, in window: NSWindow, lines: Int32, pixels: Bool) {
+        let screen = surface.screenForTesting
+        let inside = screen.convert(NSPoint(x: screen.bounds.midX, y: screen.bounds.midY), to: nil)
+        let cg = CGEvent(scrollWheelEvent2Source: nil, units: pixels ? .pixel : .line, wheelCount: 1, wheel1: pixels ? lines * 40 : lines, wheel2: 0, wheel3: 0)!
+        // CoreGraphics' global coordinates run down from the top of the main display.
+        let onScreen = window.convertPoint(toScreen: inside)
+        cg.location = CGPoint(x: onScreen.x, y: (NSScreen.screens.first?.frame.height ?? 0) - onScreen.y)
+        cg.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
+        cg.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
+        screen.scrollWheel(with: NSEvent(cgEvent: cg)!)
+    }
+
     /// ⌘-click hands a path to Side (which opens it in Editor) and a link's URL too.
     func testCommandClickOpensLinks() {
         let surface = makeSurface()
