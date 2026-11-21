@@ -3,6 +3,7 @@ import AppKit
 import Harness
 import Metal
 import SideTerminal
+import Synchronization
 
 /// The emulator's screen as AlloyTerminal's grid, as Side's AlloyTerminalSurface maps it.
 final class ScreenSource: TerminalGridSource, @unchecked Sendable {
@@ -111,6 +112,12 @@ final class SetupE {
         Run.shared.grid = "\(options.cols)x\(options.rows)"
     }
     func start(options: Options) {
+        // Side's own reader (PseudoTerminalProcess, bridged as Ghostty's is), fed as Side's surface
+        // feeds it; TERMBENCH_E_READER=harness: the harness's blocking reader, as before 2026-11-20.
+        if ProcessInfo.processInfo.environment["TERMBENCH_E_READER"] != "harness", options.mode != "latency" {
+            startWithSidesReader(options: options)
+            return
+        }
         Run.shared.shot = { [view] path in MainActor.assumeIsolated { writeShot(view, to: path) } }
         let pty = PTYProcess(command: options.command, cols: options.cols, rows: options.rows)
         let terminal = self.terminal, view = self.view
@@ -169,6 +176,69 @@ final class SetupE {
                 }
             }
         })
+    }
+}
+
+extension SetupE {
+    /// As AlloyTerminalSurface.startProcess: output from the reader's thread to the main thread,
+    /// then to a parse queue; the reader told whether batches are still on their way.
+    func startWithSidesReader(options: Options) {
+        Run.shared.shot = { [view] path in MainActor.assumeIsolated { writeShot(view, to: path) } }
+        let terminal = self.terminal, view = self.view
+        final class Count: Sendable { let value = Atomic<Int>(0) }
+        let inFlight = Count()
+        let parseQueue = DispatchQueue(label: "termbench.e.parse", qos: .userInteractive)
+        let draws = ProcessInfo.processInfo.environment["TERMBENCH_NODRAW"] != "1"
+        let process = PseudoTerminalProcess()
+        keep.append(process)
+        process.isConsumerBusy = { inFlight.value.load(ordering: .relaxed) > 0 }
+        process.onOutput = { bytes in
+            let copy = Array(bytes)
+            inFlight.value.add(1, ordering: .relaxed)
+            DispatchQueue.main.async {
+                let again = Array(copy) // the surface's display copies once more
+                parseQueue.async {
+                    terminal.feed(again)
+                    if draws { view.setNeedsFrame() }
+                    inFlight.value.subtract(1, ordering: .relaxed)
+                }
+            }
+        }
+        process.onExit = { _ in
+            // After the output already on its way: the main thread's queue, then the parse queue's.
+            DispatchQueue.main.async {
+                parseQueue.async {
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            _ = view.renderOffscreen()
+                            Run.shared.frames = view.frames
+                            if !Run.shared.options.view.isEmpty {
+                                let bar = terminal.scrollbar
+                                print("VIEW scrollbar total \(bar.total) offset \(bar.offset) length \(bar.length) scrolledBack \(bar.isScrolledBack)")
+                            }
+                            Run.shared.finish()
+                        }
+                    }
+                }
+            }
+        }
+        if !options.view.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                switch options.view {
+                case "selected": let s = TerminalSelection(terminal: terminal); s.selectAll(); keep.append(s)
+                case "scrolled": terminal.scroll(byRows: -options.rows)
+                default: print("view: \(options.view) unknown")
+                }
+                view.setNeedsFrame()
+            }
+        }
+        let environment = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
+        guard process.start(executable: options.command[0], arguments: Array(options.command.dropFirst()), environment: environment,
+                            directory: nil, columns: options.cols, rows: options.rows) else { print("couldn't start"); exit(1) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (options.view.isEmpty ? 0.3 : 1.3)) {
+            Run.shared.begin()
+            if options.view.isEmpty { process.write(ArraySlice(Array("\n".utf8))) } else { Options.go() }
+        }
     }
 }
 
