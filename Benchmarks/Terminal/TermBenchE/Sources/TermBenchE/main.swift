@@ -276,6 +276,8 @@ final class SessionsE {
     /// Kept here: the view holds its source weakly, and a source let go of draws nothing.
     let source: ScreenSource
     var exited = 0
+    /// Side's readers, kept for the run.
+    var keepAlive: [AnyObject] = []
     init(options: Options) {
         view = makeView(options)
         terminals = (0..<options.sessions).map { _ in makeTerminal(options) }
@@ -284,6 +286,12 @@ final class SessionsE {
         Run.shared.grid = "\(options.cols)x\(options.rows)"
     }
     func start(options: Options) {
+        // Side's own reader for every session, fed as Side's surfaces feed theirs (each tab is a
+        // surface, on screen or not); TERMBENCH_E_READER=harness: the harness's reader, as before.
+        if ProcessInfo.processInfo.environment["TERMBENCH_E_READER"] != "harness" {
+            startWithSidesReader(options: options)
+            return
+        }
         var ptys: [PTYProcess] = []
         let view = view
         for (i, terminal) in terminals.enumerated() {
@@ -300,6 +308,55 @@ final class SessionsE {
             })
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { Run.shared.begin(); for p in ptys { _ = write(p.master, "\n", 1) } }
+    }
+}
+
+extension SessionsE {
+    func startWithSidesReader(options: Options) {
+        final class Count: Sendable { let value = Atomic<Int>(0) }
+        let view = view
+        let environment = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
+        var processes: [PseudoTerminalProcess] = []
+        for (i, terminal) in terminals.enumerated() {
+            let shown = i == 0
+            let inFlight = Count()
+            let parseQueue = DispatchQueue(label: "termbench.e.parse.\(i)", qos: .userInteractive)
+            let process = PseudoTerminalProcess()
+            process.isConsumerBusy = { inFlight.value.load(ordering: .relaxed) > 0 }
+            process.onOutput = { bytes in
+                let copy = Array(bytes)
+                inFlight.value.add(1, ordering: .relaxed)
+                DispatchQueue.main.async {
+                    let again = Array(copy) // the surface's display copies once more
+                    parseQueue.async {
+                        terminal.feed(again)
+                        if shown { view.setNeedsFrame() }
+                        inFlight.value.subtract(1, ordering: .relaxed)
+                    }
+                }
+            }
+            process.onExit = { _ in
+                // After the output already on its way: the main thread's queue, then the parse queue's.
+                DispatchQueue.main.async {
+                    parseQueue.async {
+                        DispatchQueue.main.async {
+                            MainActor.assumeIsolated {
+                                self.exited += 1
+                                if self.exited == self.terminals.count { Run.shared.frames = self.view.frames; Run.shared.finish() }
+                            }
+                        }
+                    }
+                }
+            }
+            guard process.start(executable: options.command[0], arguments: Array(options.command.dropFirst()), environment: environment,
+                                directory: nil, columns: options.cols, rows: options.rows) else { print("couldn't start"); exit(1) }
+            processes.append(process)
+        }
+        keepAlive = processes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            Run.shared.begin()
+            for p in processes { p.write(ArraySlice(Array("\n".utf8))) }
+        }
     }
 }
 

@@ -41,9 +41,9 @@ extra frame per key (`../validation/`, and the note drafted for Ghostty's author
 | D | 1.48 s | 0.35 s | 318 MB |
 | E | 1.11 s | (0.001 s) | 171 MB |
 
-E's sessions mode still reads through the harness's reader, feeding the parser from that thread,
-not Side's path (which passes each batch through the main thread): its main-thread figure is not
-Side's and isn't to be quoted. Its process CPU and footprint stand.
+E's sessions mode still read through the harness's reader here, feeding the parser from that
+thread, not Side's path: its row is superseded by `../2026-11-21-sessions/NOTES.md` (Side's
+reader: main thread 0.108 s, process 1.22 s against D's 0.95 s, 177 MB against 321).
 
 ## What can be said
 
