@@ -97,5 +97,20 @@ of the features. D's frame cost can't be measured this way.
   D's frame count isn't known.
 - Can't: a Side-against-Ghostty throughput number as users see it. Side reads through its keeper
   (107–117 MB/s now); Ghostty reads its PTY directly (162–212).
-- Not yet done: E's own (non-keeper) reader with Ghostty's loop, which should close most of the
-  standalone gap; latency on the display clock after these changes (needs Terminal.app).
+- Not yet done: latency on the display clock after these changes (needs Terminal.app).
+
+## After E's own reader (f0679aa, later the same evening)
+
+Side's PseudoTerminalProcess (a terminal reading its own PTY: a command tab, a shell with keepers
+off) now reads as Ghostty does, and setup E reads through it, fed as Side's surface feeds it
+(2585a44). A 3-round interleaved check, not the full suite (load 4.2–4.6), MB/s and process CPU:
+
+| | D | E, Side's reader | E, harness reader |
+|---|---|---|---|
+| ligatures | 156–158 / 1.09 s | 155–158 / 0.87 s | 125–129 / 0.57 s |
+| underlines | 178–192 / 0.94 s | 163–185 / 0.72 s | 138–149 / 0.49 s |
+| ascii | 189–223 / 0.37 s | 171–176 / 0.40 s | 123–131 / 0.34 s |
+
+E now matches Ghostty on ligatures and underlines and is about 20% behind on plain code, down from
+about 40%. The faster reader costs CPU (ligatures 0.57 → 0.87 s), still under D's. The full suite
+hasn't been rerun with it; the tables above use the harness's reader.
