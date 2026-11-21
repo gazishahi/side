@@ -5,6 +5,17 @@ import XCTest
 /// Direction 02 §3: stage pinning, window titles, and the revert-readiness of the floating bar.
 @MainActor
 final class ChromeTests: XCTestCase {
+    /// 2026-11-21, the owner: the activity list's × was a teardrop. The button kept a push
+    /// button's alignment insets (an 18.5 × 20.5 frame), and its fill grew past it by autoresizing.
+    func testACircleButtonsFillIsTheButton() {
+        let button = DS.CircleButton(symbol: "xmark", diameter: 18, label: "Dismiss")
+        let host = NSStackView(views: [button])
+        host.frame = NSRect(x: 0, y: 0, width: 60, height: 30)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(button.frame.size, NSSize(width: 18, height: 18))
+        XCTAssertEqual(button.fillFrameForTesting, button.bounds)
+    }
+
     typealias Stage = ShellViewController.Stage
 
     func testTheStageControlShowsPinsThenAttentionThenTheCurrentUnpinnedStage() {

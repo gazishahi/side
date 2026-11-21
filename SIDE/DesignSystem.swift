@@ -788,8 +788,7 @@ enum DS {
             layer?.cornerRadius = diameter / 2
             layer?.masksToBounds = true
             translatesAutoresizingMaskIntoConstraints = false
-            fill.frame = NSRect(x: 0, y: 0, width: diameter, height: diameter)
-            fill.autoresizingMask = [.width, .height]
+            fill.layer?.cornerCurve = .circular
             addSubview(fill, positioned: .below, relativeTo: nil)
             let width = widthAnchor.constraint(equalToConstant: diameter)
             let height = heightAnchor.constraint(equalToConstant: diameter)
@@ -802,6 +801,16 @@ enum DS {
             toolTip = label
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        /// None: a borderless button still kept its push style's alignment insets, so the
+        /// constraints sized an 18 pt alignment rect inside an 18.5 × 20.5 frame, taller at the top,
+        /// and the circle clipped from it came out a teardrop (the activity list's ×, 2026-11-21).
+        override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets() }
+        /// The fill is the button's own bounds, whatever size it ends up.
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            fill.frame = bounds
+        }
+        var fillFrameForTesting: NSRect { fill.frame }
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             trackingAreas.forEach(removeTrackingArea)
