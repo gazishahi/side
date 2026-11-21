@@ -56,6 +56,7 @@ final class GeneralPreferencesViewController: NSViewController {
     private let minimapSwitch = NSSwitch()
     private let keepRunningSwitch = NSSwitch()
     private let confirmCloseSwitch = NSSwitch()
+    private let menuBarSwitch = NSSwitch()
     private var writerSwitches: [WriterPreferences.Aid: NSSwitch] = [:]
     private var observer: NSObjectProtocol?
     private var sideObserver: NSObjectProtocol?
@@ -86,6 +87,10 @@ final class GeneralPreferencesViewController: NSViewController {
         confirmCloseSwitch.action = #selector(confirmCloseToggled(_:))
         confirmCloseSwitch.controlSize = .small
         confirmCloseSwitch.setAccessibilityLabel("Ask before closing a running terminal")
+        menuBarSwitch.target = self
+        menuBarSwitch.action = #selector(menuBarToggled(_:))
+        menuBarSwitch.controlSize = .small
+        menuBarSwitch.setAccessibilityLabel("Show running sessions in the menu bar")
         let sidePopup = SettingsForm.popup(FileExplorer.Side.allCases.map(\.title), selected: 0, self, #selector(explorerSideChanged(_:)))
         explorerPopup = sidePopup
         let page = SettingsForm.page([
@@ -111,6 +116,8 @@ final class GeneralPreferencesViewController: NSViewController {
                                  keepRunningSwitch),
                 SettingsForm.row("Ask before closing a running terminal", detail: "When a program is running in a tab you close.",
                                  confirmCloseSwitch),
+                SettingsForm.row("Show running sessions in the menu bar", detail: "While Side is closed: what\u{2019}s working, what needs you, and what finished.",
+                                 menuBarSwitch),
             ]),
             SettingsForm.section("Writer Mode", footer: "View \u{2192} Writer Mode: the Editor alone, one column of text, nothing else on screen.",
                                  WriterPreferences.Aid.allCases.map { aid in
@@ -147,6 +154,7 @@ final class GeneralPreferencesViewController: NSViewController {
         minimapSwitch.state = EditorPreferences.minimapShown ? .on : .off
         keepRunningSwitch.state = SessionKeepers.keepsRunningOnQuit ? .on : .off
         confirmCloseSwitch.state = SessionKeepers.confirmsClosingRunning ? .on : .off
+        menuBarSwitch.state = UserDefaults.standard.object(forKey: BackgroundSessions.showKey) as? Bool ?? true ? .on : .off
         for (aid, toggle) in writerSwitches { toggle.state = WriterPreferences.isOn(aid) ? .on : .off }
         let pinned = StagePins.pinned
         for toggle in switches {
@@ -177,6 +185,10 @@ final class GeneralPreferencesViewController: NSViewController {
 
     @objc private func confirmCloseToggled(_ sender: NSSwitch) {
         SessionKeepers.confirmsClosingRunning = sender.state == .on
+    }
+
+    @objc private func menuBarToggled(_ sender: NSSwitch) {
+        UserDefaults.standard.set(sender.state == .on, forKey: BackgroundSessions.showKey)
     }
 
     @objc private func keepRunningToggled(_ sender: NSSwitch) {

@@ -56,6 +56,7 @@
 		A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000251 /* GitLaunchProbeTests.swift */; };
 		A00000000000000000000623 /* SessionRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000622 /* SessionRegistryTests.swift */; };
 		A00000000000000000000B05 /* AgentHooksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B04 /* AgentHooksTests.swift */; };
+		A00000000000000000000B13 /* BackgroundSessionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B12 /* BackgroundSessionsTests.swift */; };
 		A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000257 /* WorkGroupViewTests.swift */; };
 		A00000000000000000000272 /* DataIntegrityAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000271 /* DataIntegrityAuditTests.swift */; };
 		A00000000000000000000274 /* LSPOrderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000273 /* LSPOrderingTests.swift */; };
@@ -93,6 +94,7 @@
 		A0000000000000000000061F /* WelcomeDemos.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000061E /* WelcomeDemos.swift */; };
 		A00000000000000000000621 /* SessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000620 /* SessionRegistry.swift */; };
 		A00000000000000000000B01 /* AgentHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B00 /* AgentHooks.swift */; };
+		A00000000000000000000B11 /* BackgroundSessions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B10 /* BackgroundSessions.swift */; };
 		A00000000000000000000B07 /* Attribution.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B06 /* Attribution.swift */; };
 		A00000000000000000000B0B /* ReviewQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B0A /* ReviewQueue.swift */; };
 		A00000000000000000000B0F /* ReviewQueueRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000B0E /* ReviewQueueRail.swift */; };
@@ -250,6 +252,7 @@
 		A0000000000000000000061E /* WelcomeDemos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeDemos.swift; sourceTree = "<group>"; };
 		A00000000000000000000620 /* SessionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistry.swift; sourceTree = "<group>"; };
 		A00000000000000000000B00 /* AgentHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHooks.swift; sourceTree = "<group>"; };
+		A00000000000000000000B10 /* BackgroundSessions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundSessions.swift; sourceTree = "<group>"; };
 		A00000000000000000000B06 /* Attribution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Attribution.swift; sourceTree = "<group>"; };
 		A00000000000000000000B0A /* ReviewQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewQueue.swift; sourceTree = "<group>"; };
 		A00000000000000000000B0E /* ReviewQueueRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewQueueRail.swift; sourceTree = "<group>"; };
@@ -271,6 +274,7 @@
 		A00000000000000000000251 /* GitLaunchProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLaunchProbeTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000622 /* SessionRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistryTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000B04 /* AgentHooksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHooksTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000B12 /* BackgroundSessionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundSessionsTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000257 /* WorkGroupViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkGroupViewTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000271 /* DataIntegrityAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataIntegrityAuditTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000273 /* LSPOrderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LSPOrderingTests.swift; sourceTree = "<group>"; };
@@ -473,6 +477,7 @@
 				A0000000000000000000061E /* WelcomeDemos.swift */,
 				A00000000000000000000620 /* SessionRegistry.swift */,
 				A00000000000000000000B00 /* AgentHooks.swift */,
+				A00000000000000000000B10 /* BackgroundSessions.swift */,
 				A00000000000000000000B06 /* Attribution.swift */,
 				A00000000000000000000B0A /* ReviewQueue.swift */,
 				A00000000000000000000B0E /* ReviewQueueRail.swift */,
@@ -540,6 +545,7 @@
 				A00000000000000000000251 /* GitLaunchProbeTests.swift */,
 				A00000000000000000000622 /* SessionRegistryTests.swift */,
 				A00000000000000000000B04 /* AgentHooksTests.swift */,
+				A00000000000000000000B12 /* BackgroundSessionsTests.swift */,
 				A00000000000000000000B08 /* AttributionTests.swift */,
 				A00000000000000000000B0C /* ReviewQueueTests.swift */,
 				A00000000000000000000257 /* WorkGroupViewTests.swift */,
@@ -824,6 +830,7 @@
 				A0000000000000000000061F /* WelcomeDemos.swift in Sources */,
 				A00000000000000000000621 /* SessionRegistry.swift in Sources */,
 				A00000000000000000000B01 /* AgentHooks.swift in Sources */,
+				A00000000000000000000B11 /* BackgroundSessions.swift in Sources */,
 				A00000000000000000000B07 /* Attribution.swift in Sources */,
 				A00000000000000000000B0B /* ReviewQueue.swift in Sources */,
 				A00000000000000000000B0F /* ReviewQueueRail.swift in Sources */,
@@ -868,6 +875,7 @@
 				A00000000000000000000252 /* GitLaunchProbeTests.swift in Sources */,
 				A00000000000000000000623 /* SessionRegistryTests.swift in Sources */,
 				A00000000000000000000B05 /* AgentHooksTests.swift in Sources */,
+				A00000000000000000000B13 /* BackgroundSessionsTests.swift in Sources */,
 				A00000000000000000000B09 /* AttributionTests.swift in Sources */,
 				A00000000000000000000B0D /* ReviewQueueTests.swift in Sources */,
 				A00000000000000000000258 /* WorkGroupViewTests.swift in Sources */,

@@ -8,6 +8,7 @@ import UserNotifications
 // tab.
 //
 // Usage: Side Notifier --title <title> --body <body> --url <side://run/id> [--group <id>]
+//        Side Notifier --menu ... (MenuBar.swift)
 
 final class Notifier: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private func value(_ flag: String) -> String? {
@@ -58,7 +59,23 @@ final class Notifier: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
     }
 }
 
+/// `--menu`: the menu bar's list of sessions still running while Side is closed (MenuBar.swift).
+final class MenuBarLauncher: NSObject, NSApplicationDelegate {
+    private var menuBar: MenuBar?
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let arguments = CommandLine.arguments
+        func value(_ flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
+            return arguments[index + 1]
+        }
+        guard let side = value("--side"), let domain = value("--defaults"), let run = value("--run") else { return NSApp.terminate(nil) }
+        let menuBar = MenuBar(sideApp: URL(fileURLWithPath: side), defaultsDomain: domain, run: URL(fileURLWithPath: run, isDirectory: true))
+        self.menuBar = menuBar
+        menuBar.start()
+    }
+}
+
 let app = NSApplication.shared
-let notifier = Notifier()
-app.delegate = notifier
+let delegate: NSApplicationDelegate = CommandLine.arguments.contains("--menu") ? MenuBarLauncher() : Notifier()
+app.delegate = delegate
 app.run()

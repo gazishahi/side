@@ -45,14 +45,15 @@ mv "$staging" "$keeper"
 # The bare keeper of earlier builds.
 rm -f "$dest/SideSessionKeeper"
 
-# The notifier: a tiny background app keepers run to post notifications under Side's name.
+# The notifier: a tiny background app keepers run to post notifications under Side's name, and
+# the menu bar's list of sessions while Side is closed (--menu).
 notifier="$dest/Side Notifier.app"
 staging="$dest/.Side Notifier.staged.app"
 rm -rf "$staging"
 mkdir -p "$staging/Contents/MacOS" "$staging/Contents/Resources"
 sed -e "s/\$(MARKETING_VERSION)/${MARKETING_VERSION:-0}/" -e "s/\$(CURRENT_PROJECT_VERSION)/${CURRENT_PROJECT_VERSION:-0}/" -e "s/\$(PRODUCT_BUNDLE_IDENTIFIER)/${PRODUCT_BUNDLE_IDENTIFIER:-com.shahi.side}/" \
   Helpers/SideNotifier/Info.plist > "$staging/Contents/Info.plist"
-xcrun swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos15.0" Helpers/SideNotifier/main.swift -o "$staging/Contents/MacOS/Side Notifier"
+xcrun swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos15.0" Helpers/SideNotifier/main.swift Helpers/SideNotifier/MenuBar.swift SIDE/BackgroundSessions.swift -o "$staging/Contents/MacOS/Side Notifier"
 [[ -f "$icon" ]] && cp "$icon" "$staging/Contents/Resources/AppIcon.icns"
 if [[ -n "$identity" && "$identity" != "-" ]]; then
   codesign --force --sign "$identity" --options runtime $timestamp "$staging"

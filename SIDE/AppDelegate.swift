@@ -680,6 +680,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// side://run/<session id>, from a notification a terminal's keeper posted: Side comes to
     /// that tab, opening its project first if no window has it.
     func application(_ application: NSApplication, open urls: [URL]) {
+        // side://settings: the menu bar's Settings… while Side was closed.
+        if urls.contains(where: { $0.scheme == "side" && $0.host == "settings" }) { openSettings(at: .general) }
         for url in urls where url.scheme == "side" && url.host == "run" {
             let id = url.lastPathComponent
             guard !id.isEmpty, id != "/" else { continue }
@@ -687,6 +689,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let files = urls.filter(\.isFileURL)
         if !files.isEmpty { openFiles(files, attempts: 50) }
+    }
+
+    /// The menu bar's list of what's still running (Helpers/SideNotifier, `--menu`), started as
+    /// Side quits with terminals left running. What the hooks said until now goes with it, since
+    /// Side has read, and removed, those events; the helper decides whether anything is worth
+    /// showing, and goes when Side opens again.
+    func startMenuBar(run: URL = SessionPaths.runDirectory) {
+        guard SessionKeepers.isEnabled, SessionKeepers.keepsRunningOnQuit,
+              UserDefaults.standard.object(forKey: BackgroundSessions.showKey) as? Bool ?? true,
+              let notifier = SessionKeepers.notifierURL,
+              !SessionPaths.records().filter(SessionKeepers.isRunning).isEmpty else { return }
+        HookInbox.shared.read()
+        let agents = HookInbox.shared.sessions.sessions.values.map { session in
+            BackgroundSessions.Agent(id: session.id, pid: session.pid, state: BackgroundSessions.State(session.state),
+                                     request: session.request, message: session.message, updatedAt: session.updatedAt, ended: session.ended)
+        }
+        BackgroundSessions.writeSnapshot(agents, to: BackgroundSessions.snapshotURL(run: run))
+        let process = Process()
+        process.executableURL = notifier
+        process.arguments = ["--menu", "--side", Bundle.main.bundleURL.path, "--defaults", Bundle.main.bundleIdentifier ?? "com.shahi.side", "--run", run.path]
+        try? process.run()
     }
 
     /// Quits and opens Side again (a setting that applies at launch): a shell waits for this
@@ -1017,6 +1040,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Messages API rejects outright on the next launch.
     func applicationWillTerminate(_ notification: Notification) {
         if relaunchWhenQuit { startRelaunchWaiter() }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil, !Self.isUITesting, !relaunchWhenQuit { startMenuBar() }
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil, !Self.isUITesting { CrashReports.runEnded() }
         // Debugger servers (js-debug's node, Delve) don't end with their client.
         DAPSocketTransport.terminateAllServers()
