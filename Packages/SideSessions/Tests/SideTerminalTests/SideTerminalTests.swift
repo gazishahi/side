@@ -142,6 +142,35 @@ final class SideTerminalTests: XCTestCase {
         XCTAssertEqual(text(read(reader)[0]), "half-drawn done")
     }
 
+    /// Rows changed just before a hold are read once it ends. (2026-11-20, on screen: btop's rows
+    /// stayed under lazygit after one quit and the other started; both use synchronized output.
+    /// A snapshot taken in a second render state when a hold began had taken those rows' changes.)
+    func testRowsChangedAroundAHoldAreAllRead() throws {
+        let terminal = try Terminal(columns: 20, rows: 3)
+        let reader = ScreenReader(terminal: terminal)
+        terminal.feed(Array("one\r\ntwo\r\nthree".utf8))
+        XCTAssertTrue(reader.update())
+        _ = read(reader)
+        // Row 1 changes, then a hold begins and ends before the reader looks.
+        terminal.feed(Array("\u{1b}[2;1H\u{1b}[2KTWO".utf8))
+        terminal.feed(Array("\u{1b}[?2026h\u{1b}[?2026l".utf8))
+        XCTAssertTrue(reader.update())
+        XCTAssertEqual(text(read(reader)[1]), "TWO", "the change made before the hold")
+
+        // A change before a hold and one inside it: nothing while held, both once it ends.
+        terminal.feed(Array("\u{1b}[3;1H\u{1b}[2KTHREE".utf8))
+        terminal.feed(Array("\u{1b}[?2026h\u{1b}[1;1H\u{1b}[2KONE".utf8))
+        XCTAssertFalse(reader.update(), "nothing new while held")
+        terminal.feed(Array("\u{1b}[?2026l".utf8))
+        XCTAssertTrue(reader.update())
+        let rows = read(reader)
+        XCTAssertEqual(text(rows[0]), "ONE")
+        XCTAssertEqual(text(rows[2]), "THREE")
+        terminal.feed(Array("\u{1b}[2;5Hx".utf8))
+        XCTAssertTrue(reader.update())
+        XCTAssertEqual(text(read(reader)[1]), "TWO x", "the reader has the terminal's rows")
+    }
+
     func testResize() throws {
         let terminal = try Terminal(columns: 10, rows: 2)
         let reader = ScreenReader(terminal: terminal)

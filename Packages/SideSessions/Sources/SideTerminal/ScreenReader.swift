@@ -94,13 +94,8 @@ public final class ScreenReader {
     public func update() -> Bool {
         let t = terminal
         let changed: Bool = t.lock.read {
-            if t.holding, DispatchTime.now().uptimeNanoseconds - t.holdStarted < 1_000_000_000 {
-                // Held: the screen from when the hold began, once, then nothing new until it ends.
-                guard t.holdCaptured else { return false }
-                t.holdCaptured = false
-                swap(&state, &t.holdCapture)
-                return true
-            }
+            // Held: nothing new until the hold ends (the change stays recorded for then).
+            if t.holding, DispatchTime.now().uptimeNanoseconds - t.holdStarted < 1_000_000_000 { return false }
             guard t.changedSinceRead else { return false }
             t.changedSinceRead = false
             ghostty_render_state_update(state, t.handle)

@@ -43,14 +43,14 @@ public final class Terminal: @unchecked Sendable {
     /// Output arrived since the screen was last read.
     var changedSinceRead = true
 
-    /// Synchronized output (mode 2026), which Claude Code wraps nearly every update in: the
-    /// screen as it was when a hold began is what a reader sees until the hold ends, or for a
-    /// second at most (render.h, Render Holds), as Ghostty and SwiftTerm both do.
+    /// Synchronized output (mode 2026), which Claude Code wraps nearly every update in: while a
+    /// hold lasts (a second at most), readers don't update, so what's drawn is the last frame
+    /// read before it, as Ghostty's renderer does. Not a snapshot taken in a render state of
+    /// its own when the hold begins: a render-state update takes the terminal's record of which
+    /// rows changed, so a second state left the reader's missing rows (2026-11-20, on screen:
+    /// btop's rows under lazygit).
     var holding = false
     var holdStarted: UInt64 = 0
-    /// Set when a hold begins: the screen at that moment, captured for the next read.
-    var holdCapture: GhosttyRenderState?
-    var holdCaptured = false
 
     /// `cursorBlinks`: whether the cursor blinks until a program says otherwise (DECSCUSR, DEC
     /// mode 12), as Ghostty's `cursor-style-blink` does. Blinking, as there and in SwiftTerm.
@@ -78,12 +78,10 @@ public final class Terminal: @unchecked Sendable {
         ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_MODE, &blink)
         var blinks = cursorBlinks
         ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blinks)
-        ghostty_render_state_new(nil, &holdCapture)
         registerCallbacks()
     }
 
     deinit {
-        ghostty_render_state_free(holdCapture)
         ghostty_terminal_free(handle)
     }
 
@@ -284,9 +282,7 @@ public final class Terminal: @unchecked Sendable {
             let me = Terminal.owner(userdata)
             if held {
                 // The screen as it is now is what readers see until the hold ends.
-                ghostty_render_state_update(me.holdCapture, terminal)
                 me.holding = true
-                me.holdCaptured = true
                 me.holdStarted = DispatchTime.now().uptimeNanoseconds
             } else {
                 me.holding = false
