@@ -8,6 +8,10 @@ import SideSessionsKit
 /// Not final: SessionKeeperAlloyTests runs every one of these again on the new terminal engine.
 class SessionKeeperTests: XCTestCase {
     nonisolated(unsafe) private var runDirectory: URL!
+    /// Keep Running on Quit as the developer had it. The test host shares debug builds' defaults
+    /// (com.shahi.side.dev), so a test that turns it off and is interrupted would leave it off:
+    /// every later run would then close its shells on teardown (side-c0, 2026-11-20).
+    nonisolated(unsafe) private var savedKeepRunning: Any?
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -16,10 +20,13 @@ class SessionKeeperTests: XCTestCase {
         runDirectory = URL(fileURLWithPath: "/tmp/skt-\(UUID().uuidString.prefix(8))", isDirectory: true)
         setenv("SIDE_SESSIONS_DIR", runDirectory.path, 1)
         SessionKeepers.enabledForTesting = true
+        savedKeepRunning = UserDefaults.standard.object(forKey: SessionKeepers.keepRunningKey)
+        SessionKeepers.keepsRunningOnQuit = true
     }
 
     override func tearDown() {
         SessionKeepers.enabledForTesting = false
+        UserDefaults.standard.set(savedKeepRunning, forKey: SessionKeepers.keepRunningKey)
         for record in SessionPaths.records() { kill(record.childPID, SIGKILL); kill(record.keeperPID, SIGKILL) }
         if let runDirectory { try? FileManager.default.removeItem(at: runDirectory) }
         unsetenv("SIDE_SESSIONS_DIR")
@@ -140,8 +147,6 @@ class SessionKeeperTests: XCTestCase {
     }
 
     func testWithKeepRunningOffQuittingEndsTheShell() throws {
-        let saved = UserDefaults.standard.object(forKey: SessionKeepers.keepRunningKey)
-        defer { UserDefaults.standard.set(saved, forKey: SessionKeepers.keepRunningKey) }
         SessionKeepers.keepsRunningOnQuit = false
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("keepers-off-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
