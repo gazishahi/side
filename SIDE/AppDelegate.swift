@@ -328,7 +328,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             }
                         }
                         // Named keys carry their key codes ("down", "return", "escape"), which some views read.
+                        // A space is "space": the command splits on spaces.
                         let named: [String: (String, UInt16)] = ["tab": ("\t", 48), "return": ("\r", 36), "escape": ("\u{1B}", 53),
+                                                                 "space": (" ", 49), "delete": ("\u{7F}", 51),
                                                                  "down": (String(UnicodeScalar(NSDownArrowFunctionKey)!), 125), "up": (String(UnicodeScalar(NSUpArrowFunctionKey)!), 126)]
                         let name = parts.last ?? ""
                         let (key, code) = named[name] ?? (name, 0)
