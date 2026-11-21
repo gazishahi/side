@@ -3,11 +3,10 @@ import SideAgents
 import SideSessionsKit
 import SwiftTerm
 
-/// Which engine a new terminal gets (docs/SIDE_RFC_TERMINAL_ENGINE.md): SwiftTerm by default, or
-/// libghostty-vt drawn by Alloy with `defaults write com.shahi.side terminal.engine alloy`
-/// (`com.shahi.side.dev` for a development build): the owner's builds first, while selection,
-/// links and scrolling back are still to come. Read when a terminal opens; open terminals keep
-/// theirs.
+/// Which engine a new terminal gets (docs/SIDE_RFC_TERMINAL_ENGINE.md): libghostty-vt drawn by
+/// Alloy by default (Phase 3, 2026-11-21), or SwiftTerm, the way back until it's removed
+/// (Phase 4), with `defaults write com.shahi.side terminal.engine swiftterm` (`com.shahi.side.dev`
+/// for a development build). Read when a terminal opens; open terminals keep theirs.
 enum TerminalEngine: String {
     case swiftTerm = "swiftterm"
     case alloy
@@ -18,7 +17,7 @@ enum TerminalEngine: String {
     nonisolated(unsafe) static var overrideForTesting: TerminalEngine?
 
     static var current: TerminalEngine {
-        overrideForTesting ?? UserDefaults.standard.string(forKey: defaultsKey).flatMap(TerminalEngine.init(rawValue:)) ?? .swiftTerm
+        overrideForTesting ?? UserDefaults.standard.string(forKey: defaultsKey).flatMap(TerminalEngine.init(rawValue:)) ?? .alloy
     }
 
     @MainActor static func makeSurface() -> any TerminalSurface {

@@ -247,7 +247,10 @@ class SessionKeeperTests: XCTestCase {
         XCTAssertTrue(waitUntil { session.viewController.startupSettled })
         XCTAssertNil(session.viewController.runningProgramName, "a shell at its prompt isn't running anything")
         session.viewController.terminalView.send(text: "sleep 30\r")
-        XCTAssertTrue(waitUntil { session.viewController.runningProgramName == "sleep" }, session.viewController.runningProgramName ?? "nil")
+        // Up to 45 seconds: the shell is settled once Side's rc has run, but the person's own
+        // startup can still take ~10 seconds before the first prompt reads the typed line (seen
+        // on the second shell of a run, 2026-11-21), and more under a full suite's load.
+        XCTAssertTrue(waitUntil(45) { session.viewController.runningProgramName == "sleep" }, session.viewController.runningProgramName ?? "nil")
     }
 
     func testEndingASessionWithNoTabEndsIt() throws {

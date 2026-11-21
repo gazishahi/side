@@ -159,7 +159,11 @@ final class VerificationStalenessTests: XCTestCase {
     }
 
     @MainActor
+    /// SwiftTerm's, which hands titles over at once (the new engine's, waiting for its parse, is
+    /// in its own tests below).
     func testARunningProgramNamesTheTabUntilItFinishes() {
+        TerminalEngine.overrideForTesting = .swiftTerm
+        defer { TerminalEngine.overrideForTesting = nil }
         let vc = TerminalViewController()
         vc.loadViewIfNeeded()
         let session = TerminalSession(label: "project", viewController: vc)
