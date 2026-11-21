@@ -1,4 +1,5 @@
 import AppKit
+import SideAgents
 import SideSessionsKit
 
 /// Run's shells live in session keepers (SIDE_RFC_SESSION_RESTORE.md): a process per terminal,
@@ -94,9 +95,12 @@ enum SessionKeepers {
         set { UserDefaults.standard.set(newValue, forKey: confirmCloseKey) }
     }
 
+    /// In HeronDefaults' store: under XCTest, this process's own, so test processes running side by
+    /// side (SessionKeeperTests and SessionKeeperAlloyTests) can't turn it on or off for each
+    /// other through the shared defaults, nor leave it off for the next run (2026-11-20, 11-21).
     static var keepsRunningOnQuit: Bool {
-        get { UserDefaults.standard.object(forKey: keepRunningKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: keepRunningKey) }
+        get { HeronDefaults.store.object(forKey: keepRunningKey) as? Bool ?? true }
+        set { HeronDefaults.store.set(newValue, forKey: keepRunningKey) }
     }
 
     /// Unit tests get the old in-process terminals unless a test turns keepers on: a test's
