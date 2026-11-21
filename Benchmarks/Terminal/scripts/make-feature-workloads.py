@@ -9,11 +9,18 @@ renderer's features, deterministic (a fixed seed), 64 MB each by default.
   underlines.bin  scrolling text marked as editors and LSPs mark it: underline styles (single,
                   double, curly, dotted, dashed) with their own colors (SGR 58), strikethrough,
                   overline.
+  images.bin      a listing with image previews between its lines, as a file browser or a loop
+                  of `kitten icat` prints them: kitty graphics, PNG (decoded by the terminal) and
+                  raw RGB, 160x100 pixels each, shown at 20x5 cells, each a new image id, so
+                  every one is decoded, stored, uploaded and drawn, then scrolled away.
 
 Usage: python3 -I make-feature-workloads.py <out dir> [MB]
 """
+import base64
 import random
+import struct
 import sys
+import zlib
 
 out = sys.argv[1]
 size = int(sys.argv[2]) * 1024 * 1024 if len(sys.argv) > 2 else 64 * 1024 * 1024
@@ -132,6 +139,50 @@ def marked(rng):
     return ''.join(marked_line(rng) for _ in range(200))
 
 
+# Images: a few distinct pictures, sent again and again under new ids.
+def png(width, height, pixel):
+    raw = b''.join(b'\x00' + b''.join(bytes(pixel(x, y)) for x in range(width)) for y in range(height))
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
+
+
+def picture(seed):
+    rng = random.Random(seed)
+    a, b, c = rng.randrange(256), rng.randrange(256), rng.randrange(256)
+    return lambda x, y: ((a + x * 3) % 256, (b + y * 5) % 256, (c + x * y) % 256, 255 if (x // 8 + y // 8) % 5 else 160)
+
+
+PICTURES = [picture(seed) for seed in range(8)]
+PNGS = [base64.b64encode(png(160, 100, p)).decode() for p in PICTURES]
+RGBS = [base64.b64encode(b''.join(bytes(p(x, y)[:3]) for y in range(100) for x in range(160))).decode() for p in PICTURES]
+image_id = [0]
+
+
+def kitty(control, payload):
+    # Chunks of 4096 bytes of base64, as the protocol asks of large payloads.
+    pieces = [payload[i:i + 4096] for i in range(0, len(payload), 4096)]
+    out = ''
+    for n, piece in enumerate(pieces):
+        head = (control + ',' if n == 0 else '') + f'm={1 if n < len(pieces) - 1 else 0}'
+        out += f'\x1b_G{head};{piece}\x1b\\'
+    return out
+
+
+def previews(rng):
+    image_id[0] += 1
+    n = rng.randrange(len(PICTURES))
+    name = f'{rng.choice(WORDS)}-{image_id[0]}.{"png" if image_id[0] % 2 else "rgb"}'
+    if image_id[0] % 2:
+        image = kitty(f'a=T,f=100,i={image_id[0]},c=20,r=5,q=2', PNGS[n])
+    else:
+        image = kitty(f'a=T,f=24,s=160,v=100,i={image_id[0]},c=20,r=5,q=2', RGBS[n])
+    lines = ''.join(f'{ESC}2m{rng.randrange(10**6):>8}{ESC}0m  {rng.choice(WORDS)}/{rng.choice(WORDS)}\r\n' for _ in range(rng.randrange(2, 8)))
+    return f'{ESC}1m{name}{ESC}0m\r\n{image}\r\n{lines}'
+
+
 write('ligatures.bin', code)
 write('boxes.bin', dashboard)
 write('underlines.bin', marked)
+write('images.bin', previews)

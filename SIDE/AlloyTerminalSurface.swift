@@ -101,6 +101,7 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
         view.autoresizingMask = [.width, .height]
         view.frame = bounds
         view.source = source
+        source.requestFrame = { [weak view] in view?.setNeedsFrame() }
         view.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
         view.onText = { [weak self] text in
             guard let self else { return }
@@ -691,10 +692,17 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
     // @unchecked: used only on the render thread.
     private let reader: ScreenReader
 
+    /// Asks for a frame: an animated image's next one is due.
+    var requestFrame: (@Sendable () -> Void)?
+    /// When the frame asked for is due, so there's one request at a time.
+    private var frameRequestedFor: DispatchTime?
+
     init(reader: ScreenReader) { self.reader = reader }
 
     func snapshot(into grid: TerminalGrid) -> Bool {
         guard reader.update() else { return false }
+        Self.copyImages(reader, into: grid)
+        scheduleImageFrame()
         let columns = grid.columns
         reader.forEachChangedRow { y, cells in
             guard y < grid.rows else { return }
@@ -743,6 +751,40 @@ private final class ScreenSource: TerminalGridSource, @unchecked Sendable {
         grid.cursor = TerminalCursor(column: cursor.column, row: cursor.row, visible: cursor.visible, shape: shape, blinking: cursor.blinking,
                                      color: reader.cursorColor)
         return true
+    }
+
+    /// A frame when an animation's next one is due: no sooner than 8 ms, as animations
+    /// faster than the display can't show anyway.
+    private func scheduleImageFrame() {
+        guard let wait = reader.nextImageFrame, let requestFrame else { return }
+        let due = DispatchTime.now() + max(wait, 0.008)
+        if let pending = frameRequestedFor, pending > DispatchTime.now(), pending <= due { return }
+        frameRequestedFor = due
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: due, execute: requestFrame)
+    }
+
+    /// The reader's images, in cells, and their new pixels, for the renderer.
+    static func copyImages(_ reader: ScreenReader, into grid: TerminalGrid) {
+        if !reader.newImagePixels.isEmpty {
+            grid.newImagePixels += reader.newImagePixels.map {
+                TerminalImage.Pixels(key: .init(id: $0.key.id, generation: $0.key.generation), width: $0.width, height: $0.height, rgba: $0.rgba)
+            }
+        }
+        guard reader.imagesChanged else { return }
+        let unit = (width: Double(reader.imageCellSize.width), height: Double(reader.imageCellSize.height))
+        grid.images = reader.images.map { image in
+            let layer: TerminalImage.Layer = switch image.layer {
+            case .belowBackground: .belowBackground
+            case .belowText: .belowText
+            case .aboveText: .aboveText
+            }
+            return TerminalImage(key: .init(id: image.key.id, generation: image.key.generation), layer: layer, z: image.z,
+                                 x: Double(image.column) + Double(image.offsetX) / unit.width,
+                                 y: Double(image.row) + Double(image.offsetY) / unit.height,
+                                 width: Double(image.width) / unit.width, height: Double(image.height) / unit.height,
+                                 sourceX: Double(image.sourceX), sourceY: Double(image.sourceY),
+                                 sourceWidth: Double(image.sourceWidth), sourceHeight: Double(image.sourceHeight))
+        }
     }
 }
 

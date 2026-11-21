@@ -93,6 +93,11 @@ public final class TerminalGrid {
     /// most rows; set with the row's cells.
     public var rowClusters: [[Int: String]]
     public var cursor = TerminalCursor()
+    /// The images on screen (kitty graphics), in no particular order.
+    public var images: [TerminalImage] = []
+    /// Pixels for images the renderer hasn't had yet: it takes them at its next frame. An image
+    /// whose pixels never came isn't drawn.
+    public var newImagePixels: [TerminalImage.Pixels] = []
     let blank: TerminalCell
 
     public init(columns: Int, rows: Int, foreground: UInt32) {
@@ -130,6 +135,53 @@ public final class TerminalGrid {
         dirty = Array(repeating: true, count: self.rows)
         rowClusters = Array(repeating: [:], count: self.rows)
         cursor = TerminalCursor()
+    }
+}
+
+/// One image placement: an image's part, drawn at a place measured in cells.
+public struct TerminalImage: Equatable, Sendable {
+    public enum Layer: Int, Sendable, Comparable {
+        /// Under cell backgrounds (but over the window's), under text, or over text.
+        case belowBackground, belowText, aboveText
+        public static func < (a: Layer, b: Layer) -> Bool { a.rawValue < b.rawValue }
+    }
+    /// An image's pixels as one version of them: a new generation is new pixels.
+    public struct Key: Hashable, Sendable {
+        public let id: UInt32
+        public let generation: UInt64
+        public init(id: UInt32, generation: UInt64) { self.id = id; self.generation = generation }
+    }
+    /// 8-bit RGBA, rows top first, no padding, alpha not premultiplied.
+    public struct Pixels: Sendable {
+        public let key: Key
+        public let width: Int
+        public let height: Int
+        public let rgba: [UInt8]
+        public init(key: Key, width: Int, height: Int, rgba: [UInt8]) {
+            self.key = key; self.width = width; self.height = height; self.rgba = rgba
+        }
+    }
+    public var key: Key
+    public var layer: Layer
+    /// The order within the layer, lowest first.
+    public var z: Int32
+    /// The top-left corner and size, in cells from the grid's top-left (fractional; negative
+    /// above or left of the grid).
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+    /// The part of the image drawn, in image pixels.
+    public var sourceX: Double
+    public var sourceY: Double
+    public var sourceWidth: Double
+    public var sourceHeight: Double
+
+    public init(key: Key, layer: Layer, z: Int32, x: Double, y: Double, width: Double, height: Double,
+                sourceX: Double, sourceY: Double, sourceWidth: Double, sourceHeight: Double) {
+        self.key = key; self.layer = layer; self.z = z
+        self.x = x; self.y = y; self.width = width; self.height = height
+        self.sourceX = sourceX; self.sourceY = sourceY; self.sourceWidth = sourceWidth; self.sourceHeight = sourceHeight
     }
 }
 

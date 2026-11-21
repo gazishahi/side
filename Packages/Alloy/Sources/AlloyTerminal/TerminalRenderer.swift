@@ -198,6 +198,97 @@ public final class TerminalRenderer {
     private struct Placed { let entry: AtlasEntry; let dx: CGFloat }
     private var glyphCache: [GlyphKey: [Placed]] = [:]
 
+    /// Where the assembled quads' text begins, after the backgrounds: images under text go
+    /// between.
+    private var textStart = 0
+
+    // MARK: Images (kitty graphics)
+
+    private struct ImageDraw {
+        let layer: TerminalImage.Layer
+        let texture: MTLTexture
+        let quad: Quad
+    }
+    /// Each image's texture, kept while the image is on screen.
+    private var imageTextures: [TerminalImage.Key: MTLTexture] = [:]
+    /// Images are scaled to their place, so they're sampled smoothly, unlike glyphs.
+    private lazy var imageSampler: MTLSamplerState? = {
+        let descriptor = MTLSamplerDescriptor()
+        descriptor.minFilter = .linear
+        descriptor.magFilter = .linear
+        return device.makeSamplerState(descriptor: descriptor)
+    }()
+    /// How many image textures are held, for tests.
+    public var imageTextureCount: Int { imageTextures.count }
+
+    /// Takes the grid's new pixels, lets go of images no longer on screen, and places the ones
+    /// that are: in pixels, sorted by layer and z, and clipped to the grid by the GPU's scissor.
+    private func imageDraws(_ grid: TerminalGrid, scale: CGFloat, size: (width: Int, height: Int)) -> [ImageDraw] {
+        for pixels in grid.newImagePixels {
+            if let texture = makeTexture(pixels) { imageTextures[pixels.key] = texture }
+        }
+        grid.newImagePixels.removeAll()
+        if !imageTextures.isEmpty {
+            let onScreen = Set(grid.images.map(\.key))
+            imageTextures = imageTextures.filter { onScreen.contains($0.key) }
+        }
+        guard !grid.images.isEmpty else { return [] }
+        let m = metrics(scale)
+        var draws: [ImageDraw] = []
+        for image in grid.images.sorted(by: { ($0.layer, $0.z) < ($1.layer, $1.z) }) {
+            guard let texture = imageTextures[image.key], image.width > 0, image.height > 0 else { continue }
+            let w = Float(texture.width), h = Float(texture.height)
+            let source = SIMD4(Float(image.sourceX) / w, Float(image.sourceY) / h,
+                               Float(image.sourceWidth > 0 ? image.sourceWidth : Double(w)) / w,
+                               Float(image.sourceHeight > 0 ? image.sourceHeight : Double(h)) / h)
+            let rect = SIMD4(Float(image.x) * m.width, Float(image.y) * m.height, Float(image.width) * m.width, Float(image.height) * m.height)
+            draws.append(ImageDraw(layer: image.layer, texture: texture, quad: Quad(rect: rect, uv: source, color: .zero, kind: 2)))
+        }
+        imageClip = MTLScissorRect(x: 0, y: 0, width: min(size.width, Int((Float(grid.columns) * m.width).rounded(.up))),
+                                   height: min(size.height, Int(Float(grid.rows) * m.height)))
+        imageTarget = size
+        return draws
+    }
+    private var imageClip = MTLScissorRect(x: 0, y: 0, width: 0, height: 0)
+    private var imageTarget = (width: 0, height: 0)
+
+    private func drawImages(_ draws: [ImageDraw], layer: TerminalImage.Layer, encoder: MTLRenderCommandEncoder) {
+        let these = draws.filter { $0.layer == layer }
+        guard !these.isEmpty, imageClip.width > 0, imageClip.height > 0, let sampler = imageSampler else { return }
+        var one: Float = 1
+        encoder.setRenderPipelineState(gpu.pipeline)
+        encoder.setScissorRect(imageClip)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.setFragmentBytes(&one, length: MemoryLayout<Float>.size, index: 0)
+        for draw in these {
+            var quad = draw.quad
+            encoder.setVertexBytes(&quad, length: MemoryLayout<Quad>.stride, index: 0)
+            encoder.setFragmentTexture(draw.texture, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: 1)
+        }
+        encoder.setScissorRect(MTLScissorRect(x: 0, y: 0, width: imageTarget.width, height: imageTarget.height))
+    }
+
+    /// A texture for an image's pixels: premultiplied, as the quads blend.
+    private func makeTexture(_ pixels: TerminalImage.Pixels) -> MTLTexture? {
+        let width = pixels.width, height = pixels.height
+        guard width > 0, height > 0, width <= 16_384, height <= 16_384, pixels.rgba.count >= width * height * 4 else { return nil }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = .shaderRead
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        var premultiplied = pixels.rgba
+        premultiplied.withUnsafeMutableBufferPointer { p in
+            for i in stride(from: 0, to: width * height * 4, by: 4) {
+                let a = UInt16(p[i + 3])
+                guard a < 255 else { continue }
+                for c in 0..<3 { p[i + c] = UInt8((UInt16(p[i + c]) * a + 127) / 255) }
+            }
+        }
+        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: premultiplied, bytesPerRow: width * 4)
+        return texture
+    }
+
     private var ring: [MTLBuffer] = []
     private var ringIndex = 0
     private let framesInFlight = DispatchSemaphore(value: 3)
@@ -234,6 +325,12 @@ public final class TerminalRenderer {
         }
         let inFlight = framesInFlight
         buffer.addCompletedHandler { _ in inFlight.signal() }
+        let images = imageDraws(grid, scale: scale, size: (target.width, target.height))
+        var viewport = SIMD2<Float>(Float(target.width), Float(target.height))
+        encoder.setRenderPipelineState(gpu.pipeline)
+        encoder.setVertexBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.size, index: 1)
+        // Under the cells' backgrounds: over the window's (the clear), as Ghostty layers them.
+        drawImages(images, layer: .belowBackground, encoder: encoder)
         if !quads.isEmpty {
             let length = quads.count * MemoryLayout<Quad>.stride
             if ring.count < 3 {
@@ -244,16 +341,23 @@ public final class TerminalRenderer {
             }
             if ring[ringIndex].length < length { ring[ringIndex] = device.makeBuffer(length: length * 2, options: .storageModeShared)! }
             quads.withUnsafeBytes { ring[ringIndex].contents().copyMemory(from: $0.baseAddress!, byteCount: length) }
-            var viewport = SIMD2<Float>(Float(target.width), Float(target.height))
             var atlasSize = Float(atlas.size)
-            encoder.setRenderPipelineState(gpu.pipeline)
-            encoder.setVertexBuffer(ring[ringIndex], offset: 0, index: 0)
-            encoder.setVertexBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.size, index: 1)
-            encoder.setFragmentTexture(atlas.texture, index: 0)
-            encoder.setFragmentSamplerState(gpu.sampler, index: 0)
-            encoder.setFragmentBytes(&atlasSize, length: MemoryLayout<Float>.size, index: 0)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: quads.count)
+            // Backgrounds, then the images under text, then the rest: two draws when there are
+            // such images, one otherwise.
+            let split = images.contains { $0.layer == .belowText } ? textStart : quads.count
+            for range in [0..<split, split..<quads.count] where !range.isEmpty {
+                encoder.setRenderPipelineState(gpu.pipeline)
+                encoder.setVertexBuffer(ring[ringIndex], offset: 0, index: 0)
+                encoder.setFragmentTexture(atlas.texture, index: 0)
+                encoder.setFragmentSamplerState(gpu.sampler, index: 0)
+                encoder.setFragmentBytes(&atlasSize, length: MemoryLayout<Float>.size, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: range.count, baseInstance: range.lowerBound)
+                if range.lowerBound == 0 { drawImages(images, layer: .belowText, encoder: encoder) }
+            }
+        } else {
+            drawImages(images, layer: .belowText, encoder: encoder)
         }
+        drawImages(images, layer: .aboveText, encoder: encoder)
         encoder.endEncoding()
         if let drawable { buffer.present(drawable) }
         if let completion { buffer.addCompletedHandler(completion) }
@@ -298,6 +402,7 @@ public final class TerminalRenderer {
         quads.reserveCapacity(grid.columns * grid.rows / 2 + 64)
         for row in backgroundQuads { quads += row }
         if paddingColor == .extend { quads += paddingQuads(grid, scale: scale, size: size) }
+        textStart = quads.count
         for row in glyphQuads { quads += row }
         // Blinking text shows in the blink's on phase, and always while unfocused (no blink then).
         if blinkOn || !focused { for row in blinkingGlyphQuads { quads += row } }

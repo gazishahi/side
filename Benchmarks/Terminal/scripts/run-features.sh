@@ -1,14 +1,15 @@
 #!/bin/zsh
 # The RFC's rule 4 suite (docs/SIDE_RFC_TERMINAL_ENGINE.md): workloads that exercise the renderer's
 # features, in one ligature font for every setup. Throughput (5 runs, interleaved) of ligatures,
-# boxes and underlines in A, C, D and E; selection while streaming and a scrolled-back viewport in
-# D and E (the setups that draw them); frame cost of each workload in C and E. Windows open and
-# close on screen: leave them uncovered (Ghostty stops drawing an occluded surface).
+# boxes and underlines in A, C, D and E, and of images in D and E (the setups that decode them);
+# selection while streaming and a scrolled-back viewport in D and E (the setups that draw them);
+# frame cost of each workload in C and E. Windows open and close on screen: leave them uncovered
+# (Ghostty stops drawing an occluded surface).
 # Workloads: scripts/make-feature-workloads.py. Results go to $RESULTS (default results/features).
 set -uo pipefail
 here=${0:A:h}/..; T=$here/TermBench/.build/release; W=$here/workloads; R=${RESULTS:-$here/results/features}  # committed runs: results/<date>-features; mkdir -p $R
 font=${FONT:-FiraCodeNFM-Reg}
-for w in ligatures boxes underlines; do [[ -f $W/$w.bin ]] || python3 -I $here/scripts/make-feature-workloads.py $W || exit 1; done
+for w in ligatures boxes underlines images; do [[ -f $W/$w.bin ]] || python3 -I $here/scripts/make-feature-workloads.py $W || exit 1; done
 (cd $here/TermBench && for p in TermBenchST TermBenchGV TermBenchGK; do swift build -c release --product $p; done) || exit 1
 (cd $here/TermBenchE && swift build -c release --product TermBenchE) || exit 1
 bin() { case $1 in A) echo $T/TermBenchST;; C) echo $T/TermBenchGV;; D) echo $T/TermBenchGK;; E) echo $here/TermBenchE/.build/release/TermBenchE;; esac }
@@ -28,6 +29,10 @@ for i in 1 2 3 4 5; do
   [[ $parts == *" plain "* ]] && for w in ligatures boxes underlines; do for s in A C D E; do
     out=$(run $s $w); echo "${${out##*$'\n'}%\}},\"run\":$i}" >> $R/throughput.jsonl
   done; done
+  # Images: D and E, the setups that decode and draw kitty graphics.
+  [[ $parts == *" plain "* ]] && for s in D E; do
+    out=$(run $s images); echo "${${out##*$'\n'}%\}},\"run\":$i}" >> $R/throughput.jsonl
+  done
   [[ $parts == *" views "* ]] && for v in "boxes selected" "tui selected" "ligatures scrolled" "ascii scrolled"; do set -- ${=v}; for s in D E; do
     out=$(run $s $1 $2)
     echo "${${out##*$'\n'}%\}},\"run\":$i}" >> $R/views.jsonl

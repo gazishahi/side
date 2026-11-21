@@ -66,6 +66,10 @@ public final class Terminal: @unchecked Sendable {
         ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &lines)
         // The C API's default byte limit (10,000 bytes) silently overrides the line limit.
         ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, nil)
+        // Kitty graphics: off until given a storage limit; PNGs decoded by ImageIO.
+        KittyGraphics.installDecoder
+        var imageLimit = KittyGraphics.storageLimit
+        ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &imageLimit)
         // Grapheme clustering (mode 2027), on as in Ghostty.app and the keeper.
         var clustering = GhosttyTerminalModeConfig()
         clustering.mode = ghostty_mode_new(2027, false)
@@ -104,10 +108,16 @@ public final class Terminal: @unchecked Sendable {
     }
 
     /// A new size, in cells, and the cell's size in pixels (for programs that ask).
+    /// The cell size given at the last resize: the unit images are placed and sized in.
+    public private(set) var cellWidth = 8
+    public private(set) var cellHeight = 16
+
     public func resize(columns: Int, rows: Int, cellWidth: Int = 8, cellHeight: Int = 16) {
         lock.read {
             self.columns = max(1, columns)
             self.rows = max(1, rows)
+            self.cellWidth = max(1, cellWidth)
+            self.cellHeight = max(1, cellHeight)
             ghostty_terminal_resize(handle, UInt16(clamping: self.columns), UInt16(clamping: self.rows), UInt32(clamping: cellWidth), UInt32(clamping: cellHeight))
             changedSinceRead = true
         }

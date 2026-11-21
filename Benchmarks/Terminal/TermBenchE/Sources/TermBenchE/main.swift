@@ -13,6 +13,7 @@ final class ScreenSource: TerminalGridSource, @unchecked Sendable {
 
     func snapshot(into grid: TerminalGrid) -> Bool {
         guard reader.update() else { return false }
+        Self.copyImages(reader, into: grid)
         let columns = grid.columns
         reader.forEachChangedRow { y, cells in
             guard y < grid.rows else { return }
@@ -61,6 +62,30 @@ final class ScreenSource: TerminalGridSource, @unchecked Sendable {
         grid.cursor = TerminalCursor(column: cursor.column, row: cursor.row, visible: cursor.visible, shape: shape,
                                      blinking: cursor.blinking, color: reader.cursorColor)
         return true
+    }
+
+    /// The reader's images, in cells, and their new pixels, for the renderer.
+    static func copyImages(_ reader: ScreenReader, into grid: TerminalGrid) {
+        if !reader.newImagePixels.isEmpty {
+            grid.newImagePixels += reader.newImagePixels.map {
+                TerminalImage.Pixels(key: .init(id: $0.key.id, generation: $0.key.generation), width: $0.width, height: $0.height, rgba: $0.rgba)
+            }
+        }
+        guard reader.imagesChanged else { return }
+        let unit = (width: Double(reader.imageCellSize.width), height: Double(reader.imageCellSize.height))
+        grid.images = reader.images.map { image in
+            let layer: TerminalImage.Layer = switch image.layer {
+            case .belowBackground: .belowBackground
+            case .belowText: .belowText
+            case .aboveText: .aboveText
+            }
+            return TerminalImage(key: .init(id: image.key.id, generation: image.key.generation), layer: layer, z: image.z,
+                                 x: Double(image.column) + Double(image.offsetX) / unit.width,
+                                 y: Double(image.row) + Double(image.offsetY) / unit.height,
+                                 width: Double(image.width) / unit.width, height: Double(image.height) / unit.height,
+                                 sourceX: Double(image.sourceX), sourceY: Double(image.sourceY),
+                                 sourceWidth: Double(image.sourceWidth), sourceHeight: Double(image.sourceHeight))
+        }
     }
 }
 

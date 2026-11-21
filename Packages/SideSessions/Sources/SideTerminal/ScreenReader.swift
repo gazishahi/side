@@ -76,14 +76,39 @@ public final class ScreenReader {
     public private(set) var columns = 0
     public private(set) var rows = 0
 
+    // MARK: Images (kitty graphics)
+
+    /// After `update`: the image placements on screen, in no particular order.
+    public private(set) var images: [ScreenImage] = []
+    /// Whether `images` changed in the last update.
+    public private(set) var imagesChanged = false
+    /// After `update`: pixels for images whose generation wasn't handed over while on screen.
+    public private(set) var newImagePixels: [ScreenImagePixels] = []
+    /// When a playing animation's next frame is due, in seconds from now; nil when none plays.
+    public var nextImageFrame: TimeInterval? {
+        nextFrameAt.map { max(0, Double(Int64($0) - Int64(Self.clockMilliseconds())) / 1000) }
+    }
+    /// The cell size images are measured in (the terminal's, at the last update): offsets and
+    /// sizes over it are in cells.
+    public private(set) var imageCellSize = (width: 8, height: 16)
+    private var imageIterator: GhosttyRenderStateImageIterator?
+    private var placementsGeneration: UInt64 = 0
+    private var haveImageList = false
+    private var delivered: Set<ScreenImage.Key> = []
+    private var nextFrameAt: UInt64?
+    /// The animation clock: milliseconds since boot, which only moves forward.
+    private static func clockMilliseconds() -> UInt64 { DispatchTime.now().uptimeNanoseconds / 1_000_000 }
+
     public init(terminal: Terminal) {
         self.terminal = terminal
         ghostty_render_state_new(nil, &state)
         ghostty_render_state_row_iterator_new(nil, &rowIterator)
         ghostty_render_state_row_cells_new(nil, &rowCells)
+        ghostty_render_state_image_iterator_new(nil, &imageIterator)
     }
 
     deinit {
+        ghostty_render_state_image_iterator_free(imageIterator)
         ghostty_render_state_row_cells_free(rowCells)
         ghostty_render_state_row_iterator_free(rowIterator)
         ghostty_render_state_free(state)
@@ -96,9 +121,17 @@ public final class ScreenReader {
         let changed: Bool = t.lock.read {
             // Held: nothing new until the hold ends (the change stays recorded for then).
             if t.holding, DispatchTime.now().uptimeNanoseconds - t.holdStarted < 1_000_000_000 { return false }
-            guard t.changedSinceRead else { return false }
+            let now = Self.clockMilliseconds()
+            let frameDue = nextFrameAt.map { now >= $0 } ?? false
+            guard t.changedSinceRead || frameDue else { return false }
             t.changedSinceRead = false
+            var graphics: GhosttyKittyGraphics?
+            ghostty_terminal_get(t.handle, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics)
+            // Animations move to the frame that's due before the screen is read.
+            var next: UInt64 = 0
+            nextFrameAt = graphics.flatMap { ghostty_kitty_graphics_animation_tick($0, now, &next) == GHOSTTY_SUCCESS ? next : nil }
             ghostty_render_state_update(state, t.handle)
+            readImages(graphics)
             return true
         }
         guard changed else { return false }
@@ -134,6 +167,71 @@ public final class ScreenReader {
         default: .block
         }
         return true
+    }
+
+    /// The render state's image list, read again only when it changed, and the pixels of images
+    /// not handed over yet. Under the terminal's lock: the storage's pixels are only valid there.
+    private func readImages(_ graphics: GhosttyKittyGraphics?) {
+        imagesChanged = false
+        newImagePixels = []
+        var generation: UInt64 = 0
+        ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION, &generation)
+        if imageCellSize != (terminal.cellWidth, terminal.cellHeight) {
+            imageCellSize = (terminal.cellWidth, terminal.cellHeight)
+            haveImageList = false
+        }
+        guard !haveImageList || generation != placementsGeneration else { return }
+        haveImageList = true
+        placementsGeneration = generation
+        imagesChanged = true
+        var list: [ScreenImage] = []
+        if ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &imageIterator) == GHOSTTY_SUCCESS {
+            while ghostty_render_state_image_iterator_next(imageIterator) {
+                var protocolKind = GHOSTTY_IMAGE_PROTOCOL_KITTY
+                var layer = GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT
+                var id: UInt32 = 0, imageGeneration: UInt64 = 0
+                var z: Int32 = 0, column: Int32 = 0, row: Int32 = 0
+                var offsetX: UInt32 = 0, offsetY: UInt32 = 0, width: UInt32 = 0, height: UInt32 = 0
+                var sourceX: UInt32 = 0, sourceY: UInt32 = 0, sourceWidth: UInt32 = 0, sourceHeight: UInt32 = 0
+                func get(_ key: GhosttyRenderStateImageData, _ out: UnsafeMutableRawPointer) -> Bool {
+                    ghostty_render_state_image_get(imageIterator, key, out) == GHOSTTY_SUCCESS
+                }
+                let ok = get(GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL, &protocolKind)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID, &id)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION, &imageGeneration)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER, &layer)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_Z, &z)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL, &column)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW, &row)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X, &offsetX)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y, &offsetY)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH, &width)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT, &height)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X, &sourceX)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y, &sourceY)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH, &sourceWidth)
+                    && get(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT, &sourceHeight)
+                // A protocol this reader doesn't know: skipped, as the header asks.
+                guard ok, protocolKind == GHOSTTY_IMAGE_PROTOCOL_KITTY, width > 0, height > 0 else { continue }
+                let screenLayer: ScreenImage.Layer = switch layer {
+                case GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_BACKGROUND: .belowBackground
+                case GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT: .aboveText
+                default: .belowText
+                }
+                list.append(ScreenImage(key: .init(id: id, generation: imageGeneration), layer: screenLayer, z: z, column: column, row: row,
+                                        offsetX: offsetX, offsetY: offsetY, width: width, height: height,
+                                        sourceX: sourceX, sourceY: sourceY, sourceWidth: sourceWidth, sourceHeight: sourceHeight))
+            }
+        }
+        images = list
+        // Pixels for what's new on screen; an image that left and came back is sent again.
+        let onScreen = Set(list.map(\.key))
+        if let graphics {
+            for key in onScreen where !delivered.contains(key) {
+                if let pixels = KittyGraphics.pixels(graphics, key: key) { newImagePixels.append(pixels) }
+            }
+        }
+        delivered = onScreen
     }
 
     /// Each row that changed since it was last read, after `update`, then marks it read. The
@@ -192,6 +290,12 @@ public final class ScreenReader {
         } else if tag == GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME {
             readGraphemes(into: &cell, &graphemes, column: column)
         }
+        // A kitty graphics placeholder (its diacritics give its row and column): the image is
+        // drawn there, so the cell shows no text, as in Ghostty.
+        if cell.scalar == Self.imagePlaceholder {
+            cell.scalar = 0
+            if cell.style.contains(.cluster) { cell.style.remove(.cluster); rowClusters[column] = nil }
+        }
         // Default colors and no style: nothing more to ask.
         let hasBackground = tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE || tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB
         guard styled || hasBackground else {
@@ -200,6 +304,9 @@ public final class ScreenReader {
         }
         return styledCell(cell)
     }
+
+    /// U+10EEEE, the kitty graphics protocol's Unicode placeholder.
+    static let imagePlaceholder: UInt32 = 0x10EEEE
 
     private static let cellKeys: [GhosttyCellData] = [GHOSTTY_CELL_DATA_WIDE, GHOSTTY_CELL_DATA_CONTENT_TAG, GHOSTTY_CELL_DATA_HAS_STYLING, GHOSTTY_CELL_DATA_CODEPOINT]
 

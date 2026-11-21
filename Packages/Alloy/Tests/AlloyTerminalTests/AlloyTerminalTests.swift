@@ -53,6 +53,111 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(grid.dirty, [false, false], "drawn rows are clean")
     }
 
+    // MARK: Images (kitty graphics)
+
+    /// One color's pixels, width × height, RGBA.
+    private func solid(_ key: TerminalImage.Key, _ rgba: [UInt8], width: Int = 2, height: Int = 2) -> TerminalImage.Pixels {
+        TerminalImage.Pixels(key: key, width: width, height: height, rgba: Array([[UInt8]](repeating: rgba, count: width * height).joined()))
+    }
+
+    private func place(_ key: TerminalImage.Key, _ layer: TerminalImage.Layer, x: Double, y: Double, width: Double, height: Double, z: Int32 = 0,
+                       source: (Double, Double, Double, Double) = (0, 0, 0, 0)) -> TerminalImage {
+        TerminalImage(key: key, layer: layer, z: z, x: x, y: y, width: width, height: height,
+                      sourceX: source.0, sourceY: source.1, sourceWidth: source.2, sourceHeight: source.3)
+    }
+
+    /// Ghostty's layers: under the cells' backgrounds, between backgrounds and text, over text.
+    func testImagesAreDrawnInTheirLayers() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 8, rows: 3, foreground: 0xFFFFFF)
+        grid.cursor.visible = false
+        let red = TerminalImage.Key(id: 1, generation: 1), blue = TerminalImage.Key(id: 2, generation: 1), white = TerminalImage.Key(id: 3, generation: 1)
+        grid.newImagePixels = [solid(red, [255, 0, 0, 255]), solid(blue, [0, 0, 255, 255]), solid(white, [255, 255, 255, 255])]
+        // Row 0: red under text across cells 0–3; cell 1 has a green background, cell 2 a W.
+        grid[1, 0] = TerminalCell(foreground: 0xFFFFFF, background: 0x00FF00)
+        grid[2, 0] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0x00FF00)
+        // Row 1: blue under backgrounds across cells 0–3; cell 1 has a green background.
+        grid[1, 1] = TerminalCell(foreground: 0xFFFFFF, background: 0x00FF00)
+        // Row 2: white over text across cells 0–3; cell 1 has a red W.
+        grid[1, 2] = TerminalCell(scalar: UInt32(UInt8(ascii: "W")), foreground: 0xFF0000)
+        grid.images = [place(red, .belowText, x: 0, y: 0, width: 4, height: 1),
+                       place(blue, .belowBackground, x: 0, y: 1, width: 4, height: 1),
+                       place(white, .aboveText, x: 0, y: 2, width: 4, height: 1)]
+        let pixels = try render(grid, renderer: renderer)
+
+        func all(_ column: Int, _ row: Int, _ test: (Pixels.RGBA) -> Bool) -> Bool {
+            let r = cellRect(column: column, row: row)
+            return pixels.count(in: r, test) == r.x.count * r.y.count
+        }
+        XCTAssertTrue(all(0, 0) { $0.r > 250 && $0.g < 5 && $0.b < 5 }, "the image on the default background")
+        XCTAssertTrue(all(1, 0) { $0.r > 250 && $0.g < 5 }, "an image under text covers a cell's background")
+        XCTAssertGreaterThan(pixels.count(in: cellRect(column: 2, row: 0)) { $0.g > 150 && $0.r < 100 }, 20, "but not the text")
+        XCTAssertTrue(all(0, 1) { $0.b > 250 && $0.r < 5 }, "an image under backgrounds shows on the default one")
+        XCTAssertTrue(all(1, 1) { $0.g > 250 && $0.b < 5 }, "and under a cell's own")
+        XCTAssertTrue(all(1, 2) { $0.r > 250 && $0.g > 250 && $0.b > 250 }, "an image over text hides it")
+        XCTAssertTrue(all(5, 0) { $0.r < 5 && $0.g < 5 && $0.b < 5 }, "nothing past the image")
+        XCTAssertEqual(renderer.imageTextureCount, 3)
+        XCTAssertTrue(grid.newImagePixels.isEmpty, "the renderer took the pixels")
+    }
+
+    func testAnImageDrawsItsSourceRectangleBlendedAndClippedToTheGrid() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 6, rows: 2, foreground: 0xFFFFFF)
+        grid.cursor.visible = false
+        let halves = TerminalImage.Key(id: 1, generation: 1), faint = TerminalImage.Key(id: 2, generation: 1)
+        // Left pixel red, right pixel blue; only the right one is drawn, across two cells.
+        grid.newImagePixels = [TerminalImage.Pixels(key: halves, width: 2, height: 1, rgba: [255, 0, 0, 255, 0, 0, 255, 255]),
+                               solid(faint, [255, 255, 255, 128])]
+        // The half-transparent one runs off the grid's right edge and over its top.
+        grid.images = [place(halves, .belowText, x: 0, y: 0, width: 2, height: 1, source: (1, 0, 1, 1)),
+                       place(faint, .belowText, x: 4, y: -0.5, width: 4, height: 1)]
+        let cell = font.cellSize
+        let gridWidth = Int((CGFloat(grid.columns) * cell.width * scale).rounded(.up))
+        let rowHeight = Int((cell.height * scale).rounded())
+        // A target two cells wider than the grid: the padding stays the theme's.
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: gridWidth + Int(cell.width * scale * 2),
+                                                                  height: rowHeight * 2, mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        let texture = try XCTUnwrap(renderer.device.makeTexture(descriptor: descriptor))
+        try XCTUnwrap(renderer.draw(grid, scale: scale, into: texture)).waitUntilCompleted()
+        let pixels = Pixels(texture)
+
+        // Sampled smoothly, as Ghostty does: the source's left edge blends with its neighbor, so
+        // the second cell, past the texel's center, is the one that's pure.
+        let source = cellRect(column: 1, row: 0)
+        XCTAssertEqual(pixels.count(in: source) { $0.b > 250 && $0.r < 5 }, source.x.count * source.y.count, "the source's blue")
+        XCTAssertEqual(pixels.count(in: cellRect(column: 0, row: 0)) { $0.r > 128 }, 0, "and not the red beside it")
+        let half = (x: cellRect(column: 4, row: 0).x, y: 2..<(rowHeight / 2 - 2))
+        XCTAssertEqual(pixels.count(in: half) { (120...136).contains(Int($0.r)) && $0.r == $0.g && $0.g == $0.b }, half.x.count * half.y.count,
+                       "half-transparent white over black")
+        let below = (x: half.x, y: (rowHeight / 2 + 2)..<(rowHeight - 2))
+        XCTAssertEqual(pixels.count(in: below) { $0.r < 5 }, below.x.count * below.y.count, "the part above the grid isn't drawn lower down")
+        let padding = (x: (gridWidth + 1)..<texture.width, y: 0..<rowHeight)
+        XCTAssertEqual(pixels.count(in: padding) { $0.r < 5 && $0.g < 5 && $0.b < 5 }, padding.x.count * padding.y.count, "clipped at the grid's edge")
+    }
+
+    /// Textures last while their images are on screen; an image whose pixels never came isn't drawn.
+    func testImageTexturesGoWhenTheirImagesDo() throws {
+        let renderer = try makeRenderer()
+        let grid = TerminalGrid(columns: 4, rows: 1, foreground: 0xFFFFFF)
+        grid.cursor.visible = false
+        let one = TerminalImage.Key(id: 1, generation: 1), next = TerminalImage.Key(id: 1, generation: 2)
+        grid.newImagePixels = [solid(one, [255, 0, 0, 255])]
+        grid.images = [place(one, .belowText, x: 0, y: 0, width: 2, height: 1)]
+        _ = try render(grid, renderer: renderer)
+        XCTAssertEqual(renderer.imageTextureCount, 1)
+        // A new generation (new pixels) whose pixels haven't come: nothing drawn, the old one let go.
+        grid.images = [place(next, .belowText, x: 0, y: 0, width: 2, height: 1)]
+        let pixels = try render(grid, renderer: renderer)
+        XCTAssertEqual(renderer.imageTextureCount, 0)
+        let r = cellRect(column: 0, row: 0)
+        XCTAssertEqual(pixels.count(in: r) { $0.r < 5 }, r.x.count * r.y.count)
+        grid.images = []
+        _ = try render(grid, renderer: renderer)
+        XCTAssertEqual(renderer.imageTextureCount, 0)
+    }
+
     /// A grapheme of several scalars (a flag, a combining accent) is kept by the grid, not the
     /// cell, and drawn whole; the cell itself stays plain data.
     func testAClusterIsDrawnWhole() throws {
