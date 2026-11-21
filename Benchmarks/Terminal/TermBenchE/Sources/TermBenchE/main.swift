@@ -114,7 +114,7 @@ final class SetupE {
     func start(options: Options) {
         // Side's own reader (PseudoTerminalProcess, bridged as Ghostty's is), fed as Side's surface
         // feeds it; TERMBENCH_E_READER=harness: the harness's blocking reader, as before 2026-11-20.
-        if ProcessInfo.processInfo.environment["TERMBENCH_E_READER"] != "harness", options.mode != "latency" {
+        if ProcessInfo.processInfo.environment["TERMBENCH_E_READER"] != "harness" {
             startWithSidesReader(options: options)
             return
         }
@@ -193,12 +193,15 @@ extension SetupE {
         keep.append(process)
         process.isConsumerBusy = { inFlight.value.load(ordering: .relaxed) > 0 }
         process.onOutput = { bytes in
+            Stages.mark("echoRead")
             let copy = Array(bytes)
             inFlight.value.add(1, ordering: .relaxed)
             DispatchQueue.main.async {
                 let again = Array(copy) // the surface's display copies once more
                 parseQueue.async {
+                    Stages.mark("parse0")
                     terminal.feed(again)
+                    Stages.mark("parse1")
                     if draws { view.setNeedsFrame() }
                     inFlight.value.subtract(1, ordering: .relaxed)
                 }
@@ -233,6 +236,30 @@ extension SetupE {
             }
         }
         let environment = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
+        if options.mode == "latency" {
+            // Hidden sessions streaming meanwhile, each its own terminal read through Side's reader.
+            for _ in 0..<options.load {
+                let extra = makeTerminal(options)
+                let queue = DispatchQueue(label: "termbench.e.load", qos: .userInteractive)
+                let loader = PseudoTerminalProcess()
+                loader.onOutput = { bytes in let copy = Array(bytes); queue.async { extra.feed(copy) } }
+                loader.start(executable: options.loadCommand[0], arguments: Array(options.loadCommand.dropFirst()), environment: environment,
+                             directory: nil, columns: options.cols, rows: options.rows)
+                keep.append(extra); keep.append(loader)
+            }
+            let cell = view.cellSize
+            // A typed key goes to the program as its characters, through process.write as Side's surface sends it.
+            view.keyHandler = { event in
+                guard let text = event.characters, !text.isEmpty else { return false }
+                process.write(ArraySlice(Array(text.utf8)))
+                Stages.mark("keySent")
+                return true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [view] in
+                let row = Latency.echoRow(view: view, cellSize: cell)
+                Latency.run(window: view.window!, cell: { _ in row }, send: { process.write(ArraySlice(Array("X".utf8))) })
+            }
+        }
         guard process.start(executable: options.command[0], arguments: Array(options.command.dropFirst()), environment: environment,
                             directory: nil, columns: options.cols, rows: options.rows) else { print("couldn't start"); exit(1) }
         DispatchQueue.main.asyncAfter(deadline: .now() + (options.view.isEmpty ? 0.3 : 1.3)) {
