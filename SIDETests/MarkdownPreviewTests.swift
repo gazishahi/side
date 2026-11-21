@@ -159,6 +159,39 @@ final class MarkdownPreviewTests: XCTestCase {
         XCTAssertTrue(DS.Text.Fonts.monospacedFamilies().contains("Menlo"))
     }
 
+    /// Font variations (Settings › Appearance › Fonts › Weight): a variable font's weight axis,
+    /// or a family's faces; none for a family with only a regular and a bold; a new family
+    /// starts at its own regular again.
+    func testACodeFontsWeight() throws {
+        defer { for role in DS.Text.Fonts.Role.allCases { DS.Text.Fonts.setFamily(nil, for: role) } }
+        let wght = NSNumber(value: 0x7767_6874)
+        func weight(_ font: NSFont) -> Double? { (CTFontCopyVariation(font as CTFont) as? [NSNumber: NSNumber])?[wght]?.doubleValue }
+
+        // The default editor font, SF Mono, is variable.
+        guard case .axis(let range)? = DS.Text.Fonts.weights(.editor) else { return XCTFail("SF Mono's weight axis") }
+        XCTAssertTrue(range.contains(450))
+        DS.Text.Fonts.setWeight(.axis(450), for: .editor)
+        XCTAssertEqual(weight(DS.Text.editor()), 450)
+        XCTAssertEqual(DS.Text.Fonts.currentWeight(.editor), .axis(450))
+        XCTAssertTrue(DS.Text.editor().isFixedPitch)
+        XCTAssertNotEqual(weight(DS.Text.editor(.bold)), 450, "bold isn't the chosen weight")
+        XCTAssertNil(weight(DS.Text.Fonts.font(.reading, size: 16)).map { $0 == 450 ? $0 : nil } ?? nil, "reading isn't a code font")
+
+        // Menlo: Regular and Bold only, so no choice; a family change drops the old weight.
+        DS.Text.Fonts.setFamily("Menlo", for: .editor)
+        XCTAssertNil(DS.Text.Fonts.weights(.editor))
+        XCTAssertNil(DS.Text.Fonts.weight(.editor))
+        XCTAssertEqual(DS.Text.editor().fontName, "Menlo-Regular")
+
+        // A face of another family never applies.
+        DS.Text.Fonts.setWeight(.face("Menlo-Bold"), for: .terminal)
+        DS.Text.Fonts.setFamily("Menlo", for: .terminal)
+        DS.Text.Fonts.setWeight(.face("Menlo-Bold"), for: .terminal)
+        XCTAssertEqual(DS.Text.Fonts.font(.terminal, size: 12).fontName, "Menlo-Bold", "a face of the family applies")
+        DS.Text.Fonts.setWeight(.face("Courier-Bold"), for: .terminal)
+        XCTAssertEqual(DS.Text.Fonts.font(.terminal, size: 12).fontName, "Menlo-Regular", "one of another family doesn't")
+    }
+
     /// `SIDE_PREVIEW_SNAPSHOT=<dir>` writes light and dark pictures of `SIDE_PREVIEW_SAMPLE`.
     func testSnapshot() throws {
         let env = ProcessInfo.processInfo.environment

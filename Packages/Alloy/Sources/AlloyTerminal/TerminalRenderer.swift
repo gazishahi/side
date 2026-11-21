@@ -5,7 +5,9 @@ import Metal
 import QuartzCore
 
 /// The faces a terminal draws with, made from one monospaced font: bold, italic and bold italic
-/// come from CoreText's traits, falling back to the regular face where the family has none.
+/// come from CoreText's traits, falling back to the regular face where the family has none. A
+/// variable font set at a weight of its own (SF Mono at 450) has no bold face by traits: its
+/// bold is 300 heavier on its weight axis, as CSS's `bolder` steps.
 public struct TerminalFont: @unchecked Sendable {
     // @unchecked: CTFont is immutable and thread-safe.
     public let regular: CTFont
@@ -60,10 +62,34 @@ public struct TerminalFont: @unchecked Sendable {
             return made
         }
         let realBold = styled(.traitBold), realItalic = styled(.traitItalic)
-        bold = realBold ?? font
         italic = realItalic ?? font
-        boldItalic = styled([.traitBold, .traitItalic]) ?? realItalic ?? realBold ?? font
+        if let weight = Self.weight(font), let axis = Self.weightAxis(font), (realBold.map { Self.weight($0) ?? .infinity } ?? -.infinity) <= weight {
+            let heavier = min(axis.upperBound, weight + 300)
+            bold = Self.font(font, weight: heavier)
+            boldItalic = Self.font(italic, weight: heavier)
+        } else {
+            bold = realBold ?? font
+            boldItalic = styled([.traitBold, .traitItalic]) ?? realItalic ?? realBold ?? font
+        }
         substitutes = [regular, bold, italic, boldItalic].map(Self.substitutesInText)
+    }
+
+    /// OpenType's weight axis, 'wght'.
+    static let weightTag = 0x7767_6874
+    /// A variable font's weight, where it's set on the weight axis.
+    static func weight(_ font: CTFont) -> Double? {
+        (CTFontCopyVariation(font) as? [NSNumber: NSNumber])?[NSNumber(value: weightTag)]?.doubleValue
+    }
+    static func weightAxis(_ font: CTFont) -> ClosedRange<Double>? {
+        let axes = (CTFontCopyVariationAxes(font) as? [[CFString: Any]]) ?? []
+        guard let axis = axes.first(where: { ($0[kCTFontVariationAxisIdentifierKey] as? NSNumber)?.intValue == weightTag }),
+              let low = (axis[kCTFontVariationAxisMinimumValueKey] as? NSNumber)?.doubleValue,
+              let high = (axis[kCTFontVariationAxisMaximumValueKey] as? NSNumber)?.doubleValue, low <= high else { return nil }
+        return low...high
+    }
+    static func font(_ font: CTFont, weight: Double) -> CTFont {
+        let descriptor = CTFontDescriptorCreateCopyWithVariation(CTFontCopyFontDescriptor(font), weightTag as CFNumber, CGFloat(weight))
+        return CTFontCreateWithFontDescriptor(descriptor, CTFontGetSize(font), nil)
     }
 
     /// What a style's face has to draw synthetically (Ghostty's font-synthetic-style): what the

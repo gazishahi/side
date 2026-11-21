@@ -16,6 +16,8 @@ final class AppearanceViewController: NSViewController {
     private let editorSizePopup = NSPopUpButton()
     private let terminalSizePopup = NSPopUpButton()
     private var fontPopups: [DS.Text.Fonts.Role: NSPopUpButton] = [:]
+    /// A code font's Weight row: shown when its family has weights to choose from.
+    private var weightRows: [DS.Text.Fonts.Role: (row: NSView, slider: NSSlider, label: NSTextField)] = [:]
     /// The editor theme for light and for dark appearance, and removing an imported one.
     private let lightThemePopup = NSPopUpButton()
     private let darkThemePopup = NSPopUpButton()
@@ -157,7 +159,9 @@ final class AppearanceViewController: NSViewController {
             ]),
             SettingsForm.section("Fonts", [
                 SettingsForm.row("Editor", fontPopups[.editor]!),
+                weightRow(.editor),
                 SettingsForm.row("Terminal", fontPopups[.terminal]!),
+                weightRow(.terminal),
                 SettingsForm.row("Reading", detail: "Markdown previews.", fontPopups[.reading]!),
             ]),
         ])
@@ -189,6 +193,7 @@ final class AppearanceViewController: NSViewController {
         translucentSwitch.setAccessibilityLabel("Translucent background")
         translucentEditorSwitch.setAccessibilityLabel("Editor too")
         syncInterfaceThemeSwitch()
+        for role in weightRows.keys { syncWeightRow(role) }
         applyFonts()
         // The samples set their own size; the rest of the pane follows with everything else.
         TextScaleFollower.exempt(sampleLabel)
@@ -272,6 +277,96 @@ final class AppearanceViewController: NSViewController {
     @objc private func fontChanged(_ sender: NSPopUpButton) {
         let role = DS.Text.Fonts.Role.allCases[sender.tag]
         DS.Text.Fonts.setFamily(sender.selectedItem?.representedObject as? String, for: role)
+        syncWeightRow(role)
+        applyFonts()
+    }
+
+    // MARK: Weight
+
+    /// Weight, under a code font: a slider that glides along a variable font's weight axis
+    /// (SF Mono) and steps through a family's faces (Fira Code's Light to Bold), the weight's
+    /// name beside it. Hidden for a family with only a regular and a bold.
+    private func weightRow(_ role: DS.Text.Fonts.Role) -> NSView {
+        let slider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: self, action: #selector(weightChanged(_:)))
+        slider.isContinuous = true
+        slider.controlSize = .small
+        slider.tag = DS.Text.Fonts.Role.allCases.firstIndex(of: role)!
+        slider.setAccessibilityLabel("\(role == .editor ? "Editor" : "Terminal") font weight")
+        slider.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        let label = NSTextField(labelWithString: "")
+        label.font = DS.Text.body()
+        label.textColor = .secondaryLabelColor
+        label.alignment = .right
+        label.widthAnchor.constraint(equalToConstant: 84).isActive = true
+        let control = NSStackView(views: [slider, label])
+        control.orientation = .horizontal
+        control.alignment = .centerY
+        control.spacing = DS.Spacing.s
+        let row = SettingsForm.row("Weight", control)
+        weightRows[role] = (row, slider, label)
+        syncWeightRow(role)
+        return row
+    }
+
+    private func syncWeightRow(_ role: DS.Text.Fonts.Role) {
+        guard let (row, slider, label) = weightRows[role] else { return }
+        let weights = DS.Text.Fonts.weights(role)
+        // The hairline belongs to the row's slot (its superview, once in a section), so the slot
+        // is what hides.
+        row.isHidden = false
+        if let slot = row.superview, !(slot is NSStackView) { slot.isHidden = weights == nil }
+        switch (weights, DS.Text.Fonts.currentWeight(role)) {
+        case (.axis(let range)?, let current):
+            slider.numberOfTickMarks = 0
+            slider.allowsTickMarkValuesOnly = false
+            slider.minValue = range.lowerBound
+            slider.maxValue = range.upperBound
+            if case .axis(let value)? = current { slider.doubleValue = value } else { slider.doubleValue = 400 }
+            label.stringValue = Self.weightName(slider.doubleValue)
+        case (.faces(let faces)?, let current):
+            slider.minValue = 0
+            slider.maxValue = Double(faces.count - 1)
+            slider.numberOfTickMarks = faces.count
+            slider.allowsTickMarkValuesOnly = true
+            let index: Int
+            if case .face(let name)? = current { index = faces.firstIndex { $0.postScriptName == name } ?? faces.firstIndex { $0.name == "Regular" } ?? 0 }
+            else { index = faces.firstIndex { $0.name == "Regular" } ?? 0 }
+            slider.integerValue = index
+            label.stringValue = faces[index].name
+        default:
+            break
+        }
+    }
+
+    /// The name of a weight on the axis: the standard one it sits on, else its number.
+    private static func weightName(_ value: Double) -> String {
+        let names = [100: "Thin", 200: "Extra Light", 300: "Light", 400: "Regular", 500: "Medium", 600: "Semibold", 700: "Bold", 800: "Heavy", 900: "Black"]
+        let nearest = Int((value / 100).rounded()) * 100
+        if abs(value - Double(nearest)) < 5, let name = names[nearest] { return name }
+        return "\(Int(value.rounded()))"
+    }
+
+    /// The label follows the drag; the font changes when the drag ends, since every editor and
+    /// terminal remakes its glyphs for a new font.
+    @objc private func weightChanged(_ sender: NSSlider) {
+        let role = DS.Text.Fonts.Role.allCases[sender.tag]
+        guard let (_, _, label) = weightRows[role] else { return }
+        let weight: DS.Text.Fonts.Weight
+        switch DS.Text.Fonts.weights(role) {
+        case .axis?:
+            let value = (sender.doubleValue / 5).rounded() * 5
+            label.stringValue = Self.weightName(value)
+            weight = .axis(value)
+        case .faces(let faces)?:
+            let face = faces[min(max(0, sender.integerValue), faces.count - 1)]
+            label.stringValue = face.name
+            weight = .face(face.postScriptName)
+        case nil:
+            return
+        }
+        let ended = NSApp.currentEvent.map { $0.type == .leftMouseUp || $0.type == .keyDown } ?? true
+        guard ended, weight != DS.Text.Fonts.currentWeight(role) else { return }
+        DS.Text.Fonts.setWeight(weight, for: role)
         applyFonts()
     }
 

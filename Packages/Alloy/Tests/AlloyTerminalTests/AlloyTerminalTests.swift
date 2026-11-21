@@ -53,6 +53,24 @@ final class TerminalRendererTests: XCTestCase {
         XCTAssertEqual(grid.dirty, [false, false], "drawn rows are clean")
     }
 
+    /// A variable font at a weight of its own has no bold face by traits: its bold is 300
+    /// heavier on its weight axis, its italics keep the weight.
+    func testAVariableFontsBoldIsHeavierOnItsAxis() throws {
+        let base = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular) as CTFont
+        let axis = try XCTUnwrap(TerminalFont.weightAxis(base), "SF Mono is variable")
+        let font = TerminalFont(TerminalFont.font(base, weight: 450))
+        XCTAssertEqual(TerminalFont.weight(font.regular), 450)
+        XCTAssertEqual(TerminalFont.weight(font.bold), 750)
+        XCTAssertEqual(TerminalFont.weight(font.boldItalic), 750)
+        XCTAssertTrue(CTFontGetSymbolicTraits(font.italic).contains(.traitItalic))
+        XCTAssertEqual(TerminalFont.weight(TerminalFont(TerminalFont.font(base, weight: 800)).bold), axis.upperBound, "held to the axis")
+        XCTAssertEqual(CTFontGetAdvancesForGlyphs(font.bold, .horizontal, [CTFontGetGlyphWithName(font.bold, "M" as CFString)], nil, 1),
+                       CTFontGetAdvancesForGlyphs(font.regular, .horizontal, [CTFontGetGlyphWithName(font.regular, "M" as CFString)], nil, 1),
+                       "the same cell width")
+        // A static family keeps its own bold face.
+        XCTAssertEqual(CTFontCopyPostScriptName(TerminalFont(name: "Menlo-Regular", size: 13).bold) as String, "Menlo-Bold")
+    }
+
     /// A translucent theme (Side's translucent background) as Ghostty's background-opacity at its
     /// defaults: only the default background lets the window's glass through; a cell's own
     /// background, its text and an image stay opaque (background-opacity-cells = false).

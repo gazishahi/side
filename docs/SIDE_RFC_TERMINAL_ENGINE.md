@@ -259,6 +259,21 @@ under it. Its cost per frame isn't comparable to Ghostty's until it does the sam
 **Tier 2, what power users expect:** kitty graphics (images and Unicode placeholders);
 background opacity and blur; unfocused-split dimming; font variations.
 
+Tier 2's state (2026-11-21):
+- **Kitty graphics**: done (723c06d). Placements, PNG and raw pixels, animation and Unicode
+  placeholders, in Ghostty's three layers by z-index, clipped to the grid; the rule-4 workload
+  `images.bin` runs in D and E. Images are sampled smoothly when scaled, as Ghostty does
+  (to confirm against Ghostty's shader before any claim).
+- **Background opacity and blur**: done (80b8bf1). Side's translucent background is the window's
+  material; the engine draws the default background at the theme's opacity and keeps cell
+  backgrounds, text and images opaque, as Ghostty's `background-opacity` with
+  `background-opacity-cells` off.
+- **Unfocused-split dimming**: not applicable. Side has no splits (sessions pivot, 2026-11-12).
+- **Font variations**: done. Settings › Appearance › Fonts › Weight, for the editor's and the
+  terminal's font: along a variable font's weight axis, or through a family's faces (Ghostty's
+  `font-variation` and `font-style` for weight). A variable weight's bold is 300 heavier on the
+  axis. Other axes (width, slant) aren't offered.
+
 **Tier 3, Ghostty's extras, out of scope and said so:** custom shaders, background images, link
 previews.
 

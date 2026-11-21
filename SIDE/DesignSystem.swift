@@ -360,7 +360,92 @@ enum DS {
             }
             static func setFamily(_ family: String?, for role: Role) {
                 CodeSize.defaults.set(family, forKey: key(role))
+                // A weight belongs to the family it was chosen in.
+                CodeSize.defaults.removeObject(forKey: weightKey(role))
                 NotificationCenter.default.post(name: CodeSize.didChangeNotification, object: nil)
+            }
+
+            // MARK: Weight (font variations, Ghostty's font-variation and font-style)
+
+            /// The weights a code font offers: a variable font's weight axis, or a family's
+            /// upright faces when it has more than a regular and a bold (Fira Code's six).
+            enum Weights: Equatable {
+                case axis(ClosedRange<Double>)
+                case faces([Face])
+                struct Face: Equatable { let name: String; let postScriptName: String }
+            }
+            /// A chosen weight: a value on the weight axis, or a face by its PostScript name.
+            enum Weight: Equatable {
+                case axis(Double)
+                case face(String)
+            }
+
+            private static func weightKey(_ role: Role) -> String { "side.font-weight.\(role.rawValue)" }
+            private static let wght = 0x7767_6874
+
+            static func weight(_ role: Role) -> Weight? {
+                guard let stored = CodeSize.defaults.string(forKey: weightKey(role)), !stored.isEmpty else { return nil }
+                if stored.hasPrefix("wght="), let value = Double(stored.dropFirst(5)) { return .axis(value) }
+                return .face(stored)
+            }
+            static func setWeight(_ weight: Weight?, for role: Role) {
+                switch weight {
+                case .axis(let value): CodeSize.defaults.set("wght=\(Int(value.rounded()))", forKey: weightKey(role))
+                case .face(let name): CodeSize.defaults.set(name, forKey: weightKey(role))
+                case nil: CodeSize.defaults.removeObject(forKey: weightKey(role))
+                }
+                NotificationCenter.default.post(name: CodeSize.didChangeNotification, object: nil)
+            }
+
+            /// What the role's font offers; nil for a family with only a regular and a bold.
+            static func weights(_ role: Role) -> Weights? {
+                let base = baseFont(role, size: 12)
+                if let axis = weightAxis(base) { return .axis(axis) }
+                guard let family = base.familyName else { return nil }
+                let faces = (NSFontManager.shared.availableMembers(ofFontFamily: family) ?? []).compactMap { member -> (Face: Weights.Face, weight: CGFloat, order: Int)? in
+                    guard member.count >= 4, let name = member[0] as? String, let title = member[1] as? String,
+                          let traits = (member[3] as? NSNumber)?.uintValue,
+                          NSFontTraitMask(rawValue: traits).isDisjoint(with: [.italicFontMask, .condensedFontMask, .expandedFontMask]),
+                          let font = NSFont(name: name, size: 12) else { return nil }
+                    let weight = (font.fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat ?? 0
+                    return (Weights.Face(name: title, postScriptName: name), weight, 0)
+                }
+                guard faces.count >= 3 else { return nil }
+                // Lightest first; faces of one weight (Fira's Regular and Retina) in the family's order.
+                return .faces(faces.enumerated().sorted { ($0.element.weight, $0.offset) < ($1.element.weight, $1.offset) }.map(\.element.Face))
+            }
+
+            private static func weightAxis(_ font: NSFont) -> ClosedRange<Double>? {
+                let axes = (CTFontCopyVariationAxes(font as CTFont) as? [[CFString: Any]]) ?? []
+                guard let axis = axes.first(where: { ($0[kCTFontVariationAxisIdentifierKey] as? NSNumber)?.intValue == wght }),
+                      let low = (axis[kCTFontVariationAxisMinimumValueKey] as? NSNumber)?.doubleValue,
+                      let high = (axis[kCTFontVariationAxisMaximumValueKey] as? NSNumber)?.doubleValue, low < high else { return nil }
+                return low...high
+            }
+
+            /// The weight the role's font is drawn at, on its axis or among its faces: the chosen
+            /// one, or the regular face's.
+            static func currentWeight(_ role: Role) -> Weight? {
+                if let chosen = weight(role) { return chosen }
+                let base = baseFont(role, size: 12)
+                if let value = (CTFontCopyVariation(base as CTFont) as? [NSNumber: NSNumber])?[NSNumber(value: wght)]?.doubleValue { return .axis(value) }
+                return .face(base.fontName)
+            }
+
+            /// `base` at the role's chosen weight, where its family has it.
+            private static func weighted(_ base: NSFont, _ role: Role) -> NSFont {
+                switch weight(role) {
+                case .axis(let value)?:
+                    guard let axis = weightAxis(base) else { return base }
+                    let descriptor = CTFontDescriptorCreateCopyWithVariation(CTFontCopyFontDescriptor(base as CTFont), wght as CFNumber,
+                                                                             CGFloat(min(max(value, axis.lowerBound), axis.upperBound)))
+                    return CTFontCreateWithFontDescriptor(descriptor, base.pointSize, nil) as NSFont
+                case .face(let name)?:
+                    guard let face = NSFont(name: name, size: base.pointSize), face.familyName == base.familyName else { return base }
+                    return face
+                case nil:
+                    return base
+                }
             }
 
             /// Installed families whose regular face is fixed-pitch: the choices for code.
@@ -376,6 +461,13 @@ enum DS {
             /// (SF Mono for code, the Meslo Nerd Font for the terminal when present, since themed
             /// prompts draw with its glyphs, and New York for reading).
             static func font(_ role: Role, size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+                let base = baseFont(role, size: size, weight: weight)
+                // A code font's chosen weight, for its regular text only: bold stays the family's.
+                guard role != .reading, weight == .regular else { return base }
+                return weighted(base, role)
+            }
+
+            private static func baseFont(_ role: Role, size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
                 if family(role) == "SF Pro" { return .systemFont(ofSize: size, weight: weight) }
                 if let family = family(role),
                    let chosen = NSFontManager.shared.font(withFamily: family, traits: weight >= .semibold ? .boldFontMask : [], weight: 5, size: size) {
