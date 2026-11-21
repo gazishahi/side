@@ -27,6 +27,8 @@ final class SearchTests: XCTestCase {
         let terminal = try Terminal(columns: 20, rows: 3)
         terminal.feed(Array("old match\r\n1\r\n2\r\n3\r\n4\r\nnew match\r\n$ ".utf8))
         let search = TerminalSearch(terminal: terminal)
+        let reader = ScreenReader(terminal: terminal)
+        _ = reader.update()
         search.needle = "match"
         XCTAssertEqual(search.total, 2)
         search.next()
@@ -36,6 +38,11 @@ final class SearchTests: XCTestCase {
         XCTAssertEqual(search.selectedNumber, 2)
         XCTAssertEqual(search.viewportMatches().selected, [.init(row: 0, columns: 4...8)], "scrolled up to it")
         XCTAssertTrue(terminal.scrollbar.isScrolledBack, "the viewport isn't at the bottom")
+        // The screen reads again after the scroll, so what's drawn follows the match.
+        XCTAssertTrue(reader.update(), "the scroll marks the screen changed")
+        var top = ""
+        reader.forEachChangedRow { y, cells in if y == 0 { top = String(String.UnicodeScalarView(cells.compactMap { UnicodeScalar($0.scalar) })) } }
+        XCTAssertTrue(top.hasPrefix("old match"), top)
         search.previous()
         XCTAssertEqual(search.selectedNumber, 1)
     }

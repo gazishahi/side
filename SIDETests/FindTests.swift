@@ -125,6 +125,49 @@ final class FindTests: XCTestCase {
         XCTAssertEqual(make.editor.document?.string, "let count = 1\nprint(count)\nlet other = count + 1\n", "Replace All is one undo step")
     }
 
+    /// Find in the terminal (⌘F in the Terminal stage): the same palette, without the editor's
+    /// options or replace; Return steps up through older output; the keys stay in the palette;
+    /// Escape gives the terminal its focus back and clears the highlights. The editor's Find
+    /// afterwards has its options again.
+    func testFindInTheTerminalUsesThePalette() throws {
+        let surface = AlloyTerminalSurface(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        surface.applyTheme(TerminalSurfaceTheme(foreground: .white, background: .black,
+                                                palette: TerminalViewController.ansiPaletteColors(dark: true), backgroundOpacity: 1))
+        window.contentView?.addSubview(surface, positioned: .below, relativeTo: make.paletteSurface)
+        surface.display(text: "first needle\r\n" + String(repeating: "hay\r\n", count: 40) + "last needle here")
+        XCTAssertTrue(waitUntil { surface.visibleText().contains("last needle") })
+        window.makeFirstResponder(surface)
+        XCTAssertTrue((window.firstResponder as? NSView)?.isDescendant(of: surface) == true)
+
+        make.presentTerminalFind(surface)
+        XCTAssertTrue(make.isPaletteOpen)
+        XCTAssertTrue(make.findOptionsShownForTesting == (false, false), "no case, word, expression or replace")
+        type("needle")
+        XCTAssertTrue(waitUntil { self.make.terminalFindCountForTesting == "1 of 2" }, make.terminalFindCountForTesting)
+        XCTAssertEqual(surface.searchHighlightsForTesting.selected.first?[1...2], [5, 10], "the newest match, selected")
+
+        let fieldEditor = try XCTUnwrap(make.searchField.currentEditor() as? NSTextView)
+        XCTAssertTrue(make.control(make.searchField, textView: fieldEditor, doCommandBy: #selector(NSResponder.insertNewline(_:))), "Return stays in the palette")
+        XCTAssertTrue(waitUntil { self.make.terminalFindCountForTesting == "2 of 2" }, make.terminalFindCountForTesting)
+        XCTAssertTrue(surface.scrollbarForTesting.isScrolledBack, "the older match, scrolled to")
+
+        XCTAssertTrue(make.control(make.searchField, textView: fieldEditor, doCommandBy: #selector(NSResponder.cancelOperation(_:))))
+        XCTAssertFalse(make.isPaletteOpen)
+        XCTAssertTrue((window.firstResponder as? NSView)?.isDescendant(of: surface) == true, "typing goes back to the terminal: \(String(describing: window.firstResponder))")
+        XCTAssertTrue(waitUntil { surface.searchHighlightsForTesting.matches.isEmpty && surface.findStatus.total == 0 })
+
+        try open("let count = 1\n")
+        make.presentFind(replace: false)
+        XCTAssertTrue(make.findOptionsShownForTesting == (true, true), "the editor's Find keeps its options")
+        XCTAssertEqual(make.searchField.placeholderString, "Find in find.swift")
+    }
+
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline { if condition() { return true }; RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        return condition()
+    }
+
     /// 2026-10-23, the owner: "Does Find work in a table?" It does: each cell is searched, the
     /// matches are marked, and stepping moves the active cell; a sheet isn't edited, so no replace.
     func testFindWorksInASheetWithoutReplace() throws {

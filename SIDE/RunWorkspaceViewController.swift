@@ -140,6 +140,9 @@ final class RunWorkspaceViewController: NSViewController {
     /// The session this view has in its container, if any.
     private var displayedSession: TerminalSession? { didSet { if displayedSession !== oldValue { checkForDuplicateConversation() } } }
 
+    /// The terminal on screen, for Find (⌘F in the Terminal stage).
+    var displayedTerminalSurface: (any TerminalSurface)? { displayedSession?.viewController.terminalView }
+
     // MARK: One conversation, two tabs
 
     /// The tab on screen holds a Claude Code conversation another of Side's terminals holds too

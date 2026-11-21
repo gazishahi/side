@@ -64,6 +64,8 @@ public final class TerminalSearch: @unchecked Sendable {
         terminal.lock.write {
             guard let handle, !needle.isEmpty else { return }
             ghostty_search_set(handle, option, nil)
+            // Selecting a match can scroll the viewport: the screen is read again.
+            terminal.changedSinceRead = true
         }
     }
 

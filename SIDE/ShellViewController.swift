@@ -876,11 +876,21 @@ final class ShellViewController: NSViewController {
     @objc func searchTapped(_ sender: Any?) { makeVC.presentPalette(StagePins.pinned.contains(.make) ? .files : .commands) }
     @objc func showCommandPalette(_ sender: Any?) { makeVC.presentPalette(.commands) }
     @objc func showFindInProject(_ sender: Any?) { makeVC.presentPalette(.text) }
-    // Find in the file on screen: Make's, from Make.
-    @objc func showFind(_ sender: Any?) { if current == .make { makeVC.presentFind(replace: false) } }
-    @objc func showFindAndReplace(_ sender: Any?) { if current == .make { makeVC.presentFind(replace: true) } }
-    @objc func findNext(_ sender: Any?) { if current == .make { makeVC.findNext(forward: true) } }
-    @objc func findPrevious(_ sender: Any?) { if current == .make { makeVC.findNext(forward: false) } }
+    // Find in the file on screen: Make's, from Make; in Terminal, the terminal on screen (Side's
+    // own engine: SwiftTerm's search can't count or mark its matches).
+    private var findableTerminal: AlloyTerminalSurface? { current == .run ? runVC.displayedTerminalSurface as? AlloyTerminalSurface : nil }
+    @objc func showFind(_ sender: Any?) {
+        if current == .make { makeVC.presentFind(replace: false) } else if let terminal = findableTerminal { makeVC.presentTerminalFind(terminal) }
+    }
+    @objc func showFindAndReplace(_ sender: Any?) {
+        if current == .make { makeVC.presentFind(replace: true) } else if let terminal = findableTerminal { makeVC.presentTerminalFind(terminal) }
+    }
+    @objc func findNext(_ sender: Any?) {
+        if current == .make { makeVC.findNext(forward: true) } else if let terminal = findableTerminal { makeVC.terminalFindNext(terminal, up: true) }
+    }
+    @objc func findPrevious(_ sender: Any?) {
+        if current == .make { makeVC.findNext(forward: false) } else if let terminal = findableTerminal { makeVC.terminalFindNext(terminal, up: false) }
+    }
     @objc func useSelectionForFind(_ sender: Any?) { if current == .make { makeVC.useSelectionForFind() } }
     @objc func showGoToSymbol(_ sender: Any?) { makeVC.presentPalette(.symbols) }
     @objc func toggleTrackPopover(_ sender: Any?) { trackPill.togglePopover() }

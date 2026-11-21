@@ -102,7 +102,7 @@ struct PaletteCommand {
 }
 
 /// Which list the palette is showing. `commands` is also reached by typing `>` in any mode.
-enum PaletteMode { case files, symbols, text, commands, find, problems, references, choices }
+enum PaletteMode { case files, symbols, text, commands, find, terminalFind, problems, references, choices }
 
 /// A row of the palette's choices mode: something to pick (a launch configuration, a process).
 struct PaletteChoice {
@@ -323,7 +323,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     private var searchMode: SearchMode = .files
     /// Typing `>` switches any mode to commands, the way every palette does.
     private var effectiveMode: SearchMode {
-        [.find, .problems, .references, .choices].contains(searchMode) || !searchField.stringValue.hasPrefix(">") ? searchMode : .commands
+        [.find, .terminalFind, .problems, .references, .choices].contains(searchMode) || !searchField.stringValue.hasPrefix(">") ? searchMode : .commands
     }
     /// Every problem the servers report, across the project (Show Problems, ⇧⌘M).
     private var allDiagnostics: [URL: [LSPDiagnostic]] = [:]
@@ -792,6 +792,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard paletteIsOpen else { return }
         paletteIsOpen = false
         if searchMode == .find { endFind() }
+        if searchMode == .terminalFind { endTerminalFind() }
         onPaletteHide?()
     }
 
@@ -830,9 +831,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         hideSignatureHelp()
         endCompletion()
         if paletteIsOpen, searchMode == .find, mode != .find { endFind() }
+        if paletteIsOpen, searchMode == .terminalFind, mode != .terminalFind { endTerminalFind() }
         paletteIsOpen = true
         searchMode = mode == .commands ? .files : mode
-        findAccessory.isHidden = mode != .find
+        findAccessory.isHidden = mode != .find && mode != .terminalFind
+        // libghostty's search has no case, word or expression options, and a terminal isn't edited.
+        for option in [findCaseButton, findWordButton, findRegexButton, findReplaceToggle] { option.isHidden = mode == .terminalFind }
         if mode != .find { setReplaceRowShown(false) }
         let project = projectURL?.lastPathComponent
         switch mode {
@@ -841,11 +845,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .symbols: searchField.placeholderString = "Go to symbol"
         case .commands: searchField.placeholderString = "Run a command"
         case .find: searchField.placeholderString = activeTabIndex.map { "Find in \(openTabs[$0].url.lastPathComponent)" } ?? "Find"
+        case .terminalFind: searchField.placeholderString = "Find in the terminal"
         case .problems: searchField.placeholderString = problemsSummary
         case .references: searchField.placeholderString = "References to \(referenceSymbol) \u{00B7} \(referenceResults.count)"
         case .choices: searchField.placeholderString = choicePrompt
         }
-        searchField.stringValue = mode == .commands ? ">" : (mode == .find ? find.query : "")
+        searchField.stringValue = mode == .commands ? ">" : (mode == .find ? find.query : mode == .terminalFind ? terminalFindQuery : "")
         if mode == .symbols { outlineSymbols = []; loadOutline() }
         showQuickOpenPanel()
         searchField.window?.makeFirstResponder(searchField)
@@ -939,6 +944,75 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard let selected = selectedEditorText(), !selected.isEmpty else { return }
         find.query = String(selected.prefix(200))
         if paletteIsOpen, searchMode == .find { searchField.stringValue = find.query; performFindSearch() }
+    }
+
+    // MARK: - Find in the terminal
+
+    /// The terminal Find looks in (the Terminal stage's, on screen), and what it last looked for.
+    private weak var findTerminal: AlloyTerminalSurface?
+    private var terminalFindQuery = ""
+    /// Whether the terminal is searching for `terminalFindQuery` now (closing Find stops it).
+    private var terminalFindActive = false
+
+    /// ⌘F in the Terminal stage: the same palette as the editor's Find, over the terminal's text,
+    /// scrollback included. Return steps up through older output, ⇧Return back down; Escape
+    /// closes it and gives the terminal its keys back.
+    func presentTerminalFind(_ surface: AlloyTerminalSurface) {
+        if findTerminal !== surface { endTerminalFind() }
+        findTerminal = surface
+        surface.onFindStatus = { [weak self] _, _ in self?.updateTerminalFindCount() }
+        presentPalette(.terminalFind)
+    }
+
+    /// ⌘G / ⇧⌘G in the Terminal stage: Find, opened if it isn't, a step further.
+    func terminalFindNext(_ surface: AlloyTerminalSurface, up: Bool) {
+        let open = paletteIsOpen && searchMode == .terminalFind && findTerminal === surface
+        if !open { presentTerminalFind(surface) }
+        if open, !terminalFindQuery.isEmpty { terminalFindStep(up: up) }
+    }
+
+    private func performTerminalFind() {
+        guard let surface = findTerminal else { return }
+        let query = searchField.stringValue
+        guard query != terminalFindQuery || !terminalFindActive else { return }
+        terminalFindQuery = query
+        terminalFindActive = !query.isEmpty
+        surface.find(query)
+        // The newest match first, scrolled to, as the editor's Find starts at the caret.
+        if !query.isEmpty { surface.findNext() }
+        updateTerminalFindCount()
+    }
+
+    private func terminalFindStep(up: Bool) {
+        guard let surface = findTerminal, !terminalFindQuery.isEmpty else { return }
+        if up { surface.findNext() } else { surface.findPrevious() }
+    }
+
+    private func updateTerminalFindCount() {
+        guard searchMode == .terminalFind, let surface = findTerminal else { return }
+        let (selected, total) = surface.findStatus
+        if terminalFindQuery.isEmpty {
+            findCountLabel.stringValue = ""
+        } else if total == 0 {
+            findCountLabel.stringValue = "No matches"
+        } else {
+            findCountLabel.stringValue = selected.map { "\($0.formatted()) of \(total.formatted())" } ?? total.formatted()
+        }
+    }
+
+    /// Closing Find clears its highlights; the query stays for next time.
+    private func endTerminalFind() {
+        terminalFindActive = false
+        findTerminal?.find("")
+        findTerminal?.onFindStatus = nil
+        findCountLabel.stringValue = ""
+    }
+
+    /// UI testing: what the count says while the terminal's Find is open.
+    var terminalFindCountForTesting: String { findCountLabel.stringValue }
+    /// Testing: whether Find shows its case, word and expression options, and its replace toggle.
+    var findOptionsShownForTesting: (options: Bool, replace: Bool) {
+        (![findCaseButton, findWordButton, findRegexButton].contains { $0.isHidden }, !findReplaceToggle.isHidden)
     }
 
     /// Find runs over the Markdown preview's text while the preview is what's showing.
@@ -3457,6 +3531,10 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             performFindSearch()
             return
         }
+        if searchMode == .terminalFind {
+            performTerminalFind()
+            return
+        }
         if effectiveMode == .commands {
             performCommandSearch()
             return
@@ -3546,6 +3624,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .text: return textMatches.count
         case .commands: return commandMatches.count
         case .find: return min(findRows.count, Self.findListLimit)
+        case .terminalFind: return 0
         case .problems: return problemRows.count
         case .references: return referenceRows.count
         case .choices: return choiceRows.count
@@ -3652,6 +3731,9 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         case .find:
             // Return steps to the next match (⇧Return the previous); the palette stays.
             findStep(forward: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
+        case .terminalFind:
+            // Return: the next match up, into older output; ⇧Return back down.
+            terminalFindStep(up: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
         case .problems:
             let row = (selected >= 0 && selected < problemRows.count) ? problemRows[selected] : problemRows.first
             guard let row else { return }
@@ -3679,6 +3761,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         hideQuickOpenPanel()
         if let target, let window = searchField.window ?? view.window, (target as? NSView)?.window === window {
             window.makeFirstResponder(target)
+        } else if let terminal = findTerminal, terminal.window != nil, searchMode == .terminalFind {
+            terminal.window?.makeFirstResponder(terminal)
         } else if view.window != nil {
             editor.focus()
         }
@@ -3747,6 +3831,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
             let (line, text) = findLine(at: row)
             let place = findingInSheet ? findSheetCell(forMatch: findRows[row].firstMatch).map(sheetView.name(of:)) ?? "" : findingInPDF ? "page \(line)" : "line \(line)"
             cell.configure(icon: Self.paletteSymbol("text.magnifyingglass"), title: text, detail: nil, trailing: place)
+        case .terminalFind:
+            break
         case .problems:
             let problem = problemRows[row]
             cell.configure(icon: Self.problemSymbol(problem.diagnostic.severity), title: problem.diagnostic.message,
