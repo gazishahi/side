@@ -7,7 +7,8 @@
 # (Ghostty stops drawing an occluded surface).
 # Workloads: scripts/make-feature-workloads.py. Results go to $RESULTS (default results/features).
 set -uo pipefail
-here=${0:A:h}/..; T=$here/TermBench/.build/release; W=$here/workloads; R=${RESULTS:-$here/results/features}  # committed runs: results/<date>-features; mkdir -p $R
+here=${0:A:h}/..; T=$here/TermBench/.build/release; W=$here/workloads; R=${RESULTS:-$here/results/features}  # committed runs: results/<date>-features
+mkdir -p $R
 font=${FONT:-FiraCodeNFM-Reg}
 for w in ligatures boxes underlines images; do [[ -f $W/$w.bin ]] || python3 -I $here/scripts/make-feature-workloads.py $W || exit 1; done
 (cd $here/TermBench && for p in TermBenchST TermBenchGV TermBenchGK; do swift build -c release --product $p; done) || exit 1

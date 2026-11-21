@@ -1,0 +1,6 @@
+{ 2.78 3.56 3.86 }
+ %CPU COMM
+ 40.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 30.1 /System/Library/CoreServices/NotificationCenter.app/Contents/MacOS/NotificationCenter
+  9.1 /Applications/Side.app/Contents/MacOS/Side
+  7.1 /System/Library/PrivateFrameworks/IDS.framework/identityservicesd.app/Contents/MacOS/identityservicesd
