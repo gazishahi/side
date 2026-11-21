@@ -19,6 +19,44 @@ final class PseudoTerminalProcessTests: XCTestCase {
         XCTAssertEqual(status.values.first.map { ($0 >> 8) & 0xFF }, 3, "the raw wait status, exit code 3")
     }
 
+    /// A flood read in bridged batches (with a consumer that says it's busy, so the bridge waits
+    /// too) arrives whole and in order, all of it before the exit is reported.
+    func testAFloodArrivesWholeAndBeforeTheExit() throws {
+        final class Tally: @unchecked Sendable {
+            let lock = NSLock()
+            var count = 0, markers: [Int] = [], marker = "", batches = 0, exited = false, outputAfterExit = false
+            func take(_ bytes: ArraySlice<UInt8>) {
+                lock.lock(); defer { lock.unlock() }
+                batches += 1
+                if exited { outputAfterExit = true }
+                for b in bytes {
+                    switch b {
+                    case UInt8(ascii: "x"): count += 1
+                    case UInt8(ascii: "["): marker = ""
+                    case UInt8(ascii: "]"): markers.append(Int(marker) ?? -1)
+                    default: if (48...57).contains(b) { marker.append(Character(UnicodeScalar(b))) }
+                    }
+                }
+            }
+            func exit() { lock.lock(); exited = true; lock.unlock() }
+        }
+        let process = PseudoTerminalProcess()
+        let tally = Tally()
+        let exited = expectation(description: "exited")
+        process.isConsumerBusy = { true }
+        process.onOutput = { tally.take($0) }
+        process.onExit = { _ in tally.exit(); exited.fulfill() }
+        XCTAssertTrue(process.start(executable: "/bin/sh",
+                                    arguments: ["-c", "stty -onlcr; i=0; while [ $i -lt 40 ]; do head -c 125000 /dev/zero | tr '\\0' x; printf '[%d]' $i; i=$((i+1)); done"],
+                                    environment: ["PATH=/usr/bin:/bin"], directory: "/tmp", columns: 80, rows: 24))
+        wait(for: [exited], timeout: 30)
+        tally.lock.lock(); defer { tally.lock.unlock() }
+        XCTAssertEqual(tally.count, 5_000_000)
+        XCTAssertEqual(tally.markers, Array(0..<40))
+        XCTAssertFalse(tally.outputAfterExit, "output after the exit was reported")
+        XCTAssertLessThan(tally.batches, 2_000, "gathered into batches, not a read (about a kilobyte) at a time")
+    }
+
     func testInputAndResize() throws {
         let process = PseudoTerminalProcess()
         let output = Collected<UInt8>()

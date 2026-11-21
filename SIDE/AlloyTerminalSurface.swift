@@ -3,6 +3,7 @@ import AppKit
 import Metal
 import SideSessionsKit
 import SideTerminal
+import Synchronization
 
 /// The terminal engine of docs/SIDE_RFC_TERMINAL_ENGINE.md behind `TerminalSurface`: libghostty-vt
 /// (SideTerminal) parses on a queue of its own, Alloy (AlloyTerminal) draws on a render thread of
@@ -548,9 +549,20 @@ final class AlloyTerminalSurface: NSView, TerminalSurface, NSMenuItemValidation 
 
     func startProcess(executable: String, arguments: [String], environment: [String], currentDirectory: String?) {
         let process = PseudoTerminalProcess()
+        // Batches on their way through the main thread to the parser: while there are, the
+        // reader may gather a flood into bigger batches (PseudoTerminalProcess.Bridge).
+        final class Count: Sendable { let value = Atomic<Int>(0) }
+        let inFlight = Count()
+        let parseQueue = parseQueue
+        process.isConsumerBusy = { inFlight.value.load(ordering: .relaxed) > 0 }
         process.onOutput = { [weak self] bytes in
             let copy = Array(bytes)
-            DispatchQueue.main.async { self?.receive(copy[...]) }
+            inFlight.value.add(1, ordering: .relaxed)
+            DispatchQueue.main.async {
+                self?.receive(copy[...])
+                // After this batch's parse, queued behind it.
+                parseQueue.async { inFlight.value.subtract(1, ordering: .relaxed) }
+            }
         }
         process.onExit = { [weak self] status in
             DispatchQueue.main.async {
