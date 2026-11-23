@@ -390,7 +390,37 @@ final class ActivityPill {
     static func projectMark(_ project: URL, size: CGFloat = markSize) -> NSImage {
         let space = ProjectSpaces.shared.spaces.first { $0.url.standardizedFileURL.path == project.standardizedFileURL.path }
         let logo = space?.logoPath.flatMap { ProjectLogo.chosen(URL(fileURLWithPath: $0), size: size) } ?? ProjectLogo.image(for: project, size: size)
-        return logo ?? tile(symbol: space?.symbol ?? "folder.fill", color: space?.color ?? .systemGray, size: size)
+        guard let logo else { return tile(symbol: space?.symbol ?? "folder.fill", color: space?.color ?? .systemGray, size: size) }
+        return fillsItsSquare(logo) ? logo : onTile(logo, size: size)
+    }
+
+    /// A logo whose edges are see-through (a bare glyph, not an app-style square): on the
+    /// tile a symbol gets, inset a little, so it has an edge of its own. Bare, such logos ran
+    /// into each other in the deck (the owner, 2026-11-23).
+    static func onTile(_ logo: NSImage, size: CGFloat) -> NSImage {
+        NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            let tile = NSBezierPath(roundedRect: rect, xRadius: size * 0.225, yRadius: size * 0.225)
+            DS.Color.raised.setFill()
+            tile.fill()
+            logo.draw(in: rect.insetBy(dx: size * 0.14, dy: size * 0.14), from: .zero, operation: .sourceOver, fraction: 1)
+            return true
+        }
+    }
+
+    /// Whether a logo is opaque along its edges, away from the corners a rounded square leaves
+    /// clear: then it's its own tile.
+    static func fillsItsSquare(_ logo: NSImage) -> Bool {
+        let side = 32
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: rep) else { return true }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        logo.draw(in: NSRect(x: 0, y: 0, width: side, height: side), from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        let along = [side / 3, side / 2, side * 2 / 3]
+        let points = along.flatMap { [(1, $0), (side - 2, $0), ($0, 1), ($0, side - 2)] }
+        return points.allSatisfy { (rep.colorAt(x: $0.0, y: $0.1)?.alphaComponent ?? 0) > 0.9 }
     }
 
     /// The list's mark for an item: its project's, with what's running there (Claude Code's
@@ -539,7 +569,9 @@ final class ActivityRow: NSView {
             needsDisplay = true
             let showsActions = hovered && !actions.arrangedSubviews.isEmpty
             actions.isHidden = !showsActions
-            state.isHidden = showsActions
+            // Kept in the row, only unseen: hidden, the stack gave its column to the words,
+            // which ran on under the × (the owner, 2026-11-23).
+            state.alphaValue = showsActions ? 0 : 1
         }
     }
 

@@ -152,6 +152,42 @@ final class ChromeTests: XCTestCase {
         XCTAssertEqual(MakeWorkspaceViewController.commandSymbol("Something new"), "command")
     }
 
+    /// 2026-11-23, the owner: on hover a long reason ran on under the row's ×. The words keep
+    /// their width when the actions take the state's place.
+    func testAnActivityRowsWordsStayClearOfItsActions() {
+        var item = ActivityCenter.Item(id: "a", state: .finished, title: "Claude Code", place: "app · tab", program: "claude", target: .update)
+        item.reason = String(repeating: "A long reason that runs on and on, ", count: 6)
+        let stateWidth = max(60, ActivityRow.actionsWidth(review: false, dismiss: true))
+        let row = ActivityRow(item: item, stateWidth: stateWidth, canDismiss: true)
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 80))
+        host.addSubview(row)
+        NSLayoutConstraint.activate([row.leadingAnchor.constraint(equalTo: host.leadingAnchor), row.trailingAnchor.constraint(equalTo: host.trailingAnchor), row.topAnchor.constraint(equalTo: host.topAnchor)])
+        func wordsEnd() -> CGFloat {
+            host.layoutSubtreeIfNeeded()
+            func fields(_ view: NSView) -> [NSTextField] { (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields) }
+            return fields(row).filter { $0.stringValue.hasPrefix("A long reason") }.map { $0.convert($0.bounds, to: row).maxX }.max() ?? 0
+        }
+        let resting = wordsEnd()
+        row.hoverForTesting(true)
+        XCTAssertEqual(row.actionsForTesting, ["Dismiss"])
+        XCTAssertEqual(wordsEnd(), resting, accuracy: 0.5, "the words don't take the state's column")
+        XCTAssertLessThan(resting, 360 - stateWidth - DS.Spacing.m)
+    }
+
+    /// 2026-11-23, the owner: a logo with a see-through background ran into the others in the
+    /// pill's deck. Such a logo goes on a tile; one that fills its square is its own.
+    func testASeeThroughLogoGoesOnATile() {
+        let square = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+            NSColor.systemBlue.setFill(); NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill(); return true
+        }
+        let glyph = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+            NSColor.systemBlue.setFill(); NSBezierPath(ovalIn: rect.insetBy(dx: 5, dy: 5)).fill(); return true
+        }
+        XCTAssertTrue(ActivityPill.fillsItsSquare(square))
+        XCTAssertFalse(ActivityPill.fillsItsSquare(glyph))
+        XCTAssertTrue(ActivityPill.fillsItsSquare(ActivityPill.onTile(glyph, size: 18)), "on its tile, it has an edge")
+    }
+
     func testTheActivityPillSaysTheMostPressingThing() {
         typealias Item = ActivityCenter.Item
         let working = Item(id: "a", state: .working, title: "Claude Code", place: "app · tab", program: "claude", target: .update)
