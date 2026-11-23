@@ -851,6 +851,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
     var isActive: Bool = false {
         didSet {
             needsDisplay = true
+            nextChip?.needsDisplay = true
             updateCloseVisibility()
             if isActive { revealWhenLaidOut() }
         }
@@ -1037,7 +1038,28 @@ final class TabChipView: NSView, PointerHoverSyncing {
     static let flare: CGFloat = 4
 
     private var trackingArea: NSTrackingArea?
-    private(set) var isHovered = false { didSet { needsDisplay = true } }
+    private(set) var isHovered = false { didSet { needsDisplay = true; nextChip?.needsDisplay = true } }
+
+    /// The tabs either side in the strip, for the line between them.
+    private var neighbours: [NSView] { (superview as? NSStackView)?.arrangedSubviews ?? [] }
+    private var previousChip: TabChipView? {
+        guard let index = neighbours.firstIndex(of: self), index > 0 else { return nil }
+        return neighbours[index - 1] as? TabChipView
+    }
+    private var nextChip: TabChipView? {
+        guard let index = neighbours.firstIndex(of: self), index + 1 < neighbours.count else { return nil }
+        return neighbours[index + 1] as? TabChipView
+    }
+    /// Quiet: a tab with no fill of its own beside one with none either.
+    private var isPlain: Bool { !isActive && !isHovered && phase == .idle && !drawsLifted && bounds.width > Self.flare * 2 + 16 }
+
+    /// A hairline between two plain tabs, in the gap before this one: equal widths with no
+    /// fill ran together with nothing to say where one ended (the owner, 2026-11-23). None
+    /// beside the selected or hovered tab, whose capsule is edge enough, as in Safari's tabs.
+    private var drawsLeadingSeparator: Bool {
+        guard isPlain, let previous = previousChip else { return false }
+        return previous.isPlain
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1227,6 +1249,15 @@ final class TabChipView: NSView, PointerHoverSyncing {
             pill.fill()
         }
 
+        if drawsLeadingSeparator {
+            // In the middle of the gap, which starts before this view: views don't clip.
+            let gap = (superview as? NSStackView)?.spacing ?? 0
+            let x = -gap / 2 - 0.5
+            let height: CGFloat = 12
+            DS.Color.hairlineStrong.setFill()
+            NSRect(x: x, y: (bounds.height - height) / 2, width: 1, height: height).fill()
+        }
+
         if renameField == nil, !drawsLifted {
             // Under the shimmer the title sits a step quieter, so the band of light reads.
             let shimmering = isWorking
@@ -1288,7 +1319,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
     // MARK: Drag (§4.2)
 
     enum Phase { case idle, pressed, lifted, torn }
-    private(set) var phase: Phase = .idle { didSet { if phase != oldValue { needsDisplay = true } } }
+    private(set) var phase: Phase = .idle { didSet { if phase != oldValue { needsDisplay = true; nextChip?.needsDisplay = true } } }
     private var pressPoint = NSPoint.zero
     /// Where in the chip it was grabbed, so it stays under the pointer at that spot.
     private var grabOffset = NSPoint.zero
